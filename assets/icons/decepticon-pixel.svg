@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="512" height="512">
+  <title>Pixel mech mask icon</title>
+  <desc>Original pixel-art robot mask inspired by sharp angular villain insignias.</desc>
+  <g shape-rendering="crispEdges">
+    <rect width="32" height="32" fill="none"/>
+
+    <path fill="#2c1748" d="M4 2h1v1H4zm23 0h1v1h-1zM4 3h1v1H4zm23 0h1v1h-1zM4 4h1v1H4zm23 0h1v1h-1zM4 5h1v1H4zm23 0h1v1h-1zM4 6h1v1H4zm23 0h1v1h-1zM4 7h1v1H4zm23 0h1v1h-1zM4 8h1v1H4zm23 0h1v1h-1zM4 9h1v1H4zm23 0h1v1h-1zM5 10h1v1H5zm21 0h1v1h-1zM5 11h1v1H5zm21 0h1v1h-1zM5 12h1v1H5zm21 0h1v1h-1zM5 13h1v1H5zm21 0h1v1h-1zM5 14h1v1H5zm21 0h1v1h-1zM5 15h1v1H5zm21 0h1v1h-1zM5 16h1v1H5zm21 0h1v1h-1zM6 17h1v1H6zm19 0h1v1h-1zM6 18h1v1H6zm19 0h1v1h-1zM6 19h1v1H6zm19 0h1v1h-1zM6 20h1v1H6zm19 0h1v1h-1zM6 21h1v1H6zm19 0h1v1h-1zM7 22h1v1H7zm17 0h1v1h-1zM7 23h1v1H7zm17 0h1v1h-1zM8 24h1v1H8zm15 0h1v1h-1zM8 25h1v1H8zm15 0h1v1h-1zM9 26h1v1H9zm13 0h1v1h-1zM10 27h1v1h-1zm11 0h1v1h-1zM11 28h1v1h-1zm9 0h1v1h-1z"/>
+
+    <path fill="#4a2c73" d="M5 2h1v1H5zm21 0h1v1h-1zM5 3h1v1H5zm21 0h1v1h-1zM5 4h1v1H5zm21 0h1v1h-1zM5 5h1v1H5zm21 0h1v1h-1zM5 6h1v1H5zm21 0h1v1h-1zM5 7h1v1H5zm21 0h1v1h-1zM5 8h1v1H5zm21 0h1v1h-1zM6 9h1v1H6zm19 0h1v1h-1zM6 10h1v1H6zm19 0h1v1h-1zM6 11h1v1H6zm19 0h1v1h-1zM6 12h1v1H6zm19 0h1v1h-1zM6 13h1v1H6zm19 0h1v1h-1zM6 14h1v1H6zm19 0h1v1h-1zM6 15h1v1H6zm19 0h1v1h-1zM7 16h1v1H7zm17 0h1v1h-1zM7 17h1v1H7zm17 0h1v1h-1zM7 18h1v1H7zm17 0h1v1h-1zM7 19h1v1H7zm17 0h1v1h-1zM7 20h1v1H7zm17 0h1v1h-1zM8 21h1v1H8zm15 0h1v1h-1zM8 22h1v1H8zm15 0h1v1h-1zM9 23h1v1H9zm13 0h1v1h-1zM9 24h1v1H9zm13 0h1v1h-1zM10 25h1v1h-1zm11 0h1v1h-1zM11 26h1v1h-1zm9 0h1v1h-1z"/>
+
+    <path fill="#6d4a98" d="M6 2h1v1H6zm19 0h1v1h-1zM6 3h1v1H6zm19 0h1v1h-1zM6 4h1v1H6zm19 0h1v1h-1zM6 5h1v1H6zm19 0h1v1h-1zM6 6h1v1H6zm19 0h1v1h-1zM6 7h1v1H6zm19 0h1v1h-1zM7 8h1v1H7zm17 0h1v1h-1zM7 9h1v1H7zm17 0h1v1h-1zM7 10h1v1H7zm17 0h1v1h-1zM7 11h1v1H7zm17 0h1v1h-1zM7 12h1v1H7zm17 0h1v1h-1zM7 13h1v1H7zm17 0h1v1h-1zM8 14h1v1H8zm15 0h1v1h-1zM8 15h1v1H8zm15 0h1v1h-1zM8 16h1v1H8zm15 0h1v1h-1zM8 17h1v1H8zm15 0h1v1h-1zM8 18h1v1H8zm15 0h1v1h-1zM9 19h1v1H9zm13 0h1v1h-1zM9 20h1v1H9zm13 0h1v1h-1zM10 21h1v1h-1zm11 0h1v1h-1zM10 22h1v1h-1zm11 0h1v1h-1zM11 23h1v1h-1zm9 0h1v1h-1zM12 24h1v1h-1zm7 0h1v1h-1zM13 25h1v1h-1zm5 0h1v1h-1z"/>
+
+    <path fill="#8c6abc" d="M7 2h1v1H7zm17 0h1v1h-1zM7 3h1v1H7zm17 0h1v1h-1zM7 4h1v1H7zm17 0h1v1h-1zM7 5h1v1H7zm17 0h1v1h-1zM8 6h1v1H8zm15 0h1v1h-1zM8 7h1v1H8zm15 0h1v1h-1zM8 8h1v1H8zm15 0h1v1h-1zM8 9h1v1H8zm15 0h1v1h-1zM8 10h1v1H8zm15 0h1v1h-1zM8 11h1v1H8zm15 0h1v1h-1zM9 12h1v1H9zm13 0h1v1h-1zM9 13h1v1H9zm13 0h1v1h-1zM9 14h1v1H9zm13 0h1v1h-1zM9 15h1v1H9zm13 0h1v1h-1zM9 16h1v1H9zm13 0h1v1h-1zM10 17h1v1h-1zm11 0h1v1h-1zM10 18h1v1h-1zm11 0h1v1h-1zM11 19h1v1h-1zm9 0h1v1h-1zM11 20h1v1h-1zm9 0h1v1h-1zM12 21h1v1h-1zm7 0h1v1h-1zM13 22h1v1h-1zm5 0h1v1h-1z"/>
+
+    <path fill="#2c1748" d="M4 2h1v1H4zm1 1h1v1H5zm1 1h1v1H6zm1 1h1v1H7zm1 1h1v1H8zm1 1h1v1H9zm1 1h1v1h-1zm1 1h1v1h-1zm1 0h1v1h-1zm1 0h1v1h-1zm1 1h1v1h-1zm1 0h4v1h-4zm4-1h1v1h-1zm1-1h1v1h-1zm1-1h1v1h-1zm1-1h1v1h-1zm1-1h1v1h-1zm1-1h1v1h-1zm1-1h1v1h-1zm1-1h1v1h-1z"/>
+
+    <path fill="#2c1748" d="M9 9h1v1H9zm1 1h1v1h-1zm1 1h6v1h-6zm6-1h1v1h-1zm1-1h1v1h-1zM8 12h1v1H8zm1 1h1v1H9zm1 1h5v1h-5zm5-1h1v1h-1zm1-1h1v1h-1zm1-1h1v1h-1zM23 9h1v1h-1zm-1 1h1v1h-1zm-6 1h6v1h-6zm-1-1h1v1h-1zm-1-1h1v1h-1zm8 3h1v1h-1zm-1 1h1v1h-1zm-1 1h-5v1h5zm-5-1h-1v1h1zm-1-1h-1v1h1z"/>
+
+    <path fill="#2c1748" d="M10 16h1v1h-1zm1-1h1v1h-1zm1-1h3v1h-3zm3 1h1v1h-1zm1 1h1v1h-1zm5 0h1v1h-1zm-1-1h1v1h-1zm-3-1h3v1h-3zm-1 1h1v1h-1zm-1 1h1v1h-1zM12 21h1v1h-1zm1 1h1v1h-1zm1 0h4v1h-4zm4-1h1v1h-1zm1 1h1v1h-1zm-6 2h1v1h-1zm1 1h4v1h-4zm4-1h1v1h-1zm-3 2h2v1h-2z"/>
+
+    <path fill="#efe6ff" d="M10 15h2v1h-2zm2-1h3v1h-3zm6 0h3v1h-3zm3 1h2v1h-2zM9 16h1v1H9zm1 1h5v1h-5zm7 0h5v1h-5zm5-1h1v1h-1z"/>
+
+    <path fill="#c6b6f2" d="M13 4h1v1h-1zm5 0h1v1h-1zM12 5h1v1h-1zm1 1h6v1h-6zm6-1h1v1h-1zM13 7h1v1h-1zm4 0h1v1h-1zM15 18h2v1h-2z"/>
+
+    <path fill="#a88de0" d="M13 8h1v1h-1zm1 1h4v1h-4zm4-1h1v1h-1zM15 10h2v2h-2zM15 20h2v2h-2z"/>
+
+    <path fill="#2c1748" d="M14 3h4v1h-4zM13 4h1v1h-1zm4 0h1v1h-1zm-4 1h1v1h-1zm4 0h1v1h-1zm-4 1h1v1h-1zm4 0h1v1h-1zm-4 1h1v1h-1zm4 0h1v1h-1zm-4 1h1v1h-1zm4 0h1v1h-1z"/>
+  </g>
+</svg>

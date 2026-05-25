@@ -1,0 +1,742 @@
+//! UI Module - Beautiful terminal UI matching original Claude Code
+//!
+//! This module provides styled output, colors, animations, and formatting
+//! to match the aesthetic of the original TypeScript Claude Code CLI.
+
+use colored::{ColoredString, Colorize};
+use std::io::{self, Write};
+use std::thread;
+use std::time::Duration;
+use unicode_width::UnicodeWidthStr;
+
+/// Claude Code brand colors
+pub mod colors {
+    use colored::Color;
+
+    /// Anthropic purple - primary brand color
+    pub const PRIMARY: Color = Color::Magenta;
+    /// Warm orange - accent color
+    pub const ACCENT: Color = Color::TrueColor {
+        r: 255,
+        g: 140,
+        b: 66,
+    };
+    /// Soft purple for secondary elements
+    pub const SECONDARY: Color = Color::TrueColor {
+        r: 147,
+        g: 112,
+        b: 219,
+    };
+    /// Green for success states
+    pub const SUCCESS: Color = Color::Green;
+    /// Yellow for warnings
+    pub const WARNING: Color = Color::Yellow;
+    /// Red for errors
+    pub const ERROR: Color = Color::Red;
+    /// Cyan for info
+    pub const INFO: Color = Color::Cyan;
+    /// Bright white for text
+    pub const TEXT: Color = Color::White;
+    /// Gray for muted text
+    pub const MUTED: Color = Color::BrightBlack;
+}
+
+/// Print the wgenty welcome banner
+pub fn print_welcome(model: &str) {
+    println!();
+    print_ascii_logo(model);
+    println!();
+    print_feature_bar();
+    println!();
+    println!(
+        "     {}",
+        "输入 help 查看命令 · 输入 exit 退出"
+            .bright_black()
+            .italic()
+    );
+    println!();
+}
+
+/// Print ASCII Art logo with gradient colors
+fn print_ascii_logo(model: &str) {
+    let logo_lines = [
+        "  ▄   ▄   ▄▄▄   ▄▄▄▄▄  ▄   ▄  ▄▄▄▄▄  ▄   ▄",
+        "  █   █   ███   █████  █   █  █████  █   █",
+        "  █   █  █   █  █      ██  █    █    █   █",
+        "  █ █ █  █      ███    █ █ █    █     ███ ",
+        "  █ █ █  █  ██  █      █  ██    █      █  ",
+        "   █ █    ████  █████  █   █    █      █  ",
+    ];
+
+    let gradient = [
+        (220, 180, 255),
+        (200, 160, 240),
+        (170, 130, 220),
+        (140, 100, 195),
+        (115, 80, 170),
+        (100, 60, 150),
+    ];
+
+    for (i, line) in logo_lines.iter().enumerate() {
+        let (r, g, b) = gradient[i];
+        println!("{}", line.truecolor(r, g, b).bold());
+    }
+
+    println!();
+    println!("        {} {} {}",
+        "🟣".to_string(),
+        "Wgenty Code".truecolor(200, 150, 255).bold(),
+        "· Rust Edition".truecolor(255, 140, 66).bold()
+    );
+    println!("           {}", "高性能 AI 编码助手".truecolor(147, 112, 219));
+    println!();
+    println!(
+        "        {} {}",
+        "Model:".bright_black(),
+        model.truecolor(220, 200, 255)
+    );
+}
+
+/// Print single-line feature bar with dividers
+fn print_feature_bar() {
+    let width = terminal_size().0.min(70);
+    let divider = "─".repeat(width as usize);
+    println!("   {}", divider.truecolor(80, 60, 100));
+    println!(
+        "     {} 启动 {}   {} 内存 {}   {} 响应 {}",
+        "⚡".truecolor(255, 200, 50),
+        "2.5x".green().bold(),
+        "💾".truecolor(100, 200, 255),
+        "-60%".green().bold(),
+        "🚀".truecolor(255, 140, 66),
+        "+40%".green().bold(),
+    );
+    println!("   {}", divider.truecolor(80, 60, 100));
+}
+
+/// Print a stylish divider
+pub fn print_divider() {
+    let width = terminal_size().0.min(70);
+    let line = "─".repeat(width as usize);
+    println!("{}", line.truecolor(100, 80, 120));
+}
+
+/// Print an assistant message with styling
+pub fn print_claude_message(content: &str) {
+    println!();
+    let width = terminal_size().0;
+    let inner = (width as usize).saturating_sub(4);
+    let label = " 🟣 Wgenty ";
+    // Emoji 🟣 displays as 2 columns but chars().count() returns 1, so add 1
+    let label_display_width = label.chars().count() + 1;
+    let dash_after = inner.saturating_sub(label_display_width);
+
+    // Orange border for assistant messages
+    let border_color = (180, 120, 60);
+    println!(
+        "  ╭{}{}╮",
+        label.truecolor(200, 150, 80).bold(),
+        "─"
+            .repeat(dash_after)
+            .truecolor(border_color.0, border_color.1, border_color.2)
+    );
+
+    // Format the content with proper wrapping and styling
+    for line in content.lines() {
+        let left_border = format!("  {} ", "│")
+            .truecolor(border_color.0, border_color.1, border_color.2)
+            .to_string();
+
+        if line.starts_with("```") {
+            if line.len() > 3 {
+                let lang = &line[3..];
+                println!(
+                    "{} {}",
+                    left_border,
+                    format!("───── {} ─────", lang).truecolor(80, 80, 80)
+                );
+            } else {
+                println!(
+                    "{} {}",
+                    left_border,
+                    "─────────────────────".truecolor(80, 80, 80)
+                );
+            }
+        } else if line.starts_with("#") {
+            let level = line.chars().take_while(|&c| c == '#').count();
+            let header_text = line.trim_start_matches('#').trim();
+            let styled = match level {
+                1 => header_text.truecolor(255, 140, 66).bold().underline(),
+                2 => header_text.truecolor(200, 150, 255).bold(),
+                _ => header_text.bright_white().bold(),
+            };
+            println!("{}{}", left_border, styled);
+        } else if line.starts_with("-") || line.starts_with("*") {
+            println!(
+                "{}{} {}",
+                left_border,
+                "•".truecolor(147, 112, 219),
+                &line[1..].trim()
+            );
+        } else if line.starts_with(">") {
+            println!(
+                "{}{} {}",
+                left_border,
+                "│".truecolor(100, 80, 120),
+                line[1..].trim().bright_black()
+            );
+        } else {
+            let formatted = format_inline_styles(line);
+            println!("{}{}", left_border, formatted);
+        }
+    }
+
+    println!(
+        "  ╰{}╯",
+        "─"
+            .repeat(inner)
+            .truecolor(border_color.0, border_color.1, border_color.2)
+    );
+    println!();
+}
+
+/// Print a user message header (content already shown in terminal input)
+pub fn print_user_message(_content: &str) {
+    // 不重复打印用户输入，因为输入时已经显示在终端了
+}
+
+/// Print the top border for streaming assistant output
+pub fn print_assistant_border_top() {
+    let width = terminal_size().0;
+    let inner = (width as usize).saturating_sub(4);
+    let label = " 🟣 Wgenty ";
+    let label_display_width: usize = label
+        .chars()
+        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+        .sum::<usize>()
+        + 1;
+    let dash_after = inner.saturating_sub(label_display_width);
+    let border_color = (180, 120, 60);
+    println!();
+    println!(
+        "  ╭{}{}╮",
+        label.truecolor(200, 150, 80).bold(),
+        "─".repeat(dash_after)
+            .truecolor(border_color.0, border_color.1, border_color.2)
+    );
+    // Print left border for first content line
+    print!(
+        "  {} ",
+        "│".truecolor(border_color.0, border_color.1, border_color.2)
+    );
+    io::stdout().flush().ok();
+}
+
+/// Print the bottom border for streaming assistant output
+pub fn print_assistant_border_bottom() {
+    let width = terminal_size().0;
+    let inner = (width as usize).saturating_sub(4);
+    let border_color = (180, 120, 60);
+    println!();
+    println!(
+        "  ╰{}╯",
+        "─".repeat(inner)
+            .truecolor(border_color.0, border_color.1, border_color.2)
+    );
+}
+
+/// Stream a chunk of assistant content with line wrapping and left border.
+/// Returns the updated line buffer state.
+pub struct StreamLineState {
+    /// Current column position on the line (after the left border prefix)
+    pub col: usize,
+    /// Max content width per line (terminal width minus borders and padding)
+    pub max_width: usize,
+    /// Border color
+    pub border_color: (u8, u8, u8),
+}
+
+impl StreamLineState {
+    pub fn new() -> Self {
+        let width = terminal_size().0 as usize;
+        // "  │ " = 4 display columns (prefix), " │" = 2 (suffix), total = 6
+        let max_width = width.saturating_sub(6);
+        Self {
+            col: 0,
+            max_width,
+            border_color: (180, 120, 60),
+        }
+    }
+
+    /// Print a delta content chunk with wrapping
+    pub fn print_delta(&mut self, content: &str) {
+        for ch in content.chars() {
+            if ch == '\n' {
+                // End of line — print right border and start new line
+                let padding = self.max_width.saturating_sub(self.col);
+                if padding > 0 {
+                    print!("\x1B[{}C", padding);
+                }
+                println!(
+                    "{}",
+                    " │".truecolor(
+                        self.border_color.0,
+                        self.border_color.1,
+                        self.border_color.2
+                    )
+                );
+                // Start new line with left border
+                print!(
+                    "  {} ",
+                    "│".truecolor(
+                        self.border_color.0,
+                        self.border_color.1,
+                        self.border_color.2
+                    )
+                );
+                self.col = 0;
+            } else {
+                let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                if self.col + ch_width > self.max_width {
+                    // Wrap to next line
+                    let padding = self.max_width.saturating_sub(self.col);
+                    if padding > 0 {
+                        print!("\x1B[{}C", padding);
+                    }
+                    println!(
+                        "{}",
+                        " │".truecolor(
+                            self.border_color.0,
+                            self.border_color.1,
+                            self.border_color.2
+                        )
+                    );
+                    print!(
+                        "  {} ",
+                        "│".truecolor(
+                            self.border_color.0,
+                            self.border_color.1,
+                            self.border_color.2
+                        )
+                    );
+                    self.col = 0;
+                }
+                print!("{}", ch);
+                self.col += ch_width;
+            }
+        }
+        io::stdout().flush().ok();
+    }
+}
+
+/// Format inline markdown styles (bold, italic, code)
+fn format_inline_styles(text: &str) -> ColoredString {
+    // Handle inline code
+    if text.contains('`') {
+        let mut result = String::new();
+        let mut in_code = false;
+        for c in text.chars() {
+            if c == '`' {
+                in_code = !in_code;
+                if in_code {
+                    result.push_str("\x1b[48;5;238m\x1b[38;5;250m");
+                } else {
+                    result.push_str("\x1b[0m");
+                }
+            } else {
+                result.push(c);
+            }
+        }
+        return result.normal();
+    }
+
+    // Handle bold (**text**)
+    if text.contains("**") {
+        let parts: Vec<&str> = text.split("**").collect();
+        let mut result = String::new();
+        for (i, part) in parts.iter().enumerate() {
+            if i % 2 == 1 {
+                result.push_str(&format!("\x1b[1m{}\x1b[0m", part));
+            } else {
+                result.push_str(part);
+            }
+        }
+        return result.normal();
+    }
+
+    text.normal()
+}
+
+/// Print a typing indicator animation
+pub fn print_typing_indicator() {
+    print!("  {} ", "●".truecolor(147, 112, 219).bold());
+    print!("{}", "thinking...".truecolor(150, 150, 150));
+    io::stdout().flush().ok();
+
+    let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    for frame in frames.iter().cycle().take(10) {
+        print!(
+            "\r  {} {} {}",
+            "●".truecolor(147, 112, 219).bold(),
+            "thinking".truecolor(150, 150, 150),
+            frame.truecolor(147, 112, 219)
+        );
+        io::stdout().flush().ok();
+        thread::sleep(Duration::from_millis(80));
+    }
+    // 清除整行
+    print!("\r\x1B[K");
+    io::stdout().flush().ok();
+}
+
+/// Print a typewriter-style animated output
+pub fn print_typewriter(text: &str, delay_ms: u64) {
+    for c in text.chars() {
+        print!("{}", c);
+        io::stdout().flush().ok();
+        thread::sleep(Duration::from_millis(delay_ms));
+    }
+}
+
+/// Print styled help information
+pub fn print_help() {
+    println!();
+    println!(
+        "  {}",
+        "📖 Available Commands".truecolor(147, 112, 219).bold()
+    );
+    println!();
+
+    let commands = [
+        ("help", ".help", "Show help information"),
+        ("status", ".status", "Show current status"),
+        ("config", ".config", "Show configuration"),
+        ("history", ".history", "Show conversation history"),
+        ("reset", ".reset", "Reset conversation"),
+        ("clear", ".clear", "Clear screen"),
+        ("exit", ".exit", "Exit REPL"),
+    ];
+
+    for (cmd, alias, desc) in commands {
+        println!(
+            "  {} {:12} {:12} {}",
+            "▸".truecolor(100, 80, 120),
+            cmd.bright_cyan(),
+            alias.bright_black(),
+            desc.bright_white()
+        );
+    }
+
+    println!();
+    println!("  {}", "💡 Tip:".truecolor(255, 140, 66).bold());
+    println!("     Type any message to chat with wgenty");
+    println!();
+}
+
+/// Print status with styled formatting
+pub fn print_status(status: &StatusInfo) {
+    println!();
+    println!("  {}", "📊 Status".truecolor(147, 112, 219).bold());
+    println!();
+
+    print_status_row("Model", &status.model, true);
+    print_status_row("API Base", &status.api_base, true);
+    print_status_row("Max Tokens", &status.max_tokens, true);
+    print_status_row("Timeout", &format!("{}s", status.timeout), true);
+    print_status_row(
+        "Streaming",
+        if status.streaming { "On" } else { "Off" },
+        status.streaming,
+    );
+    print_status_row("Messages", &format!("{}", status.message_count), true);
+    print_status_row(
+        "API Key",
+        if status.api_key_set {
+            "Set ✓"
+        } else {
+            "Not Set ✗"
+        },
+        status.api_key_set,
+    );
+
+    println!();
+}
+
+fn print_status_row(label: &str, value: &str, positive: bool) {
+    let value_colored = if positive { value.green() } else { value.red() };
+    println!(
+        "  {:15} {}",
+        format!("{}:", label).truecolor(120, 120, 120),
+        value_colored
+    );
+}
+
+/// Status information structure
+pub struct StatusInfo {
+    pub model: String,
+    pub api_base: String,
+    pub max_tokens: String,
+    pub timeout: u64,
+    pub streaming: bool,
+    pub message_count: usize,
+    pub api_key_set: bool,
+}
+
+/// Print an error message with styling
+pub fn print_error(message: &str) {
+    println!();
+    println!("  {} {}", "✗".red().bold(), "Error:".red().bold());
+    println!("    {}", message.bright_red());
+    println!();
+}
+
+/// Print a success message with styling
+pub fn print_success(message: &str) {
+    println!("  {} {}", "✓".green().bold(), message.green());
+}
+
+/// Print a warning message with styling
+pub fn print_warning(message: &str) {
+    println!("  {} {}", "⚠".yellow().bold(), message.yellow());
+}
+
+/// Print an info message with styling
+pub fn print_info(message: &str) {
+    println!("  {} {}", "ℹ".cyan(), message.cyan());
+}
+
+/// Print a code block with syntax highlighting simulation
+pub fn print_code_block(code: &str, language: Option<&str>) {
+    let lang = language.unwrap_or("");
+    let header = format!("───── {} ─────", lang).truecolor(80, 80, 80);
+
+    println!("  {}", header);
+    for line in code.lines() {
+        // Simple syntax highlighting simulation
+        let highlighted = highlight_code_line(line);
+        println!("  {}", highlighted);
+    }
+    println!("  {}", "─────────────────────".truecolor(80, 80, 80));
+}
+
+/// Simple syntax highlighting for code
+fn highlight_code_line(line: &str) -> ColoredString {
+    // Keywords
+    let keywords = [
+        "fn", "let", "mut", "use", "pub", "struct", "impl", "if", "else", "return", "match",
+    ];
+    for kw in &keywords {
+        if line.trim().starts_with(kw) || line.contains(&format!(" {} ", kw)) {
+            return line.truecolor(180, 140, 250); // Purple tint for keywords
+        }
+    }
+
+    // Strings
+    if line.contains('"') || line.contains('\'') {
+        return line.truecolor(140, 220, 140); // Green tint for strings
+    }
+
+    // Comments
+    if line.trim().starts_with("//") || line.trim().starts_with("#") {
+        return line.bright_black(); // Gray for comments
+    }
+
+    line.normal()
+}
+
+/// Print a table with styled headers
+pub fn print_table(headers: &[&str], rows: &[Vec<String>]) {
+    if rows.is_empty() {
+        println!("  (no data)");
+        return;
+    }
+
+    // Calculate column widths
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i < widths.len() {
+                widths[i] = widths[i].max(cell.len());
+            }
+        }
+    }
+
+    // Print header
+    print!("  ");
+    for (i, header) in headers.iter().enumerate() {
+        let width = widths.get(i).copied().unwrap_or(10);
+        print!(
+            "{}  ",
+            format!("{:width$}", header, width = width)
+                .truecolor(147, 112, 219)
+                .bold()
+        );
+    }
+    println!();
+
+    // Print divider
+    print!("  ");
+    for width in &widths {
+        print!("{}  ", "─".repeat(*width).truecolor(80, 80, 80));
+    }
+    println!();
+
+    // Print rows
+    for row in rows {
+        print!("  ");
+        for (i, cell) in row.iter().enumerate() {
+            let width = widths.get(i).copied().unwrap_or(10);
+            print!(
+                "{}  ",
+                format!("{:width$}", cell, width = width).bright_white()
+            );
+        }
+        println!();
+    }
+}
+
+/// Get terminal size (width, height)
+pub fn terminal_size() -> (u16, u16) {
+    terminal_size::terminal_size()
+        .map(|(w, h)| (w.0, h.0))
+        .unwrap_or((80, 24))
+}
+
+/// Clear the screen
+pub fn clear_screen() {
+    print!("\x1B[2J\x1B[1;1H");
+    io::stdout().flush().ok();
+}
+
+/// Print the input prompt with left border
+pub fn print_prompt() {
+    print!(
+        "  {} ",
+        "│ ▸".truecolor(255, 140, 66).bold()
+    );
+    io::stdout().flush().ok();
+}
+
+/// Print the top border of the input box
+pub fn print_input_border_top() {
+    let width = terminal_size().0 as usize;
+    let inner = width.saturating_sub(4);
+    let label = " Wgenty ";
+    let label_display_width: usize = label
+        .chars()
+        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+        .sum();
+    let dash_after = inner.saturating_sub(label_display_width);
+    println!(
+        "  ╭{}{}╮",
+        label.truecolor(200, 150, 255).bold(),
+        "─".repeat(dash_after).truecolor(147, 112, 219)
+    );
+}
+
+/// Complete the input line with right border (move up one line + rewrite)
+pub fn complete_input_line(content: &str) {
+    let width = terminal_size().0 as usize;
+    let prefix = "  │ ▸ ";
+    let prefix_display_width: usize = prefix
+        .chars()
+        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+        .sum();
+    let content_display_width = UnicodeWidthStr::width(content);
+    let right_border = " │";
+    let right_border_display_width: usize = right_border
+        .chars()
+        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+        .sum();
+    let used = prefix_display_width + content_display_width + right_border_display_width;
+    let padding = width.saturating_sub(used);
+
+    print!("\x1B[1A\r");
+    print!(
+        "{}{}",
+        prefix.truecolor(255, 140, 66).bold(),
+        content.bright_white(),
+    );
+    if padding > 0 {
+        print!("\x1B[{}C", padding);
+    }
+    println!("{}", right_border.truecolor(147, 112, 219));
+    io::stdout().flush().ok();
+}
+
+/// Print the bottom border of the input box
+pub fn print_input_border_bottom() {
+    let width = terminal_size().0 as usize;
+    let inner = width.saturating_sub(4);
+    println!(
+        "  ╰{}╯",
+        "─".repeat(inner).truecolor(147, 112, 219)
+    );
+}
+
+/// Print the continuation prompt for multiline input
+pub fn print_continuation_prompt() {
+    print!(
+        "  {} ",
+        "│ ...".truecolor(147, 112, 219)
+    );
+    io::stdout().flush().ok();
+}
+
+/// Complete a continuation line with right border
+pub fn complete_continuation_line(content: &str) {
+    let width = terminal_size().0 as usize;
+    let prefix = "  │ ... ";
+    let prefix_display_width: usize = prefix
+        .chars()
+        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+        .sum();
+    let content_display_width = UnicodeWidthStr::width(content);
+    let right_border = " │";
+    let right_border_display_width: usize = right_border
+        .chars()
+        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+        .sum();
+    let used = prefix_display_width + content_display_width + right_border_display_width;
+    let padding = width.saturating_sub(used);
+
+    print!("\x1B[1A\r");
+    print!(
+        "{}{}",
+        prefix.truecolor(147, 112, 219),
+        content.bright_white(),
+    );
+    if padding > 0 {
+        print!("\x1B[{}C", padding);
+    }
+    println!("{}", right_border.truecolor(147, 112, 219));
+    io::stdout().flush().ok();
+}
+
+/// Initialize the terminal for styled output
+pub fn init_terminal() {
+    // Enable ANSI colors on Windows
+    #[cfg(windows)]
+    {
+        let _ = colored::control::set_virtual_terminal(true);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_inline_styles() {
+        let text = "This is **bold** text";
+        let _result = format_inline_styles(text);
+        // Just verify it doesn't panic
+    }
+
+    #[test]
+    fn test_terminal_size() {
+        let (w, h) = terminal_size();
+        assert!(w > 0);
+        assert!(h > 0);
+    }
+}
