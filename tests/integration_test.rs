@@ -1,5 +1,6 @@
 //! Integration Tests for Claude Code Rust
 
+use clap::Parser;
 use claude_code_rs::{
     cli::Cli,
     config::Settings,
@@ -12,14 +13,14 @@ use std::sync::Arc;
 #[test]
 fn test_cli_initialization() {
     // Test that CLI can be parsed
-    let cli = Cli::parse_from(vec!["claude-code"]);
-    // Should not panic
+    let cli = Cli::try_parse_from(vec!["claude-code"]);
+    assert!(cli.is_ok());
 }
 
 #[test]
 fn test_settings_load() {
     // Settings should load with defaults
-    let settings = Settings::load();
+    let _settings = Settings::load();
     // May fail if no config file exists, but should not panic
 }
 
@@ -40,6 +41,11 @@ async fn test_tool_system_integration() {
     assert!(tool_names.contains(&"git_operations"));
     assert!(tool_names.contains(&"task_management"));
     assert!(tool_names.contains(&"note_edit"));
+    // New tool: ask_user_question
+    assert!(
+        tool_names.contains(&"ask_user_question"),
+        "ask_user_question tool should be registered"
+    );
 }
 
 #[tokio::test]
@@ -48,7 +54,7 @@ async fn test_skill_system_integration() {
 
     // Register all built-in skills
     for (skill, categories) in BuiltinSkills::all() {
-        registry.register(Arc::new(skill), categories);
+        registry.register(skill, categories);
     }
 
     // Verify all categories are represented

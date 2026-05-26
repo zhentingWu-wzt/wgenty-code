@@ -219,7 +219,11 @@ impl Repl {
                     let args: serde_json::Value =
                         serde_json::from_str(&tc.function.arguments)
                             .unwrap_or(serde_json::json!({}));
-                    let tool_result = self.execute_tool(&tc.function.name, args).await;
+                    let tool_result = if tc.function.name == "ask_user_question" {
+                        self.execute_ask_user_question(args).await
+                    } else {
+                        self.execute_tool(&tc.function.name, args).await
+                    };
                     let tool_result_msg = ChatMessage::tool(&tc.id, tool_result);
                     self.conversation_history.push(tool_result_msg);
                 }
@@ -412,6 +416,124 @@ impl Repl {
                 .to_string()
             }
         }
+    }
+
+    /// 交互式执行 ask_user_question 工具
+    /// 直接读取 stdin 通道获取用户答案
+    async fn execute_ask_user_question(&mut self, args: serde_json::Value) -> String {
+        let question = args
+            .get("question")
+            .and_then(|v| v.as_str())
+            .unwrap_or("请选择一个选项:");
+        let options = args.get("options").and_then(|v| v.as_array());
+        let multi_select = args
+            .get("multiSelect")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // 解析选项列表
+        let mut parsed_options: Vec<(String, String)> = Vec::new();
+        if let Some(opts) = options {
+            for opt in opts {
+                let label = opt
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Option")
+                    .to_string();
+                let desc = opt
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                parsed_options.push((label, desc));
+            }
+        }
+
+        // 打印问题
+        ui::print_question(question, &parsed_options);
+        ui::print_question_prompt(multi_select);
+        io::stdout().flush().ok();
+
+        // 读取用户输入
+        let input = match self.stdin_rx.recv().await {
+            Some(text) => text,
+            None => {
+                return serde_json::json!({
+                    "success": false,
+                    "error": "Failed to read user input"
+                })
+                .to_string();
+            }
+        };
+
+        // 解析答案
+        let other_idx = parsed_options.len() + 1;
+        let answers: Vec<serde_json::Value> = if multi_select {
+            // 多选：逗号分隔数字
+            let indices: Vec<usize> = input
+                .split(',')
+                .filter_map(|s| s.trim().parse::<usize>().ok())
+                .filter(|&n| n > 0 && n <= other_idx)
+                .collect();
+
+            indices
+                .into_iter()
+                .map(|idx| {
+                    if idx == other_idx {
+                        serde_json::json!({
+                            "label": "Other",
+                            "value": input.trim(),
+                            "custom": true
+                        })
+                    } else {
+                        let (label, _) = &parsed_options[idx - 1];
+                        serde_json::json!({
+                            "label": label,
+                            "value": label,
+                            "custom": false
+                        })
+                    }
+                })
+                .collect()
+        } else {
+            // 单选
+            if let Ok(idx) = input.trim().parse::<usize>() {
+                if idx > 0 && idx <= parsed_options.len() {
+                    let (label, _) = &parsed_options[idx - 1];
+                    vec![serde_json::json!({
+                        "label": label,
+                        "value": label,
+                        "custom": false
+                    })]
+                } else if idx == other_idx {
+                    vec![serde_json::json!({
+                        "label": "Other",
+                        "value": input.trim(),
+                        "custom": true
+                    })]
+                } else {
+                    // 无效数字，视为自定义文本
+                    vec![serde_json::json!({
+                        "label": "Other",
+                        "value": input.trim(),
+                        "custom": true
+                    })]
+                }
+            } else {
+                // 非数字输入，视为自定义文本
+                vec![serde_json::json!({
+                    "label": "Other",
+                    "value": input.trim(),
+                    "custom": true
+                })]
+            }
+        };
+
+        serde_json::json!({
+            "success": true,
+            "answers": answers
+        })
+        .to_string()
     }
 
     fn print_status(&self) {
