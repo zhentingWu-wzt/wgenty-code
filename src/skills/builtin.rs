@@ -5,6 +5,7 @@
 use super::{Skill, SkillCategory, SkillContext, SkillError, SkillParams, SkillResult};
 use async_trait::async_trait;
 use serde_json;
+use std::sync::Arc;
 
 /// Commit skill - creates a git commit with AI-generated message
 pub struct CommitSkill;
@@ -376,26 +377,26 @@ pub struct BuiltinSkills;
 
 impl BuiltinSkills {
     /// Get all built-in skills
-    pub fn all() -> Vec<(Box<dyn Skill>, Vec<SkillCategory>)> {
+    pub fn all() -> Vec<(Arc<dyn Skill>, Vec<SkillCategory>)> {
         vec![
             (
-                Box::new(CommitSkill) as Box<dyn Skill>,
+                Arc::new(CommitSkill) as Arc<dyn Skill>,
                 vec![SkillCategory::Git, SkillCategory::Utility],
             ),
             (
-                Box::new(ReviewSkill),
+                Arc::new(ReviewSkill),
                 vec![SkillCategory::CodeReview, SkillCategory::Utility],
             ),
             (
-                Box::new(TestSkill),
+                Arc::new(TestSkill),
                 vec![SkillCategory::Testing, SkillCategory::Utility],
             ),
             (
-                Box::new(DocumentSkill),
+                Arc::new(DocumentSkill),
                 vec![SkillCategory::Documentation, SkillCategory::Utility],
             ),
             (
-                Box::new(BuildSkill),
+                Arc::new(BuildSkill),
                 vec![SkillCategory::ProjectSetup, SkillCategory::Utility],
             ),
         ]
