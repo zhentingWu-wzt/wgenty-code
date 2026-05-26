@@ -9,7 +9,7 @@ pub type Cli = CliArgs;
 impl Cli {
     pub async fn run_async(&self, state: crate::state::AppState) -> anyhow::Result<()> {
         if self.version {
-            println!("claude-code-rust {}", env!("CARGO_PKG_VERSION"));
+            println!("wgenty code {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
 
