@@ -1,5 +1,6 @@
 //! Tools Module - File operations, commands, search, etc.
 
+pub mod ask_user_question;
 pub mod execute_command;
 pub mod file_edit;
 pub mod file_read;
@@ -10,6 +11,7 @@ pub mod note_edit;
 pub mod search;
 pub mod task_management;
 
+pub use ask_user_question::AskUserQuestionTool;
 pub use execute_command::ExecuteCommandTool;
 pub use file_edit::FileEditTool;
 pub use file_read::FileReadTool;
@@ -86,6 +88,7 @@ impl ToolRegistry {
         };
 
         // Register built-in tools
+        registry.register(Box::new(ask_user_question::AskUserQuestionTool::new()));
         registry.register(Box::new(file_read::FileReadTool::new()));
         registry.register(Box::new(file_edit::FileEditTool::new()));
         registry.register(Box::new(file_write::FileWriteTool::new()));

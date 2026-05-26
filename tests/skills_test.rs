@@ -17,7 +17,7 @@ fn test_skill_registration() {
 
     // Register built-in skills
     for (skill, categories) in BuiltinSkills::all() {
-        registry.register(Arc::new(skill), categories);
+        registry.register(skill, categories);
     }
 
     // Should have 5 skills now
@@ -37,7 +37,7 @@ fn test_skill_search() {
 
     // Register built-in skills
     for (skill, categories) in BuiltinSkills::all() {
-        registry.register(Arc::new(skill), categories);
+        registry.register(skill, categories);
     }
 
     // Search for "commit"
@@ -51,7 +51,7 @@ fn test_skill_categories() {
 
     // Register built-in skills
     for (skill, categories) in BuiltinSkills::all() {
-        registry.register(Arc::new(skill), categories);
+        registry.register(skill, categories);
     }
 
     // Check Git category
@@ -69,7 +69,7 @@ async fn test_skill_executor() {
 
     // Register built-in skills
     for (skill, categories) in BuiltinSkills::all() {
-        registry.register(Arc::new(skill), categories);
+        registry.register(skill, categories);
     }
 
     let registry_arc = Arc::new(registry);
@@ -97,7 +97,7 @@ fn test_skill_help() {
 
     // Register built-in skills
     for (skill, categories) in BuiltinSkills::all() {
-        registry.register(Arc::new(skill), categories);
+        registry.register(skill, categories);
     }
 
     let registry_arc = Arc::new(registry);
@@ -117,7 +117,7 @@ fn test_skill_parameter_parsing() {
 
     // Register built-in skills
     for (skill, categories) in BuiltinSkills::all() {
-        registry.register(Arc::new(skill), categories);
+        registry.register(skill, categories);
     }
 
     let registry_arc = Arc::new(registry);

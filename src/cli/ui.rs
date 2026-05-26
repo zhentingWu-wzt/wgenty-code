@@ -442,6 +442,93 @@ impl ThinkingIndicator {
     }
 }
 
+/// Print a question from the assistant with styled formatting and numbered options
+pub fn print_question(question: &str, options: &[(String, String)]) {
+    println!();
+    let width = terminal_size().0 as usize;
+    let inner = width.saturating_sub(4);
+    let label = " ❓ Question ";
+    let label_display_width: usize = label
+        .chars()
+        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+        .sum::<usize>()
+        + 1;
+    let dash_after = inner.saturating_sub(label_display_width);
+
+    let border_color = (180, 120, 60);
+
+    // Top border
+    println!(
+        "  ╭{}{}╮",
+        label.truecolor(255, 200, 100).bold(),
+        "─"
+            .repeat(dash_after)
+            .truecolor(border_color.0, border_color.1, border_color.2)
+    );
+
+    // Question text
+    for line in question.lines() {
+        println!(
+            "  {} {}",
+            "│".truecolor(border_color.0, border_color.1, border_color.2),
+            line.truecolor(220, 200, 255).bold()
+        );
+    }
+
+    // Spacer
+    println!(
+        "  {} {}",
+        "│".truecolor(border_color.0, border_color.1, border_color.2),
+        ""
+    );
+
+    // Options
+    for (i, (label_opt, desc)) in options.iter().enumerate() {
+        let num = (i + 1).to_string();
+        println!(
+            "  {}   {} {} - {}",
+            "│".truecolor(border_color.0, border_color.1, border_color.2),
+            num.truecolor(255, 140, 66).bold(),
+            label_opt.truecolor(200, 150, 255).bold(),
+            desc.truecolor(180, 180, 180)
+        );
+    }
+
+    // Other option
+    let other_idx = options.len() + 1;
+    println!(
+        "  {}   {} {} - {}",
+        "│".truecolor(border_color.0, border_color.1, border_color.2),
+        other_idx.to_string().truecolor(255, 140, 66).bold(),
+        "Other".truecolor(200, 150, 255).bold(),
+        "Type a custom answer".truecolor(180, 180, 180)
+    );
+
+    // Bottom border
+    println!(
+        "  ╰{}╯",
+        "─"
+            .repeat(inner)
+            .truecolor(border_color.0, border_color.1, border_color.2)
+    );
+}
+
+/// Print the question input prompt
+pub fn print_question_prompt(multi_select: bool) {
+    if multi_select {
+        print!(
+            "  {} ",
+            "│ ▸ Your choices (comma-separated, e.g. 1,3): ".truecolor(255, 140, 66).bold()
+        );
+    } else {
+        print!(
+            "  {} ",
+            "│ ▸ Your choice (number or custom text): ".truecolor(255, 140, 66).bold()
+        );
+    }
+    io::stdout().flush().ok();
+}
+
 /// Print a typewriter-style animated output
 pub fn print_typewriter(text: &str, delay_ms: u64) {
     for c in text.chars() {
