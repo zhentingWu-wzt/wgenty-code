@@ -367,26 +367,79 @@ fn format_inline_styles(text: &str) -> ColoredString {
     text.normal()
 }
 
-/// Print a typing indicator animation
-pub fn print_typing_indicator() {
-    print!("  {} ", "●".truecolor(147, 112, 219).bold());
-    print!("{}", "thinking...".truecolor(150, 150, 150));
-    io::stdout().flush().ok();
+/// Spinner frames for the thinking animation
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-    let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    for frame in frames.iter().cycle().take(10) {
-        print!(
-            "\r  {} {} {}",
-            "●".truecolor(147, 112, 219).bold(),
-            "thinking".truecolor(150, 150, 150),
-            frame.truecolor(147, 112, 219)
-        );
-        io::stdout().flush().ok();
-        thread::sleep(Duration::from_millis(80));
+/// Format elapsed time display
+fn format_elapsed(secs: u64) -> String {
+    if secs < 60 {
+        format!("等待响应 {}s", secs)
+    } else {
+        format!("等待响应 {}m{}s", secs / 60, secs % 60)
     }
-    // 清除整行
-    print!("\r\x1B[K");
-    io::stdout().flush().ok();
+}
+
+/// Async thinking indicator that runs in the background while waiting for the
+/// first stream chunk. Shows a spinner + elapsed time.
+pub struct ThinkingIndicator {
+    cancel: tokio::sync::watch::Sender<bool>,
+    done: tokio::sync::watch::Receiver<bool>,
+}
+
+impl ThinkingIndicator {
+    /// Start the thinking indicator. Returns a handle that can be used to stop it.
+    pub fn start() -> Self {
+        let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+        let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+
+        tokio::spawn(async move {
+            let mut frame_idx = 0usize;
+            let start = std::time::Instant::now();
+            let mut tick = tokio::time::interval(Duration::from_millis(120));
+
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        let frame = SPINNER_FRAMES[frame_idx % SPINNER_FRAMES.len()];
+                        let elapsed = format_elapsed(start.elapsed().as_secs());
+
+                        print!(
+                            "\r  {} {}  {}",
+                            "●".truecolor(147, 112, 219).bold(),
+                            frame.truecolor(147, 112, 219),
+                            elapsed.truecolor(150, 150, 150),
+                        );
+                        print!("\x1B[K");
+                        io::stdout().flush().ok();
+
+                        frame_idx += 1;
+                    }
+                    _ = cancel_rx.changed() => {
+                        break;
+                    }
+                }
+            }
+
+            // Clear the indicator line
+            print!("\r\x1B[K");
+            io::stdout().flush().ok();
+
+            // Signal that cleanup is done
+            let _ = done_tx.send(true);
+        });
+
+        ThinkingIndicator {
+            cancel: cancel_tx,
+            done: done_rx,
+        }
+    }
+
+    /// Stop the indicator and wait for the line to be cleared.
+    pub async fn stop(mut self) {
+        let _ = self.cancel.send(true);
+        // Wait for the spawned task to finish clearing the line
+        let _ = self.done.changed().await;
+    }
 }
 
 /// Print a typewriter-style animated output

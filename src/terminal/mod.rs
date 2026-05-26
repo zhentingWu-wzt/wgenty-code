@@ -5,11 +5,11 @@ pub mod ime;
 pub mod input;
 
 use crate::api::{ApiClient, ChatMessage, ToolCall, ToolDefinition};
-use crate::mcp::ToolRegistry;
 use crate::state::AppState;
 use crate::terminal::history::{ChatHistory, HistoryEntry};
 use crate::terminal::ime::{ImeAction, ImeHandler};
 use crate::terminal::input::{InputBox, InputResult};
+use crate::tools::ToolRegistry;
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEvent,
@@ -27,7 +27,7 @@ use ratatui::{
 };
 use std::io::Stdout;
 use std::sync::Arc;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 /// TUI-based REPL application
 pub struct TuiRepl {
@@ -54,7 +54,6 @@ impl TuiRepl {
         let terminal = Terminal::new(backend)?;
 
         let tool_registry = Arc::new(ToolRegistry::new());
-        tool_registry.register_builtin_tools().await;
 
         Ok(Self {
             terminal,
@@ -211,13 +210,13 @@ impl TuiRepl {
         self.is_processing = true;
         self.draw()?;
 
-        self.process_api_request(&trimmed).await?;
+        self.process_loop(&trimmed).await?;
 
         self.is_processing = false;
         Ok(())
     }
 
-    async fn process_api_request(&mut self, input: &str) -> anyhow::Result<()> {
+    async fn process_loop(&mut self, input: &str) -> anyhow::Result<()> {
         let client = ApiClient::new(self.state.settings.clone());
 
         if client.get_api_key().is_none() {
@@ -236,14 +235,41 @@ impl TuiRepl {
         };
 
         loop {
-            let messages = self.conversation_history.clone();
+            // Show thinking indicator while waiting for API response
+            self.history.add(HistoryEntry::Thinking { frame: 0, elapsed_secs: 0 });
+            self.draw()?;
 
-            let response = match client.chat_stream(messages, tools_opt.clone()).await {
+            let messages = self.conversation_history.clone();
+            let response_fut = client.chat_stream(messages, tools_opt.clone());
+
+            // Drive the thinking animation while waiting for the response
+            let mut response = Box::pin(response_fut);
+            let mut thinking_tick = tokio::time::interval(std::time::Duration::from_millis(120));
+            // Consume the first immediate tick
+            thinking_tick.tick().await;
+
+            let response = loop {
+                tokio::select! {
+                    r = &mut response => {
+                        break r;
+                    }
+                    _ = thinking_tick.tick() => {
+                        self.history.advance_thinking();
+                        self.draw()?;
+                    }
+                }
+            };
+
+            // Remove thinking indicator before showing result
+            self.history.remove_thinking();
+
+            let response = match response {
                 Ok(r) => r,
                 Err(e) => {
                     error!(error = %e, "tui stream request failed");
                     self.history
                         .add(HistoryEntry::System(format!("请求失败: {}", e)));
+                    self.draw()?;
                     return Ok(());
                 }
             };
@@ -254,16 +280,16 @@ impl TuiRepl {
                 error!(status = %status, "tui api returned non-success status");
                 self.history
                     .add(HistoryEntry::System(format!("API 错误 ({}): {}", status, body)));
+                self.draw()?;
                 return Ok(());
             }
 
-            // Add streaming entry
-            self.history.add(HistoryEntry::AssistantStreaming(String::new()));
-            self.draw()?;
-
+            // Add streaming entry — but only if there's content to show
+            // When the model only returns tool_calls with no content, skip the empty bubble
             let mut full_content = String::new();
             let mut tool_calls_accum: Vec<serde_json::Value> = Vec::new();
             let mut has_tool_calls = false;
+            let mut streaming_entry_added = false;
 
             let mut stream = response.bytes_stream();
             let mut buffer = String::new();
@@ -286,6 +312,10 @@ impl TuiRepl {
                         if let Some(choice) = stream_chunk.choices.first() {
                             if let Some(content) = &choice.delta.content {
                                 full_content.push_str(content);
+                                if !streaming_entry_added {
+                                    self.history.add(HistoryEntry::AssistantStreaming(String::new()));
+                                    streaming_entry_added = true;
+                                }
                                 self.history.update_last_streaming(&full_content);
                                 self.draw()?;
                             }
@@ -332,19 +362,13 @@ impl TuiRepl {
                 }
             }
 
-            // Finalize streaming entry
-            self.history.finalize_last_streaming();
+            // Finalize streaming entry (only if one was added)
+            if streaming_entry_added {
+                self.history.finalize_last_streaming();
+            }
 
             if has_tool_calls && !tool_calls_accum.is_empty() {
                 info!(tool_call_count = tool_calls_accum.len(), "model requested tool calls");
-
-                for tc in &tool_calls_accum {
-                    let tool_name = tc["function"]["name"].as_str().unwrap_or("unknown");
-                    self.history.add(HistoryEntry::ToolCall {
-                        name: tool_name.to_string(),
-                        success: true,
-                    });
-                }
 
                 let tool_calls_parsed: Vec<ToolCall> = tool_calls_accum
                     .iter()
@@ -374,16 +398,72 @@ impl TuiRepl {
                 };
                 self.conversation_history.push(assistant_msg);
 
-                for tc in &self.conversation_history.last().unwrap().tool_calls.clone().unwrap() {
+                // Execute each tool and show status
+                let tool_calls = self.conversation_history.last().unwrap().tool_calls.clone().unwrap();
+                for tc in &tool_calls {
+                    // Show thinking indicator while executing tool
+                    self.history.add(HistoryEntry::Thinking { frame: 0, elapsed_secs: 0 });
+                    self.draw()?;
+
                     let args: serde_json::Value =
                         serde_json::from_str(&tc.function.arguments)
                             .unwrap_or(serde_json::json!({}));
-                    let result = self.execute_tool(&tc.function.name, args).await;
-                    let tool_result_msg = ChatMessage::tool(&tc.id, result);
+                    let tool_name = tc.function.name.clone();
+                    let tool_summary = Self::summarize_tool_args(&tool_name, &args);
+                    let tool_call_id = tc.id.clone();
+                    let registry = self.tool_registry.clone();
+
+                    // Drive thinking animation during tool execution
+                    let tool_name_for_fut = tool_name.clone();
+                    let tool_fut = registry.execute(&tool_name_for_fut, args);
+                    let mut tool_fut = Box::pin(tool_fut);
+                    let mut thinking_tick = tokio::time::interval(std::time::Duration::from_millis(120));
+                    thinking_tick.tick().await;
+
+                    let result = loop {
+                        tokio::select! {
+                            r = &mut tool_fut => {
+                                break r;
+                            }
+                            _ = thinking_tick.tick() => {
+                                self.history.advance_thinking();
+                                self.draw()?;
+                            }
+                        }
+                    };
+
+                    // Remove thinking, show tool result
+                    self.history.remove_thinking();
+
+                    let success = result.is_ok();
+                    self.history.add(HistoryEntry::ToolCall {
+                        name: tool_name,
+                        summary: tool_summary,
+                        success,
+                    });
+                    self.draw()?;
+
+                    let tool_result_str = match result {
+                        Ok(v) => serde_json::json!({
+                            "success": true,
+                            "output_type": v.output_type,
+                            "content": v.content,
+                            "metadata": v.metadata
+                        })
+                        .to_string(),
+                        Err(e) => serde_json::json!({
+                            "success": false,
+                            "error": {
+                                "message": e.message,
+                                "code": e.code
+                            }
+                        })
+                        .to_string(),
+                    };
+                    let tool_result_msg = ChatMessage::tool(&tool_call_id, tool_result_str);
                     self.conversation_history.push(tool_result_msg);
                 }
 
-                self.draw()?;
                 continue;
             }
 
@@ -401,26 +481,67 @@ impl TuiRepl {
     }
 
     async fn get_tool_definitions(&self) -> Vec<ToolDefinition> {
-        let tools = self.tool_registry.list().await;
+        let tools = self.tool_registry.list();
         tools
             .into_iter()
-            .map(|t| ToolDefinition::new(t.name, t.description, t.input_schema))
+            .map(|t| ToolDefinition::new(t.name(), t.description(), t.input_schema()))
             .collect()
     }
 
-    async fn execute_tool(&self, name: &str, args: serde_json::Value) -> String {
-        debug!(tool_name = name, args = %args, "dispatching tui tool call");
-        match self.tool_registry.execute(name, args).await {
-            Ok(result) => {
-                if let Some(success) = result.get("success").and_then(|s| s.as_bool()) {
-                    info!(tool_name = name, success, "tool call completed");
+    fn summarize_tool_args(name: &str, args: &serde_json::Value) -> Option<String> {
+        fn quoted(value: &str) -> String {
+            format!("\"{}\"", value)
+        }
+
+        fn truncate(value: &str, max_chars: usize) -> String {
+            let mut chars = value.chars();
+            let truncated: String = chars.by_ref().take(max_chars).collect();
+            if chars.next().is_some() {
+                format!("{}...", truncated)
+            } else {
+                truncated
+            }
+        }
+
+        match name {
+            "file_read" | "file_write" | "file_edit" => args["path"]
+                .as_str()
+                .map(|path| format!("path={}", quoted(path))),
+            "search" => {
+                let pattern = args["pattern"].as_str();
+                let path = args["path"].as_str();
+                match (pattern, path) {
+                    (Some(pattern), Some(path)) => Some(format!(
+                        "pattern={} path={}",
+                        quoted(&truncate(pattern, 40)),
+                        quoted(path)
+                    )),
+                    (Some(pattern), None) => {
+                        Some(format!("pattern={}", quoted(&truncate(pattern, 40))))
+                    }
+                    (None, Some(path)) => Some(format!("path={}", quoted(path))),
+                    (None, None) => None,
                 }
-                result.to_string()
             }
-            Err(e) => {
-                error!(tool_name = name, error = %e, "tool call failed");
-                serde_json::json!({"error": e.to_string()}).to_string()
+            "execute_command" => args["command"]
+                .as_str()
+                .map(|command| format!("command={}", quoted(&truncate(command, 60)))),
+            "list_files" => args["path"]
+                .as_str()
+                .map(|path| format!("path={}", quoted(path))),
+            "git_operations" => {
+                let operation = args["operation"].as_str();
+                let path = args["path"].as_str();
+                match (operation, path) {
+                    (Some(operation), Some(path)) => {
+                        Some(format!("operation={} path={}", quoted(operation), quoted(path)))
+                    }
+                    (Some(operation), None) => Some(format!("operation={}", quoted(operation))),
+                    (None, Some(path)) => Some(format!("path={}", quoted(path))),
+                    (None, None) => None,
+                }
             }
+            _ => None,
         }
     }
 }
