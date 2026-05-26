@@ -1,5 +1,6 @@
 //! Utility functions
 
+pub mod logging;
 pub mod project;
 
 use std::path::PathBuf;

@@ -16,8 +16,14 @@ pub enum HistoryEntry {
     Assistant(String),
     /// Assistant message being streamed (content updates in place)
     AssistantStreaming(String),
+    /// Thinking indicator with spinner frame index and elapsed seconds
+    Thinking { frame: usize, elapsed_secs: u64 },
     /// Tool call result
-    ToolCall { name: String, success: bool },
+    ToolCall {
+        name: String,
+        summary: Option<String>,
+        success: bool,
+    },
     /// System message
     System(String),
     /// Welcome banner with model name
@@ -117,6 +123,31 @@ impl ChatHistory {
         }
     }
 
+    /// Advance the thinking spinner on the last Thinking entry.
+    /// Called every ~120ms; updates elapsed_secs every 8 frames (~1s).
+    /// Returns false if the last entry is not Thinking.
+    pub fn advance_thinking(&mut self) -> bool {
+        if let Some(entry) = self.entries.last_mut() {
+            if let HistoryEntry::Thinking { frame, elapsed_secs } = entry {
+                *frame += 1;
+                if frame.is_multiple_of(8) {
+                    *elapsed_secs += 1;
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Remove the last Thinking entry (replaced by streaming response)
+    pub fn remove_thinking(&mut self) {
+        if let Some(entry) = self.entries.last() {
+            if matches!(entry, HistoryEntry::Thinking { .. }) {
+                self.entries.pop();
+            }
+        }
+    }
+
     fn build_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         let max_content_width = width.saturating_sub(4) as usize;
@@ -173,14 +204,54 @@ impl ChatHistory {
                     ));
                     lines.push(Line::raw(""));
                 }
-                HistoryEntry::ToolCall { name, success } => {
+                HistoryEntry::Thinking { frame, elapsed_secs } => {
+                    let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                    let spinner = spinner_frames[frame % spinner_frames.len()];
+                    let elapsed_text = if *elapsed_secs < 60 {
+                        format!("等待响应 {}s", elapsed_secs)
+                    } else {
+                        format!("等待响应 {}m{}s", elapsed_secs / 60, elapsed_secs % 60)
+                    };
+                    lines.push(Self::border_top_line(
+                        " Wgenty ",
+                        Color::Rgb(200, 150, 255),
+                        max_content_width,
+                    ));
+                    lines.push(Line::from(vec![
+                        Span::styled("│ ", Style::default().fg(Color::Rgb(147, 112, 219))),
+                        Span::styled(
+                            "● ",
+                            Style::default()
+                                .fg(Color::Rgb(147, 112, 219))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("{} ", spinner),
+                            Style::default().fg(Color::Rgb(147, 112, 219)),
+                        ),
+                        Span::styled(
+                            elapsed_text,
+                            Style::default().fg(Color::Rgb(150, 150, 150)),
+                        ),
+                    ]));
+                    lines.push(Self::border_bottom_line(
+                        Color::Rgb(147, 112, 219),
+                        max_content_width,
+                    ));
+                    lines.push(Line::raw(""));
+                }
+                HistoryEntry::ToolCall {
+                    name,
+                    summary,
+                    success,
+                } => {
                     let icon = if *success { "✓" } else { "✗" };
                     let icon_color = if *success {
                         Color::Green
                     } else {
                         Color::Red
                     };
-                    lines.push(Line::from(vec![
+                    let mut spans = vec![
                         Span::styled("  🔧 ", Style::default()),
                         Span::styled(
                             format!("Tool: {}", name),
@@ -188,11 +259,18 @@ impl ChatHistory {
                                 .fg(Color::Cyan)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(
-                            format!(" {}", icon),
-                            Style::default().fg(icon_color),
-                        ),
-                    ]));
+                    ];
+                    if let Some(summary) = summary {
+                        spans.push(Span::styled(
+                            format!("  {}", summary),
+                            Style::default().fg(Color::Rgb(170, 170, 180)),
+                        ));
+                    }
+                    spans.push(Span::styled(
+                        format!(" {}", icon),
+                        Style::default().fg(icon_color),
+                    ));
+                    lines.push(Line::from(spans));
                 }
                 HistoryEntry::System(text) => {
                     lines.push(Line::from(vec![Span::styled(

@@ -24,7 +24,7 @@ pub use prompts::{Prompt, PromptManager};
 pub use resources::{Resource, ResourceManager};
 pub use sampling::{SamplingManager, SamplingRequest};
 pub use server::McpServer;
-pub use tools::{McpTool, ToolExecutor, ToolRegistry};
+pub use tools::{McpTool, ToolRegistry};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerInfo {

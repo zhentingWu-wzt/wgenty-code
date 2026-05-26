@@ -7,8 +7,8 @@
 
 use crate::api::{ApiClient, ChatMessage, ToolCall, ToolDefinition};
 use crate::cli::ui;
-use crate::mcp::ToolRegistry;
 use crate::state::AppState;
+use crate::tools::ToolRegistry;
 use colored::Colorize;
 use futures::StreamExt;
 use std::io::{self, BufRead, Write};
@@ -27,7 +27,6 @@ impl Repl {
     pub async fn new(state: AppState) -> Self {
         ui::init_terminal();
         let tool_registry = Arc::new(ToolRegistry::new());
-        tool_registry.register_builtin_tools().await;
 
         let (stdin_tx, stdin_rx) = mpsc::channel::<String>(16);
 
@@ -145,12 +144,16 @@ impl Repl {
         // Tool call loop
         let mut pending_input: Option<String> = None;
         loop {
-            ui::print_typing_indicator();
+            let indicator = ui::ThinkingIndicator::start();
 
             let messages = self.conversation_history.clone();
             let response = match client.chat_stream(messages, tools_opt.clone()).await {
-                Ok(r) => r,
+                Ok(r) => {
+                    indicator.stop().await;
+                    r
+                }
                 Err(e) => {
+                    indicator.stop().await;
                     error!(error = %e, "repl stream request failed");
                     ui::print_error(&format!("Request failed: {}", e));
                     return Ok(());
@@ -374,10 +377,10 @@ impl Repl {
 
     /// 获取 MCP 工具定义（转换为 API 格式）
     async fn get_tool_definitions(&self) -> Vec<ToolDefinition> {
-        let tools = self.tool_registry.list().await;
+        let tools = self.tool_registry.list();
         tools
             .into_iter()
-            .map(|t| ToolDefinition::new(t.name, t.description, t.input_schema))
+            .map(|t| ToolDefinition::new(t.name(), t.description(), t.input_schema()))
             .collect()
     }
 
@@ -386,22 +389,27 @@ impl Repl {
         debug!(tool_name = name, args = %args, "dispatching repl tool call");
         match self.tool_registry.execute(name, args).await {
             Ok(result) => {
-                // 打印工具结果摘要
-                if let Some(success) = result.get("success").and_then(|s| s.as_bool()) {
-                    if success {
-                        info!(tool_name = name, "tool call succeeded");
-                        println!("  {} Tool succeeded", "✓".green());
-                    } else {
-                        warn!(tool_name = name, "tool call reported failure");
-                        println!("  {} Tool failed", "✗".red());
-                    }
-                }
-                result.to_string()
+                info!(tool_name = name, "tool call succeeded");
+                println!("  {} Tool succeeded", "✓".green());
+                serde_json::json!({
+                    "success": true,
+                    "output_type": result.output_type,
+                    "content": result.content,
+                    "metadata": result.metadata
+                })
+                .to_string()
             }
             Err(e) => {
-                error!(tool_name = name, error = %e, "tool call failed");
-                println!("  {} Tool error: {}", "✗".red(), e);
-                serde_json::json!({"error": e.to_string()}).to_string()
+                error!(tool_name = name, error = ?e, "tool call failed");
+                println!("  {} Tool error: {:?}", "✗".red(), e);
+                serde_json::json!({
+                    "success": false,
+                    "error": {
+                        "message": e.message,
+                        "code": e.code
+                    }
+                })
+                .to_string()
             }
         }
     }

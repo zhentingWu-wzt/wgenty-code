@@ -88,11 +88,11 @@ impl Theme {
             // Window
             window_fill: BG_SURFACE,
             window_stroke: Stroke::new(1.0, BORDER),
-            window_rounding: Rounding::same(12.0),
+            window_corner_radius: Rounding::same(12),
             window_shadow: egui::epaint::Shadow {
-                offset: egui::vec2(8.0, 8.0),
-                blur: 16.0,
-                spread: 0.0,
+                offset: [8, 8],
+                blur: 16,
+                spread: 0,
                 color: Color32::from_black_alpha(128),
             },
 
@@ -100,7 +100,7 @@ impl Theme {
             panel_fill: BG_DARK,
 
             // Menu
-            menu_rounding: Rounding::same(8.0),
+            menu_corner_radius: Rounding::same(8),
 
             // Color space
             numeric_color_space: egui::style::NumericColorSpace::GammaByte,
@@ -112,7 +112,7 @@ impl Theme {
                     weak_bg_fill: BG_SURFACE,
                     bg_stroke: Stroke::new(1.0, BORDER),
                     fg_stroke: Stroke::new(1.0, TEXT_SECONDARY),
-                    rounding: Rounding::same(8.0),
+                    corner_radius: Rounding::same(8),
                     expansion: 0.0,
                 },
                 inactive: egui::style::WidgetVisuals {
@@ -120,7 +120,7 @@ impl Theme {
                     weak_bg_fill: BG_ELEVATED,
                     bg_stroke: Stroke::new(1.0, BORDER),
                     fg_stroke: Stroke::new(1.0, TEXT_PRIMARY),
-                    rounding: Rounding::same(8.0),
+                    corner_radius: Rounding::same(8),
                     expansion: 0.0,
                 },
                 hovered: egui::style::WidgetVisuals {
@@ -128,7 +128,7 @@ impl Theme {
                     weak_bg_fill: Color32::from_rgb(55, 55, 55),
                     bg_stroke: Stroke::new(1.0, BORDER_LIGHT),
                     fg_stroke: Stroke::new(1.5, CLAUDE_ORANGE),
-                    rounding: Rounding::same(8.0),
+                    corner_radius: Rounding::same(8),
                     expansion: 1.0,
                 },
                 active: egui::style::WidgetVisuals {
@@ -136,7 +136,7 @@ impl Theme {
                     weak_bg_fill: CLAUDE_ORANGE,
                     bg_stroke: Stroke::new(1.0, CLAUDE_ORANGE_LIGHT),
                     fg_stroke: Stroke::new(1.5, Color32::WHITE),
-                    rounding: Rounding::same(8.0),
+                    corner_radius: Rounding::same(8),
                     expansion: 1.0,
                 },
                 open: egui::style::WidgetVisuals {
@@ -144,7 +144,7 @@ impl Theme {
                     weak_bg_fill: BG_SURFACE,
                     bg_stroke: Stroke::new(1.0, CLAUDE_ORANGE),
                     fg_stroke: Stroke::new(1.0, CLAUDE_ORANGE),
-                    rounding: Rounding::same(8.0),
+                    corner_radius: Rounding::same(8),
                     expansion: 0.0,
                 },
             },
@@ -157,9 +157,9 @@ impl Theme {
 
             // Other settings
             popup_shadow: egui::epaint::Shadow {
-                offset: egui::vec2(4.0, 4.0),
-                blur: 12.0,
-                spread: 0.0,
+                offset: [4, 4],
+                blur: 12,
+                spread: 0,
                 color: Color32::from_black_alpha(128),
             },
             resize_corner_size: 12.0,
@@ -193,16 +193,16 @@ impl Theme {
 
             window_fill: BG_LIGHT_SURFACE,
             window_stroke: Stroke::new(1.0, BORDER_LIGHT_MODE),
-            window_rounding: Rounding::same(12.0),
+            window_corner_radius: Rounding::same(12),
             window_shadow: egui::epaint::Shadow {
-                offset: egui::vec2(8.0, 8.0),
-                blur: 16.0,
-                spread: 0.0,
+                offset: [8, 8],
+                blur: 16,
+                spread: 0,
                 color: Color32::from_black_alpha(64),
             },
 
             panel_fill: BG_LIGHT,
-            menu_rounding: Rounding::same(8.0),
+            menu_corner_radius: Rounding::same(8),
             numeric_color_space: egui::style::NumericColorSpace::GammaByte,
 
             widgets: egui::style::Widgets {
@@ -211,7 +211,7 @@ impl Theme {
                     weak_bg_fill: Color32::WHITE,
                     bg_stroke: Stroke::new(1.0, BORDER_LIGHT_MODE),
                     fg_stroke: Stroke::new(1.0, TEXT_LIGHT_SECONDARY),
-                    rounding: Rounding::same(8.0),
+                    corner_radius: Rounding::same(8),
                     expansion: 0.0,
                 },
                 inactive: egui::style::WidgetVisuals {
@@ -219,7 +219,7 @@ impl Theme {
                     weak_bg_fill: BG_LIGHT,
                     bg_stroke: Stroke::new(1.0, BORDER_LIGHT_MODE),
                     fg_stroke: Stroke::new(1.0, TEXT_LIGHT_PRIMARY),
-                    rounding: Rounding::same(8.0),
+                    corner_radius: Rounding::same(8),
                     expansion: 0.0,
                 },
                 hovered: egui::style::WidgetVisuals {
@@ -227,7 +227,7 @@ impl Theme {
                     weak_bg_fill: Color32::from_rgb(240, 240, 240),
                     bg_stroke: Stroke::new(1.0, Color32::from_rgb(200, 200, 200)),
                     fg_stroke: Stroke::new(1.5, CLAUDE_ORANGE_DARK),
-                    rounding: Rounding::same(8.0),
+                    corner_radius: Rounding::same(8),
                     expansion: 1.0,
                 },
                 active: egui::style::WidgetVisuals {
@@ -235,7 +235,7 @@ impl Theme {
                     weak_bg_fill: CLAUDE_ORANGE_LIGHT,
                     bg_stroke: Stroke::new(1.0, CLAUDE_ORANGE_DARK),
                     fg_stroke: Stroke::new(1.5, Color32::WHITE),
-                    rounding: Rounding::same(8.0),
+                    corner_radius: Rounding::same(8),
                     expansion: 1.0,
                 },
                 open: egui::style::WidgetVisuals {
@@ -243,7 +243,7 @@ impl Theme {
                     weak_bg_fill: Color32::WHITE,
                     bg_stroke: Stroke::new(1.0, CLAUDE_ORANGE),
                     fg_stroke: Stroke::new(1.0, CLAUDE_ORANGE),
-                    rounding: Rounding::same(8.0),
+                    corner_radius: Rounding::same(8),
                     expansion: 0.0,
                 },
             },
@@ -254,9 +254,9 @@ impl Theme {
             },
 
             popup_shadow: egui::epaint::Shadow {
-                offset: egui::vec2(4.0, 4.0),
-                blur: 12.0,
-                spread: 0.0,
+                offset: [4, 4],
+                blur: 12,
+                spread: 0,
                 color: Color32::from_black_alpha(64),
             },
             resize_corner_size: 12.0,
@@ -309,7 +309,7 @@ impl Theme {
 
         // Spacing
         style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-        style.spacing.window_margin = egui::Margin::same(16.0);
+        style.spacing.window_margin = egui::Margin::same(16);
         style.spacing.button_padding = egui::vec2(12.0, 8.0);
         style.spacing.indent = 16.0;
         style.spacing.interact_size = egui::vec2(40.0, 24.0);
