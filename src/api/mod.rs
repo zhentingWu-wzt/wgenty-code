@@ -154,6 +154,7 @@ pub struct ToolCallFunction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
@@ -292,3 +293,52 @@ pub fn parse_sse_line(line: &str) -> Option<StreamChunk> {
 }
 
 pub type AnthropicClient = ApiClient;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chat_message_serialization() {
+        // Assistant with tool_calls, content=None → should NOT serialize content:null
+        let msg = ChatMessage {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "call_123".to_string(),
+                r#type: "function".to_string(),
+                function: ToolCallFunction {
+                    name: "file_read".to_string(),
+                    arguments: r#"{"path":"README.md"}"#.to_string(),
+                },
+            }]),
+            tool_call_id: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            !json.contains(r#""content":null"#),
+            "content:null should not appear for tool_calls message, got: {json}"
+        );
+        assert!(json.contains(r#""tool_calls""#));
+    }
+
+    #[test]
+    fn test_tool_result_message_serialization() {
+        let msg = ChatMessage::tool("call_123", r#"{"success":true,"content":"..."}"#);
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""tool_call_id":"call_123""#));
+        assert!(
+            !json.contains(r#""tool_calls":null"#),
+            "tool_calls should be omitted, got: {json}"
+        );
+    }
+
+    #[test]
+    fn test_user_message_serialization() {
+        let msg = ChatMessage::user("hello");
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""content":"hello""#));
+        assert!(!json.contains(r#"tool_calls"#));
+        assert!(!json.contains(r#"tool_call_id"#));
+    }
+}

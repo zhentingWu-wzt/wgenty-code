@@ -33,18 +33,18 @@ impl Tool for FileReadTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "file_path": {
+                "path": {
                     "type": "string",
                     "description": "Path to the file to read"
                 }
             },
-            "required": ["file_path"]
+            "required": ["path"]
         })
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let file_path = input["file_path"].as_str().ok_or_else(|| ToolError {
-            message: "file_path is required".to_string(),
+        let file_path = input["path"].as_str().ok_or_else(|| ToolError {
+            message: "path is required".to_string(),
             code: Some("missing_parameter".to_string()),
         })?;
 

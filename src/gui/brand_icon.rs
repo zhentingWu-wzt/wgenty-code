@@ -1,4 +1,4 @@
-use egui::{pos2, vec2, Color32, Rect, Response, Sense, Stroke, Ui, Vec2};
+use egui::{pos2, vec2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2};
 
 use crate::branding;
 
@@ -44,5 +44,6 @@ pub fn paint(ui: &Ui, rect: Rect) {
         Rect::from_min_size(origin, icon_size),
         10.0,
         Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 10)),
+        StrokeKind::Outside,
     );
 }

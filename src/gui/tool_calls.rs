@@ -161,7 +161,7 @@ impl ToolCallManager {
 
         Frame::none()
             .fill(bg_color)
-            .rounding(Rounding::same(8.0))
+            .rounding(Rounding::same(8))
             .stroke(Stroke::new(1.5, border_color))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -239,8 +239,8 @@ impl ToolCallManager {
 
                         Frame::none()
                             .fill(Color32::from_rgb(25, 25, 25))
-                            .rounding(Rounding::same(4.0))
-                            .inner_margin(Margin::same(8.0))
+                            .rounding(Rounding::same(4))
+                            .inner_margin(Margin::same(8))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
 
@@ -331,8 +331,8 @@ impl ToolCallManager {
 
                     Frame::none()
                         .fill(Color32::from_rgb(25, 25, 25))
-                        .rounding(Rounding::same(4.0))
-                        .inner_margin(Margin::same(8.0))
+                        .rounding(Rounding::same(4))
+                        .inner_margin(Margin::same(8))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             let preview = if content.len() > 500 {
@@ -358,8 +358,8 @@ impl ToolCallManager {
 
                     Frame::none()
                         .fill(Color32::from_rgb(30, 20, 10))
-                        .rounding(Rounding::same(4.0))
-                        .inner_margin(Margin::same(8.0))
+                        .rounding(Rounding::same(4))
+                        .inner_margin(Margin::same(8))
                         .stroke(Stroke::new(1.0, Color32::from_rgb(100, 70, 40)))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
@@ -461,7 +461,7 @@ impl ToolCallManager {
 
         Frame::none()
             .fill(Color32::from_rgb(20, 20, 20))
-            .rounding(Rounding::same(4.0))
+            .rounding(Rounding::same(4))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
 
