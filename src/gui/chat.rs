@@ -8,11 +8,11 @@
 //! - Thinking process expand/collapse
 //! - Perfect markdown rendering
 
-use super::syntax_highlight::{format_code_block, CodeHighlighter};
-use super::tool_calls::{ToolCall, ToolCallManager};
+use super::syntax_highlight::format_code_block;
+use super::tool_calls::ToolCall;
 use chrono::{DateTime, Utc};
 use egui::{
-    Align, Color32, Frame, Layout, Margin, RichText, Rounding, ScrollArea, Stroke, TextEdit, Ui,
+    Align, Color32, Frame, Layout, Margin, RichText, CornerRadius, ScrollArea, Stroke, TextEdit, Ui,
     Vec2,
 };
 
@@ -89,8 +89,6 @@ pub struct ChatPanel {
     pub is_loading: bool,
     pub scroll_to_bottom: bool,
     current_model: String,
-    highlighter: CodeHighlighter,
-    tool_manager: ToolCallManager,
 
     /// Callback for sending messages
     on_send_message: Option<Box<dyn Fn(Vec<crate::api::ChatMessage>) + Send>>,
@@ -107,8 +105,6 @@ impl Default for ChatPanel {
             is_loading: false,
             scroll_to_bottom: true,
             current_model: "claude-3-5-sonnet-20241022".to_string(),
-            highlighter: CodeHighlighter::new(),
-            tool_manager: ToolCallManager::default(),
             on_send_message: None,
         }
     }
@@ -133,7 +129,7 @@ impl ChatPanel {
         let messages_height = available_height - input_height - 16.0;
 
         // Messages area with exact Claude styling
-        Frame::none()
+        Frame::NONE
             .fill(theme.background_darkest())
             .show(ui, |ui| {
                 ui.set_min_height(messages_height);
@@ -172,7 +168,7 @@ impl ChatPanel {
             });
 
         // Input area - fixed at bottom
-        Frame::none()
+        Frame::NONE
             .fill(theme.background_darkest())
             .show(ui, |ui| {
                 self.render_input_area(ui, theme);
@@ -183,9 +179,9 @@ impl ChatPanel {
         ui.vertical_centered(|ui| {
             ui.add_space(40.0);
 
-            Frame::none()
+            Frame::NONE
                 .fill(theme.surface_color())
-                .rounding(Rounding::same(20))
+                .corner_radius(CornerRadius::same(20))
                 .stroke(Stroke::new(1.0, theme.border_color()))
                 .inner_margin(Margin::symmetric(24, 22))
                 .show(ui, |ui| {
@@ -228,16 +224,16 @@ impl ChatPanel {
             ];
 
             for (tag, title, desc) in capabilities {
-                Frame::none()
+                Frame::NONE
                     .fill(theme.surface_color())
-                    .rounding(Rounding::same(8))
+                    .corner_radius(CornerRadius::same(8))
                     .inner_margin(Margin::symmetric(16, 12))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width().min(460.0));
                         ui.horizontal(|ui| {
-                            Frame::none()
+                            Frame::NONE
                                 .fill(theme.background_darkest())
-                                .rounding(Rounding::same(6))
+                                .corner_radius(CornerRadius::same(6))
                                 .inner_margin(Margin::symmetric(10, 6))
                                 .show(ui, |ui| {
                                     ui.label(
@@ -282,7 +278,7 @@ impl ChatPanel {
         let is_user = matches!(message.role, MessageRole::User);
 
         // Full-width message container
-        Frame::none()
+        Frame::NONE
             .fill(if is_user {
                 theme.background_darkest()
             } else {
@@ -362,9 +358,9 @@ impl ChatPanel {
     }
 
     fn render_claude_avatar(&self, ui: &mut Ui, theme: &super::Theme) {
-        Frame::none()
+        Frame::NONE
             .fill(theme.surface_color())
-            .rounding(Rounding::same(8))
+            .corner_radius(CornerRadius::same(8))
             .stroke(Stroke::new(1.0, theme.border_color()))
             .show(ui, |ui| {
                 super::brand_icon::show(ui, Vec2::new(32.0, 32.0));
@@ -372,9 +368,9 @@ impl ChatPanel {
     }
 
     fn render_user_avatar(&self, ui: &mut Ui, _theme: &super::Theme) {
-        Frame::none()
+        Frame::NONE
             .fill(Color32::from_rgb(80, 80, 80))
-            .rounding(Rounding::same(8))
+            .corner_radius(CornerRadius::same(8))
             .show(ui, |ui| {
                 ui.set_width(32.0);
                 ui.set_height(32.0);
@@ -387,9 +383,9 @@ impl ChatPanel {
     fn render_user_message_bubble(&self, ui: &mut Ui, message: &ChatMessage, theme: &super::Theme) {
         let max_width = 600.0f32.min(ui.available_width() * 0.8);
 
-        Frame::none()
+        Frame::NONE
             .fill(Color32::from_rgb(212, 165, 116)) // Claude orange
-            .rounding(Rounding::same(16))
+            .corner_radius(CornerRadius::same(16))
             .inner_margin(Margin::symmetric(16, 12))
             .show(ui, |ui| {
                 ui.set_max_width(max_width);
@@ -471,9 +467,9 @@ impl ChatPanel {
         }
 
         if *expanded {
-            Frame::none()
+            Frame::NONE
                 .fill(Color32::from_rgb(30, 30, 35))
-                .rounding(Rounding::same(6))
+                .corner_radius(CornerRadius::same(6))
                 .inner_margin(Margin::same(12))
                 .stroke(Stroke::new(1.0, Color32::from_rgb(60, 60, 70)))
                 .show(ui, |ui| {
@@ -571,9 +567,9 @@ impl ChatPanel {
                         }
                         // Blockquote
                         else if let Some(quote) = trimmed.strip_prefix("> ") {
-                            Frame::none()
+                            Frame::NONE
                                 .fill(Color32::from_rgb(40, 40, 45))
-                                .rounding(Rounding::same(4))
+                                .corner_radius(CornerRadius::same(4))
                                 .inner_margin(Margin::same(12))
                                 .stroke(Stroke::new(2.0, theme.primary_color()))
                                 .show(ui, |ui| {
@@ -603,9 +599,9 @@ impl ChatPanel {
                     ui.add_space(8.0);
                 }
                 ContentPart::InlineCode(code) => {
-                    Frame::none()
+                    Frame::NONE
                         .fill(Color32::from_rgb(55, 55, 60))
-                        .rounding(Rounding::same(4))
+                        .corner_radius(CornerRadius::same(4))
                         .inner_margin(Margin::symmetric(4, 2))
                         .show(ui, |ui| {
                             ui.monospace(
@@ -637,9 +633,9 @@ impl ChatPanel {
             _ => ("🔧", tool_call.name.as_str(), theme.border_color()),
         };
 
-        Frame::none()
+        Frame::NONE
             .fill(theme.surface_color())
-            .rounding(Rounding::same(8))
+            .corner_radius(CornerRadius::same(8))
             .stroke(Stroke::new(1.5, border_color))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width().min(600.0));
@@ -673,9 +669,9 @@ impl ChatPanel {
     }
 
     fn render_attachment(&self, ui: &mut Ui, attachment: &Attachment, theme: &super::Theme) {
-        Frame::none()
+        Frame::NONE
             .fill(Color32::from_rgb(50, 50, 55))
-            .rounding(Rounding::same(8))
+            .corner_radius(CornerRadius::same(8))
             .inner_margin(Margin::symmetric(12, 8))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -720,9 +716,9 @@ impl ChatPanel {
         ui.horizontal(|ui| {
             ui.add_space(80.0);
 
-            Frame::none()
+            Frame::NONE
                 .fill(theme.surface_color())
-                .rounding(Rounding::same(16))
+                .corner_radius(CornerRadius::same(16))
                 .inner_margin(Margin::symmetric(16, 12))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -746,16 +742,16 @@ impl ChatPanel {
     }
 
     fn render_input_area(&mut self, ui: &mut Ui, theme: &super::Theme) {
-        Frame::none()
+        Frame::NONE
             .fill(theme.background_darkest())
             .inner_margin(Margin::same(16))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
 
                 // Input container
-                Frame::none()
+                Frame::NONE
                     .fill(theme.surface_color())
-                    .rounding(Rounding::same(16))
+                    .corner_radius(CornerRadius::same(16))
                     .stroke(Stroke::new(1.0, theme.border_color()))
                     .inner_margin(Margin::same(12))
                     .show(ui, |ui| {
@@ -793,7 +789,7 @@ impl ChatPanel {
                                     }),
                             )
                             .fill(button_color)
-                            .rounding(Rounding::same(10)),
+                            .corner_radius(CornerRadius::same(10)),
                         );
 
                         // Handle send
