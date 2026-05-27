@@ -202,6 +202,7 @@ Output only the updated document content, nothing else."#,
         let messages = vec![crate::api::ChatMessage {
             role: "user".to_string(),
             content: Some(prompt),
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
         }];

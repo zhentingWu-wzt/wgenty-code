@@ -91,6 +91,10 @@ impl Tool for GrepTool {
         "grep"
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> &str {
         "Search file contents using regex with include/exclude filters"
     }

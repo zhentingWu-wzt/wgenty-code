@@ -168,6 +168,7 @@ impl SamplingManager {
             .map(|m| crate::api::ChatMessage {
                 role: m.role.clone(),
                 content: Some(m.content.text.clone()),
+                reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
             })
