@@ -291,12 +291,14 @@ Be thorough and systematic. Focus on finding and reporting issues."#.to_string()
             crate::api::ChatMessage {
                 role: "system".to_string(),
                 content: Some(agent.system_prompt.clone()),
+                reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
             },
             crate::api::ChatMessage {
                 role: "user".to_string(),
                 content: Some(prompt.to_string()),
+                reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
             },

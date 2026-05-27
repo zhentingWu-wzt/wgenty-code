@@ -24,6 +24,10 @@ impl Tool for SearchTool {
         "search"
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> &str {
         "Search for patterns in files using regex. Prefer grep for richer include/exclude controls."
     }

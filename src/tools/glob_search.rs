@@ -17,6 +17,10 @@ impl Tool for GlobTool {
         "glob"
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> &str {
         "Find files matching glob patterns"
     }

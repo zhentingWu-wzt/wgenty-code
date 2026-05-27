@@ -1,14 +1,22 @@
 //! API Module - OpenAI/DeepSeek compatible API Client
 
+pub mod anthropic_types;
+pub mod provider;
+
 use crate::config::Settings;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
+
+use anthropic_types::{convert_messages_to_anthropic, convert_tools_to_anthropic, convert_anthropic_response};
+use provider::Provider;
 
 #[derive(Clone)]
 pub struct ApiClient {
     settings: Settings,
-    http_client: std::sync::Arc<Client>,
+    http_client: Arc<Client>,
+    provider: Arc<dyn Provider>,
 }
 
 impl ApiClient {
@@ -18,10 +26,19 @@ impl ApiClient {
             .build()
             .unwrap_or_default();
 
+        let provider: Arc<dyn Provider> =
+            provider::detect_provider(&settings.api.get_base_url()).into();
+
         Self {
             settings,
-            http_client: std::sync::Arc::new(http_client),
+            http_client: Arc::new(http_client),
+            provider,
         }
+    }
+
+    /// The provider used by this client
+    pub fn provider(&self) -> &dyn Provider {
+        self.provider.as_ref()
     }
 
     pub fn get_api_key(&self) -> Option<String> {
@@ -45,8 +62,21 @@ impl ApiClient {
             .get_api_key()
             .ok_or_else(|| anyhow::anyhow!("API key not configured"))?;
 
+        if self.provider.is_openai_compat() {
+            self.chat_openai_compat(&api_key, messages, tools).await
+        } else {
+            self.chat_anthropic(&api_key, messages, tools).await
+        }
+    }
+
+    async fn chat_openai_compat(
+        &self,
+        api_key: &str,
+        messages: Vec<ChatMessage>,
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> anyhow::Result<ChatResponse> {
         let request = ChatRequest {
-            model: self.settings.api.get_model_id(&self.settings.model),
+            model: self.provider.resolve_model_id(&self.settings.model),
             messages,
             max_tokens: self.settings.api.max_tokens,
             stream: false,
@@ -75,6 +105,48 @@ impl ApiClient {
         Ok(chat_response)
     }
 
+    async fn chat_anthropic(
+        &self,
+        api_key: &str,
+        messages: Vec<ChatMessage>,
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> anyhow::Result<ChatResponse> {
+        let (anthropic_msgs, system_prompt) = convert_messages_to_anthropic(&messages);
+        let anthropic_tools = tools
+            .as_ref()
+            .map(|t| convert_tools_to_anthropic(t));
+
+        let request = anthropic_types::AnthropicRequest {
+            model: self.provider.resolve_model_id(&self.settings.model),
+            messages: anthropic_msgs,
+            max_tokens: self.settings.api.max_tokens,
+            system: system_prompt,
+            tools: anthropic_tools,
+            stream: false,
+        };
+
+        let url = format!("{}/v1/messages", self.get_base_url());
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Anthropic API error ({}): {}", status, body));
+        }
+
+        let anthropic_resp: anthropic_types::AnthropicResponse = response.json().await?;
+        Ok(convert_anthropic_response(&anthropic_resp))
+    }
+
     pub async fn chat_stream(
         &self,
         messages: Vec<ChatMessage>,
@@ -84,8 +156,21 @@ impl ApiClient {
             .get_api_key()
             .ok_or_else(|| anyhow::anyhow!("API key not configured"))?;
 
+        if self.provider.is_openai_compat() {
+            self.chat_stream_openai_compat(&api_key, messages, tools).await
+        } else {
+            self.chat_stream_anthropic(&api_key, messages, tools).await
+        }
+    }
+
+    async fn chat_stream_openai_compat(
+        &self,
+        api_key: &str,
+        messages: Vec<ChatMessage>,
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> anyhow::Result<reqwest::Response> {
         let request = ChatRequest {
-            model: self.settings.api.get_model_id(&self.settings.model),
+            model: self.provider.resolve_model_id(&self.settings.model),
             messages,
             max_tokens: self.settings.api.max_tokens,
             stream: true,
@@ -105,6 +190,83 @@ impl ApiClient {
             .await?;
 
         Ok(response)
+    }
+
+    /// Anthropic streaming: convert Anthropic SSE events to OpenAI-compatible SSE bytes,
+    /// then return as a synthetic reqwest::Response so the REPL can parse uniformly.
+    async fn chat_stream_anthropic(
+        &self,
+        api_key: &str,
+        messages: Vec<ChatMessage>,
+        tools: Option<Vec<ToolDefinition>>,
+    ) -> anyhow::Result<reqwest::Response> {
+        use anthropic_types::{
+            AnthropicRequest, AnthropicStreamState, convert_messages_to_anthropic,
+            convert_tools_to_anthropic,
+        };
+
+        let (anthropic_msgs, system_prompt) = convert_messages_to_anthropic(&messages);
+        let anthropic_tools = tools
+            .as_ref()
+            .map(|t| convert_tools_to_anthropic(t));
+
+        let request = AnthropicRequest {
+            model: self.provider.resolve_model_id(&self.settings.model),
+            messages: anthropic_msgs,
+            max_tokens: self.settings.api.max_tokens,
+            system: system_prompt,
+            tools: anthropic_tools,
+            stream: true,
+        };
+
+        let url = format!("{}/v1/messages", self.get_base_url());
+
+        let response = self
+            .http_client
+            .post(&url)
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Anthropic API error ({}): {}", status, body));
+        }
+
+        // Read Anthropic SSE stream, convert to OpenAI-compatible SSE bytes
+        let mut state = AnthropicStreamState::new();
+        let body = response.text().await?;
+        let mut sse_out = String::new();
+
+        for line in body.lines() {
+            let line = line.trim().to_string();
+            if line.is_empty() || !line.starts_with("data: ") {
+                continue;
+            }
+            if let Some(chunks) =
+                anthropic_types::parse_anthropic_sse_line(&line, &mut state)
+            {
+                for chunk in &chunks {
+                    sse_out.push_str("data: ");
+                    sse_out.push_str(&serde_json::to_string(chunk).unwrap_or_default());
+                    sse_out.push('\n');
+                    sse_out.push('\n');
+                }
+            }
+        }
+        sse_out.push_str("data: [DONE]\n\n");
+
+        let http_resp = http::Response::builder()
+            .status(200)
+            .header("Content-Type", "text/event-stream")
+            .body(reqwest::Body::from(sse_out))
+            .map_err(|e| anyhow::anyhow!("Failed to build response: {}", e))?;
+
+        Ok(reqwest::Response::from(http_resp))
     }
 }
 
@@ -157,6 +319,8 @@ pub struct ChatMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
@@ -167,6 +331,7 @@ impl ChatMessage {
         Self {
             role: "user".to_string(),
             content: Some(content.into()),
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
         }
@@ -176,6 +341,7 @@ impl ChatMessage {
         Self {
             role: "assistant".to_string(),
             content: Some(content.into()),
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
         }
@@ -185,6 +351,7 @@ impl ChatMessage {
         Self {
             role: "assistant".to_string(),
             content: None,
+            reasoning_content: None,
             tool_calls: Some(tool_calls),
             tool_call_id: None,
         }
@@ -194,6 +361,7 @@ impl ChatMessage {
         Self {
             role: "system".to_string(),
             content: Some(content.into()),
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
         }
@@ -203,6 +371,7 @@ impl ChatMessage {
         Self {
             role: "tool".to_string(),
             content: Some(content.into()),
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
         }
@@ -244,7 +413,7 @@ pub struct Usage {
     pub total_tokens: usize,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamChunk {
     pub id: String,
     pub object: String,
@@ -253,22 +422,24 @@ pub struct StreamChunk {
     pub choices: Vec<StreamChoice>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamChoice {
     pub index: i32,
     pub delta: Delta,
     pub finish_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Delta {
     pub role: Option<String>,
     pub content: Option<String>,
     #[serde(default)]
+    pub reasoning_content: Option<String>,
+    #[serde(default)]
     pub tool_calls: Option<Vec<StreamToolCall>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamToolCall {
     pub index: i32,
     pub id: Option<String>,
@@ -276,7 +447,7 @@ pub struct StreamToolCall {
     pub function: Option<StreamToolCallFunction>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamToolCallFunction {
     pub name: Option<String>,
     pub arguments: Option<String>,
@@ -304,6 +475,7 @@ mod tests {
         let msg = ChatMessage {
             role: "assistant".to_string(),
             content: None,
+            reasoning_content: None,
             tool_calls: Some(vec![ToolCall {
                 id: "call_123".to_string(),
                 r#type: "function".to_string(),

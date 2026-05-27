@@ -2,6 +2,7 @@
 
 pub mod ask_user_question;
 pub mod apply_patch;
+pub mod view;
 pub mod executor;
 pub mod execute_command;
 pub mod exec_command;
@@ -13,14 +14,18 @@ pub mod glob_search;
 pub mod grep;
 pub mod kill_session;
 pub mod list_files;
+pub mod lsp;
 pub mod note_edit;
+pub mod policy;
 pub mod search;
 pub mod session_manager;
 pub mod task_management;
+pub mod think;
 pub mod write_stdin;
 
 pub use ask_user_question::AskUserQuestionTool;
 pub use apply_patch::ApplyPatchTool;
+pub use view::ViewTool;
 pub use executor::ToolExecutor;
 pub use execute_command::ExecuteCommandTool;
 pub use exec_command::ExecCommandTool;
@@ -32,10 +37,13 @@ pub use glob_search::GlobTool;
 pub use grep::GrepTool;
 pub use kill_session::KillSessionTool;
 pub use list_files::ListFilesTool;
+pub use lsp::LspTool;
 pub use note_edit::NoteEditTool;
+pub use policy::{PermissionRequest, PolicyDecision, ToolPermissionPolicy};
 pub use search::SearchTool;
 pub use session_manager::CommandSessionManager;
 pub use task_management::TaskManagementTool;
+pub use think::ThinkTool;
 pub use write_stdin::WriteStdinTool;
 
 use async_trait::async_trait;
@@ -53,6 +61,11 @@ pub trait Tool: Send + Sync {
 
     /// Tool input schema
     fn input_schema(&self) -> serde_json::Value;
+
+    /// Whether this tool is read-only (no side effects). Default: false.
+    fn is_read_only(&self) -> bool {
+        false
+    }
 
     /// Execute the tool
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError>;
@@ -124,8 +137,11 @@ impl ToolRegistry {
         registry.register(Box::new(glob_search::GlobTool::new()));
         registry.register(Box::new(grep::GrepTool::new()));
         registry.register(Box::new(list_files::ListFilesTool::new()));
+        registry.register(Box::new(view::ViewTool::new()));
         registry.register(Box::new(git_operations::GitOperationsTool::new()));
         registry.register(Box::new(task_management::TaskManagementTool::new()));
+        registry.register(Box::new(think::ThinkTool::new()));
+        registry.register(Box::new(lsp::LspTool::new()));
         registry.register(Box::new(note_edit::NoteEditTool::new()));
 
         registry
