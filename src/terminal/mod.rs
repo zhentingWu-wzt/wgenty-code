@@ -9,7 +9,7 @@ use crate::state::AppState;
 use crate::terminal::history::{ChatHistory, HistoryEntry};
 use crate::terminal::ime::{ImeAction, ImeHandler};
 use crate::terminal::input::{InputBox, InputResult};
-use crate::tools::ToolRegistry;
+use crate::tools::{ToolExecutor, ToolRegistry};
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEvent,
@@ -21,13 +21,29 @@ use crossterm::{
 use futures::StreamExt;
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout, Margin},
     prelude::*,
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Terminal,
 };
 use std::io::Stdout;
 use std::sync::Arc;
 use tracing::{error, info};
+
+/// TUI 运行模式
+enum TuiMode {
+    /// 正常聊天模式
+    Normal,
+    /// 提问模式：展示问题和选项，等待用户选择
+    Question {
+        question: String,
+        options: Vec<(String, String)>, // (label, description)
+        selected: usize,                // 当前选中索引（0-based，0 = Other）
+        multi_select: bool,
+        confirmed: bool,                // 用户是否已确认
+        answers: Vec<usize>,            // 已选中的选项索引（多选用）
+    },
+}
 
 /// TUI-based REPL application
 pub struct TuiRepl {
@@ -38,10 +54,13 @@ pub struct TuiRepl {
     state: AppState,
     conversation_history: Vec<ChatMessage>,
     tool_registry: Arc<ToolRegistry>,
+    tool_executor: ToolExecutor,
     should_quit: bool,
     is_processing: bool,
     /// Height of the chat area (for scroll calculations)
     chat_area_height: u16,
+    /// Current TUI mode (normal or question)
+    mode: TuiMode,
 }
 
 impl TuiRepl {
@@ -62,10 +81,12 @@ impl TuiRepl {
             ime: ImeHandler::new(),
             state,
             conversation_history: Vec::new(),
+            tool_executor: ToolExecutor::new(tool_registry.clone()),
             tool_registry,
             should_quit: false,
             is_processing: false,
             chat_area_height: 0,
+            mode: TuiMode::Normal,
         })
     }
 
@@ -84,13 +105,14 @@ impl TuiRepl {
 
     fn draw(&mut self) -> anyhow::Result<()> {
         self.terminal.draw(|f| {
+            let area = f.area();
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Min(1),   // Chat history
                     Constraint::Length(8), // Input box
                 ])
-                .split(f.area());
+                .split(area);
 
             self.chat_area_height = chunks[0].height;
 
@@ -99,6 +121,11 @@ impl TuiRepl {
 
             // Render input box
             self.input.render(chunks[1], f.buffer_mut());
+
+            // If in question mode, render overlay
+            if let TuiMode::Question { question, options, selected, multi_select, answers, .. } = &self.mode {
+                Self::render_question_overlay(f, area, question, options, *selected, *multi_select, answers);
+            }
         })?;
 
         Ok(())
@@ -107,6 +134,11 @@ impl TuiRepl {
     async fn handle_events(&mut self) -> anyhow::Result<()> {
         if event::poll(std::time::Duration::from_millis(50))? {
             let event = event::read()?;
+
+            // Question mode takes priority over everything
+            if self.handle_question_event(&event).await? {
+                return Ok(());
+            }
 
             match self.ime.handle_event(&event) {
                 ImeAction::Committed(text) => {
@@ -401,6 +433,129 @@ impl TuiRepl {
                 // Execute each tool and show status
                 let tool_calls = self.conversation_history.last().unwrap().tool_calls.clone().unwrap();
                 for tc in &tool_calls {
+                    let tool_name = tc.function.name.clone();
+                    let tool_call_id = tc.id.clone();
+
+                    // Special handling for ask_user_question (interactive)
+                    if tool_name == "ask_user_question" {
+                        let args: serde_json::Value =
+                            serde_json::from_str(&tc.function.arguments)
+                                .unwrap_or(serde_json::json!({}));
+                        let options = Self::parse_options(args.get("options"));
+                        let question = args
+                            .get("question")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("请选择一个选项:")
+                            .to_string();
+                        let multi_select = args
+                            .get("multiSelect")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+
+                        // Switch to question mode
+                        self.mode = TuiMode::Question {
+                            question,
+                            options,
+                            selected: 0,
+                            multi_select,
+                            confirmed: false,
+                            answers: Vec::new(),
+                        };
+
+                        // Wait for user to answer (draw + handle events)
+                        while let TuiMode::Question { confirmed: false, .. } = self.mode {
+                            self.draw()?;
+                            Box::pin(self.handle_events()).await?;
+                        }
+
+                        // Build answer JSON
+                        let result = match &self.mode {
+                            TuiMode::Question {
+                                answers,
+                                options,
+                                multi_select,
+                                ..
+                            } => {
+                                let answer_objs: Vec<serde_json::Value> = if *multi_select {
+                                    answers
+                                        .iter()
+                                        .map(|idx| {
+                                            if *idx >= options.len() {
+                                                serde_json::json!({
+                                                    "label": "Other",
+                                                    "value": "",
+                                                    "custom": true
+                                                })
+                                            } else {
+                                                let (label, _) = &options[*idx];
+                                                serde_json::json!({
+                                                    "label": label,
+                                                    "value": label,
+                                                    "custom": false
+                                                })
+                                            }
+                                        })
+                                        .collect()
+                                } else {
+                                    if let Some(idx) = answers.first() {
+                                        if *idx >= options.len() {
+                                            vec![serde_json::json!({
+                                                "label": "Other",
+                                                "value": "",
+                                                "custom": true
+                                            })]
+                                        } else {
+                                            let (label, _) = &options[*idx];
+                                            vec![serde_json::json!({
+                                                "label": label,
+                                                "value": label,
+                                                "custom": false
+                                            })]
+                                        }
+                                    } else {
+                                        vec![]
+                                    }
+                                };
+                                serde_json::json!({
+                                    "success": true,
+                                    "answers": answer_objs
+                                })
+                                .to_string()
+                            }
+                            _ => unreachable!(),
+                        };
+
+                        // Return to normal mode
+                        self.mode = TuiMode::Normal;
+
+                        // Show what the user selected in history
+                        let answer_labels = match &result {
+                            r if r.contains("answers") => {
+                                let parsed: serde_json::Value = serde_json::from_str(r).unwrap_or_default();
+                                parsed["answers"]
+                                    .as_array()
+                                    .map(|arr| {
+                                        arr.iter()
+                                            .filter_map(|a| a["label"].as_str())
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    })
+                                    .unwrap_or_default()
+                            }
+                            _ => String::new(),
+                        };
+                        if !answer_labels.is_empty() {
+                            self.history.add(HistoryEntry::System(format!(
+                                "选择了: {}",
+                                answer_labels
+                            )));
+                        }
+
+                        let tool_result_msg = ChatMessage::tool(&tool_call_id, result);
+                        self.conversation_history.push(tool_result_msg);
+                        continue;
+                    }
+
                     // Show thinking indicator while executing tool
                     self.history.add(HistoryEntry::Thinking { frame: 0, elapsed_secs: 0 });
                     self.draw()?;
@@ -481,11 +636,7 @@ impl TuiRepl {
     }
 
     async fn get_tool_definitions(&self) -> Vec<ToolDefinition> {
-        let tools = self.tool_registry.list();
-        tools
-            .into_iter()
-            .map(|t| ToolDefinition::new(t.name(), t.description(), t.input_schema()))
-            .collect()
+        self.tool_executor.tool_definitions()
     }
 
     fn summarize_tool_args(name: &str, args: &serde_json::Value) -> Option<String> {
@@ -543,6 +694,229 @@ impl TuiRepl {
             }
             _ => None,
         }
+    }
+
+    /// Parse question options from JSON args
+    fn parse_options(value: Option<&serde_json::Value>) -> Vec<(String, String)> {
+        let mut options = Vec::new();
+        if let Some(serde_json::Value::Array(arr)) = value {
+            for opt in arr {
+                let label = opt
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Option")
+                    .to_string();
+                let desc = opt
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                options.push((label, desc));
+            }
+        }
+        options
+    }
+
+    /// Render a question overlay popup in the center of the terminal
+    fn render_question_overlay(
+        frame: &mut Frame,
+        area: Rect,
+        question: &str,
+        options: &[(String, String)],
+        selected: usize,
+        multi_select: bool,
+        answers: &[usize],
+    ) {
+        let popup_width = ((area.width as f32 * 0.8).max(60.0).min(120.0) as u16)
+            .min(area.width.saturating_sub(4));
+        let option_count = options.len() + 1; // +1 for Other
+        let min_height = 10u16;
+        let content_height = (question.lines().count() as u16)
+            .saturating_add(option_count as u16 * 2 + 4)
+            .max(min_height)
+            .min(area.height.saturating_sub(4));
+        let popup_area = Rect {
+            x: area.x + (area.width - popup_width) / 2,
+            y: area.y + (area.height - content_height) / 2,
+            width: popup_width,
+            height: content_height,
+        };
+
+        Clear.render(popup_area, frame.buffer_mut());
+
+        let block = Block::default()
+            .title(" ❓ Question ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Rgb(255, 200, 100)))
+            .style(Style::default().bg(Color::Rgb(30, 30, 35)));
+        block.render(popup_area, frame.buffer_mut());
+
+        let inner = popup_area.inner(Margin::new(2, 1));
+
+        // Question text
+        let question_para = Paragraph::new(question)
+            .style(Style::default().fg(Color::Rgb(220, 200, 255)).add_modifier(Modifier::BOLD))
+            .wrap(Wrap { trim: true });
+        let question_height = question.lines().count() as u16;
+        let question_area = Rect::new(inner.x, inner.y, inner.width, question_height);
+        question_para.render(question_area, frame.buffer_mut());
+
+        // Options list
+        let mut list_items: Vec<ListItem> = Vec::new();
+        for (i, (label, desc)) in options.iter().enumerate() {
+            let is_selected = i == selected;
+            let is_checked = answers.contains(&i);
+            let check_mark = if multi_select {
+                if is_checked { "[x] " } else { "[ ] " }
+            } else {
+                if is_selected { "● " } else { "○ " }
+            };
+            let num = format!("{:2}. ", i + 1);
+            let text = format!("{}{}{} - {}", check_mark, num, label, desc);
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(80, 60, 120))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Rgb(180, 180, 180))
+            };
+            list_items.push(ListItem::new(text).style(style));
+        }
+        // Other option
+        let other_idx = options.len();
+        let is_other_selected = selected == other_idx;
+        let is_other_checked = answers.contains(&other_idx);
+        let check_mark = if multi_select {
+            if is_other_checked { "[x] " } else { "[ ] " }
+        } else {
+            if is_other_selected { "● " } else { "○ " }
+        };
+        let text = format!("{:2}. Other - 输入自定义答案", other_idx + 1);
+        let style = if is_other_selected {
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Rgb(80, 60, 120))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(180, 180, 180))
+        };
+        list_items.push(ListItem::new(format!("{}{}", check_mark, text)).style(style));
+
+        let list = List::new(list_items);
+        let list_area = Rect::new(
+            inner.x,
+            inner.y + question_height + 1,
+            inner.width,
+            content_height.saturating_sub(question_height + 3),
+        );
+        ratatui::widgets::Widget::render(list, list_area, frame.buffer_mut());
+
+        // Bottom hint
+        let hint = if multi_select {
+            "↑↓选择 · 空格勾选 · Enter确认 · Esc取消 · 1-9直接选择"
+        } else {
+            "↑↓选择 · Enter确认 · Esc取消 · 1-9直接选择"
+        };
+        let hint_para = Paragraph::new(hint)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Rgb(150, 150, 150)).add_modifier(Modifier::ITALIC));
+        let hint_area = Rect::new(
+            inner.x,
+            inner.y + content_height.saturating_sub(2),
+            inner.width,
+            1,
+        );
+        hint_para.render(hint_area, frame.buffer_mut());
+    }
+
+    /// Handle keyboard/mouse events when in question mode.
+    /// Returns true if the event was consumed (question mode handled it).
+    async fn handle_question_event(&mut self, event: &Event) -> anyhow::Result<bool> {
+        let mut should_confirm = false;
+        let mut canceled = false;
+
+        if let TuiMode::Question {
+            ref mut selected,
+            ref mut answers,
+            multi_select,
+            ref mut confirmed,
+            ref options,
+            ..
+        } = self.mode
+        {
+            match event {
+                Event::Key(key) => {
+                    match key.code {
+                        KeyCode::Up => {
+                            *selected = selected.saturating_sub(1);
+                        }
+                        KeyCode::Down => {
+                            let max_idx = options.len();
+                            if *selected < max_idx {
+                                *selected += 1;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if multi_select {
+                                // 如果 answers 为空但 selected 有效，自动加入
+                                if answers.is_empty() && !options.is_empty() {
+                                    answers.push(*selected);
+                                }
+                            } else {
+                                answers.clear();
+                                answers.push(*selected);
+                            }
+                            should_confirm = true;
+                        }
+                        KeyCode::Esc => {
+                            answers.clear();
+                            canceled = true;
+                        }
+                        KeyCode::Char(' ') if multi_select => {
+                            if answers.contains(&*selected) {
+                                answers.retain(|x| *x != *selected);
+                            } else {
+                                answers.push(*selected);
+                            }
+                        }
+                        KeyCode::Char(c) if c.is_ascii_digit() => {
+                            let num = c.to_digit(10).unwrap() as usize;
+                            let max_num = options.len() + 1;
+                            if num > 0 && num <= max_num {
+                                *selected = num - 1;
+                                if !multi_select {
+                                    answers.clear();
+                                    answers.push(*selected);
+                                    should_confirm = true;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Event::Mouse(mouse) => {
+                    if let MouseEventKind::Down(_) = mouse.kind {
+                        // Simple: click anywhere confirms current selection
+                        // (accurate hit-testing would require knowing rendered positions)
+                        if !multi_select {
+                            answers.clear();
+                            answers.push(*selected);
+                            should_confirm = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            if should_confirm || canceled {
+                *confirmed = true;
+            }
+            self.draw()?;
+            return Ok(true);
+        }
+
+        Ok(false)
     }
 }
 

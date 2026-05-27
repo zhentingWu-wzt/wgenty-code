@@ -1,26 +1,42 @@
 //! Tools Module - File operations, commands, search, etc.
 
 pub mod ask_user_question;
+pub mod apply_patch;
+pub mod executor;
 pub mod execute_command;
+pub mod exec_command;
 pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
 pub mod git_operations;
+pub mod glob_search;
+pub mod grep;
+pub mod kill_session;
 pub mod list_files;
 pub mod note_edit;
 pub mod search;
+pub mod session_manager;
 pub mod task_management;
+pub mod write_stdin;
 
 pub use ask_user_question::AskUserQuestionTool;
+pub use apply_patch::ApplyPatchTool;
+pub use executor::ToolExecutor;
 pub use execute_command::ExecuteCommandTool;
+pub use exec_command::ExecCommandTool;
 pub use file_edit::FileEditTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
 pub use git_operations::GitOperationsTool;
+pub use glob_search::GlobTool;
+pub use grep::GrepTool;
+pub use kill_session::KillSessionTool;
 pub use list_files::ListFilesTool;
 pub use note_edit::NoteEditTool;
 pub use search::SearchTool;
+pub use session_manager::CommandSessionManager;
 pub use task_management::TaskManagementTool;
+pub use write_stdin::WriteStdinTool;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -83,17 +99,30 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     /// Create a new tool registry
     pub fn new() -> Self {
+        let command_sessions = std::sync::Arc::new(session_manager::CommandSessionManager::new());
         let mut registry = Self {
             tools: HashMap::new(),
         };
 
         // Register built-in tools
         registry.register(Box::new(ask_user_question::AskUserQuestionTool::new()));
+        registry.register(Box::new(apply_patch::ApplyPatchTool::new()));
         registry.register(Box::new(file_read::FileReadTool::new()));
         registry.register(Box::new(file_edit::FileEditTool::new()));
         registry.register(Box::new(file_write::FileWriteTool::new()));
         registry.register(Box::new(execute_command::ExecuteCommandTool::new()));
+        registry.register(Box::new(exec_command::ExecCommandTool::new(
+            command_sessions.clone(),
+        )));
+        registry.register(Box::new(write_stdin::WriteStdinTool::new(
+            command_sessions.clone(),
+        )));
+        registry.register(Box::new(kill_session::KillSessionTool::new(
+            command_sessions,
+        )));
         registry.register(Box::new(search::SearchTool::new()));
+        registry.register(Box::new(glob_search::GlobTool::new()));
+        registry.register(Box::new(grep::GrepTool::new()));
         registry.register(Box::new(list_files::ListFilesTool::new()));
         registry.register(Box::new(git_operations::GitOperationsTool::new()));
         registry.register(Box::new(task_management::TaskManagementTool::new()));
