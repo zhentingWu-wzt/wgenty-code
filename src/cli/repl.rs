@@ -145,13 +145,11 @@ impl Repl {
                 Some(input) => input,
                 None => break, // channel closed = EOF
             };
-
+            tracing::info!(input = input, "user input received");
             if input.is_empty() {
                 println!();
                 continue;
             }
-
-            println!();
 
             match input.as_str() {
                 "exit" | "quit" | ".exit" | ":q" => {
@@ -183,6 +181,7 @@ impl Repl {
         ui::print_user_message(input);
         info!(
             input_len = input.len(),
+            input = input,
             conversation_messages = self.conversation_history.len(),
             "processing repl input"
         );
@@ -206,21 +205,16 @@ impl Repl {
         // Tool call loop
         let mut pending_input: Option<String> = None;
         loop {
-            let indicator = ui::ThinkingIndicator::start();
-
             let messages = self.conversation_history.clone();
             let response = match client.chat_stream(messages, tools_opt.clone()).await {
-                Ok(r) => {
-                    indicator.stop().await;
-                    r
-                }
+                Ok(r) => r,
                 Err(e) => {
-                    indicator.stop().await;
                     error!(error = %e, "repl stream request failed");
                     ui::print_error(&format!("Request failed: {}", e));
                     return Ok(());
                 }
             };
+            
 
             if !response.status().is_success() {
                 let status = response.status();
@@ -235,7 +229,6 @@ impl Repl {
 
             if result.has_tool_calls && !result.tool_calls_accum.is_empty() {
                 info!(tool_call_count = result.tool_calls_accum.len(), "model requested tool calls");
-                println!();
                 for tc in &result.tool_calls_accum {
                     let tool_name = tc["function"]["name"].as_str().unwrap_or("unknown");
                     let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
@@ -257,6 +250,11 @@ impl Repl {
                                 (Some(p), None) => Some(format!(" → `{}`", p)),
                                 _ => None,
                             }
+                        }
+                        "glob" => {
+                            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
+                            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                            Some(format!(" → {} in {}", pattern, path))
                         }
                         "list_files" => {
                             args.get("path").and_then(|v| v.as_str()).map(|s| format!(" → {}", s))
@@ -301,12 +299,13 @@ impl Repl {
                     };
 
                     let detail_str = detail.unwrap_or_default();
-                    println!(
-                        "  {} {} {}",
+                    print!(
+                        "  {} {}{}",
                         "▸".truecolor(255, 200, 100),
                         tool_name.cyan().bold(),
                         detail_str.truecolor(180, 180, 180)
                     );
+                    io::stdout().flush().ok();
                 }
 
                 let tool_calls_parsed: Vec<ToolCall> = result
@@ -410,20 +409,18 @@ impl Repl {
         let mut has_tool_calls = false;
         let mut pending_input: Option<String> = None;
         let mut stream_done = false;
+        let mut first_chunk = true;
 
         let mut stream = response.bytes_stream();
         let mut buffer = String::with_capacity(4096);
-        let mut flush_tick = tokio::time::interval(std::time::Duration::from_millis(100));
-        flush_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // Thinking indicator — starts as "等待响应", transitions to "正在思考"
+        // only when reasoning_content (not visible content) arrives
+        let indicator = ui::ThinkingIndicator::start();
 
         while !stream_done {
             tokio::select! {
                 biased;
-
-                // 定时强制刷新，避免小 chunk 滞留缓冲
-                _ = flush_tick.tick() => {
-                    line_state.flush();
-                }
 
                 // SSE stream chunk
                 chunk = stream.next() => {
@@ -438,16 +435,31 @@ impl Repl {
                                 if let Some(stream_chunk) = crate::api::parse_sse_line(&line) {
                                     if let Some(choice) = stream_chunk.choices.first() {
                                         if let Some(content) = &choice.delta.content {
+                                            // Stop spinner BEFORE printing — print_delta
+                                            // moves the cursor to the next line
+                                            if first_chunk {
+                                                indicator.signal_stop();
+                                                first_chunk = false;
+                                            }
                                             line_state.print_delta(content);
                                             full_content.push_str(content);
                                         }
 
                                         if let Some(rc) = &choice.delta.reasoning_content {
                                             reasoning_content.push_str(rc);
+                                            // Model is actually thinking — switch from "等待响应" to "正在思考"
+                                            if first_chunk {
+                                                indicator.signal_thinking();
+                                            }
                                         }
 
                                         if let Some(tc_deltas) = &choice.delta.tool_calls {
                                             has_tool_calls = true;
+                                            // Stop spinner on tool calls too
+                                            if first_chunk {
+                                                indicator.signal_stop();
+                                                first_chunk = false;
+                                            }
                                             for tc in tc_deltas {
                                                 let idx = tc.index as usize;
                                                 while tool_calls_accum.len() <= idx {
@@ -503,6 +515,11 @@ impl Repl {
                         Some(text) => {
                             if !text.is_empty() {
                                 pending_input = Some(text);
+                                // Also stop spinner if user starts typing
+                                if first_chunk {
+                                    indicator.signal_stop();
+                                    first_chunk = false;
+                                }
                             }
                         }
                         None => {
@@ -514,6 +531,8 @@ impl Repl {
             }
         }
 
+        // Ensure indicator is stopped and its line cleared
+        indicator.stop().await;
         line_state.finish();
 
         Ok(StreamResult {
@@ -534,14 +553,23 @@ impl Repl {
     async fn execute_tool(&mut self, name: &str, args: serde_json::Value) -> String {
         debug!(tool_name = name, args = %args, "dispatching repl tool call");
 
-        // 1. Validate against policy
+        // Validate against policy
         match self.tool_executor.validate_tool_call(name, &args).await {
             Ok(PolicyDecision::Allow) => {
-                // Safe — execute directly
-                self.do_execute_tool(name, args).await
+                // Safe — execute directly, print result inline
+                let result = self.do_execute_tool(name, args).await;
+                let parsed: serde_json::Value = serde_json::from_str(&result).unwrap_or_default();
+                if parsed["success"].as_bool().unwrap_or(false) {
+                    info!(tool_name = name, "tool call succeeded");
+                    println!("  {}", "✓".green());
+                } else {
+                    error!(tool_name = name, error = ?parsed, "tool call failed");
+                    println!("  {}", "✗".red());
+                }
+                result
             }
             Ok(PolicyDecision::Ask(req)) => {
-                // Needs approval — prompt user
+                // Needs approval — prompt user (prints its own ✓ Approved)
                 self.prompt_approval(name, &args, req).await
             }
             Err(e) => {
@@ -558,23 +586,16 @@ impl Repl {
         }
     }
 
-    /// Execute tool directly (no policy check)
+    /// Execute tool directly (no policy check, no status output).
     async fn do_execute_tool(&self, name: &str, args: serde_json::Value) -> String {
         let message = self.tool_executor.execute_tool_call("tool_call", name, args).await;
-        let content = message.content.unwrap_or_default();
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
-        if parsed["success"].as_bool().unwrap_or(false) {
-            info!(tool_name = name, "tool call succeeded");
-            println!("  {} Tool succeeded", "✓".green());
-        } else {
-            error!(tool_name = name, error = ?parsed, "tool call failed");
-            println!("  {} Tool error", "✗".red());
-        }
-        content
+        message.content.unwrap_or_default()
     }
 
     /// Show approval prompt and wait for user
     async fn prompt_approval(&mut self, name: &str, args: &serde_json::Value, req: PermissionRequest) -> String {
+        // Move to next line — tool detail was printed without newline via print!
+        println!();
         let detail = match name {
             "execute_command" | "exec_command" => {
                 args.get("command")
@@ -597,7 +618,6 @@ impl Repl {
             _ => String::new(),
         };
 
-        println!();
         println!("  {} {} {}", "⚠".yellow().bold(), "Permission needed:".yellow().bold(), req.tool_name.cyan());
         println!("  {} {}", "  Reason:".truecolor(180, 180, 180), req.reason.truecolor(200, 200, 200));
         if !detail.is_empty() {
@@ -633,11 +653,29 @@ impl Repl {
                 self.do_execute_tool(name, args.clone()).await
             }
             _ => {
-                println!("  {} Denied", "✗".red());
+                println!("  {} Denied — operation cancelled", "✗".red());
+
+                let detail = match name {
+                    "execute_command" | "exec_command" => args
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
+                    "file_write" | "file_edit" => args
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(""),
+                    _ => "",
+                };
+
                 serde_json::json!({
                     "success": false,
                     "error": {
-                        "message": format!("User denied permission for {}: {}", req.tool_name, req.reason),
+                        "message": format!(
+                            "PERMISSION DENIED: The user rejected '{}'. \
+                             Operation cancelled. Do NOT attempt to achieve the same \
+                             result with alternative commands or workarounds.",
+                            detail
+                        ),
                         "code": "permission_denied"
                     }
                 }).to_string()

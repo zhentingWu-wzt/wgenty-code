@@ -7,7 +7,7 @@
 //! - File diff viewer
 //! - Tool result display
 
-use egui::{Align, Color32, Frame, Layout, Margin, RichText, Rounding, Stroke, Ui};
+use egui::{Align, Color32, Frame, Layout, Margin, RichText, CornerRadius, Stroke, Ui};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A tool call instance
@@ -159,9 +159,9 @@ impl ToolCallManager {
             ToolCallStatus::Error => Color32::from_rgb(244, 67, 54),
         };
 
-        Frame::none()
+        Frame::NONE
             .fill(bg_color)
-            .rounding(Rounding::same(8))
+            .corner_radius(CornerRadius::same(8))
             .stroke(Stroke::new(1.5, border_color))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -237,9 +237,9 @@ impl ToolCallManager {
                             theme.success_color()
                         };
 
-                        Frame::none()
+                        Frame::NONE
                             .fill(Color32::from_rgb(25, 25, 25))
-                            .rounding(Rounding::same(4))
+                            .corner_radius(CornerRadius::same(4))
                             .inner_margin(Margin::same(8))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
@@ -329,9 +329,9 @@ impl ToolCallManager {
                             .size(12.0),
                     );
 
-                    Frame::none()
+                    Frame::NONE
                         .fill(Color32::from_rgb(25, 25, 25))
-                        .rounding(Rounding::same(4))
+                        .corner_radius(CornerRadius::same(4))
                         .inner_margin(Margin::same(8))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
@@ -356,9 +356,9 @@ impl ToolCallManager {
                             .size(12.0),
                     );
 
-                    Frame::none()
+                    Frame::NONE
                         .fill(Color32::from_rgb(30, 20, 10))
-                        .rounding(Rounding::same(4))
+                        .corner_radius(CornerRadius::same(4))
                         .inner_margin(Margin::same(8))
                         .stroke(Stroke::new(1.0, Color32::from_rgb(100, 70, 40)))
                         .show(ui, |ui| {
@@ -459,9 +459,9 @@ impl ToolCallManager {
 
         let diff = TextDiff::from_lines(old_content, new_content);
 
-        Frame::none()
+        Frame::NONE
             .fill(Color32::from_rgb(20, 20, 20))
-            .rounding(Rounding::same(4))
+            .corner_radius(CornerRadius::same(4))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
 

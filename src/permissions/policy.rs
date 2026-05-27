@@ -105,19 +105,33 @@ impl ToolPermissionPolicy {
             code: Some("missing_parameter".to_string()),
         })?;
 
-        let denied_fragments = ["rm -rf", "mkfs", "shutdown", "reboot", ":(){:|:&};:"];
-        if denied_fragments.iter().any(|fragment| command.contains(fragment)) {
-            let rule_key = format!("command:{}", command_prefix(command));
+        // Fork-bomb detection (no proper command name, must be fragment-matched)
+        if command.contains(":(){:|:&};:") {
+            let rule_key = "command:forkbomb".to_string();
             if session_rules.contains(&rule_key) {
                 return Ok(PolicyDecision::Allow);
             }
             return Ok(PolicyDecision::Ask(PermissionRequest {
                 tool_name: tool_name.to_string(),
-                reason: format!("dangerous shell command requires approval: {}", command),
+                reason: format!("fork bomb detected: {}", command),
                 session_rule: rule_key,
             }));
         }
 
+        // Classify risk by analysing each sub-command's base name
+        if let Some((base_cmd, reason)) = classify_command_risk(command) {
+            let rule_key = format!("command:{}", base_cmd);
+            if session_rules.contains(&rule_key) {
+                return Ok(PolicyDecision::Allow);
+            }
+            return Ok(PolicyDecision::Ask(PermissionRequest {
+                tool_name: tool_name.to_string(),
+                reason,
+                session_rule: rule_key,
+            }));
+        }
+
+        // Check workdir bounds
         if let Some(workdir) = args["workdir"].as_str() {
             if let Some(rule_key) = self.path_rule_key(workdir)? {
                 if session_rules.contains(&rule_key) {
@@ -164,10 +178,261 @@ fn canonical_or_original(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-fn command_prefix(command: &str) -> String {
-    command
-        .split_whitespace()
-        .take(2)
-        .collect::<Vec<_>>()
-        .join(" ")
+/// Split a shell command by control operators into individual sub-commands.
+fn split_shell_commands(command: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut depth = 0u8;
+    let mut in_single = false;
+    let mut in_double = false;
+    let bytes = command.as_bytes();
+    let mut start = 0;
+
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            b'$' if !in_single && !in_double => {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'(' {
+                    depth += 1;
+                }
+            }
+            b')' if !in_single && !in_double && depth > 0 => {
+                depth -= 1;
+            }
+            b'&' | b';' | b'|' if !in_single && !in_double && depth == 0 => {
+                if start < i {
+                    let sub = command[start..i].trim();
+                    if !sub.is_empty() {
+                        result.push(sub);
+                    }
+                }
+                // Skip the second char of && / ||
+                if (b == b'&' || b == b'|') && i + 1 < bytes.len() && bytes[i + 1] == b {
+                    start = i + 2;
+                    continue;
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+
+    let tail = command[start..].trim();
+    if !tail.is_empty() {
+        result.push(tail);
+    }
+
+    result
+}
+
+/// Classify the risk of a shell command by examining each sub-command's base name.
+///
+/// Returns `Some((base_command_name, reason))` if the command needs approval,
+/// or `None` if it is safe to execute.
+fn classify_command_risk(command: &str) -> Option<(String, String)> {
+    let sub_commands = split_shell_commands(command);
+
+    for sub in &sub_commands {
+        let base = sub.split_whitespace().next()?;
+
+        // ── File redirect operators ──────────────────────────────────
+        if sub.contains('>') {
+            return Some((
+                base.to_string(),
+                format!("file redirect requires approval: {}", command),
+            ));
+        }
+
+        // ── Filesystem-modifying commands ────────────────────────────
+        const FS_MODIFIERS: &[&str] = &[
+            "mv",
+            "cp",
+            "rm",
+            "dd",
+            "touch",
+            "mkdir",
+            "tee",
+            "install",
+            "ln",
+            "chmod",
+            "chown",
+            "truncate",
+            "rmdir",
+            "chattr",
+            "setfacl",
+            "setfattr",
+        ];
+        if FS_MODIFIERS.contains(&base) {
+            return Some((
+                base.to_string(),
+                format!(
+                    "filesystem-modifying command requires approval: {}",
+                    command
+                ),
+            ));
+        }
+
+        // ── Script interpreters (arbitrary code execution) ───────────
+        const INTERPRETERS: &[&str] = &[
+            "python3",
+            "python",
+            "python2",
+            "ruby",
+            "perl",
+            "node",
+            "php",
+            "sh",
+            "bash",
+            "zsh",
+            "fish",
+            "dash",
+            "pwsh",
+            "powershell",
+            "lua",
+            "tclsh",
+            "awk",
+            "sed",
+            "groovy",
+        ];
+        if INTERPRETERS.contains(&base) {
+            return Some((
+                base.to_string(),
+                format!("interpreter command requires approval: {}", command),
+            ));
+        }
+
+        // ── System / privilege commands ──────────────────────────────
+        const SYSTEM: &[&str] = &[
+            "sudo",
+            "su",
+            "doas",
+            "shutdown",
+            "reboot",
+            "halt",
+            "poweroff",
+            "mkfs",
+            "mount",
+            "umount",
+            "systemctl",
+            "service",
+            "kill",
+            "pkill",
+            "killall",
+            "crontab",
+            "at",
+            "batch",
+        ];
+        if SYSTEM.contains(&base) {
+            return Some((
+                base.to_string(),
+                format!("system command requires approval: {}", command),
+            ));
+        }
+
+        // ── Network / remote commands ────────────────────────────────
+        const NETWORK: &[&str] = &[
+            "curl",
+            "wget",
+            "nc",
+            "ncat",
+            "scp",
+            "rsync",
+            "ftp",
+            "sftp",
+            "ssh",
+            "telnet",
+            "nmap",
+            "tcpdump",
+            "tshark",
+            "socat",
+        ];
+        if NETWORK.contains(&base) {
+            return Some((
+                base.to_string(),
+                format!("network command requires approval: {}", command),
+            ));
+        }
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_simple() {
+        let parts = split_shell_commands("ls -la");
+        assert_eq!(parts, vec!["ls -la"]);
+    }
+
+    #[test]
+    fn test_split_and_and() {
+        let parts = split_shell_commands("cp A B && rm A");
+        assert_eq!(parts, vec!["cp A B", "rm A"]);
+    }
+
+    #[test]
+    fn test_split_semicolon() {
+        let parts = split_shell_commands("echo hello; mv a b");
+        assert_eq!(parts, vec!["echo hello", "mv a b"]);
+    }
+
+    #[test]
+    fn test_split_respects_quotes() {
+        let parts = split_shell_commands(r#"echo "hello && world"; ls"#);
+        assert_eq!(parts, vec![r#"echo "hello && world""#, "ls"]);
+    }
+
+    #[test]
+    fn test_classify_cp_rm_bypass() {
+        let result = classify_command_risk("cp A B && rm A");
+        assert!(result.is_some());
+        let (base, _) = result.unwrap();
+        assert_eq!(base, "cp");
+    }
+
+    #[test]
+    fn test_classify_mv() {
+        assert!(classify_command_risk("mv a b").is_some());
+    }
+
+    #[test]
+    fn test_classify_safe() {
+        assert!(classify_command_risk("ls -la").is_none());
+        assert!(classify_command_risk("cargo build").is_none());
+        assert!(classify_command_risk("echo hello").is_none());
+    }
+
+    #[test]
+    fn test_classify_python3() {
+        assert!(classify_command_risk("python3 -c 'print(1)'").is_some());
+    }
+
+    #[test]
+    fn test_classify_redirect() {
+        assert!(classify_command_risk("cat a > b").is_some());
+        assert!(classify_command_risk("echo hello >> log.txt").is_some());
+    }
+
+    #[test]
+    fn test_classify_sudo() {
+        assert!(classify_command_risk("sudo ls").is_some());
+    }
+
+    #[test]
+    fn test_classify_curl() {
+        assert!(classify_command_risk("curl https://example.com").is_some());
+    }
+
+    #[test]
+    fn test_classify_mv_chinese_filename() {
+        assert!(classify_command_risk(r#"mv "我爱你宝宝哦.txt" "我爱宝宝.txt""#).is_some());
+    }
+
+    #[test]
+    fn test_classify_rm_chinese_filename() {
+        assert!(classify_command_risk(r#"rm "我爱宝宝.txt""#).is_some());
+    }
 }

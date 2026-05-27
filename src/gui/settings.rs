@@ -145,7 +145,7 @@ impl SettingsPanel {
                 theme.surface_color()
             })
             .min_size(Vec2::new(ui.available_width(), 40.0))
-            .rounding(8.0);
+            .corner_radius(8.0);
 
             if ui.add(button).clicked() {
                 self.current_section = section;
@@ -163,7 +163,7 @@ impl SettingsPanel {
             ui.label(RichText::new("Language").strong().color(theme.text_color()));
             ui.add_space(4.0);
 
-            egui::ComboBox::from_id_source("language")
+            egui::ComboBox::from_id_salt("language")
                 .selected_text(&self.language)
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.language, "en".to_string(), "🇺🇸 English");
@@ -283,7 +283,7 @@ impl SettingsPanel {
             ui.label(RichText::new("Model").strong().color(theme.text_color()));
             ui.add_space(4.0);
 
-            egui::ComboBox::from_id_source("model")
+            egui::ComboBox::from_id_salt("model")
                 .selected_text(&self.model)
                 .show_ui(ui, |ui| {
                     ui.selectable_value(
@@ -320,7 +320,7 @@ impl SettingsPanel {
         )
         .fill(theme.success_color())
         .min_size(Vec2::new(150.0, 36.0))
-        .rounding(8.0);
+        .corner_radius(8.0);
 
         if ui.add(save_button).clicked() {
             if let Some(callback) = &self.on_save_settings {
@@ -339,7 +339,7 @@ impl SettingsPanel {
             )
             .fill(theme.primary_color())
             .min_size(Vec2::new(150.0, 36.0))
-            .rounding(8.0);
+            .corner_radius(8.0);
 
             if ui.add(test_button).clicked() {
                 if let Some(callback) = &self.on_test_connection {
@@ -391,7 +391,7 @@ impl SettingsPanel {
                         theme.surface_color()
                     })
                     .min_size(Vec2::new(100.0, 60.0))
-                    .rounding(8.0);
+                    .corner_radius(8.0);
 
                     if ui.add(button).clicked() {
                         self.theme = t;
@@ -512,7 +512,7 @@ impl SettingsPanel {
         )
         .fill(theme.primary_color())
         .min_size(Vec2::new(150.0, 36.0))
-        .rounding(8.0);
+        .corner_radius(8.0);
 
         if ui.add(install_button).clicked() {
             // Open plugin marketplace

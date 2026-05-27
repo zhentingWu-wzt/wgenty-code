@@ -1,6 +1,6 @@
 use crate::api::ChatMessage;
 use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
-use crate::tools::{Tool, ToolRegistry};
+use crate::tools::ToolRegistry;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -12,10 +12,7 @@ pub struct ToolExecutor {
 }
 
 impl ToolExecutor {
-    pub fn new(
-        registry: Arc<ToolRegistry>,
-        policy: ToolPermissionPolicy,
-    ) -> Self {
+    pub fn new(registry: Arc<ToolRegistry>, policy: ToolPermissionPolicy) -> Self {
         Self {
             registry,
             policy,
@@ -42,17 +39,19 @@ impl ToolExecutor {
         let tool = self.registry.get(tool_name);
         let session_rules = self.session_rules.read().await;
         match tool {
-            Some(t) => self.policy.validate_tool_call(t, tool_name, args, &session_rules),
+            Some(t) => self
+                .policy
+                .validate_tool_call(t, tool_name, args, &session_rules),
             None => Ok(PolicyDecision::Allow),
         }
     }
 
-    /// Record an approved session rule so future calls skip the prompt
+    /// Record an approved session rule so future calls skip the prompt.
     pub async fn approve_rule(&self, rule: String) {
         self.session_rules.write().await.insert(rule);
     }
 
-    /// Execute a tool call directly (policy already passed)
+    /// Execute a tool call directly (policy already passed).
     pub async fn execute_tool_call(
         &self,
         tool_call_id: &str,
