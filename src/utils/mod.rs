@@ -1,7 +1,12 @@
-//! Utility functions
+//! Utility functions — logging, project helpers, stress testing.
+//!
+//! Non-domain utilities that don't fit into a specific harness mechanism.
 
 pub mod logging;
 pub mod project;
+pub mod stress_tests;
+
+pub use stress_tests::{run_stress_test, StressTestResult, StressTestRunner};
 
 use std::path::PathBuf;
 

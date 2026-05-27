@@ -106,7 +106,7 @@ impl Cli {
         tui: bool,
     ) -> anyhow::Result<()> {
         if tui {
-            let mut tui_repl = crate::terminal::TuiRepl::new(state).await?;
+            let mut tui_repl = crate::cli::TuiRepl::new(state).await?;
             tui_repl.run().await?;
         } else {
             let mut repl = crate::cli::repl::Repl::new(state).await;
@@ -310,7 +310,7 @@ impl Cli {
     }
 
     async fn run_memory(&self, action: &super::MemoryCommands) -> anyhow::Result<()> {
-        let manager = crate::memory::MemoryManager::new();
+        let manager = crate::context::MemoryManager::new();
         manager.load().await?;
 
         match action {
@@ -355,7 +355,7 @@ impl Cli {
         push_to_talk: bool,
     ) -> anyhow::Result<()> {
         let state = Arc::new(RwLock::new(state));
-        let service = crate::services::VoiceService::new(state, None);
+        let service = crate::voice::VoiceService::new(state, None);
 
         let status = service.get_status().await;
         if !status.available {
@@ -496,14 +496,14 @@ impl Cli {
         prompt: &str,
     ) -> anyhow::Result<()> {
         let state = Arc::new(RwLock::new(state));
-        let service = crate::services::AgentsService::new(state);
+        let service = crate::teams::AgentsService::new(state);
 
         let agent_type = match agent_type.to_lowercase().as_str() {
-            "guide" | "claude-code-guide" => crate::services::AgentType::ClaudeCodeGuide,
-            "explore" => crate::services::AgentType::Explore,
-            "plan" => crate::services::AgentType::Plan,
-            "verify" | "verification" => crate::services::AgentType::Verification,
-            "general" | "general-purpose" => crate::services::AgentType::GeneralPurpose,
+            "guide" | "claude-code-guide" => crate::teams::AgentType::ClaudeCodeGuide,
+            "explore" => crate::teams::AgentType::Explore,
+            "plan" => crate::teams::AgentType::Plan,
+            "verify" | "verification" => crate::teams::AgentType::Verification,
+            "general" | "general-purpose" => crate::teams::AgentType::GeneralPurpose,
             _ => {
                 println!("Unknown agent type: {}", agent_type);
                 println!("Available types: guide, explore, plan, verify, general");
@@ -530,7 +530,7 @@ impl Cli {
         action: &super::MagicDocsCommands,
     ) -> anyhow::Result<()> {
         let state = Arc::new(RwLock::new(state));
-        let service = crate::services::MagicDocsService::new(state, None);
+        let service = crate::knowledge::MagicDocsService::new(state, None);
 
         match action {
             super::MagicDocsCommands::List => {
@@ -650,7 +650,7 @@ impl Cli {
     }
 
     async fn run_stress_test(&self, concurrency: usize, iterations: usize) -> anyhow::Result<()> {
-        use crate::services::run_stress_test;
+        use crate::utils::stress_tests::run_stress_test;
         run_stress_test(concurrency, iterations).await;
         Ok(())
     }
