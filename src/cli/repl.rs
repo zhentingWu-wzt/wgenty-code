@@ -8,7 +8,7 @@
 use crate::api::{ApiClient, ChatMessage, ToolCall, ToolDefinition};
 use crate::cli::ui;
 use crate::state::AppState;
-use crate::tools::ToolRegistry;
+use crate::tools::{ToolExecutor, ToolRegistry};
 use colored::Colorize;
 use futures::StreamExt;
 use std::io::{self, BufRead, Write};
@@ -19,7 +19,7 @@ use tracing::{debug, error, info, warn};
 pub struct Repl {
     state: AppState,
     conversation_history: Vec<ChatMessage>,
-    tool_registry: Arc<ToolRegistry>,
+    tool_executor: ToolExecutor,
     stdin_rx: mpsc::Receiver<String>,
 }
 
@@ -54,7 +54,7 @@ impl Repl {
         Self {
             state,
             conversation_history: Vec::new(),
-            tool_registry,
+            tool_executor: ToolExecutor::new(tool_registry.clone()),
             stdin_rx,
         }
     }
@@ -73,8 +73,7 @@ impl Repl {
         }
 
         loop {
-            ui::print_input_border_top();
-            ui::print_prompt();
+            print!("  {} ", "▸".truecolor(255, 140, 66));
             io::stdout().flush().ok();
 
             let input = match self.stdin_rx.recv().await {
@@ -83,13 +82,11 @@ impl Repl {
             };
 
             if input.is_empty() {
-                ui::complete_input_line("");
-                ui::print_input_border_bottom();
+                println!();
                 continue;
             }
 
-            ui::complete_input_line(&input);
-            ui::print_input_border_bottom();
+            println!();
 
             match input.as_str() {
                 "exit" | "quit" | ".exit" | ":q" => {
@@ -171,20 +168,63 @@ impl Repl {
             // Stream with concurrent input
             let result = self.stream_with_input(response).await?;
 
-            ui::print_assistant_border_bottom();
-            println!();
-
             if result.has_tool_calls && !result.tool_calls_accum.is_empty() {
                 info!(tool_call_count = result.tool_calls_accum.len(), "model requested tool calls");
+                println!();
                 for tc in &result.tool_calls_accum {
                     let tool_name = tc["function"]["name"].as_str().unwrap_or("unknown");
+                    let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
+                    let args: serde_json::Value =
+                        serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+
+                    let detail = match tool_name {
+                        "file_read" | "file_edit" | "file_write" => {
+                            args.get("path").and_then(|v| v.as_str()).map(|s| format!(" → {}", s))
+                        }
+                        "execute_command" => {
+                            args.get("command").and_then(|v| v.as_str()).map(|s| format!(" → `{}`", s))
+                        }
+                        "search" => {
+                            let pattern = args.get("pattern").and_then(|v| v.as_str());
+                            let path = args.get("path").and_then(|v| v.as_str());
+                            match (pattern, path) {
+                                (Some(p), Some(dir)) => Some(format!(" → `{}` in {}", p, dir)),
+                                (Some(p), None) => Some(format!(" → `{}`", p)),
+                                _ => None,
+                            }
+                        }
+                        "list_files" => {
+                            args.get("path").and_then(|v| v.as_str()).map(|s| format!(" → {}", s))
+                        }
+                        "git_operations" => {
+                            args.get("operation").and_then(|v| v.as_str()).map(|s| format!(" → {}", s))
+                        }
+                        "note_edit" => {
+                            let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("unknown");
+                            match op {
+                                "create" => args.get("title").and_then(|v| v.as_str()).map(|s| format!(" → {}", s)),
+                                "search" => args.get("query").and_then(|v| v.as_str()).map(|s| format!(" → `{}`", s)),
+                                _ => args.get("note_id").and_then(|v| v.as_str()).map(|s| format!(" → {}", s)),
+                            }
+                        }
+                        "task_management" => {
+                            let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("unknown");
+                            match op {
+                                "create" => args.get("subject").and_then(|v| v.as_str()).map(|s| format!(" → {}", s)),
+                                _ => args.get("task_id").and_then(|v| v.as_str()).map(|s| format!(" → {}", s)),
+                            }
+                        }
+                        _ => None,
+                    };
+
+                    let detail_str = detail.unwrap_or_default();
                     println!(
-                        "  {} Executing tool: {}",
-                        "🔧".truecolor(255, 200, 100),
-                        tool_name.cyan().bold()
+                        "  {} {} {}",
+                        "▸".truecolor(255, 200, 100),
+                        tool_name.cyan().bold(),
+                        detail_str.truecolor(180, 180, 180)
                     );
                 }
-                println!();
 
                 let tool_calls_parsed: Vec<ToolCall> = result
                     .tool_calls_accum
@@ -256,9 +296,7 @@ impl Repl {
                 "▸".truecolor(255, 200, 100),
                 "(input captured during streaming)".bright_black().italic()
             );
-            ui::print_input_border_top();
-            ui::complete_input_line(&pending);
-            ui::print_input_border_bottom();
+            println!("  {} {}", "▸".truecolor(255, 140, 66), pending);
             Box::pin(self.process_input(&pending)).await?;
         }
 
@@ -273,16 +311,14 @@ impl Repl {
         response: reqwest::Response,
     ) -> anyhow::Result<StreamResult> {
         let mut line_state = ui::StreamLineState::new();
-        let mut full_content = String::new();
+        let mut full_content = String::with_capacity(4096);
         let mut tool_calls_accum: Vec<serde_json::Value> = Vec::new();
         let mut has_tool_calls = false;
         let mut pending_input: Option<String> = None;
         let mut stream_done = false;
 
-        ui::print_assistant_border_top();
-
         let mut stream = response.bytes_stream();
-        let mut buffer = String::new();
+        let mut buffer = String::with_capacity(4096);
 
         while !stream_done {
             tokio::select! {
@@ -371,6 +407,8 @@ impl Repl {
             }
         }
 
+        line_state.finish();
+
         Ok(StreamResult {
             content: full_content,
             tool_calls_accum,
@@ -381,41 +419,23 @@ impl Repl {
 
     /// 获取 MCP 工具定义（转换为 API 格式）
     async fn get_tool_definitions(&self) -> Vec<ToolDefinition> {
-        let tools = self.tool_registry.list();
-        tools
-            .into_iter()
-            .map(|t| ToolDefinition::new(t.name(), t.description(), t.input_schema()))
-            .collect()
+        self.tool_executor.tool_definitions()
     }
 
     /// 执行工具调用
     async fn execute_tool(&self, name: &str, args: serde_json::Value) -> String {
         debug!(tool_name = name, args = %args, "dispatching repl tool call");
-        match self.tool_registry.execute(name, args).await {
-            Ok(result) => {
-                info!(tool_name = name, "tool call succeeded");
-                println!("  {} Tool succeeded", "✓".green());
-                serde_json::json!({
-                    "success": true,
-                    "output_type": result.output_type,
-                    "content": result.content,
-                    "metadata": result.metadata
-                })
-                .to_string()
-            }
-            Err(e) => {
-                error!(tool_name = name, error = ?e, "tool call failed");
-                println!("  {} Tool error: {:?}", "✗".red(), e);
-                serde_json::json!({
-                    "success": false,
-                    "error": {
-                        "message": e.message,
-                        "code": e.code
-                    }
-                })
-                .to_string()
-            }
+        let message = self.tool_executor.execute_tool_call("tool_call", name, args).await;
+        let content = message.content.unwrap_or_default();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+        if parsed["success"].as_bool().unwrap_or(false) {
+            info!(tool_name = name, "tool call succeeded");
+            println!("  {} Tool succeeded", "✓".green());
+        } else {
+            error!(tool_name = name, error = ?parsed, "tool call failed");
+            println!("  {} Tool error", "✗".red());
         }
+        content
     }
 
     /// 交互式执行 ask_user_question 工具

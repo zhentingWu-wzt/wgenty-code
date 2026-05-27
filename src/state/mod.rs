@@ -190,39 +190,17 @@ impl Default for Conversation {
 
 impl Default for ToolRegistryState {
     fn default() -> Self {
-        Self {
-            tools: vec![
-                ToolInfo {
-                    name: "file_read".to_string(),
-                    description: "Read file contents".to_string(),
-                    enabled: true,
-                },
-                ToolInfo {
-                    name: "file_edit".to_string(),
-                    description: "Edit file contents".to_string(),
-                    enabled: true,
-                },
-                ToolInfo {
-                    name: "file_write".to_string(),
-                    description: "Write new file".to_string(),
-                    enabled: true,
-                },
-                ToolInfo {
-                    name: "execute_command".to_string(),
-                    description: "Execute shell command".to_string(),
-                    enabled: true,
-                },
-                ToolInfo {
-                    name: "search".to_string(),
-                    description: "Search for patterns in files".to_string(),
-                    enabled: true,
-                },
-                ToolInfo {
-                    name: "list_files".to_string(),
-                    description: "List directory contents".to_string(),
-                    enabled: true,
-                },
-            ],
-        }
+        let registry = crate::tools::ToolRegistry::new();
+        let tools = registry
+            .list()
+            .into_iter()
+            .map(|tool| ToolInfo {
+                name: tool.name().to_string(),
+                description: tool.description().to_string(),
+                enabled: true,
+            })
+            .collect();
+
+        Self { tools }
     }
 }

@@ -3,7 +3,6 @@
 use super::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use serde_json;
-use std::path::Path;
 
 pub struct SearchTool;
 
@@ -26,7 +25,7 @@ impl Tool for SearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search for patterns in files using regex"
+        "Search for patterns in files using regex. Prefer grep for richer include/exclude controls."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -44,6 +43,10 @@ impl Tool for SearchTool {
                 "file_pattern": {
                     "type": "string",
                     "description": "File pattern to match (optional)"
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of matching lines to return"
                 }
             },
             "required": ["path", "pattern"]
@@ -51,61 +54,10 @@ impl Tool for SearchTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let path = input["path"].as_str().ok_or_else(|| ToolError {
-            message: "path is required".to_string(),
-            code: Some("missing_parameter".to_string()),
-        })?;
-
-        let pattern = input["pattern"].as_str().ok_or_else(|| ToolError {
-            message: "pattern is required".to_string(),
-            code: Some("missing_parameter".to_string()),
-        })?;
-
-        let search_path = Path::new(path);
-
-        if !search_path.exists() {
-            return Err(ToolError {
-                message: format!("Path does not exist: {}", path),
-                code: Some("path_not_found".to_string()),
-            });
+        let mut grep_input = input;
+        if let Some(file_pattern) = grep_input["file_pattern"].as_str() {
+            grep_input["include"] = serde_json::json!([file_pattern]);
         }
-
-        // Simple grep-like search
-        let regex = regex::Regex::new(pattern).map_err(|e| ToolError {
-            message: format!("Invalid regex pattern: {}", e),
-            code: Some("invalid_pattern".to_string()),
-        })?;
-
-        let mut results = Vec::new();
-
-        // Walk the directory
-        for entry in walkdir::WalkDir::new(search_path)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            let entry_path = entry.path();
-
-            if entry_path.is_file() {
-                // Try to read and search
-                if let Ok(content) = std::fs::read_to_string(entry_path) {
-                    for (line_num, line) in content.lines().enumerate() {
-                        if regex.is_match(line) {
-                            results.push(format!(
-                                "{}:{}: {}",
-                                entry_path.display(),
-                                line_num + 1,
-                                line
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(ToolOutput {
-            output_type: "text".to_string(),
-            content: results.join("\n"),
-            metadata: std::collections::HashMap::new(),
-        })
+        super::grep::GrepTool::run_search(&grep_input)
     }
 }

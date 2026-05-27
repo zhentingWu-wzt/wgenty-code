@@ -4,10 +4,86 @@
 //! to match the aesthetic of the original TypeScript Claude Code CLI.
 
 use colored::{ColoredString, Colorize};
-use std::io::{self, Write};
+use std::fmt::Write as FmtWrite;
+use std::io::{self, BufWriter, StdoutLock, Write};
 use std::thread;
 use std::time::Duration;
-use unicode_width::UnicodeWidthStr;
+
+/// Lightweight line builder — accumulates styled text into a single String
+/// to avoid per-segment ANSI-reset/reopen fragmentation.
+pub struct Line {
+    buf: String,
+}
+
+impl Line {
+    pub fn new() -> Self {
+        Self {
+            buf: String::with_capacity(128),
+        }
+    }
+
+    pub fn push(&mut self, text: &str) -> &mut Self {
+        self.buf.push_str(text);
+        self
+    }
+
+    pub fn push_styled(&mut self, styled: &ColoredString) -> &mut Self {
+        self.buf.push_str(&styled.to_string());
+        self
+    }
+
+    pub fn push_str_styled(&mut self, text: &str, color: (u8, u8, u8)) -> &mut Self {
+        write!(
+            self.buf,
+            "\x1b[38;2;{};{};{}m{}\x1b[0m",
+            color.0, color.1, color.2, text
+        )
+        .ok();
+        self
+    }
+
+    pub fn push_str_bold(&mut self, text: &str, color: (u8, u8, u8)) -> &mut Self {
+        write!(
+            self.buf,
+            "\x1b[1;38;2;{};{};{}m{}\x1b[0m",
+            color.0, color.1, color.2, text
+        )
+        .ok();
+        self
+    }
+
+    /// Write the accumulated line to stdout
+    pub fn out(&self, stdout: &mut StdoutLock) -> io::Result<()> {
+        stdout.write_all(self.buf.as_bytes())
+    }
+
+    /// Write with a trailing newline
+    pub fn outln(&self, stdout: &mut StdoutLock) -> io::Result<()> {
+        stdout.write_all(self.buf.as_bytes())?;
+        stdout.write_all(b"\n")
+    }
+
+    /// Print directly (takes stdout lock internally)
+    pub fn print(&self) {
+        let mut stdout = io::stdout().lock();
+        let _ = self.out(&mut stdout);
+    }
+
+    pub fn println(&self) {
+        let mut stdout = io::stdout().lock();
+        let _ = self.outln(&mut stdout);
+    }
+
+    pub fn into_string(self) -> String {
+        self.buf
+    }
+}
+
+// Shared BufWriter for stdout to reduce lock contention.
+// Wrapping stdout in a BufWriter is cheap and avoids per-print syscalls.
+pub fn stdout() -> BufWriter<io::Stdout> {
+    BufWriter::with_capacity(8192, io::stdout())
+}
 
 /// Claude Code brand colors
 pub mod colors {
@@ -127,8 +203,7 @@ pub fn print_claude_message(content: &str) {
     let width = terminal_size().0;
     let inner = (width as usize).saturating_sub(4);
     let label = " 🟣 Wgenty ";
-    // Emoji 🟣 displays as 2 columns but chars().count() returns 1, so add 1
-    let label_display_width = label.chars().count() + 1;
+    let label_display_width = unicode_width::UnicodeWidthStr::width(label);
     let dash_after = inner.saturating_sub(label_display_width);
 
     // Orange border for assistant messages
@@ -205,127 +280,85 @@ pub fn print_user_message(_content: &str) {
     // 不重复打印用户输入，因为输入时已经显示在终端了
 }
 
-/// Print the top border for streaming assistant output
-pub fn print_assistant_border_top() {
-    let width = terminal_size().0;
-    let inner = (width as usize).saturating_sub(4);
-    let label = " 🟣 Wgenty ";
-    let label_display_width: usize = label
-        .chars()
-        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
-        .sum::<usize>()
-        + 1;
-    let dash_after = inner.saturating_sub(label_display_width);
-    let border_color = (180, 120, 60);
-    println!();
-    println!(
-        "  ╭{}{}╮",
-        label.truecolor(200, 150, 80).bold(),
-        "─".repeat(dash_after)
-            .truecolor(border_color.0, border_color.1, border_color.2)
-    );
-    // Print left border for first content line
-    print!(
-        "  {} ",
-        "│".truecolor(border_color.0, border_color.1, border_color.2)
-    );
-    io::stdout().flush().ok();
-}
-
-/// Print the bottom border for streaming assistant output
-pub fn print_assistant_border_bottom() {
-    let width = terminal_size().0;
-    let inner = (width as usize).saturating_sub(4);
-    let border_color = (180, 120, 60);
-    println!();
-    println!(
-        "  ╰{}╯",
-        "─".repeat(inner)
-            .truecolor(border_color.0, border_color.1, border_color.2)
-    );
-}
-
-/// Stream a chunk of assistant content with line wrapping and left border.
-/// Returns the updated line buffer state.
+/// Buffered streaming output — accumulates deltas and flushes periodically.
+/// Uses a simple left margin instead of full-bordered boxes.
 pub struct StreamLineState {
-    /// Current column position on the line (after the left border prefix)
-    pub col: usize,
-    /// Max content width per line (terminal width minus borders and padding)
-    pub max_width: usize,
-    /// Border color
-    pub border_color: (u8, u8, u8),
+    buf: String,
+    line_width: usize,
+    max_width: usize,
+    started: bool,
+    stdout: BufWriter<io::Stdout>,
 }
 
 impl StreamLineState {
     pub fn new() -> Self {
         let width = terminal_size().0 as usize;
-        // "  │ " = 4 display columns (prefix), " │" = 2 (suffix), total = 6
-        let max_width = width.saturating_sub(6);
+        let max_width = width.saturating_sub(4);
         Self {
-            col: 0,
+            buf: String::with_capacity(2048),
+            line_width: 0,
             max_width,
-            border_color: (180, 120, 60),
+            started: false,
+            stdout: BufWriter::with_capacity(4096, io::stdout()),
         }
     }
 
-    /// Print a delta content chunk with wrapping
     pub fn print_delta(&mut self, content: &str) {
         for ch in content.chars() {
+            if ch == '\r' {
+                continue;
+            }
             if ch == '\n' {
-                // End of line — print right border and start new line
-                let padding = self.max_width.saturating_sub(self.col);
-                if padding > 0 {
-                    print!("\x1B[{}C", padding);
-                }
-                println!(
-                    "{}",
-                    " │".truecolor(
-                        self.border_color.0,
-                        self.border_color.1,
-                        self.border_color.2
-                    )
-                );
-                // Start new line with left border
-                print!(
-                    "  {} ",
-                    "│".truecolor(
-                        self.border_color.0,
-                        self.border_color.1,
-                        self.border_color.2
-                    )
-                );
-                self.col = 0;
+                self.buf.push('\n');
+                self.line_width = 0;
             } else {
                 let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                if self.col + ch_width > self.max_width {
-                    // Wrap to next line
-                    let padding = self.max_width.saturating_sub(self.col);
-                    if padding > 0 {
-                        print!("\x1B[{}C", padding);
-                    }
-                    println!(
-                        "{}",
-                        " │".truecolor(
-                            self.border_color.0,
-                            self.border_color.1,
-                            self.border_color.2
-                        )
-                    );
-                    print!(
-                        "  {} ",
-                        "│".truecolor(
-                            self.border_color.0,
-                            self.border_color.1,
-                            self.border_color.2
-                        )
-                    );
-                    self.col = 0;
+                if self.line_width + ch_width > self.max_width {
+                    self.buf.push('\n');
+                    self.line_width = 0;
                 }
-                print!("{}", ch);
-                self.col += ch_width;
+                self.buf.push(ch);
+                self.line_width += ch_width;
             }
         }
-        io::stdout().flush().ok();
+        self.flush_if_needed();
+    }
+
+    fn flush_if_needed(&mut self) {
+        if self.buf.len() > 1024 {
+            if !self.started {
+                let _ = write!(self.stdout, "\n  │ ");
+                self.started = true;
+            }
+            // Prefix each buffered line with left margin
+            let mut result = String::with_capacity(self.buf.len() + 64);
+            for (i, line) in self.buf.lines().enumerate() {
+                if i > 0 {
+                    result.push_str("\n  │ ");
+                }
+                result.push_str(line);
+            }
+            let _ = self.stdout.write_all(result.as_bytes());
+            let _ = self.stdout.flush();
+            self.buf.clear();
+            self.line_width = 0;
+        }
+    }
+
+    pub fn finish(&mut self) {
+        if !self.buf.is_empty() {
+            if !self.started {
+                let _ = write!(self.stdout, "\n  │ ");
+            }
+            for (i, line) in self.buf.lines().enumerate() {
+                if i > 0 {
+                    let _ = write!(self.stdout, "\n  │ ");
+                }
+                let _ = self.stdout.write_all(line.as_bytes());
+            }
+        }
+        let _ = self.stdout.write_all(b"\n");
+        let _ = self.stdout.flush();
     }
 }
 
@@ -448,11 +481,7 @@ pub fn print_question(question: &str, options: &[(String, String)]) {
     let width = terminal_size().0 as usize;
     let inner = width.saturating_sub(4);
     let label = " ❓ Question ";
-    let label_display_width: usize = label
-        .chars()
-        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
-        .sum::<usize>()
-        + 1;
+    let label_display_width = unicode_width::UnicodeWidthStr::width(label);
     let dash_after = inner.saturating_sub(label_display_width);
 
     let border_color = (180, 120, 60);
@@ -745,111 +774,6 @@ pub fn terminal_size() -> (u16, u16) {
 /// Clear the screen
 pub fn clear_screen() {
     print!("\x1B[2J\x1B[1;1H");
-    io::stdout().flush().ok();
-}
-
-/// Print the input prompt with left border
-pub fn print_prompt() {
-    print!(
-        "  {} ",
-        "│ ▸".truecolor(255, 140, 66).bold()
-    );
-    io::stdout().flush().ok();
-}
-
-/// Print the top border of the input box
-pub fn print_input_border_top() {
-    let width = terminal_size().0 as usize;
-    let inner = width.saturating_sub(4);
-    let label = " Wgenty ";
-    let label_display_width: usize = label
-        .chars()
-        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
-        .sum();
-    let dash_after = inner.saturating_sub(label_display_width);
-    println!(
-        "  ╭{}{}╮",
-        label.truecolor(200, 150, 255).bold(),
-        "─".repeat(dash_after).truecolor(147, 112, 219)
-    );
-}
-
-/// Complete the input line with right border (move up one line + rewrite)
-pub fn complete_input_line(content: &str) {
-    let width = terminal_size().0 as usize;
-    let prefix = "  │ ▸ ";
-    let prefix_display_width: usize = prefix
-        .chars()
-        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
-        .sum();
-    let content_display_width = UnicodeWidthStr::width(content);
-    let right_border = " │";
-    let right_border_display_width: usize = right_border
-        .chars()
-        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
-        .sum();
-    let used = prefix_display_width + content_display_width + right_border_display_width;
-    let padding = width.saturating_sub(used);
-
-    print!("\x1B[1A\r");
-    print!(
-        "{}{}",
-        prefix.truecolor(255, 140, 66).bold(),
-        content.bright_white(),
-    );
-    if padding > 0 {
-        print!("\x1B[{}C", padding);
-    }
-    println!("{}", right_border.truecolor(147, 112, 219));
-    io::stdout().flush().ok();
-}
-
-/// Print the bottom border of the input box
-pub fn print_input_border_bottom() {
-    let width = terminal_size().0 as usize;
-    let inner = width.saturating_sub(4);
-    println!(
-        "  ╰{}╯",
-        "─".repeat(inner).truecolor(147, 112, 219)
-    );
-}
-
-/// Print the continuation prompt for multiline input
-pub fn print_continuation_prompt() {
-    print!(
-        "  {} ",
-        "│ ...".truecolor(147, 112, 219)
-    );
-    io::stdout().flush().ok();
-}
-
-/// Complete a continuation line with right border
-pub fn complete_continuation_line(content: &str) {
-    let width = terminal_size().0 as usize;
-    let prefix = "  │ ... ";
-    let prefix_display_width: usize = prefix
-        .chars()
-        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
-        .sum();
-    let content_display_width = UnicodeWidthStr::width(content);
-    let right_border = " │";
-    let right_border_display_width: usize = right_border
-        .chars()
-        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
-        .sum();
-    let used = prefix_display_width + content_display_width + right_border_display_width;
-    let padding = width.saturating_sub(used);
-
-    print!("\x1B[1A\r");
-    print!(
-        "{}{}",
-        prefix.truecolor(147, 112, 219),
-        content.bright_white(),
-    );
-    if padding > 0 {
-        print!("\x1B[{}C", padding);
-    }
-    println!("{}", right_border.truecolor(147, 112, 219));
     io::stdout().flush().ok();
 }
 
