@@ -26,6 +26,10 @@ impl Tool for FileReadTool {
         "file_read"
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> &str {
         "Read file contents, optionally restricted to a line range"
     }

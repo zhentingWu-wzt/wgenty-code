@@ -25,6 +25,10 @@ impl Tool for ListFilesTool {
         "list_files"
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     fn description(&self) -> &str {
         "List files in a directory"
     }

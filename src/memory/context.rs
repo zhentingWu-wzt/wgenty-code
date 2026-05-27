@@ -159,6 +159,7 @@ impl ContextWindow {
             .map(|e| crate::api::ChatMessage {
                 role: e.role.clone(),
                 content: Some(e.content.clone()),
+                reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
             })

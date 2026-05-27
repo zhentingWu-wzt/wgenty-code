@@ -9,7 +9,7 @@ use crate::state::AppState;
 use crate::terminal::history::{ChatHistory, HistoryEntry};
 use crate::terminal::ime::{ImeAction, ImeHandler};
 use crate::terminal::input::{InputBox, InputResult};
-use crate::tools::{ToolExecutor, ToolRegistry};
+use crate::tools::{ToolExecutor, ToolPermissionPolicy, ToolRegistry};
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEvent,
@@ -73,6 +73,7 @@ impl TuiRepl {
         let terminal = Terminal::new(backend)?;
 
         let tool_registry = Arc::new(ToolRegistry::new());
+        let policy = ToolPermissionPolicy::from_settings(&state.settings);
 
         Ok(Self {
             terminal,
@@ -81,7 +82,7 @@ impl TuiRepl {
             ime: ImeHandler::new(),
             state,
             conversation_history: Vec::new(),
-            tool_executor: ToolExecutor::new(tool_registry.clone()),
+            tool_executor: ToolExecutor::new(tool_registry.clone(), policy),
             tool_registry,
             should_quit: false,
             is_processing: false,
@@ -319,6 +320,7 @@ impl TuiRepl {
             // Add streaming entry — but only if there's content to show
             // When the model only returns tool_calls with no content, skip the empty bubble
             let mut full_content = String::new();
+            let mut reasoning_content = String::new();
             let mut tool_calls_accum: Vec<serde_json::Value> = Vec::new();
             let mut has_tool_calls = false;
             let mut streaming_entry_added = false;
@@ -350,6 +352,10 @@ impl TuiRepl {
                                 }
                                 self.history.update_last_streaming(&full_content);
                                 self.draw()?;
+                            }
+
+                            if let Some(rc) = &choice.delta.reasoning_content {
+                                reasoning_content.push_str(rc);
                             }
 
                             if let Some(tc_deltas) = &choice.delta.tool_calls {
@@ -418,6 +424,8 @@ impl TuiRepl {
                     })
                     .collect();
 
+                let rc = if reasoning_content.is_empty() { None } else { Some(reasoning_content.clone()) };
+
                 let assistant_msg = ChatMessage {
                     role: "assistant".to_string(),
                     content: if full_content.is_empty() {
@@ -425,6 +433,7 @@ impl TuiRepl {
                     } else {
                         Some(full_content)
                     },
+                    reasoning_content: rc,
                     tool_calls: Some(tool_calls_parsed),
                     tool_call_id: None,
                 };
@@ -624,8 +633,11 @@ impl TuiRepl {
 
             if !full_content.is_empty() {
                 info!(response_len = full_content.len(), "received streaming response in tui");
-                self.conversation_history
-                    .push(ChatMessage::assistant(&full_content));
+                let mut msg = ChatMessage::assistant(&full_content);
+                if !reasoning_content.is_empty() {
+                    msg.reasoning_content = Some(reasoning_content);
+                }
+                self.conversation_history.push(msg);
             }
 
             self.draw()?;

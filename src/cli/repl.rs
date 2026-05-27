@@ -8,7 +8,7 @@
 use crate::api::{ApiClient, ChatMessage, ToolCall, ToolDefinition};
 use crate::cli::ui;
 use crate::state::AppState;
-use crate::tools::{ToolExecutor, ToolRegistry};
+use crate::tools::{PolicyDecision, PermissionRequest, ToolExecutor, ToolPermissionPolicy, ToolRegistry};
 use colored::Colorize;
 use futures::StreamExt;
 use std::io::{self, BufRead, Write};
@@ -111,12 +111,14 @@ impl Repl {
             let _ = disable_raw_mode();
         });
 
+        let policy = ToolPermissionPolicy::from_settings(&state.settings);
+
         info!("repl initialized");
 
         Self {
             state,
             conversation_history: Vec::new(),
-            tool_executor: ToolExecutor::new(tool_registry.clone()),
+            tool_executor: ToolExecutor::new(tool_registry.clone(), policy),
             stdin_rx,
         }
     }
@@ -276,6 +278,24 @@ impl Repl {
                                 _ => args.get("task_id").and_then(|v| v.as_str()).map(|s| format!(" → {}", s)),
                             }
                         }
+                        "view" => {
+                            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                            let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(3);
+                            Some(format!(" → {} (depth: {})", path, depth))
+                        }
+                        "think" => {
+                            args.get("thought")
+                                .and_then(|v| v.as_str())
+                                .map(|s| {
+                                    let preview: String = s.chars().take(60).collect();
+                                    if s.len() > 60 { format!(" → {}...", preview) } else { format!(" → {}", preview) }
+                                })
+                        }
+                        "lsp" => {
+                            let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("?");
+                            let sym = args.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
+                            Some(format!(" → {} `{}`", op, sym))
+                        }
                         _ => None,
                     };
 
@@ -305,6 +325,12 @@ impl Repl {
                     })
                     .collect();
 
+                let reasoning = if result.reasoning_content.is_empty() {
+                    None
+                } else {
+                    Some(result.reasoning_content.clone())
+                };
+
                 let assistant_msg = ChatMessage {
                     role: "assistant".to_string(),
                     content: if result.content.is_empty() {
@@ -312,6 +338,7 @@ impl Repl {
                     } else {
                         Some(result.content)
                     },
+                    reasoning_content: reasoning,
                     tool_calls: Some(tool_calls_parsed),
                     tool_call_id: None,
                 };
@@ -340,8 +367,11 @@ impl Repl {
             // Normal response — save to history
             if !result.content.is_empty() {
                 info!(response_len = result.content.len(), "received streaming response");
-                self.conversation_history
-                    .push(ChatMessage::assistant(result.content));
+                let mut msg = ChatMessage::assistant(result.content);
+                if !result.reasoning_content.is_empty() {
+                    msg.reasoning_content = Some(result.reasoning_content);
+                }
+                self.conversation_history.push(msg);
             }
 
             if result.pending_input.is_some() {
@@ -374,6 +404,7 @@ impl Repl {
     ) -> anyhow::Result<StreamResult> {
         let mut line_state = ui::StreamLineState::new();
         let mut full_content = String::with_capacity(4096);
+        let mut reasoning_content = String::with_capacity(4096);
         let mut tool_calls_accum: Vec<serde_json::Value> = Vec::new();
         let mut has_tool_calls = false;
         let mut pending_input: Option<String> = None;
@@ -408,6 +439,10 @@ impl Repl {
                                         if let Some(content) = &choice.delta.content {
                                             line_state.print_delta(content);
                                             full_content.push_str(content);
+                                        }
+
+                                        if let Some(rc) = &choice.delta.reasoning_content {
+                                            reasoning_content.push_str(rc);
                                         }
 
                                         if let Some(tc_deltas) = &choice.delta.tool_calls {
@@ -482,6 +517,7 @@ impl Repl {
 
         Ok(StreamResult {
             content: full_content,
+            reasoning_content,
             tool_calls_accum,
             has_tool_calls,
             pending_input,
@@ -493,9 +529,36 @@ impl Repl {
         self.tool_executor.tool_definitions()
     }
 
-    /// 执行工具调用
-    async fn execute_tool(&self, name: &str, args: serde_json::Value) -> String {
+    /// 执行工具调用（含审批检查）
+    async fn execute_tool(&mut self, name: &str, args: serde_json::Value) -> String {
         debug!(tool_name = name, args = %args, "dispatching repl tool call");
+
+        // 1. Validate against policy
+        match self.tool_executor.validate_tool_call(name, &args).await {
+            Ok(PolicyDecision::Allow) => {
+                // Safe — execute directly
+                self.do_execute_tool(name, args).await
+            }
+            Ok(PolicyDecision::Ask(req)) => {
+                // Needs approval — prompt user
+                self.prompt_approval(name, &args, req).await
+            }
+            Err(e) => {
+                error!(tool_name = name, error = ?e, "policy validation error");
+                serde_json::json!({
+                    "success": false,
+                    "error": {
+                        "message": e.message,
+                        "code": e.code
+                    }
+                })
+                .to_string()
+            }
+        }
+    }
+
+    /// Execute tool directly (no policy check)
+    async fn do_execute_tool(&self, name: &str, args: serde_json::Value) -> String {
         let message = self.tool_executor.execute_tool_call("tool_call", name, args).await;
         let content = message.content.unwrap_or_default();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
@@ -507,6 +570,78 @@ impl Repl {
             println!("  {} Tool error", "✗".red());
         }
         content
+    }
+
+    /// Show approval prompt and wait for user
+    async fn prompt_approval(&mut self, name: &str, args: &serde_json::Value, req: PermissionRequest) -> String {
+        let detail = match name {
+            "execute_command" | "exec_command" => {
+                args.get("command")
+                    .and_then(|v| v.as_str())
+                    .map(|s| format!("`{}`", s))
+                    .unwrap_or_default()
+            }
+            "file_write" | "file_edit" => {
+                args.get("path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| format!("{}", s))
+                    .unwrap_or_default()
+            }
+            "apply_patch" => {
+                args.get("workdir")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("current directory")
+                    .to_string()
+            }
+            _ => String::new(),
+        };
+
+        println!();
+        println!("  {} {} {}", "⚠".yellow().bold(), "Permission needed:".yellow().bold(), req.tool_name.cyan());
+        println!("  {} {}", "  Reason:".truecolor(180, 180, 180), req.reason.truecolor(200, 200, 200));
+        if !detail.is_empty() {
+            println!("  {} {}", "  Detail:".truecolor(180, 180, 180), detail.truecolor(200, 200, 200));
+        }
+        println!("  {}", "  ─────────────────────────────".truecolor(100, 100, 100));
+        println!("  [y] Allow once   [a] Always allow   [n] Deny");
+
+        io::stdout().flush().ok();
+
+        // Read user input
+        let input = match self.stdin_rx.recv().await {
+            Some(text) => text.trim().to_lowercase(),
+            None => {
+                return serde_json::json!({
+                    "success": false,
+                    "error": {
+                        "message": "Approval cancelled (EOF)",
+                        "code": "approval_cancelled"
+                    }
+                }).to_string();
+            }
+        };
+
+        match input.as_str() {
+            "y" | "yes" => {
+                println!("  {} Approved", "✓".green());
+                self.do_execute_tool(name, args.clone()).await
+            }
+            "a" | "always" => {
+                println!("  {} Always allowed this session", "✓".green());
+                self.tool_executor.approve_rule(req.session_rule).await;
+                self.do_execute_tool(name, args.clone()).await
+            }
+            _ => {
+                println!("  {} Denied", "✗".red());
+                serde_json::json!({
+                    "success": false,
+                    "error": {
+                        "message": format!("User denied permission for {}: {}", req.tool_name, req.reason),
+                        "code": "permission_denied"
+                    }
+                }).to_string()
+            }
+        }
     }
 
     /// 交互式执行 ask_user_question 工具
@@ -722,6 +857,7 @@ impl Repl {
 /// Result of a streaming operation with concurrent input
 struct StreamResult {
     content: String,
+    reasoning_content: String,
     tool_calls_accum: Vec<serde_json::Value>,
     has_tool_calls: bool,
     /// User input typed during streaming (if any)

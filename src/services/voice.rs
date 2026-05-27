@@ -207,12 +207,14 @@ impl VoiceService {
             crate::api::ChatMessage {
                 role: "system".to_string(),
                 content: Some(prompt.to_string()),
+                reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
             },
             crate::api::ChatMessage {
                 role: "user".to_string(),
                 content: Some(format!("[Audio data: {} bytes]", audio_data.len())),
+                reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
             },

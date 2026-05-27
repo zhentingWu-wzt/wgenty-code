@@ -1,14 +1,26 @@
 use crate::api::ChatMessage;
-use crate::tools::ToolRegistry;
+use crate::tools::policy::{PolicyDecision, ToolPermissionPolicy};
+use crate::tools::{Tool, ToolRegistry};
+use std::collections::HashSet;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 pub struct ToolExecutor {
     registry: Arc<ToolRegistry>,
+    policy: ToolPermissionPolicy,
+    session_rules: Arc<RwLock<HashSet<String>>>,
 }
 
 impl ToolExecutor {
-    pub fn new(registry: Arc<ToolRegistry>) -> Self {
-        Self { registry }
+    pub fn new(
+        registry: Arc<ToolRegistry>,
+        policy: ToolPermissionPolicy,
+    ) -> Self {
+        Self {
+            registry,
+            policy,
+            session_rules: Arc::new(RwLock::new(HashSet::new())),
+        }
     }
 
     pub fn tool_definitions(&self) -> Vec<crate::api::ToolDefinition> {
@@ -21,6 +33,26 @@ impl ToolExecutor {
             .collect()
     }
 
+    /// Validate a tool call before execution. Returns PolicyDecision.
+    pub async fn validate_tool_call(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Result<PolicyDecision, crate::tools::ToolError> {
+        let tool = self.registry.get(tool_name);
+        let session_rules = self.session_rules.read().await;
+        match tool {
+            Some(t) => self.policy.validate_tool_call(t, tool_name, args, &session_rules),
+            None => Ok(PolicyDecision::Allow),
+        }
+    }
+
+    /// Record an approved session rule so future calls skip the prompt
+    pub async fn approve_rule(&self, rule: String) {
+        self.session_rules.write().await.insert(rule);
+    }
+
+    /// Execute a tool call directly (policy already passed)
     pub async fn execute_tool_call(
         &self,
         tool_call_id: &str,
