@@ -30,23 +30,85 @@ impl Repl {
 
         let (stdin_tx, stdin_rx) = mpsc::channel::<String>(16);
 
-        // Dedicated stdin thread: reads lines in cooked mode (IME works)
-        // and sends them through the channel.
+        // Dedicated stdin thread: reads key events in raw mode for proper
+        // CJK/Unicode backspace handling, falls back to cooked read_line.
         std::thread::spawn(move || {
-            let stdin = io::stdin();
-            loop {
-                let mut line = String::new();
-                match stdin.lock().read_line(&mut line) {
-                    Ok(0) => break, // EOF
-                    Ok(_) => {
-                        let trimmed = line.trim().to_string();
-                        if stdin_tx.blocking_send(trimmed).is_err() {
-                            break; // channel closed
+            use crossterm::event::{read, Event, KeyCode, KeyModifiers};
+            use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+
+            // Try raw mode first
+            if enable_raw_mode().is_err() {
+                // Fallback: standard cooked mode read_line
+                let stdin = io::stdin();
+                loop {
+                    let mut line = String::new();
+                    match stdin.lock().read_line(&mut line) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            let trimmed = line.trim().to_string();
+                            if stdin_tx.blocking_send(trimmed).is_err() {
+                                break;
+                            }
                         }
+                        Err(_) => break,
                     }
-                    Err(_) => break,
+                }
+                return;
+            }
+
+            // Re-enable OPOST so \n works correctly
+            #[cfg(unix)]
+            unsafe {
+                let mut term: libc::termios = std::mem::zeroed();
+                if libc::tcgetattr(libc::STDIN_FILENO, &mut term) == 0 {
+                    term.c_oflag |= libc::OPOST;
+                    libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &term);
                 }
             }
+
+            let mut line = String::new();
+
+            loop {
+                match read() {
+                    Ok(Event::Key(key)) => {
+                        match key.code {
+                            KeyCode::Enter => {
+                                let trimmed = line.trim().to_string();
+                                if stdin_tx.blocking_send(trimmed).is_err() {
+                                    break;
+                                }
+                                line.clear();
+                                println!();
+                            }
+                            KeyCode::Backspace => {
+                                if !line.is_empty() {
+                                    line.pop();
+                                    print!(
+                                        "\r\x1B[K  {} {line}",
+                                        "▸".truecolor(255, 140, 66)
+                                    );
+                                    io::stdout().flush().unwrap();
+                                }
+                            }
+                            KeyCode::Char(c) => {
+                                if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'c' {
+                                    let _ = disable_raw_mode();
+                                    std::process::exit(130);
+                                }
+                                line.push(c);
+                                print!("{c}");
+                                io::stdout().flush().unwrap();
+                            }
+                            _ => {}
+                        }
+                    }
+                    Ok(Event::Resize(_, _)) => {}
+                    Err(_) => break,
+                    _ => {}
+                }
+            }
+
+            let _ = disable_raw_mode();
         });
 
         info!("repl initialized");
