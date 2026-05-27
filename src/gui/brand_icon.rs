@@ -1,6 +1,6 @@
 use egui::{pos2, vec2, Color32, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2};
 
-use crate::branding;
+use crate::cli::branding;
 
 pub fn show(ui: &mut Ui, size: Vec2) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
