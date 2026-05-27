@@ -1,12 +1,22 @@
-//! CLI Module - Command Line Interface
+//! CLI Module — command-line argument parsing, REPL loop, TUI rendering, and branding.
+//!
+//! The TUI REPL lives here because it's the primary harness frontend: it drives
+//! the agent loop, renders conversation history, handles streaming responses,
+//! and delegates tool execution to the tools module.
 
 pub mod args;
+pub mod branding;
 pub mod commands;
 pub mod repl;
+pub mod tui_history;
+pub mod tui_ime;
+pub mod tui_input;
+pub mod tui_repl;
 pub mod ui;
 
 pub use args::Cli;
 pub use repl::Repl;
+pub use tui_repl::TuiRepl;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -190,7 +200,7 @@ pub enum McpCommands {
         name: String,
         /// Server command (可选，filesystem 可只用 --path)
         command: Option<String>,
-        /// Filesystem 专用路径（新增 --path / -p 支持）
+        /// Filesystem 专用路径
         #[arg(long, short = 'p', value_name = "PATH")]
         path: Option<String>,
     },

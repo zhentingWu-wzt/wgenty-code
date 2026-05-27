@@ -1,5 +1,5 @@
 use crate::api::ChatMessage;
-use crate::tools::policy::{PolicyDecision, ToolPermissionPolicy};
+use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
 use crate::tools::{Tool, ToolRegistry};
 use std::collections::HashSet;
 use std::sync::Arc;

@@ -1,33 +1,34 @@
-//! Claude Code Rust - High-performance CLI for Claude AI
+//! Claude Code Rust — harness-centric agent infrastructure.
 //!
-//! A complete Rust implementation of Claude Code, featuring:
-//! - Async-first architecture with Tokio
-//! - Native terminal UI with Ratatui
-//! - MCP protocol support
-//! - Voice input support
-//! - Memory management and team sync
-//! - Plugin system
-//! - SSH connection support
-//! - Remote execution
-//! - Project initialization
-//! - WebAssembly support for browser environments
-//! - Native GUI with egui/eframe
-//! - Plugin marketplace web interface
-//! - Multi-language i18n support
+//! Module organization mirrors the harness component model:
+//!   agent/       — core agent loop (s01+s02)
+//!   tools/       — agent hands: filesystem, search, execution, meta
+//!   knowledge/   — on-demand skill loading + magic docs (s05)
+//!   context/     — memory, sessions, compression (s06+s07)
+//!   tasks/       — task CRUD + dependency graph (s07+s08)
+//!   teams/       — subagents, mailboxes, worktree isolation (s04,s09-s12)
+//!   permissions/ — tool governance and sandboxing
+//!   api/         — API client + types (thin transport layer)
+//!   mcp/         — MCP protocol extensions
+//!   cli/         — frontend: args, REPL, TUI, commands
+//!   config/      — settings
+//!   services/    — background daemons
+//!   plugins/     — plugin system
+//!   state/       — shared application state
 
-pub mod advanced;
+pub mod agent;
 pub mod api;
-pub mod branding;
 pub mod cli;
 pub mod config;
+pub mod context;
+pub mod knowledge;
 pub mod mcp;
-pub mod memory;
+pub mod permissions;
 pub mod plugins;
 pub mod services;
-pub mod session;
-pub mod skills;
 pub mod state;
-pub mod terminal;
+pub mod tasks;
+pub mod teams;
 pub mod tools;
 pub mod utils;
 pub mod voice;
@@ -45,16 +46,13 @@ pub mod web;
 pub use api::{AnthropicClient, ApiClient, ChatMessage};
 pub use cli::Cli;
 pub use config::Settings;
+pub use context::MemoryManager;
+pub use knowledge::{Skill, SkillCategory, SkillContext, SkillError, SkillExecutor, SkillParams, SkillRegistry, SkillResult};
 pub use mcp::McpManager;
-pub use memory::MemoryManager;
 pub use plugins::PluginManager;
-pub use skills::{
-    Skill, SkillCategory, SkillContext, SkillError, SkillExecutor, SkillParams, SkillRegistry,
-    SkillResult,
-};
 pub use state::AppState;
 pub use tools::ToolRegistry;
-pub use voice::VoiceInput;
+pub use voice::VoiceService;
 
 // Feature-gated re-exports
 #[cfg(feature = "gui-egui")]

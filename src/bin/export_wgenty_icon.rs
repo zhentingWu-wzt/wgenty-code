@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use image::{ImageBuffer, Rgba};
 
-use claude_code_rs::branding;
+use claude_code_rs::cli::branding;
 
 fn main() -> anyhow::Result<()> {
     let out_dir = PathBuf::from("assets/icons");

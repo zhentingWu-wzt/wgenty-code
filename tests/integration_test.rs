@@ -4,7 +4,7 @@ use clap::Parser;
 use claude_code_rs::{
     cli::Cli,
     config::Settings,
-    skills::{BuiltinSkills, SkillCategory, SkillContext, SkillExecutor, SkillRegistry},
+    knowledge::{BuiltinSkills, SkillCategory, SkillContext, SkillExecutor, SkillRegistry},
     state::AppState,
     tools::ToolRegistry,
 };

@@ -8,7 +8,8 @@
 use crate::api::{ApiClient, ChatMessage, ToolCall, ToolDefinition};
 use crate::cli::ui;
 use crate::state::AppState;
-use crate::tools::{PolicyDecision, PermissionRequest, ToolExecutor, ToolPermissionPolicy, ToolRegistry};
+use crate::permissions::{PermissionRequest, PolicyDecision, ToolPermissionPolicy};
+use crate::tools::{ToolExecutor, ToolRegistry};
 use colored::Colorize;
 use futures::StreamExt;
 use std::io::{self, BufRead, Write};
