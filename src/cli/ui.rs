@@ -325,38 +325,35 @@ impl StreamLineState {
     }
 
     fn flush_if_needed(&mut self) {
-        if self.buf.len() > 1024 {
-            if !self.started {
-                let _ = write!(self.stdout, "\n  │ ");
-                self.started = true;
-            }
-            // Prefix each buffered line with left margin
-            let mut result = String::with_capacity(self.buf.len() + 64);
-            for (i, line) in self.buf.lines().enumerate() {
-                if i > 0 {
-                    result.push_str("\n  │ ");
-                }
-                result.push_str(line);
-            }
-            let _ = self.stdout.write_all(result.as_bytes());
-            let _ = self.stdout.flush();
-            self.buf.clear();
-            self.line_width = 0;
+        if self.buf.len() > 64 {
+            self.flush();
         }
     }
 
-    pub fn finish(&mut self) {
-        if !self.buf.is_empty() {
-            if !self.started {
-                let _ = write!(self.stdout, "\n  │ ");
-            }
-            for (i, line) in self.buf.lines().enumerate() {
-                if i > 0 {
-                    let _ = write!(self.stdout, "\n  │ ");
-                }
-                let _ = self.stdout.write_all(line.as_bytes());
-            }
+    /// 无条件刷新缓冲内容到 stdout
+    pub fn flush(&mut self) {
+        if self.buf.is_empty() {
+            return;
         }
+        if !self.started {
+            let _ = write!(self.stdout, "\n  │ ");
+            self.started = true;
+        }
+        let mut result = String::with_capacity(self.buf.len() + 64);
+        for (i, line) in self.buf.lines().enumerate() {
+            if i > 0 {
+                result.push_str("\n  │ ");
+            }
+            result.push_str(line);
+        }
+        let _ = self.stdout.write_all(result.as_bytes());
+        let _ = self.stdout.flush();
+        self.buf.clear();
+        self.line_width = 0;
+    }
+
+    pub fn finish(&mut self) {
+        self.flush();
         let _ = self.stdout.write_all(b"\n");
         let _ = self.stdout.flush();
     }

@@ -381,9 +381,18 @@ impl Repl {
 
         let mut stream = response.bytes_stream();
         let mut buffer = String::with_capacity(4096);
+        let mut flush_tick = tokio::time::interval(std::time::Duration::from_millis(100));
+        flush_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         while !stream_done {
             tokio::select! {
+                biased;
+
+                // 定时强制刷新，避免小 chunk 滞留缓冲
+                _ = flush_tick.tick() => {
+                    line_state.flush();
+                }
+
                 // SSE stream chunk
                 chunk = stream.next() => {
                     match chunk {
