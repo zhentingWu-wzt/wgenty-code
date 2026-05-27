@@ -2,7 +2,7 @@
 //!
 //! Claude-style sidebar with conversation list and navigation
 
-use egui::{Color32, Frame, Margin, RichText, Rounding, Stroke, Ui, Vec2};
+use egui::{Color32, Frame, Margin, RichText, CornerRadius, Stroke, Ui, Vec2};
 
 /// Sidebar state and configuration
 pub struct Sidebar {
@@ -56,7 +56,7 @@ impl Sidebar {
             .max_width(400.0)
             .default_width(width)
             .show_inside(ui, |ui| {
-                Frame::none()
+                Frame::NONE
                     .fill(theme.background_darkest())
                     .show(ui, |ui| {
                         ui.set_width(width);
@@ -78,7 +78,7 @@ impl Sidebar {
                                             RichText::new("◀").color(theme.muted_text_color()),
                                         )
                                         .fill(theme.surface_color())
-                                        .rounding(Rounding::same(6));
+                                        .corner_radius(CornerRadius::same(6));
                                         if ui.add(collapse_btn).clicked() {
                                             self.collapsed = true;
                                         }
@@ -89,7 +89,7 @@ impl Sidebar {
                                     RichText::new("▶").color(theme.primary_color()),
                                 )
                                 .fill(theme.surface_color())
-                                .rounding(Rounding::same(6));
+                                .corner_radius(CornerRadius::same(6));
                                 if ui.add(expand_btn).clicked() {
                                     self.collapsed = false;
                                 }
@@ -113,7 +113,7 @@ impl Sidebar {
             let new_chat_btn = egui::Button::new(RichText::new("➕").color(Color32::WHITE))
                 .fill(theme.primary_color())
                 .min_size(Vec2::new(40.0, 40.0))
-                .rounding(Rounding::same(10));
+                .corner_radius(CornerRadius::same(10));
 
             if ui.add(new_chat_btn).clicked() {
                 self.selected_tab = Tab::Chat;
@@ -146,7 +146,7 @@ impl Sidebar {
                 let button = egui::Button::new(RichText::new(icon).size(20.0).color(text_color))
                     .fill(bg_color)
                     .min_size(Vec2::new(44.0, 44.0))
-                    .rounding(Rounding::same(10));
+                    .corner_radius(CornerRadius::same(10));
 
                 if ui.add(button).clicked() {
                     self.selected_tab = tab;
@@ -162,7 +162,7 @@ impl Sidebar {
             egui::Button::new(RichText::new("+  New Chat").strong().color(Color32::WHITE))
                 .fill(theme.primary_color())
                 .min_size(Vec2::new(ui.available_width(), 44.0))
-                .rounding(Rounding::same(10));
+                .corner_radius(CornerRadius::same(10));
 
         if ui.add(new_chat_button).clicked() {
             self.create_new_conversation();
@@ -202,7 +202,7 @@ impl Sidebar {
                     egui::Button::new(RichText::new(btn_text).color(text_color).size(13.0))
                         .fill(bg_color)
                         .min_size(Vec2::new(if label.is_empty() { 36.0 } else { 70.0 }, 32.0))
-                        .rounding(Rounding::same(8));
+                        .corner_radius(CornerRadius::same(8));
 
                 if ui.add(button).clicked() {
                     self.selected_tab = tab;
@@ -238,7 +238,7 @@ impl Sidebar {
         .fill(theme.surface_color())
         .stroke(Stroke::new(1.0, theme.border_color()))
         .min_size(Vec2::new(ui.available_width(), 40.0))
-        .rounding(Rounding::same(8));
+        .corner_radius(CornerRadius::same(8));
 
         if ui.add(settings_button).clicked() {
             self.selected_tab = Tab::Settings;
@@ -291,7 +291,7 @@ impl Sidebar {
         .fill(bg_color)
         .stroke(stroke)
         .min_size(Vec2::new(ui.available_width(), 48.0))
-        .rounding(Rounding::same(10));
+        .corner_radius(CornerRadius::same(10));
 
         ui.add(button);
         ui.add_space(6.0);
@@ -322,7 +322,7 @@ impl Sidebar {
                 )
                 .fill(theme.surface_color())
                 .min_size(Vec2::new(ui.available_width() - 50.0, 40.0))
-                .rounding(Rounding::same(8));
+                .corner_radius(CornerRadius::same(8));
 
                 ui.add(button);
 
@@ -359,9 +359,9 @@ impl Sidebar {
                 theme.muted_text_color()
             };
 
-            Frame::none()
+            Frame::NONE
                 .fill(theme.surface_color())
-                .rounding(Rounding::same(8))
+                .corner_radius(CornerRadius::same(8))
                 .inner_margin(Margin::symmetric(12, 8))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -386,7 +386,7 @@ impl Sidebar {
         .fill(theme.background_darkest())
         .stroke(Stroke::new(1.0, theme.border_color()))
         .min_size(Vec2::new(ui.available_width(), 40.0))
-        .rounding(Rounding::same(8));
+        .corner_radius(CornerRadius::same(8));
 
         if ui.add(install_btn).clicked() {
             // Open plugin marketplace
@@ -410,9 +410,9 @@ impl Sidebar {
         ];
 
         for (icon, name, desc) in tools {
-            Frame::none()
+            Frame::NONE
                 .fill(theme.surface_color())
-                .rounding(Rounding::same(10))
+                .corner_radius(CornerRadius::same(10))
                 .inner_margin(Margin::symmetric(12, 10))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -456,9 +456,9 @@ impl Sidebar {
         ];
 
         for (icon, name, desc) in settings {
-            Frame::none()
+            Frame::NONE
                 .fill(theme.surface_color())
-                .rounding(Rounding::same(10))
+                .corner_radius(CornerRadius::same(10))
                 .inner_margin(Margin::symmetric(12, 10))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());

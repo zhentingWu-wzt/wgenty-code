@@ -345,10 +345,10 @@ pub fn format_code_block(ui: &mut egui::Ui, code: &str, language: Option<&str>, 
         });
 
     // Code block container
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(bg_color)
         .inner_margin(12.0)
-        .rounding(8.0)
+        .corner_radius(8.0)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
 
@@ -364,7 +364,7 @@ pub fn format_code_block(ui: &mut egui::Ui, code: &str, language: Option<&str>, 
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button("📋").clicked() {
-                            ui.output_mut(|o| o.copied_text = code.to_string());
+                            ui.ctx().copy_text(code.to_string());
                         }
                     });
                 });

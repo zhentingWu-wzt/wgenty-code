@@ -2,7 +2,7 @@
 //!
 //! Based on Claude.ai design system with warm orange/brown accent colors
 
-use egui::{Color32, FontFamily, FontId, Rounding, Stroke, TextStyle, Visuals};
+use egui::{Color32, FontFamily, FontId, CornerRadius, Stroke, TextStyle, Visuals};
 
 /// Application theme
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +88,7 @@ impl Theme {
             // Window
             window_fill: BG_SURFACE,
             window_stroke: Stroke::new(1.0, BORDER),
-            window_corner_radius: Rounding::same(12),
+            window_corner_radius: CornerRadius::same(12),
             window_shadow: egui::epaint::Shadow {
                 offset: [8, 8],
                 blur: 16,
@@ -100,7 +100,7 @@ impl Theme {
             panel_fill: BG_DARK,
 
             // Menu
-            menu_corner_radius: Rounding::same(8),
+            menu_corner_radius: CornerRadius::same(8),
 
             // Color space
             numeric_color_space: egui::style::NumericColorSpace::GammaByte,
@@ -112,7 +112,7 @@ impl Theme {
                     weak_bg_fill: BG_SURFACE,
                     bg_stroke: Stroke::new(1.0, BORDER),
                     fg_stroke: Stroke::new(1.0, TEXT_SECONDARY),
-                    corner_radius: Rounding::same(8),
+                    corner_radius: CornerRadius::same(8),
                     expansion: 0.0,
                 },
                 inactive: egui::style::WidgetVisuals {
@@ -120,7 +120,7 @@ impl Theme {
                     weak_bg_fill: BG_ELEVATED,
                     bg_stroke: Stroke::new(1.0, BORDER),
                     fg_stroke: Stroke::new(1.0, TEXT_PRIMARY),
-                    corner_radius: Rounding::same(8),
+                    corner_radius: CornerRadius::same(8),
                     expansion: 0.0,
                 },
                 hovered: egui::style::WidgetVisuals {
@@ -128,7 +128,7 @@ impl Theme {
                     weak_bg_fill: Color32::from_rgb(55, 55, 55),
                     bg_stroke: Stroke::new(1.0, BORDER_LIGHT),
                     fg_stroke: Stroke::new(1.5, CLAUDE_ORANGE),
-                    corner_radius: Rounding::same(8),
+                    corner_radius: CornerRadius::same(8),
                     expansion: 1.0,
                 },
                 active: egui::style::WidgetVisuals {
@@ -136,7 +136,7 @@ impl Theme {
                     weak_bg_fill: CLAUDE_ORANGE,
                     bg_stroke: Stroke::new(1.0, CLAUDE_ORANGE_LIGHT),
                     fg_stroke: Stroke::new(1.5, Color32::WHITE),
-                    corner_radius: Rounding::same(8),
+                    corner_radius: CornerRadius::same(8),
                     expansion: 1.0,
                 },
                 open: egui::style::WidgetVisuals {
@@ -144,7 +144,7 @@ impl Theme {
                     weak_bg_fill: BG_SURFACE,
                     bg_stroke: Stroke::new(1.0, CLAUDE_ORANGE),
                     fg_stroke: Stroke::new(1.0, CLAUDE_ORANGE),
-                    corner_radius: Rounding::same(8),
+                    corner_radius: CornerRadius::same(8),
                     expansion: 0.0,
                 },
             },
@@ -193,7 +193,7 @@ impl Theme {
 
             window_fill: BG_LIGHT_SURFACE,
             window_stroke: Stroke::new(1.0, BORDER_LIGHT_MODE),
-            window_corner_radius: Rounding::same(12),
+            window_corner_radius: CornerRadius::same(12),
             window_shadow: egui::epaint::Shadow {
                 offset: [8, 8],
                 blur: 16,
@@ -202,7 +202,7 @@ impl Theme {
             },
 
             panel_fill: BG_LIGHT,
-            menu_corner_radius: Rounding::same(8),
+            menu_corner_radius: CornerRadius::same(8),
             numeric_color_space: egui::style::NumericColorSpace::GammaByte,
 
             widgets: egui::style::Widgets {
@@ -211,7 +211,7 @@ impl Theme {
                     weak_bg_fill: Color32::WHITE,
                     bg_stroke: Stroke::new(1.0, BORDER_LIGHT_MODE),
                     fg_stroke: Stroke::new(1.0, TEXT_LIGHT_SECONDARY),
-                    corner_radius: Rounding::same(8),
+                    corner_radius: CornerRadius::same(8),
                     expansion: 0.0,
                 },
                 inactive: egui::style::WidgetVisuals {
@@ -219,7 +219,7 @@ impl Theme {
                     weak_bg_fill: BG_LIGHT,
                     bg_stroke: Stroke::new(1.0, BORDER_LIGHT_MODE),
                     fg_stroke: Stroke::new(1.0, TEXT_LIGHT_PRIMARY),
-                    corner_radius: Rounding::same(8),
+                    corner_radius: CornerRadius::same(8),
                     expansion: 0.0,
                 },
                 hovered: egui::style::WidgetVisuals {
@@ -227,7 +227,7 @@ impl Theme {
                     weak_bg_fill: Color32::from_rgb(240, 240, 240),
                     bg_stroke: Stroke::new(1.0, Color32::from_rgb(200, 200, 200)),
                     fg_stroke: Stroke::new(1.5, CLAUDE_ORANGE_DARK),
-                    corner_radius: Rounding::same(8),
+                    corner_radius: CornerRadius::same(8),
                     expansion: 1.0,
                 },
                 active: egui::style::WidgetVisuals {
@@ -235,7 +235,7 @@ impl Theme {
                     weak_bg_fill: CLAUDE_ORANGE_LIGHT,
                     bg_stroke: Stroke::new(1.0, CLAUDE_ORANGE_DARK),
                     fg_stroke: Stroke::new(1.5, Color32::WHITE),
-                    corner_radius: Rounding::same(8),
+                    corner_radius: CornerRadius::same(8),
                     expansion: 1.0,
                 },
                 open: egui::style::WidgetVisuals {
@@ -243,7 +243,7 @@ impl Theme {
                     weak_bg_fill: Color32::WHITE,
                     bg_stroke: Stroke::new(1.0, CLAUDE_ORANGE),
                     fg_stroke: Stroke::new(1.0, CLAUDE_ORANGE),
-                    corner_radius: Rounding::same(8),
+                    corner_radius: CornerRadius::same(8),
                     expansion: 0.0,
                 },
             },

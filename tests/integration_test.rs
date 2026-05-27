@@ -5,7 +5,6 @@ use claude_code_rs::{
     cli::Cli,
     config::Settings,
     knowledge::{BuiltinSkills, SkillCategory, SkillContext, SkillExecutor, SkillRegistry},
-    state::AppState,
     tools::ToolRegistry,
 };
 use std::sync::Arc;
@@ -90,6 +89,7 @@ async fn test_skill_system_integration() {
 #[test]
 fn test_lib_exports() {
     // Verify all public types are exported
+    #[allow(unused_imports)]
     use claude_code_rs::{
         Skill, SkillCategory, SkillContext, SkillError, SkillExecutor, SkillParams, SkillRegistry,
         SkillResult,

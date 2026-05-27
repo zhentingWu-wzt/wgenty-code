@@ -6,6 +6,8 @@
 use colored::{ColoredString, Colorize};
 use std::fmt::Write as FmtWrite;
 use std::io::{self, BufWriter, StdoutLock, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -287,6 +289,7 @@ pub struct StreamLineState {
     line_width: usize,
     max_width: usize,
     started: bool,
+    trailing_newline: bool,
     stdout: BufWriter<io::Stdout>,
 }
 
@@ -299,6 +302,7 @@ impl StreamLineState {
             line_width: 0,
             max_width,
             started: false,
+            trailing_newline: false,
             stdout: BufWriter::with_capacity(4096, io::stdout()),
         }
     }
@@ -321,13 +325,8 @@ impl StreamLineState {
                 self.line_width += ch_width;
             }
         }
-        self.flush_if_needed();
-    }
-
-    fn flush_if_needed(&mut self) {
-        if self.buf.len() > 64 {
-            self.flush();
-        }
+        // Flush immediately — no buffering delay
+        self.flush();
     }
 
     /// 无条件刷新缓冲内容到 stdout
@@ -338,7 +337,15 @@ impl StreamLineState {
         if !self.started {
             let _ = write!(self.stdout, "\n  │ ");
             self.started = true;
+        } else if self.trailing_newline {
+            // Previous flush ended with a newline — re-add margin prefix
+            let _ = write!(self.stdout, "  │ ");
         }
+
+        // Track whether this flush ends with a newline for cross-flush prefix
+        let ends_with_nl = self.buf.ends_with('\n');
+        self.trailing_newline = ends_with_nl;
+
         let mut result = String::with_capacity(self.buf.len() + 64);
         for (i, line) in self.buf.lines().enumerate() {
             if i > 0 {
@@ -347,6 +354,11 @@ impl StreamLineState {
             result.push_str(line);
         }
         let _ = self.stdout.write_all(result.as_bytes());
+        // .lines() strips trailing newlines — re-emit so the cursor
+        // advances to the next line before the next flush
+        if ends_with_nl {
+            let _ = self.stdout.write_all(b"\n");
+        }
         let _ = self.stdout.flush();
         self.buf.clear();
         self.line_width = 0;
@@ -400,28 +412,22 @@ fn format_inline_styles(text: &str) -> ColoredString {
 /// Spinner frames for the thinking animation
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Format elapsed time display
-fn format_elapsed(secs: u64) -> String {
-    if secs < 60 {
-        format!("等待响应 {}s", secs)
-    } else {
-        format!("等待响应 {}m{}s", secs / 60, secs % 60)
-    }
-}
-
-/// Async thinking indicator that runs in the background while waiting for the
-/// first stream chunk. Shows a spinner + elapsed time.
+/// Two-phase indicator: "等待响应" while the HTTP request is in flight,
+/// then "正在思考" once the first stream chunk arrives (model is reasoning).
 pub struct ThinkingIndicator {
     cancel: tokio::sync::watch::Sender<bool>,
     done: tokio::sync::watch::Receiver<bool>,
+    phase: Arc<AtomicBool>, // false = waiting for response, true = thinking
 }
 
 impl ThinkingIndicator {
-    /// Start the thinking indicator. Returns a handle that can be used to stop it.
+    /// Start the thinking indicator in "等待响应" (waiting for response) phase.
     pub fn start() -> Self {
         let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
         let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+        let phase = Arc::new(AtomicBool::new(false));
 
+        let phase_clone = phase.clone();
         tokio::spawn(async move {
             let mut frame_idx = 0usize;
             let start = std::time::Instant::now();
@@ -431,13 +437,18 @@ impl ThinkingIndicator {
                 tokio::select! {
                     _ = tick.tick() => {
                         let frame = SPINNER_FRAMES[frame_idx % SPINNER_FRAMES.len()];
-                        let elapsed = format_elapsed(start.elapsed().as_secs());
+                        let secs = start.elapsed().as_secs();
+                        let label = if phase_clone.load(Ordering::Relaxed) {
+                            format_elapsed("正在思考", secs)
+                        } else {
+                            format_elapsed("等待响应", secs)
+                        };
 
                         print!(
                             "\r  {} {}  {}",
                             "●".truecolor(147, 112, 219).bold(),
                             frame.truecolor(147, 112, 219),
-                            elapsed.truecolor(150, 150, 150),
+                            label.truecolor(150, 150, 150),
                         );
                         print!("\x1B[K");
                         io::stdout().flush().ok();
@@ -461,7 +472,23 @@ impl ThinkingIndicator {
         ThinkingIndicator {
             cancel: cancel_tx,
             done: done_rx,
+            phase,
         }
+    }
+
+    /// Transition from "等待响应" to "正在思考" phase.
+    pub fn signal_thinking(&self) {
+        self.phase.store(true, Ordering::Relaxed);
+    }
+
+    /// Signal the indicator to stop (non-blocking). Clears the indicator line
+    /// synchronously to avoid racing with subsequent content output.
+    pub fn signal_stop(&self) {
+        // Clear inline before the background task wakes — content may already
+        // be queued to write on the next line.
+        print!("\r\x1B[K");
+        io::stdout().flush().ok();
+        let _ = self.cancel.send(true);
     }
 
     /// Stop the indicator and wait for the line to be cleared.
@@ -469,6 +496,15 @@ impl ThinkingIndicator {
         let _ = self.cancel.send(true);
         // Wait for the spawned task to finish clearing the line
         let _ = self.done.changed().await;
+    }
+}
+
+/// Format elapsed time display with a phase label
+fn format_elapsed(label: &str, secs: u64) -> String {
+    if secs < 60 {
+        format!("{} {}s", label, secs)
+    } else {
+        format!("{} {}m{}s", label, secs / 60, secs % 60)
     }
 }
 
