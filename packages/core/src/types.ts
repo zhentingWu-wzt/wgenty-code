@@ -106,3 +106,22 @@ export interface ConfigResponse {
   timeout: number;
   streaming: boolean;
 }
+
+// ── Session types ──────────────────────────────────────────────────────────────
+
+export interface SessionInfo {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  summary?: string | null;
+}
+
+export interface Session {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  messages: ChatMessage[];
+}
