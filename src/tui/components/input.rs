@@ -1,1 +1,56 @@
-// placeholder
+use crate::tui::theme;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
+use ratatui::widgets::{Block, Borders};
+use ratatui::Frame;
+use tui_textarea::TextArea;
+
+/// Input box wrapping tui-textarea for CJK/IME-compatible text input.
+pub struct InputBox {
+    pub textarea: TextArea<'static>,
+}
+
+impl InputBox {
+    pub fn new() -> Self {
+        let mut textarea = TextArea::default();
+        textarea.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme::DIM)),
+        );
+        textarea.set_placeholder_text("Type your message...");
+        textarea.set_style(Style::default().fg(Color::White));
+        Self { textarea }
+    }
+
+    pub fn render(&self, f: &mut Frame, area: Rect) {
+        f.render_widget(&self.textarea, area);
+    }
+
+    /// Extract text and reset the textarea for next input.
+    pub fn take_text(&mut self) -> String {
+        let text = self.textarea.lines().iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        // Create a fresh TextArea with the same styling
+        let mut new_ta = TextArea::default();
+        new_ta.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme::DIM)),
+        );
+        new_ta.set_placeholder_text("Type your message...");
+        new_ta.set_style(Style::default().fg(Color::White));
+        self.textarea = new_ta;
+        text
+    }
+
+    /// Get current text without resetting.
+    pub fn text(&self) -> String {
+        self.textarea.lines().iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")
+    }
+
+    /// Check if input is empty (no content).
+    pub fn is_empty(&self) -> bool {
+        self.textarea.lines().is_empty()
+            || self.textarea.lines().iter().all(|l| l.to_string().trim().is_empty())
+    }
+}
