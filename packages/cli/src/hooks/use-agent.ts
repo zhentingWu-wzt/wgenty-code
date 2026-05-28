@@ -263,8 +263,8 @@ export function useAgent({ client }: UseAgentOptions) {
     try {
       const list = await client.listSessions();
       setSessions(list);
-    } catch {
-      // silently fail
+    } catch (err) {
+      console.error("Failed to refresh sessions:", err);
     }
   }, [client]);
 

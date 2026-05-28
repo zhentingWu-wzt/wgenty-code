@@ -136,7 +136,7 @@ export class ApiClient {
 
   async listSessions(): Promise<SessionInfo[]> {
     const res = await fetch(`${this.baseUrl}/api/v1/sessions`);
-    if (!res.ok) return [];
+    if (!res.ok) throw new Error(`Failed to list sessions (${res.status})`);
     return res.json();
   }
 
