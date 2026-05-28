@@ -4,7 +4,8 @@ import { Message } from "./message.tsx";
 import type { UIMessage } from "../hooks/use-agent.ts";
 
 interface Props {
-  messages: UIMessage[];
+  committedMessages: UIMessage[];
+  streamingContent: string;
   width: number;
   allExpanded: boolean;
   overrides: Map<number, boolean>;
@@ -39,31 +40,38 @@ function mergeMessages(messages: UIMessage[]): UIMessage[] {
 }
 
 export const ChatView: React.FC<Props> = React.memo(({
-  messages,
+  committedMessages,
+  streamingContent,
   width,
   allExpanded,
   overrides,
 }) => {
-  const merged = React.useMemo(() => mergeMessages(messages), [messages]);
+  // Only recompute when committed messages change (not during streaming)
+  const merged = React.useMemo(() => mergeMessages(committedMessages), [committedMessages]);
 
   // Assign collapsible indices (only to results exceeding 10 lines)
-  let collapsibleIdx = 1;
-  const collapsibleMap: number[] = [];
-  for (const msg of merged) {
-    if (
-      msg.role === "tool" &&
-      msg.toolPhase === "result" &&
-      msg.content.split("\n").length > 10
-    ) {
-      collapsibleMap.push(collapsibleIdx++);
-    } else {
-      collapsibleMap.push(-1);
+  const collapsibleMap = React.useMemo(() => {
+    let collapsibleIdx = 1;
+    const map: number[] = [];
+    for (const msg of merged) {
+      if (
+        msg.role === "tool" &&
+        msg.toolPhase === "result" &&
+        msg.content.split("\n").length > 10
+      ) {
+        map.push(collapsibleIdx++);
+      } else {
+        map.push(-1);
+      }
     }
-  }
+    return map;
+  }, [merged]);
+
+  const isEmpty = merged.length === 0 && !streamingContent;
 
   return (
     <Box flexDirection="column">
-      {merged.length === 0 && (
+      {isEmpty && (
         <Box flexDirection="column" marginY={1}>
           <Text dimColor>Type your message and press Enter to send.</Text>
           <Text dimColor>Shift+Enter for newline. Ctrl+C to quit.</Text>
@@ -82,6 +90,13 @@ export const ChatView: React.FC<Props> = React.memo(({
           />
         );
       })}
+      {streamingContent && (
+        <Message
+          key="streaming"
+          msg={{ id: -1, role: "assistant", content: streamingContent }}
+          width={width}
+        />
+      )}
     </Box>
   );
 });

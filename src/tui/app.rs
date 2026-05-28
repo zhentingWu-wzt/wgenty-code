@@ -408,7 +408,7 @@ impl App {
                 Constraint::Length(1),  // header
                 Constraint::Min(3),      // chat
                 Constraint::Length(1),  // status
-                Constraint::Length(1),  // input
+                Constraint::Length(3),  // input (tui-textarea with borders)
             ])
             .split(area);
 
