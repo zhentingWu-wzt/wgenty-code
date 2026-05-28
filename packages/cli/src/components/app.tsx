@@ -51,7 +51,8 @@ const AgentView: React.FC<{
     (process.stdout as unknown as { columns?: number }).columns ?? 80;
 
   const {
-    messages,
+    committedMessages,
+    streamingContent,
     status,
     pendingQuestion,
     pendingPermission,
@@ -109,7 +110,7 @@ const AgentView: React.FC<{
   const lastCollapsibleIndex = React.useMemo(() => {
     let idx = 0;
     let last = -1;
-    for (const msg of messages) {
+    for (const msg of committedMessages) {
       if (
         msg.role === "tool" &&
         msg.toolPhase === "result" &&
@@ -120,7 +121,7 @@ const AgentView: React.FC<{
       }
     }
     return last;
-  }, [messages]);
+  }, [committedMessages]);
 
   const toggleAll = React.useCallback(() => {
     setAllExpanded((prev) => !prev);
@@ -256,15 +257,15 @@ const AgentView: React.FC<{
         <Text dimColor>{"─".repeat(cols)}</Text>
       </Box>
 
-      {messages.length === 0 && status.type === "idle" && (
+      {committedMessages.length === 0 && !streamingContent && status.type === "idle" && (
         <WelcomeBanner model={model} width={cols} />
       )}
 
-      <ChatView messages={messages} width={cols} allExpanded={allExpanded} overrides={overrides} />
+      <ChatView committedMessages={committedMessages} streamingContent={streamingContent} width={cols} allExpanded={allExpanded} overrides={overrides} />
 
       {modal}
 
-      <TaskPanel client={client} key={messages.filter(m => m.role === 'user').length} />
+      <TaskPanel client={client} key={committedMessages.filter(m => m.role === 'user').length} />
 
       <StatusBar status={status} />
 
