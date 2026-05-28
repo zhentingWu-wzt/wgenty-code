@@ -229,84 +229,6 @@ impl Repl {
 
             if result.has_tool_calls && !result.tool_calls_accum.is_empty() {
                 info!(tool_call_count = result.tool_calls_accum.len(), "model requested tool calls");
-                for tc in &result.tool_calls_accum {
-                    let tool_name = tc["function"]["name"].as_str().unwrap_or("unknown");
-                    let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
-                    let args: serde_json::Value =
-                        serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
-
-                    let detail = match tool_name {
-                        "file_read" | "file_edit" | "file_write" => {
-                            args.get("path").and_then(|v| v.as_str()).map(|s| format!(" → {}", s))
-                        }
-                        "execute_command" => {
-                            args.get("command").and_then(|v| v.as_str()).map(|s| format!(" → `{}`", s))
-                        }
-                        "search" => {
-                            let pattern = args.get("pattern").and_then(|v| v.as_str());
-                            let path = args.get("path").and_then(|v| v.as_str());
-                            match (pattern, path) {
-                                (Some(p), Some(dir)) => Some(format!(" → `{}` in {}", p, dir)),
-                                (Some(p), None) => Some(format!(" → `{}`", p)),
-                                _ => None,
-                            }
-                        }
-                        "glob" => {
-                            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
-                            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                            Some(format!(" → {} in {}", pattern, path))
-                        }
-                        "list_files" => {
-                            args.get("path").and_then(|v| v.as_str()).map(|s| format!(" → {}", s))
-                        }
-                        "git_operations" => {
-                            args.get("operation").and_then(|v| v.as_str()).map(|s| format!(" → {}", s))
-                        }
-                        "note_edit" => {
-                            let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("unknown");
-                            match op {
-                                "create" => args.get("title").and_then(|v| v.as_str()).map(|s| format!(" → {}", s)),
-                                "search" => args.get("query").and_then(|v| v.as_str()).map(|s| format!(" → `{}`", s)),
-                                _ => args.get("note_id").and_then(|v| v.as_str()).map(|s| format!(" → {}", s)),
-                            }
-                        }
-                        "task_management" => {
-                            let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("unknown");
-                            match op {
-                                "create" => args.get("subject").and_then(|v| v.as_str()).map(|s| format!(" → {}", s)),
-                                _ => args.get("task_id").and_then(|v| v.as_str()).map(|s| format!(" → {}", s)),
-                            }
-                        }
-                        "view" => {
-                            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                            let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(3);
-                            Some(format!(" → {} (depth: {})", path, depth))
-                        }
-                        "think" => {
-                            args.get("thought")
-                                .and_then(|v| v.as_str())
-                                .map(|s| {
-                                    let preview: String = s.chars().take(60).collect();
-                                    if s.len() > 60 { format!(" → {}...", preview) } else { format!(" → {}", preview) }
-                                })
-                        }
-                        "lsp" => {
-                            let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("?");
-                            let sym = args.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
-                            Some(format!(" → {} `{}`", op, sym))
-                        }
-                        _ => None,
-                    };
-
-                    let detail_str = detail.unwrap_or_default();
-                    print!(
-                        "  {} {}{}",
-                        "▸".truecolor(255, 200, 100),
-                        tool_name.cyan().bold(),
-                        detail_str.truecolor(180, 180, 180)
-                    );
-                    io::stdout().flush().ok();
-                }
 
                 let tool_calls_parsed: Vec<ToolCall> = result
                     .tool_calls_accum
@@ -349,6 +271,14 @@ impl Repl {
                         serde_json::from_str(&tc.function.arguments)
                             .unwrap_or(serde_json::json!({}));
                     let tool_result = if tc.function.name == "ask_user_question" {
+                        // ask_user_question has its own UI — print detail inline first
+                        let detail = self.format_tool_detail(&tc.function.name, &args);
+                        println!(
+                            "  {} {}{}",
+                            "▸".truecolor(255, 200, 100),
+                            tc.function.name.cyan().bold(),
+                            detail.truecolor(180, 180, 180)
+                        );
                         self.execute_ask_user_question(args).await
                     } else {
                         self.execute_tool(&tc.function.name, args).await
@@ -549,14 +479,90 @@ impl Repl {
         self.tool_executor.tool_definitions()
     }
 
-    /// 执行工具调用（含审批检查）
+    /// Format a human-readable detail string for a tool call (params summary).
+    fn format_tool_detail(&self, tool_name: &str, args: &serde_json::Value) -> String {
+        match tool_name {
+            "file_read" | "file_edit" | "file_write" => {
+                args.get("path").and_then(|v| v.as_str()).map(|s| format!(" → {}", s))
+            }
+            "execute_command" => {
+                args.get("command").and_then(|v| v.as_str()).map(|s| format!(" → `{}`", s))
+            }
+            "search" => {
+                let pattern = args.get("pattern").and_then(|v| v.as_str());
+                let path = args.get("path").and_then(|v| v.as_str());
+                match (pattern, path) {
+                    (Some(p), Some(dir)) => Some(format!(" → `{}` in {}", p, dir)),
+                    (Some(p), None) => Some(format!(" → `{}`", p)),
+                    _ => None,
+                }
+            }
+            "glob" => {
+                let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
+                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                Some(format!(" → {} in {}", pattern, path))
+            }
+            "list_files" => {
+                args.get("path").and_then(|v| v.as_str()).map(|s| format!(" → {}", s))
+            }
+            "git_operations" => {
+                args.get("operation").and_then(|v| v.as_str()).map(|s| format!(" → {}", s))
+            }
+            "note_edit" => {
+                let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("unknown");
+                match op {
+                    "create" => args.get("title").and_then(|v| v.as_str()).map(|s| format!(" → {}", s)),
+                    "search" => args.get("query").and_then(|v| v.as_str()).map(|s| format!(" → `{}`", s)),
+                    _ => args.get("note_id").and_then(|v| v.as_str()).map(|s| format!(" → {}", s)),
+                }
+            }
+            "task_management" => {
+                let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("unknown");
+                match op {
+                    "create" => args.get("subject").and_then(|v| v.as_str()).map(|s| format!(" → {}", s)),
+                    _ => args.get("task_id").and_then(|v| v.as_str()).map(|s| format!(" → {}", s)),
+                }
+            }
+            "view" => {
+                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(3);
+                Some(format!(" → {} (depth: {})", path, depth))
+            }
+            "think" => {
+                args.get("thought")
+                    .and_then(|v| v.as_str())
+                    .map(|s| {
+                        let preview: String = s.chars().take(60).collect();
+                        if s.len() > 60 { format!(" → {}...", preview) } else { format!(" → {}", preview) }
+                    })
+            }
+            "lsp" => {
+                let op = args.get("operation").and_then(|v| v.as_str()).unwrap_or("?");
+                let sym = args.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
+                Some(format!(" → {} `{}`", op, sym))
+            }
+            _ => None,
+        }
+        .unwrap_or_default()
+    }
+
+    /// 执行工具调用（含审批检查和 inline 展示）
     async fn execute_tool(&mut self, name: &str, args: serde_json::Value) -> String {
         debug!(tool_name = name, args = %args, "dispatching repl tool call");
+
+        // Print tool detail (no newline — result follows on same line)
+        let detail = self.format_tool_detail(name, &args);
+        print!(
+            "  {} {}{}",
+            "▸".truecolor(255, 200, 100),
+            name.cyan().bold(),
+            detail.truecolor(180, 180, 180)
+        );
+        io::stdout().flush().ok();
 
         // Validate against policy
         match self.tool_executor.validate_tool_call(name, &args).await {
             Ok(PolicyDecision::Allow) => {
-                // Safe — execute directly, print result inline
                 let result = self.do_execute_tool(name, args).await;
                 let parsed: serde_json::Value = serde_json::from_str(&result).unwrap_or_default();
                 if parsed["success"].as_bool().unwrap_or(false) {
@@ -569,11 +575,12 @@ impl Repl {
                 result
             }
             Ok(PolicyDecision::Ask(req)) => {
-                // Needs approval — prompt user (prints its own ✓ Approved)
+                // prompt_approval starts with println!() to move to next line
                 self.prompt_approval(name, &args, req).await
             }
             Err(e) => {
                 error!(tool_name = name, error = ?e, "policy validation error");
+                println!("  {}", "✗".red());
                 serde_json::json!({
                     "success": false,
                     "error": {
