@@ -144,3 +144,44 @@ pub struct GetTodosResponse {
     pub has_open_items: bool,
     pub display: String,
 }
+
+// ── Sessions ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct SessionInfoResponse {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub message_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionResponse {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub messages: Vec<crate::api::ChatMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateSessionRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateSessionRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub messages: Option<Vec<crate::api::ChatMessage>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SearchSessionsQuery {
+    pub q: String,
+}
