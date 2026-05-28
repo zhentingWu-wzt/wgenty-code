@@ -1,17 +1,20 @@
 //! Application main loop — event handling, layout, and daemon lifecycle.
 
 use crate::state::AppState;
+use crate::tui::agent::AgentLoop;
 use crate::tui::client::DaemonClient;
 use crate::tui::components;
 use crate::tui::theme;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span, Text};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
 use std::io;
+use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio::sync::Mutex as TokioMutex;
 
 /// Events that drive the UI loop.
 #[derive(Debug)]
@@ -65,6 +68,7 @@ pub struct App {
     pub session_id: String,
     pub session_name: String,
     pub scroll_offset: u16,
+    pub agent: Arc<TokioMutex<AgentLoop>>,
     /// Channel sender for agent/input events
     event_tx: mpsc::UnboundedSender<AppEvent>,
     /// Channel receiver
@@ -75,6 +79,11 @@ pub struct App {
 impl App {
     pub fn new(daemon_client: DaemonClient, session_id: String) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let agent = AgentLoop::new(
+            daemon_client.clone(),
+            event_tx.clone(),
+            session_id.clone(),
+        );
         Self {
             daemon_client,
             input: String::new(),
@@ -85,6 +94,7 @@ impl App {
             session_id,
             session_name: "New Session".to_string(),
             scroll_offset: 0,
+            agent: Arc::new(TokioMutex::new(agent)),
             event_tx,
             event_rx,
             should_quit: false,
@@ -171,8 +181,11 @@ impl App {
                     content: text.clone(),
                     tool_name: None,
                 });
-                self.input.clear();
                 self.status = "thinking".to_string();
+                let agent = self.agent.clone();
+                tokio::spawn(async move {
+                    agent.lock().await.process_input(text).await;
+                });
             }
             AppEvent::ContentDelta(text) => {
                 self.streaming_content.push_str(&text);
@@ -265,51 +278,14 @@ impl App {
     }
 
     fn render_chat(&self, f: &mut Frame, area: Rect) {
-        let mut lines: Vec<Line> = Vec::new();
-
-        for msg in &self.committed_messages {
-            match msg.role {
-                MessageRole::User => {
-                    lines.push(Line::from(vec![
-                        Span::styled("> ", Style::default().fg(theme::ROLE_USER)),
-                        Span::raw(&msg.content),
-                    ]));
-                }
-                MessageRole::Assistant => {
-                    lines.push(Line::from(vec![
-                        Span::styled("* ", Style::default().fg(theme::ROLE_ASSISTANT)),
-                        Span::raw(&msg.content),
-                    ]));
-                }
-                MessageRole::Tool => {
-                    let label = msg.tool_name.as_deref().unwrap_or("tool");
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("[{}] ", label),
-                            Style::default().fg(theme::ROLE_TOOL),
-                        ),
-                        Span::styled(&msg.content, Style::default().fg(theme::DIM)),
-                    ]));
-                }
-                MessageRole::System => {
-                    lines.push(Line::from(vec![Span::styled(
-                        &msg.content,
-                        Style::default().fg(theme::DIM),
-                    )]));
-                }
-            }
-        }
-
-        // Streaming content as transient line
-        if self.streaming_active && !self.streaming_content.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled("* ", Style::default().fg(theme::ROLE_ASSISTANT)),
-                Span::raw(&self.streaming_content),
-            ]));
-        }
-
-        let para = Paragraph::new(Text::from(lines)).scroll((self.scroll_offset, 0));
-        f.render_widget(para, area);
+        components::chat::render(
+            f,
+            area,
+            &self.committed_messages,
+            &self.streaming_content,
+            self.streaming_active,
+            self.scroll_offset,
+        );
     }
 
     fn render_status(&self, f: &mut Frame, area: Rect) {
