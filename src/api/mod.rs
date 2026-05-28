@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anthropic_types::{convert_messages_to_anthropic, convert_tools_to_anthropic, convert_anthropic_response};
+use anthropic_types::{
+    convert_anthropic_response, convert_messages_to_anthropic, convert_tools_to_anthropic,
+};
 use provider::Provider;
 
 #[derive(Clone)]
@@ -112,9 +114,7 @@ impl ApiClient {
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<ChatResponse> {
         let (anthropic_msgs, system_prompt) = convert_messages_to_anthropic(&messages);
-        let anthropic_tools = tools
-            .as_ref()
-            .map(|t| convert_tools_to_anthropic(t));
+        let anthropic_tools = tools.as_ref().map(|t| convert_tools_to_anthropic(t));
 
         let request = anthropic_types::AnthropicRequest {
             model: self.provider.resolve_model_id(&self.settings.model),
@@ -140,7 +140,11 @@ impl ApiClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Anthropic API error ({}): {}", status, body));
+            return Err(anyhow::anyhow!(
+                "Anthropic API error ({}): {}",
+                status,
+                body
+            ));
         }
 
         let anthropic_resp: anthropic_types::AnthropicResponse = response.json().await?;
@@ -157,7 +161,8 @@ impl ApiClient {
             .ok_or_else(|| anyhow::anyhow!("API key not configured"))?;
 
         if self.provider.is_openai_compat() {
-            self.chat_stream_openai_compat(&api_key, messages, tools).await
+            self.chat_stream_openai_compat(&api_key, messages, tools)
+                .await
         } else {
             self.chat_stream_anthropic(&api_key, messages, tools).await
         }
@@ -201,14 +206,12 @@ impl ApiClient {
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<reqwest::Response> {
         use anthropic_types::{
-            AnthropicRequest, AnthropicStreamState, convert_messages_to_anthropic,
-            convert_tools_to_anthropic,
+            convert_messages_to_anthropic, convert_tools_to_anthropic, AnthropicRequest,
+            AnthropicStreamState,
         };
 
         let (anthropic_msgs, system_prompt) = convert_messages_to_anthropic(&messages);
-        let anthropic_tools = tools
-            .as_ref()
-            .map(|t| convert_tools_to_anthropic(t));
+        let anthropic_tools = tools.as_ref().map(|t| convert_tools_to_anthropic(t));
 
         let request = AnthropicRequest {
             model: self.provider.resolve_model_id(&self.settings.model),
@@ -234,7 +237,11 @@ impl ApiClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Anthropic API error ({}): {}", status, body));
+            return Err(anyhow::anyhow!(
+                "Anthropic API error ({}): {}",
+                status,
+                body
+            ));
         }
 
         // Read Anthropic SSE stream, convert to OpenAI-compatible SSE bytes
@@ -247,9 +254,7 @@ impl ApiClient {
             if line.is_empty() || !line.starts_with("data: ") {
                 continue;
             }
-            if let Some(chunks) =
-                anthropic_types::parse_anthropic_sse_line(&line, &mut state)
-            {
+            if let Some(chunks) = anthropic_types::parse_anthropic_sse_line(&line, &mut state) {
                 for chunk in &chunks {
                     sse_out.push_str("data: ");
                     sse_out.push_str(&serde_json::to_string(chunk).unwrap_or_default());

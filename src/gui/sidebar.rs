@@ -2,7 +2,7 @@
 //!
 //! Claude-style sidebar with conversation list and navigation
 
-use egui::{Color32, Frame, Margin, RichText, CornerRadius, Stroke, Ui, Vec2};
+use egui::{Color32, CornerRadius, Frame, Margin, RichText, Stroke, Ui, Vec2};
 
 /// Sidebar state and configuration
 pub struct Sidebar {
@@ -56,54 +56,51 @@ impl Sidebar {
             .max_width(400.0)
             .default_width(width)
             .show_inside(ui, |ui| {
-                Frame::NONE
-                    .fill(theme.background_darkest())
-                    .show(ui, |ui| {
-                        ui.set_width(width);
-                        ui.set_min_height(ui.available_height());
+                Frame::NONE.fill(theme.background_darkest()).show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.set_min_height(ui.available_height());
 
-                        // Header with collapse button
-                        ui.horizontal(|ui| {
-                            if !self.collapsed {
-                                ui.heading(
-                                    RichText::new("wgenty")
-                                        .color(theme.primary_color())
-                                        .size(20.0)
-                                        .strong(),
-                                );
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        let collapse_btn = egui::Button::new(
-                                            RichText::new("◀").color(theme.muted_text_color()),
-                                        )
-                                        .fill(theme.surface_color())
-                                        .corner_radius(CornerRadius::same(6));
-                                        if ui.add(collapse_btn).clicked() {
-                                            self.collapsed = true;
-                                        }
-                                    },
-                                );
-                            } else {
-                                let expand_btn = egui::Button::new(
-                                    RichText::new("▶").color(theme.primary_color()),
-                                )
-                                .fill(theme.surface_color())
-                                .corner_radius(CornerRadius::same(6));
-                                if ui.add(expand_btn).clicked() {
-                                    self.collapsed = false;
-                                }
-                            }
-                        });
-
-                        ui.add_space(20.0);
-
-                        if self.collapsed {
-                            self.render_collapsed(ui, theme);
+                    // Header with collapse button
+                    ui.horizontal(|ui| {
+                        if !self.collapsed {
+                            ui.heading(
+                                RichText::new("wgenty")
+                                    .color(theme.primary_color())
+                                    .size(20.0)
+                                    .strong(),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let collapse_btn = egui::Button::new(
+                                        RichText::new("◀").color(theme.muted_text_color()),
+                                    )
+                                    .fill(theme.surface_color())
+                                    .corner_radius(CornerRadius::same(6));
+                                    if ui.add(collapse_btn).clicked() {
+                                        self.collapsed = true;
+                                    }
+                                },
+                            );
                         } else {
-                            self.render_expanded(ui, theme);
+                            let expand_btn =
+                                egui::Button::new(RichText::new("▶").color(theme.primary_color()))
+                                    .fill(theme.surface_color())
+                                    .corner_radius(CornerRadius::same(6));
+                            if ui.add(expand_btn).clicked() {
+                                self.collapsed = false;
+                            }
                         }
                     });
+
+                    ui.add_space(20.0);
+
+                    if self.collapsed {
+                        self.render_collapsed(ui, theme);
+                    } else {
+                        self.render_expanded(ui, theme);
+                    }
+                });
             });
     }
 
