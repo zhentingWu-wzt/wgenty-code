@@ -4,8 +4,12 @@ use crate::state::AppState;
 use crate::tui::agent::AgentLoop;
 use crate::tui::client::DaemonClient;
 use crate::tui::components;
+use crate::tui::client::SessionInfo;
+use crate::tui::client::TodoItem;
 use crate::tui::components::permission::PermissionState;
 use crate::tui::components::question::QuestionState;
+use crate::tui::components::session::SessionState;
+use crate::tui::components::task_panel::TaskPanelState;
 use crate::tui::theme;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -47,6 +51,14 @@ pub enum AppEvent {
     StreamError(String),
     /// Tick for periodic refresh
     Tick,
+    /// Toggle session popup
+    ToggleSessions,
+    /// Toggle task panel
+    ToggleTaskPanel,
+    /// Sessions loaded from daemon
+    SessionListLoaded(Vec<SessionInfo>),
+    /// Todo items updated from daemon
+    TodosUpdated(Vec<TodoItem>),
 }
 
 /// UI state for a single message in the chat view.
@@ -84,6 +96,8 @@ pub struct App {
     should_quit: bool,
     pub permission_state: PermissionState,
     pub question_state: QuestionState,
+    pub session_state: SessionState,
+    pub task_panel: TaskPanelState,
 }
 
 impl App {
@@ -110,6 +124,8 @@ impl App {
             should_quit: false,
             permission_state: PermissionState::new(),
             question_state: QuestionState::new(),
+            session_state: SessionState::new(),
+            task_panel: TaskPanelState::new(),
         }
     }
 
@@ -171,6 +187,16 @@ impl App {
                         {
                             let _ = tx.send(AppEvent::Key(KeyCode::Esc));
                             return Ok(());
+                        }
+                        KeyCode::Char('s')
+                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            let _ = tx.send(AppEvent::ToggleSessions);
+                        }
+                        KeyCode::Char('t')
+                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            let _ = tx.send(AppEvent::ToggleTaskPanel);
                         }
                         KeyCode::Enter => {
                             let _ = tx.send(AppEvent::Key(KeyCode::Enter));
@@ -246,6 +272,38 @@ impl App {
             } => {
                 self.question_state.show(question, options, multi_select);
             }
+            AppEvent::ToggleSessions => {
+                if self.session_state.visible {
+                    self.session_state.dismiss();
+                } else {
+                    let client = self.daemon_client.clone();
+                    let tx = self.event_tx.clone();
+                    tokio::spawn(async move {
+                        if let Ok(sessions) = client.list_sessions().await {
+                            let _ = tx.send(AppEvent::SessionListLoaded(sessions));
+                        }
+                    });
+                }
+            }
+            AppEvent::SessionListLoaded(sessions) => {
+                self.session_state.show(sessions);
+            }
+            AppEvent::ToggleTaskPanel => {
+                self.task_panel.toggle();
+                // Fetch todos from daemon if opening
+                if self.task_panel.visible {
+                    let client = self.daemon_client.clone();
+                    let tx = self.event_tx.clone();
+                    tokio::spawn(async move {
+                        if let Ok(todos) = client.get_todos().await {
+                            let _ = tx.send(AppEvent::TodosUpdated(todos.items));
+                        }
+                    });
+                }
+            }
+            AppEvent::TodosUpdated(items) => {
+                self.task_panel.update(items);
+            }
             _ => {}
         }
     }
@@ -291,6 +349,37 @@ impl App {
             return;
         }
 
+        // If session popup is visible, handle its keys
+        if self.session_state.visible {
+            match key {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.session_state.move_up();
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.session_state.move_down();
+                }
+                KeyCode::Enter => {
+                    if let Some(session) = self.session_state.selected_session() {
+                        let id = session.id.clone();
+                        self.session_state.dismiss();
+                        // Load session in background
+                        let client = self.daemon_client.clone();
+                        let agent = self.agent.clone();
+                        tokio::spawn(async move {
+                            if let Ok(resp) = client.load_session(&id).await {
+                                agent.lock().await.load_history(resp.messages);
+                            }
+                        });
+                    }
+                }
+                KeyCode::Esc => {
+                    self.session_state.dismiss();
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match key {
             KeyCode::Esc => {
                 self.should_quit = true;
@@ -326,10 +415,24 @@ impl App {
             .split(area);
 
         self.render_header(f, layout[0]);
-        if self.committed_messages.is_empty() && !self.streaming_active {
-            components::welcome::render(f, layout[1]);
+        let main_area = if self.task_panel.visible {
+            let split = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(70),
+                    Constraint::Percentage(30),
+                ])
+                .split(layout[1]);
+            components::task_panel::render(f, split[1], &self.task_panel);
+            split[0]
         } else {
-            self.render_chat(f, layout[1]);
+            layout[1]
+        };
+
+        if self.committed_messages.is_empty() && !self.streaming_active {
+            components::welcome::render(f, main_area);
+        } else {
+            self.render_chat(f, main_area);
         }
         self.render_status(f, layout[2]);
         self.render_input(f, layout[3]);
@@ -337,6 +440,7 @@ impl App {
         // Render popups on top (at the end so they overlay everything)
         components::permission::render(f, &self.permission_state, centered_rect);
         components::question::render(f, &self.question_state, centered_rect);
+        components::session::render(f, &self.session_state, centered_rect);
     }
 
     fn render_header(&self, f: &mut Frame, area: Rect) {
