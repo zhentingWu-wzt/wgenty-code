@@ -1,5 +1,6 @@
 //! Session Module - Session management
 
+use crate::api::ChatMessage;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -18,7 +19,7 @@ impl SessionManager {
         Self { sessions_dir }
     }
 
-    /// List all sessions
+    /// List all sessions (returns SessionInfo without messages)
     pub fn list(&self) -> anyhow::Result<Vec<SessionInfo>> {
         if !self.sessions_dir.exists() {
             return Ok(Vec::new());
@@ -31,16 +32,34 @@ impl SessionManager {
 
             if path.extension().map(|e| e == "json").unwrap_or(false) {
                 if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Ok(session) = serde_json::from_str::<SessionInfo>(&content) {
-                        sessions.push(session);
+                    if let Ok(session) = serde_json::from_str::<Session>(&content) {
+                        let summary = session
+                            .messages
+                            .iter()
+                            .find(|m| m.role == "user")
+                            .and_then(|m| m.content.as_ref())
+                            .map(|c| {
+                                if c.len() > 80 {
+                                    format!("{}...", &c[..80])
+                                } else {
+                                    c.clone()
+                                }
+                            });
+
+                        sessions.push(SessionInfo {
+                            id: session.id,
+                            name: session.name,
+                            created_at: session.created_at,
+                            updated_at: session.updated_at,
+                            message_count: session.messages.len(),
+                            summary,
+                        });
                     }
                 }
             }
         }
 
-        // Sort by created_at descending
-        sessions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-
+        sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(sessions)
     }
 
@@ -78,7 +97,7 @@ impl SessionManager {
         Ok(Some(session))
     }
 
-    /// Save a session
+    /// Save a session (upsert: create file if it doesn't exist)
     pub fn save(&self, session: &Session) -> anyhow::Result<()> {
         std::fs::create_dir_all(&self.sessions_dir)?;
 
@@ -99,6 +118,23 @@ impl SessionManager {
 
         Ok(())
     }
+
+    /// Search sessions by name and first user message content
+    pub fn search(&self, query: &str) -> anyhow::Result<Vec<SessionInfo>> {
+        let all = self.list()?;
+        let query_lower = query.to_lowercase();
+
+        Ok(all
+            .into_iter()
+            .filter(|s| {
+                s.name.to_lowercase().contains(&query_lower)
+                    || s.summary
+                        .as_ref()
+                        .map(|sm| sm.to_lowercase().contains(&query_lower))
+                        .unwrap_or(false)
+            })
+            .collect())
+    }
 }
 
 impl Default for SessionManager {
@@ -113,14 +149,7 @@ pub struct Session {
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pub messages: Vec<Message>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub role: String,
-    pub content: String,
-    pub timestamp: DateTime<Utc>,
+    pub messages: Vec<ChatMessage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,4 +159,6 @@ pub struct SessionInfo {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub message_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
