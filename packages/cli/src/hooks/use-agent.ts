@@ -226,8 +226,8 @@ export function useAgent({ client }: UseAgentOptions) {
     try {
       await client.saveSession(sessionId, sessionName || "Untitled", history);
       setDirty(false);
-    } catch {
-      // silently fail — auto-save is best-effort
+    } catch (err) {
+      console.error("Failed to save session:", err);
     }
   }, [client, sessionId, sessionName]);
 
@@ -279,8 +279,8 @@ export function useAgent({ client }: UseAgentOptions) {
     setSessionListOpen(false);
   }, []);
 
-  const reset = useCallback(() => {
-    saveCurrentSession();
+  const reset = useCallback(async () => {
+    await saveCurrentSession();
     setMessages([]);
     setStatus({ type: "idle" });
     streamingContentRef.current = "";
