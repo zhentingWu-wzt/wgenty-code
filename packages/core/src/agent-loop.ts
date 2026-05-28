@@ -535,6 +535,18 @@ export class AgentLoop {
     });
   }
 
+  /** Replace conversation history entirely (for session restore). */
+  loadHistory(messages: ChatMessage[]): void {
+    this.roundsSinceTodo = 0;
+    this.compactedSummary = "";
+    this.conversationHistory = messages;
+  }
+
+  /** Expose current conversation history (for session save). */
+  getHistory(): ChatMessage[] {
+    return this.conversationHistory;
+  }
+
   /** Reset conversation history, preserving the system prompt. */
   reset(): void {
     this.roundsSinceTodo = 0;
