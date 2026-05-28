@@ -113,7 +113,7 @@ export function useAgent({ client }: UseAgentOptions) {
 
     onToolResult(name: string, result: ToolResult) {
       const summary = result.success
-        ? result.content ?? "Done"
+        ? formatToolResult(name, result.content ?? "Done")
         : result.error ?? "failed";
       addMsg("tool", summary, {
         toolName: name,
@@ -139,6 +139,12 @@ export function useAgent({ client }: UseAgentOptions) {
       return new Promise((resolve) => {
         setPendingQuestion({ question, options, multiSelect, resolve });
       });
+    },
+
+    onStreamRetry() {
+      // Clear partial streaming content before retry
+      streamingContentRef.current = "";
+      updateLastMsg("");
     },
   };
 
@@ -227,6 +233,99 @@ export function useAgent({ client }: UseAgentOptions) {
 
 // ── Tool display helpers ──────────────────────────────────────────────────────
 
+/** Route tool result content through tool-specific formatters. */
+function formatToolResult(name: string, content: string): string {
+  if (name === "task_management") {
+    const formatted = formatTaskManagementResult(content);
+    if (formatted !== null) return formatted;
+  }
+  if (name === "TodoWrite") return content; // Already formatted by the tool itself
+  return content;
+}
+
+/** Pretty-print a task_management tool result. Returns null if not parseable. */
+function formatTaskManagementResult(content: string): string | null {
+  try {
+    const data = JSON.parse(content);
+    if (!data.success) return null;
+
+    // list operation — render a task table
+    if (data.tasks && Array.isArray(data.tasks)) {
+      if (data.tasks.length === 0) return "No tasks found.";
+      const lines: string[] = [`Tasks (${data.count ?? data.tasks.length}):`];
+      for (const t of data.tasks) {
+        const s = statusIcon(t.status);
+        const p = priorityLabel(t.priority);
+        const id = (t.id as string).slice(0, 8);
+        const tags =
+          t.tags && (t.tags as string[]).length > 0
+            ? ` [${(t.tags as string[]).join(", ")}]`
+            : "";
+        lines.push(`  ${s} ${p} [${id}] ${t.subject}${tags}`);
+      }
+      return lines.join("\n");
+    }
+
+    // single task result (get, complete, update)
+    if (data.task) {
+      const t = data.task;
+      const s = statusIcon(t.status);
+      const p = priorityLabel(t.priority);
+      const lines: string[] = [
+        `${s} ${p} [${(t.id as string).slice(0, 8)}] ${t.subject}`,
+        `   Status: ${t.status} | Priority: ${t.priority}`,
+      ];
+      if (t.description) lines.push(`   ${t.description}`);
+      if (t.tags && (t.tags as string[]).length > 0)
+        lines.push(`   Tags: ${(t.tags as string[]).join(", ")}`);
+      return lines.join("\n");
+    }
+
+    // create / delete — just message + task_id
+    if (data.message) {
+      return data.task_id
+        ? `${data.message}\n   ID: ${(data.task_id as string).slice(0, 8)}`
+        : data.message;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Shared display helpers ────────────────────────────────────────────────────
+
+function statusIcon(status: string): string {
+  switch (status) {
+    case "Pending":
+      return "○";
+    case "InProgress":
+      return "◐";
+    case "Completed":
+      return "✓";
+    case "Deleted":
+      return "✗";
+    default:
+      return "?";
+  }
+}
+
+function priorityLabel(priority: string): string {
+  switch (priority) {
+    case "Critical":
+      return "🔴";
+    case "High":
+      return "🟠";
+    case "Medium":
+      return "🟡";
+    case "Low":
+      return "🟢";
+    default:
+      return "";
+  }
+}
+
 /** Format a one-line summary of what the tool call is doing. */
 function formatToolCallSummary(
   name: string,
@@ -247,8 +346,32 @@ function formatToolCallSummary(
       return `Listing ${args.path ?? "directory"}...`;
     case "git_operations":
       return `Git ${args.operation ?? "operation"}...`;
-    case "task_management":
-      return `Task: ${args.action ?? "..."}...`;
+    case "task_management": {
+      const op = args.operation as string | undefined;
+      if (op === "create" && args.subject)
+        return `Creating task "${args.subject}"...`;
+      if (op === "update" && args.task_id)
+        return `Updating task ${(args.task_id as string).slice(0, 8)}...`;
+      if (op === "delete" && args.task_id)
+        return `Deleting task ${(args.task_id as string).slice(0, 8)}...`;
+      if (op === "complete" && args.task_id)
+        return `Completing task ${(args.task_id as string).slice(0, 8)}...`;
+      if (op === "get" && args.task_id)
+        return `Getting task ${(args.task_id as string).slice(0, 8)}...`;
+      if (op === "list") return `Listing tasks...`;
+      return `Task: ${op ?? "..."}...`;
+    }
+    case "TodoWrite": {
+      const newItems = args.items as Array<Record<string, string>> | undefined;
+      if (newItems && newItems.length > 0) {
+        const total = newItems.length;
+        const done = newItems.filter(
+          (i) => i.status === "completed"
+        ).length;
+        return `Updating todos (${done}/${total})...`;
+      }
+      return `Updating todos...`;
+    }
     case "note_edit":
       return `Editing notes...`;
     case "view":
@@ -265,13 +388,34 @@ function formatToolArgs(args: Record<string, unknown>): string {
   const command = args.command as string | undefined;
   const pattern = args.pattern as string | undefined;
   const operation = args.operation as string | undefined;
-  const action = args.action as string | undefined;
 
   if (path) parts.push(`path: ${path}`);
   if (command) parts.push(`\`${command}\``);
   if (pattern) parts.push(`pattern: ${pattern}`);
   if (operation) parts.push(operation);
-  if (action) parts.push(action);
+
+  // TodoWrite specific
+  if (args.items && Array.isArray(args.items)) {
+    const total = (args.items as Array<Record<string, unknown>>).length;
+    const done = (args.items as Array<Record<string, unknown>>).filter(
+      (i) => i.status === "completed"
+    ).length;
+    parts.push(`${done}/${total}`);
+  }
+
+  // task_management specific
+  if (args.subject) parts.push(`"${args.subject}"`);
+  if (args.task_id)
+    parts.push(`id: ${(args.task_id as string).slice(0, 8)}`);
+  if (args.status) parts.push(`status: ${args.status}`);
+  if (args.priority) parts.push(`${args.priority}`);
+  if (args.filter) {
+    const f = args.filter as Record<string, unknown>;
+    const fparts: string[] = [];
+    if (f.status) fparts.push(`status=${f.status}`);
+    if (f.priority) fparts.push(`priority=${f.priority}`);
+    if (fparts.length) parts.push(`filter: ${fparts.join(",")}`);
+  }
 
   return parts.join(" · ") || "";
 }

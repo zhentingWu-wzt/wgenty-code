@@ -38,7 +38,7 @@ function mergeMessages(messages: UIMessage[]): UIMessage[] {
   return out;
 }
 
-export const ChatView: React.FC<Props> = ({
+export const ChatView: React.FC<Props> = React.memo(({
   messages,
   width,
   allExpanded,
@@ -84,4 +84,4 @@ export const ChatView: React.FC<Props> = ({
       })}
     </Box>
   );
-};
+});

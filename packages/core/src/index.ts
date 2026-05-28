@@ -1,5 +1,11 @@
 export { ApiClient } from "./client.ts";
-export type { ClientOptions } from "./client.ts";
+export type {
+  ClientOptions,
+  TaskInfo,
+  TaskListResponse,
+  TodoItemInfo,
+  TodoResponse,
+} from "./client.ts";
 export { parseSseLine } from "./sse.ts";
 export { AgentLoop } from "./agent-loop.ts";
 export type {

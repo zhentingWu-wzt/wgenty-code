@@ -6,6 +6,9 @@ import type {
   StreamChoice,
   ToolCall,
 } from "./types.ts";
+import * as path from "node:path";
+import * as os from "node:os";
+import { promises as fs } from "node:fs";
 
 // ── Stream result ────────────────────────────────────────────────────────────
 
@@ -15,6 +18,8 @@ export interface StreamResult {
   toolCalls: ToolCall[];
   hasToolCalls: boolean;
   finishReason: string;
+  /** True if the stream received a finish_reason or [DONE] marker */
+  streamComplete: boolean;
 }
 
 // ── Tool result ─────────────────────────────────────────────────────────────
@@ -48,6 +53,8 @@ export interface AgentCallbacks {
     options: { label: string; description: string }[],
     multiSelect: boolean
   ): Promise<string[]>;
+  /** Called before retrying a broken stream — UI should clear partial content */
+  onStreamRetry(): void;
 }
 
 // ── Stream processor (TypeScript port of Rust StreamProcessor) ──────────────
@@ -59,6 +66,7 @@ class StreamProcessor {
   private toolCallsAccum: Record<string, unknown>[] = [];
   hasToolCalls = false;
   private finishReason = "";
+  streamComplete = false;
 
   feedBytes(bytes: Uint8Array): StreamEvent[] {
     this.buffer += new TextDecoder().decode(bytes);
@@ -79,6 +87,18 @@ class StreamProcessor {
   }
 
   private processLine(line: string): StreamEvent | null {
+    // Detect daemon error events (not standard SSE chat chunks)
+    if (line.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.error) {
+          return { type: "stream_error", error: parsed.error as string };
+        }
+      } catch {
+        // Not JSON, continue to standard processing
+      }
+    }
+
     const chunk = parseSseLine(line);
     if (!chunk) return null;
 
@@ -88,6 +108,7 @@ class StreamProcessor {
     // Finish reason
     if (choice.finish_reason) {
       this.finishReason = choice.finish_reason;
+      this.streamComplete = true;
       return { type: "done", finishReason: choice.finish_reason };
     }
 
@@ -161,6 +182,7 @@ class StreamProcessor {
       toolCalls,
       hasToolCalls: this.hasToolCalls,
       finishReason: this.finishReason,
+      streamComplete: this.streamComplete,
     };
   }
 }
@@ -177,7 +199,37 @@ type StreamEvent =
       name?: string;
       arguments?: string;
     }
-  | { type: "done"; finishReason: string };
+  | { type: "done"; finishReason: string }
+  | { type: "stream_error"; error: string };
+
+/** Build the system prompt for the agent. */
+export function buildSystemPrompt(): string {
+  return `You are a coding agent with access to tools for reading/writing files, executing commands, searching code, git operations, and task tracking.
+
+## Planning
+
+Before any non-trivial multi-step task, use \`TodoWrite\` to break it down into a checklist. \
+Replace the ENTIRE list each call — it's a batch update, not CRUD. \
+Mark the current task \`in_progress\` (with activeForm) before starting, \`completed\` when done. \
+Only ONE in_progress at a time. Max 20 items.
+
+Example: for "add a login page", call TodoWrite with:
+\`\`\`
+items: [
+  {content: "Create login component", status: "pending", activeForm: ""},
+  {content: "Add auth API route", status: "pending", activeForm: ""},
+  {content: "Write tests", status: "pending", activeForm: ""}
+]
+\`\`\`
+Then mark the first one in_progress: \`{content: "Create login component", status: "in_progress", activeForm: "Creating login component"}\`
+
+Prefer tools over prose. Update TodoWrite as you progress.
+
+## Skills (on-demand)
+
+Use \`load_skill\` to load full skill instructions when you need detailed guidance \
+for a specific task. Call \`load_skill\` with no name to list available skills.`;
+}
 
 // ── Agent loop ───────────────────────────────────────────────────────────────
 
@@ -188,12 +240,25 @@ export interface AgentLoopOptions {
   maxTokens?: number;
 }
 
+/** Errors that should trigger a stream retry (network, timeout, stream break) */
+function isRetryableError(err: unknown): boolean {
+  const msg = String(err);
+  // Don't retry on HTTP API errors (4xx/5xx from the daemon itself)
+  if (msg.includes("API error") && !msg.includes("timeout")) return false;
+  return true;
+}
+
 export class AgentLoop {
   private client: ApiClient;
   private callbacks: AgentCallbacks;
   private sessionId: string;
   private maxTokens?: number;
-  conversationHistory: ChatMessage[] = [];
+  private roundsSinceTodo = 0;
+  private compactedSummary = "";
+  private readonly MAX_ESTIMATED_TOKENS = 50000;
+  conversationHistory: ChatMessage[] = [
+    { role: "system", content: buildSystemPrompt() },
+  ];
 
   constructor(options: AgentLoopOptions) {
     this.client = options.client;
@@ -204,19 +269,25 @@ export class AgentLoop {
 
   /** Process a single user input. Handles the full agent loop (SSE + tools). */
   async processInput(input: string): Promise<void> {
+    // Inject any completed background task results before processing new input
+    await this.injectBackgroundResults();
+
     this.conversationHistory.push({ role: "user", content: input });
 
     const maxRounds = 10;
     for (let round = 0; round < maxRounds; round++) {
-      const messages = [...this.conversationHistory];
+      // Micro-compact old tool results before sending to API
+      const messages = this.microCompact();
 
-      const response = await this.client.chatStream({
-        messages,
-        max_tokens: this.maxTokens,
-      });
+      // Auto-compaction check — trigger if estimated tokens exceed limit
+      if (this.needsCompaction(messages)) {
+        await this.doAutoCompact();
+        // The conversation was replaced with a summary — restart the round
+        continue;
+      }
 
-      // Stream SSE
-      const result = await this.streamResponse(response);
+      // Stream with retry on network/stream errors
+      const result = await this.streamWithRetry(messages);
 
       if (result.hasToolCalls && result.toolCalls.length > 0) {
         // Build assistant message
@@ -230,6 +301,7 @@ export class AgentLoop {
         this.conversationHistory.push(assistantMsg);
 
         // Execute each tool
+        let usedTodo = false;
         for (const tc of result.toolCalls) {
           let args: Record<string, unknown>;
           try {
@@ -246,6 +318,29 @@ export class AgentLoop {
               tool_call_id: tc.id,
             });
             continue;
+          }
+
+          // s06: manual compaction — handle locally, don't call the daemon
+          if (tc.function.name === "compact") {
+            const compactResult: ToolResult = {
+              success: true,
+              outputType: "text",
+              content:
+                "Conversation history has been compressed to save context. Full transcript archived to ~/.claude-code/transcripts/.",
+            };
+            this.callbacks.onToolStart(tc.function.name, args);
+            await this.doAutoCompact();
+            this.callbacks.onToolResult(tc.function.name, compactResult);
+            this.conversationHistory.push({
+              role: "tool",
+              content: JSON.stringify(compactResult),
+              tool_call_id: tc.id,
+            });
+            continue;
+          }
+
+          if (tc.function.name === "TodoWrite") {
+            usedTodo = true;
           }
 
           this.callbacks.onToolStart(tc.function.name, args);
@@ -265,6 +360,18 @@ export class AgentLoop {
           });
         }
 
+        // s03: nag reminder — inject after 3 rounds without TodoWrite
+        this.roundsSinceTodo = usedTodo ? 0 : this.roundsSinceTodo + 1;
+        if (this.roundsSinceTodo >= 3) {
+          this.conversationHistory[this.conversationHistory.length - 1] = {
+            ...this.conversationHistory[this.conversationHistory.length - 1],
+            content:
+              this.conversationHistory[this.conversationHistory.length - 1]
+                .content +
+              "\n<reminder>Update your todos with TodoWrite.</reminder>",
+          };
+        }
+
         // Continue loop — model gets tool results
         continue;
       }
@@ -279,6 +386,42 @@ export class AgentLoop {
       }
       break;
     }
+  }
+
+  /** Stream with retry logic. Retries up to 2 times on network/stream errors. */
+  private async streamWithRetry(messages: ChatMessage[]): Promise<StreamResult> {
+    const maxRetries = 2;
+    let lastError = "";
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await this.client.chatStream({
+          messages,
+          max_tokens: this.maxTokens,
+        });
+        const result = await this.streamResponse(response);
+
+        // Detect incomplete stream: has tool calls but never received finish_reason
+        if (result.hasToolCalls && !result.streamComplete) {
+          throw new Error("Stream ended before tool calls completed");
+        }
+
+        return result;
+      } catch (err) {
+        lastError = String(err);
+
+        if (!isRetryableError(err) || attempt >= maxRetries) {
+          throw err;
+        }
+
+        // Signal UI to clear partial content before retry
+        this.callbacks.onStreamRetry();
+        // Exponential backoff: 2s, 4s
+        await new Promise((r) => setTimeout(r, (attempt + 1) * 2000));
+      }
+    }
+
+    throw new Error(`Stream failed after retries: ${lastError}`);
   }
 
   private async streamResponse(response: Response): Promise<StreamResult> {
@@ -303,8 +446,10 @@ export class AgentLoop {
               // silently accumulate
               break;
             case "done":
-              // stream done
+              // stream complete — finish_reason received
               break;
+            case "stream_error":
+              throw new Error(`Daemon error: ${event.error}`);
           }
         }
       }
@@ -356,6 +501,7 @@ export class AgentLoop {
         success: retryResult.success,
         outputType: retryResult.output_type ?? undefined,
         content: retryResult.content ?? undefined,
+        error: retryResult.error ?? undefined,
       };
     }
 
@@ -363,6 +509,7 @@ export class AgentLoop {
       success: result.success,
       outputType: result.output_type ?? undefined,
       content: result.content ?? undefined,
+      error: result.error ?? undefined,
     };
   }
 
@@ -388,8 +535,220 @@ export class AgentLoop {
     });
   }
 
-  /** Reset conversation history */
+  /** Reset conversation history, preserving the system prompt. */
   reset(): void {
-    this.conversationHistory = [];
+    this.roundsSinceTodo = 0;
+    this.compactedSummary = "";
+    this.conversationHistory = [
+      { role: "system", content: buildSystemPrompt() },
+    ];
+  }
+
+  /**
+   * Poll the daemon for completed background task results.
+   * If any exist, inject them as a user message so the agent sees them
+   * on the next iteration.
+   */
+  private async injectBackgroundResults(): Promise<void> {
+    try {
+      const results = await this.client.getBackgroundResults();
+      if (results && results.length > 0) {
+        const notification = results
+          .map(
+            (r: any) =>
+              `[Background task ${r.task_id} completed: ${r.success ? "SUCCESS" : "FAILED"}]\n${r.stdout || r.stderr}`,
+          )
+          .join("\n\n");
+        this.conversationHistory.push({
+          role: "user",
+          content: notification,
+        });
+      }
+    } catch {
+      // Silently ignore — background results are optional
+    }
+  }
+
+  // ── s06: Context compaction ──────────────────────────────────────────────
+
+  /**
+   * Micro-compaction: silently replace old tool results with short markers.
+   * Keeps the last 3 tool messages as-is and always preserves read_file results.
+   * Returns the compacted array without modifying conversationHistory.
+   */
+  private microCompact(): ChatMessage[] {
+    // Build a map: tool_call_id -> tool_name from all assistant messages
+    const toolCallIdToName = new Map<string, string>();
+    for (const msg of this.conversationHistory) {
+      if (msg.role === "assistant" && msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          toolCallIdToName.set(tc.id, tc.function.name);
+        }
+      }
+    }
+
+    // Find indices of all tool result messages
+    const toolIndices: number[] = [];
+    for (let i = 0; i < this.conversationHistory.length; i++) {
+      if (this.conversationHistory[i].role === "tool") {
+        toolIndices.push(i);
+      }
+    }
+
+    // Keep the last 3 tool messages as-is
+    const keepIndices = new Set(toolIndices.slice(-3));
+
+    const result: ChatMessage[] = [];
+    for (let i = 0; i < this.conversationHistory.length; i++) {
+      const msg = this.conversationHistory[i];
+      if (msg.role === "tool" && !keepIndices.has(i)) {
+        const toolName = msg.tool_call_id
+          ? toolCallIdToName.get(msg.tool_call_id)
+          : undefined;
+        // Always preserve read_file results (they are reference material)
+        if (toolName === "file_read" || toolName === "read_file") {
+          result.push(msg);
+        } else {
+          result.push({
+            role: "tool",
+            content: `[Previous: used ${toolName || "unknown tool"}]`,
+            tool_call_id: msg.tool_call_id,
+          });
+        }
+      } else {
+        result.push(msg);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Estimate whether the message list exceeds the token limit.
+   * Rough estimate: total_chars / 4.
+   */
+  private needsCompaction(messages: ChatMessage[]): boolean {
+    const totalChars = messages.reduce(
+      (sum, m) => sum + (m.content?.length ?? 0),
+      0,
+    );
+    return totalChars / 4 > this.MAX_ESTIMATED_TOKENS;
+  }
+
+  /**
+   * Auto-compaction: save full transcript to disk, ask LLM to summarize,
+   * then replace conversationHistory with the summary.
+   */
+  private async doAutoCompact(): Promise<void> {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const transcriptDir = path.join(
+      os.homedir(),
+      ".claude-code",
+      "transcripts",
+    );
+
+    // Ensure transcript directory exists
+    await fs.mkdir(transcriptDir, { recursive: true });
+
+    // Save full transcript to disk as a JSON archive
+    const transcriptPath = path.join(
+      transcriptDir,
+      `session_${timestamp}.json`,
+    );
+    await fs.writeFile(
+      transcriptPath,
+      JSON.stringify(this.conversationHistory, null, 2),
+      "utf-8",
+    );
+
+    // Build a plain-text version for the summarization prompt
+    const transcriptText = this.conversationHistory
+      .map((m) => {
+        const role = m.role;
+        const content = m.content ?? "";
+        return `[${role}]: ${content}`;
+      })
+      .join("\n\n");
+
+    const summaryMessages: ChatMessage[] = [
+      {
+        role: "system",
+        content:
+          "You are a conversation summary assistant. Summarize the following coding assistant conversation history for an AI agent. Preserve key details: project context, files modified, decisions made, bugs found, commands executed, and any pending tasks. Keep it concise but include all important information the agent needs to continue working. Do NOT use any tools — just return the summary as plain text.",
+      },
+      {
+        role: "user",
+        content: `Summarize this conversation history:\n\n${transcriptText}`,
+      },
+    ];
+
+    try {
+      const summary = await this.simpleStream(summaryMessages);
+      if (!summary) {
+        return; // Empty summary — don't replace history
+      }
+
+      this.compactedSummary = summary;
+
+      // Find the last user message to preserve continuity
+      const lastUserMsg = [...this.conversationHistory]
+        .reverse()
+        .find((m) => m.role === "user");
+
+      // Replace conversation with compressed version:
+      // system prompt → summary → last user message
+      this.conversationHistory = [
+        { role: "system", content: buildSystemPrompt() },
+        {
+          role: "system",
+          content: `<previous_conversation_summary>\n${summary}\n</previous_conversation_summary>`,
+        },
+      ];
+
+      if (lastUserMsg) {
+        this.conversationHistory.push(lastUserMsg);
+      }
+    } catch (err) {
+      // Don't modify conversationHistory on failure — the transcript is
+      // already saved, so nothing is lost.
+      console.error("Auto-compaction failed:", err);
+    }
+  }
+
+  /**
+   * Stream messages and collect the full response without triggering UI callbacks.
+   * Used internally for compaction summarization.
+   */
+  private async simpleStream(messages: ChatMessage[]): Promise<string> {
+    const maxRetries = 1;
+    let lastError = "";
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await this.client.chatStream({ messages });
+        const processor = new StreamProcessor();
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error("Response body not readable");
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            processor.feedBytes(value);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+
+        return processor.finish().content;
+      } catch (err) {
+        lastError = String(err);
+        if (attempt < maxRetries) {
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      }
+    }
+
+    throw new Error(`Summary stream failed: ${lastError}`);
   }
 }
