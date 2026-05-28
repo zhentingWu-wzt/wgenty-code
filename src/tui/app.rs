@@ -6,15 +6,16 @@ use crate::tui::client::DaemonClient;
 use crate::tui::components;
 use crate::tui::client::SessionInfo;
 use crate::tui::client::TodoItem;
+use crate::tui::components::input::InputBox;
 use crate::tui::components::permission::PermissionState;
 use crate::tui::components::question::QuestionState;
 use crate::tui::components::session::SessionState;
 use crate::tui::components::task_panel::TaskPanelState;
 use crate::tui::theme;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::Style;
+use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
 use std::io;
@@ -25,8 +26,8 @@ use tokio::sync::Mutex as TokioMutex;
 /// Events that drive the UI loop.
 #[derive(Debug)]
 pub enum AppEvent {
-    /// User pressed a key
-    Key(KeyCode),
+    /// Full key event for tui-textarea processing (CJK/IME support)
+    KeyEvent(KeyEvent),
     /// User submitted input text
     Submit(String),
     /// An SSE content delta arrived
@@ -80,7 +81,7 @@ pub struct UIMessage {
 /// Application state for the TUI.
 pub struct App {
     pub daemon_client: DaemonClient,
-    pub input: String,
+    pub input_box: InputBox,
     pub committed_messages: Vec<UIMessage>,
     pub streaming_content: String,
     pub streaming_active: bool,
@@ -110,7 +111,7 @@ impl App {
         );
         Self {
             daemon_client,
-            input: String::new(),
+            input_box: InputBox::new(),
             committed_messages: Vec::new(),
             streaming_content: String::new(),
             streaming_active: false,
@@ -181,30 +182,29 @@ impl App {
         loop {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
-                    match key.code {
-                        KeyCode::Char('c')
-                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                        {
-                            let _ = tx.send(AppEvent::Key(KeyCode::Esc));
-                            return Ok(());
-                        }
-                        KeyCode::Char('s')
-                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                        {
-                            let _ = tx.send(AppEvent::ToggleSessions);
-                        }
-                        KeyCode::Char('t')
-                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                        {
-                            let _ = tx.send(AppEvent::ToggleTaskPanel);
-                        }
-                        KeyCode::Enter => {
-                            let _ = tx.send(AppEvent::Key(KeyCode::Enter));
-                        }
-                        _ => {
-                            let _ = tx.send(AppEvent::Key(key.code));
-                        }
+                    // Ctrl+C -> quit
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        let _ = tx.send(AppEvent::KeyEvent(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+                        return Ok(());
                     }
+                    // Ctrl+S -> sessions
+                    if key.code == KeyCode::Char('s')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        let _ = tx.send(AppEvent::ToggleSessions);
+                        continue;
+                    }
+                    // Ctrl+T -> task panel
+                    if key.code == KeyCode::Char('t')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        let _ = tx.send(AppEvent::ToggleTaskPanel);
+                        continue;
+                    }
+                    // Send the full key event to be processed by tui-textarea + key handler
+                    let _ = tx.send(AppEvent::KeyEvent(key));
                 }
             }
         }
@@ -212,7 +212,96 @@ impl App {
 
     async fn handle_event(&mut self, event: AppEvent) {
         match event {
-            AppEvent::Key(key) => self.handle_key(key),
+            AppEvent::KeyEvent(key) => {
+                // Permission popup handling
+                if self.permission_state.visible {
+                    match key.code {
+                        KeyCode::Char('y') => {
+                            let (_reason, rule) = self.permission_state.dismiss();
+                            let _ = self.event_tx.send(AppEvent::Submit(format!("__permission_allow:{}", rule)));
+                        }
+                        KeyCode::Char('a') => {
+                            let (_reason, rule) = self.permission_state.dismiss();
+                            let _ = self.event_tx.send(AppEvent::Submit(format!("__permission_always:{}", rule)));
+                        }
+                        KeyCode::Char('n') => {
+                            let (_reason, _rule) = self.permission_state.dismiss();
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+
+                // Question popup handling
+                if self.question_state.visible {
+                    match key.code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.question_state.move_up();
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.question_state.move_down();
+                        }
+                        KeyCode::Enter => {
+                            let answers = self.question_state.dismiss();
+                            let _ = self.event_tx.send(AppEvent::Submit(format!("__question_answer:{:?}", answers)));
+                        }
+                        KeyCode::Esc => {
+                            self.question_state.dismiss();
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+
+                // Session popup handling
+                if self.session_state.visible {
+                    match key.code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.session_state.move_up();
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.session_state.move_down();
+                        }
+                        KeyCode::Enter => {
+                            if let Some(session) = self.session_state.selected_session() {
+                                let id = session.id.clone();
+                                self.session_state.dismiss();
+                                let client = self.daemon_client.clone();
+                                let agent = self.agent.clone();
+                                tokio::spawn(async move {
+                                    if let Ok(resp) = client.load_session(&id).await {
+                                        agent.lock().await.load_history(resp.messages);
+                                    }
+                                });
+                            }
+                        }
+                        KeyCode::Esc => {
+                            self.session_state.dismiss();
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+
+                // Feed the key to tui-textarea for CJK/IME-compatible input
+                let handled = self.input_box.textarea.input(key.clone());
+
+                if !handled {
+                    // tui-textarea didn't handle it — process as navigation/control key
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.should_quit = true;
+                        }
+                        KeyCode::Enter => {
+                            if !self.input_box.is_empty() {
+                                let text = self.input_box.take_text();
+                                let _ = self.event_tx.send(AppEvent::Submit(text));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             AppEvent::Submit(text) => {
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::User,
@@ -308,97 +397,6 @@ impl App {
         }
     }
 
-    fn handle_key(&mut self, key: KeyCode) {
-        // If permission popup is visible, handle its keys
-        if self.permission_state.visible {
-            match key {
-                KeyCode::Char('y') => {
-                    let (_reason, rule) = self.permission_state.dismiss();
-                    let _ = self.event_tx.send(AppEvent::Submit(format!("__permission_allow:{}", rule)));
-                }
-                KeyCode::Char('a') => {
-                    let (_reason, rule) = self.permission_state.dismiss();
-                    let _ = self.event_tx.send(AppEvent::Submit(format!("__permission_always:{}", rule)));
-                }
-                KeyCode::Char('n') => {
-                    let (_reason, _rule) = self.permission_state.dismiss();
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // If question popup is visible, handle its keys
-        if self.question_state.visible {
-            match key {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.question_state.move_up();
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.question_state.move_down();
-                }
-                KeyCode::Enter => {
-                    let answers = self.question_state.dismiss();
-                    let _ = self.event_tx.send(AppEvent::Submit(format!("__question_answer:{:?}", answers)));
-                }
-                KeyCode::Esc => {
-                    self.question_state.dismiss();
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // If session popup is visible, handle its keys
-        if self.session_state.visible {
-            match key {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.session_state.move_up();
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.session_state.move_down();
-                }
-                KeyCode::Enter => {
-                    if let Some(session) = self.session_state.selected_session() {
-                        let id = session.id.clone();
-                        self.session_state.dismiss();
-                        // Load session in background
-                        let client = self.daemon_client.clone();
-                        let agent = self.agent.clone();
-                        tokio::spawn(async move {
-                            if let Ok(resp) = client.load_session(&id).await {
-                                agent.lock().await.load_history(resp.messages);
-                            }
-                        });
-                    }
-                }
-                KeyCode::Esc => {
-                    self.session_state.dismiss();
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        match key {
-            KeyCode::Esc => {
-                self.should_quit = true;
-            }
-            KeyCode::Enter => {
-                let text = std::mem::take(&mut self.input);
-                if !text.trim().is_empty() {
-                    let _ = self.event_tx.send(AppEvent::Submit(text));
-                }
-            }
-            KeyCode::Backspace => {
-                self.input.pop();
-            }
-            KeyCode::Char(c) => {
-                self.input.push(c);
-            }
-            _ => {}
-        }
-    }
 
     fn render(&self, f: &mut Frame) {
         let area = f.area();
@@ -472,19 +470,7 @@ impl App {
     }
 
     fn render_input(&self, f: &mut Frame, area: Rect) {
-        let prompt = Span::styled("> ", Style::default().fg(theme::ROLE_USER));
-        let input_text = &self.input;
-        // Show cursor when input is empty
-        let display = if input_text.is_empty() {
-            Line::from(vec![
-                prompt,
-                Span::styled(" ", Style::default().bg(Color::White).fg(Color::Black)),
-            ])
-        } else {
-            Line::from(vec![prompt, Span::raw(input_text)])
-        };
-
-        f.render_widget(Paragraph::new(display), area);
+        self.input_box.render(f, area);
     }
 }
 
