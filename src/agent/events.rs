@@ -1,0 +1,30 @@
+//! Event types emitted by StreamProcessor during SSE streaming.
+
+use crate::api::ToolCall;
+
+/// Events produced by StreamProcessor as it parses SSE chunks.
+/// The frontend handles each event according to its rendering model.
+pub enum StreamEvent {
+    /// A content delta from the model (text being generated).
+    ContentDelta(String),
+    /// A reasoning_content delta (thinking, not shown to user).
+    ReasoningDelta(String),
+    /// A tool call delta fragment — accumulated by index.
+    ToolCallDelta {
+        index: usize,
+        id: Option<String>,
+        name: Option<String>,
+        arguments: Option<String>,
+    },
+    /// Streaming completed with the given finish_reason.
+    StreamDone { finish_reason: String },
+}
+
+/// The final result after streaming completes.
+pub struct StreamResult {
+    pub content: String,
+    pub reasoning_content: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub has_tool_calls: bool,
+    pub finish_reason: String,
+}

@@ -42,12 +42,17 @@ pub mod i18n;
 pub mod wasm;
 #[cfg(feature = "web")]
 pub mod web;
+#[cfg(feature = "daemon")]
+pub mod daemon;
 
 pub use api::{AnthropicClient, ApiClient, ChatMessage};
 pub use cli::Cli;
 pub use config::Settings;
 pub use context::MemoryManager;
-pub use knowledge::{Skill, SkillCategory, SkillContext, SkillError, SkillExecutor, SkillParams, SkillRegistry, SkillResult};
+pub use knowledge::{
+    Skill, SkillCategory, SkillContext, SkillError, SkillExecutor, SkillParams, SkillRegistry,
+    SkillResult,
+};
 pub use mcp::McpManager;
 pub use plugins::PluginManager;
 pub use state::AppState;

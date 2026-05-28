@@ -1,22 +1,14 @@
-//! CLI Module — command-line argument parsing, REPL loop, TUI rendering, and branding.
+//! CLI Module — command-line argument parsing, branding, and subcommand dispatch.
 //!
-//! The TUI REPL lives here because it's the primary harness frontend: it drives
-//! the agent loop, renders conversation history, handles streaming responses,
-//! and delegates tool execution to the tools module.
+//! The interactive REPL has been migrated to a TypeScript/Ink frontend
+//! (`packages/cli/`). Run `npm run dev:ink` to launch it. The Rust side
+//! provides the daemon API server that the frontend communicates with.
 
 pub mod args;
 pub mod branding;
 pub mod commands;
-pub mod repl;
-pub mod tui_history;
-pub mod tui_ime;
-pub mod tui_input;
-pub mod tui_repl;
-pub mod ui;
 
 pub use args::Cli;
-pub use repl::Repl;
-pub use tui_repl::TuiRepl;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -61,15 +53,11 @@ pub struct CliArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Start an interactive REPL session
+    /// Start an interactive REPL session (redirects to TypeScript CLI)
     Repl {
         /// Initial prompt to send
         #[arg(short, long)]
         prompt: Option<String>,
-
-        /// Launch in TUI full-screen mode (real-time borders, Shift+Enter for multiline)
-        #[arg(long)]
-        tui: bool,
     },
 
     /// Execute a single query
@@ -169,6 +157,13 @@ pub enum Commands {
         /// Number of iterations per request
         #[arg(short, long, default_value = "10")]
         iterations: usize,
+    },
+
+    /// Start the daemon HTTP API server
+    Daemon {
+        /// Port to listen on
+        #[arg(long, default_value = "8371")]
+        port: u16,
     },
 }
 

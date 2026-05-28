@@ -8,7 +8,10 @@
 //! - Tool calls appear as content blocks (type: "tool_use"), not a separate tool_calls array
 //! - Tool results are user messages with content blocks (type: "tool_result")
 
-use super::{ChatMessage, ChatResponse, Choice, Delta, StreamChunk, StreamChoice, StreamToolCall, StreamToolCallFunction, ToolCall, ToolCallFunction, ToolDefinition, Usage};
+use super::{
+    ChatMessage, ChatResponse, Choice, Delta, StreamChoice, StreamChunk, StreamToolCall,
+    StreamToolCallFunction, ToolCall, ToolCallFunction, ToolDefinition, Usage,
+};
 use serde::{Deserialize, Serialize};
 
 // ── Anthropic Request Types ──────────────────────────────────────────────────
@@ -180,7 +183,8 @@ pub fn convert_messages_to_anthropic(
                 .map(|tc| AnthropicContentBlock::ToolUse {
                     id: tc.id.clone(),
                     name: tc.function.name.clone(),
-                    input: serde_json::from_str(&tc.function.arguments).unwrap_or(serde_json::Value::Null),
+                    input: serde_json::from_str(&tc.function.arguments)
+                        .unwrap_or(serde_json::Value::Null),
                 })
                 .collect();
             anthropic_msgs.push(AnthropicMessage {
@@ -342,14 +346,18 @@ impl AnthropicStreamState {
                     }],
                 }]
             }
-            AnthropicSseEvent::ContentBlockStart { index, content_block } => {
+            AnthropicSseEvent::ContentBlockStart {
+                index,
+                content_block,
+            } => {
                 match content_block {
                     AnthropicContentBlock::Text { text } => {
                         self.block_type_by_index.insert(*index, "text".to_string());
                         self.text_by_index.insert(*index, text.clone());
                     }
                     AnthropicContentBlock::ToolUse { id, name, input: _ } => {
-                        self.block_type_by_index.insert(*index, "tool_use".to_string());
+                        self.block_type_by_index
+                            .insert(*index, "tool_use".to_string());
                         self.tool_id_by_index.insert(*index, id.clone());
                         self.tool_name_by_index.insert(*index, name.clone());
                         self.tool_args_by_index.insert(*index, String::new());
@@ -383,58 +391,56 @@ impl AnthropicStreamState {
                 }
                 vec![]
             }
-            AnthropicSseEvent::ContentBlockDelta { index, delta } => {
-                match delta {
-                    AnthropicSseDelta::TextDelta { text } => {
-                        let entry = self.text_by_index.entry(*index).or_default();
-                        entry.push_str(text);
-                        vec![StreamChunk {
-                            id: self.message_id.clone(),
-                            object: "chat.completion.chunk".to_string(),
-                            created: self.created,
-                            model: self.model.clone(),
-                            choices: vec![StreamChoice {
-                                index: 0,
-                                delta: Delta {
-                                    role: None,
-                                    content: Some(text.clone()),
-                                    reasoning_content: None,
-                                    tool_calls: None,
-                                },
-                                finish_reason: None,
-                            }],
-                        }]
-                    }
-                    AnthropicSseDelta::InputJsonDelta { partial_json } => {
-                        let args = self.tool_args_by_index.entry(*index).or_default();
-                        args.push_str(partial_json);
-                        vec![StreamChunk {
-                            id: self.message_id.clone(),
-                            object: "chat.completion.chunk".to_string(),
-                            created: self.created,
-                            model: self.model.clone(),
-                            choices: vec![StreamChoice {
-                                index: 0,
-                                delta: Delta {
-                                    role: None,
-                                    content: None,
-                                    reasoning_content: None,
-                                    tool_calls: Some(vec![StreamToolCall {
-                                        index: *index as i32,
-                                        id: None,
-                                        r#type: None,
-                                        function: Some(StreamToolCallFunction {
-                                            name: None,
-                                            arguments: Some(partial_json.clone()),
-                                        }),
-                                    }]),
-                                },
-                                finish_reason: None,
-                            }],
-                        }]
-                    }
+            AnthropicSseEvent::ContentBlockDelta { index, delta } => match delta {
+                AnthropicSseDelta::TextDelta { text } => {
+                    let entry = self.text_by_index.entry(*index).or_default();
+                    entry.push_str(text);
+                    vec![StreamChunk {
+                        id: self.message_id.clone(),
+                        object: "chat.completion.chunk".to_string(),
+                        created: self.created,
+                        model: self.model.clone(),
+                        choices: vec![StreamChoice {
+                            index: 0,
+                            delta: Delta {
+                                role: None,
+                                content: Some(text.clone()),
+                                reasoning_content: None,
+                                tool_calls: None,
+                            },
+                            finish_reason: None,
+                        }],
+                    }]
                 }
-            }
+                AnthropicSseDelta::InputJsonDelta { partial_json } => {
+                    let args = self.tool_args_by_index.entry(*index).or_default();
+                    args.push_str(partial_json);
+                    vec![StreamChunk {
+                        id: self.message_id.clone(),
+                        object: "chat.completion.chunk".to_string(),
+                        created: self.created,
+                        model: self.model.clone(),
+                        choices: vec![StreamChoice {
+                            index: 0,
+                            delta: Delta {
+                                role: None,
+                                content: None,
+                                reasoning_content: None,
+                                tool_calls: Some(vec![StreamToolCall {
+                                    index: *index as i32,
+                                    id: None,
+                                    r#type: None,
+                                    function: Some(StreamToolCallFunction {
+                                        name: None,
+                                        arguments: Some(partial_json.clone()),
+                                    }),
+                                }]),
+                            },
+                            finish_reason: None,
+                        }],
+                    }]
+                }
+            },
             AnthropicSseEvent::ContentBlockStop { .. } => {
                 // End of a content block — no chunk needed
                 vec![]
@@ -522,7 +528,10 @@ mod tests {
             AnthropicContentValue::Blocks(blocks) => {
                 assert_eq!(blocks.len(), 1);
                 match &blocks[0] {
-                    AnthropicContentBlock::ToolResult { tool_use_id, content } => {
+                    AnthropicContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                    } => {
                         assert_eq!(tool_use_id, "call_123");
                         assert_eq!(content, "result text");
                     }
@@ -552,16 +561,14 @@ mod tests {
         let (anthropic_msgs, _) = convert_messages_to_anthropic(&msgs);
         assert_eq!(anthropic_msgs.len(), 1);
         match &anthropic_msgs[0].content {
-            AnthropicContentValue::Blocks(blocks) => {
-                match &blocks[0] {
-                    AnthropicContentBlock::ToolUse { id, name, input } => {
-                        assert_eq!(id, "toolu_001");
-                        assert_eq!(name, "get_weather");
-                        assert_eq!(input["location"], "NYC");
-                    }
-                    _ => panic!("expected ToolUse"),
+            AnthropicContentValue::Blocks(blocks) => match &blocks[0] {
+                AnthropicContentBlock::ToolUse { id, name, input } => {
+                    assert_eq!(id, "toolu_001");
+                    assert_eq!(name, "get_weather");
+                    assert_eq!(input["location"], "NYC");
                 }
-            }
+                _ => panic!("expected ToolUse"),
+            },
             _ => panic!("expected Blocks"),
         }
     }
@@ -585,7 +592,10 @@ mod tests {
         };
         let chat_resp = convert_anthropic_response(&resp);
         assert_eq!(chat_resp.id, "msg_001");
-        assert_eq!(chat_resp.choices[0].message.content, Some("Hello!".to_string()));
+        assert_eq!(
+            chat_resp.choices[0].message.content,
+            Some("Hello!".to_string())
+        );
         assert_eq!(chat_resp.choices[0].finish_reason, Some("stop".to_string()));
         assert_eq!(chat_resp.usage.as_ref().unwrap().prompt_tokens, 10);
         assert_eq!(chat_resp.usage.as_ref().unwrap().completion_tokens, 5);
@@ -611,7 +621,10 @@ mod tests {
             },
         };
         let chat_resp = convert_anthropic_response(&resp);
-        assert_eq!(chat_resp.choices[0].finish_reason, Some("tool_calls".to_string()));
+        assert_eq!(
+            chat_resp.choices[0].finish_reason,
+            Some("tool_calls".to_string())
+        );
         let tool_calls = chat_resp.choices[0].message.tool_calls.as_ref().unwrap();
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0].id, "toolu_001");

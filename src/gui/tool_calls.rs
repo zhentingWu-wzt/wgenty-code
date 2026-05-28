@@ -7,7 +7,7 @@
 //! - File diff viewer
 //! - Tool result display
 
-use egui::{Align, Color32, Frame, Layout, Margin, RichText, CornerRadius, Stroke, Ui};
+use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke, Ui};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A tool call instance

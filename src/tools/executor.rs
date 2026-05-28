@@ -24,9 +24,7 @@ impl ToolExecutor {
         self.registry
             .list()
             .into_iter()
-            .map(|t| {
-                crate::api::ToolDefinition::new(t.name(), t.description(), t.input_schema())
-            })
+            .map(|t| crate::api::ToolDefinition::new(t.name(), t.description(), t.input_schema()))
             .collect()
     }
 

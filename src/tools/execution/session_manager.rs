@@ -138,10 +138,13 @@ impl CommandSessionManager {
                 });
             };
 
-            stdin.write_all(chars.as_bytes()).await.map_err(|e| ToolError {
-                message: format!("Failed to write stdin: {}", e),
-                code: Some("stdin_write_error".to_string()),
-            })?;
+            stdin
+                .write_all(chars.as_bytes())
+                .await
+                .map_err(|e| ToolError {
+                    message: format!("Failed to write stdin: {}", e),
+                    code: Some("stdin_write_error".to_string()),
+                })?;
             stdin.flush().await.map_err(|e| ToolError {
                 message: format!("Failed to flush stdin: {}", e),
                 code: Some("stdin_flush_error".to_string()),
@@ -194,18 +197,12 @@ impl CommandSessionManager {
         let stdout_bytes = handle.state.stdout.lock().await.clone();
         let stderr_bytes = handle.state.stderr.lock().await.clone();
 
-        let stdout = Self::slice_incremental(
-            &stdout_bytes,
-            &handle.state.stdout_offset,
-            max_output_chars,
-        )
-        .await;
-        let stderr = Self::slice_incremental(
-            &stderr_bytes,
-            &handle.state.stderr_offset,
-            max_output_chars,
-        )
-        .await;
+        let stdout =
+            Self::slice_incremental(&stdout_bytes, &handle.state.stdout_offset, max_output_chars)
+                .await;
+        let stderr =
+            Self::slice_incremental(&stderr_bytes, &handle.state.stderr_offset, max_output_chars)
+                .await;
         let exit_code = *handle.state.exit_status.read().await;
         let finished = exit_code.is_some();
 

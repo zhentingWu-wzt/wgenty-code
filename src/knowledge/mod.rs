@@ -62,7 +62,11 @@ pub trait Skill: Send + Sync {
     fn description(&self) -> &str;
     fn examples(&self) -> Vec<String>;
     fn parameter_schema(&self) -> serde_json::Value;
-    async fn execute(&self, params: SkillParams, context: SkillContext) -> Result<SkillResult, SkillError>;
+    async fn execute(
+        &self,
+        params: SkillParams,
+        context: SkillContext,
+    ) -> Result<SkillResult, SkillError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

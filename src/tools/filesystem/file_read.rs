@@ -91,9 +91,15 @@ impl Tool for FileReadTool {
             code: Some("encoding_error".to_string()),
         })?;
 
-        let start_line = input["start_line"].as_u64().map(|v| v as usize).unwrap_or(1);
+        let start_line = input["start_line"]
+            .as_u64()
+            .map(|v| v as usize)
+            .unwrap_or(1);
         let end_line = input["end_line"].as_u64().map(|v| v as usize);
-        let max_chars = input["max_chars"].as_u64().map(|v| v as usize).unwrap_or(12000);
+        let max_chars = input["max_chars"]
+            .as_u64()
+            .map(|v| v as usize)
+            .unwrap_or(12000);
 
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();

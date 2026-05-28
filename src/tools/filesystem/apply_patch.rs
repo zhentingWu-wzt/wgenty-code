@@ -82,16 +82,14 @@ impl Tool for ApplyPatchTool {
         let mut metadata = HashMap::new();
         metadata.insert(
             "files_changed".to_string(),
-            serde_json::json!(
-                operations
-                    .iter()
-                    .map(|op| match op {
-                        PatchOperation::Add { path, .. } => path.display().to_string(),
-                        PatchOperation::Update { path, .. } => path.display().to_string(),
-                        PatchOperation::Delete { path } => path.display().to_string(),
-                    })
-                    .collect::<Vec<_>>()
-            ),
+            serde_json::json!(operations
+                .iter()
+                .map(|op| match op {
+                    PatchOperation::Add { path, .. } => path.display().to_string(),
+                    PatchOperation::Update { path, .. } => path.display().to_string(),
+                    PatchOperation::Delete { path } => path.display().to_string(),
+                })
+                .collect::<Vec<_>>()),
         );
 
         Ok(ToolOutput {
@@ -266,11 +264,7 @@ fn apply_operations(operations: &[PatchOperation]) -> Result<(), ToolError> {
     Ok(())
 }
 
-fn apply_hunks(
-    original: &str,
-    hunks: &[UpdateHunk],
-    path: &Path,
-) -> Result<String, ToolError> {
+fn apply_hunks(original: &str, hunks: &[UpdateHunk], path: &Path) -> Result<String, ToolError> {
     let mut content = original.to_string();
 
     for hunk in hunks {
