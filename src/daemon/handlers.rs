@@ -6,7 +6,7 @@ use crate::daemon::state::DaemonState;
 use crate::permissions::PolicyDecision;
 use crate::tasks::management::{TaskPriority, TaskStatus};
 use axum::{
-    extract::State,
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive},
@@ -345,4 +345,148 @@ pub async fn list_mcp_servers(
         .collect();
 
     Json(ListMcpServersResponse { servers })
+}
+
+// ── Sessions ──────────────────────────────────────────────────────────────────
+
+pub async fn list_sessions(
+    State(state): State<Arc<DaemonState>>,
+) -> Result<Json<Vec<SessionInfoResponse>>, StatusCode> {
+    let sessions = tokio::task::spawn_blocking(move || state.session_manager.list())
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(
+        sessions
+            .into_iter()
+            .map(|s| SessionInfoResponse {
+                id: s.id,
+                name: s.name,
+                created_at: s.created_at.to_rfc3339(),
+                updated_at: s.updated_at.to_rfc3339(),
+                message_count: s.message_count,
+                summary: s.summary,
+            })
+            .collect(),
+    ))
+}
+
+pub async fn create_session(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<CreateSessionRequest>,
+) -> Result<Json<SessionResponse>, StatusCode> {
+    let session = tokio::task::spawn_blocking(move || state.session_manager.create(body.name.as_deref()))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(SessionResponse {
+        id: session.id,
+        name: session.name,
+        created_at: session.created_at.to_rfc3339(),
+        updated_at: session.updated_at.to_rfc3339(),
+        messages: session.messages,
+    }))
+}
+
+pub async fn get_session(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+) -> Result<Json<SessionResponse>, StatusCode> {
+    let session = tokio::task::spawn_blocking(move || state.session_manager.load(&id))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(Json(SessionResponse {
+        id: session.id,
+        name: session.name,
+        created_at: session.created_at.to_rfc3339(),
+        updated_at: session.updated_at.to_rfc3339(),
+        messages: session.messages,
+    }))
+}
+
+pub async fn update_session(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateSessionRequest>,
+) -> Result<Json<SessionResponse>, StatusCode> {
+    let session = tokio::task::spawn_blocking(move || {
+        let mut session = state
+            .session_manager
+            .load(&id)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .unwrap_or_else(|| crate::context::session::Session {
+                id: id.clone(),
+                name: String::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                messages: Vec::new(),
+            });
+
+        if let Some(name) = &body.name {
+            session.name = name.clone();
+        }
+        if let Some(messages) = body.messages {
+            session.messages = messages;
+        }
+        session.updated_at = chrono::Utc::now();
+
+        state
+            .session_manager
+            .save(&session)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        Ok::<_, StatusCode>(session)
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(SessionResponse {
+        id: session.id,
+        name: session.name,
+        created_at: session.created_at.to_rfc3339(),
+        updated_at: session.updated_at.to_rfc3339(),
+        messages: session.messages,
+    }))
+}
+
+pub async fn delete_session(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
+    let result = tokio::task::spawn_blocking(move || state.session_manager.delete(&id)).await;
+
+    match result {
+        Ok(Ok(())) => Json(serde_json::json!({"success": true})),
+        _ => Json(serde_json::json!({"success": false, "error": "Failed to delete session"})),
+    }
+}
+
+pub async fn search_sessions(
+    State(state): State<Arc<DaemonState>>,
+    Query(query): Query<SearchSessionsQuery>,
+) -> Result<Json<Vec<SessionInfoResponse>>, StatusCode> {
+    let sessions = tokio::task::spawn_blocking(move || state.session_manager.search(&query.q))
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(
+        sessions
+            .into_iter()
+            .map(|s| SessionInfoResponse {
+                id: s.id,
+                name: s.name,
+                created_at: s.created_at.to_rfc3339(),
+                updated_at: s.updated_at.to_rfc3339(),
+                message_count: s.message_count,
+                summary: s.summary,
+            })
+            .collect(),
+    ))
 }
