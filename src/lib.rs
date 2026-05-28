@@ -29,6 +29,7 @@ pub mod plugins;
 pub mod services;
 pub mod state;
 pub mod tasks;
+pub mod tui;
 pub mod teams;
 pub mod tools;
 pub mod utils;
