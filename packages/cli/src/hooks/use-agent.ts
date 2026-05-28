@@ -70,18 +70,36 @@ export function useAgent({ client }: UseAgentOptions) {
     });
   }, []);
 
+  // Throttle streaming updates: render at most every 100ms, not on every SSE byte
+  const streamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const callbacks: AgentCallbacks = {
     onContentDelta(content: string) {
       streamingContentRef.current += content;
-      setStatus({ type: "streaming", content: streamingContentRef.current });
-      updateLastMsg(streamingContentRef.current);
+
+      // Deferred render: accumulate deltas and flush periodically
+      if (streamTimerRef.current === null) {
+        streamTimerRef.current = setTimeout(() => {
+          streamTimerRef.current = null;
+          setStatus({ type: "streaming", content: streamingContentRef.current });
+          updateLastMsg(streamingContentRef.current);
+        }, 100);
+      }
     },
 
     onReasoningDelta(_content: string) {
-      setStatus({ type: "thinking" });
+      setStatus((prev) => (prev.type === "thinking" ? prev : { type: "thinking" }));
     },
 
     onToolStart(name: string, args: Record<string, unknown>) {
+      // Flush any pending streaming update before switching to executing
+      if (streamTimerRef.current !== null) {
+        clearTimeout(streamTimerRef.current);
+        streamTimerRef.current = null;
+        // Flush final accumulated content
+        setStatus({ type: "streaming", content: streamingContentRef.current });
+        updateLastMsg(streamingContentRef.current);
+      }
       streamingContentRef.current = "";
       setStatus({ type: "executing", toolName: name });
       // Add tool invocation message with key args
@@ -134,14 +152,23 @@ export function useAgent({ client }: UseAgentOptions) {
       streamingContentRef.current = "";
       setStatus({ type: "thinking" });
 
-      // Create a new agent for each message (or reuse)
-      const agent = new AgentLoop({ client, callbacks });
-      agentRef.current = agent;
+      // Reuse agent instance to preserve conversation history
+      if (!agentRef.current) {
+        agentRef.current = new AgentLoop({ client, callbacks });
+      }
+      const agent = agentRef.current;
 
       try {
         await agent.processInput(input);
       } catch (err) {
         addMsg("system", `Error: ${err}`);
+      }
+
+      // Flush any pending streaming update
+      if (streamTimerRef.current !== null) {
+        clearTimeout(streamTimerRef.current);
+        streamTimerRef.current = null;
+        updateLastMsg(streamingContentRef.current);
       }
 
       // Remove empty assistant placeholder if nothing was streamed (tool-only response)
