@@ -27,4 +27,6 @@ export type {
   ConfigResponse,
   ExecuteToolRequest,
   ExecuteToolResponse,
+  Session,
+  SessionInfo,
 } from "./types.ts";
