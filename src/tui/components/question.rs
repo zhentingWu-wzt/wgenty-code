@@ -15,6 +15,7 @@ pub struct QuestionState {
 }
 
 impl QuestionState {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             visible: false,
@@ -56,7 +57,11 @@ impl QuestionState {
 }
 
 /// Render the question popup centered on screen.
-pub fn render(f: &mut Frame, state: &QuestionState, centered_rect_fn: impl Fn(u16, u16, Rect) -> Rect) {
+pub fn render(
+    f: &mut Frame,
+    state: &QuestionState,
+    centered_rect_fn: impl Fn(u16, u16, Rect) -> Rect,
+) {
     if !state.visible {
         return;
     }

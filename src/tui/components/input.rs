@@ -11,6 +11,7 @@ pub struct InputBox {
 }
 
 impl InputBox {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let mut textarea = TextArea::default();
         textarea.set_block(
@@ -29,7 +30,13 @@ impl InputBox {
 
     /// Extract text and reset the textarea for next input.
     pub fn take_text(&mut self) -> String {
-        let text = self.textarea.lines().iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let text = self
+            .textarea
+            .lines()
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         // Create a fresh TextArea with the same styling
         let mut new_ta = TextArea::default();
         new_ta.set_block(
@@ -45,12 +52,21 @@ impl InputBox {
 
     /// Get current text without resetting.
     pub fn text(&self) -> String {
-        self.textarea.lines().iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n")
+        self.textarea
+            .lines()
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Check if input is empty (no content).
     pub fn is_empty(&self) -> bool {
         self.textarea.lines().is_empty()
-            || self.textarea.lines().iter().all(|l| l.to_string().trim().is_empty())
+            || self
+                .textarea
+                .lines()
+                .iter()
+                .all(|l| l.to_string().trim().is_empty())
     }
 }

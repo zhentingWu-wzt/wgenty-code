@@ -3,9 +3,9 @@
 use crate::state::AppState;
 use crate::tui::agent::AgentLoop;
 use crate::tui::client::DaemonClient;
-use crate::tui::components;
 use crate::tui::client::SessionInfo;
 use crate::tui::client::TodoItem;
+use crate::tui::components;
 use crate::tui::components::input::InputBox;
 use crate::tui::components::permission::PermissionState;
 use crate::tui::components::question::QuestionState;
@@ -105,11 +105,7 @@ pub struct App {
 impl App {
     pub fn new(daemon_client: DaemonClient, session_id: String) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let agent = AgentLoop::new(
-            daemon_client.clone(),
-            event_tx.clone(),
-            session_id.clone(),
-        );
+        let agent = AgentLoop::new(daemon_client.clone(), event_tx.clone(), session_id.clone());
         Self {
             daemon_client,
             input_box: InputBox::new(),
@@ -188,7 +184,10 @@ impl App {
                     if key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
-                        let _ = tx.send(AppEvent::KeyEvent(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+                        let _ = tx.send(AppEvent::KeyEvent(KeyEvent::new(
+                            KeyCode::Esc,
+                            KeyModifiers::NONE,
+                        )));
                         return Ok(());
                     }
                     // Ctrl+S -> sessions
@@ -220,11 +219,15 @@ impl App {
                     match key.code {
                         KeyCode::Char('y') => {
                             let (_reason, rule) = self.permission_state.dismiss();
-                            let _ = self.event_tx.send(AppEvent::Submit(format!("__permission_allow:{}", rule)));
+                            let _ = self
+                                .event_tx
+                                .send(AppEvent::Submit(format!("__permission_allow:{}", rule)));
                         }
                         KeyCode::Char('a') => {
                             let (_reason, rule) = self.permission_state.dismiss();
-                            let _ = self.event_tx.send(AppEvent::Submit(format!("__permission_always:{}", rule)));
+                            let _ = self
+                                .event_tx
+                                .send(AppEvent::Submit(format!("__permission_always:{}", rule)));
                         }
                         KeyCode::Char('n') => {
                             let (_reason, _rule) = self.permission_state.dismiss();
@@ -245,7 +248,9 @@ impl App {
                         }
                         KeyCode::Enter => {
                             let answers = self.question_state.dismiss();
-                            let _ = self.event_tx.send(AppEvent::Submit(format!("__question_answer:{:?}", answers)));
+                            let _ = self
+                                .event_tx
+                                .send(AppEvent::Submit(format!("__question_answer:{:?}", answers)));
                         }
                         KeyCode::Esc => {
                             self.question_state.dismiss();
@@ -317,9 +322,7 @@ impl App {
                 }
 
                 // Ctrl+L: clear screen
-                if key.code == KeyCode::Char('l')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
+                if key.code == KeyCode::Char('l') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     self.committed_messages.clear();
                     self.streaming_content.clear();
                     self.scroll_offset = 0;
@@ -328,7 +331,7 @@ impl App {
                 }
 
                 // Feed the key to tui-textarea for CJK/IME-compatible input
-                let handled = self.input_box.textarea.input(key.clone());
+                let handled = self.input_box.textarea.input(key);
 
                 if !handled {
                     // tui-textarea didn't handle it — process as navigation/control key
@@ -336,11 +339,9 @@ impl App {
                         KeyCode::Esc => {
                             self.should_quit = true;
                         }
-                        KeyCode::Enter => {
-                            if !self.input_box.is_empty() {
-                                let text = self.input_box.take_text();
-                                let _ = self.event_tx.send(AppEvent::Submit(text));
-                            }
+                        KeyCode::Enter if !self.input_box.is_empty() => {
+                            let text = self.input_box.take_text();
+                            let _ = self.event_tx.send(AppEvent::Submit(text));
                         }
                         _ => {}
                     }
@@ -447,7 +448,6 @@ impl App {
         }
     }
 
-
     fn render(&self, f: &mut Frame) {
         let area = f.area();
 
@@ -455,10 +455,10 @@ impl App {
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),  // header
-                Constraint::Min(3),      // chat
-                Constraint::Length(1),  // status
-                Constraint::Length(3),  // input (tui-textarea with borders)
+                Constraint::Length(1), // header
+                Constraint::Min(3),    // chat
+                Constraint::Length(1), // status
+                Constraint::Length(3), // input (tui-textarea with borders)
             ])
             .split(area);
 
@@ -466,10 +466,7 @@ impl App {
         let main_area = if self.task_panel.visible {
             let split = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(70),
-                    Constraint::Percentage(30),
-                ])
+                .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
                 .split(layout[1]);
             components::task_panel::render(f, split[1], &self.task_panel);
             split[0]

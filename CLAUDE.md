@@ -48,17 +48,21 @@ Cargo.toml 中定义了三个二进制目标：
 
 本项目采用 **前后端分离架构**：
 - **Rust 后端**：API 调用、工具执行、MCP 管理、权限验证，通过 HTTP daemon 暴露 REST + SSE API
-- **TypeScript 前端**：Agent Loop、UI 渲染、交互处理（权限提示、ask_user_question）
+- **Rust 前端（ratatui）**：Agent Loop、TUI 渲染、交互处理（权限提示、ask_user_question）。`src/tui/` 模块。推荐使用此前端。
+- **TypeScript 前端（遗留）**：Agent Loop、UI 渲染、交互处理。位于 `packages/`。不再作为默认构建目标。
 
 Rust 使用 **Tokio 异步优先架构**，调用 **OpenAI/DeepSeek 兼容的 chat completions API**（非 Anthropic Messages API）。
 
 ### 入口流程
 
-**TypeScript CLI 路径**（推荐）：
+**ratatui TUI 路径**（推荐）：
+`cargo run` → 后台启动 daemon（随机端口）→ ratatui Terminal + AgentLoop → 通过 HTTP/SSE 与 daemon 通信
+
+**TypeScript CLI 路径**（遗留）：
 `npm run dev:ink` → 启动 Rust daemon（`cargo run -- daemon`）→ Ink React 应用渲染终端 UI → `useAgent` hook 驱动 agent loop → 通过 HTTP/SSE 与 daemon 通信
 
 **Rust CLI 路径**（传统命令）：
-`main.rs` → clap 解析 CLI 参数 → `cli/args.rs` 分发到命令处理器。运行 `cargo run -- repl` 会提示使用 TypeScript CLI。
+`main.rs` → clap 解析 CLI 参数 → `cli/args.rs` 分发到命令处理器。
 
 ### 核心模块依赖
 

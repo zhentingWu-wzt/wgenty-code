@@ -13,6 +13,7 @@ pub struct PermissionState {
 }
 
 impl PermissionState {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             visible: false,
@@ -29,12 +30,19 @@ impl PermissionState {
 
     pub fn dismiss(&mut self) -> (String, String) {
         self.visible = false;
-        (std::mem::take(&mut self.reason), std::mem::take(&mut self.rule))
+        (
+            std::mem::take(&mut self.reason),
+            std::mem::take(&mut self.rule),
+        )
     }
 }
 
 /// Render the permission popup centered on screen.
-pub fn render(f: &mut Frame, state: &PermissionState, centered_rect_fn: impl Fn(u16, u16, Rect) -> Rect) {
+pub fn render(
+    f: &mut Frame,
+    state: &PermissionState,
+    centered_rect_fn: impl Fn(u16, u16, Rect) -> Rect,
+) {
     if !state.visible {
         return;
     }
