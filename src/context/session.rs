@@ -40,7 +40,8 @@ impl SessionManager {
                             .and_then(|m| m.content.as_ref())
                             .map(|c| {
                                 if c.len() > 80 {
-                                    format!("{}...", &c[..80])
+                                    let truncated: String = c.chars().take(80).collect();
+                                    format!("{}...", truncated)
                                 } else {
                                     c.clone()
                                 }
