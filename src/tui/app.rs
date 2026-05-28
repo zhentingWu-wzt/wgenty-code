@@ -2,6 +2,7 @@
 
 use crate::state::AppState;
 use crate::tui::client::DaemonClient;
+use crate::tui::components;
 use crate::tui::theme;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -250,20 +251,17 @@ impl App {
             .split(area);
 
         self.render_header(f, layout[0]);
-        self.render_chat(f, layout[1]);
+        if self.committed_messages.is_empty() && !self.streaming_active {
+            components::welcome::render(f, layout[1]);
+        } else {
+            self.render_chat(f, layout[1]);
+        }
         self.render_status(f, layout[2]);
         self.render_input(f, layout[3]);
     }
 
     fn render_header(&self, f: &mut Frame, area: Rect) {
-        let text = Span::styled(
-            format!(
-                " {} | {} | Ctrl+C to quit",
-                self.session_name, self.status
-            ),
-            Style::default().fg(theme::DIM),
-        );
-        f.render_widget(Paragraph::new(text), area);
+        components::status::render(f, area, &self.status, &self.session_name);
     }
 
     fn render_chat(&self, f: &mut Frame, area: Rect) {
