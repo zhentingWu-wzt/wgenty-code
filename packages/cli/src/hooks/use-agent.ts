@@ -23,7 +23,7 @@ export interface UIMessage {
 export type AgentStatus =
   | { type: "idle" }
   | { type: "thinking" }
-  | { type: "streaming"; content: string }
+  | { type: "streaming" }
   | { type: "executing"; toolName: string };
 
 export interface UseAgentOptions {
@@ -50,7 +50,8 @@ function findToolNameForId(msgs: ChatMessage[], toolCallId?: string | null): str
 }
 
 export function useAgent({ client }: UseAgentOptions) {
-  const [messages, setMessages] = useState<UIMessage[]>([]);
+  const [committedMessages, setCommittedMessages] = useState<UIMessage[]>([]);
+  const [streamingContent, setStreamingContent] = useState("");
   const [status, setStatus] = useState<AgentStatus>({ type: "idle" });
   const [pendingQuestion, setPendingQuestion] = useState<{
     question: string;
@@ -78,26 +79,14 @@ export function useAgent({ client }: UseAgentOptions) {
   const addMsg = useCallback(
     (role: MsgRole, content: string, extra?: Partial<UIMessage>) => {
       const id = nextId.current++;
-      setMessages((prev) => [...prev, { id, role, content, ...extra }]);
+      setCommittedMessages((prev) => [...prev, { id, role, content, ...extra }]);
     },
     []
   );
 
-  const updateLastMsg = useCallback((content: string) => {
-    setMessages((prev) => {
-      const updated = [...prev];
-      if (updated.length > 0) {
-        updated[updated.length - 1] = {
-          ...updated[updated.length - 1],
-          content,
-        };
-      }
-      return updated;
-    });
-  }, []);
-
   // Throttle streaming updates: render at most every 100ms, not on every SSE byte
   const streamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const callbacksRef = useRef<AgentCallbacks>(null!);
 
   const callbacks: AgentCallbacks = {
     onContentDelta(content: string) {
@@ -107,8 +96,8 @@ export function useAgent({ client }: UseAgentOptions) {
       if (streamTimerRef.current === null) {
         streamTimerRef.current = setTimeout(() => {
           streamTimerRef.current = null;
-          setStatus({ type: "streaming", content: streamingContentRef.current });
-          updateLastMsg(streamingContentRef.current);
+          setStatus({ type: "streaming" });
+          setStreamingContent(streamingContentRef.current);
         }, 100);
       }
     },
@@ -122,11 +111,22 @@ export function useAgent({ client }: UseAgentOptions) {
       if (streamTimerRef.current !== null) {
         clearTimeout(streamTimerRef.current);
         streamTimerRef.current = null;
-        // Flush final accumulated content
-        setStatus({ type: "streaming", content: streamingContentRef.current });
-        updateLastMsg(streamingContentRef.current);
+        const content = streamingContentRef.current;
+        if (content) {
+          const id = nextId.current++;
+          setCommittedMessages((prev) => [...prev, { id, role: "assistant", content }]);
+        }
+        streamingContentRef.current = "";
+        setStreamingContent("");
+      }
+      // Timer already fired: flush accumulated streaming content before tool call
+      const pending = streamingContentRef.current;
+      if (pending) {
+        const id = nextId.current++;
+        setCommittedMessages((prev) => [...prev, { id, role: "assistant", content: pending }]);
       }
       streamingContentRef.current = "";
+      setStreamingContent("");
       setStatus({ type: "executing", toolName: name });
       // Add tool invocation message with key args
       addMsg("tool", formatToolCallSummary(name, args), {
@@ -168,11 +168,16 @@ export function useAgent({ client }: UseAgentOptions) {
     },
 
     onStreamRetry() {
-      // Clear partial streaming content before retry
+      // Clear pending timer and partial streaming content before retry
+      if (streamTimerRef.current !== null) {
+        clearTimeout(streamTimerRef.current);
+        streamTimerRef.current = null;
+      }
       streamingContentRef.current = "";
-      updateLastMsg("");
+      setStreamingContent("");
     },
   };
+  callbacksRef.current = callbacks;
 
   /** Rebuild UIMessage[] from raw ChatMessage[] for display after loading a session. */
   const rebuildUIMessages = useCallback(
@@ -242,19 +247,20 @@ export function useAgent({ client }: UseAgentOptions) {
       try {
         const session = await client.loadSession(id);
         if (!agentRef.current) {
-          agentRef.current = new AgentLoop({ client, callbacks });
+          agentRef.current = new AgentLoop({ client, callbacks: callbacksRef.current });
         }
         agentRef.current.loadHistory(session.messages);
         const ui = rebuildUIMessages(session.messages);
         nextId.current = Math.max(0, ...ui.map((m) => m.id)) + 1;
-        setMessages(ui);
+        setCommittedMessages(ui);
+        setStreamingContent("");
         setSessionId(session.id);
         setSessionName(session.name);
         setDirty(false);
       } catch (err) {
       }
     },
-    [client, callbacks, rebuildUIMessages],
+    [client, rebuildUIMessages],
   );
 
   /** Refresh the session list from daemon. */
@@ -280,7 +286,8 @@ export function useAgent({ client }: UseAgentOptions) {
 
   const reset = useCallback(async () => {
     await saveCurrentSession();
-    setMessages([]);
+    setCommittedMessages([]);
+    setStreamingContent("");
     setStatus({ type: "idle" });
     streamingContentRef.current = "";
     agentRef.current?.reset();
@@ -333,14 +340,13 @@ export function useAgent({ client }: UseAgentOptions) {
           input.length > 50 ? input.slice(0, 50) + "..." : input;
         setSessionName(name);
       }
-      // Add empty assistant placeholder so streaming deltas update it, not the user msg
-      addMsg("assistant", "");
       streamingContentRef.current = "";
+      setStreamingContent("");
       setStatus({ type: "thinking" });
 
       // Reuse agent instance to preserve conversation history
       if (!agentRef.current) {
-        agentRef.current = new AgentLoop({ client, callbacks });
+        agentRef.current = new AgentLoop({ client, callbacks: callbacksRef.current });
       }
       const agent = agentRef.current;
 
@@ -354,26 +360,23 @@ export function useAgent({ client }: UseAgentOptions) {
       if (streamTimerRef.current !== null) {
         clearTimeout(streamTimerRef.current);
         streamTimerRef.current = null;
-        updateLastMsg(streamingContentRef.current);
+      }
+      // Commit final streaming content as assistant message
+      const finalContent = streamingContentRef.current;
+      if (finalContent) {
+        const id = nextId.current++;
+        setCommittedMessages((prev) => [...prev, { id, role: "assistant", content: finalContent }]);
+        streamingContentRef.current = "";
+        setStreamingContent("");
       }
 
-      // Remove empty assistant placeholder if nothing was streamed (tool-only response)
-      setMessages((prev) => {
-        if (prev.length > 0) {
-          const last = prev[prev.length - 1];
-          if (last.role === "assistant" && last.content === "") {
-            return prev.slice(0, -1);
-          }
-        }
-        return prev;
-      });
       setStatus({ type: "idle" });
 
       // Auto-save after each round-trip
       setDirty(true);
       saveCurrentSession();
     },
-    [client, addMsg, updateLastMsg, saveCurrentSession]
+    [client, addMsg, saveCurrentSession]
   );
 
   const resolvePermission = useCallback(
@@ -397,7 +400,8 @@ export function useAgent({ client }: UseAgentOptions) {
   );
 
   return {
-    messages,
+    committedMessages,
+    streamingContent,
     status,
     pendingQuestion,
     pendingPermission,

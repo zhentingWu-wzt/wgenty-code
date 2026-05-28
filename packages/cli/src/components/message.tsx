@@ -11,7 +11,7 @@ interface Props {
 
 const COLLAPSE_LINES = 10;
 
-export const Message: React.FC<Props> = ({
+export const Message: React.FC<Props> = React.memo(({
   msg,
   width,
   expanded = false,
@@ -135,7 +135,7 @@ export const Message: React.FC<Props> = ({
     default:
       return <Text>{msg.content}</Text>;
   }
-};
+});
 
 /** Compute display content for a tool result, handling collapse. */
 function computeCollapsed(
