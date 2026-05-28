@@ -1,9 +1,12 @@
 import type {
+  ChatMessage,
   ChatStreamRequest,
   ConfigResponse,
   ExecuteToolRequest,
   ExecuteToolResponse,
   HealthResponse,
+  Session,
+  SessionInfo,
   ToolInfo,
 } from "./types.ts";
 
@@ -126,6 +129,62 @@ export class ApiClient {
 
   async getTodos(): Promise<TodoResponse> {
     const res = await fetch(`${this.baseUrl}/api/v1/todos`);
+    return res.json();
+  }
+
+  // ── Sessions ──────────────────────────────────────────────────────────────
+
+  async listSessions(): Promise<SessionInfo[]> {
+    const res = await fetch(`${this.baseUrl}/api/v1/sessions`);
+    if (!res.ok) return [];
+    return res.json();
+  }
+
+  async createSession(name?: string): Promise<Session> {
+    const res = await fetch(`${this.baseUrl}/api/v1/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) throw new Error(`Failed to create session (${res.status})`);
+    return res.json();
+  }
+
+  async loadSession(id: string): Promise<Session> {
+    const res = await fetch(`${this.baseUrl}/api/v1/sessions/${encodeURIComponent(id)}`);
+    if (!res.ok) throw new Error(`Failed to load session (${res.status})`);
+    return res.json();
+  }
+
+  async saveSession(
+    id: string,
+    name: string,
+    messages: ChatMessage[],
+  ): Promise<void> {
+    const res = await fetch(
+      `${this.baseUrl}/api/v1/sessions/${encodeURIComponent(id)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, messages }),
+      },
+    );
+    if (!res.ok) throw new Error(`Failed to save session (${res.status})`);
+  }
+
+  async deleteSession(id: string): Promise<void> {
+    const res = await fetch(
+      `${this.baseUrl}/api/v1/sessions/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok) throw new Error(`Failed to delete session (${res.status})`);
+  }
+
+  async searchSessions(query: string): Promise<SessionInfo[]> {
+    const res = await fetch(
+      `${this.baseUrl}/api/v1/sessions/search?q=${encodeURIComponent(query)}`,
+    );
+    if (!res.ok) return [];
     return res.json();
   }
 }
