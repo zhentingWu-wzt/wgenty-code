@@ -1,12 +1,14 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text, useInput } from "ink";
 import { ApiClient } from "@claude-code/core";
+import type { SessionInfo } from "@claude-code/core";
 import { useAgent } from "../hooks/use-agent.ts";
 import { ChatView } from "./chat-view.tsx";
 import { StatusBar } from "./status-bar.tsx";
 import { InputBox } from "./input-box.tsx";
 import { PermissionModal } from "./permission-modal.tsx";
 import { QuestionModal } from "./question-modal.tsx";
+import { SessionModal } from "./session-modal.tsx";
 import { WelcomeBanner } from "./welcome-banner.tsx";
 import { TaskPanel } from "./task-panel.tsx";
 
@@ -56,12 +58,36 @@ const AgentView: React.FC<{
     reset,
     resolvePermission,
     resolveQuestion,
+    sessionListOpen,
+    sessions,
+    loadSession,
+    openSessionList,
+    closeSessionList,
+    deleteSession,
   } = useAgent({ client });
 
   const [allExpanded, setAllExpanded] = React.useState(false);
   const [overrides, setOverrides] = React.useState<Map<number, boolean>>(
     new Map()
   );
+
+  const [sessionSearchQuery, setSessionSearchQuery] = React.useState("");
+  const [sessionSelectedIndex, setSessionSelectedIndex] = React.useState(0);
+
+  // Startup: try to restore the most recent session
+  React.useEffect(() => {
+    client.listSessions().then((list) => {
+      if (list.length > 0) {
+        const latest = list[0];
+        const updatedAt = new Date(latest.updated_at).getTime();
+        const now = Date.now();
+        const hoursSinceUpdate = (now - updatedAt) / (1000 * 60 * 60);
+        if (hoursSinceUpdate < 24) {
+          loadSession(latest.id);
+        }
+      }
+    }).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Find the last collapsible tool result's index (for Ctrl+O)
   const lastCollapsibleIndex = React.useMemo(() => {
@@ -116,21 +142,82 @@ const AgentView: React.FC<{
     }
   };
 
-  const modal =
-    pendingPermission != null ? (
-      <PermissionModal
-        reason={pendingPermission.reason}
-        sessionRule={pendingPermission.sessionRule}
-        onResolve={resolvePermission}
-      />
-    ) : pendingQuestion != null ? (
-      <QuestionModal
-        question={pendingQuestion.question}
-        options={pendingQuestion.options}
-        multiSelect={pendingQuestion.multiSelect}
-        onResolve={resolveQuestion}
-      />
-    ) : null;
+  const handleSessionSelect = React.useCallback(
+    async (session: SessionInfo) => {
+      closeSessionList();
+      setSessionSearchQuery("");
+      setSessionSelectedIndex(0);
+      await loadSession(session.id);
+    },
+    [loadSession, closeSessionList],
+  );
+
+  const handleSessionDelete = React.useCallback(
+    async (id: string) => {
+      await deleteSession(id);
+      setSessionSelectedIndex(0);
+    },
+    [deleteSession],
+  );
+
+  const handleSessionNavigate = React.useCallback(
+    (delta: number) => {
+      setSessionSelectedIndex((prev) => {
+        const filtered = sessions.filter(
+          (s) =>
+            sessionSearchQuery === "" ||
+            s.name.toLowerCase().includes(sessionSearchQuery.toLowerCase()),
+        );
+        const max = Math.max(0, filtered.length - 1);
+        return Math.max(0, Math.min(max, prev + delta));
+      });
+    },
+    [sessions, sessionSearchQuery],
+  );
+
+  // Ctrl+S to open session list (only when idle and no modal open)
+  useInput((input, key) => {
+    if (
+      key.ctrl &&
+      input === "s" &&
+      status.type === "idle" &&
+      !pendingPermission &&
+      !pendingQuestion &&
+      !sessionListOpen
+    ) {
+      openSessionList();
+    }
+  });
+
+  const modal = sessionListOpen ? (
+    <SessionModal
+      sessions={sessions}
+      selectedIndex={sessionSelectedIndex}
+      searchQuery={sessionSearchQuery}
+      onSelect={handleSessionSelect}
+      onDelete={handleSessionDelete}
+      onClose={() => {
+        closeSessionList();
+        setSessionSearchQuery("");
+        setSessionSelectedIndex(0);
+      }}
+      onSearchChange={setSessionSearchQuery}
+      onNavigate={handleSessionNavigate}
+    />
+  ) : pendingPermission != null ? (
+    <PermissionModal
+      reason={pendingPermission.reason}
+      sessionRule={pendingPermission.sessionRule}
+      onResolve={resolvePermission}
+    />
+  ) : pendingQuestion != null ? (
+    <QuestionModal
+      question={pendingQuestion.question}
+      options={pendingQuestion.options}
+      multiSelect={pendingQuestion.multiSelect}
+      onResolve={resolveQuestion}
+    />
+  ) : null;
 
   return (
     <Box flexDirection="column">
