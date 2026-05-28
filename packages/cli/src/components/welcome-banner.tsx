@@ -90,10 +90,6 @@ export const WelcomeBanner: React.FC<Props> = ({ model, width = 80 }) => {
 
       <Box height={1} />
 
-      {/* Hint */}
-      <Box>
-        <Text dimColor>     输入 help 查看命令 · 输入 exit 退出</Text>
-      </Box>
     </Box>
   );
 };
