@@ -11,13 +11,7 @@ import { QuestionModal } from "./question-modal.tsx";
 import { SessionModal } from "./session-modal.tsx";
 import { WelcomeBanner } from "./welcome-banner.tsx";
 import { TaskPanel } from "./task-panel.tsx";
-import * as fs from "node:fs";
 
-function debugLog(msg: string) {
-  try {
-    fs.appendFileSync("/tmp/claude-code-debug.log", `[${new Date().toISOString()}] ${msg}\n`);
-  } catch {}
-}
 
 interface Props {
   workingDir?: string;
@@ -75,8 +69,6 @@ const AgentView: React.FC<{
     saveRef,
   } = useAgent({ client });
 
-  debugLog("AgentView rendered, useAgent initialized");
-
   const [allExpanded, setAllExpanded] = React.useState(false);
   const [overrides, setOverrides] = React.useState<Map<number, boolean>>(
     new Map()
@@ -87,23 +79,17 @@ const AgentView: React.FC<{
 
   // Startup: try to restore the most recent session
   React.useEffect(() => {
-    debugLog("startup: listing sessions for auto-restore...");
     client.listSessions().then((list) => {
-      debugLog(`startup: got ${list.length} sessions`);
       if (list.length > 0) {
         const latest = list[0];
         const updatedAt = new Date(latest.updated_at).getTime();
         const now = Date.now();
         const hoursSinceUpdate = (now - updatedAt) / (1000 * 60 * 60);
-        debugLog(`startup: latest session "${latest.name}", ${hoursSinceUpdate.toFixed(1)}h since update`);
         if (hoursSinceUpdate < 24) {
-          debugLog(`startup: auto-restoring ${latest.id}`);
           loadSession(latest.id);
         }
       }
-    }).catch((err) => {
-      debugLog(`startup: listSessions failed: ${err}`);
-    });
+    }).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Save session on exit (SIGINT/SIGTERM)
@@ -152,7 +138,6 @@ const AgentView: React.FC<{
   }, [lastCollapsibleIndex, allExpanded]);
 
   const handleSubmit = (input: string) => {
-    debugLog(`handleSubmit called: "${input}"`);
     switch (input.toLowerCase()) {
       case "exit":
       case "quit":
@@ -163,14 +148,12 @@ const AgentView: React.FC<{
         console.clear();
         break;
       case "reset":
-        debugLog("handleSubmit -> reset");
         reset();
         break;
       case "help":
         sendMessage("help");
         break;
       default:
-        debugLog("handleSubmit -> sendMessage");
         sendMessage(input);
     }
   };

@@ -1,15 +1,6 @@
 import React, { useState, useRef, useCallback } from "react";
 import { ApiClient, AgentLoop } from "@claude-code/core";
 import type { AgentCallbacks, ToolResult, ChatMessage, SessionInfo } from "@claude-code/core";
-import * as fs from "node:fs";
-
-// Write debug log to file since Ink may swallow console.error output
-function debugLog(msg: string) {
-  try {
-    const line = `[${new Date().toISOString()}] ${msg}\n`;
-    fs.appendFileSync("/tmp/claude-code-debug.log", line);
-  } catch {}
-}
 
 export type MsgRole = "user" | "assistant" | "tool" | "system";
 
@@ -229,18 +220,13 @@ export function useAgent({ client }: UseAgentOptions) {
 
   /** Save current session to daemon. */
   const saveCurrentSession = useCallback(async () => {
-    debugLog(`saveCurrentSession called, agentRef=${!!agentRef.current}, sessionId=${sessionId}, sessionName="${sessionName}"`);
-    if (!agentRef.current) { debugLog("saveCurrentSession: no agentRef, returning"); return; }
+    if (!agentRef.current) return;
     const history = agentRef.current.getHistory();
-    debugLog(`saveCurrentSession: history.length=${history.length}`);
-    if (history.length <= 1) { debugLog("saveCurrentSession: history too short, returning"); return; }
+    if (history.length <= 1) return;
     try {
-      debugLog("saveCurrentSession: calling client.saveSession...");
       await client.saveSession(sessionId, sessionName || "Untitled", history);
-      debugLog("saveCurrentSession: save succeeded");
       setDirty(false);
     } catch (err) {
-      debugLog(`saveCurrentSession: save FAILED: ${err}`);
       console.error("Failed to save session:", err);
     }
   }, [client, sessionId, sessionName]);
@@ -254,9 +240,7 @@ export function useAgent({ client }: UseAgentOptions) {
   const loadSession = useCallback(
     async (id: string) => {
       try {
-        debugLog(`loadSession: loading ${id}...`);
         const session = await client.loadSession(id);
-        debugLog(`loadSession: loaded, ${session.messages.length} messages`);
         if (!agentRef.current) {
           agentRef.current = new AgentLoop({ client, callbacks });
         }
@@ -268,7 +252,6 @@ export function useAgent({ client }: UseAgentOptions) {
         setSessionName(session.name);
         setDirty(false);
       } catch (err) {
-        debugLog(`loadSession: FAILED: ${err}`);
       }
     },
     [client, callbacks, rebuildUIMessages],
@@ -277,21 +260,16 @@ export function useAgent({ client }: UseAgentOptions) {
   /** Refresh the session list from daemon. */
   const refreshSessions = useCallback(async () => {
     try {
-      debugLog("refreshSessions: fetching sessions...");
       const list = await client.listSessions();
-      debugLog(`refreshSessions: got ${list.length} sessions`);
       setSessions(list);
     } catch (err) {
-      debugLog(`refreshSessions: FAILED: ${err}`);
       console.error("Failed to refresh sessions:", err);
     }
   }, [client]);
 
   /** Open session modal (save current first, refresh list). */
   const openSessionList = useCallback(async () => {
-    debugLog("openSessionList: saving current first...");
     await saveCurrentSession();
-    debugLog("openSessionList: refreshing list...");
     await refreshSessions();
     setSessionListOpen(true);
   }, [saveCurrentSession, refreshSessions]);
@@ -301,9 +279,7 @@ export function useAgent({ client }: UseAgentOptions) {
   }, []);
 
   const reset = useCallback(async () => {
-    debugLog("reset: awaiting saveCurrentSession...");
     await saveCurrentSession();
-    debugLog("reset: save done, clearing state");
     setMessages([]);
     setStatus({ type: "idle" });
     streamingContentRef.current = "";
@@ -395,7 +371,6 @@ export function useAgent({ client }: UseAgentOptions) {
 
       // Auto-save after each round-trip
       setDirty(true);
-      debugLog("sendMessage: calling saveCurrentSession (auto-save)");
       saveCurrentSession();
     },
     [client, addMsg, updateLastMsg, saveCurrentSession]
