@@ -89,6 +89,7 @@ pub struct App {
     pub session_id: String,
     pub session_name: String,
     pub scroll_offset: u16,
+    pub user_scrolled: bool,
     pub agent: Arc<TokioMutex<AgentLoop>>,
     /// Channel sender for agent/input events
     event_tx: mpsc::UnboundedSender<AppEvent>,
@@ -119,6 +120,7 @@ impl App {
             session_id,
             session_name: "New Session".to_string(),
             scroll_offset: 0,
+            user_scrolled: false,
             agent: Arc::new(TokioMutex::new(agent)),
             event_tx,
             event_rx,
@@ -283,6 +285,48 @@ impl App {
                     return;
                 }
 
+                // Scroll handling (when no popup is active)
+                match key.code {
+                    KeyCode::Up => {
+                        self.scroll_offset = self.scroll_offset.saturating_add(1);
+                        self.user_scrolled = true;
+                        return;
+                    }
+                    KeyCode::Down => {
+                        if self.scroll_offset > 0 {
+                            self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                            if self.scroll_offset == 0 {
+                                self.user_scrolled = false;
+                            }
+                        }
+                        return;
+                    }
+                    KeyCode::PageUp => {
+                        self.scroll_offset = self.scroll_offset.saturating_add(10);
+                        self.user_scrolled = true;
+                        return;
+                    }
+                    KeyCode::PageDown => {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(10);
+                        if self.scroll_offset == 0 {
+                            self.user_scrolled = false;
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+
+                // Ctrl+L: clear screen
+                if key.code == KeyCode::Char('l')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    self.committed_messages.clear();
+                    self.streaming_content.clear();
+                    self.scroll_offset = 0;
+                    self.user_scrolled = false;
+                    return;
+                }
+
                 // Feed the key to tui-textarea for CJK/IME-compatible input
                 let handled = self.input_box.textarea.input(key.clone());
 
@@ -318,6 +362,10 @@ impl App {
                 self.streaming_content.push_str(&text);
                 self.streaming_active = true;
                 self.status = "streaming".to_string();
+                // Auto-scroll: keep at bottom when streaming and user hasn't manually scrolled
+                if !self.user_scrolled {
+                    self.scroll_offset = 0;
+                }
             }
             AppEvent::StreamDone { .. } => {
                 if !self.streaming_content.is_empty() {
@@ -329,6 +377,8 @@ impl App {
                 }
                 self.streaming_active = false;
                 self.status = "idle".to_string();
+                self.scroll_offset = 0;
+                self.user_scrolled = false;
             }
             AppEvent::ToolStart { name } => {
                 self.status = format!("executing {}", name);
@@ -344,7 +394,7 @@ impl App {
             AppEvent::StreamError(msg) => {
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::System,
-                    content: format!("Error: {}", msg),
+                    content: format!("⚠ {}", msg),
                     tool_name: None,
                 });
                 self.streaming_active = false;
