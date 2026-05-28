@@ -23,6 +23,10 @@ export const InputBox: React.FC<Props> = ({
   // Flag to filter out ctrl-key characters from TextInput onChange
   const ctrlFlag = React.useRef(false);
 
+  // Keep latest onSubmit in ref so ink-text-input never sees a stale callback
+  const onSubmitRef = React.useRef(onSubmit);
+  onSubmitRef.current = onSubmit;
+
   useInput((input, key) => {
     if (key.ctrl) {
       if (input === "e" || input === "\x05") {
@@ -43,13 +47,13 @@ export const InputBox: React.FC<Props> = ({
     setValue(newValue);
   };
 
-  const handleSubmit = (val: string) => {
+  const handleSubmit = React.useCallback((val: string) => {
     const trimmed = val.trim();
     if (trimmed) {
-      onSubmit(trimmed);
+      onSubmitRef.current(trimmed);
       setValue("");
     }
-  };
+  }, []);
 
   return (
     <Box flexDirection="column" marginTop={1}>
