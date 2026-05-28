@@ -4,6 +4,8 @@ use crate::state::AppState;
 use crate::tui::agent::AgentLoop;
 use crate::tui::client::DaemonClient;
 use crate::tui::components;
+use crate::tui::components::permission::PermissionState;
+use crate::tui::components::question::QuestionState;
 use crate::tui::theme;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -35,6 +37,12 @@ pub enum AppEvent {
     ToolResult { name: String, content: String },
     /// Permission is needed
     PermissionRequired { reason: String, rule: String },
+    /// ask_user_question was invoked
+    QuestionAsked {
+        question: String,
+        options: Vec<String>,
+        multi_select: bool,
+    },
     /// A stream error occurred
     StreamError(String),
     /// Tick for periodic refresh
@@ -74,6 +82,8 @@ pub struct App {
     /// Channel receiver
     event_rx: mpsc::UnboundedReceiver<AppEvent>,
     should_quit: bool,
+    pub permission_state: PermissionState,
+    pub question_state: QuestionState,
 }
 
 impl App {
@@ -98,6 +108,8 @@ impl App {
             event_tx,
             event_rx,
             should_quit: false,
+            permission_state: PermissionState::new(),
+            question_state: QuestionState::new(),
         }
     }
 
@@ -224,11 +236,61 @@ impl App {
                 self.status = "idle".to_string();
             }
             AppEvent::Tick => { /* periodic refresh */ }
+            AppEvent::PermissionRequired { reason, rule } => {
+                self.permission_state.show(reason, rule);
+            }
+            AppEvent::QuestionAsked {
+                question,
+                options,
+                multi_select,
+            } => {
+                self.question_state.show(question, options, multi_select);
+            }
             _ => {}
         }
     }
 
     fn handle_key(&mut self, key: KeyCode) {
+        // If permission popup is visible, handle its keys
+        if self.permission_state.visible {
+            match key {
+                KeyCode::Char('y') => {
+                    let (_reason, rule) = self.permission_state.dismiss();
+                    let _ = self.event_tx.send(AppEvent::Submit(format!("__permission_allow:{}", rule)));
+                }
+                KeyCode::Char('a') => {
+                    let (_reason, rule) = self.permission_state.dismiss();
+                    let _ = self.event_tx.send(AppEvent::Submit(format!("__permission_always:{}", rule)));
+                }
+                KeyCode::Char('n') => {
+                    let (_reason, _rule) = self.permission_state.dismiss();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // If question popup is visible, handle its keys
+        if self.question_state.visible {
+            match key {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.question_state.move_up();
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.question_state.move_down();
+                }
+                KeyCode::Enter => {
+                    let answers = self.question_state.dismiss();
+                    let _ = self.event_tx.send(AppEvent::Submit(format!("__question_answer:{:?}", answers)));
+                }
+                KeyCode::Esc => {
+                    self.question_state.dismiss();
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match key {
             KeyCode::Esc => {
                 self.should_quit = true;
@@ -271,6 +333,10 @@ impl App {
         }
         self.render_status(f, layout[2]);
         self.render_input(f, layout[3]);
+
+        // Render popups on top (at the end so they overlay everything)
+        components::permission::render(f, &self.permission_state, centered_rect);
+        components::question::render(f, &self.question_state, centered_rect);
     }
 
     fn render_header(&self, f: &mut Frame, area: Rect) {
