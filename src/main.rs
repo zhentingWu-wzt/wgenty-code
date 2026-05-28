@@ -9,9 +9,6 @@ use tracing::error;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // 防御性恢复终端模式（防止 TUI 异常退出后残留 raw mode）
-    let _ = crossterm::terminal::disable_raw_mode();
-
     logging::init();
 
     let cli = Cli::parse();

@@ -19,8 +19,8 @@ impl Cli {
         }
 
         match &self.command {
-            Some(super::Commands::Repl { prompt, tui }) => {
-                self.run_repl(state, prompt.clone(), *tui).await?;
+            Some(super::Commands::Repl { prompt }) => {
+                self.run_repl(state, prompt.clone()).await?;
             }
             Some(super::Commands::Query { prompt }) => {
                 self.run_query(state, prompt.clone()).await?;
@@ -70,8 +70,18 @@ impl Cli {
             Some(super::Commands::Skills { action }) => {
                 self.run_skills(action).await?;
             }
+            #[cfg(feature = "daemon")]
+            Some(super::Commands::Daemon { port }) => {
+                crate::daemon::run(state, *port).await?;
+            }
+            #[cfg(not(feature = "daemon"))]
+            Some(super::Commands::Daemon { .. }) => {
+                return Err(anyhow::anyhow!(
+                    "Daemon feature is not enabled. Rebuild with: cargo build --features daemon"
+                ));
+            }
             None => {
-                self.run_repl(state, None, false).await?;
+                self.run_repl(state, None).await?;
             }
         }
 
@@ -79,39 +89,34 @@ impl Cli {
     }
 
     fn print_system_info(&self) {
-        use colored::Colorize;
-
         println!();
-        println!("  {}", "System Information".truecolor(147, 112, 219).bold());
+        println!("  System Information");
         println!();
-        println!("  {:20} {}", "Version:", env!("CARGO_PKG_VERSION").green());
-        println!("  {:20} {}", "OS:", std::env::consts::OS.cyan());
-        println!("  {:20} {}", "Architecture:", std::env::consts::ARCH.cyan());
+        println!("  {:20} {}", "Version:", env!("CARGO_PKG_VERSION"));
+        println!("  {:20} {}", "OS:", std::env::consts::OS);
+        println!("  {:20} {}", "Architecture:", std::env::consts::ARCH);
         println!(
             "  {:20} {}",
             "Working Directory:",
-            std::env::current_dir()
-                .unwrap()
-                .display()
-                .to_string()
-                .bright_white()
+            std::env::current_dir().unwrap().display()
         );
         println!();
     }
 
     async fn run_repl(
         &self,
-        state: crate::state::AppState,
-        prompt: Option<String>,
-        tui: bool,
+        _state: crate::state::AppState,
+        _prompt: Option<String>,
     ) -> anyhow::Result<()> {
-        if tui {
-            let mut tui_repl = crate::cli::TuiRepl::new(state).await?;
-            tui_repl.run().await?;
-        } else {
-            let mut repl = crate::cli::repl::Repl::new(state).await;
-            repl.start(prompt).await?;
-        }
+        println!();
+        println!("  The interactive REPL has moved to the TypeScript frontend.");
+        println!();
+        println!("  To start the rich CLI:");
+        println!("    npm run dev:ink");
+        println!();
+        println!("  Or for the minimal readline CLI:");
+        println!("    npm run -w packages/cli dev");
+        println!();
         Ok(())
     }
 

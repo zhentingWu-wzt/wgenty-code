@@ -9,12 +9,12 @@ use tokio::sync::RwLock;
 use crate::config::Settings;
 use crate::knowledge::{MagicDocsConfig, MagicDocsService};
 use crate::services::{
-    AutoDreamConfig, AutoDreamService, PluginConfig, PluginMarketplaceService,
-    TeamMemoryConfig, TeamMemorySyncService,
+    AutoDreamConfig, AutoDreamService, PluginConfig, PluginMarketplaceService, TeamMemoryConfig,
+    TeamMemorySyncService,
 };
+use crate::state::AppState;
 use crate::teams::AgentsService;
 use crate::voice::{VoiceConfig, VoiceService};
-use crate::state::AppState;
 
 #[derive(Debug, Clone)]
 pub struct StressTestResult {

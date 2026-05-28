@@ -6,16 +6,16 @@
 //!   - execution/   — shell commands, session management, git
 //!   - meta/        — think, lsp, ask_user_question, note_edit
 
+pub mod execution;
 pub mod executor;
 pub mod filesystem;
-pub mod search;
-pub mod execution;
 pub mod meta;
+pub mod search;
 
+use crate::tasks::TaskManagementTool;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::tasks::TaskManagementTool;
 
 /// Tool trait for all tools
 #[async_trait]
@@ -61,7 +61,8 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        let command_sessions = std::sync::Arc::new(execution::session_manager::CommandSessionManager::new());
+        let command_sessions =
+            std::sync::Arc::new(execution::session_manager::CommandSessionManager::new());
         let mut registry = Self {
             tools: HashMap::new(),
         };
@@ -74,7 +75,9 @@ impl ToolRegistry {
         registry.register(Box::new(filesystem::file_edit::FileEditTool::new()));
         registry.register(Box::new(filesystem::file_write::FileWriteTool::new()));
         // Execution tools
-        registry.register(Box::new(execution::execute_command::ExecuteCommandTool::new()));
+        registry.register(Box::new(
+            execution::execute_command::ExecuteCommandTool::new(),
+        ));
         registry.register(Box::new(execution::exec_command::ExecCommandTool::new(
             command_sessions.clone(),
         )));
@@ -137,13 +140,13 @@ impl Default for ToolRegistry {
 }
 
 // Re-export all tool types
+pub use execution::{
+    CommandSessionManager, ExecCommandTool, ExecuteCommandTool, GitOperationsTool, KillSessionTool,
+    WriteStdinTool,
+};
 pub use executor::ToolExecutor;
 pub use filesystem::{
     ApplyPatchTool, FileEditTool, FileReadTool, FileWriteTool, ListFilesTool, ViewTool,
 };
-pub use search::{GlobTool, GrepTool, SearchTool};
-pub use execution::{
-    CommandSessionManager, ExecCommandTool, ExecuteCommandTool, GitOperationsTool,
-    KillSessionTool, WriteStdinTool,
-};
 pub use meta::{AskUserQuestionTool, LspTool, NoteEditTool, ThinkTool};
+pub use search::{GlobTool, GrepTool, SearchTool};

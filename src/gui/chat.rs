@@ -12,8 +12,8 @@ use super::syntax_highlight::format_code_block;
 use super::tool_calls::ToolCall;
 use chrono::{DateTime, Utc};
 use egui::{
-    Align, Color32, Frame, Layout, Margin, RichText, CornerRadius, ScrollArea, Stroke, TextEdit, Ui,
-    Vec2,
+    Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, ScrollArea, Stroke, TextEdit,
+    Ui, Vec2,
 };
 
 /// A chat message - matches Claude.ai structure
@@ -129,50 +129,45 @@ impl ChatPanel {
         let messages_height = available_height - input_height - 16.0;
 
         // Messages area with exact Claude styling
-        Frame::NONE
-            .fill(theme.background_darkest())
-            .show(ui, |ui| {
-                ui.set_min_height(messages_height);
+        Frame::NONE.fill(theme.background_darkest()).show(ui, |ui| {
+            ui.set_min_height(messages_height);
 
-                ScrollArea::vertical()
-                    .auto_shrink([false; 2])
-                    .stick_to_bottom(self.scroll_to_bottom)
-                    .show(ui, |ui| {
-                        ui.add_space(24.0);
+            ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .stick_to_bottom(self.scroll_to_bottom)
+                .show(ui, |ui| {
+                    ui.add_space(24.0);
 
-                        // Welcome banner for first load
-                        if self.messages.len() <= 1 {
-                            self.render_welcome_banner(ui, theme);
-                        }
+                    // Welcome banner for first load
+                    if self.messages.len() <= 1 {
+                        self.render_welcome_banner(ui, theme);
+                    }
 
-                        // Render all messages
-                        let msg_count = self.messages.len();
-                        // 先克隆所有消息，避免借用冲突
-                        let mut messages_clone = self.messages.clone();
-                        for (idx, message) in messages_clone.iter_mut().enumerate() {
-                            self.render_message(ui, message, theme, idx == msg_count - 1);
-                        }
-                        // 更新展开状态
-                        for i in 0..msg_count {
-                            self.messages[i].thinking_expanded =
-                                messages_clone[i].thinking_expanded;
-                        }
+                    // Render all messages
+                    let msg_count = self.messages.len();
+                    // 先克隆所有消息，避免借用冲突
+                    let mut messages_clone = self.messages.clone();
+                    for (idx, message) in messages_clone.iter_mut().enumerate() {
+                        self.render_message(ui, message, theme, idx == msg_count - 1);
+                    }
+                    // 更新展开状态
+                    for i in 0..msg_count {
+                        self.messages[i].thinking_expanded = messages_clone[i].thinking_expanded;
+                    }
 
-                        // Loading indicator
-                        if self.is_loading && !self.messages.iter().any(|m| m.is_streaming) {
-                            self.render_loading_indicator(ui, theme);
-                        }
+                    // Loading indicator
+                    if self.is_loading && !self.messages.iter().any(|m| m.is_streaming) {
+                        self.render_loading_indicator(ui, theme);
+                    }
 
-                        ui.add_space(24.0);
-                    });
-            });
+                    ui.add_space(24.0);
+                });
+        });
 
         // Input area - fixed at bottom
-        Frame::NONE
-            .fill(theme.background_darkest())
-            .show(ui, |ui| {
-                self.render_input_area(ui, theme);
-            });
+        Frame::NONE.fill(theme.background_darkest()).show(ui, |ui| {
+            self.render_input_area(ui, theme);
+        });
     }
 
     fn render_welcome_banner(&self, ui: &mut Ui, theme: &super::Theme) {
