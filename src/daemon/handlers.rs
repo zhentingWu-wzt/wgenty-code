@@ -4,6 +4,7 @@ use crate::api::{ApiClient, ToolDefinition};
 use crate::daemon::models::*;
 use crate::daemon::state::DaemonState;
 use crate::permissions::PolicyDecision;
+use crate::tasks::management::{TaskPriority, TaskStatus};
 use axum::{
     extract::State,
     http::StatusCode,
@@ -14,11 +15,22 @@ use axum::{
 };
 use futures::StreamExt;
 use std::convert::Infallible;
+use std::io::Write;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::Stream;
 use tracing::error;
+
+fn debug_log(msg: &str) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/claude-code-debug.log")
+    {
+        let _ = writeln!(f, "{}", msg);
+    }
+}
 
 // ── Health ───────────────────────────────────────────────────────────────────
 
@@ -69,10 +81,7 @@ pub async fn chat_stream(
         let response = match client.chat_stream(messages, tools).await {
             Ok(r) => r,
             Err(e) => {
-                let _ = tx.send(Ok(Event::default().data(format!(
-                    r#"{{"error":"{}"}}"#,
-                    e
-                ))));
+                let _ = tx.send(Ok(Event::default().data(format!(r#"{{"error":"{}"}}"#, e))));
                 return;
             }
         };
@@ -80,41 +89,57 @@ pub async fn chat_stream(
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            let _ = tx.send(Ok(Event::default().data(format!(
-                r#"{{"error":"API error ({}): {}"}}"#,
-                status, body
-            ))));
+            let _ = tx.send(Ok(
+                Event::default().data(format!(r#"{{"error":"API error ({}): {}"}}"#, status, body))
+            ));
             return;
         }
 
-        // Stream SSE chunks back to the client
+        // Stream SSE chunks back to the client.
+        // Use a buffer to handle chunk boundaries — a TCP chunk may split an SSE line
+        // in the middle, and String::lines() would discard the partial fragment.
         let mut stream = response.bytes_stream();
+        let mut stream_error = false;
+        let mut buffer = String::new();
         while let Some(chunk) = stream.next().await {
             match chunk {
                 Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    for line in text.lines() {
-                        let line = line.trim();
+                    buffer.push_str(&String::from_utf8_lossy(&bytes));
+                    // Extract complete lines; keep the trailing partial line in buffer
+                    while let Some(idx) = buffer.find('\n') {
+                        let line = buffer[..idx].trim().to_string();
+                        buffer = buffer[idx + 1..].to_string();
                         if line.is_empty() {
                             continue;
                         }
                         // Upstream already formats SSE as "data: {...}" or "[DONE]";
                         // strip prefix so we don't double-wrap.
-                        let payload = line
-                            .strip_prefix("data: ")
-                            .unwrap_or(line);
+                        let payload = line.strip_prefix("data: ").unwrap_or(&line);
                         let _ = tx.send(Ok(Event::default().data(payload)));
                     }
                 }
                 Err(e) => {
                     error!(error = %e, "stream chunk error");
+                    stream_error = true;
                     break;
                 }
             }
         }
+        // Flush any remaining data in the buffer
+        let remainder = buffer.trim().to_string();
+        if !remainder.is_empty() && !stream_error {
+            let payload = remainder.strip_prefix("data: ").unwrap_or(&remainder);
+            let _ = tx.send(Ok(Event::default().data(payload)));
+        }
 
-        // Signal done
-        let _ = tx.send(Ok(Event::default().data("[DONE]")));
+        // Signal done or error (not normal end — lets the TS side detect incomplete streams)
+        if stream_error {
+            let _ = tx.send(Ok(
+                Event::default().data(r#"{"error":"Upstream stream interrupted"}"#)
+            ));
+        } else {
+            let _ = tx.send(Ok(Event::default().data("[DONE]")));
+        }
     });
 
     Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(KeepAlive::default())
@@ -153,19 +178,22 @@ pub async fn execute_tool(
         .await
     {
         Ok(PolicyDecision::Allow) => {
-            // Execute directly
+            // Execute directly with hooks
             let msg = state
                 .tool_executor
-                .execute_tool_call("api", tool_name, args.clone())
+                .execute_with_hooks("api", tool_name, args.clone(), Some(session_id))
                 .await;
             let content = msg.content.unwrap_or_default();
-            let parsed: serde_json::Value =
-                serde_json::from_str(&content).unwrap_or_default();
+            let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
 
             Ok(Json(ExecuteToolResponse {
                 success: parsed["success"].as_bool().unwrap_or(false),
                 output_type: parsed["output_type"].as_str().map(|s| s.to_string()),
                 content: parsed["content"].as_str().map(|s| s.to_string()),
+                error: parsed["error"]
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string()),
                 metadata: parsed.get("metadata").cloned(),
                 permission_required: None,
             }))
@@ -175,16 +203,19 @@ pub async fn execute_tool(
             if state.is_rule_approved(session_id, &req.session_rule).await {
                 let msg = state
                     .tool_executor
-                    .execute_tool_call("api", tool_name, args.clone())
+                    .execute_with_hooks("api", tool_name, args.clone(), Some(session_id))
                     .await;
                 let content = msg.content.unwrap_or_default();
-                let parsed: serde_json::Value =
-                    serde_json::from_str(&content).unwrap_or_default();
+                let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
 
                 return Ok(Json(ExecuteToolResponse {
                     success: parsed["success"].as_bool().unwrap_or(false),
                     output_type: parsed["output_type"].as_str().map(|s| s.to_string()),
                     content: parsed["content"].as_str().map(|s| s.to_string()),
+                    error: parsed["error"]
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .map(|s| s.to_string()),
                     metadata: parsed.get("metadata").cloned(),
                     permission_required: None,
                 }));
@@ -195,6 +226,7 @@ pub async fn execute_tool(
                 success: false,
                 output_type: None,
                 content: None,
+                error: None,
                 metadata: None,
                 permission_required: Some(PermissionRequiredInfo {
                     reason: req.reason,
@@ -205,7 +237,8 @@ pub async fn execute_tool(
         Err(e) => Ok(Json(ExecuteToolResponse {
             success: false,
             output_type: None,
-            content: Some(format!("{}: {}", e.code.as_deref().unwrap_or("error"), e.message)),
+            content: None,
+            error: Some(e.message),
             metadata: None,
             permission_required: None,
         })),
@@ -220,11 +253,77 @@ pub async fn approve_tool(
         .tool_executor
         .approve_rule(body.session_rule.clone())
         .await;
-    state
-        .approve_rule("default", body.session_rule)
-        .await;
+    state.approve_rule("default", body.session_rule).await;
 
     Json(serde_json::json!({"success": true}))
+}
+
+// ── Tasks ────────────────────────────────────────────────────────────────────
+
+pub async fn list_tasks(State(state): State<Arc<DaemonState>>) -> Json<ListTasksResponse> {
+    let all = state.task_manager.get_all_tasks().await;
+    debug_log(&format!(
+        "[list_tasks handler] returning {} tasks",
+        all.len()
+    ));
+    let tasks: Vec<TaskInfo> = all
+        .into_iter()
+        .map(|t| TaskInfo {
+            id: t.id,
+            subject: t.subject,
+            description: t.description,
+            status: match t.status {
+                TaskStatus::Pending => "pending",
+                TaskStatus::InProgress => "in_progress",
+                TaskStatus::Completed => "completed",
+                TaskStatus::Deleted => "deleted",
+            }
+            .to_string(),
+            priority: match t.priority {
+                TaskPriority::Low => "low",
+                TaskPriority::Medium => "medium",
+                TaskPriority::High => "high",
+                TaskPriority::Critical => "critical",
+            }
+            .to_string(),
+            created_at: t.created_at.to_rfc3339(),
+            updated_at: t.updated_at.to_rfc3339(),
+            tags: t.tags,
+        })
+        .collect();
+
+    Json(ListTasksResponse { tasks })
+}
+
+// ── Todos (s03 TodoWrite) ────────────────────────────────────────────────────
+
+pub async fn get_todos(State(state): State<Arc<DaemonState>>) -> Json<GetTodosResponse> {
+    let todo_state = state.todo_state.read().await;
+    let items: Vec<TodoItemResponse> = todo_state
+        .items
+        .iter()
+        .map(|t| TodoItemResponse {
+            content: t.content.clone(),
+            status: t.status.clone(),
+            active_form: t.active_form.clone(),
+        })
+        .collect();
+    let has_open = todo_state.has_open_items();
+    let display = todo_state.render();
+    Json(GetTodosResponse {
+        items,
+        has_open_items: has_open,
+        display,
+    })
+}
+
+// ── Background Tasks ──────────────────────────────────────────────────────────
+
+pub async fn get_background_results(
+    State(state): State<Arc<DaemonState>>,
+) -> Json<serde_json::Value> {
+    let results = state.background_manager.drain_results().await;
+    Json(serde_json::json!({ "results": results }))
 }
 
 // ── MCP ──────────────────────────────────────────────────────────────────────

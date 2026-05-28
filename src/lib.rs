@@ -21,6 +21,7 @@ pub mod api;
 pub mod cli;
 pub mod config;
 pub mod context;
+pub mod hooks;
 pub mod knowledge;
 pub mod mcp;
 pub mod permissions;
@@ -34,6 +35,8 @@ pub mod utils;
 pub mod voice;
 
 // Feature-gated modules
+#[cfg(feature = "daemon")]
+pub mod daemon;
 #[cfg(feature = "gui-egui")]
 pub mod gui;
 #[cfg(feature = "i18n")]
@@ -42,8 +45,6 @@ pub mod i18n;
 pub mod wasm;
 #[cfg(feature = "web")]
 pub mod web;
-#[cfg(feature = "daemon")]
-pub mod daemon;
 
 pub use api::{AnthropicClient, ApiClient, ChatMessage};
 pub use cli::Cli;

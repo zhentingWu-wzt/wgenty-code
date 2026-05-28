@@ -64,6 +64,8 @@ pub struct ExecuteToolResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_required: Option<PermissionRequiredInfo>,
@@ -105,4 +107,40 @@ pub struct AddMcpServerRequest {
     pub env: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub auto_start: bool,
+}
+
+// ── Tasks ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct TaskInfo {
+    pub id: String,
+    pub subject: String,
+    pub description: String,
+    pub status: String,
+    pub priority: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListTasksResponse {
+    pub tasks: Vec<TaskInfo>,
+}
+
+// ── Todos (s03 TodoWrite) ─────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct TodoItemResponse {
+    pub content: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub active_form: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetTodosResponse {
+    pub items: Vec<TodoItemResponse>,
+    pub has_open_items: bool,
+    pub display: String,
 }

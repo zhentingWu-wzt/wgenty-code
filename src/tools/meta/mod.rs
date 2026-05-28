@@ -1,9 +1,17 @@
 pub mod ask_user_question;
+pub mod compact;
+pub mod load_skill;
 pub mod lsp;
 pub mod note_edit;
+pub mod task;
+pub mod team_message;
 pub mod think;
 
 pub use ask_user_question::AskUserQuestionTool;
+pub use compact::CompactTool;
+pub use load_skill::LoadSkillTool;
 pub use lsp::LspTool;
 pub use note_edit::NoteEditTool;
+pub use task::TaskTool;
+pub use team_message::TeamMessageTool;
 pub use think::ThinkTool;

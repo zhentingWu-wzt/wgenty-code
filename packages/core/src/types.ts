@@ -86,6 +86,7 @@ export interface ExecuteToolResponse {
   success: boolean;
   output_type?: string | null;
   content?: string | null;
+  error?: string | null;
   metadata?: Record<string, unknown> | null;
   permission_required?: {
     reason: string;

@@ -6,6 +6,7 @@
 pub mod builtin;
 pub mod docs;
 pub mod executor;
+pub mod loader;
 pub mod registry;
 
 use async_trait::async_trait;
@@ -97,4 +98,5 @@ impl std::fmt::Display for SkillCategory {
 pub use builtin::BuiltinSkills;
 pub use docs::{MagicDocHeader, MagicDocInfo, MagicDocsConfig, MagicDocsService, MagicDocsStatus};
 pub use executor::SkillExecutor;
+pub use loader::{SkillInfo, SkillLoader};
 pub use registry::SkillRegistry;

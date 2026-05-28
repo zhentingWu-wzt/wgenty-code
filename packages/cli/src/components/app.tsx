@@ -8,6 +8,7 @@ import { InputBox } from "./input-box.tsx";
 import { PermissionModal } from "./permission-modal.tsx";
 import { QuestionModal } from "./question-modal.tsx";
 import { WelcomeBanner } from "./welcome-banner.tsx";
+import { TaskPanel } from "./task-panel.tsx";
 
 interface Props {
   workingDir?: string;
@@ -146,10 +147,11 @@ const AgentView: React.FC<{
         <WelcomeBanner model={model} width={cols} />
       )}
 
-      {/* Messages — flow naturally, terminal handles scrollback */}
       <ChatView messages={messages} width={cols} allExpanded={allExpanded} overrides={overrides} />
 
       {modal}
+
+      <TaskPanel client={client} key={messages.filter(m => m.role === 'user').length} />
 
       <StatusBar status={status} />
 

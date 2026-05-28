@@ -68,15 +68,19 @@ impl Tool for ExecuteCommandTool {
                 let stdout = String::from_utf8_lossy(&result.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&result.stderr).to_string();
 
-                let content = if result.status.success() {
-                    stdout
-                } else {
-                    format!("Error: {}\n{}", result.status, stderr)
-                };
+                if !result.status.success() {
+                    return Err(ToolError {
+                        message: format!(
+                            "exit code: {}\nstdout:\n{}\nstderr:\n{}",
+                            result.status, stdout, stderr
+                        ),
+                        code: Some("non_zero_exit".to_string()),
+                    });
+                }
 
                 Ok(ToolOutput {
                     output_type: "text".to_string(),
-                    content,
+                    content: stdout,
                     metadata: std::collections::HashMap::new(),
                 })
             }

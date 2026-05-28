@@ -12,7 +12,6 @@ pub mod filesystem;
 pub mod meta;
 pub mod search;
 
-use crate::tasks::TaskManagementTool;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -98,10 +97,10 @@ impl ToolRegistry {
         registry.register(Box::new(execution::git_operations::GitOperationsTool::new()));
         // Meta tools (more)
         registry.register(Box::new(meta::think::ThinkTool::new()));
+        registry.register(Box::new(meta::compact::CompactTool::new()));
         registry.register(Box::new(meta::lsp::LspTool::new()));
         registry.register(Box::new(meta::note_edit::NoteEditTool::new()));
-        // Task management (infrastructure tool)
-        registry.register(Box::new(TaskManagementTool::new()));
+        // Task management is registered externally via DaemonState to share task store
 
         registry
     }
@@ -141,12 +140,15 @@ impl Default for ToolRegistry {
 
 // Re-export all tool types
 pub use execution::{
-    CommandSessionManager, ExecCommandTool, ExecuteCommandTool, GitOperationsTool, KillSessionTool,
-    WriteStdinTool,
+    BackgroundManager, BackgroundResult, BackgroundTool, CommandSessionManager, ExecCommandTool,
+    ExecuteCommandTool, GitOperationsTool, KillSessionTool, WriteStdinTool,
 };
 pub use executor::ToolExecutor;
 pub use filesystem::{
     ApplyPatchTool, FileEditTool, FileReadTool, FileWriteTool, ListFilesTool, ViewTool,
 };
-pub use meta::{AskUserQuestionTool, LspTool, NoteEditTool, ThinkTool};
+pub use meta::{
+    AskUserQuestionTool, CompactTool, LoadSkillTool, LspTool, NoteEditTool, TaskTool,
+    TeamMessageTool, ThinkTool,
+};
 pub use search::{GlobTool, GrepTool, SearchTool};

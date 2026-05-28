@@ -226,6 +226,12 @@ async function main(): Promise<void> {
     async onAskUserQuestion(question, options, multiSelect) {
       return askQuestion(question, options, multiSelect);
     },
+
+    onStreamRetry() {
+      // Readline REPL — reset output state for retry
+      isStreaming = false;
+      process.stdout.write("\n[stream interrupted, retrying...]\n");
+    },
   };
 
   const agent = new AgentLoop({ client, callbacks });

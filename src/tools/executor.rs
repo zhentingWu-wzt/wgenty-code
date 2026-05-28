@@ -1,4 +1,5 @@
 use crate::api::ChatMessage;
+use crate::hooks::{HookEvent, HookManager};
 use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
 use crate::tools::ToolRegistry;
 use std::collections::HashSet;
@@ -9,6 +10,7 @@ pub struct ToolExecutor {
     registry: Arc<ToolRegistry>,
     policy: ToolPermissionPolicy,
     session_rules: Arc<RwLock<HashSet<String>>>,
+    hook_manager: Arc<HookManager>,
 }
 
 impl ToolExecutor {
@@ -17,7 +19,13 @@ impl ToolExecutor {
             registry,
             policy,
             session_rules: Arc::new(RwLock::new(HashSet::new())),
+            hook_manager: Arc::new(HookManager::default()),
         }
+    }
+
+    pub fn with_hooks(mut self, hook_manager: Arc<HookManager>) -> Self {
+        self.hook_manager = hook_manager;
+        self
     }
 
     pub fn tool_definitions(&self) -> Vec<crate::api::ToolDefinition> {
@@ -76,5 +84,61 @@ impl ToolExecutor {
         };
 
         ChatMessage::tool(tool_call_id, content)
+    }
+
+    /// Execute a tool call with Pre/Post hooks wrapping execution.
+    ///
+    /// PreToolUse hooks run before execution; if any hook returns
+    /// `{ "continue_execution": false }` the tool call is blocked.
+    /// PostToolUse hooks run after execution and cannot block.
+    pub async fn execute_with_hooks(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+        args: serde_json::Value,
+        session_id: Option<&str>,
+    ) -> ChatMessage {
+        // PreToolUse hook
+        let pre_ctx = HookManager::pre_tool_context(tool_name, &args, session_id);
+        let pre_outcomes = self
+            .hook_manager
+            .fire(&HookEvent::PreToolUse, &pre_ctx)
+            .await;
+
+        // Check if any hook blocked execution
+        for outcome in &pre_outcomes {
+            if outcome.blocked {
+                return ChatMessage::tool(
+                    tool_call_id,
+                    &format!("Tool '{}' blocked by hook: {}", tool_name, outcome.output),
+                );
+            }
+        }
+
+        // Execute the tool
+        let result = self.registry.execute(tool_name, args.clone()).await;
+        let content = match &result {
+            Ok(r) => serde_json::json!({
+                "success": true,
+                "output_type": r.output_type,
+                "content": r.content,
+                "metadata": r.metadata
+            })
+            .to_string(),
+            Err(e) => serde_json::json!({
+                "success": false,
+                "error": {"message": e.message, "code": e.code}
+            })
+            .to_string(),
+        };
+
+        // PostToolUse hook
+        let post_ctx = HookManager::post_tool_context(tool_name, &args, &content, session_id);
+        let _post_outcomes = self
+            .hook_manager
+            .fire(&HookEvent::PostToolUse, &post_ctx)
+            .await;
+
+        ChatMessage::tool(tool_call_id, &content)
     }
 }

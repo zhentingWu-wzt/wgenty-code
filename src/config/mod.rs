@@ -28,6 +28,10 @@ pub struct Settings {
     pub voice: VoiceSettings,
     /// Plugin settings
     pub plugins: PluginSettings,
+    /// Hook definitions for lifecycle events
+    /// Format: { "PreToolUse": [{ "command": "...", "timeout_secs": 30 }] }
+    #[serde(default)]
+    pub hooks: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +96,7 @@ impl Default for Settings {
                 plugin_dir: config_dir.join("plugins"),
                 auto_update: true,
             },
+            hooks: None,
         }
     }
 }
