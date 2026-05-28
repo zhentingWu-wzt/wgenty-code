@@ -13,6 +13,7 @@ pub struct SessionState {
 }
 
 impl SessionState {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             visible: false,
@@ -48,7 +49,11 @@ impl SessionState {
 }
 
 /// Render session list popup.
-pub fn render(f: &mut Frame, state: &SessionState, centered_rect_fn: impl Fn(u16, u16, Rect) -> Rect) {
+pub fn render(
+    f: &mut Frame,
+    state: &SessionState,
+    centered_rect_fn: impl Fn(u16, u16, Rect) -> Rect,
+) {
     if !state.visible {
         return;
     }

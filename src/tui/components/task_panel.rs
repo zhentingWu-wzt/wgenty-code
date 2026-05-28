@@ -12,6 +12,7 @@ pub struct TaskPanelState {
 }
 
 impl TaskPanelState {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             visible: false,

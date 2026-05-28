@@ -42,8 +42,7 @@ impl AgentLoop {
     pub async fn process_input(&mut self, input: String) {
         self.inject_background_results().await;
 
-        self.conversation_history
-            .push(ChatMessage::user(&input));
+        self.conversation_history.push(ChatMessage::user(&input));
 
         for _round in 0..MAX_ROUNDS {
             let messages = self.micro_compact();
@@ -56,9 +55,7 @@ impl AgentLoop {
             let result = match self.stream_with_retry(&messages).await {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = self
-                        .event_tx
-                        .send(AppEvent::StreamError(e.to_string()));
+                    let _ = self.event_tx.send(AppEvent::StreamError(e.to_string()));
                     return;
                 }
             };
@@ -80,10 +77,8 @@ impl AgentLoop {
                     // Handle ask_user_question locally
                     if tc.function.name == "ask_user_question" {
                         let tool_result = self.handle_ask_user_question(&args).await;
-                        self.conversation_history.push(ChatMessage::tool(
-                            &tc.id,
-                            tool_result,
-                        ));
+                        self.conversation_history
+                            .push(ChatMessage::tool(&tc.id, tool_result));
                         continue;
                     }
 
@@ -109,11 +104,9 @@ impl AgentLoop {
                         used_todo = true;
                     }
 
-                    let _ = self
-                        .event_tx
-                        .send(AppEvent::ToolStart {
-                            name: tc.function.name.clone(),
-                        });
+                    let _ = self.event_tx.send(AppEvent::ToolStart {
+                        name: tc.function.name.clone(),
+                    });
 
                     let exec_result = self
                         .execute_tool_with_permission(&tc.function.name, args.clone())
@@ -124,14 +117,16 @@ impl AgentLoop {
                         content: exec_result.clone(),
                     });
 
-                    self.conversation_history.push(ChatMessage::tool(
-                        &tc.id,
-                        exec_result,
-                    ));
+                    self.conversation_history
+                        .push(ChatMessage::tool(&tc.id, exec_result));
                 }
 
                 // s03: nag reminder — inject after 3 rounds without TodoWrite
-                self.rounds_since_todo = if used_todo { 0 } else { self.rounds_since_todo + 1 };
+                self.rounds_since_todo = if used_todo {
+                    0
+                } else {
+                    self.rounds_since_todo + 1
+                };
                 if self.rounds_since_todo >= 3 {
                     if let Some(last) = self.conversation_history.last_mut() {
                         if last.role == "tool" {
@@ -182,18 +177,18 @@ impl AgentLoop {
                 Ok(response) => match self.stream_response(response).await {
                     Ok(result) => {
                         // Detect incomplete stream: has tool calls without finish_reason
-                        if result.has_tool_calls && result.finish_reason.is_empty() {
-                            if attempt < MAX_RETRIES {
-                                let _ = self.event_tx.send(AppEvent::StreamError(
-                                    "Stream ended before tool calls completed, retrying..."
-                                        .to_string(),
-                                ));
-                                tokio::time::sleep(
-                                    tokio::time::Duration::from_secs((attempt + 1) as u64 * 2),
-                                )
-                                .await;
-                                continue;
-                            }
+                        if result.has_tool_calls
+                            && result.finish_reason.is_empty()
+                            && attempt < MAX_RETRIES
+                        {
+                            let _ = self.event_tx.send(AppEvent::StreamError(
+                                "Stream ended before tool calls completed, retrying...".to_string(),
+                            ));
+                            tokio::time::sleep(tokio::time::Duration::from_secs(
+                                (attempt + 1) as u64 * 2,
+                            ))
+                            .await;
+                            continue;
                         }
                         return Ok(result);
                     }
@@ -204,9 +199,9 @@ impl AgentLoop {
                                 "Stream error, retrying... ({})",
                                 e
                             )));
-                            tokio::time::sleep(
-                                tokio::time::Duration::from_secs((attempt + 1) as u64 * 2),
-                            )
+                            tokio::time::sleep(tokio::time::Duration::from_secs(
+                                (attempt + 1) as u64 * 2,
+                            ))
                             .await;
                             continue;
                         }
@@ -215,9 +210,9 @@ impl AgentLoop {
                 Err(e) => {
                     last_error = e.to_string();
                     if attempt < MAX_RETRIES {
-                        tokio::time::sleep(
-                            tokio::time::Duration::from_secs((attempt + 1) as u64 * 2),
-                        )
+                        tokio::time::sleep(tokio::time::Duration::from_secs(
+                            (attempt + 1) as u64 * 2,
+                        ))
                         .await;
                         continue;
                     }
@@ -226,7 +221,10 @@ impl AgentLoop {
             break;
         }
 
-        Err(anyhow::anyhow!("Stream failed after retries: {}", last_error))
+        Err(anyhow::anyhow!(
+            "Stream failed after retries: {}",
+            last_error
+        ))
     }
 
     async fn stream_response(
@@ -264,9 +262,7 @@ impl AgentLoop {
                 // Accumulated internally by StreamProcessor, no UI action needed
             }
             StreamEvent::StreamDone { finish_reason } => {
-                let _ = self
-                    .event_tx
-                    .send(AppEvent::StreamDone { finish_reason });
+                let _ = self.event_tx.send(AppEvent::StreamDone { finish_reason });
             }
         }
     }
@@ -426,26 +422,17 @@ impl AgentLoop {
 
         tokio::fs::create_dir_all(&transcript_dir).await.ok();
 
-        let timestamp = chrono::Utc::now()
-            .format("%Y-%m-%dT%H-%M-%S")
-            .to_string();
+        let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
         let transcript_path = transcript_dir.join(format!("session_{}.json", timestamp));
 
-        let json =
-            serde_json::to_string_pretty(&self.conversation_history).unwrap_or_default();
+        let json = serde_json::to_string_pretty(&self.conversation_history).unwrap_or_default();
         tokio::fs::write(&transcript_path, json).await.ok();
 
         // Build plain-text transcript for summarization
         let transcript_text: String = self
             .conversation_history
             .iter()
-            .map(|m| {
-                format!(
-                    "[{}]: {}",
-                    m.role,
-                    m.content.as_deref().unwrap_or("")
-                )
-            })
+            .map(|m| format!("[{}]: {}", m.role, m.content.as_deref().unwrap_or("")))
             .collect::<Vec<_>>()
             .join("\n\n");
 
