@@ -64,6 +64,8 @@ const AgentView: React.FC<{
     openSessionList,
     closeSessionList,
     deleteSession,
+    renameSession,
+    saveRef,
   } = useAgent({ client });
 
   const [allExpanded, setAllExpanded] = React.useState(false);
@@ -88,6 +90,19 @@ const AgentView: React.FC<{
       }
     }).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Save session on exit (SIGINT/SIGTERM)
+  React.useEffect(() => {
+    const handleExit = () => {
+      saveRef.current();
+    };
+    process.on("SIGINT", handleExit);
+    process.on("SIGTERM", handleExit);
+    return () => {
+      process.removeListener("SIGINT", handleExit);
+      process.removeListener("SIGTERM", handleExit);
+    };
+  }, [saveRef]);
 
   // Find the last collapsible tool result's index (for Ctrl+O)
   const lastCollapsibleIndex = React.useMemo(() => {
@@ -160,13 +175,22 @@ const AgentView: React.FC<{
     [deleteSession],
   );
 
+  const handleSessionRename = React.useCallback(
+    async (id: string, newName: string) => {
+      await renameSession(newName);
+    },
+    [renameSession],
+  );
+
   const handleSessionNavigate = React.useCallback(
     (delta: number) => {
       setSessionSelectedIndex((prev) => {
+        const q = sessionSearchQuery.toLowerCase();
         const filtered = sessions.filter(
           (s) =>
             sessionSearchQuery === "" ||
-            s.name.toLowerCase().includes(sessionSearchQuery.toLowerCase()),
+            s.name.toLowerCase().includes(q) ||
+            (s.summary ?? "").toLowerCase().includes(q),
         );
         const max = Math.max(0, filtered.length - 1);
         return Math.max(0, Math.min(max, prev + delta));
@@ -203,6 +227,7 @@ const AgentView: React.FC<{
       }}
       onSearchChange={setSessionSearchQuery}
       onNavigate={handleSessionNavigate}
+      onRename={handleSessionRename}
     />
   ) : pendingPermission != null ? (
     <PermissionModal

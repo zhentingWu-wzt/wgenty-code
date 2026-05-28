@@ -62,8 +62,13 @@ async function main(): Promise<void> {
   };
 
   process.on("exit", cleanup);
-  process.on("SIGINT", cleanup);
-  process.on("SIGTERM", cleanup);
+  process.on("SIGINT", () => {
+    // Delay daemon kill to allow auto-save to complete
+    setTimeout(cleanup, 500);
+  });
+  process.on("SIGTERM", () => {
+    setTimeout(cleanup, 500);
+  });
 
   const { waitUntilExit } = render(
     React.createElement(App, { workingDir: process.cwd() })

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback } from "react";
 import { ApiClient, AgentLoop } from "@claude-code/core";
 import type { AgentCallbacks, ToolResult, ChatMessage, SessionInfo } from "@claude-code/core";
 
@@ -73,6 +73,7 @@ export function useAgent({ client }: UseAgentOptions) {
   const nextId = useRef(0);
   const agentRef = useRef<AgentLoop | null>(null);
   const streamingContentRef = useRef("");
+  const saveRef = useRef<() => Promise<void>>(async () => {});
 
   const addMsg = useCallback(
     (role: MsgRole, content: string, extra?: Partial<UIMessage>) => {
@@ -230,6 +231,11 @@ export function useAgent({ client }: UseAgentOptions) {
     }
   }, [client, sessionId, sessionName]);
 
+  // Keep saveRef in sync for exit handler
+  React.useEffect(() => {
+    saveRef.current = saveCurrentSession;
+  }, [saveCurrentSession]);
+
   /** Load a session from daemon and restore state. */
   const loadSession = useCallback(
     async (id: string) => {
@@ -312,8 +318,9 @@ export function useAgent({ client }: UseAgentOptions) {
     async (newName: string) => {
       setSessionName(newName);
       setDirty(true);
+      await saveCurrentSession();
     },
-    [],
+    [saveCurrentSession],
   );
 
   const sendMessage = useCallback(
@@ -321,6 +328,12 @@ export function useAgent({ client }: UseAgentOptions) {
       if (!input.trim()) return;
 
       addMsg("user", input);
+      // Auto-name: use first user message as session name
+      if (!sessionName) {
+        const name =
+          input.length > 50 ? input.slice(0, 50) + "..." : input;
+        setSessionName(name);
+      }
       // Add empty assistant placeholder so streaming deltas update it, not the user msg
       addMsg("assistant", "");
       streamingContentRef.current = "";
@@ -405,6 +418,7 @@ export function useAgent({ client }: UseAgentOptions) {
     deleteSession: deleteSessionById,
     renameSession,
     rebuildUIMessages,
+    saveRef,
   };
 }
 
