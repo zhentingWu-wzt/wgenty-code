@@ -2,7 +2,7 @@
 
 use crate::daemon::handlers;
 use crate::daemon::state::DaemonState;
-use axum::{routing::{delete, get, post, put}, Router};
+use axum::{routing::{get, post}, Router};
 use std::sync::Arc;
 
 pub fn create_router(state: Arc<DaemonState>) -> Router {
@@ -24,12 +24,11 @@ pub fn create_router(state: Arc<DaemonState>) -> Router {
         .route("/api/v1/background/results", get(handlers::get_background_results))
         // MCP
         .route("/api/v1/mcp/servers", get(handlers::list_mcp_servers))
-        // Sessions
-        .route("/api/v1/sessions", get(handlers::list_sessions))
-        .route("/api/v1/sessions", post(handlers::create_session))
+        // Sessions — list/create at base path
+        .route("/api/v1/sessions", get(handlers::list_sessions).post(handlers::create_session))
+        // Sessions — search (must be before /{id} to avoid path capture)
         .route("/api/v1/sessions/search", get(handlers::search_sessions))
-        .route("/api/v1/sessions/{id}", get(handlers::get_session))
-        .route("/api/v1/sessions/{id}", put(handlers::update_session))
-        .route("/api/v1/sessions/{id}", delete(handlers::delete_session))
+        // Sessions — get/update/delete by id
+        .route("/api/v1/sessions/:id", get(handlers::get_session).put(handlers::update_session).delete(handlers::delete_session))
         .with_state(state)
 }
