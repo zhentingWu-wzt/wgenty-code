@@ -4,6 +4,16 @@ use crate::api::ChatMessage;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use tracing::warn;
+
+/// Validate a session ID to prevent path traversal attacks.
+fn validate_id(id: &str) -> bool {
+    !id.is_empty()
+        && !id.contains('/')
+        && !id.contains('\\')
+        && !id.contains("..")
+        && !id.starts_with('.')
+}
 
 /// Session manager
 pub struct SessionManager {
@@ -17,6 +27,14 @@ impl SessionManager {
         let sessions_dir = home.join(".claude-code").join("sessions");
 
         Self { sessions_dir }
+    }
+
+    /// Ensure session ID is safe for filesystem use.
+    fn check_id(&self, id: &str) -> anyhow::Result<()> {
+        if !validate_id(id) {
+            anyhow::bail!("Invalid session ID: {id}");
+        }
+        Ok(())
     }
 
     /// List all sessions (returns SessionInfo without messages)
@@ -55,6 +73,8 @@ impl SessionManager {
                             message_count: session.messages.len(),
                             summary,
                         });
+                    } else {
+                        warn!("Skipping corrupt session file: {}", path.display());
                     }
                 }
             }
@@ -86,6 +106,7 @@ impl SessionManager {
 
     /// Load a session by ID
     pub fn load(&self, id: &str) -> anyhow::Result<Option<Session>> {
+        self.check_id(id)?;
         let path = self.sessions_dir.join(format!("{}.json", id));
 
         if !path.exists() {
@@ -100,6 +121,7 @@ impl SessionManager {
 
     /// Save a session (upsert: create file if it doesn't exist)
     pub fn save(&self, session: &Session) -> anyhow::Result<()> {
+        self.check_id(&session.id)?;
         std::fs::create_dir_all(&self.sessions_dir)?;
 
         let path = self.sessions_dir.join(format!("{}.json", session.id));
@@ -111,6 +133,7 @@ impl SessionManager {
 
     /// Delete a session
     pub fn delete(&self, id: &str) -> anyhow::Result<()> {
+        self.check_id(id)?;
         let path = self.sessions_dir.join(format!("{}.json", id));
 
         if path.exists() {

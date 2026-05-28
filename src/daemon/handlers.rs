@@ -458,12 +458,19 @@ pub async fn update_session(
 pub async fn delete_session(
     State(state): State<Arc<DaemonState>>,
     Path(id): Path<String>,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, StatusCode> {
     let result = tokio::task::spawn_blocking(move || state.session_manager.delete(&id)).await;
 
     match result {
-        Ok(Ok(())) => Json(serde_json::json!({"success": true})),
-        _ => Json(serde_json::json!({"success": false, "error": "Failed to delete session"})),
+        Ok(Ok(())) => Ok(Json(serde_json::json!({"success": true}))),
+        Ok(Err(e)) => {
+            if e.to_string().contains("Invalid session ID") {
+                Err(StatusCode::BAD_REQUEST)
+            } else {
+                Err(StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
 
