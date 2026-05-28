@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback } from "react";
 import { ApiClient, AgentLoop } from "@claude-code/core";
-import type { AgentCallbacks, ToolResult } from "@claude-code/core";
+import type { AgentCallbacks, ToolResult, ChatMessage, SessionInfo } from "@claude-code/core";
 
 export type MsgRole = "user" | "assistant" | "tool" | "system";
 
@@ -30,6 +30,25 @@ export interface UseAgentOptions {
   client: ApiClient;
 }
 
+/** Try to parse JSON, return null on failure. */
+function tryParseJson(content?: string | null): Record<string, unknown> | null {
+  if (!content) return null;
+  try { return JSON.parse(content); } catch { return null; }
+}
+
+/** Find the tool name for a given tool_call_id from the messages array. */
+function findToolNameForId(msgs: ChatMessage[], toolCallId?: string | null): string | undefined {
+  if (!toolCallId) return undefined;
+  for (const msg of msgs) {
+    if (msg.role === "assistant" && msg.tool_calls) {
+      for (const tc of msg.tool_calls) {
+        if (tc.id === toolCallId) return tc.function.name;
+      }
+    }
+  }
+  return undefined;
+}
+
 export function useAgent({ client }: UseAgentOptions) {
   const [messages, setMessages] = useState<UIMessage[]>([]);
   const [status, setStatus] = useState<AgentStatus>({ type: "idle" });
@@ -44,6 +63,12 @@ export function useAgent({ client }: UseAgentOptions) {
     sessionRule: string;
     resolve: (choice: "allow" | "always" | "deny") => void;
   } | null>(null);
+
+  const [sessionId, setSessionId] = useState<string>(() => crypto.randomUUID());
+  const [sessionName, setSessionName] = useState<string>("");
+  const [sessionListOpen, setSessionListOpen] = useState(false);
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [dirty, setDirty] = useState(false);
 
   const nextId = useRef(0);
   const agentRef = useRef<AgentLoop | null>(null);
@@ -148,6 +173,149 @@ export function useAgent({ client }: UseAgentOptions) {
     },
   };
 
+  /** Rebuild UIMessage[] from raw ChatMessage[] for display after loading a session. */
+  const rebuildUIMessages = useCallback(
+    (msgs: ChatMessage[]): UIMessage[] => {
+      const ui: UIMessage[] = [];
+      for (const msg of msgs) {
+        if (msg.role === "system") continue;
+
+        if (msg.role === "user") {
+          ui.push({ id: nextId.current++, role: "user", content: msg.content ?? "" });
+        } else if (msg.role === "assistant") {
+          ui.push({ id: nextId.current++, role: "assistant", content: msg.content ?? "" });
+          if (msg.tool_calls) {
+            for (const tc of msg.tool_calls) {
+              let args: Record<string, unknown> = {};
+              try { args = JSON.parse(tc.function.arguments); } catch { /* ignore */ }
+              ui.push({
+                id: nextId.current++,
+                role: "tool",
+                content: formatToolCallSummary(tc.function.name, args),
+                toolName: tc.function.name,
+                toolArgs: formatToolArgs(args),
+                toolPhase: "call",
+              });
+            }
+          }
+        } else if (msg.role === "tool") {
+          const parsed = tryParseJson(msg.content);
+          const success = (parsed?.success as boolean) ?? true;
+          const toolName = findToolNameForId(msgs, msg.tool_call_id);
+          ui.push({
+            id: nextId.current++,
+            role: "tool",
+            content: msg.content ?? "",
+            toolName,
+            toolPhase: "result",
+            toolSuccess: success,
+          });
+        }
+      }
+      return ui;
+    },
+    [],
+  );
+
+  /** Save current session to daemon. */
+  const saveCurrentSession = useCallback(async () => {
+    if (!agentRef.current) return;
+    const history = agentRef.current.getHistory();
+    if (history.length <= 1) return; // skip empty (only system prompt)
+    try {
+      await client.saveSession(sessionId, sessionName || "Untitled", history);
+      setDirty(false);
+    } catch {
+      // silently fail — auto-save is best-effort
+    }
+  }, [client, sessionId, sessionName]);
+
+  /** Load a session from daemon and restore state. */
+  const loadSession = useCallback(
+    async (id: string) => {
+      try {
+        const session = await client.loadSession(id);
+        if (!agentRef.current) {
+          agentRef.current = new AgentLoop({ client, callbacks });
+        }
+        agentRef.current.loadHistory(session.messages);
+        const ui = rebuildUIMessages(session.messages);
+        nextId.current = Math.max(0, ...ui.map((m) => m.id)) + 1;
+        setMessages(ui);
+        setSessionId(session.id);
+        setSessionName(session.name);
+        setDirty(false);
+      } catch {
+        // Network error — keep current session
+      }
+    },
+    [client, callbacks, rebuildUIMessages],
+  );
+
+  /** Refresh the session list from daemon. */
+  const refreshSessions = useCallback(async () => {
+    try {
+      const list = await client.listSessions();
+      setSessions(list);
+    } catch {
+      // silently fail
+    }
+  }, [client]);
+
+  /** Open session modal (save current first, refresh list). */
+  const openSessionList = useCallback(async () => {
+    await saveCurrentSession();
+    await refreshSessions();
+    setSessionListOpen(true);
+  }, [saveCurrentSession, refreshSessions]);
+
+  const closeSessionList = useCallback(() => {
+    setSessionListOpen(false);
+  }, []);
+
+  const reset = useCallback(() => {
+    saveCurrentSession();
+    setMessages([]);
+    setStatus({ type: "idle" });
+    streamingContentRef.current = "";
+    agentRef.current?.reset();
+    setSessionId(crypto.randomUUID());
+    setSessionName("");
+    setDirty(false);
+  }, [saveCurrentSession]);
+
+  /** Delete a session from daemon. */
+  const deleteSessionById = useCallback(
+    async (id: string) => {
+      try {
+        await client.deleteSession(id);
+        if (id === sessionId) {
+          const updated = sessions.filter((s) => s.id !== id);
+          if (updated.length > 0) {
+            await loadSession(updated[0].id);
+          } else {
+            reset();
+            setSessionId(crypto.randomUUID());
+            setSessionName("");
+          }
+        }
+        await refreshSessions();
+      } catch {
+        // silently fail
+      }
+    },
+    [client, sessionId, sessions, loadSession, refreshSessions, reset],
+  );
+
+  /** Rename current session. */
+  const renameSession = useCallback(
+    async (newName: string) => {
+      setSessionName(newName);
+      setDirty(true);
+    },
+    [],
+  );
+
   const sendMessage = useCallback(
     async (input: string) => {
       if (!input.trim()) return;
@@ -188,16 +356,13 @@ export function useAgent({ client }: UseAgentOptions) {
         return prev;
       });
       setStatus({ type: "idle" });
-    },
-    [client, addMsg, updateLastMsg]
-  );
 
-  const reset = useCallback(() => {
-    setMessages([]);
-    setStatus({ type: "idle" });
-    streamingContentRef.current = "";
-    agentRef.current?.reset();
-  }, []);
+      // Auto-save after each round-trip
+      setDirty(true);
+      saveCurrentSession();
+    },
+    [client, addMsg, updateLastMsg, saveCurrentSession]
+  );
 
   const resolvePermission = useCallback(
     (choice: "allow" | "always" | "deny") => {
@@ -228,6 +393,18 @@ export function useAgent({ client }: UseAgentOptions) {
     reset,
     resolvePermission,
     resolveQuestion,
+    // Session management
+    sessionId,
+    sessionName,
+    sessionListOpen,
+    sessions,
+    loadSession,
+    saveCurrentSession,
+    openSessionList,
+    closeSessionList,
+    deleteSession: deleteSessionById,
+    renameSession,
+    rebuildUIMessages,
   };
 }
 
