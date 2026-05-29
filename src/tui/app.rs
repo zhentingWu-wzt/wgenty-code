@@ -143,6 +143,8 @@ pub struct App {
     pub task_panel: TaskPanelState,
     /// Timestamp of last Ctrl+C press for double-press detection
     last_ctrl_c: Option<std::time::Instant>,
+    /// Cancellation flag for blocking input reader task
+    shutdown_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Pending oneshot sender for question response
     pub question_responder: Option<QuestionResponder>,
     /// Pending oneshot sender for permission response
@@ -173,6 +175,7 @@ impl App {
             session_state: SessionState::new(),
             task_panel: TaskPanelState::new(),
             last_ctrl_c: None,
+            shutdown_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             question_responder: None,
             permission_responder: None,
         }
@@ -189,8 +192,9 @@ impl App {
     ) -> anyhow::Result<()> {
         // Spawn input reader task (blocking crossterm event::read)
         let tx = self.event_tx.clone();
+        let shutdown = self.shutdown_flag.clone();
         tokio::task::spawn_blocking(move || {
-            let _ = Self::read_input(tx);
+            let _ = Self::read_input(tx, shutdown);
         });
 
         // Spawn ticker for periodic refresh
@@ -226,8 +230,12 @@ impl App {
         Ok(())
     }
 
-    fn read_input(tx: mpsc::UnboundedSender<AppEvent>) -> io::Result<()> {
-        loop {
+    fn read_input(
+        tx: mpsc::UnboundedSender<AppEvent>,
+        shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> io::Result<()> {
+        use std::sync::atomic::Ordering;
+        while !shutdown.load(Ordering::SeqCst) {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
                     // Ctrl+C -> require double-press within 500ms to quit
@@ -270,6 +278,7 @@ impl App {
                 }
             }
         }
+        Ok(())
     }
 
     async fn handle_event(&mut self, event: AppEvent) {
