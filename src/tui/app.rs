@@ -23,6 +23,32 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex as TokioMutex;
 
+/// Wraps a oneshot sender for returning question answers.
+/// Manual Debug impl because `oneshot::Sender` doesn't implement Debug.
+pub struct QuestionResponder(pub Option<tokio::sync::oneshot::Sender<Vec<String>>>);
+
+impl std::fmt::Debug for QuestionResponder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("QuestionResponder").finish()
+    }
+}
+
+#[derive(Debug)]
+pub enum PermissionResponse {
+    AllowOnce,
+    AlwaysAllow,
+    Deny,
+}
+
+/// Wraps a oneshot sender for returning permission decisions.
+pub struct PermissionResponder(pub Option<tokio::sync::oneshot::Sender<PermissionResponse>>);
+
+impl std::fmt::Debug for PermissionResponder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("PermissionResponder").finish()
+    }
+}
+
 /// Events that drive the UI loop.
 #[derive(Debug)]
 pub enum AppEvent {
@@ -41,12 +67,17 @@ pub enum AppEvent {
     /// A tool result arrived
     ToolResult { name: String, content: String },
     /// Permission is needed
-    PermissionRequired { reason: String, rule: String },
+    PermissionRequired {
+        reason: String,
+        rule: String,
+        responder: PermissionResponder,
+    },
     /// ask_user_question was invoked
     QuestionAsked {
         question: String,
         options: Vec<String>,
         multi_select: bool,
+        responder: QuestionResponder,
     },
     /// A stream error occurred
     StreamError(String),
@@ -58,12 +89,16 @@ pub enum AppEvent {
     ToggleTaskPanel,
     /// Sessions loaded from daemon
     SessionListLoaded(Vec<SessionInfo>),
+    /// Toggle collapse all paragraphs
+    ToggleCollapseAll,
+    /// Toggle collapse latest message paragraphs
+    ToggleCollapseLatest,
     /// Todo items updated from daemon
     TodosUpdated(Vec<TodoItem>),
 }
 
 /// UI state for a single message in the chat view.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MessageRole {
     User,
     Assistant,
@@ -76,6 +111,8 @@ pub struct UIMessage {
     pub role: MessageRole,
     pub content: String,
     pub tool_name: Option<String>,
+    pub content_collapsed: bool,
+    pub tool_collapsed: bool,
 }
 
 /// Application state for the TUI.
@@ -100,6 +137,10 @@ pub struct App {
     pub question_state: QuestionState,
     pub session_state: SessionState,
     pub task_panel: TaskPanelState,
+    /// Pending oneshot sender for question response
+    pub question_responder: Option<QuestionResponder>,
+    /// Pending oneshot sender for permission response
+    pub permission_responder: Option<PermissionResponder>,
 }
 
 impl App {
@@ -125,6 +166,8 @@ impl App {
             question_state: QuestionState::new(),
             session_state: SessionState::new(),
             task_panel: TaskPanelState::new(),
+            question_responder: None,
+            permission_responder: None,
         }
     }
 
@@ -180,7 +223,7 @@ impl App {
         loop {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
-                    // Ctrl+C -> quit
+                    // Ctrl+C -> send quit event (handled in handle_event)
                     if key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
@@ -188,7 +231,7 @@ impl App {
                             KeyCode::Esc,
                             KeyModifiers::NONE,
                         )));
-                        return Ok(());
+                        continue;
                     }
                     // Ctrl+S -> sessions
                     if key.code == KeyCode::Char('s')
@@ -204,6 +247,20 @@ impl App {
                         let _ = tx.send(AppEvent::ToggleTaskPanel);
                         continue;
                     }
+                    // Ctrl+E -> toggle collapse all
+                    if key.code == KeyCode::Char('e')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        let _ = tx.send(AppEvent::ToggleCollapseAll);
+                        continue;
+                    }
+                    // Ctrl+O -> toggle collapse latest message
+                    if key.code == KeyCode::Char('o')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        let _ = tx.send(AppEvent::ToggleCollapseLatest);
+                        continue;
+                    }
                     // Send the full key event to be processed by tui-textarea + key handler
                     let _ = tx.send(AppEvent::KeyEvent(key));
                 }
@@ -214,31 +271,68 @@ impl App {
     async fn handle_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::KeyEvent(key) => {
-                // Permission popup handling
+                // Permission panel handling (inline, not popup)
                 if self.permission_state.visible {
                     match key.code {
                         KeyCode::Char('y') => {
-                            let (_reason, rule) = self.permission_state.dismiss();
-                            let _ = self
-                                .event_tx
-                                .send(AppEvent::Submit(format!("__permission_allow:{}", rule)));
+                            let (reason, _rule) = self.permission_state.dismiss();
+                            self.push_permission_result(&reason, "Allowed once");
+                            if let Some(responder) = self.permission_responder.take() {
+                                let _ = responder.0.unwrap().send(PermissionResponse::AllowOnce);
+                            }
                         }
                         KeyCode::Char('a') => {
-                            let (_reason, rule) = self.permission_state.dismiss();
-                            let _ = self
-                                .event_tx
-                                .send(AppEvent::Submit(format!("__permission_always:{}", rule)));
+                            let (reason, _rule) = self.permission_state.dismiss();
+                            self.push_permission_result(&reason, "Always allow");
+                            if let Some(responder) = self.permission_responder.take() {
+                                let _ = responder.0.unwrap().send(PermissionResponse::AlwaysAllow);
+                            }
                         }
-                        KeyCode::Char('n') => {
-                            let (_reason, _rule) = self.permission_state.dismiss();
+                        KeyCode::Char('n') | KeyCode::Esc => {
+                            let (reason, _rule) = self.permission_state.dismiss();
+                            self.push_permission_result(&reason, "Denied");
+                            if let Some(responder) = self.permission_responder.take() {
+                                let _ = responder.0.unwrap().send(PermissionResponse::Deny);
+                            }
                         }
                         _ => {}
                     }
                     return;
                 }
 
-                // Question popup handling
+                // Question panel handling (inline, not popup)
                 if self.question_state.visible {
+                    // Text input mode: cursor is on "Other" option
+                    if self.question_state.cursor_on_other() {
+                        match key.code {
+                            KeyCode::Char(c) => {
+                                self.question_state.other_value.push(c);
+                            }
+                            KeyCode::Backspace => {
+                                self.question_state.other_value.pop();
+                            }
+                            KeyCode::Enter => {
+                                let answers = self.question_state.dismiss();
+                                self.push_question_answer(&answers);
+                                if let Some(responder) = self.question_responder.take() {
+                                    let _ = responder.0.unwrap().send(answers);
+                                }
+                            }
+                            KeyCode::Up => {
+                                self.question_state.move_up();
+                            }
+                            KeyCode::Down => {
+                                self.question_state.move_down();
+                            }
+                            KeyCode::Esc => {
+                                self.question_state.dismiss();
+                                self.question_responder = None;
+                            }
+                            _ => {}
+                        }
+                        return;
+                    }
+
                     match key.code {
                         KeyCode::Up | KeyCode::Char('k') => {
                             self.question_state.move_up();
@@ -247,13 +341,32 @@ impl App {
                             self.question_state.move_down();
                         }
                         KeyCode::Enter => {
-                            let answers = self.question_state.dismiss();
-                            let _ = self
-                                .event_tx
-                                .send(AppEvent::Submit(format!("__question_answer:{:?}", answers)));
+                            let can_submit = !self.question_state.multi_select
+                                || !self.question_state.selected.is_empty();
+                            if can_submit {
+                                let answers = self.question_state.dismiss();
+                                self.push_question_answer(&answers);
+                                if let Some(responder) = self.question_responder.take() {
+                                    let _ = responder.0.unwrap().send(answers);
+                                }
+                            }
+                        }
+                        KeyCode::Char(' ') => {
+                            self.question_state.toggle_selection();
                         }
                         KeyCode::Esc => {
                             self.question_state.dismiss();
+                            self.question_responder = None;
+                        }
+                        KeyCode::Char(c) if c.is_ascii_digit() => {
+                            let n = c.to_digit(10).unwrap() as usize;
+                            if self.question_state.select_number(n) {
+                                let answers = self.question_state.dismiss();
+                                self.push_question_answer(&answers);
+                                if let Some(responder) = self.question_responder.take() {
+                                    let _ = responder.0.unwrap().send(answers);
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -291,31 +404,26 @@ impl App {
                 }
 
                 // Scroll handling (when no popup is active)
+                // scroll_offset = ratatui-native: lines skipped from top (0 = oldest, max = newest)
                 match key.code {
                     KeyCode::Up => {
-                        self.scroll_offset = self.scroll_offset.saturating_add(1);
+                        // Scroll UP → see OLDER content → fewer lines skipped from top
+                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
                         self.user_scrolled = true;
                         return;
                     }
                     KeyCode::Down => {
-                        if self.scroll_offset > 0 {
-                            self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                            if self.scroll_offset == 0 {
-                                self.user_scrolled = false;
-                            }
-                        }
+                        // Scroll DOWN → see NEWER content → more lines skipped from top
+                        self.scroll_offset = self.scroll_offset.saturating_add(1);
                         return;
                     }
                     KeyCode::PageUp => {
-                        self.scroll_offset = self.scroll_offset.saturating_add(10);
+                        self.scroll_offset = self.scroll_offset.saturating_sub(10);
                         self.user_scrolled = true;
                         return;
                     }
                     KeyCode::PageDown => {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(10);
-                        if self.scroll_offset == 0 {
-                            self.user_scrolled = false;
-                        }
+                        self.scroll_offset = self.scroll_offset.saturating_add(10);
                         return;
                     }
                     _ => {}
@@ -330,21 +438,54 @@ impl App {
                     return;
                 }
 
-                // Feed the key to tui-textarea for CJK/IME-compatible input
+                // Handle Enter/Shift+Enter BEFORE tui-textarea consumes them.
+                // tui-textarea's default binding inserts newline on Enter.
+                if key.code == KeyCode::Enter {
+                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        // Shift+Enter → newline
+                        self.input_box.textarea.insert_char('\n');
+                    } else if !self.input_box.is_empty() {
+                        let text = self.input_box.take_text();
+                        let _ = self.event_tx.send(AppEvent::Submit(text));
+                    }
+                    return;
+                }
+
+                // Feed to tui-textarea for CJK/IME input.
+                // Returns true if tui-textarea consumed the key.
                 let handled = self.input_box.textarea.input(key);
 
                 if !handled {
-                    // tui-textarea didn't handle it — process as navigation/control key
                     match key.code {
                         KeyCode::Esc => {
                             self.should_quit = true;
                         }
-                        KeyCode::Enter if !self.input_box.is_empty() => {
-                            let text = self.input_box.take_text();
-                            let _ = self.event_tx.send(AppEvent::Submit(text));
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.should_quit = true;
+                        }
+                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            self.should_quit = true;
                         }
                         _ => {}
                     }
+                }
+            }
+            AppEvent::ToggleCollapseAll => {
+                let any_expanded = self.committed_messages.iter().any(|m| {
+                    !m.content_collapsed || !m.tool_collapsed
+                });
+                let new_state = any_expanded;
+                for m in &mut self.committed_messages {
+                    m.content_collapsed = new_state;
+                    m.tool_collapsed = new_state;
+                }
+            }
+            AppEvent::ToggleCollapseLatest => {
+                if let Some(last) = self.committed_messages.last_mut() {
+                    let any_expanded = !last.content_collapsed || !last.tool_collapsed;
+                    let new_state = any_expanded;
+                    last.content_collapsed = new_state;
+                    last.tool_collapsed = new_state;
                 }
             }
             AppEvent::Submit(text) => {
@@ -352,6 +493,8 @@ impl App {
                     role: MessageRole::User,
                     content: text.clone(),
                     tool_name: None,
+                    content_collapsed: false,
+                    tool_collapsed: false,
                 });
                 self.status = "thinking".to_string();
                 let agent = self.agent.clone();
@@ -370,10 +513,14 @@ impl App {
             }
             AppEvent::StreamDone { .. } => {
                 if !self.streaming_content.is_empty() {
+                    let content = std::mem::take(&mut self.streaming_content);
+                    let (content_collapsed, tool_collapsed) = compute_collapse_state(&MessageRole::Assistant, &content);
                     self.committed_messages.push(UIMessage {
                         role: MessageRole::Assistant,
-                        content: std::mem::take(&mut self.streaming_content),
+                        content,
                         tool_name: None,
+                        content_collapsed,
+                        tool_collapsed,
                     });
                 }
                 self.streaming_active = false;
@@ -383,13 +530,37 @@ impl App {
             }
             AppEvent::ToolStart { name } => {
                 self.status = format!("executing {}", name);
-            }
-            AppEvent::ToolResult { name, content } => {
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::Tool,
-                    content,
+                    content: String::new(),
                     tool_name: Some(name),
+                    content_collapsed: false,
+                    tool_collapsed: false,
                 });
+            }
+            AppEvent::ToolResult { name, content } => {
+                // Replace the placeholder ToolStart message with the result
+                if let Some(last) = self.committed_messages.last_mut() {
+                    if last.role == MessageRole::Tool
+                        && last.content.is_empty()
+                        && last.tool_name.as_deref() == Some(&name)
+                    {
+                        last.content = format_tool_result(&name, &content);
+                        let (cc, tc) = compute_collapse_state(&MessageRole::Tool, &last.content);
+                        last.content_collapsed = cc;
+                        last.tool_collapsed = tc;
+                    } else {
+                        let formatted = format_tool_result(&name, &content);
+                        let (content_collapsed, tool_collapsed) = compute_collapse_state(&MessageRole::Tool, &formatted);
+                        self.committed_messages.push(UIMessage {
+                            role: MessageRole::Tool,
+                            content: formatted,
+                            tool_name: Some(name),
+                            content_collapsed,
+                            tool_collapsed,
+                        });
+                    }
+                }
                 self.status = "thinking".to_string();
             }
             AppEvent::StreamError(msg) => {
@@ -397,19 +568,29 @@ impl App {
                     role: MessageRole::System,
                     content: format!("⚠ {}", msg),
                     tool_name: None,
+                    content_collapsed: false,
+                    tool_collapsed: false,
                 });
                 self.streaming_active = false;
                 self.status = "idle".to_string();
             }
             AppEvent::Tick => { /* periodic refresh */ }
-            AppEvent::PermissionRequired { reason, rule } => {
+            AppEvent::PermissionRequired {
+                reason,
+                rule,
+                responder,
+            } => {
+                tracing::info!("🔐 App: showing permission panel for '{}'", rule);
+                self.permission_responder = Some(responder);
                 self.permission_state.show(reason, rule);
             }
             AppEvent::QuestionAsked {
                 question,
                 options,
                 multi_select,
+                responder,
             } => {
+                self.question_responder = Some(responder);
                 self.question_state.show(question, options, multi_select);
             }
             AppEvent::ToggleSessions => {
@@ -448,30 +629,84 @@ impl App {
         }
     }
 
+    /// Record the user's question answer as a chat message.
+    fn push_question_answer(&mut self, answers: &[String]) {
+        let q = &self.question_state.question;
+        let a = answers.join(", ");
+        self.committed_messages.push(UIMessage {
+            role: MessageRole::System,
+            content: format!("Q: {}\nA: {}", q, a),
+            tool_name: Some("ask".to_string()),
+                content_collapsed: false,
+                tool_collapsed: false,
+        });
+    }
+
+    fn push_permission_result(&mut self, reason: &str, decision: &str) {
+        self.committed_messages.push(UIMessage {
+            role: MessageRole::System,
+            content: format!("🔐 {} — {}", reason, decision),
+            tool_name: Some("permission".to_string()),
+                content_collapsed: false,
+                tool_collapsed: false,
+        });
+    }
+
     fn render(&self, f: &mut Frame) {
         let area = f.area();
 
-        // Split vertically: header, chat, status, input
+        // Layout changes when question or permission is active:
+        //   normal:    header | chat | status | input
+        //   question:  header | chat | question-panel | status | input(hidden)
+        //   permission: header | chat | permission-panel | status | input(hidden)
+        let has_question = self.question_state.visible;
+        let has_permission = self.permission_state.visible;
+        let show_panel = has_question || has_permission;
+        let panel_height = if has_question {
+            self.question_state.height_needed()
+        } else if has_permission {
+            self.permission_state.height_needed()
+        } else {
+            0
+        };
+
+        let constraints: Vec<Constraint> = if show_panel {
+            vec![
+                Constraint::Length(1),
+                Constraint::Min(3),
+                Constraint::Length(panel_height),
+                Constraint::Length(1),
+                Constraint::Length(0),
+            ]
+        } else {
+            vec![
+                Constraint::Length(1),
+                Constraint::Min(3),
+                Constraint::Length(1),
+                Constraint::Length(8),
+            ]
+        };
+
         let layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // header
-                Constraint::Min(3),    // chat
-                Constraint::Length(1), // status
-                Constraint::Length(3), // input (tui-textarea with borders)
-            ])
+            .constraints(constraints)
             .split(area);
 
-        self.render_header(f, layout[0]);
+        let chat_idx = 1;
+        let panel_idx = if show_panel { 2 } else { 0 };
+        let status_idx = if show_panel { 3 } else { 2 };
+        let input_idx = if show_panel { 4 } else { 3 };
+
+        self.render_header(f, layout[chat_idx - 1]);
         let main_area = if self.task_panel.visible {
             let split = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-                .split(layout[1]);
+                .split(layout[chat_idx]);
             components::task_panel::render(f, split[1], &self.task_panel);
             split[0]
         } else {
-            layout[1]
+            layout[chat_idx]
         };
 
         if self.committed_messages.is_empty() && !self.streaming_active {
@@ -479,12 +714,18 @@ impl App {
         } else {
             self.render_chat(f, main_area);
         }
-        self.render_status(f, layout[2]);
-        self.render_input(f, layout[3]);
 
-        // Render popups on top (at the end so they overlay everything)
-        components::permission::render(f, &self.permission_state, centered_rect);
-        components::question::render(f, &self.question_state, centered_rect);
+        // Inline question / permission panel
+        if self.question_state.visible {
+            components::question::render(f, layout[panel_idx], &self.question_state);
+        } else if self.permission_state.visible {
+            components::permission::render(f, layout[panel_idx], &self.permission_state);
+        }
+
+        self.render_status(f, layout[status_idx]);
+        self.render_input(f, layout[input_idx]);
+
+        // Session is still a popup overlay
         components::session::render(f, &self.session_state, centered_rect);
     }
 
@@ -500,6 +741,7 @@ impl App {
             &self.streaming_content,
             self.streaming_active,
             self.scroll_offset,
+            self.user_scrolled,
         );
     }
 
@@ -569,8 +811,64 @@ pub async fn start_daemon(
     anyhow::bail!("daemon did not become ready within 5 seconds");
 }
 
+
+/// Compute initial collapse state based on line-count thresholds.
+/// Returns (content_collapsed, tool_collapsed) tuple.
+fn compute_collapse_state(role: &MessageRole, content: &str) -> (bool, bool) {
+    let line_count = content.lines().count();
+    match role {
+        MessageRole::Assistant => {
+            (line_count > 50, false)
+        }
+        MessageRole::Tool => {
+            (false, line_count > 10)
+        }
+        _ => (false, false),
+    }
+}
+
+/// Parse the JSON wrapper from execute_tool_with_permission and extract the
+/// meaningful content for display. Strips metadata noise like success/output_type.
+fn format_tool_result(name: &str, raw_json: &str) -> String {
+    let parsed: serde_json::Value = match serde_json::from_str(raw_json) {
+        Ok(v) => v,
+        Err(_) => {
+            let preview: String = if raw_json.len() > 300 {
+                raw_json.chars().take(300).collect()
+            } else {
+                raw_json.to_string()
+            };
+            return preview;
+        }
+    };
+
+    let error = parsed["error"].as_str().unwrap_or("");
+    if !error.is_empty() {
+        return format!("{}:\n{}", name, error);
+    }
+
+    let content = parsed["content"].as_str().unwrap_or("");
+    if content.is_empty() {
+        let success = parsed["success"].as_bool().unwrap_or(false);
+        return if success {
+            format!("{}: done", name)
+        } else {
+            format!("{}: failed", name)
+        };
+    }
+
+    // Trim long outputs
+    if content.len() > 500 {
+        // Safe truncation on char boundaries (avoids panics on multi-byte Unicode)
+        let truncated: String = content.chars().take(500).collect();
+        format!("{}:\n{}...", name, truncated)
+    } else {
+        format!("{}:\n{}", name, content)
+    }
+}
+
 /// Helper: create a centered rectangle of the given percentage size within `area`.
-/// Used by popup components (permission, question, session).
+/// Used by popup components (session).
 pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let popup_width = area.width * percent_x / 100;
     let popup_height = area.height * percent_y / 100;
