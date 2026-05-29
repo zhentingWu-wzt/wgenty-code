@@ -89,6 +89,8 @@ pub enum AppEvent {
     ToggleTaskPanel,
     /// Sessions loaded from daemon
     SessionListLoaded(Vec<SessionInfo>),
+    HistoryLoaded(Vec<crate::api::ChatMessage>),
+    SaveSession,
     /// Toggle collapse all paragraphs
     ToggleCollapseAll,
     /// Toggle collapse latest message paragraphs
@@ -388,9 +390,12 @@ impl App {
                                 self.session_state.dismiss();
                                 let client = self.daemon_client.clone();
                                 let agent = self.agent.clone();
+                                let tx = self.event_tx.clone();
                                 tokio::spawn(async move {
                                     if let Ok(resp) = client.load_session(&id).await {
-                                        agent.lock().await.load_history(resp.messages);
+                                        let messages = resp.messages;
+                                        agent.lock().await.load_history(messages.clone());
+                                        let _ = tx.send(AppEvent::HistoryLoaded(messages));
                                     }
                                 });
                             }
@@ -608,6 +613,39 @@ impl App {
             }
             AppEvent::SessionListLoaded(sessions) => {
                 self.session_state.show(sessions);
+            }
+            AppEvent::HistoryLoaded(messages) => {
+                // Convert ChatMessage to UIMessage for display
+                self.committed_messages.clear();
+                for msg in &messages {
+                    let role = match msg.role.as_str() {
+                        "user" => MessageRole::User,
+                        "assistant" => MessageRole::Assistant,
+                        "tool" => MessageRole::Tool,
+                        _ => MessageRole::System,
+                    };
+                    let content = msg.content.clone().unwrap_or_default();
+                    let (content_collapsed, tool_collapsed) = compute_collapse_state(&role, &content);
+                    self.committed_messages.push(UIMessage {
+                        role,
+                        content,
+                        tool_name: msg.tool_call_id.clone(),
+                        content_collapsed,
+                        tool_collapsed,
+                    });
+                }
+                self.scroll_offset = 0;
+                self.user_scrolled = false;
+            }
+            AppEvent::SaveSession => {
+                let id = self.session_id.clone();
+                let name = self.session_name.clone();
+                let client = self.daemon_client.clone();
+                let agent = self.agent.clone();
+                tokio::spawn(async move {
+                    let history = agent.lock().await.get_history().to_vec();
+                    let _ = client.save_session(&id, &name, &history).await;
+                });
             }
             AppEvent::ToggleTaskPanel => {
                 self.task_panel.toggle();
