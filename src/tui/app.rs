@@ -87,6 +87,8 @@ pub enum AppEvent {
     ToggleSessions,
     /// Toggle task panel
     ToggleTaskPanel,
+    /// Ctrl+C pressed (double-press to quit)
+    CtrlCPressed,
     /// Sessions loaded from daemon
     SessionListLoaded(Vec<SessionInfo>),
     HistoryLoaded(Vec<crate::api::ChatMessage>),
@@ -139,6 +141,8 @@ pub struct App {
     pub question_state: QuestionState,
     pub session_state: SessionState,
     pub task_panel: TaskPanelState,
+    /// Timestamp of last Ctrl+C press for double-press detection
+    last_ctrl_c: Option<std::time::Instant>,
     /// Pending oneshot sender for question response
     pub question_responder: Option<QuestionResponder>,
     /// Pending oneshot sender for permission response
@@ -168,6 +172,7 @@ impl App {
             question_state: QuestionState::new(),
             session_state: SessionState::new(),
             task_panel: TaskPanelState::new(),
+            last_ctrl_c: None,
             question_responder: None,
             permission_responder: None,
         }
@@ -225,14 +230,11 @@ impl App {
         loop {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
-                    // Ctrl+C -> send quit event (handled in handle_event)
+                    // Ctrl+C -> require double-press within 500ms to quit
                     if key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
-                        let _ = tx.send(AppEvent::KeyEvent(KeyEvent::new(
-                            KeyCode::Esc,
-                            KeyModifiers::NONE,
-                        )));
+                        let _ = tx.send(AppEvent::CtrlCPressed);
                         continue;
                     }
                     // Ctrl+S -> sessions
@@ -465,12 +467,6 @@ impl App {
                         KeyCode::Esc => {
                             self.should_quit = true;
                         }
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            self.should_quit = true;
-                        }
-                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            self.should_quit = true;
-                        }
                         _ => {}
                     }
                 }
@@ -660,6 +656,16 @@ impl App {
                     let history = agent.lock().await.get_history().to_vec();
                     let _ = client.save_session(&id, &name, &history).await;
                 });
+            }
+            AppEvent::CtrlCPressed => {
+                let now = std::time::Instant::now();
+                if let Some(last) = self.last_ctrl_c {
+                    if last.elapsed().as_millis() < 500 {
+                        self.should_quit = true;
+                        return;
+                    }
+                }
+                self.last_ctrl_c = Some(now);
             }
             AppEvent::ToggleTaskPanel => {
                 self.task_panel.toggle();
