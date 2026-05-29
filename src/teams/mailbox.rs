@@ -29,10 +29,7 @@ pub enum TeamMessage {
         timestamp: String,
     },
     /// Request to shut down a teammate
-    ShutdownRequest {
-        from: String,
-        request_id: String,
-    },
+    ShutdownRequest { from: String, request_id: String },
     /// Response to a shutdown request
     ShutdownResponse {
         from: String,
@@ -171,11 +168,7 @@ impl TeamManager {
     }
 
     /// Send a message to a specific team member's mailbox
-    pub async fn send_to(
-        &self,
-        member_name: &str,
-        message: &TeamMessage,
-    ) -> std::io::Result<()> {
+    pub async fn send_to(&self, member_name: &str, message: &TeamMessage) -> std::io::Result<()> {
         if let Some(mailbox) = self.mailboxes.get(member_name) {
             mailbox.send(message).await
         } else {
@@ -187,11 +180,7 @@ impl TeamManager {
     }
 
     /// Broadcast a message to all team members
-    pub async fn broadcast(
-        &self,
-        from: &str,
-        content: &str,
-    ) -> Vec<std::io::Result<()>> {
+    pub async fn broadcast(&self, from: &str, content: &str) -> Vec<std::io::Result<()>> {
         let msg = TeamMessage::Broadcast {
             from: from.to_string(),
             content: content.to_string(),
@@ -208,12 +197,7 @@ impl TeamManager {
     }
 
     /// Send direct message
-    pub async fn send_message(
-        &self,
-        from: &str,
-        to: &str,
-        content: &str,
-    ) -> std::io::Result<()> {
+    pub async fn send_message(&self, from: &str, to: &str, content: &str) -> std::io::Result<()> {
         let msg = TeamMessage::Message {
             from: from.to_string(),
             to: to.to_string(),

@@ -106,6 +106,18 @@ impl DaemonClient {
         Ok(())
     }
 
+    /// POST /api/v1/tools/unapprove
+    pub async fn unapprove_tool(&self, session_rule: &str) -> anyhow::Result<()> {
+        let url = format!("{}/api/v1/tools/unapprove", self.base_url);
+        self.http
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({"session_rule": session_rule}))
+            .send()
+            .await?;
+        Ok(())
+    }
+
     /// GET /api/v1/background/results
     pub async fn get_background_results(&self) -> anyhow::Result<Vec<serde_json::Value>> {
         let url = format!("{}/api/v1/background/results", self.base_url);

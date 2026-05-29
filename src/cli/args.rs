@@ -67,6 +67,9 @@ impl Cli {
             }) => {
                 self.run_stress_test(*concurrency, *iterations).await?;
             }
+            Some(super::Commands::Sandbox { action }) => {
+                self.run_sandbox(action).await?;
+            }
             Some(super::Commands::Skills { action }) => {
                 self.run_skills(action).await?;
             }
@@ -103,19 +106,83 @@ impl Cli {
         println!();
     }
 
+    #[cfg(feature = "daemon")]
+    async fn run_repl(
+        &self,
+        state: crate::state::AppState,
+        prompt: Option<String>,
+    ) -> anyhow::Result<()> {
+        use crate::tui::app::{self, App};
+        use crate::tui::client::DaemonClient;
+        use crossterm::{
+            execute,
+            terminal::{
+                disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+            },
+        };
+        use ratatui::{backend::CrosstermBackend, Terminal};
+        use std::io;
+
+        // Start daemon in background
+        let (base_url, shutdown_tx) = app::start_daemon(state).await?;
+
+        // Set up terminal
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen)?;
+
+        // Install panic hook to restore terminal on crash.
+        // Without this, a panic leaves the terminal in raw mode with
+        // the alternate screen, causing overlapping/garbled display.
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            default_hook(info);
+        }));
+
+        enable_raw_mode()?;
+        let backend = CrosstermBackend::new(stdout);
+
+        // Create client and app
+        let client = DaemonClient::new(base_url);
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let mut app = App::new(client, session_id);
+
+        // Send initial prompt if given
+        if let Some(p) = prompt {
+            let tx = app.event_sender();
+            let _ = tx.send(crate::tui::app::AppEvent::Submit(p));
+        }
+
+        // Run the TUI — terminal is dropped when this block ends, releasing stdout
+        let result = {
+            let mut terminal = Terminal::new(backend)?;
+            app.run(&mut terminal).await
+        };
+
+        // Restore terminal
+        disable_raw_mode()?;
+        execute!(io::stdout(), LeaveAlternateScreen)?;
+        // Restore default panic hook
+        let _ = std::panic::take_hook();
+
+        // Shutdown daemon
+        let _ = shutdown_tx.send(());
+
+        result
+    }
+
+    #[cfg(not(feature = "daemon"))]
     async fn run_repl(
         &self,
         _state: crate::state::AppState,
         _prompt: Option<String>,
     ) -> anyhow::Result<()> {
         println!();
-        println!("  The interactive REPL has moved to the TypeScript frontend.");
+        println!("  The TUI frontend requires the daemon feature.");
         println!();
-        println!("  To start the rich CLI:");
-        println!("    npm run dev:ink");
-        println!();
-        println!("  Or for the minimal readline CLI:");
-        println!("    npm run -w packages/cli dev");
+        println!("  Rebuild with:");
+        println!("    cargo build --features daemon");
         println!();
         Ok(())
     }
@@ -680,4 +747,29 @@ impl Cli {
         }
         Ok(())
     }
+
+    async fn run_sandbox(&self, action: &super::SandboxCommands) -> anyhow::Result<()> {
+        let sandbox = crate::sandbox::SandboxManager::new();
+        let status = sandbox.status();
+        match action {
+            super::SandboxCommands::Status => {
+                println!("Sandbox Status:");
+                println!("  Backend: {}", status.backend_name);
+                println!("  Hardware-enforced: {}", status.is_hardware_enforced);
+                println!("  Capabilities: {:?}", status.capabilities);
+            }
+            super::SandboxCommands::Disable => {
+                println!("Sandbox disabled for this session.");
+            }
+            super::SandboxCommands::Enable => {
+                if status.is_hardware_enforced {
+                    println!("Sandbox enabled ({}).", status.backend_name);
+                } else {
+                    println!("Sandbox enabled (policy-only, {}).", status.backend_name);
+                }
+            }
+        }
+        Ok(())
+    }
+
 }

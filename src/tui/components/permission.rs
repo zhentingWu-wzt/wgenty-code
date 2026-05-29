@@ -1,11 +1,14 @@
-use crate::tui::theme;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Borders};
 use ratatui::Frame;
 
-/// Permission popup state.
+const WARN_COLOR: Color = Color::Rgb(255, 200, 50);
+const DIM_COLOR: Color = Color::Rgb(120, 120, 130);
+
+/// Permission approval state.
+/// Rendered inline between chat and status bar — same style as question panel.
 pub struct PermissionState {
     pub visible: bool,
     pub reason: String,
@@ -35,46 +38,37 @@ impl PermissionState {
             std::mem::take(&mut self.rule),
         )
     }
+
+    pub fn height_needed(&self) -> u16 {
+        // border(2) + reason(1) + blank(1) + hint(1) = 5
+        5
+    }
 }
 
-/// Render the permission popup centered on screen.
-pub fn render(
-    f: &mut Frame,
-    state: &PermissionState,
-    centered_rect_fn: impl Fn(u16, u16, Rect) -> Rect,
-) {
+/// Render the permission panel inline in the layout.
+pub fn render(f: &mut Frame, area: Rect, state: &PermissionState) {
     if !state.visible {
         return;
     }
 
-    let area = f.area();
-    let popup_area = centered_rect_fn(60, 25, area);
+    let mut lines: Vec<Line> = Vec::new();
 
-    // Clear the background under the popup
-    f.render_widget(Clear, popup_area);
-
-    let text = vec![
-        Line::from(Span::styled(
-            " ⚠ Permission Required",
-            Style::default().fg(theme::WARNING),
-        )),
-        Line::from(""),
-        Line::from(Span::raw(format!(" {}", state.reason))),
-        Line::from(""),
-        Line::from(Span::styled(
-            " [y] Allow once    [a] Always allow    [n] Deny",
-            Style::default().fg(theme::DIM),
-        )),
-    ];
+    lines.push(Line::from(Span::styled(
+        format!(" {}", state.reason),
+        Style::default().fg(Color::White),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " [y] Allow once    [a] Always allow    [n] Deny",
+        Style::default().fg(DIM_COLOR),
+    )));
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme::WARNING))
-        .title(" Permission ");
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(WARN_COLOR))
+        .title(" Permission Required ");
 
-    let para = Paragraph::new(Text::from(text))
-        .block(block)
-        .wrap(Wrap { trim: true });
-
-    f.render_widget(para, popup_area);
+    let para = ratatui::widgets::Paragraph::new(ratatui::text::Text::from(lines)).block(block);
+    f.render_widget(para, area);
 }

@@ -833,12 +833,7 @@ fn format_tool_result(name: &str, raw_json: &str) -> String {
     let parsed: serde_json::Value = match serde_json::from_str(raw_json) {
         Ok(v) => v,
         Err(_) => {
-            let preview: String = if raw_json.len() > 300 {
-                raw_json.chars().take(300).collect()
-            } else {
-                raw_json.to_string()
-            };
-            return preview;
+            return raw_json.to_string();
         }
     };
 
@@ -857,14 +852,7 @@ fn format_tool_result(name: &str, raw_json: &str) -> String {
         };
     }
 
-    // Trim long outputs
-    if content.len() > 500 {
-        // Safe truncation on char boundaries (avoids panics on multi-byte Unicode)
-        let truncated: String = content.chars().take(500).collect();
-        format!("{}:\n{}...", name, truncated)
-    } else {
-        format!("{}:\n{}", name, content)
-    }
+    format!("{}:\n{}", name, content)
 }
 
 /// Helper: create a centered rectangle of the given percentage size within `area`.

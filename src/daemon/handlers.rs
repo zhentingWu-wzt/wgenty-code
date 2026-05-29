@@ -172,10 +172,12 @@ pub async fn execute_tool(
     let session_id = body.session_id.as_deref().unwrap_or("default");
 
     // Validate against policy
-    match state
+    let decision = state
         .tool_executor
         .validate_tool_call(tool_name, args)
-        .await
+        .await;
+    tracing::info!("🔐 Daemon: policy for '{}' = {:?}", tool_name, decision);
+    match decision
     {
         Ok(PolicyDecision::Allow) => {
             // Execute directly with hooks
@@ -222,6 +224,12 @@ pub async fn execute_tool(
             }
 
             // Need permission from user
+            tracing::info!(
+                "🔐 Daemon: permission required for '{}': {} (rule: {})",
+                tool_name,
+                req.reason,
+                req.session_rule
+            );
             Ok(Json(ExecuteToolResponse {
                 success: false,
                 output_type: None,
@@ -254,6 +262,16 @@ pub async fn approve_tool(
         .approve_rule(body.session_rule.clone())
         .await;
     state.approve_rule("default", body.session_rule).await;
+
+    Json(serde_json::json!({"success": true}))
+}
+
+pub async fn unapprove_tool(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<ApproveToolRequest>,
+) -> Json<serde_json::Value> {
+    state.tool_executor.unapprove_rule(&body.session_rule).await;
+    state.unapprove_rule("default", &body.session_rule).await;
 
     Json(serde_json::json!({"success": true}))
 }
@@ -376,10 +394,11 @@ pub async fn create_session(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<CreateSessionRequest>,
 ) -> Result<Json<SessionResponse>, StatusCode> {
-    let session = tokio::task::spawn_blocking(move || state.session_manager.create(body.name.as_deref()))
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let session =
+        tokio::task::spawn_blocking(move || state.session_manager.create(body.name.as_deref()))
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(SessionResponse {
         id: session.id,

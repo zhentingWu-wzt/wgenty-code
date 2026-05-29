@@ -1,8 +1,8 @@
 //! CLI Module — command-line argument parsing, branding, and subcommand dispatch.
 //!
-//! The interactive REPL has been migrated to a TypeScript/Ink frontend
-//! (`packages/cli/`). Run `npm run dev:ink` to launch it. The Rust side
-//! provides the daemon API server that the frontend communicates with.
+//! The interactive REPL uses a ratatui-based TUI frontend. Running `cargo run`
+//! (or `cargo run -- repl`) starts the daemon in the background and launches
+//! the ratatui terminal UI. No Node.js/npm dependency required.
 
 pub mod args;
 pub mod branding;
@@ -53,7 +53,7 @@ pub struct CliArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Start an interactive REPL session (redirects to TypeScript CLI)
+    /// Start an interactive REPL session (ratatui TUI)
     Repl {
         /// Initial prompt to send
         #[arg(short, long)]
@@ -147,6 +147,12 @@ pub enum Commands {
     Skills {
         #[command(subcommand)]
         action: SkillsCommands,
+    },
+
+    /// Manage sandbox settings
+    Sandbox {
+        #[command(subcommand)]
+        action: SandboxCommands,
     },
 
     /// Run stress tests
@@ -395,4 +401,16 @@ pub enum SkillsCommands {
         /// Search query
         query: String,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SandboxCommands {
+    /// Show sandbox status
+    Status,
+
+    /// Disable sandbox for the session
+    Disable,
+
+    /// Enable sandbox
+    Enable,
 }

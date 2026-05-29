@@ -250,15 +250,8 @@ impl ToolCallManager {
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
 
-                                // Truncate if too long
-                                let display_result = if result.len() > 2000 {
-                                    format!("{}... (truncated)", &result[..2000])
-                                } else {
-                                    result.clone()
-                                };
-
                                 ui.monospace(
-                                    RichText::new(display_result).color(result_color).size(11.0),
+                                    RichText::new(result).color(result_color).size(11.0),
                                 );
                             });
                     }

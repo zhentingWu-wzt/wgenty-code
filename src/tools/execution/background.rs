@@ -118,10 +118,9 @@ impl BackgroundManager {
             let status = if r.success { "SUCCESS" } else { "FAILED" };
             let output = if r.success { &r.stdout } else { &r.stderr };
             // Truncate to 2000 chars
-            let truncated: String = output.chars().take(2000).collect();
             lines.push(format!(
                 "### {} [{}] (exit: {:?})\n```\n{}\n```",
-                r.task_id, status, r.exit_code, truncated
+                r.task_id, status, r.exit_code, output
             ));
         }
         Some(lines.join("\n"))
