@@ -661,8 +661,7 @@ impl App {
                 let now = std::time::Instant::now();
                 if let Some(last) = self.last_ctrl_c {
                     if last.elapsed().as_millis() < 500 {
-                        self.should_quit = true;
-                        return;
+                        std::process::exit(0);
                     }
                 }
                 self.last_ctrl_c = Some(now);
