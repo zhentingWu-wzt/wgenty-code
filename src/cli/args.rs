@@ -124,7 +124,7 @@ impl Cli {
         use std::io;
 
         // Start daemon in background
-        let (base_url, shutdown_tx) = app::start_daemon(state).await?;
+        let (base_url, shutdown_tx, daemon_handle) = app::start_daemon(state).await?;
 
         // Set up terminal
         let mut stdout = io::stdout();
@@ -166,8 +166,9 @@ impl Cli {
         // Restore default panic hook
         let _ = std::panic::take_hook();
 
-        // Shutdown daemon
+        // Shutdown daemon and wait for it to fully stop
         let _ = shutdown_tx.send(());
+        let _ = daemon_handle.await;
 
         result
     }

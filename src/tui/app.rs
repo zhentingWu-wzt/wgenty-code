@@ -826,7 +826,7 @@ impl App {
 #[cfg(feature = "daemon")]
 pub async fn start_daemon(
     app_state: AppState,
-) -> anyhow::Result<(String, tokio::sync::oneshot::Sender<()>)> {
+) -> anyhow::Result<(String, tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>)> {
     // Bind to a random available port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
@@ -847,7 +847,7 @@ pub async fn start_daemon(
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         axum::serve(listener, app)
             .with_graceful_shutdown(async {
                 let _ = shutdown_rx.await;
@@ -861,7 +861,7 @@ pub async fn start_daemon(
     for _attempt in 0..50 {
         if client.health().await.is_ok() {
             tracing::info!("daemon ready on port {}", port);
-            return Ok((base_url, shutdown_tx));
+            return Ok((base_url, shutdown_tx, handle));
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
