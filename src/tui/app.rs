@@ -494,6 +494,20 @@ impl App {
                 }
             }
             AppEvent::Submit(text) => {
+                // Slash commands
+                if text.trim() == "/clear" {
+                    self.committed_messages.clear();
+                    self.streaming_content.clear();
+                    self.streaming_active = false;
+                    self.status = "idle".to_string();
+                    self.scroll_offset = 0;
+                    self.user_scrolled = false;
+                    let agent = self.agent.clone();
+                    tokio::spawn(async move {
+                        agent.lock().await.reset();
+                    });
+                    return;
+                }
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::User,
                     content: text.clone(),
