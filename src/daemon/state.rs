@@ -141,4 +141,12 @@ impl DaemonState {
             .approved
             .insert(rule);
     }
+
+    /// Remove a previously approved session rule.
+    pub async fn unapprove_rule(&self, session_id: &str, rule: &str) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(session_id) {
+            s.approved.remove(rule);
+        }
+    }
 }

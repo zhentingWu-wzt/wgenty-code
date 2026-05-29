@@ -69,7 +69,7 @@ Rust 使用 **Tokio 异步优先架构**，调用 **OpenAI/DeepSeek 兼容的 ch
 - **`state`** — `AppState` 持有共享状态（配置、对话、工具注册表、内存）。按值传递或用 `Arc<RwLock<>>` 包装后传给服务层。
 - **`config`** — `Settings` 从 `~/.claude-code/settings.json` 加载。包含 `ApiConfig`、`McpConfig[]`、模型选择、内存/语音/插件设置。API Key 解析优先级：环境变量 `ANTHROPIC_API_KEY` > `DASHSCOPE_API_KEY` > `DEEPSEEK_API_KEY` > 配置文件值。
 - **`api`** — `ApiClient` 封装 reqwest，请求 `/v1/chat/completions`（OpenAI 兼容格式）。支持 `chat()` 和 `chat_stream()`。`ChatMessage` 支持角色：user、assistant、system、tool。工具调用使用 `ToolDefinition`/`ToolCall` 类型。
-- **`cli`** — CLI 参数解析和子命令分发（`CliArgs`、`Commands` 枚举）。交互式 REPL 已迁移至 TypeScript 前端（`packages/cli/`），Rust 侧仅保留 `args`、`branding`、`commands` 模块。
+- **`cli`** — CLI 参数解析和子命令分发（`CliArgs`、`Commands` 枚举）。交互式 REPL 使用 ratatui TUI（`src/tui/`），`cargo run` 直接启动。
 - **`daemon`** — HTTP API 服务（`src/daemon/`）。提供 REST + SSE 端点供 TypeScript 前端调用。启动：`cargo run -- daemon --port 8371`。
 - **`agent`** — 共享的 SSE 流解析器（`StreamProcessor`），用于解析 OpenAI 兼容的 SSE 流式响应。
 

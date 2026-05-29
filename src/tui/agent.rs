@@ -272,53 +272,154 @@ impl AgentLoop {
         name: &str,
         args: serde_json::Value,
     ) -> String {
-        match self
+        let result = match self
             .client
             .execute_tool(name, args.clone(), &self.session_id)
             .await
         {
-            Ok(resp) => {
-                if let Some(perm) = resp.permission_required {
-                    let _ = self.event_tx.send(AppEvent::PermissionRequired {
-                        reason: perm.reason.clone(),
-                        rule: perm.session_rule.clone(),
-                    });
-                    // NOTE: In the full implementation (Task 7), this will wait for user
-                    // response via a oneshot channel. For now, deny by default.
+            Ok(resp) => resp,
+            Err(e) => {
+                tracing::warn!("Tool execution failed for '{}': {}", name, e);
+                return format!(r#"{{"success":false,"error":"{}"}}"#, e);
+            }
+        };
+
+        // If permission required, ask the user via inline panel
+        if let Some(perm) = result.permission_required {
+            tracing::info!(
+                "🔐 Permission required for '{}': {} (rule: {})",
+                name,
+                perm.reason,
+                perm.session_rule
+            );
+
+            let (tx, rx) = tokio::sync::oneshot::channel();
+
+            let _ = self.event_tx.send(AppEvent::PermissionRequired {
+                reason: perm.reason.clone(),
+                rule: perm.session_rule.clone(),
+                responder: crate::tui::app::PermissionResponder(Some(tx)),
+            });
+
+            match rx.await {
+                Ok(crate::tui::app::PermissionResponse::AllowOnce) => {
+                    // Approve → execute → unapprove (one-shot)
+                    if self.client.approve_tool(&perm.session_rule).await.is_err() {
+                        return r#"{"success":false,"error":"Failed to approve permission"}"#.to_string();
+                    }
+
+                    let result = self
+                        .client
+                        .execute_tool(name, args.clone(), &self.session_id)
+                        .await;
+
+                    // Remove the temporary approval
+                    let _ = self.client.unapprove_tool(&perm.session_rule).await;
+
+                    match result {
+                        Ok(resp) => {
+                            return format!(
+                                r#"{{"success":{},"output_type":{},"content":{},"error":{}}}"#,
+                                resp.success,
+                                serde_json::to_string(&resp.output_type).unwrap_or_default(),
+                                serde_json::to_string(&resp.content).unwrap_or_default(),
+                                serde_json::to_string(&resp.error).unwrap_or_default(),
+                            );
+                        }
+                        Err(e) => {
+                            return format!(r#"{{"success":false,"error":"{}"}}"#, e);
+                        }
+                    }
+                }
+                Ok(crate::tui::app::PermissionResponse::AlwaysAllow) => {
+                    // Approve the rule, then re-execute the tool
+                    if self.client.approve_tool(&perm.session_rule).await.is_err() {
+                        return r#"{{"success":false,"error":"Failed to approve permission"}}"#.to_string();
+                    }
+
+                    match self
+                        .client
+                        .execute_tool(name, args.clone(), &self.session_id)
+                        .await
+                    {
+                        Ok(resp) => {
+                            return format!(
+                                r#"{{"success":{},"output_type":{},"content":{},"error":{}}}"#,
+                                resp.success,
+                                serde_json::to_string(&resp.output_type).unwrap_or_default(),
+                                serde_json::to_string(&resp.content).unwrap_or_default(),
+                                serde_json::to_string(&resp.error).unwrap_or_default(),
+                            );
+                        }
+                        Err(e) => {
+                            return format!(r#"{{"success":false,"error":"{}"}}"#, e);
+                        }
+                    }
+                }
+                Ok(crate::tui::app::PermissionResponse::Deny) | Err(_) => {
                     return format!(
                         r#"{{"success":false,"error":"PERMISSION DENIED: {}"}}"#,
                         perm.reason
                     );
                 }
-
-                format!(
-                    r#"{{"success":{},"output_type":{},"content":{},"error":{}}}"#,
-                    resp.success,
-                    serde_json::to_string(&resp.output_type).unwrap_or_default(),
-                    serde_json::to_string(&resp.content).unwrap_or_default(),
-                    serde_json::to_string(&resp.error).unwrap_or_default(),
-                )
-            }
-            Err(e) => {
-                format!(r#"{{"success":false,"error":"{}"}}"#, e)
             }
         }
+
+        // No permission required — return result directly
+        format!(
+            r#"{{"success":{},"output_type":{},"content":{},"error":{}}}"#,
+            result.success,
+            serde_json::to_string(&result.output_type).unwrap_or_default(),
+            serde_json::to_string(&result.content).unwrap_or_default(),
+            serde_json::to_string(&result.error).unwrap_or_default(),
+        )
     }
 
     async fn handle_ask_user_question(&self, args: &serde_json::Value) -> String {
-        // Will be connected to QuestionPopup in Task 7.
-        // For now, auto-answer with the first option.
-        let options = args["options"].as_array();
-        let first = options
-            .and_then(|o| o.first())
-            .and_then(|o| o["label"].as_str())
-            .unwrap_or("ok");
+        let (tx, rx) = tokio::sync::oneshot::channel();
 
-        serde_json::json!({
-            "success": true,
-            "answers": [{"label": first, "value": first, "custom": false}]
-        })
-        .to_string()
+        let question = args["question"]
+            .as_str()
+            .unwrap_or("Choose an option:")
+            .to_string();
+        let options: Vec<String> = args["options"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|o| o["label"].as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let multi_select = args["multi_select"].as_bool().unwrap_or(false);
+
+        let _ = self.event_tx.send(AppEvent::QuestionAsked {
+            question,
+            options,
+            multi_select,
+            responder: crate::tui::app::QuestionResponder(Some(tx)),
+        });
+
+        match rx.await {
+            Ok(answers) => {
+                let answers_json: Vec<serde_json::Value> = answers
+                    .iter()
+                    .map(|a| serde_json::json!({"label": a, "value": a, "custom": false}))
+                    .collect();
+                serde_json::json!({
+                    "success": true,
+                    "answers": answers_json
+                })
+                .to_string()
+            }
+            Err(_) => {
+                // Channel closed without response (user pressed Esc)
+                serde_json::json!({
+                    "success": false,
+                    "error": "User cancelled the question"
+                })
+                .to_string()
+            }
+        }
     }
 
     async fn inject_background_results(&mut self) {

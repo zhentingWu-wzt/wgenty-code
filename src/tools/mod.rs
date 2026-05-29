@@ -60,8 +60,12 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        let command_sessions =
-            std::sync::Arc::new(execution::session_manager::CommandSessionManager::new());
+        // Create sandbox manager (auto-selects best backend)
+        let sandbox = std::sync::Arc::new(crate::sandbox::SandboxManager::new());
+        let command_sessions = std::sync::Arc::new(
+            execution::session_manager::CommandSessionManager::new()
+                .with_sandbox(sandbox.clone()),
+        );
         let mut registry = Self {
             tools: HashMap::new(),
         };
@@ -75,7 +79,7 @@ impl ToolRegistry {
         registry.register(Box::new(filesystem::file_write::FileWriteTool::new()));
         // Execution tools
         registry.register(Box::new(
-            execution::execute_command::ExecuteCommandTool::new(),
+            execution::execute_command::ExecuteCommandTool::with_sandbox(sandbox.clone()),
         ));
         registry.register(Box::new(execution::exec_command::ExecCommandTool::new(
             command_sessions.clone(),
