@@ -379,6 +379,39 @@ impl ClaudeCodeApp {
 
 impl eframe::App for ClaudeCodeApp {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+        // Keyboard shortcuts (global)
+        ctx.input(|i| {
+            if i.key_pressed(egui::Key::E) && i.modifiers.ctrl && !i.modifiers.shift {
+                // Ctrl+E: toggle collapse all messages
+                let any_expanded = self.chat_panel.messages.iter().any(|m| {
+                    !m.content_collapsed || !m.thinking_expanded
+                        || m.tool_calls.iter().any(|tc| tc.expanded)
+                });
+                let new_state = any_expanded;
+                for msg in &mut self.chat_panel.messages {
+                    msg.content_collapsed = new_state;
+                    msg.thinking_expanded = !new_state;
+                    for tc in &mut msg.tool_calls {
+                        tc.expanded = !new_state;
+                    }
+                }
+            }
+            if i.key_pressed(egui::Key::O) && i.modifiers.ctrl && !i.modifiers.shift {
+                // Ctrl+O: toggle collapse latest message only
+                if let Some(last) = self.chat_panel.messages.last_mut() {
+                    let any_expanded = !last.content_collapsed
+                        || !last.thinking_expanded
+                        || last.tool_calls.iter().any(|tc| tc.expanded);
+                    let new_state = any_expanded;
+                    last.content_collapsed = new_state;
+                    last.thinking_expanded = !new_state;
+                    for tc in &mut last.tool_calls {
+                        tc.expanded = !new_state;
+                    }
+                }
+            }
+        });
+
         // Process pending messages
         self.process_messages(ctx);
 

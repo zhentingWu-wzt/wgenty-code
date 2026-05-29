@@ -49,14 +49,20 @@ impl ToolCall {
     }
 
     pub fn with_result(mut self, result: impl Into<String>) -> Self {
-        self.result = Some(result.into());
+        let result_str = result.into();
+        let line_count = result_str.lines().count();
+        self.result = Some(result_str);
         self.status = ToolCallStatus::Success;
+        self.expanded = line_count <= 10;
         self
     }
 
     pub fn with_error(mut self, error: impl Into<String>) -> Self {
-        self.result = Some(error.into());
+        let error_str = error.into();
+        let line_count = error_str.lines().count();
+        self.result = Some(error_str);
         self.status = ToolCallStatus::Error;
+        self.expanded = line_count <= 10;
         self
     }
 }
