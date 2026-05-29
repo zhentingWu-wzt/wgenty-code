@@ -236,45 +236,42 @@ impl App {
     ) -> io::Result<()> {
         use std::sync::atomic::Ordering;
         while !shutdown.load(Ordering::SeqCst) {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
-                    // Ctrl+C -> require double-press within 500ms to quit
-                    if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        let _ = tx.send(AppEvent::CtrlCPressed);
-                        continue;
+            // Poll with 100ms timeout so we can check shutdown flag frequently
+            if event::poll(std::time::Duration::from_millis(100))? {
+                if let Event::Key(key) = event::read()? {
+                    if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
+                        if key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
+                            let _ = tx.send(AppEvent::CtrlCPressed);
+                            continue;
+                        }
+                        if key.code == KeyCode::Char('s')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
+                            let _ = tx.send(AppEvent::ToggleSessions);
+                            continue;
+                        }
+                        if key.code == KeyCode::Char('t')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
+                            let _ = tx.send(AppEvent::ToggleTaskPanel);
+                            continue;
+                        }
+                        if key.code == KeyCode::Char('e')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
+                            let _ = tx.send(AppEvent::ToggleCollapseAll);
+                            continue;
+                        }
+                        if key.code == KeyCode::Char('o')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                        {
+                            let _ = tx.send(AppEvent::ToggleCollapseLatest);
+                            continue;
+                        }
+                        let _ = tx.send(AppEvent::KeyEvent(key));
                     }
-                    // Ctrl+S -> sessions
-                    if key.code == KeyCode::Char('s')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        let _ = tx.send(AppEvent::ToggleSessions);
-                        continue;
-                    }
-                    // Ctrl+T -> task panel
-                    if key.code == KeyCode::Char('t')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        let _ = tx.send(AppEvent::ToggleTaskPanel);
-                        continue;
-                    }
-                    // Ctrl+E -> toggle collapse all
-                    if key.code == KeyCode::Char('e')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        let _ = tx.send(AppEvent::ToggleCollapseAll);
-                        continue;
-                    }
-                    // Ctrl+O -> toggle collapse latest message
-                    if key.code == KeyCode::Char('o')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        let _ = tx.send(AppEvent::ToggleCollapseLatest);
-                        continue;
-                    }
-                    // Send the full key event to be processed by tui-textarea + key handler
-                    let _ = tx.send(AppEvent::KeyEvent(key));
                 }
             }
         }
