@@ -64,8 +64,9 @@ impl Tool for TeamMessageTool {
             Some(tm) => tm,
             None => {
                 return Err(ToolError {
-                    message: "No team configured. Create .team/config.json to enable team features."
-                        .to_string(),
+                    message:
+                        "No team configured. Create .team/config.json to enable team features."
+                            .to_string(),
                     code: Some("no_team".to_string()),
                 })
             }
@@ -134,14 +135,17 @@ impl Tool for TeamMessageTool {
                 })
             }
             "members" => {
-                let members: Vec<serde_json::Value> =
-                    tm.members().iter().map(|m| {
+                let members: Vec<serde_json::Value> = tm
+                    .members()
+                    .iter()
+                    .map(|m| {
                         serde_json::json!({
                             "name": m.name,
                             "role": m.role,
                             "status": m.status,
                         })
-                    }).collect();
+                    })
+                    .collect();
 
                 Ok(ToolOutput {
                     output_type: "json".to_string(),

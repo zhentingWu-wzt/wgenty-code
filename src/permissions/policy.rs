@@ -7,6 +7,7 @@ pub struct ToolPermissionPolicy {
     workspace_root: PathBuf,
 }
 
+#[derive(Debug)]
 pub enum PolicyDecision {
     Allow,
     Ask(PermissionRequest),

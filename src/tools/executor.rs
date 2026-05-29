@@ -57,6 +57,11 @@ impl ToolExecutor {
         self.session_rules.write().await.insert(rule);
     }
 
+    /// Remove an approved session rule (for "allow once" flow).
+    pub async fn unapprove_rule(&self, rule: &str) {
+        self.session_rules.write().await.remove(rule);
+    }
+
     /// Execute a tool call directly (policy already passed).
     pub async fn execute_tool_call(
         &self,

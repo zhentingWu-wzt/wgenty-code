@@ -14,6 +14,7 @@
 //!   config/      — settings
 //!   services/    — background daemons
 //!   plugins/     — plugin system
+//!   sandbox/     — cross-platform OS-level process isolation
 //!   state/       — shared application state
 
 pub mod agent;
@@ -26,12 +27,13 @@ pub mod knowledge;
 pub mod mcp;
 pub mod permissions;
 pub mod plugins;
+pub mod sandbox;
 pub mod services;
 pub mod state;
 pub mod tasks;
-pub mod tui;
 pub mod teams;
 pub mod tools;
+pub mod tui;
 pub mod utils;
 pub mod voice;
 
