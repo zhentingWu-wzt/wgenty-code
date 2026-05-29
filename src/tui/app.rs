@@ -670,7 +670,9 @@ impl App {
                 let now = std::time::Instant::now();
                 if let Some(last) = self.last_ctrl_c {
                     if last.elapsed().as_millis() < 500 {
-                        std::process::exit(0);
+                        self.shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                        self.should_quit = true;
+                        return;
                     }
                 }
                 self.last_ctrl_c = Some(now);
