@@ -139,6 +139,7 @@ impl AgentLoop {
                     }
                 }
 
+                let _ = self.event_tx.send(AppEvent::SaveSession);
                 continue; // Continue the tool call loop
             }
 
@@ -161,6 +162,7 @@ impl AgentLoop {
             let _ = self.event_tx.send(AppEvent::StreamDone {
                 finish_reason: result.finish_reason,
             });
+            let _ = self.event_tx.send(AppEvent::SaveSession);
             return;
         }
     }
