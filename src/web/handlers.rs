@@ -273,10 +273,10 @@ fn get_sample_plugins() -> Vec<Plugin> {
                 "Advanced file operations including search, batch rename, and directory sync"
                     .to_string(),
             version: "1.2.0".to_string(),
-            author: "Claude Code Team".to_string(),
-            author_url: Some("https://github.com/claude-code".to_string()),
-            repository_url: Some("https://github.com/claude-code/file-system-plugin".to_string()),
-            documentation_url: Some("https://docs.claude-code.dev/plugins/file-system".to_string()),
+            author: "Wgenty Code Team".to_string(),
+            author_url: Some("https://github.com/wgenty-code".to_string()),
+            repository_url: Some("https://github.com/wgenty-code/file-system-plugin".to_string()),
+            documentation_url: Some("https://docs.wgenty-code.dev/plugins/file-system".to_string()),
             icon_url: None,
             tags: vec![
                 "files".to_string(),
@@ -302,10 +302,10 @@ fn get_sample_plugins() -> Vec<Plugin> {
             description: "Full Git support with commit, branch, merge, and history visualization"
                 .to_string(),
             version: "2.0.1".to_string(),
-            author: "Claude Code Team".to_string(),
-            author_url: Some("https://github.com/claude-code".to_string()),
-            repository_url: Some("https://github.com/claude-code/git-plugin".to_string()),
-            documentation_url: Some("https://docs.claude-code.dev/plugins/git".to_string()),
+            author: "Wgenty Code Team".to_string(),
+            author_url: Some("https://github.com/wgenty-code".to_string()),
+            repository_url: Some("https://github.com/wgenty-code/git-plugin".to_string()),
+            documentation_url: Some("https://docs.wgenty-code.dev/plugins/git".to_string()),
             icon_url: None,
             tags: vec![
                 "git".to_string(),
@@ -382,7 +382,7 @@ fn get_sample_plugins() -> Vec<Plugin> {
         Plugin {
             id: "slack-integration".to_string(),
             name: "Slack Integration".to_string(),
-            description: "Send notifications and interact with Slack from Claude Code".to_string(),
+            description: "Send notifications and interact with Slack from Wgenty Code".to_string(),
             version: "1.1.0".to_string(),
             author: "Integration Expert".to_string(),
             author_url: Some("https://integrations.dev".to_string()),

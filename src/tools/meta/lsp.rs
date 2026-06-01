@@ -15,31 +15,79 @@ fn def_patterns() -> Vec<(&'static str, &'static str, &'static str)> {
     // (extension, symbol_pattern, reference_pattern)
     vec![
         // Rust
-        ("rs", r"\b(fn|struct|enum|trait|impl|mod|type|const|static)\s+{symbol}\b", r"\b{symbol}\b"),
+        (
+            "rs",
+            r"\b(fn|struct|enum|trait|impl|mod|type|const|static)\s+{symbol}\b",
+            r"\b{symbol}\b",
+        ),
         // Go
-        ("go", r"\b(func|type|var|const)\s+{symbol}\b", r"\b{symbol}\b"),
+        (
+            "go",
+            r"\b(func|type|var|const)\s+{symbol}\b",
+            r"\b{symbol}\b",
+        ),
         // Python
         ("py", r"\b(def|class)\s+{symbol}\b", r"\b{symbol}\b"),
         // JavaScript / TypeScript
-        ("js", r"\b(function|class|const|let|var)\s+{symbol}\b", r"\b{symbol}\b"),
-        ("ts", r"\b(function|class|const|let|var|interface|type|enum)\s+{symbol}\b", r"\b{symbol}\b"),
-        ("tsx", r"\b(function|class|const|let|var|interface|type|enum)\s+{symbol}\b", r"\b{symbol}\b"),
-        ("jsx", r"\b(function|class|const|let|var)\s+{symbol}\b", r"\b{symbol}\b"),
+        (
+            "js",
+            r"\b(function|class|const|let|var)\s+{symbol}\b",
+            r"\b{symbol}\b",
+        ),
+        (
+            "ts",
+            r"\b(function|class|const|let|var|interface|type|enum)\s+{symbol}\b",
+            r"\b{symbol}\b",
+        ),
+        (
+            "tsx",
+            r"\b(function|class|const|let|var|interface|type|enum)\s+{symbol}\b",
+            r"\b{symbol}\b",
+        ),
+        (
+            "jsx",
+            r"\b(function|class|const|let|var)\s+{symbol}\b",
+            r"\b{symbol}\b",
+        ),
         // Java
-        ("java", r"\b(class|interface|enum|record)\s+{symbol}\b", r"\b{symbol}\b"),
+        (
+            "java",
+            r"\b(class|interface|enum|record)\s+{symbol}\b",
+            r"\b{symbol}\b",
+        ),
         // C / C++
-        ("c", r"\b(\w+\s+)?{symbol}\s*\([^)]*\)\s*\{", r"\b{symbol}\b"),
+        (
+            "c",
+            r"\b(\w+\s+)?{symbol}\s*\([^)]*\)\s*\{",
+            r"\b{symbol}\b",
+        ),
         ("h", r"\b(\w+\s+)?{symbol}\s*\([^)]*\)\s*;", r"\b{symbol}\b"),
-        ("cpp", r"\b(\w+\s+)?{symbol}\s*\([^)]*\)\s*\{", r"\b{symbol}\b"),
-        ("hpp", r"\b(\w+\s+)?{symbol}\s*\([^)]*\)\s*;", r"\b{symbol}\b"),
+        (
+            "cpp",
+            r"\b(\w+\s+)?{symbol}\s*\([^)]*\)\s*\{",
+            r"\b{symbol}\b",
+        ),
+        (
+            "hpp",
+            r"\b(\w+\s+)?{symbol}\s*\([^)]*\)\s*;",
+            r"\b{symbol}\b",
+        ),
         // Shell
         ("sh", r"\b(function\s+)?{symbol}\s*\(\s*\)", r"\b{symbol}\b"),
         // Ruby
         ("rb", r"\b(def|class|module)\s+{symbol}\b", r"\b{symbol}\b"),
         // Swift
-        ("swift", r"\b(func|class|struct|enum|protocol|let|var)\s+{symbol}\b", r"\b{symbol}\b"),
+        (
+            "swift",
+            r"\b(func|class|struct|enum|protocol|let|var)\s+{symbol}\b",
+            r"\b{symbol}\b",
+        ),
         // Kotlin
-        ("kt", r"\b(fun|class|object|interface|val|var)\s+{symbol}\b", r"\b{symbol}\b"),
+        (
+            "kt",
+            r"\b(fun|class|object|interface|val|var)\s+{symbol}\b",
+            r"\b{symbol}\b",
+        ),
         // Markdown (for completeness)
         ("md", r"^#+\s.*{symbol}", r"{symbol}"),
         // TOML / config
@@ -130,14 +178,21 @@ impl Tool for LspTool {
             "definition" => find_definitions(&base, symbol, max_results),
             "references" => find_references(&base, symbol, max_results),
             _ => Err(ToolError {
-                message: format!("Unknown operation: {}. Use 'definition' or 'references'", operation),
+                message: format!(
+                    "Unknown operation: {}. Use 'definition' or 'references'",
+                    operation
+                ),
                 code: Some("invalid_operation".to_string()),
             }),
         }
     }
 }
 
-fn find_definitions(base: &std::path::Path, symbol: &str, max_results: usize) -> Result<ToolOutput, ToolError> {
+fn find_definitions(
+    base: &std::path::Path,
+    symbol: &str,
+    max_results: usize,
+) -> Result<ToolOutput, ToolError> {
     let mut results: Vec<SymbolLocation> = Vec::new();
 
     for (ext, def_pat, _) in def_patterns() {
@@ -185,7 +240,11 @@ fn find_definitions(base: &std::path::Path, symbol: &str, max_results: usize) ->
     format_results("definition", symbol, results, max_results)
 }
 
-fn find_references(base: &std::path::Path, symbol: &str, max_results: usize) -> Result<ToolOutput, ToolError> {
+fn find_references(
+    base: &std::path::Path,
+    symbol: &str,
+    max_results: usize,
+) -> Result<ToolOutput, ToolError> {
     let escaped = regex::escape(symbol);
     let pattern_str = format!(r"\b{}\b", escaped);
     let word_re = Regex::new(&pattern_str).map_err(|e| ToolError {
@@ -226,7 +285,9 @@ fn find_references(base: &std::path::Path, symbol: &str, max_results: usize) -> 
     let def_set: HashMap<String, std::collections::HashSet<usize>> = {
         let mut map = HashMap::new();
         for (file, line) in &def_locations {
-            map.entry(file.clone()).or_insert_with(std::collections::HashSet::new).insert(*line);
+            map.entry(file.clone())
+                .or_insert_with(std::collections::HashSet::new)
+                .insert(*line);
         }
         map
     };
@@ -249,7 +310,10 @@ fn find_references(base: &std::path::Path, symbol: &str, max_results: usize) -> 
             for (line_num, line) in content.lines().enumerate() {
                 if let Some(mat) = word_re.find(line) {
                     // Skip definition lines
-                    let is_def = def_set.get(&file_path).map(|lines| lines.contains(&(line_num + 1))).unwrap_or(false);
+                    let is_def = def_set
+                        .get(&file_path)
+                        .map(|lines| lines.contains(&(line_num + 1)))
+                        .unwrap_or(false);
                     if is_def {
                         continue;
                     }
@@ -271,9 +335,23 @@ fn find_references(base: &std::path::Path, symbol: &str, max_results: usize) -> 
     format_results("references", symbol, results, max_results)
 }
 
-fn format_results(op: &str, symbol: &str, results: Vec<SymbolLocation>, max: usize) -> Result<ToolOutput, ToolError> {
-    let label = if op == "definition" { "definitions" } else { "references" };
-    let mut lines = vec![format!("Found {} {} for `{}`:\n", results.len().min(max), label, symbol)];
+fn format_results(
+    op: &str,
+    symbol: &str,
+    results: Vec<SymbolLocation>,
+    max: usize,
+) -> Result<ToolOutput, ToolError> {
+    let label = if op == "definition" {
+        "definitions"
+    } else {
+        "references"
+    };
+    let mut lines = vec![format!(
+        "Found {} {} for `{}`:\n",
+        results.len().min(max),
+        label,
+        symbol
+    )];
 
     for loc in &results {
         lines.push(format!(

@@ -1,32 +1,24 @@
-//! CLI Module — command-line argument parsing, REPL loop, TUI rendering, and branding.
+//! CLI Module — command-line argument parsing, branding, and subcommand dispatch.
 //!
-//! The TUI REPL lives here because it's the primary harness frontend: it drives
-//! the agent loop, renders conversation history, handles streaming responses,
-//! and delegates tool execution to the tools module.
+//! The interactive REPL uses a ratatui-based TUI frontend. Running `cargo run`
+//! (or `cargo run -- repl`) starts the daemon in the background and launches
+//! the ratatui terminal UI. No Node.js/npm dependency required.
 
 pub mod args;
 pub mod branding;
 pub mod commands;
-pub mod repl;
-pub mod tui_history;
-pub mod tui_ime;
-pub mod tui_input;
-pub mod tui_repl;
-pub mod ui;
 
 pub use args::Cli;
-pub use repl::Repl;
-pub use tui_repl::TuiRepl;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Claude Code - AI-powered coding assistant
+/// Wgenty Code - AI-powered coding assistant
 #[derive(Parser, Debug)]
-#[command(name = "claude-code")]
+#[command(name = "wgenty-code")]
 #[command(author = "Anthropic")]
 #[command(version = "0.1.0")]
-#[command(about = "High-performance Rust implementation of Claude Code CLI")]
+#[command(about = "High-performance Rust implementation of Wgenty Code CLI")]
 #[command(disable_version_flag = true)]
 #[command(disable_help_subcommand = true)]
 pub struct CliArgs {
@@ -61,15 +53,11 @@ pub struct CliArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Start an interactive REPL session
+    /// Start an interactive REPL session (ratatui TUI)
     Repl {
         /// Initial prompt to send
         #[arg(short, long)]
         prompt: Option<String>,
-
-        /// Launch in TUI full-screen mode (real-time borders, Shift+Enter for multiline)
-        #[arg(long)]
-        tui: bool,
     },
 
     /// Execute a single query
@@ -161,6 +149,12 @@ pub enum Commands {
         action: SkillsCommands,
     },
 
+    /// Manage sandbox settings
+    Sandbox {
+        #[command(subcommand)]
+        action: SandboxCommands,
+    },
+
     /// Run stress tests
     StressTest {
         /// Number of concurrent requests
@@ -169,6 +163,13 @@ pub enum Commands {
         /// Number of iterations per request
         #[arg(short, long, default_value = "10")]
         iterations: usize,
+    },
+
+    /// Start the daemon HTTP API server
+    Daemon {
+        /// Port to listen on
+        #[arg(long, default_value = "8371")]
+        port: u16,
     },
 }
 
@@ -400,4 +401,16 @@ pub enum SkillsCommands {
         /// Search query
         query: String,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SandboxCommands {
+    /// Show sandbox status
+    Status,
+
+    /// Disable sandbox for the session
+    Disable,
+
+    /// Enable sandbox
+    Enable,
 }

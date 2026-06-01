@@ -1,4 +1,4 @@
-//! Chat UI Component - Full recreation of Claude Code chat interface
+//! Chat UI Component - Full recreation of Wgenty Code chat interface
 //!
 //! Features:
 //! - Exact Claude.ai message styling
@@ -12,8 +12,8 @@ use super::syntax_highlight::format_code_block;
 use super::tool_calls::ToolCall;
 use chrono::{DateTime, Utc};
 use egui::{
-    Align, Color32, Frame, Layout, Margin, RichText, CornerRadius, ScrollArea, Stroke, TextEdit, Ui,
-    Vec2,
+    Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, ScrollArea, Stroke, TextEdit,
+    Ui, Vec2,
 };
 
 /// A chat message - matches Claude.ai structure
@@ -28,6 +28,8 @@ pub struct ChatMessage {
     pub attachments: Vec<Attachment>,
     pub thinking: Option<String>,
     pub thinking_expanded: bool,
+    /// Whether the body text is collapsed (long content)
+    pub content_collapsed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,16 +48,20 @@ pub struct Attachment {
 
 impl ChatMessage {
     pub fn new(role: MessageRole, content: impl Into<String>) -> Self {
+        let content_str: String = content.into();
+        let line_count = content_str.lines().count();
+        let content_collapsed = matches!(role, MessageRole::Assistant) && line_count > 50;
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             role,
-            content: content.into(),
+            content: content_str,
             timestamp: Utc::now(),
             is_streaming: false,
             tool_calls: Vec::new(),
             attachments: Vec::new(),
             thinking: None,
             thinking_expanded: false,
+            content_collapsed,
         }
     }
 
@@ -82,7 +88,7 @@ impl ChatMessage {
     }
 }
 
-/// Chat panel - full recreation of Claude Code interface
+/// Chat panel - full recreation of Wgenty Code interface
 pub struct ChatPanel {
     pub messages: Vec<ChatMessage>,
     pub input_text: String,
@@ -129,50 +135,45 @@ impl ChatPanel {
         let messages_height = available_height - input_height - 16.0;
 
         // Messages area with exact Claude styling
-        Frame::NONE
-            .fill(theme.background_darkest())
-            .show(ui, |ui| {
-                ui.set_min_height(messages_height);
+        Frame::NONE.fill(theme.background_darkest()).show(ui, |ui| {
+            ui.set_min_height(messages_height);
 
-                ScrollArea::vertical()
-                    .auto_shrink([false; 2])
-                    .stick_to_bottom(self.scroll_to_bottom)
-                    .show(ui, |ui| {
-                        ui.add_space(24.0);
+            ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .stick_to_bottom(self.scroll_to_bottom)
+                .show(ui, |ui| {
+                    ui.add_space(24.0);
 
-                        // Welcome banner for first load
-                        if self.messages.len() <= 1 {
-                            self.render_welcome_banner(ui, theme);
-                        }
+                    // Welcome banner for first load
+                    if self.messages.len() <= 1 {
+                        self.render_welcome_banner(ui, theme);
+                    }
 
-                        // Render all messages
-                        let msg_count = self.messages.len();
-                        // 先克隆所有消息，避免借用冲突
-                        let mut messages_clone = self.messages.clone();
-                        for (idx, message) in messages_clone.iter_mut().enumerate() {
-                            self.render_message(ui, message, theme, idx == msg_count - 1);
-                        }
-                        // 更新展开状态
-                        for i in 0..msg_count {
-                            self.messages[i].thinking_expanded =
-                                messages_clone[i].thinking_expanded;
-                        }
+                    // Render all messages
+                    let msg_count = self.messages.len();
+                    // 先克隆所有消息，避免借用冲突
+                    let mut messages_clone = self.messages.clone();
+                    for (idx, message) in messages_clone.iter_mut().enumerate() {
+                        self.render_message(ui, message, theme, idx == msg_count - 1);
+                    }
+                    // 更新展开状态
+                    for i in 0..msg_count {
+                        self.messages[i].thinking_expanded = messages_clone[i].thinking_expanded;
+                    }
 
-                        // Loading indicator
-                        if self.is_loading && !self.messages.iter().any(|m| m.is_streaming) {
-                            self.render_loading_indicator(ui, theme);
-                        }
+                    // Loading indicator
+                    if self.is_loading && !self.messages.iter().any(|m| m.is_streaming) {
+                        self.render_loading_indicator(ui, theme);
+                    }
 
-                        ui.add_space(24.0);
-                    });
-            });
+                    ui.add_space(24.0);
+                });
+        });
 
         // Input area - fixed at bottom
-        Frame::NONE
-            .fill(theme.background_darkest())
-            .show(ui, |ui| {
-                self.render_input_area(ui, theme);
-            });
+        Frame::NONE.fill(theme.background_darkest()).show(ui, |ui| {
+            self.render_input_area(ui, theme);
+        });
     }
 
     fn render_welcome_banner(&self, ui: &mut Ui, theme: &super::Theme) {
@@ -424,13 +425,67 @@ impl ChatPanel {
             }
 
             // Main content
-            let content = if message.is_streaming {
+            let content_str = if message.is_streaming {
                 format!("{}▌", message.content)
             } else {
                 message.content.clone()
             };
 
-            self.render_markdown_content(ui, &content, theme);
+            if message.content_collapsed && !message.is_streaming {
+                // Collapsed: show preview + toggle button
+                let preview_lines: Vec<&str> = message.content.lines().take(3).collect();
+                let total_lines = message.content.lines().count();
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(
+                            RichText::new(format!("▶ {} lines (collapsed)", total_lines))
+                                .size(12.0)
+                                .color(theme.muted_text_color()),
+                        )
+                        .clicked()
+                    {
+                        message.content_collapsed = false;
+                    }
+                });
+                Frame::NONE
+                    .fill(theme.surface_color())
+                    .corner_radius(CornerRadius::same(6))
+                    .inner_margin(Margin::same(12))
+                    .stroke(Stroke::new(1.0, theme.border_color()))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        for line in &preview_lines {
+                            ui.label(
+                                RichText::new(*line)
+                                    .size(14.0)
+                                    .color(theme.text_color()),
+                            );
+                        }
+                        ui.label(
+                            RichText::new(format!("... ({} lines total, click to expand)", total_lines))
+                                .size(12.0)
+                                .color(theme.muted_text_color())
+                                .italics(),
+                        );
+                    });
+            } else {
+                // Expanded: show full content with collapse button
+                if !message.is_streaming && message.content.lines().count() > 0 {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(
+                                RichText::new("▼ Expanded")
+                                    .size(12.0)
+                                    .color(theme.muted_text_color()),
+                            )
+                            .clicked()
+                        {
+                            message.content_collapsed = true;
+                        }
+                    });
+                }
+                self.render_markdown_content(ui, &content_str, theme);
+            }
 
             // Streaming cursor animation for last message
             if message.is_streaming && is_last {

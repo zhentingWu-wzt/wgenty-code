@@ -1,6 +1,6 @@
 //! Web Server Main Entry Point - Plugin Marketplace Web Interface
 
-use claude_code_rs::web::{start_server, WebServer};
+use wgenty_code::web::{server::start_server, WebServer};
 use tracing::{info, Level};
 use tracing_subscriber;
 
@@ -14,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(8080);
 
-    info!("Starting Claude Code Plugin Marketplace Web Server");
+    info!("Starting Wgenty Code Plugin Marketplace Web Server");
     info!("Server will be available at http://127.0.0.1:{}", port);
 
     start_server(port).await

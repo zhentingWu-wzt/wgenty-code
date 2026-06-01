@@ -1,0 +1,112 @@
+use ratatui::layout::{Alignment, Rect};
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::Paragraph;
+use ratatui::Frame;
+
+/// Render the wgenty welcome banner with gradient ASCII art logo.
+pub fn render(f: &mut Frame, area: Rect) {
+    let logo_lines = [
+        "  ▄   ▄   ▄▄▄   ▄▄▄▄▄  ▄   ▄  ▄▄▄▄▄  ▄   ▄",
+        "  █   █   ███   █████  █   █  █████  █   █",
+        "  █   █  █   █  █      ██  █    █    █   █",
+        "  █ █ █  █      ███    █ █ █    █     ███ ",
+        "  █ █ █  █  ██  █      █  ██    █      █  ",
+        "   █ █    ████  █████  █   █    █      █  ",
+    ];
+
+    let gradient = [
+        Color::Rgb(220, 180, 255),
+        Color::Rgb(200, 160, 240),
+        Color::Rgb(170, 130, 220),
+        Color::Rgb(140, 100, 195),
+        Color::Rgb(115, 80, 170),
+        Color::Rgb(100, 60, 150),
+    ];
+
+    let mut lines: Vec<Line> = vec![Line::raw("")];
+
+    // Gradient ASCII logo
+    for (i, logo_line) in logo_lines.iter().enumerate() {
+        lines.push(Line::from(Span::styled(
+            *logo_line,
+            Style::default()
+                .fg(gradient[i])
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        )));
+    }
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::raw("        "),
+        Span::styled(
+            "Wgenty Code",
+            Style::default()
+                .fg(Color::Rgb(200, 150, 255))
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            "· Rust Edition",
+            Style::default()
+                .fg(Color::Rgb(255, 140, 66))
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(Span::styled(
+        "           高性能 AI 编码助手",
+        Style::default().fg(Color::Rgb(147, 112, 219)),
+    )));
+    lines.push(Line::raw(""));
+
+    // Feature bar divider
+    let divider = "─".repeat(area.width.min(70) as usize);
+    lines.push(Line::from(Span::styled(
+        format!("   {}", divider),
+        Style::default().fg(Color::Rgb(80, 60, 100)),
+    )));
+    lines.push(Line::from(vec![
+        Span::raw("     "),
+        Span::styled("⚡", Style::default().fg(Color::Rgb(255, 200, 50))),
+        Span::raw(" 启动 "),
+        Span::styled(
+            "2.5x",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+        Span::raw("   "),
+        Span::styled("💾", Style::default().fg(Color::Rgb(100, 200, 255))),
+        Span::raw(" 内存 "),
+        Span::styled(
+            "-60%",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+        Span::raw("   "),
+        Span::styled("🚀", Style::default().fg(Color::Rgb(255, 140, 66))),
+        Span::raw(" 响应 "),
+        Span::styled(
+            "+40%",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(Span::styled(
+        format!("   {}", divider),
+        Style::default().fg(Color::Rgb(80, 60, 100)),
+    )));
+
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "     输入 help 查看命令 · 输入 exit 退出",
+        Style::default()
+            .fg(Color::Rgb(150, 150, 160))
+            .add_modifier(ratatui::style::Modifier::ITALIC),
+    )));
+
+    let para = Paragraph::new(Text::from(lines)).alignment(Alignment::Left);
+    f.render_widget(para, area);
+}

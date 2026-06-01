@@ -1,8 +1,8 @@
-# 🎉 Claude Code Rust 项目部署完成报告
+# 🎉 Wgenty Code Rust 项目部署完成报告
 
 **部署时间**: 2024
 **版本**: v0.1.0
-**GitHub 地址**: https://github.com/lorryjovens-hub/claude-code-rust
+**GitHub 地址**: https://github.com/lorryjovens-hub/wgenty-code-rust
 
 ---
 
@@ -28,7 +28,7 @@
 
 #### Windows (PowerShell):
 ```powershell
-irm https://raw.githubusercontent.com/lorryjovens-hub/claude-code-rust/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/lorryjovens-hub/wgenty-code-rust/master/install.ps1 | iex
 ```
 
 **特性**：
@@ -39,7 +39,7 @@ irm https://raw.githubusercontent.com/lorryjovens-hub/claude-code-rust/master/in
 
 #### Linux / macOS (Bash):
 ```bash
-curl -sSL https://raw.githubusercontent.com/lorryjovens-hub/claude-code-rust/master/install-unix.sh | bash
+curl -sSL https://raw.githubusercontent.com/lorryjovens-hub/wgenty-code-rust/master/install-unix.sh | bash
 ```
 
 **特性**：
@@ -50,7 +50,7 @@ curl -sSL https://raw.githubusercontent.com/lorryjovens-hub/claude-code-rust/mas
 
 ### 2. **从 GitHub Releases 直接下载**
 
-前往 [Releases 页面](https://github.com/lorryjovens-hub/claude-code-rust/releases) 下载预编译二进制文件。
+前往 [Releases 页面](https://github.com/lorryjovens-hub/wgenty-code-rust/releases) 下载预编译二进制文件。
 
 **优点**：
 - 无需脚本执行
@@ -59,8 +59,8 @@ curl -sSL https://raw.githubusercontent.com/lorryjovens-hub/claude-code-rust/mas
 ### 3. **从源代码编译**
 
 ```bash
-git clone https://github.com/lorryjovens-hub/claude-code-rust.git
-cd claude-code-rust
+git clone https://github.com/lorryjovens-hub/wgenty-code-rust.git
+cd wgenty-code-rust
 cargo build --release
 ```
 
@@ -70,13 +70,13 @@ cargo build --release
 
 #### 使用 Docker:
 ```bash
-docker run -it --rm claude-code-rust --version
-docker run -it --rm claude-code-rust repl
+docker run -it --rm wgenty-code-rust --version
+docker run -it --rm wgenty-code-rust repl
 ```
 
 #### 使用 Docker Compose:
 ```bash
-docker-compose run --rm claude-code-rust repl
+docker-compose run --rm wgenty-code-rust repl
 ```
 
 **镜像大小**：约 20 MB（Alpine Linux 基础）
@@ -96,9 +96,9 @@ docker-compose run --rm claude-code-rust repl
 ### 命令响应时间
 | 命令 | TypeScript | Rust | 加速倍数 |
 |------|-----------|------|----------|
-| `claude-code --version` | 145ms | 22ms | **6.6x** |
-| `claude-code --help` | 152ms | 45ms | **3.4x** |
-| `claude-code query "test"` | 520ms | 78ms | **6.7x** |
+| `wgenty-code --version` | 145ms | 22ms | **6.6x** |
+| `wgenty-code --help` | 152ms | 45ms | **3.4x** |
+| `wgenty-code query "test"` | 520ms | 78ms | **6.7x** |
 
 ---
 
@@ -262,10 +262,10 @@ Deletions: 27
 
 | 项目 | 链接 |
 |------|------|
-| **GitHub 仓库** | https://github.com/lorryjovens-hub/claude-code-rust |
-| **Releases 页面** | https://github.com/lorryjovens-hub/claude-code-rust/releases |
-| **Issues 跟踪** | https://github.com/lorryjovens-hub/claude-code-rust/issues |
-| **Discussions** | https://github.com/lorryjovens-hub/claude-code-rust/discussions |
+| **GitHub 仓库** | https://github.com/lorryjovens-hub/wgenty-code-rust |
+| **Releases 页面** | https://github.com/lorryjovens-hub/wgenty-code-rust/releases |
+| **Issues 跟踪** | https://github.com/lorryjovens-hub/wgenty-code-rust/issues |
+| **Discussions** | https://github.com/lorryjovens-hub/wgenty-code-rust/discussions |
 
 ---
 
@@ -312,7 +312,7 @@ Deletions: 27
 
 ## 🎉 总结
 
-Claude Code Rust 项目已成功部署到 GitHub，包含：
+Wgenty Code Rust 项目已成功部署到 GitHub，包含：
 - ✅ 完整的 Rust 源代码
 - ✅ 全面的文档体系
 - ✅ 多种安装方式

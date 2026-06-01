@@ -67,7 +67,10 @@ impl Tool for WriteStdinTool {
             .await?;
 
         let mut metadata = HashMap::new();
-        metadata.insert("session_id".to_string(), serde_json::json!(chunk.session_id));
+        metadata.insert(
+            "session_id".to_string(),
+            serde_json::json!(chunk.session_id),
+        );
         metadata.insert("stdout".to_string(), serde_json::json!(chunk.stdout));
         metadata.insert("stderr".to_string(), serde_json::json!(chunk.stderr));
         metadata.insert("finished".to_string(), serde_json::json!(chunk.finished));

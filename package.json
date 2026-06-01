@@ -1,0 +1,11 @@
+{
+  "name": "wgenty-code-rust",
+  "private": true,
+  "workspaces": [
+    "packages/core",
+    "packages/cli"
+  ],
+  "devDependencies": {
+    "@types/node": "^25.9.1"
+  }
+}

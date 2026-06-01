@@ -96,7 +96,7 @@ impl LocaleLoader {
         Self::insert_messages(
             locale,
             &[
-                ("app.name", "Claude Code"),
+                ("app.name", "Wgenty Code"),
                 ("app.description", "AI-powered coding assistant"),
                 ("app.version", "Version {version}"),
                 ("menu.file", "File"),
@@ -120,7 +120,7 @@ impl LocaleLoader {
                 ("status.loading", "Loading..."),
                 ("status.saving", "Saving..."),
                 ("status.done", "Done"),
-                ("welcome.message", "Welcome to Claude Code!"),
+                ("welcome.message", "Welcome to Wgenty Code!"),
                 ("welcome.user", "Welcome, {name}!"),
                 ("plugin.install", "Install"),
                 ("plugin.uninstall", "Uninstall"),

@@ -20,13 +20,13 @@
 ```bash
 # 方式 1: 直接下载预编译二进制
 # Windows, Linux, macOS 可用
-curl -fsSL https://github.com/yourusername/claude-code-rust/releases/download/v0.1.0/claude-code-rust
+curl -fsSL https://github.com/yourusername/wgenty-code-rust/releases/download/v0.1.0/wgenty-code-rust
 
 # 方式 2: 从源代码编译
-git clone https://github.com/yourusername/claude-code-rust
-cd claude-code-rust
+git clone https://github.com/yourusername/wgenty-code-rust
+cd wgenty-code-rust
 cargo build --release
-./target/release/claude_code_rs --version
+./target/release/wgenty_code --version
 ```
 
 ### 2️⃣ 配置迁移
@@ -36,29 +36,29 @@ cargo build --release
 # 放在以下位置：
 
 # Windows
-C:\Users\YourName\AppData\Local\claude-code-rust\config.toml
+C:\Users\YourName\AppData\Local\wgenty-code-rust\config.toml
 
 # Linux/macOS
-~/.config/claude-code-rust/config.toml
+~/.config/wgenty-code-rust/config.toml
 
 # 或通过环境变量
-export CLAUDE_CODE_CONFIG=~/my-config.toml
+export WGENTY_CODE_CONFIG=~/my-config.toml
 ```
 
 ### 3️⃣ 验证安装
 
 ```bash
 # 显示版本信息 (快 2.5 倍!)
-claude-code-rs --version
+wgenty-code-rs --version
 
 # 显示帮助信息
-claude-code-rs --help
+wgenty-code-rs --help
 
 # 启动 REPL
-claude-code-rs
+wgenty-code-rs
 
 # 执行单个查询
-claude-code-rs "What is Rust?"
+wgenty-code-rs "What is Rust?"
 ```
 
 ---
@@ -71,33 +71,33 @@ claude-code-rs "What is Rust?"
 
 ```bash
 # 基本命令 (2.5x 更快)
-claude-code-rs --version              # 63ms (原: 158ms)
-claude-code-rs --help                 # 73ms (原: 176ms)
-claude-code-rs "Your query"           # 完全兼容
+wgenty-code-rs --version              # 63ms (原: 158ms)
+wgenty-code-rs --help                 # 73ms (原: 176ms)
+wgenty-code-rs "Your query"           # 完全兼容
 
 # 配置命令 (25x 更快!)
-claude-code-rs config show            # 6ms (原: 150ms)
-claude-code-rs config set key value   # 立即响应
-claude-code-rs config get key         # <1ms
+wgenty-code-rs config show            # 6ms (原: 150ms)
+wgenty-code-rs config set key value   # 立即响应
+wgenty-code-rs config get key         # <1ms
 
 # 项目命令
-claude-code-rs init                   # 初始化项目
-claude-code-rs init --template web    # 使用模板
-claude-code-rs project status         # 查看项目状态
+wgenty-code-rs init                   # 初始化项目
+wgenty-code-rs init --template web    # 使用模板
+wgenty-code-rs project status         # 查看项目状态
 
 # REPL 模式 (100x 更快!)
-claude-code-rs repl                   # 交互式命令行
+wgenty-code-rs repl                   # 交互式命令行
 # 输入任何命令，<1ms 响应
 
 # MCP 服务器
-claude-code-rs mcp start              # 启动 MCP 服务器
-claude-code-rs mcp tools              # 列出可用工具
-claude-code-rs mcp resources          # 列出资源
+wgenty-code-rs mcp start              # 启动 MCP 服务器
+wgenty-code-rs mcp tools              # 列出可用工具
+wgenty-code-rs mcp resources          # 列出资源
 
 # 插件系统
-claude-code-rs plugin list            # 列出插件
-claude-code-rs plugin install <url>   # 安装插件
-claude-code-rs plugin uninstall <id>  # 卸载插件
+wgenty-code-rs plugin list            # 列出插件
+wgenty-code-rs plugin install <url>   # 安装插件
+wgenty-code-rs plugin uninstall <id>  # 卸载插件
 ```
 
 ### 📊 命令执行性能对比
@@ -118,7 +118,7 @@ claude-code-rs plugin uninstall <id>  # 卸载插件
 
 #### TypeScript 版本配置
 ```toml
-# ~/.config/claude-code/config.toml
+# ~/.config/wgenty-code/config.toml
 [api]
 provider = "anthropic"
 api_key = "sk-ant-..."
@@ -131,7 +131,7 @@ language = "zh-CN"
 
 #### ✅ Rust 版本 (完全兼容)
 ```toml
-# ~/.config/claude-code-rust/config.toml
+# ~/.config/wgenty-code-rust/config.toml
 # 使用完全相同的格式！
 
 [api]
@@ -148,14 +148,14 @@ language = "zh-CN"
 
 ```bash
 # 步骤 1: 备份旧配置
-cp ~/.config/claude-code/config.toml ~/.config/claude-code/config.toml.bak
+cp ~/.config/wgenty-code/config.toml ~/.config/wgenty-code/config.toml.bak
 
 # 步骤 2: 复制到 Rust 版本位置
-mkdir -p ~/.config/claude-code-rust
-cp ~/.config/claude-code/config.toml ~/.config/claude-code-rust/
+mkdir -p ~/.config/wgenty-code-rust
+cp ~/.config/wgenty-code/config.toml ~/.config/wgenty-code-rust/
 
 # 步骤 3: 验证配置
-claude-code-rs config show
+wgenty-code-rs config show
 
 # 步骤 4: (可选) 完全切换到 Rust 版本
 # 更新环境变量或 PATH，使用 Rust 版本作为默认
@@ -187,7 +187,7 @@ args = ["--port", "3000"]
 
 # 插件配置
 [plugins]
-plugin_dir = "~/.config/claude-code/plugins"
+plugin_dir = "~/.config/wgenty-code/plugins"
 auto_load = true
 
 # 缓存设置
@@ -223,14 +223,14 @@ package.json       →    Cargo.toml (同时支持两种)
 # Rust 版本通过 WASM 或 FFI 自动加载
 
 # 你的 Node 插件
-~/.config/claude-code/plugins/my-plugin/
+~/.config/wgenty-code/plugins/my-plugin/
 ├── package.json
 ├── package-lock.json
 ├── dist/
 └── node_modules/
 
 # Rust 版本自动识别并加载！
-claude-code-rs plugin list
+wgenty-code-rs plugin list
 # 输出: my-plugin (Type: Node.js Adapter)
 ```
 
@@ -238,7 +238,7 @@ claude-code-rs plugin list
 
 ```rust
 // plugin-src/lib.rs
-use claude_code_sdk::prelude::*;
+use wgenty_code_sdk::prelude::*;
 
 pub struct MyPlugin {
     config: PluginConfig,
@@ -273,23 +273,23 @@ pub extern "C" fn create_plugin() -> Box<dyn Plugin> {
 
 ```bash
 # 从 GitHub 安装
-claude-code-rs plugin install \
-  https://github.com/user/claude-code-plugin-example
+wgenty-code-rs plugin install \
+  https://github.com/user/wgenty-code-plugin-example
 
 # 从本地文件安装
-claude-code-rs plugin install ./my-plugin
+wgenty-code-rs plugin install ./my-plugin
 
 # 列出已安装插件
-claude-code-rs plugin list
+wgenty-code-rs plugin list
 
 # 查看插件详情
-claude-code-rs plugin info my-plugin
+wgenty-code-rs plugin info my-plugin
 
 # 卸载插件
-claude-code-rs plugin uninstall my-plugin
+wgenty-code-rs plugin uninstall my-plugin
 
 # 更新插件
-claude-code-rs plugin update my-plugin
+wgenty-code-rs plugin update my-plugin
 ```
 
 ---
@@ -302,8 +302,8 @@ claude-code-rs plugin update my-plugin
 
 ```bash
 # 自动迁移
-cp ~/.config/claude-code/config.toml ~/.config/claude-code-rust/
-claude-code-rs config show  # 即可查看
+cp ~/.config/wgenty-code/config.toml ~/.config/wgenty-code-rust/
+wgenty-code-rs config show  # 即可查看
 ```
 
 ### Q2: 现有插件必须重写吗？
@@ -320,12 +320,12 @@ claude-code-rs config show  # 即可查看
 
 ```bash
 # 会话历史
-~/.local/share/claude-code/    # 两版本共享
-~/.local/share/claude-code-rust/  # 完全兼容
+~/.local/share/wgenty-code/    # 两版本共享
+~/.local/share/wgenty-code-rust/  # 完全兼容
 
 # 项目配置
-./.claude-code.json            # 自动识别
-./.claude-code-rust.json       # 优先使用 (可选)
+./.wgenty-code.json            # 自动识别
+./.wgenty-code-rust.json       # 优先使用 (可选)
 ```
 
 ### Q4: 如何卸载 TypeScript 版本？
@@ -334,17 +334,17 @@ claude-code-rs config show  # 即可查看
 
 ```bash
 # 步骤 1: 备份配置 (如果需要)
-cp -r ~/.config/claude-code ~/.backup/
+cp -r ~/.config/wgenty-code ~/.backup/
 
 # 步骤 2: 可选 - 卸载 npm 包
-npm uninstall -g claude-code
+npm uninstall -g wgenty-code
 
 # 步骤 3: 安装 Rust 版本 (如未安装)
 curl -fsSL https://...
 
 # 步骤 4: (可选) 删除旧文件
-rm -rf ~/.config/claude-code
-rm -rf ~/.local/share/claude-code
+rm -rf ~/.config/wgenty-code
+rm -rf ~/.local/share/wgenty-code
 ```
 
 ### Q5: 性能真的有那么快吗？
@@ -353,11 +353,11 @@ rm -rf ~/.local/share/claude-code
 
 ```bash
 # 你可以自己测试：
-time claude-code-rs config show    # Rust: ~6ms
-time claude-code config show       # Node: ~150ms
+time wgenty-code-rs config show    # Rust: ~6ms
+time wgenty-code config show       # Node: ~150ms
 
 # 或者批量测试：
-for i in {1..100}; do time claude-code-rs config show; done
+for i in {1..100}; do time wgenty-code-rs config show; done
 # Rust 版本: 总计 600ms
 # Node 版本: 总计 15 秒 (即使带缓存)
 ```
@@ -369,16 +369,16 @@ for i in {1..100}; do time claude-code-rs config show; done
 ```dockerfile
 # Dockerfile
 FROM scratch
-COPY target/release/claude_code_rs /app/claude-code-rs
-ENTRYPOINT ["/app/claude-code-rs"]
+COPY target/release/wgenty_code /app/wgenty-code-rs
+ENTRYPOINT ["/app/wgenty-code-rs"]
 
 # 构建和运行
-docker build -t claude-code-rs .
-docker run claude-code-rs --version  # 瞬间启动！
+docker build -t wgenty-code-rs .
+docker run wgenty-code-rs --version  # 瞬间启动！
 
 # 镜像大小仅 5MB!
-docker images | grep claude-code-rs
-# claude-code-rs    latest    20b123f45678    5.07 MB
+docker images | grep wgenty-code-rs
+# wgenty-code-rs    latest    20b123f45678    5.07 MB
 ```
 
 ### Q7: 环境变量设置？
@@ -392,12 +392,12 @@ export CLAUDE_MODEL="claude-3-5-sonnet-20241022"
 export CLAUDE_API_PROVIDER="anthropic"
 
 # 其他设置
-export CLAUDE_CODE_CONFIG="~/.config/custom.toml"
+export WGENTY_CODE_CONFIG="~/.config/custom.toml"
 export CLAUDE_LANGUAGE="zh-CN"
 export CLAUDE_THEME="dark"
 
 # 验证
-claude-code-rs config show
+wgenty-code-rs config show
 ```
 
 ---
@@ -422,44 +422,44 @@ claude-code-rs config show
 
 ## 疑难排解
 
-### 问题: "找不到 claude-code-rs 命令"
+### 问题: "找不到 wgenty-code-rs 命令"
 
 ```bash
 # 解决方案 1: 添加到 PATH
-export PATH="$PATH:/path/to/claude-code-rust"
+export PATH="$PATH:/path/to/wgenty-code-rust"
 
 # 解决方案 2: 创建符号链接
-sudo ln -s /path/to/claude_code_rs /usr/local/bin/claude-code-rs
+sudo ln -s /path/to/wgenty_code /usr/local/bin/wgenty-code-rs
 
 # 解决方案 3: 使用绝对路径
-/path/to/claude_code_rs --version
+/path/to/wgenty_code --version
 ```
 
 ### 问题: "配置文件未找到"
 
 ```bash
 # 检查配置位置
-echo $CLAUDE_CODE_CONFIG  # 查看环境变量
+echo $WGENTY_CODE_CONFIG  # 查看环境变量
 
 # 检查默认位置
-ls -la ~/.config/claude-code-rust/
+ls -la ~/.config/wgenty-code-rust/
 
 # 创建配置目录
-mkdir -p ~/.config/claude-code-rust
-cp default-config.toml ~/.config/claude-code-rust/config.toml
+mkdir -p ~/.config/wgenty-code-rust
+cp default-config.toml ~/.config/wgenty-code-rust/config.toml
 ```
 
 ### 问题: "插件加载失败"
 
 ```bash
 # 启用调试模式
-RUST_LOG=debug claude-code-rs plugin list
+RUST_LOG=debug wgenty-code-rs plugin list
 
 # 检查插件目录
-ls -la ~/.config/claude-code-rust/plugins/
+ls -la ~/.config/wgenty-code-rust/plugins/
 
 # 验证插件格式
-claude-code-rs plugin verify ./my-plugin
+wgenty-code-rs plugin verify ./my-plugin
 ```
 
 ---
@@ -480,5 +480,5 @@ claude-code-rs plugin verify ./my-plugin
 ---
 
 **最后更新**: 2024-2025
-**维护者**: Claude Code Rust Team
+**维护者**: Wgenty Code Rust Team
 **反馈**: 如有问题，欢迎提交 Issue 或 Pull Request

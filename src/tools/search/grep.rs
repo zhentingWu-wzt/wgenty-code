@@ -60,7 +60,12 @@ impl GrepTool {
 
             for (line_num, line) in content.lines().enumerate() {
                 if regex.is_match(line) {
-                    matches.push(format!("{}:{}: {}", entry_path.display(), line_num + 1, line));
+                    matches.push(format!(
+                        "{}:{}: {}",
+                        entry_path.display(),
+                        line_num + 1,
+                        line
+                    ));
                     if matches.len() >= max_results {
                         truncated = true;
                         break;

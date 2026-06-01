@@ -1,8 +1,8 @@
-//! Theme System - Claude Code UI themes
+//! Theme System - Wgenty Code UI themes
 //!
 //! Based on Claude.ai design system with warm orange/brown accent colors
 
-use egui::{Color32, FontFamily, FontId, CornerRadius, Stroke, TextStyle, Visuals};
+use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Visuals};
 
 /// Application theme
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

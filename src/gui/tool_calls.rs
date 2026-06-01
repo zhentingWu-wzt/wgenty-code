@@ -1,13 +1,13 @@
 //! Tool Call Visualization - Display tool calls in chat interface
 //!
-//! Recreates Claude Code's tool call cards with:
+//! Recreates Wgenty Code's tool call cards with:
 //! - Expandable/collapsible details
 //! - File read/write visualization
 //! - Bash command execution display
 //! - File diff viewer
 //! - Tool result display
 
-use egui::{Align, Color32, Frame, Layout, Margin, RichText, CornerRadius, Stroke, Ui};
+use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke, Ui};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A tool call instance
@@ -49,14 +49,20 @@ impl ToolCall {
     }
 
     pub fn with_result(mut self, result: impl Into<String>) -> Self {
-        self.result = Some(result.into());
+        let result_str = result.into();
+        let line_count = result_str.lines().count();
+        self.result = Some(result_str);
         self.status = ToolCallStatus::Success;
+        self.expanded = line_count <= 10;
         self
     }
 
     pub fn with_error(mut self, error: impl Into<String>) -> Self {
-        self.result = Some(error.into());
+        let error_str = error.into();
+        let line_count = error_str.lines().count();
+        self.result = Some(error_str);
         self.status = ToolCallStatus::Error;
+        self.expanded = line_count <= 10;
         self
     }
 }
@@ -244,15 +250,8 @@ impl ToolCallManager {
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
 
-                                // Truncate if too long
-                                let display_result = if result.len() > 2000 {
-                                    format!("{}... (truncated)", &result[..2000])
-                                } else {
-                                    result.clone()
-                                };
-
                                 ui.monospace(
-                                    RichText::new(display_result).color(result_color).size(11.0),
+                                    RichText::new(result).color(result_color).size(11.0),
                                 );
                             });
                     }

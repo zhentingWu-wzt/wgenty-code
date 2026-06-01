@@ -1,5 +1,7 @@
 //! Application State Module
 
+pub mod agent_phase;
+
 use crate::config::Settings;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -190,7 +192,7 @@ impl Default for Conversation {
 
 impl Default for ToolRegistryState {
     fn default() -> Self {
-        let registry = crate::tools::ToolRegistry::new();
+        let registry = crate::tools::ToolRegistry::new().with_settings(&crate::config::Settings::default());
         let tools = registry
             .list()
             .into_iter()

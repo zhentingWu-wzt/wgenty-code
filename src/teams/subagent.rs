@@ -1,7 +1,7 @@
 //! Agents Service - Built-in agent system
 //!
 //! Built-in agents for various tasks including:
-//! - claudeCodeGuideAgent: Claude Code guidance
+//! - wgentyCodeGuideAgent: Wgenty Code guidance
 //! - exploreAgent: Codebase exploration
 //! - generalPurposeAgent: General purpose tasks
 //! - planAgent: Planning and task breakdown
@@ -18,7 +18,7 @@ use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum AgentType {
-    ClaudeCodeGuide,
+    WgentyCodeGuide,
     Explore,
     GeneralPurpose,
     Plan,
@@ -29,7 +29,7 @@ pub enum AgentType {
 impl std::fmt::Display for AgentType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AgentType::ClaudeCodeGuide => write!(f, "claude-code-guide"),
+            AgentType::WgentyCodeGuide => write!(f, "wgenty-code-guide"),
             AgentType::Explore => write!(f, "explore"),
             AgentType::GeneralPurpose => write!(f, "general-purpose"),
             AgentType::Plan => write!(f, "plan"),
@@ -105,18 +105,18 @@ impl AgentsService {
         let mut agents = HashMap::new();
 
         agents.insert(
-            AgentType::ClaudeCodeGuide,
+            AgentType::WgentyCodeGuide,
             AgentDefinition {
-                agent_type: AgentType::ClaudeCodeGuide,
-                name: "Claude Code Guide".to_string(),
-                description: "Guides users through Claude Code features and best practices".to_string(),
-                when_to_use: "When you need help understanding Claude Code features, commands, or workflows".to_string(),
+                agent_type: AgentType::WgentyCodeGuide,
+                name: "Wgenty Code Guide".to_string(),
+                description: "Guides users through Wgenty Code features and best practices".to_string(),
+                when_to_use: "When you need help understanding Wgenty Code features, commands, or workflows".to_string(),
                 tools: vec!["file_read".to_string(), "search".to_string()],
                 model: "sonnet".to_string(),
-                system_prompt: r#"You are a Claude Code Guide agent. Your role is to help users understand and effectively use Claude Code.
+                system_prompt: r#"You are a Wgenty Code Guide agent. Your role is to help users understand and effectively use Wgenty Code.
 
 Key responsibilities:
-1. Explain Claude Code features and capabilities
+1. Explain Wgenty Code features and capabilities
 2. Guide users through common workflows
 3. Provide best practices and tips
 4. Help troubleshoot issues

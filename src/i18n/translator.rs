@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn test_translate() {
         let translator = Translator::new("en").unwrap();
-        assert_eq!(translator.translate("app.name"), "Claude Code");
+        assert_eq!(translator.translate("app.name"), "Wgenty Code");
     }
 
     #[test]

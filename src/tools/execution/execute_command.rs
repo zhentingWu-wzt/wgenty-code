@@ -1,20 +1,37 @@
-//! Execute Command Tool
+//! Execute Command Tool — runs shell commands with sandbox isolation.
 
+use crate::sandbox::{SandboxConfig, SandboxManager, SandboxProfile, SecurityLevel};
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
-use serde_json;
 
-pub struct ExecuteCommandTool;
-
-impl Default for ExecuteCommandTool {
-    fn default() -> Self {
-        Self::new()
-    }
+pub struct ExecuteCommandTool {
+    sandbox: Option<std::sync::Arc<SandboxManager>>,
 }
 
 impl ExecuteCommandTool {
     pub fn new() -> Self {
-        Self
+        Self { sandbox: None }
+    }
+
+    /// Create with sandbox enabled.
+    pub fn with_sandbox(sandbox: std::sync::Arc<SandboxManager>) -> Self {
+        Self {
+            sandbox: Some(sandbox),
+        }
+    }
+
+    /// Build a default sandbox profile for the current working directory.
+    fn default_profile(&self) -> SandboxProfile {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        SandboxConfig::builder(cwd)
+            .security_level(SecurityLevel::Minimal)
+            .build()
+    }
+}
+
+impl Default for ExecuteCommandTool {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -25,7 +42,7 @@ impl Tool for ExecuteCommandTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command"
+        "Execute a shell command (sandboxed when available)"
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -51,11 +68,48 @@ impl Tool for ExecuteCommandTool {
             code: Some("missing_parameter".to_string()),
         })?;
 
-        let timeout = input["timeout"].as_u64().unwrap_or(60);
+        let user_timeout = input["timeout"].as_u64().unwrap_or(60);
 
-        // Execute command using tokio::process
+        // Try sandbox execution first; fall back to direct execution
+        if let Some(ref sb) = self.sandbox {
+            let mut profile = self.default_profile();
+            profile.resources.max_wall_seconds = user_timeout;
+
+            match sb.execute(command, &profile).await {
+                Ok(output) => {
+                    if output.exit_code != 0 {
+                        return Err(ToolError {
+                            message: format!(
+                                "exit code: {}\nstdout:\n{}\nstderr:\n{}",
+                                output.exit_code, output.stdout, output.stderr
+                            ),
+                            code: if output.killed_by_sandbox {
+                                Some("sandbox_killed".to_string())
+                            } else {
+                                Some("non_zero_exit".to_string())
+                            },
+                        });
+                    }
+                    return Ok(ToolOutput {
+                        output_type: "text".to_string(),
+                        content: output.stdout,
+                        metadata: std::collections::HashMap::new(),
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Sandbox execution failed ({}): {}. Falling back to direct execution.",
+                        sb.status().backend_name,
+                        e
+                    );
+                    // Fall through to direct execution
+                }
+            }
+        }
+
+        // Direct execution (fallback)
         let output = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout),
+            std::time::Duration::from_secs(user_timeout),
             tokio::process::Command::new("sh")
                 .arg("-c")
                 .arg(command)
@@ -68,15 +122,19 @@ impl Tool for ExecuteCommandTool {
                 let stdout = String::from_utf8_lossy(&result.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&result.stderr).to_string();
 
-                let content = if result.status.success() {
-                    stdout
-                } else {
-                    format!("Error: {}\n{}", result.status, stderr)
-                };
+                if !result.status.success() {
+                    return Err(ToolError {
+                        message: format!(
+                            "exit code: {}\nstdout:\n{}\nstderr:\n{}",
+                            result.status, stdout, stderr
+                        ),
+                        code: Some("non_zero_exit".to_string()),
+                    });
+                }
 
                 Ok(ToolOutput {
                     output_type: "text".to_string(),
-                    content,
+                    content: stdout,
                     metadata: std::collections::HashMap::new(),
                 })
             }

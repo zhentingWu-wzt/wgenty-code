@@ -1,6 +1,6 @@
-# Claude Code Rust 安装指南
+# Wgenty Code Rust 安装指南
 
-本指南将帮助您通过命令行安装和配置 Claude Code Rust 版本。
+本指南将帮助您通过命令行安装和配置 Wgenty Code Rust 版本。
 
 ## 系统要求
 
@@ -13,8 +13,8 @@
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/lorryjovens-hub/claude-code-rust
-cd claude-code-rust
+git clone https://github.com/lorryjovens-hub/wgenty-code-rust
+cd wgenty-code-rust
 ```
 
 ### 2. 运行安装脚本
@@ -32,7 +32,7 @@ Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
 ```powershell
 # 使用 PowerShell 运行以下命令
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-.\scripts\install-windows.ps1 -InstallDir "D:\claude-code\install"
+.\scripts\install-windows.ps1 -InstallDir "D:\wgenty-code\install"
 ```
 
 #### Linux / macOS (Bash)
@@ -65,11 +65,11 @@ cargo build --release
 ##### Windows
 ```powershell
 # 创建安装目录
-$installDir = "$env:USERPROFILE\.claude-code\bin"
+$installDir = "$env:USERPROFILE\.wgenty-code\bin"
 New-Item -ItemType Directory -Path $installDir -Force
 
 # 复制可执行文件
-Copy-Item ".\target\release\claude-code.exe" "$installDir\claude-code.exe"
+Copy-Item ".\target\release\wgenty-code.exe" "$installDir\wgenty-code.exe"
 
 # 添加到 PATH
 $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
@@ -81,16 +81,16 @@ if (-not $currentPath.Contains($installDir)) {
 ##### Linux / macOS
 ```bash
 # 创建安装目录
-mkdir -p ~/.claude-code/bin
+mkdir -p ~/.wgenty-code/bin
 
 # 复制可执行文件
-cp ./target/release/claude-code ~/.claude-code/bin/
-chmod +x ~/.claude-code/bin/claude-code
+cp ./target/release/wgenty-code ~/.wgenty-code/bin/
+chmod +x ~/.wgenty-code/bin/wgenty-code
 
 # 添加到 PATH
-echo "export PATH=\"$HOME/.claude-code/bin:\$PATH\"" >> ~/.bashrc
+echo "export PATH=\"$HOME/.wgenty-code/bin:\$PATH\"" >> ~/.bashrc
 # 或对于 zsh
-# echo "export PATH=\"$HOME/.claude-code/bin:\$PATH\"" >> ~/.zshrc
+# echo "export PATH=\"$HOME/.wgenty-code/bin:\$PATH\"" >> ~/.zshrc
 ```
 
 ## 配置
@@ -99,32 +99,32 @@ echo "export PATH=\"$HOME/.claude-code/bin:\$PATH\"" >> ~/.bashrc
 
 ```bash
 # 设置 API 密钥
-claude-code config set api_key "your-api-key"
+wgenty-code config set api_key "your-api-key"
 
 # 设置 API 基础 URL
-claude-code config set base_url "https://api.deepseek.com"
+wgenty-code config set base_url "https://api.deepseek.com"
 
 # 设置模型
-claude-code config set model "deepseek-reasoner"
+wgenty-code config set model "deepseek-reasoner"
 ```
 
 ### 验证配置
 
 ```bash
-claude-code config list
+wgenty-code config list
 ```
 
 ## 测试安装
 
 ```bash
 # 测试基本功能
-claude-code query --prompt "Hello!"
+wgenty-code query --prompt "Hello!"
 
 # 启动交互模式
-claude-code repl
+wgenty-code repl
 
 # 查看帮助信息
-claude-code --help
+wgenty-code --help
 ```
 
 ## 升级
@@ -146,7 +146,7 @@ claude-code --help
 ### 手动升级
 
 ```bash
-cd claude-code-rust
+cd wgenty-code-rust
 git pull
 cargo build --release
 # 然后重新复制可执行文件到安装目录
@@ -158,28 +158,28 @@ cargo build --release
 
 ```powershell
 # 删除安装目录
-Remove-Item -Path "$env:USERPROFILE\.claude-code" -Recurse -Force
+Remove-Item -Path "$env:USERPROFILE\.wgenty-code" -Recurse -Force
 
 # 从 PATH 中移除
 $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-$newPath = $currentPath -replace "$env:USERPROFILE\\.claude-code\\bin;?", ""
+$newPath = $currentPath -replace "$env:USERPROFILE\\.wgenty-code\\bin;?", ""
 [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
 
 # 删除配置目录
-Remove-Item -Path "$env:USERPROFILE\.config\claude-code" -Recurse -Force
+Remove-Item -Path "$env:USERPROFILE\.config\wgenty-code" -Recurse -Force
 ```
 
 ### Linux / macOS
 
 ```bash
 # 删除安装目录
-rm -rf ~/.claude-code
+rm -rf ~/.wgenty-code
 
 # 从 PATH 中移除
-# 编辑 ~/.bashrc 或 ~/.zshrc 文件，删除包含 "~/.claude-code/bin" 的行
+# 编辑 ~/.bashrc 或 ~/.zshrc 文件，删除包含 "~/.wgenty-code/bin" 的行
 
 # 删除配置目录
-rm -rf ~/.config/claude-code
+rm -rf ~/.config/wgenty-code
 ```
 
 ## 故障排除
@@ -206,10 +206,10 @@ rm -rf ~/.config/claude-code
 
 ```bash
 # 设置详细日志
-RUST_LOG=claude_code=debug claude-code query --prompt "Hello!"
+RUST_LOG=wgenty_code=debug wgenty-code query --prompt "Hello!"
 ```
 
 ## 联系方式
 
 如果您遇到任何问题，请在 GitHub 仓库中创建 issue：
-https://github.com/lorryjovens-hub/claude-code-rust/issues
+https://github.com/lorryjovens-hub/wgenty-code-rust/issues

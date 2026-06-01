@@ -1,4 +1,6 @@
 use crate::api::ChatMessage;
+use crate::guardian::{Guardian, GuardianDecision};
+use crate::hooks::{HookEvent, HookManager};
 use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
 use crate::tools::ToolRegistry;
 use std::collections::HashSet;
@@ -9,6 +11,8 @@ pub struct ToolExecutor {
     registry: Arc<ToolRegistry>,
     policy: ToolPermissionPolicy,
     session_rules: Arc<RwLock<HashSet<String>>>,
+    hook_manager: Arc<HookManager>,
+    guardian: Guardian,
 }
 
 impl ToolExecutor {
@@ -17,16 +21,21 @@ impl ToolExecutor {
             registry,
             policy,
             session_rules: Arc::new(RwLock::new(HashSet::new())),
+            hook_manager: Arc::new(HookManager::default()),
+            guardian: Guardian::default(),
         }
+    }
+
+    pub fn with_hooks(mut self, hook_manager: Arc<HookManager>) -> Self {
+        self.hook_manager = hook_manager;
+        self
     }
 
     pub fn tool_definitions(&self) -> Vec<crate::api::ToolDefinition> {
         self.registry
             .list()
             .into_iter()
-            .map(|t| {
-                crate::api::ToolDefinition::new(t.name(), t.description(), t.input_schema())
-            })
+            .map(|t| crate::api::ToolDefinition::new(t.name(), t.description(), t.input_schema()))
             .collect()
     }
 
@@ -51,7 +60,34 @@ impl ToolExecutor {
         self.session_rules.write().await.insert(rule);
     }
 
+    /// Remove an approved session rule (for "allow once" flow).
+    pub async fn unapprove_rule(&self, rule: &str) {
+        self.session_rules.write().await.remove(rule);
+    }
+
     /// Execute a tool call directly (policy already passed).
+    /// Run a guardian security check before executing a high-risk tool.
+    /// Returns Some(decision) if the tool was blocked by guardian.
+    pub fn guardian_check(&self, tool_name: &str, input: &serde_json::Value) -> Option<GuardianDecision> {
+        if tool_name != "execute_command" && tool_name != "exec_command" {
+            return None;
+        }
+        if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
+            let decision = self.guardian.check(tool_name, cmd);
+            if !decision.allowed {
+                return Some(decision);
+            }
+            if decision.requires_approval {
+                tracing::warn!(
+                    risk = ?decision.risk_level,
+                    tool = tool_name,
+                    "Guardian flagged command for approval"
+                );
+            }
+        }
+        None
+    }
+
     pub async fn execute_tool_call(
         &self,
         tool_call_id: &str,
@@ -78,5 +114,61 @@ impl ToolExecutor {
         };
 
         ChatMessage::tool(tool_call_id, content)
+    }
+
+    /// Execute a tool call with Pre/Post hooks wrapping execution.
+    ///
+    /// PreToolUse hooks run before execution; if any hook returns
+    /// `{ "continue_execution": false }` the tool call is blocked.
+    /// PostToolUse hooks run after execution and cannot block.
+    pub async fn execute_with_hooks(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+        args: serde_json::Value,
+        session_id: Option<&str>,
+    ) -> ChatMessage {
+        // PreToolUse hook
+        let pre_ctx = HookManager::pre_tool_context(tool_name, &args, session_id);
+        let pre_outcomes = self
+            .hook_manager
+            .fire(&HookEvent::PreToolUse, &pre_ctx)
+            .await;
+
+        // Check if any hook blocked execution
+        for outcome in &pre_outcomes {
+            if outcome.blocked {
+                return ChatMessage::tool(
+                    tool_call_id,
+                    &format!("Tool '{}' blocked by hook: {}", tool_name, outcome.output),
+                );
+            }
+        }
+
+        // Execute the tool
+        let result = self.registry.execute(tool_name, args.clone()).await;
+        let content = match &result {
+            Ok(r) => serde_json::json!({
+                "success": true,
+                "output_type": r.output_type,
+                "content": r.content,
+                "metadata": r.metadata
+            })
+            .to_string(),
+            Err(e) => serde_json::json!({
+                "success": false,
+                "error": {"message": e.message, "code": e.code}
+            })
+            .to_string(),
+        };
+
+        // PostToolUse hook
+        let post_ctx = HookManager::post_tool_context(tool_name, &args, &content, session_id);
+        let _post_outcomes = self
+            .hook_manager
+            .fire(&HookEvent::PostToolUse, &post_ctx)
+            .await;
+
+        ChatMessage::tool(tool_call_id, &content)
     }
 }

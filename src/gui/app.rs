@@ -11,7 +11,7 @@ use super::{
 };
 
 /// Main application state
-pub struct ClaudeCodeApp {
+pub struct WgentyCodeApp {
     theme: Theme,
     sidebar: Sidebar,
     chat_panel: ChatPanel,
@@ -32,7 +32,7 @@ pub struct ClaudeCodeApp {
     pending_message_id: Option<String>,
 }
 
-impl Default for ClaudeCodeApp {
+impl Default for WgentyCodeApp {
     fn default() -> Self {
         Self {
             theme: Theme::Dark,
@@ -52,7 +52,7 @@ impl Default for ClaudeCodeApp {
     }
 }
 
-impl ClaudeCodeApp {
+impl WgentyCodeApp {
     /// Create a new application instance
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (message_tx, message_rx) = tokio::sync::mpsc::channel(100);
@@ -377,8 +377,41 @@ impl ClaudeCodeApp {
     }
 }
 
-impl eframe::App for ClaudeCodeApp {
+impl eframe::App for WgentyCodeApp {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+        // Keyboard shortcuts (global)
+        ctx.input(|i| {
+            if i.key_pressed(egui::Key::E) && i.modifiers.ctrl && !i.modifiers.shift {
+                // Ctrl+E: toggle collapse all messages
+                let any_expanded = self.chat_panel.messages.iter().any(|m| {
+                    !m.content_collapsed || !m.thinking_expanded
+                        || m.tool_calls.iter().any(|tc| tc.expanded)
+                });
+                let new_state = any_expanded;
+                for msg in &mut self.chat_panel.messages {
+                    msg.content_collapsed = new_state;
+                    msg.thinking_expanded = !new_state;
+                    for tc in &mut msg.tool_calls {
+                        tc.expanded = !new_state;
+                    }
+                }
+            }
+            if i.key_pressed(egui::Key::O) && i.modifiers.ctrl && !i.modifiers.shift {
+                // Ctrl+O: toggle collapse latest message only
+                if let Some(last) = self.chat_panel.messages.last_mut() {
+                    let any_expanded = !last.content_collapsed
+                        || !last.thinking_expanded
+                        || last.tool_calls.iter().any(|tc| tc.expanded);
+                    let new_state = any_expanded;
+                    last.content_collapsed = new_state;
+                    last.thinking_expanded = !new_state;
+                    for tc in &mut last.tool_calls {
+                        tc.expanded = !new_state;
+                    }
+                }
+            }
+        });
+
         // Process pending messages
         self.process_messages(ctx);
 
@@ -547,6 +580,6 @@ pub fn run_gui() -> eframe::Result {
     eframe::run_native(
         "wgenty",
         options,
-        Box::new(|cc| Ok(Box::new(ClaudeCodeApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(WgentyCodeApp::new(cc)))),
     )
 }

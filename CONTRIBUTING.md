@@ -1,6 +1,6 @@
 # 贡献指南
 
-感谢你对 Claude Code Rust 项目的兴趣！本文档指导如何为项目贡献代码。
+感谢你对 Wgenty Code Rust 项目的兴趣！本文档指导如何为项目贡献代码。
 
 ## 🚀 快速开始
 
@@ -8,8 +8,8 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/yourusername/claude-code-rust.git
-cd claude-code-rust
+git clone https://github.com/yourusername/wgenty-code-rust.git
+cd wgenty-code-rust
 
 # 安装 Rust (如果未安装)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -182,13 +182,13 @@ let results = futures::future::join_all(futures).await;
 cargo build --release
 
 # 测试启动速度
-time ./target/release/claude_code_rs --version
+time ./target/release/wgenty_code --version
 
 # 测试内存占用
-/usr/bin/time -v ./target/release/claude_code_rs --help
+/usr/bin/time -v ./target/release/wgenty_code --help
 
 # 检查二进制大小
-ls -lh ./target/release/claude_code_rs
+ls -lh ./target/release/wgenty_code
 ```
 
 ## 🐛 报告 Bug

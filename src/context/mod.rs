@@ -21,7 +21,10 @@ use tokio::sync::RwLock;
 pub use consolidation::{ConsolidationConfig, ConsolidationEngine};
 pub use context_window::{ContextEntry, ContextManager, ContextWindow};
 pub use history::{HistoryEntry, HistoryFilter, HistoryManager};
-pub use memory_session::{Session as MemorySession, SessionInfo as MemorySessionInfo, SessionManager as MemorySessionManager};
+pub use memory_session::{
+    Session as MemorySession, SessionInfo as MemorySessionInfo,
+    SessionManager as MemorySessionManager,
+};
 pub use session::{Session, SessionInfo, SessionManager};
 pub use storage::{Storage, StorageBackend};
 
@@ -100,7 +103,7 @@ pub struct MemoryManager {
 impl MemoryManager {
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let memory_path = home.join(".claude-code").join("memory");
+        let memory_path = home.join(".wgenty-code").join("memory");
 
         std::fs::create_dir_all(&memory_path).ok();
 
@@ -120,9 +123,18 @@ impl MemoryManager {
 
         Ok(MemoryStatus {
             total_memories: memories.len(),
-            session_count: memories.iter().filter(|m| m.memory_type == MemoryType::Session).count(),
-            conversation_count: memories.iter().filter(|m| m.memory_type == MemoryType::Conversation).count(),
-            knowledge_count: memories.iter().filter(|m| m.memory_type == MemoryType::Knowledge).count(),
+            session_count: memories
+                .iter()
+                .filter(|m| m.memory_type == MemoryType::Session)
+                .count(),
+            conversation_count: memories
+                .iter()
+                .filter(|m| m.memory_type == MemoryType::Conversation)
+                .count(),
+            knowledge_count: memories
+                .iter()
+                .filter(|m| m.memory_type == MemoryType::Knowledge)
+                .count(),
             last_consolidation: None,
             storage_size_bytes: storage_size,
         })
@@ -147,7 +159,9 @@ impl MemoryManager {
             .iter()
             .filter(|m| {
                 m.content.to_lowercase().contains(&query_lower)
-                    || m.tags.iter().any(|t| t.to_lowercase().contains(&query_lower))
+                    || m.tags
+                        .iter()
+                        .any(|t| t.to_lowercase().contains(&query_lower))
             })
             .cloned()
             .collect()
@@ -155,12 +169,20 @@ impl MemoryManager {
 
     pub async fn get_memories_by_type(&self, memory_type: MemoryType) -> Vec<MemoryEntry> {
         let memories = self.memories.read().await;
-        memories.iter().filter(|m| m.memory_type == memory_type).cloned().collect()
+        memories
+            .iter()
+            .filter(|m| m.memory_type == memory_type)
+            .cloned()
+            .collect()
     }
 
     pub async fn get_important_memories(&self, threshold: f32) -> Vec<MemoryEntry> {
         let memories = self.memories.read().await;
-        memories.iter().filter(|m| m.importance >= threshold).cloned().collect()
+        memories
+            .iter()
+            .filter(|m| m.importance >= threshold)
+            .cloned()
+            .collect()
     }
 
     pub async fn clear(&self) -> anyhow::Result<()> {
@@ -206,13 +228,25 @@ impl MemoryManager {
         self.storage.save_all(&memories).await
     }
 
-    pub fn sessions(&self) -> Arc<MemorySessionManager> { self.sessions.clone() }
-    pub fn history(&self) -> Arc<HistoryManager> { self.history.clone() }
-    pub fn context(&self) -> Arc<ContextManager> { self.context.clone() }
-    pub fn storage(&self) -> Arc<Storage> { self.storage.clone() }
-    pub fn consolidation(&self) -> Arc<ConsolidationEngine> { self.consolidation.clone() }
+    pub fn sessions(&self) -> Arc<MemorySessionManager> {
+        self.sessions.clone()
+    }
+    pub fn history(&self) -> Arc<HistoryManager> {
+        self.history.clone()
+    }
+    pub fn context(&self) -> Arc<ContextManager> {
+        self.context.clone()
+    }
+    pub fn storage(&self) -> Arc<Storage> {
+        self.storage.clone()
+    }
+    pub fn consolidation(&self) -> Arc<ConsolidationEngine> {
+        self.consolidation.clone()
+    }
 }
 
 impl Default for MemoryManager {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

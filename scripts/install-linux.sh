@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Claude Code Rust - Linux Installation Script
-# This script installs Claude Code Rust CLI tool on Linux
+# Wgenty Code Rust - Linux Installation Script
+# This script installs Wgenty Code Rust CLI tool on Linux
 
 # Default installation directory
-INSTALL_DIR="$HOME/.claude-code"
+INSTALL_DIR="$HOME/.wgenty-code"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -22,7 +22,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "==========================================="
-echo "Claude Code Rust - Linux Installation"
+echo "Wgenty Code Rust - Linux Installation"
 echo "==========================================="
 echo
 
@@ -41,7 +41,7 @@ fi
 # Set installation directory
 BIN_DIR="$INSTALL_DIR/bin"
 
-echo "Installing Claude Code Rust to: $INSTALL_DIR"
+echo "Installing Wgenty Code Rust to: $INSTALL_DIR"
 echo
 
 # Create directories
@@ -50,11 +50,11 @@ mkdir -p "$BIN_DIR"
 
 # Clone repository
 echo "Cloning repository..."
-if [ -d "$INSTALL_DIR/claude-code-rust" ]; then
-    rm -rf "$INSTALL_DIR/claude-code-rust"
+if [ -d "$INSTALL_DIR/wgenty-code-rust" ]; then
+    rm -rf "$INSTALL_DIR/wgenty-code-rust"
 fi
 
-git clone https://github.com/lorryjovens-hub/claude-code-rust "$INSTALL_DIR/claude-code-rust"
+git clone https://github.com/lorryjovens-hub/wgenty-code-rust "$INSTALL_DIR/wgenty-code-rust"
 if [ $? -ne 0 ]; then
     echo "Error: Failed to clone repository"
     exit 1
@@ -62,7 +62,7 @@ fi
 
 # Build project
 echo "Building project..."
-cd "$INSTALL_DIR/claude-code-rust"
+cd "$INSTALL_DIR/wgenty-code-rust"
 cargo build --release
 if [ $? -ne 0 ]; then
     echo "Error: Failed to build project"
@@ -71,8 +71,8 @@ fi
 
 # Copy executable
 echo "Copying executable..."
-cp "$INSTALL_DIR/claude-code-rust/target/release/claude-code" "$BIN_DIR/claude-code"
-chmod +x "$BIN_DIR/claude-code"
+cp "$INSTALL_DIR/wgenty-code-rust/target/release/wgenty-code" "$BIN_DIR/wgenty-code"
+chmod +x "$BIN_DIR/wgenty-code"
 
 # Add to PATH
 echo "Adding to PATH..."
@@ -91,7 +91,7 @@ else
 fi
 
 # Create configuration directory
-CONFIG_DIR="$HOME/.config/claude-code"
+CONFIG_DIR="$HOME/.config/wgenty-code"
 mkdir -p "$CONFIG_DIR"
 
 # Create default config file
@@ -113,18 +113,18 @@ fi
 
 # Test installation
 echo "Testing installation..."
-"$BIN_DIR/claude-code" --help
+"$BIN_DIR/wgenty-code" --help
 if [ $? -eq 0 ]; then
     echo "==========================================="
     echo "Installation successful!"
     echo "==========================================="
-    echo "You can now use 'claude-code' command from any terminal."
+    echo "You can now use 'wgenty-code' command from any terminal."
     echo ""
     echo "To configure API key, run:"
-    echo "  claude-code config set api_key \"your-api-key\""
+    echo "  wgenty-code config set api_key \"your-api-key\""
     echo ""
     echo "To test the installation, run:"
-    echo "  claude-code query --prompt \"Hello!\""
+    echo "  wgenty-code query --prompt \"Hello!\""
     echo ""
     echo "Note: You may need to restart your terminal for the PATH changes to take effect."
 else

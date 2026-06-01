@@ -19,8 +19,8 @@ impl Cli {
         }
 
         match &self.command {
-            Some(super::Commands::Repl { prompt, tui }) => {
-                self.run_repl(state, prompt.clone(), *tui).await?;
+            Some(super::Commands::Repl { prompt }) => {
+                self.run_repl(state, prompt.clone()).await?;
             }
             Some(super::Commands::Query { prompt }) => {
                 self.run_query(state, prompt.clone()).await?;
@@ -67,11 +67,24 @@ impl Cli {
             }) => {
                 self.run_stress_test(*concurrency, *iterations).await?;
             }
+            Some(super::Commands::Sandbox { action }) => {
+                self.run_sandbox(action).await?;
+            }
             Some(super::Commands::Skills { action }) => {
                 self.run_skills(action).await?;
             }
+            #[cfg(feature = "daemon")]
+            Some(super::Commands::Daemon { port }) => {
+                crate::daemon::run(state, *port).await?;
+            }
+            #[cfg(not(feature = "daemon"))]
+            Some(super::Commands::Daemon { .. }) => {
+                return Err(anyhow::anyhow!(
+                    "Daemon feature is not enabled. Rebuild with: cargo build --features daemon"
+                ));
+            }
             None => {
-                self.run_repl(state, None, false).await?;
+                self.run_repl(state, None).await?;
             }
         }
 
@@ -79,39 +92,99 @@ impl Cli {
     }
 
     fn print_system_info(&self) {
-        use colored::Colorize;
-
         println!();
-        println!("  {}", "System Information".truecolor(147, 112, 219).bold());
+        println!("  System Information");
         println!();
-        println!("  {:20} {}", "Version:", env!("CARGO_PKG_VERSION").green());
-        println!("  {:20} {}", "OS:", std::env::consts::OS.cyan());
-        println!("  {:20} {}", "Architecture:", std::env::consts::ARCH.cyan());
+        println!("  {:20} {}", "Version:", env!("CARGO_PKG_VERSION"));
+        println!("  {:20} {}", "OS:", std::env::consts::OS);
+        println!("  {:20} {}", "Architecture:", std::env::consts::ARCH);
         println!(
             "  {:20} {}",
             "Working Directory:",
-            std::env::current_dir()
-                .unwrap()
-                .display()
-                .to_string()
-                .bright_white()
+            std::env::current_dir().unwrap().display()
         );
         println!();
     }
 
+    #[cfg(feature = "daemon")]
     async fn run_repl(
         &self,
         state: crate::state::AppState,
         prompt: Option<String>,
-        tui: bool,
     ) -> anyhow::Result<()> {
-        if tui {
-            let mut tui_repl = crate::cli::TuiRepl::new(state).await?;
-            tui_repl.run().await?;
-        } else {
-            let mut repl = crate::cli::repl::Repl::new(state).await;
-            repl.start(prompt).await?;
+        use crate::tui::app::{self, App};
+        use crate::tui::client::DaemonClient;
+        use crossterm::{
+            execute,
+            terminal::{
+                disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+            },
+        };
+        use ratatui::{backend::CrosstermBackend, Terminal};
+        use std::io;
+
+        // Start daemon in background
+        let (base_url, shutdown_tx, daemon_handle) = app::start_daemon(state).await?;
+
+        // Set up terminal
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen)?;
+
+        // Install panic hook to restore terminal on crash.
+        // Without this, a panic leaves the terminal in raw mode with
+        // the alternate screen, causing overlapping/garbled display.
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            default_hook(info);
+        }));
+
+        enable_raw_mode()?;
+        let backend = CrosstermBackend::new(stdout);
+
+        // Create client and app
+        let client = DaemonClient::new(base_url);
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let mut app = App::new(client, session_id);
+
+        // Send initial prompt if given
+        if let Some(p) = prompt {
+            let tx = app.event_sender();
+            let _ = tx.send(crate::tui::app::AppEvent::Submit(p));
         }
+
+        // Run the TUI — terminal is dropped when this block ends, releasing stdout
+        let result = {
+            let mut terminal = Terminal::new(backend)?;
+            app.run(&mut terminal).await
+        };
+
+        // Restore terminal
+        disable_raw_mode()?;
+        execute!(io::stdout(), LeaveAlternateScreen)?;
+        // Restore default panic hook
+        let _ = std::panic::take_hook();
+
+        // Shutdown daemon and wait for it to fully stop
+        let _ = shutdown_tx.send(());
+        let _ = daemon_handle.await;
+
+        result
+    }
+
+    #[cfg(not(feature = "daemon"))]
+    async fn run_repl(
+        &self,
+        _state: crate::state::AppState,
+        _prompt: Option<String>,
+    ) -> anyhow::Result<()> {
+        println!();
+        println!("  The TUI frontend requires the daemon feature.");
+        println!();
+        println!("  Rebuild with:");
+        println!("    cargo build --features daemon");
+        println!();
         Ok(())
     }
 
@@ -123,7 +196,7 @@ impl Cli {
             None => {
                 eprintln!("Error: API key not configured");
                 eprintln!("Set environment variable DEEPSEEK_API_KEY or run:");
-                eprintln!("  claude-code config set api_key \"your-api-key\"");
+                eprintln!("  wgenty-code config set api_key \"your-api-key\"");
                 std::process::exit(1);
             }
         };
@@ -385,7 +458,7 @@ impl Cli {
     }
 
     fn run_init(&self, name: Option<String>) -> anyhow::Result<()> {
-        let project_name = name.unwrap_or_else(|| "claude-code-project".to_string());
+        let project_name = name.unwrap_or_else(|| "wgenty-code-project".to_string());
         crate::utils::project::init_project(&project_name)?;
         println!("Initialized project: {}", project_name);
         Ok(())
@@ -499,7 +572,7 @@ impl Cli {
         let service = crate::teams::AgentsService::new(state);
 
         let agent_type = match agent_type.to_lowercase().as_str() {
-            "guide" | "claude-code-guide" => crate::teams::AgentType::ClaudeCodeGuide,
+            "guide" | "wgenty-code-guide" => crate::teams::AgentType::WgentyCodeGuide,
             "explore" => crate::teams::AgentType::Explore,
             "plan" => crate::teams::AgentType::Plan,
             "verify" | "verification" => crate::teams::AgentType::Verification,
@@ -675,4 +748,29 @@ impl Cli {
         }
         Ok(())
     }
+
+    async fn run_sandbox(&self, action: &super::SandboxCommands) -> anyhow::Result<()> {
+        let sandbox = crate::sandbox::SandboxManager::new();
+        let status = sandbox.status();
+        match action {
+            super::SandboxCommands::Status => {
+                println!("Sandbox Status:");
+                println!("  Backend: {}", status.backend_name);
+                println!("  Hardware-enforced: {}", status.is_hardware_enforced);
+                println!("  Capabilities: {:?}", status.capabilities);
+            }
+            super::SandboxCommands::Disable => {
+                println!("Sandbox disabled for this session.");
+            }
+            super::SandboxCommands::Enable => {
+                if status.is_hardware_enforced {
+                    println!("Sandbox enabled ({}).", status.backend_name);
+                } else {
+                    println!("Sandbox enabled (policy-only, {}).", status.backend_name);
+                }
+            }
+        }
+        Ok(())
+    }
+
 }

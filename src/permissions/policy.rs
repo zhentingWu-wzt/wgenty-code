@@ -1,5 +1,5 @@
-use crate::tools::{Tool, ToolError};
 use crate::config::Settings;
+use crate::tools::{Tool, ToolError};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -7,6 +7,7 @@ pub struct ToolPermissionPolicy {
     workspace_root: PathBuf,
 }
 
+#[derive(Debug)]
 pub enum PolicyDecision {
     Allow,
     Ask(PermissionRequest),
@@ -245,22 +246,8 @@ fn classify_command_risk(command: &str) -> Option<(String, String)> {
 
         // ── Filesystem-modifying commands ────────────────────────────
         const FS_MODIFIERS: &[&str] = &[
-            "mv",
-            "cp",
-            "rm",
-            "dd",
-            "touch",
-            "mkdir",
-            "tee",
-            "install",
-            "ln",
-            "chmod",
-            "chown",
-            "truncate",
-            "rmdir",
-            "chattr",
-            "setfacl",
-            "setfattr",
+            "mv", "cp", "rm", "dd", "touch", "mkdir", "tee", "install", "ln", "chmod", "chown",
+            "truncate", "rmdir", "chattr", "setfacl", "setfattr",
         ];
         if FS_MODIFIERS.contains(&base) {
             return Some((
@@ -331,20 +318,8 @@ fn classify_command_risk(command: &str) -> Option<(String, String)> {
 
         // ── Network / remote commands ────────────────────────────────
         const NETWORK: &[&str] = &[
-            "curl",
-            "wget",
-            "nc",
-            "ncat",
-            "scp",
-            "rsync",
-            "ftp",
-            "sftp",
-            "ssh",
-            "telnet",
-            "nmap",
-            "tcpdump",
-            "tshark",
-            "socat",
+            "curl", "wget", "nc", "ncat", "scp", "rsync", "ftp", "sftp", "ssh", "telnet", "nmap",
+            "tcpdump", "tshark", "socat",
         ];
         if NETWORK.contains(&base) {
             return Some((
