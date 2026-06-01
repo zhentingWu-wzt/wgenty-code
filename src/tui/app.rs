@@ -1,5 +1,4 @@
 //! Application main loop — event handling, layout, and daemon lifecycle.
-
 use crate::api::ChatMessage;
 use crate::state::AppState;
 use crate::prompts::{self, PromptContext};
@@ -15,7 +14,7 @@ use crate::tui::components::session::SessionState;
 use crate::tui::components::task_panel::TaskPanelState;
 use crate::state::agent_phase::{AgentPhase, TurnId, TurnAbortReason};
 use crate::tui::theme;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, EnableBracketedPaste, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::Span;
@@ -26,33 +25,27 @@ use std::io;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex as TokioMutex;
-
 /// Wraps a oneshot sender for returning question answers.
 /// Manual Debug impl because `oneshot::Sender` doesn't implement Debug.
 pub struct QuestionResponder(pub Option<tokio::sync::oneshot::Sender<Vec<String>>>);
-
 impl std::fmt::Debug for QuestionResponder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("QuestionResponder").finish()
     }
 }
-
 #[derive(Debug)]
 pub enum PermissionResponse {
     AllowOnce,
     AlwaysAllow,
     Deny,
 }
-
 /// Wraps a oneshot sender for returning permission decisions.
 pub struct PermissionResponder(pub Option<tokio::sync::oneshot::Sender<PermissionResponse>>);
-
 impl std::fmt::Debug for PermissionResponder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("PermissionResponder").finish()
     }
 }
-
 /// Events that drive the UI loop.
 #[derive(Debug)]
 pub enum AppEvent {
@@ -67,9 +60,9 @@ pub enum AppEvent {
     /// Streaming completed
     StreamDone { finish_reason: String },
     /// A tool call started
-    ToolStart { name: String },
+    ToolStart { name: String, args: serde_json::Value },
     /// A tool result arrived
-    ToolResult { name: String, content: String },
+    ToolResult { name: String, args: serde_json::Value, content: String },
     /// Permission is needed
     PermissionRequired {
         reason: String,
@@ -97,6 +90,10 @@ pub enum AppEvent {
     ToggleSessions,
     /// Toggle task panel
     ToggleTaskPanel,
+    /// Pasted text from bracketed paste
+    Paste(String),
+    /// Mouse scroll (positive = up, negative = down)
+    MouseScrolled(i16),
     /// Ctrl+C pressed (double-press to quit)
     CtrlCPressed,
     /// Sessions loaded from daemon
@@ -110,7 +107,6 @@ pub enum AppEvent {
     /// Todo items updated from daemon
     TodosUpdated(Vec<TodoItem>),
 }
-
 /// UI state for a single message in the chat view.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MessageRole {
@@ -119,16 +115,15 @@ pub enum MessageRole {
     Tool,
     System,
 }
-
 #[derive(Debug, Clone)]
 pub struct UIMessage {
     pub role: MessageRole,
     pub content: String,
     pub tool_name: Option<String>,
+    pub tool_args: Option<serde_json::Value>,
     pub content_collapsed: bool,
     pub tool_collapsed: bool,
 }
-
 /// Application state for the TUI.
 pub struct App {
     pub daemon_client: DaemonClient,
@@ -139,6 +134,7 @@ pub struct App {
     pub phase: AgentPhase,
     pub session_id: String,
     pub session_name: String,
+    pub last_tool_name: Option<String>,
     pub scroll_offset: u16,
     pub user_scrolled: bool,
     /// Shared conversation history — all Turns in this session read/write
@@ -173,11 +169,9 @@ pub struct App {
     /// Pending oneshot sender for permission response
     pub permission_responder: Option<PermissionResponder>,
 }
-
 impl App {
     pub fn new(daemon_client: DaemonClient, session_id: String) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-
         // Build layered instructions from settings + context
         let prompt_ctx = PromptContext::new()
             .with_cwd(
@@ -191,13 +185,11 @@ impl App {
             )
             .with_sandbox("workspace-write")
             .with_approval("never");
-
         let settings = crate::config::Settings::load().unwrap_or_default();
         let prompt_ctx = prompt_ctx
             .with_collaboration(settings.collaboration_mode.clone().unwrap_or_default());
         let assembled = prompts::assemble_instructions(&settings, &prompt_ctx);
         let system_messages = assembled.system_messages;
-
         let conversation_history = Arc::new(TokioMutex::new(system_messages.clone()));
         Self {
             daemon_client,
@@ -208,6 +200,7 @@ impl App {
             phase: AgentPhase::Idle,
             session_id,
             session_name: "New Session".to_string(),
+            last_tool_name: None,
             scroll_offset: 0,
             user_scrolled: false,
             conversation_history,
@@ -229,23 +222,21 @@ impl App {
             permission_responder: None,
         }
     }
-
     pub fn event_sender(&self) -> mpsc::UnboundedSender<AppEvent> {
         self.event_tx.clone()
     }
-
     /// Run the main event loop.
     pub async fn run<B: ratatui::backend::Backend + std::marker::Unpin>(
         &mut self,
         terminal: &mut Terminal<B>,
     ) -> anyhow::Result<()> {
+        crossterm::execute!(io::stdout(), EnableBracketedPaste).ok();
         // Spawn input reader task (blocking crossterm event::read)
         let tx = self.event_tx.clone();
         let shutdown = self.shutdown_flag.clone();
         tokio::task::spawn_blocking(move || {
             let _ = Self::read_input(tx, shutdown);
         });
-
         // Spawn ticker for periodic refresh
         let tx = self.event_tx.clone();
         tokio::spawn(async move {
@@ -257,7 +248,6 @@ impl App {
                 }
             }
         });
-
         // Main loop
         while !self.should_quit {
             // Process pending events
@@ -267,18 +257,14 @@ impl App {
                     break;
                 }
             }
-
             terminal.draw(|f| self.render(f))?;
-
             // Block until next event (prevents busy-waiting)
             if let Some(event) = self.event_rx.recv().await {
                 self.handle_event(event).await;
             }
         }
-
         Ok(())
     }
-
     fn read_input(
         tx: mpsc::UnboundedSender<AppEvent>,
         shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -287,7 +273,25 @@ impl App {
         while !shutdown.load(Ordering::SeqCst) {
             // Poll with 100ms timeout so we can check shutdown flag frequently
             if event::poll(std::time::Duration::from_millis(100))? {
-                if let Event::Key(key) = event::read()? {
+                let ev = event::read()?;
+                if let Event::Mouse(mouse) = &ev {
+                    use crossterm::event::MouseEventKind;
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            let _ = tx.send(AppEvent::MouseScrolled(3));
+                        }
+                        MouseEventKind::ScrollDown => {
+                            let _ = tx.send(AppEvent::MouseScrolled(-3));
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+                if let Event::Paste(text) = &ev {
+                    let _ = tx.send(AppEvent::Paste(text.clone()));
+                    continue;
+                }
+                if let Event::Key(key) = ev {
                     if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
                         if key.code == KeyCode::Char('c')
                             && key.modifiers.contains(KeyModifiers::CONTROL)
@@ -326,7 +330,6 @@ impl App {
         }
         Ok(())
     }
-
     async fn handle_event(&mut self, event: AppEvent) {
         // Derive phase from event (pure function); fall back to current
         if let Some(next_phase) = agent_phase_from_event(&event) {
@@ -362,7 +365,6 @@ impl App {
                     }
                     return;
                 }
-
                 // Question panel handling (inline, not popup)
                 if self.question_state.visible {
                     // Text input mode: cursor is on "Other" option
@@ -395,7 +397,6 @@ impl App {
                         }
                         return;
                     }
-
                     match key.code {
                         KeyCode::Up | KeyCode::Char('k') => {
                             self.question_state.move_up();
@@ -435,7 +436,6 @@ impl App {
                     }
                     return;
                 }
-
                 // Session popup handling
                 if self.session_state.visible {
                     match key.code {
@@ -471,7 +471,6 @@ impl App {
                     }
                     return;
                 }
-
                 // Scroll handling (when no popup is active)
                 // scroll_offset = ratatui-native: lines skipped from top (0 = oldest, max = newest)
                 match key.code {
@@ -497,7 +496,6 @@ impl App {
                     }
                     _ => {}
                 }
-
                 // Ctrl+L: clear screen
                 if key.code == KeyCode::Char('l') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     self.committed_messages.clear();
@@ -506,7 +504,6 @@ impl App {
                     self.user_scrolled = false;
                     return;
                 }
-
                 // Handle Enter/Shift+Enter BEFORE tui-textarea consumes them.
                 // tui-textarea's default binding inserts newline on Enter.
                 if key.code == KeyCode::Enter {
@@ -519,11 +516,9 @@ impl App {
                     }
                     return;
                 }
-
                 // Feed to tui-textarea for CJK/IME input.
                 // Returns true if tui-textarea consumed the key.
                 let handled = self.input_box.textarea.input(key);
-
                 if !handled {
                     match key.code {
                         KeyCode::Esc => {
@@ -532,6 +527,20 @@ impl App {
                         _ => {}
                     }
                 }
+            }
+            AppEvent::Paste(text) => {
+                for c in text.chars() {
+                    self.input_box.textarea.insert_char(c);
+                }
+            }
+            AppEvent::MouseScrolled(delta) => {
+                let amount = (delta / 3).clamp(-5, 5);
+                if amount > 0 {
+                    self.scroll_offset = self.scroll_offset.saturating_sub(amount as u16);
+                } else {
+                    self.scroll_offset = self.scroll_offset.saturating_add((-amount) as u16);
+                }
+                self.user_scrolled = true;
             }
             AppEvent::ToggleCollapseAll => {
                 let any_expanded = self.committed_messages.iter().any(|m| {
@@ -581,13 +590,14 @@ impl App {
             AppEvent::StreamDone { .. } => {
                 if !self.streaming_content.is_empty() {
                     let content = std::mem::take(&mut self.streaming_content);
-                    let (content_collapsed, tool_collapsed) = compute_collapse_state(&MessageRole::Assistant, &content);
+                    // Last response always expanded (never auto-collapse the latest reply)
                     self.committed_messages.push(UIMessage {
                         role: MessageRole::Assistant,
                         content,
                         tool_name: None,
-                        content_collapsed,
-                        tool_collapsed,
+                        tool_args: None,
+                        content_collapsed: false,
+                        tool_collapsed: false,
                     });
                 }
                 self.streaming_active = false;
@@ -598,33 +608,36 @@ impl App {
                 self.scroll_offset = 0;
                 self.user_scrolled = false;
             }
-            AppEvent::ToolStart { name } => {
+            AppEvent::ToolStart { name, args } => {
+                self.last_tool_name = Some(tool_label(&name, &args));
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::Tool,
                     content: String::new(),
                     tool_name: Some(name),
+                    tool_args: Some(args),
                     content_collapsed: false,
                     tool_collapsed: false,
                 });
             }
-            AppEvent::ToolResult { name, content } => {
+            AppEvent::ToolResult { name, args, content } => {
                 // Replace the placeholder ToolStart message with the result
                 if let Some(last) = self.committed_messages.last_mut() {
                     if last.role == MessageRole::Tool
                         && last.content.is_empty()
                         && last.tool_name.as_deref() == Some(&name)
                     {
-                        last.content = format_tool_result(&name, &content);
+                        last.content = format_tool_result(&name, &args, &content);
                         let (cc, tc) = compute_collapse_state(&MessageRole::Tool, &last.content);
                         last.content_collapsed = cc;
                         last.tool_collapsed = tc;
                     } else {
-                        let formatted = format_tool_result(&name, &content);
+                        let formatted = format_tool_result(&name, &args, &content);
                         let (content_collapsed, tool_collapsed) = compute_collapse_state(&MessageRole::Tool, &formatted);
                         self.committed_messages.push(UIMessage {
                             role: MessageRole::Tool,
                             content: formatted,
                             tool_name: Some(name),
+                    tool_args: Some(args),
                             content_collapsed,
                             tool_collapsed,
                         });
@@ -638,6 +651,7 @@ impl App {
                     tool_name: None,
                     content_collapsed: false,
                     tool_collapsed: false,
+                    tool_args: None,
                 });
                 self.streaming_active = false;
             }
@@ -700,6 +714,7 @@ impl App {
                         role,
                         content,
                         tool_name: msg.tool_call_id.clone(),
+                        tool_args: None,
                         content_collapsed,
                         tool_collapsed,
                     });
@@ -747,7 +762,6 @@ impl App {
             _ => {}
         }
     }
-
     /// Record the user's question answer as a chat message.
     fn push_question_answer(&mut self, answers: &[String]) {
         let q = &self.question_state.question;
@@ -758,9 +772,9 @@ impl App {
             tool_name: Some("ask".to_string()),
                 content_collapsed: false,
                 tool_collapsed: false,
+                tool_args: None,
         });
     }
-
     fn push_permission_result(&mut self, reason: &str, decision: &str) {
         self.committed_messages.push(UIMessage {
             role: MessageRole::System,
@@ -768,12 +782,11 @@ impl App {
             tool_name: Some("permission".to_string()),
                 content_collapsed: false,
                 tool_collapsed: false,
+                tool_args: None,
         });
     }
-
     fn render(&self, f: &mut Frame) {
         let area = f.area();
-
         // Layout changes when question or permission is active:
         //   normal:    header | chat | status | input
         //   question:  header | chat | question-panel | status | input(hidden)
@@ -788,7 +801,6 @@ impl App {
         } else {
             0
         };
-
         let constraints: Vec<Constraint> = if show_panel {
             vec![
                 Constraint::Length(1),
@@ -802,20 +814,17 @@ impl App {
                 Constraint::Length(1),
                 Constraint::Min(3),
                 Constraint::Length(1),
-                Constraint::Length(8),
+                Constraint::Length((self.input_box.textarea.lines().len() + 1).clamp(3, 12) as u16),
             ]
         };
-
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
             .split(area);
-
         let chat_idx = 1;
         let panel_idx = if show_panel { 2 } else { 0 };
         let status_idx = if show_panel { 3 } else { 2 };
         let input_idx = if show_panel { 4 } else { 3 };
-
         self.render_header(f, layout[chat_idx - 1]);
         let main_area = if self.task_panel.visible {
             let split = Layout::default()
@@ -827,31 +836,25 @@ impl App {
         } else {
             layout[chat_idx]
         };
-
         if self.committed_messages.is_empty() && !self.streaming_active {
             components::welcome::render(f, main_area);
         } else {
             self.render_chat(f, main_area);
         }
-
         // Inline question / permission panel
         if self.question_state.visible {
             components::question::render(f, layout[panel_idx], &self.question_state);
         } else if self.permission_state.visible {
             components::permission::render(f, layout[panel_idx], &self.permission_state);
         }
-
         self.render_status(f, layout[status_idx]);
         self.render_input(f, layout[input_idx]);
-
         // Session is still a popup overlay
         components::session::render(f, &self.session_state, centered_rect);
     }
-
     fn render_header(&self, f: &mut Frame, area: Rect) {
         components::status::render(f, area, &self.phase, &self.session_name);
     }
-
     fn render_chat(&self, f: &mut Frame, area: Rect) {
         components::chat::render(
             f,
@@ -863,9 +866,9 @@ impl App {
             self.user_scrolled,
         );
     }
-
     fn render_status(&self, f: &mut Frame, area: Rect) {
         let pending = self.pending_count();
+        let tool_display = self.last_tool_name.clone().unwrap_or_default();
         let pending_text = if pending > 0 {
             format!(" | {} pending", pending)
         } else {
@@ -875,7 +878,7 @@ impl App {
             AgentPhase::Idle | AgentPhase::Completed => (format!(" Ready{}", pending_text), theme::DIM),
             AgentPhase::Thinking => (format!(" Thinking...{}", pending_text), theme::WARNING),
             AgentPhase::StreamingResponse => (format!(" Streaming...{}", pending_text), theme::WARNING),
-            AgentPhase::ExecutingTool { name } => (format!(" Executing {}{}", name, pending_text), theme::ACCENT),
+            AgentPhase::ExecutingTool { name } => (format!(" Executing {}{}", name, if tool_display.is_empty() { String::new() } else { format!(": {}", tool_display) }), theme::ACCENT),
             AgentPhase::AwaitingPermission { .. } => (format!(" Permission Required{}", pending_text), theme::WARNING),
             AgentPhase::AwaitingUserInput { .. } => (format!(" Question{}", pending_text), theme::WARNING),
             AgentPhase::Compacting => (format!(" Compacting...{}", pending_text), theme::WARNING),
@@ -883,11 +886,9 @@ impl App {
         };
         f.render_widget(Paragraph::new(Span::styled(label, Style::default().fg(color))), area);
     }
-
     fn render_input(&self, f: &mut Frame, area: Rect) {
         self.input_box.render(f, area);
     }
-
     /// Submit user input, automatically queueing if a Turn is already running.
     fn submit_input(&mut self, text: String) {
         // /clear is handled before submit_input
@@ -896,7 +897,6 @@ impl App {
             self.start_next_turn();
         }
     }
-
     /// Start the next pending turn (if any).
     fn start_next_turn(&mut self) {
         if let Some(text) = self.pending_inputs.pop_front() {
@@ -907,17 +907,16 @@ impl App {
                 tool_name: None,
                 content_collapsed: false,
                 tool_collapsed: false,
+                tool_args: None,
             });
             self.phase = AgentPhase::Thinking;
             let turn_id = TurnId::new();
             self.current_turn_id = Some(turn_id.clone());
             let _ = self.event_tx.send(AppEvent::TurnStarted { turn_id: turn_id.clone() });
-
             let history = self.conversation_history.clone();
             let client = self.daemon_client.clone();
             let event_tx = self.event_tx.clone();
             let session_id = self.session_id.clone();
-
             let sys_msgs = self.assembled_system_messages.clone();
             self.current_turn_handle = Some(tokio::spawn(async move {
                 let mut agent = AgentLoop::new(client, event_tx.clone(), session_id, history, sys_msgs);
@@ -936,7 +935,6 @@ impl App {
             }));
         }
     }
-
     /// Cancel the current turn and flush all queued input.
     fn cancel_current_turn(&mut self) {
         self.pending_inputs.clear();
@@ -948,13 +946,11 @@ impl App {
         }
         self.current_turn_id = None;
     }
-
     /// Number of inputs waiting in the queue (excluding the running one).
     fn pending_count(&self) -> usize {
         self.pending_inputs.len()
     }
 }
-
 /// Start the daemon in a background tokio task and wait for it to be ready.
 /// Returns the base URL (including port) and a shutdown sender.
 #[cfg(feature = "daemon")]
@@ -965,12 +961,10 @@ pub async fn start_daemon(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
     let base_url = format!("http://127.0.0.1:{}", port);
-
     use crate::daemon::routes;
     use crate::daemon::state::DaemonState;
     use std::sync::Arc;
     use tower_http::cors::{Any, CorsLayer};
-
     let daemon_state = Arc::new(DaemonState::new(app_state));
     let app = routes::create_router(daemon_state).layer(
         CorsLayer::new()
@@ -978,9 +972,7 @@ pub async fn start_daemon(
             .allow_methods(Any)
             .allow_headers(Any),
     );
-
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-
     let handle = tokio::spawn(async move {
         axum::serve(listener, app)
             .with_graceful_shutdown(async {
@@ -989,7 +981,6 @@ pub async fn start_daemon(
             .await
             .ok();
     });
-
     // Wait for daemon to be ready (poll health endpoint)
     let client = DaemonClient::new(base_url.clone());
     for _attempt in 0..50 {
@@ -999,11 +990,8 @@ pub async fn start_daemon(
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
-
     anyhow::bail!("daemon did not become ready within 5 seconds");
 }
-
-
 /// Compute initial collapse state based on line-count thresholds.
 /// Returns (content_collapsed, tool_collapsed) tuple.
 fn compute_collapse_state(role: &MessageRole, content: &str) -> (bool, bool) {
@@ -1018,35 +1006,76 @@ fn compute_collapse_state(role: &MessageRole, content: &str) -> (bool, bool) {
         _ => (false, false),
     }
 }
-
 /// Parse the JSON wrapper from execute_tool_with_permission and extract the
 /// meaningful content for display. Strips metadata noise like success/output_type.
-fn format_tool_result(name: &str, raw_json: &str) -> String {
+/// Format a tool result for codex-style tree display. The header bullet is
+/// rendered by chat.rs; this produces the content body with action verb,
+/// key parameter, and indented output.
+fn format_tool_result(_name: &str, _args: &serde_json::Value, raw_json: &str) -> String {
     let parsed: serde_json::Value = match serde_json::from_str(raw_json) {
         Ok(v) => v,
         Err(_) => {
-            return raw_json.to_string();
+            let lines: Vec<&str> = raw_json.lines().collect();
+            if lines.len() > MAX_TOOL_OUTPUT_LINES {
+                let preview: Vec<&str> = lines[..MAX_TOOL_OUTPUT_LINES].to_vec();
+                return format!(
+                    "{}\n  {} +{} lines (Ctrl+O to expand)",
+                    preview.join("\n"),
+                    '…',
+                    lines.len() - MAX_TOOL_OUTPUT_LINES
+                );
+            }
+            return raw_json.trim_end().to_string();
         }
     };
-
     let error = parsed["error"].as_str().unwrap_or("");
     if !error.is_empty() {
-        return format!("{}:\n{}", name, error);
+        return format!("  {} {}", '✘', error);
     }
-
     let content = parsed["content"].as_str().unwrap_or("");
     if content.is_empty() {
-        let success = parsed["success"].as_bool().unwrap_or(false);
-        return if success {
-            format!("{}: done", name)
-        } else {
-            format!("{}: failed", name)
-        };
+        return String::new();
     }
-
-    format!("{}:\n{}", name, content)
+    let non_empty: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    let total = non_empty.len();
+    let shown: Vec<&str> = non_empty.iter().take(MAX_TOOL_OUTPUT_LINES).copied().collect();
+    let mut result = shown.join("\n");
+    if total > MAX_TOOL_OUTPUT_LINES {
+        result.push_str(&format!(
+            "\n  {} +{} lines (Ctrl+O to expand)",
+            '…',
+            total - MAX_TOOL_OUTPUT_LINES
+        ));
+    }
+    result
 }
-
+const MAX_TOOL_OUTPUT_LINES: usize = 5;
+fn tool_label(name: &str, args: &serde_json::Value) -> String {
+    match name {
+        "exec_command" | "execute_command" => {
+            args.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        }
+        "file_read" | "read_file" => {
+            args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        }
+        "file_write" | "file_edit" | "apply_patch" => {
+            args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        }
+        "grep" | "search" => {
+            args.get("pattern").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        }
+        "glob_search" | "glob" | "list_files" => {
+            args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        }
+        "web_search" => {
+            args.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        }
+        "web_fetch" => {
+            args.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        }
+        _ => String::new(),
+    }
+}
 /// Pure function: derive the next AgentPhase from a single AppEvent.
 fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
     match event {
@@ -1055,7 +1084,7 @@ fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
             Some(AgentPhase::StreamingResponse)
         }
         AppEvent::StreamDone { .. } => Some(AgentPhase::Thinking),
-        AppEvent::ToolStart { name } => Some(AgentPhase::ExecutingTool {
+        AppEvent::ToolStart { name, args: _ } => Some(AgentPhase::ExecutingTool {
             name: name.clone(),
         }),
         AppEvent::ToolResult { .. } => Some(AgentPhase::Thinking),
@@ -1081,7 +1110,9 @@ fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
             _ => Some(AgentPhase::Idle),
         },
         // Events that don't change phase
-        AppEvent::KeyEvent(_)
+        AppEvent::MouseScrolled(_)
+        | AppEvent::Paste(_)
+        | AppEvent::KeyEvent(_)
         | AppEvent::Tick
         | AppEvent::ToggleSessions
         | AppEvent::ToggleTaskPanel
@@ -1095,8 +1126,6 @@ fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::TurnStarted { .. } => None,
     }
 }
-
-
 /// Helper: create a centered rectangle of the given percentage size within `area`.
 /// Used by popup components (session).
 pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -1105,15 +1134,10 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let x = (area.width - popup_width) / 2;
     let y = (area.height - popup_height) / 2;
     Rect::new(x, y, popup_width, popup_height)
-
-
-
 }
-
 #[cfg(test)]
 mod phase_tests {
     use super::*;
-
     #[test]
     fn test_phase_transitions() {
         assert_eq!(
@@ -1129,11 +1153,11 @@ mod phase_tests {
             Some(AgentPhase::Thinking)
         );
         assert_eq!(
-            agent_phase_from_event(&AppEvent::ToolStart { name: "file_read".into() }),
+            agent_phase_from_event(&AppEvent::ToolStart { name: "file_read".into(), args: serde_json::json!({}) }),
             Some(AgentPhase::ExecutingTool { name: "file_read".into() })
         );
         assert_eq!(
-            agent_phase_from_event(&AppEvent::ToolResult { name: "x".into(), content: "y".into() }),
+            agent_phase_from_event(&AppEvent::ToolResult { name: "x".into(), args: serde_json::json!({}), content: "y".into() }),
             Some(AgentPhase::Thinking)
         );
         assert_eq!(
@@ -1153,17 +1177,17 @@ mod phase_tests {
             Some(AgentPhase::Idle)
         );
     }
-
     #[test]
     fn test_non_phase_events_return_none() {
         assert_eq!(agent_phase_from_event(&AppEvent::Tick), None);
+        assert_eq!(agent_phase_from_event(&AppEvent::MouseScrolled(3)), None);
+        assert_eq!(agent_phase_from_event(&AppEvent::Paste("test".into())), None);
         assert_eq!(agent_phase_from_event(&AppEvent::SaveSession), None);
         assert_eq!(
             agent_phase_from_event(&AppEvent::TurnStarted { turn_id: TurnId::new() }),
             None
         );
     }
-
     #[test]
     fn test_phase_is_busy() {
         assert!(!AgentPhase::Idle.is_busy());

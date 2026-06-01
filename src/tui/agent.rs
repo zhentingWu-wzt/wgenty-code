@@ -142,10 +142,12 @@ impl AgentLoop {
                     if tc.function.name == "compact" {
                         let _ = self.event_tx.send(AppEvent::ToolStart {
                             name: "compact".to_string(),
+                            args: serde_json::json!({}),
                         });
                         self.do_auto_compact().await;
                         let _ = self.event_tx.send(AppEvent::ToolResult {
                             name: "compact".to_string(),
+                            args: serde_json::json!({}),
                             content: "Conversation history compressed.".to_string(),
                         });
                         let mut history = self.conversation_history.lock().await;
@@ -163,6 +165,7 @@ impl AgentLoop {
 
                     let _ = self.event_tx.send(AppEvent::ToolStart {
                         name: tc.function.name.clone(),
+                        args: args.clone(),
                     });
 
                     // Per-tool timeout: subagents get 5min, others get 2min
@@ -184,6 +187,7 @@ impl AgentLoop {
                             );
                             let _ = self.event_tx.send(AppEvent::ToolResult {
                                 name: tc.function.name.clone(),
+                                args: args.clone(),
                                 content: msg.clone(),
                             });
                             {
@@ -196,6 +200,7 @@ impl AgentLoop {
 
                     let _ = self.event_tx.send(AppEvent::ToolResult {
                         name: tc.function.name.clone(),
+                        args: args.clone(),
                         content: exec_result.clone(),
                     });
 
