@@ -100,6 +100,8 @@ impl ToolRegistry {
         registry.register(Box::new(filesystem::view::ViewTool::new()));
         // Execution tools (git)
         registry.register(Box::new(execution::git_operations::GitOperationsTool::new()));
+        // Execution tools (test runner)
+        registry.register(Box::new(execution::run_test::RunTestTool::new(sandbox)));
         // Meta tools (more)
         registry.register(Box::new(meta::think::ThinkTool::new()));
         registry.register(Box::new(meta::compact::CompactTool::new()));
