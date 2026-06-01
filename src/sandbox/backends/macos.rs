@@ -87,8 +87,8 @@ impl MacOSBackend {
         }
 
         sb.push_str(";; System necessities\n");
-        // /dev — only allow device files that shell commands actually need
-        sb.push_str("(allow file-read*\n");
+        // /dev — read+writes device files that shell commands actually need
+        sb.push_str("(allow file-read* file-write*\n");
         sb.push_str("    (subpath \"/dev/null\")\n");
         sb.push_str("    (subpath \"/dev/zero\")\n");
         sb.push_str("    (subpath \"/dev/random\")\n");
