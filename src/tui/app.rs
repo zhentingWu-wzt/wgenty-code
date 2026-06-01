@@ -278,10 +278,10 @@ impl App {
                     use crossterm::event::MouseEventKind;
                     match mouse.kind {
                         MouseEventKind::ScrollUp => {
-                            let _ = tx.send(AppEvent::MouseScrolled(3));
+                            let _ = tx.send(AppEvent::MouseScrolled(5));
                         }
                         MouseEventKind::ScrollDown => {
-                            let _ = tx.send(AppEvent::MouseScrolled(-3));
+                            let _ = tx.send(AppEvent::MouseScrolled(-5));
                         }
                         _ => {}
                     }
@@ -448,6 +448,7 @@ impl App {
                         KeyCode::Enter => {
                             if let Some(session) = self.session_state.selected_session() {
                                 let id = session.id.clone();
+                                self.session_name = session.name.clone();
                                 self.session_state.dismiss();
                                 let client = self.daemon_client.clone();
                                 let history = self.conversation_history.clone();
@@ -534,11 +535,10 @@ impl App {
                 }
             }
             AppEvent::MouseScrolled(delta) => {
-                let amount = (delta / 3).clamp(-5, 5);
-                if amount > 0 {
-                    self.scroll_offset = self.scroll_offset.saturating_sub(amount as u16);
+                if delta > 0 {
+                    self.scroll_offset = self.scroll_offset.saturating_sub(delta as u16);
                 } else {
-                    self.scroll_offset = self.scroll_offset.saturating_add((-amount) as u16);
+                    self.scroll_offset = self.scroll_offset.saturating_add((-delta) as u16);
                 }
                 self.user_scrolled = true;
             }
@@ -627,19 +627,18 @@ impl App {
                         && last.tool_name.as_deref() == Some(&name)
                     {
                         last.content = format_tool_result(&name, &args, &content);
-                        let (cc, tc) = compute_collapse_state(&MessageRole::Tool, &last.content);
-                        last.content_collapsed = cc;
-                        last.tool_collapsed = tc;
+                        // Live tool results: always expanded by default
+                        last.content_collapsed = false;
+                        last.tool_collapsed = false;
                     } else {
                         let formatted = format_tool_result(&name, &args, &content);
-                        let (content_collapsed, tool_collapsed) = compute_collapse_state(&MessageRole::Tool, &formatted);
                         self.committed_messages.push(UIMessage {
                             role: MessageRole::Tool,
                             content: formatted,
                             tool_name: Some(name),
                     tool_args: Some(args),
-                            content_collapsed,
-                            tool_collapsed,
+                            content_collapsed: false,
+                            tool_collapsed: false,
                         });
                     }
                 }
@@ -814,7 +813,7 @@ impl App {
                 Constraint::Length(1),
                 Constraint::Min(3),
                 Constraint::Length(1),
-                Constraint::Length((self.input_box.textarea.lines().len() + 1).clamp(3, 12) as u16),
+                Constraint::Length((self.input_box.textarea.lines().len() + 1).clamp(1, 12) as u16),
             ]
         };
         let layout = Layout::default()
@@ -909,6 +908,11 @@ impl App {
                 tool_collapsed: false,
                 tool_args: None,
             });
+            // Auto-name the session from the first user message
+            if self.session_name == "New Session" {
+                let name = truncate_session_name(&text);
+                self.session_name = name;
+            }
             self.phase = AgentPhase::Thinking;
             let turn_id = TurnId::new();
             self.current_turn_id = Some(turn_id.clone());
@@ -951,6 +955,19 @@ impl App {
         self.pending_inputs.len()
     }
 }
+
+/// Truncate a user message to a short session name (max ~50 chars, no newlines).
+fn truncate_session_name(text: &str) -> String {
+    let first_line = text.lines().next().unwrap_or("");
+    let trimmed = first_line.trim();
+    if trimmed.len() <= 50 {
+        trimmed.to_string()
+    } else {
+        let end = trimmed.char_indices().take(50).last().map(|(i, _)| i).unwrap_or(0);
+        format!("{}...", &trimmed[..end])
+    }
+}
+
 /// Start the daemon in a background tokio task and wait for it to be ready.
 /// Returns the base URL (including port) and a shutdown sender.
 #[cfg(feature = "daemon")]
@@ -1014,42 +1031,15 @@ fn compute_collapse_state(role: &MessageRole, content: &str) -> (bool, bool) {
 fn format_tool_result(_name: &str, _args: &serde_json::Value, raw_json: &str) -> String {
     let parsed: serde_json::Value = match serde_json::from_str(raw_json) {
         Ok(v) => v,
-        Err(_) => {
-            let lines: Vec<&str> = raw_json.lines().collect();
-            if lines.len() > MAX_TOOL_OUTPUT_LINES {
-                let preview: Vec<&str> = lines[..MAX_TOOL_OUTPUT_LINES].to_vec();
-                return format!(
-                    "{}\n  {} +{} lines (Ctrl+O to expand)",
-                    preview.join("\n"),
-                    '…',
-                    lines.len() - MAX_TOOL_OUTPUT_LINES
-                );
-            }
-            return raw_json.trim_end().to_string();
-        }
+        Err(_) => return raw_json.trim_end().to_string(),
     };
     let error = parsed["error"].as_str().unwrap_or("");
     if !error.is_empty() {
-        return format!("  {} {}", '✘', error);
+        return error.to_string();
     }
-    let content = parsed["content"].as_str().unwrap_or("");
-    if content.is_empty() {
-        return String::new();
-    }
-    let non_empty: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
-    let total = non_empty.len();
-    let shown: Vec<&str> = non_empty.iter().take(MAX_TOOL_OUTPUT_LINES).copied().collect();
-    let mut result = shown.join("\n");
-    if total > MAX_TOOL_OUTPUT_LINES {
-        result.push_str(&format!(
-            "\n  {} +{} lines (Ctrl+O to expand)",
-            '…',
-            total - MAX_TOOL_OUTPUT_LINES
-        ));
-    }
-    result
+    parsed["content"].as_str().unwrap_or("").to_string()
 }
-const MAX_TOOL_OUTPUT_LINES: usize = 5;
+
 fn tool_label(name: &str, args: &serde_json::Value) -> String {
     match name {
         "exec_command" | "execute_command" => {

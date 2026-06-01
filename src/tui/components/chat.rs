@@ -7,7 +7,6 @@ use ratatui::Frame;
 
 const USER_COLOR: Color = Color::Rgb(255, 140, 66);
 const ASSISTANT_COLOR: Color = Color::Rgb(147, 112, 219);
-const ASSISTANT_HEADER_COLOR: Color = Color::Rgb(200, 150, 255);
 const TEXT_COLOR: Color = Color::Rgb(220, 220, 230);
 const DIM_COLOR: Color = Color::Rgb(100, 100, 110);
 const TOOL_COLOR: Color = Color::Rgb(100, 200, 255);
@@ -30,13 +29,10 @@ pub fn render(
 
     // Streaming content as a transient final block
     if streaming_active && !streaming_content.is_empty() {
-        let max_w = area.width.saturating_sub(4) as usize;
-        lines.push(border_top(" Wgenty \u{2590}", ASSISTANT_HEADER_COLOR, max_w));
+        let wrap_w = area.width.saturating_sub(4) as usize;
         for line in streaming_content.lines() {
-            push_wrapped(&mut lines, line, "\u{2502} ", ASSISTANT_COLOR, TEXT_COLOR, max_w);
+            push_wrapped(&mut lines, line, "  ", TEXT_COLOR, TEXT_COLOR, wrap_w + 2);
         }
-        lines.push(border_bottom(ASSISTANT_COLOR, max_w));
-        lines.push(Line::raw(""));
     }
 
     let total_lines = lines.len() as u16;
@@ -57,29 +53,25 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
 
     match msg.role {
         MessageRole::User => {
-            let mut lines = vec![border_top(" You ", USER_COLOR, max_w)];
+            let mut lines = Vec::new();
+            lines.push(Line::from(Span::styled(">>> You:", Style::default().fg(USER_COLOR).add_modifier(Modifier::BOLD))));
             for line in msg.content.lines() {
-                push_wrapped(&mut lines, line, "\u{2502} ", USER_COLOR, Color::White, max_w);
+                push_wrapped(&mut lines, line, "  ", Color::White, Color::White, max_w + 2);
             }
-            lines.push(border_bottom(USER_COLOR, max_w));
             lines.push(Line::raw(""));
             lines
         }
         MessageRole::Assistant => {
-            let mut lines = vec![border_top(" Wgenty ", ASSISTANT_HEADER_COLOR, max_w)];
+            let mut lines = Vec::new();
             if msg.content.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    "\u{2502} ",
-                    Style::default().fg(ASSISTANT_COLOR),
-                )));
+                lines.push(Line::from(Span::styled("   ", Style::default().fg(ASSISTANT_COLOR))));
             } else if msg.content_collapsed {
-                render_collapsed(&mut lines, &msg.content, "\u{2502} ", ASSISTANT_COLOR, max_w);
+                render_collapsed(&mut lines, &msg.content, "  ", ASSISTANT_COLOR, max_w + 2);
             } else {
                 for line in msg.content.lines() {
-                    push_wrapped(&mut lines, line, "\u{2502} ", ASSISTANT_COLOR, TEXT_COLOR, max_w);
+                    push_wrapped(&mut lines, line, "  ", TEXT_COLOR, TEXT_COLOR, max_w + 2);
                 }
             }
-            lines.push(border_bottom(ASSISTANT_COLOR, max_w));
             lines.push(Line::raw(""));
             lines
         }
@@ -113,12 +105,12 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
                     .unwrap_or_default();
                 let mut lines: Vec<Line<'static>> = Vec::new();
 
-                // Header: \u{2022} {verb} {name}{detail}
+                // Header: \u{2022} {verb} {detail}
                 lines.push(Line::from(vec![
                     Span::styled("\u{2022} ", Style::default().fg(DIM_COLOR)),
                     Span::styled(verb.clone(), Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD)),
                     Span::styled(
-                        format!(" {}{}", name, detail),
+                        format!(" {} {}", verb, detail),
                         Style::default().fg(DIM_COLOR),
                     ),
                 ]));
@@ -131,11 +123,13 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
                 } else {
                     content_lines.iter().take(MAX_TOOL_DISPLAY_LINES).copied().collect::<Vec<_>>()
                 };
+                let wrap_width = width.saturating_sub(4) as usize;
                 for line in &show {
-                    lines.push(Line::from(vec![
-                        Span::styled("  ", Style::default().fg(DIM_COLOR)),
-                        Span::styled(line.to_string(), Style::default().fg(DIM_COLOR)),
-                    ]));
+                    if line.is_empty() {
+                        lines.push(Line::from(Span::styled("  ", Style::default().fg(DIM_COLOR))));
+                    } else {
+                        push_wrapped(&mut lines, line, "  ", DIM_COLOR, DIM_COLOR, wrap_width + 2);
+                    }
                 }
                 if total > show.len() {
                     lines.push(Line::from(vec![Span::styled(
@@ -247,22 +241,6 @@ fn render_collapsed(
     )));
 }
 
-fn border_top(label: &str, color: Color, max_w: usize) -> Line<'static> {
-    let label_len = label.chars().count();
-    let right_len = max_w.saturating_sub(label_len);
-    Line::from(Span::styled(
-        format!("\u{250c}{}\u{250c}{}", label, "\u{2500}".repeat(right_len)),
-        Style::default().fg(color),
-    ))
-}
-
-fn border_bottom(color: Color, max_w: usize) -> Line<'static> {
-    Line::from(Span::styled(
-        format!("\u{2514}{}", "\u{2500}".repeat(max_w)),
-        Style::default().fg(color),
-    ))
-}
-
 fn push_wrapped(
     lines: &mut Vec<Line<'static>>,
     text: &str,
@@ -271,9 +249,6 @@ fn push_wrapped(
     text_color: Color,
     max_w: usize,
 ) {
-    let prefix_len = prefix.chars().count();
-    let content_w = max_w.saturating_sub(prefix_len);
-
     if text.is_empty() {
         lines.push(Line::from(Span::styled(
             prefix.to_string(),
@@ -282,39 +257,15 @@ fn push_wrapped(
         return;
     }
 
+    let prefix_width = prefix.chars().count();
+    let wrap_width = max_w.saturating_sub(prefix_width).max(1);
+
     let prefix_owned = prefix.to_string();
-    let chars: Vec<char> = text.chars().collect();
-    let mut start = 0;
-
-    while start < chars.len() {
-        let end = (start + content_w).min(chars.len());
-        let end = if end < chars.len() {
-            let mut break_at = end;
-            for i in (start..end).rev() {
-                if chars[i] == ' ' {
-                    break_at = i;
-                    break;
-                }
-            }
-            if break_at == start {
-                end
-            } else {
-                break_at
-            }
-        } else {
-            end
-        };
-
-        let chunk: String = chars[start..end].iter().collect();
+    let wrapped = textwrap::wrap(text, textwrap::Options::new(wrap_width));
+    for line in wrapped {
         lines.push(Line::from(vec![
             Span::styled(prefix_owned.clone(), Style::default().fg(prefix_color)),
-            Span::styled(chunk, Style::default().fg(text_color)),
+            Span::styled(line.into_owned(), Style::default().fg(text_color)),
         ]));
-
-        start = if end < chars.len() && chars[end] == ' ' {
-            end + 1
-        } else {
-            end
-        };
     }
 }
