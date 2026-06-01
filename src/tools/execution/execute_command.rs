@@ -1,6 +1,7 @@
 //! Execute Command Tool — runs shell commands with sandbox isolation.
 
 use crate::sandbox::{SandboxConfig, SandboxManager, SandboxProfile, SecurityLevel};
+use std::path::PathBuf;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 
@@ -23,9 +24,14 @@ impl ExecuteCommandTool {
     /// Build a default sandbox profile for the current working directory.
     fn default_profile(&self) -> SandboxProfile {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        SandboxConfig::builder(cwd)
+        let mut profile = SandboxConfig::builder(cwd)
             .security_level(SecurityLevel::Minimal)
-            .build()
+            .build();
+        // Add home directory so tools (cargo, node, etc.) can read configs/caches
+        if let Ok(home) = std::env::var("HOME") {
+            profile.readable_paths.push(PathBuf::from(home));
+        }
+        profile
     }
 }
 
@@ -77,24 +83,26 @@ impl Tool for ExecuteCommandTool {
 
             match sb.execute(command, &profile).await {
                 Ok(output) => {
-                    if output.exit_code != 0 {
+                    if output.killed_by_sandbox {
+                        tracing::warn!(
+                            "Sandbox ({}) killed process, falling back to direct execution.",
+                            sb.status().backend_name
+                        );
+                    } else if output.exit_code != 0 {
                         return Err(ToolError {
                             message: format!(
                                 "exit code: {}\nstdout:\n{}\nstderr:\n{}",
                                 output.exit_code, output.stdout, output.stderr
                             ),
-                            code: if output.killed_by_sandbox {
-                                Some("sandbox_killed".to_string())
-                            } else {
-                                Some("non_zero_exit".to_string())
-                            },
+                            code: Some("non_zero_exit".to_string()),
+                        });
+                    } else {
+                        return Ok(ToolOutput {
+                            output_type: "text".to_string(),
+                            content: output.stdout,
+                            metadata: std::collections::HashMap::new(),
                         });
                     }
-                    return Ok(ToolOutput {
-                        output_type: "text".to_string(),
-                        content: output.stdout,
-                        metadata: std::collections::HashMap::new(),
-                    });
                 }
                 Err(e) => {
                     tracing::warn!(
