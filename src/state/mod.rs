@@ -1,5 +1,7 @@
 //! Application State Module
 
+pub mod agent_phase;
+
 use crate::config::Settings;
 use std::sync::Arc;
 use tokio::sync::RwLock;

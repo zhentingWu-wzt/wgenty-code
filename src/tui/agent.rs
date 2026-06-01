@@ -1,7 +1,7 @@
 //! AgentLoop — the core agent loop: SSE streaming + tool execution + context compaction.
 //! Port of TypeScript agent-loop.ts to Rust.
 //!
-//! Each Job (one user input → final response) creates its own AgentLoop instance
+//! Each Turn (one user input → final response) creates its own AgentLoop instance
 //! backed by a *shared* conversation_history (Arc<Mutex<Vec<ChatMessage>>>).
 //! This allows multiple user inputs to be queued while one is processing:
 //! each pending input becomes a new AgentLoop that inherits the accumulated history.
@@ -13,18 +13,19 @@ use crate::tui::app::AppEvent;
 use crate::tui::client::DaemonClient;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 const MAX_RETRIES: u32 = 2;
 const MAX_ESTIMATED_TOKENS: usize = 50_000;
-const MAX_ROUNDS: usize = 10;
+// MAX_LLM_ROUNDS (50) defined inside process_input_inner as safety valve.
 
 pub struct AgentLoop {
     client: DaemonClient,
     event_tx: mpsc::UnboundedSender<AppEvent>,
-    /// Shared conversation history across all Jobs in this session.
+    /// Shared conversation history across all Turns in this session.
     /// Each AgentLoop instance reads/writes through this Arc, so the
-    /// accumulated context is inherited by the next Job in the queue.
+    /// accumulated context is inherited by the next Turn in the queue.
     conversation_history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
     /// Pre-assembled system messages (layered instructions from PromptAssembler).
     /// Used when initializing or resetting the conversation history.
@@ -54,7 +55,24 @@ impl AgentLoop {
     }
 
     /// Process a single user input. Handles the full agent loop (SSE + tools).
-    pub async fn process_input(&mut self, input: String) {
+    /// Returns Ok(()) on normal completion, Err if cancelled or timed out.
+    pub async fn process_input(&mut self, input: String) -> Result<(), String> {
+        const AGENT_LOOP_TIMEOUT: Duration = Duration::from_secs(600);
+        
+        match tokio::time::timeout(AGENT_LOOP_TIMEOUT, self.process_input_inner(input)).await {
+            Ok(result) => result,
+            Err(_elapsed) => {
+                let _ = self.event_tx.send(AppEvent::StreamError(format!(
+                    "Agent loop timed out after {} minutes",
+                    AGENT_LOOP_TIMEOUT.as_secs() / 60
+                )));
+                Err("Agent loop timed out".to_string())
+            }
+        }
+    }
+    
+    /// Inner implementation of the agent loop.
+    async fn process_input_inner(&mut self, input: String) -> Result<(), String> {
         self.inject_background_results().await;
 
         {
@@ -62,7 +80,20 @@ impl AgentLoop {
             history.push(ChatMessage::user(&input));
         }
 
-        for _round in 0..MAX_ROUNDS {
+        let mut llm_rounds = 0;
+        // Soft limit: model-driven exit with tool-use rounds as safety valve.
+        // Codex uses no hard limit — the model declares when it's done via
+        // finish_reason != "tool_calls". Here we keep a generous ceiling (50)
+        // to catch runaway loops without cutting off legitimate tasks.
+        const MAX_LLM_ROUNDS: usize = 50;
+        loop {
+            if llm_rounds >= MAX_LLM_ROUNDS {
+                let _ = self.event_tx.send(AppEvent::StreamError(
+                    format!("Agent exceeded {} LLM rounds", MAX_LLM_ROUNDS)
+                ));
+                return Err(format!("Exceeded {} LLM rounds", MAX_LLM_ROUNDS));
+            }
+
             let messages = self.micro_compact().await;
 
             if self.needs_compaction(&messages) {
@@ -74,9 +105,11 @@ impl AgentLoop {
                 Ok(r) => r,
                 Err(e) => {
                     let _ = self.event_tx.send(AppEvent::StreamError(e.to_string()));
-                    return;
+                    return Err(e.to_string());
                 }
             };
+
+            llm_rounds += 1;
 
             if result.has_tool_calls && !result.tool_calls.is_empty() {
                 // Build and push assistant message with tool calls
@@ -132,9 +165,34 @@ impl AgentLoop {
                         name: tc.function.name.clone(),
                     });
 
-                    let exec_result = self
-                        .execute_tool_with_permission(&tc.function.name, args.clone())
-                        .await;
+                    // Per-tool timeout: subagents get 5min, others get 2min
+                    let tool_timeout = if tc.function.name == "task" {
+                        Duration::from_secs(300)
+                    } else {
+                        Duration::from_secs(120)
+                    };
+                    let exec_result = match tokio::time::timeout(
+                        tool_timeout,
+                        self.execute_tool_with_permission(&tc.function.name, args.clone()),
+                    ).await {
+                        Ok(result) => result,
+                        Err(_elapsed) => {
+                            let msg = format!(
+                                r#"{{"success":false,"error":"Tool '{}' timed out after {}s"}}"#,
+                                tc.function.name,
+                                tool_timeout.as_secs()
+                            );
+                            let _ = self.event_tx.send(AppEvent::ToolResult {
+                                name: tc.function.name.clone(),
+                                content: msg.clone(),
+                            });
+                            {
+                                let mut history = self.conversation_history.lock().await;
+                                history.push(ChatMessage::tool(&tc.id, msg));
+                            }
+                            continue;
+                        }
+                    };
 
                     let _ = self.event_tx.send(AppEvent::ToolResult {
                         name: tc.function.name.clone(),
@@ -170,7 +228,8 @@ impl AgentLoop {
                 continue; // Continue the tool call loop
             }
 
-            // Normal assistant response — no tool calls
+            // Model decided it's done: finish_reason != "tool_calls".
+            // This is the primary exit path — no hard round limit needed.
             if !result.content.is_empty() {
                 let reasoning = if result.reasoning_content.is_empty() {
                     None
@@ -193,8 +252,10 @@ impl AgentLoop {
                 finish_reason: result.finish_reason,
             });
             let _ = self.event_tx.send(AppEvent::SaveSession);
-            return;
+            return Ok(());
         }
+        
+        // Unreachable: loop header handles max rounds exit
     }
 
     /// Stream with retry logic. Retries up to MAX_RETRIES on network/stream errors.
@@ -263,11 +324,22 @@ impl AgentLoop {
         &mut self,
         response: reqwest::Response,
     ) -> anyhow::Result<StreamResult> {
+        const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
         let mut processor = StreamProcessor::new();
         let mut stream = response.bytes_stream();
 
         use futures::StreamExt;
-        while let Some(chunk) = stream.next().await {
+        loop {
+            let chunk = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()).await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(_elapsed) => {
+                    return Err(anyhow::anyhow!(
+                        "Stream stalled: no data received for {} seconds",
+                        STREAM_IDLE_TIMEOUT.as_secs()
+                    ));
+                }
+            };
             let bytes = chunk?;
             for event in processor.feed_bytes(&bytes) {
                 self.dispatch_event(event);
@@ -348,8 +420,9 @@ impl AgentLoop {
                 responder: crate::tui::app::PermissionResponder(Some(tx)),
             });
 
-            match rx.await {
-                Ok(crate::tui::app::PermissionResponse::AllowOnce) => {
+            const PERMISSION_TIMEOUT: Duration = Duration::from_secs(120);
+            match tokio::time::timeout(PERMISSION_TIMEOUT, rx).await {
+                Ok(Ok(crate::tui::app::PermissionResponse::AllowOnce)) => {
                     // Approve → execute → unapprove (one-shot)
                     if self.client.approve_tool(&perm.session_rule).await.is_err() {
                         return r#"{"success":false,"error":"Failed to approve permission"}"#.to_string();
@@ -378,7 +451,7 @@ impl AgentLoop {
                         }
                     }
                 }
-                Ok(crate::tui::app::PermissionResponse::AlwaysAllow) => {
+                Ok(Ok(crate::tui::app::PermissionResponse::AlwaysAllow)) => {
                     // Approve the rule, then re-execute the tool
                     if self.client.approve_tool(&perm.session_rule).await.is_err() {
                         return r#"{{"success":false,"error":"Failed to approve permission"}}"#.to_string();
@@ -403,10 +476,17 @@ impl AgentLoop {
                         }
                     }
                 }
-                Ok(crate::tui::app::PermissionResponse::Deny) | Err(_) => {
+                Ok(Ok(crate::tui::app::PermissionResponse::Deny)) | Ok(Err(_)) => {
                     return format!(
                         r#"{{"success":false,"error":"PERMISSION DENIED: {}"}}"#,
                         perm.reason
+                    );
+                }
+                Err(_elapsed) => {
+                    return format!(
+                        r#"{{"success":false,"error":"PERMISSION TIMEOUT: {} (no response in {}s)"}}"#,
+                        perm.reason,
+                        PERMISSION_TIMEOUT.as_secs()
                     );
                 }
             }
