@@ -1,6 +1,6 @@
-//! WebAssembly Module - Browser-compatible Claude Code
+//! WebAssembly Module - Browser-compatible Wgenty Code
 //!
-//! This module provides WebAssembly bindings for running Claude Code
+//! This module provides WebAssembly bindings for running Wgenty Code
 //! in web browsers with JavaScript interop.
 
 use serde::{Deserialize, Serialize};
@@ -23,13 +23,13 @@ pub fn start() {
 
 /// Main WASM API for JavaScript interop
 #[wasm_bindgen]
-pub struct ClaudeCodeWasm {
+pub struct WgentyCodeWasm {
     client: WasmApiClient,
     storage: BrowserStorage,
 }
 
 #[wasm_bindgen]
-impl ClaudeCodeWasm {
+impl WgentyCodeWasm {
     #[wasm_bindgen(constructor)]
     pub fn new(api_key: String, base_url: String) -> Self {
         Self {

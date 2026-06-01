@@ -1,5 +1,5 @@
 # ==========================================
-# 多阶段构建：Claude Code Rust 容器镜像
+# 多阶段构建：Wgenty Code Rust 容器镜像
 # ==========================================
 
 # 阶段 1: 构建阶段
@@ -20,8 +20,8 @@ RUN cargo build --release
 # 阶段 2: 运行时阶段（最小镜像）
 FROM alpine:3.18
 
-LABEL maintainer="claude-code-rust"
-LABEL description="High-performance Claude Code CLI - Rust Edition"
+LABEL maintainer="wgenty-code-rust"
+LABEL description="High-performance Wgenty Code CLI - Rust Edition"
 LABEL version="0.1.0"
 
 # 安装必要的运行时依赖
@@ -34,10 +34,10 @@ RUN apk add --no-cache \
 WORKDIR /app
 
 # 从构建阶段复制二进制文件
-COPY --from=builder /build/target/release/claude-code /usr/local/bin/
+COPY --from=builder /build/target/release/wgenty-code /usr/local/bin/
 
 # 创建配置目录
-RUN mkdir -p /home/claude/.config/claude-code
+RUN mkdir -p /home/claude/.config/wgenty-code
 
 # 设置环境变量
 ENV PATH="/usr/local/bin:${PATH}" \
@@ -53,10 +53,10 @@ RUN addgroup -D claude && \
 USER claude
 
 # 验证安装
-RUN claude-code --version
+RUN wgenty-code --version
 
 # 设置入口点
-ENTRYPOINT ["claude-code"]
+ENTRYPOINT ["wgenty-code"]
 
 # 默认命令：显示帮助
 CMD ["--help"]
@@ -64,13 +64,13 @@ CMD ["--help"]
 # ==========================================
 # 构建说明：
 # ==========================================
-# docker build -t claude-code-rust:latest .
-# docker build -t claude-code-rust:0.1.0 .
+# docker build -t wgenty-code-rust:latest .
+# docker build -t wgenty-code-rust:0.1.0 .
 #
 # 运行数据卷挂载：
-# docker run -it --rm -v ~/.config/claude-code:/home/claude/.config/claude-code claude-code-rust
+# docker run -it --rm -v ~/.config/wgenty-code:/home/claude/.config/wgenty-code wgenty-code-rust
 # 
 # 使用示例：
-# docker run --rm claude-code-rust --version
-# docker run -it --rm claude-code-rust repl
-# docker run --rm claude-code-rust query --prompt "What is Rust?"
+# docker run --rm wgenty-code-rust --version
+# docker run -it --rm wgenty-code-rust repl
+# docker run --rm wgenty-code-rust query --prompt "What is Rust?"

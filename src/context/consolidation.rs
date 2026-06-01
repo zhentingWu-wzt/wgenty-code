@@ -183,7 +183,7 @@ impl ConsolidationEngine {
             if count >= 10 {
                 let insight_content = format!(
                     "Pattern detected: {} {} memories recorded. Consider reviewing for optimization.",
-                    count, 
+                    count,
                     match memory_type {
                         MemoryType::Session => "session",
                         MemoryType::Conversation => "conversation",

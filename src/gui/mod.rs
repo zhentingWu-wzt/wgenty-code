@@ -1,6 +1,6 @@
 //! GUI Module - Desktop GUI using egui/eframe
 //!
-//! This module provides a native desktop GUI for Claude Code
+//! This module provides a native desktop GUI for Wgenty Code
 //! with a modern, responsive interface.
 
 pub mod app;
@@ -12,7 +12,7 @@ pub mod syntax_highlight;
 pub mod theme;
 pub mod tool_calls;
 
-pub use app::ClaudeCodeApp;
+pub use app::WgentyCodeApp;
 pub use theme::Theme;
 
 /// Async message type for GUI communication

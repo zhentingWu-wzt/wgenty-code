@@ -1,6 +1,6 @@
-# Chinese locale for Claude Code
+# Chinese locale for Wgenty Code
 
-app-name = Claude Code
+app-name = Wgenty Code
 app-description = AI驱动的编程助手
 app-version = 版本 { $version }
 
@@ -30,7 +30,7 @@ status-loading = 加载中...
 status-saving = 保存中...
 status-done = 完成
 
-welcome-message = 欢迎使用 Claude Code！
+welcome-message = 欢迎使用 Wgenty Code！
 welcome-user = 欢迎，{ $name }！
 
 plugin-install = 安装

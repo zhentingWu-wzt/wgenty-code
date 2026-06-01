@@ -28,6 +28,44 @@ pub struct Settings {
     pub voice: VoiceSettings,
     /// Plugin settings
     pub plugins: PluginSettings,
+    /// Hook definitions for lifecycle events
+    /// Format: { "PreToolUse": [{ "command": "...", "timeout_secs": 30 }] }
+    #[serde(default)]
+    pub hooks: Option<serde_json::Value>,
+    /// User-defined developer instructions injected into the system prompt.
+    /// When set and non-empty, wraps in <developer_instructions> tags.
+    #[serde(default)]
+    pub developer_instructions: Option<String>,
+    /// Collaboration mode: "default", "plan", "execute", or "pair_programming".
+    /// When set, injects the corresponding collaboration instructions.
+    #[serde(default)]
+    pub collaboration_mode: Option<String>,
+    /// Include permissions instructions (sandbox mode + approval policy) in system prompt.
+    #[serde(default = "default_true")]
+    pub include_permissions_instructions: bool,
+    /// Include developer instructions in system prompt.
+    #[serde(default = "default_true")]
+    pub include_developer_instructions: bool,
+    /// Include collaboration mode instructions in system prompt.
+    #[serde(default = "default_true")]
+    pub include_collaboration_instructions: bool,
+    /// Include environment context (cwd, shell, date, timezone) in system prompt.
+    #[serde(default = "default_true")]
+    pub include_environment_context: bool,
+    /// Include skill instructions in system prompt.
+    #[serde(default = "default_true")]
+    pub include_skill_instructions: bool,
+    /// Path to a file containing model instructions that override base instructions.
+    #[serde(default)]
+    pub model_instructions_file: Option<String>,
+    /// Guardian (security review) configuration.
+    #[serde(default)]
+    pub guardian: GuardianSettings,
+}
+
+/// Default helper for serde: returns true.
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,10 +102,34 @@ pub struct PluginSettings {
     pub auto_update: bool,
 }
 
+/// Guardian (security review) settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardianSettings {
+    /// Enable the guardian security review layer.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Enable LLM-based review for medium+ risk commands.
+    #[serde(default)]
+    pub llm_review: bool,
+    /// Auto-deny commands classified as Critical risk.
+    #[serde(default = "default_true")]
+    pub auto_deny_critical: bool,
+}
+
+impl Default for GuardianSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            llm_review: false,
+            auto_deny_critical: true,
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let config_dir = home.join(".claude-code");
+        let config_dir = home.join(".wgenty-code");
 
         Self {
             api: ApiConfig::default(),
@@ -92,6 +154,16 @@ impl Default for Settings {
                 plugin_dir: config_dir.join("plugins"),
                 auto_update: true,
             },
+            hooks: None,
+            developer_instructions: None,
+            collaboration_mode: None,
+            include_permissions_instructions: true,
+            include_developer_instructions: true,
+            include_collaboration_instructions: true,
+            include_environment_context: true,
+            include_skill_instructions: true,
+            model_instructions_file: None,
+            guardian: GuardianSettings::default(),
         }
     }
 }
@@ -100,7 +172,7 @@ impl Settings {
     /// Load settings from file
     pub fn load() -> anyhow::Result<Self> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let config_path = home.join(".claude-code").join("settings.json");
+        let config_path = home.join(".wgenty-code").join("settings.json");
 
         if config_path.exists() {
             let content = std::fs::read_to_string(&config_path)?;
@@ -116,7 +188,7 @@ impl Settings {
     /// Save settings to file
     pub fn save(&self) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let config_dir = home.join(".claude-code");
+        let config_dir = home.join(".wgenty-code");
         std::fs::create_dir_all(&config_dir)?;
 
         let config_path = config_dir.join("settings.json");

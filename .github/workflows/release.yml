@@ -15,16 +15,16 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: claude_code_rs
-            asset_name: claude-code-rust-linux-x86_64
+            artifact: wgenty_code_rs
+            asset_name: wgenty-code-rust-linux-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: claude_code_rs.exe
-            asset_name: claude-code-rust-windows-x86_64.exe
+            artifact: wgenty_code_rs.exe
+            asset_name: wgenty-code-rust-windows-x86_64.exe
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact: claude_code_rs
-            asset_name: claude-code-rust-macos-x86_64
+            artifact: wgenty_code_rs
+            asset_name: wgenty-code-rust-macos-x86_64
 
     steps:
       - uses: actions/checkout@v4
@@ -47,8 +47,8 @@ jobs:
       
       - name: 构建 Docker 镜像
         run: |
-          docker build -t claude-code-rust:${{ github.ref_name }} .
-          docker tag claude-code-rust:${{ github.ref_name }} claude-code-rust:latest
+          docker build -t wgenty-code-rust:${{ github.ref_name }} .
+          docker tag wgenty-code-rust:${{ github.ref_name }} wgenty-code-rust:latest
       
       - name: 验证镜像
-        run: docker run --rm claude-code-rust:latest --version
+        run: docker run --rm wgenty-code-rust:latest --version

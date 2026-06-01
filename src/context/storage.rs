@@ -222,6 +222,6 @@ impl Storage {
 impl Default for Storage {
     fn default() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        Self::new(home.join(".claude-code").join("memory"))
+        Self::new(home.join(".wgenty-code").join("memory"))
     }
 }

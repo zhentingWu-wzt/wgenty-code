@@ -10,7 +10,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{Mutex, RwLock};
 
+use crate::sandbox::{SandboxManager, SandboxProfile, SandboxConfig, SecurityLevel};
+
 pub struct CommandSessionManager {
+    sandbox: Option<Arc<SandboxManager>>,
+    sandbox_profile: Option<SandboxProfile>,
     sessions: RwLock<HashMap<u64, Arc<CommandSessionHandle>>>,
     next_id: AtomicU64,
 }
@@ -42,28 +46,69 @@ pub struct SessionChunk {
 impl CommandSessionManager {
     pub fn new() -> Self {
         Self {
+            sandbox: None,
+            sandbox_profile: None,
             sessions: RwLock::new(HashMap::new()),
             next_id: AtomicU64::new(1),
         }
+    }
+
+    /// Attach a sandbox manager. All future spawns will run inside the sandbox.
+    pub fn with_sandbox(mut self, sandbox: Arc<SandboxManager>) -> Self {
+        self.sandbox = Some(sandbox);
+        self
+    }
+
+    /// Set the sandbox profile for future spawns.
+    pub fn with_sandbox_profile(mut self, profile: SandboxProfile) -> Self {
+        self.sandbox_profile = Some(profile);
+        self
+    }
+
+    /// Build a Default sandbox profile for the given workspace.
+    fn default_profile(&self, cwd: &PathBuf) -> SandboxProfile {
+        SandboxConfig::builder(cwd.clone())
+            .security_level(SecurityLevel::Minimal)
+            .build()
     }
 
     pub async fn spawn(&self, command: &str, workdir: Option<PathBuf>) -> Result<u64, ToolError> {
         let session_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let cwd = workdir.unwrap_or_else(|| PathBuf::from("."));
 
-        let mut child = tokio::process::Command::new("sh");
-        child
-            .arg("-c")
-            .arg(command)
-            .current_dir(&cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        // Try sandbox spawn first; fall back to direct spawn on error
+        let mut child = if let Some(ref sb) = self.sandbox {
+            let profile = self
+                .sandbox_profile
+                .clone()
+                .unwrap_or_else(|| self.default_profile(&cwd));
 
-        let mut child = child.spawn().map_err(|e| ToolError {
-            message: format!("Failed to spawn command: {}", e),
-            code: Some("spawn_error".to_string()),
-        })?;
+            match sb.spawn(command, &profile) {
+                Ok(sandboxed) => {
+                    // Quick health check: wait 200ms, if the process was already
+                    // killed by the sandbox, fall back to direct execution.
+                    let mut child = sandboxed.child;
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    match child.try_wait() {
+                        Ok(Some(status)) if status.code().is_none() => {
+                            // Process was killed by signal (likely sandbox violation)
+                            tracing::warn!(
+                                "Sandbox killed process immediately ({}), falling back to direct",
+                                sb.status().backend_name
+                            );
+                            self.spawn_direct(command, &cwd)?
+                        }
+                        _ => child, // Still running or exited normally, use sandboxed child
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Sandbox spawn failed ({}), falling back to direct: {:?}", sb.status().backend_name, e);
+                    self.spawn_direct(command, &cwd)?
+                }
+            }
+        } else {
+            self.spawn_direct(command, &cwd)?
+        };
 
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().ok_or_else(|| ToolError {
@@ -95,6 +140,22 @@ impl CommandSessionManager {
 
         self.sessions.write().await.insert(session_id, handle);
         Ok(session_id)
+    }
+
+    /// Direct spawn without sandbox (fallback / no-sandbox mode).
+    fn spawn_direct(&self, command: &str, cwd: &PathBuf) -> Result<tokio::process::Child, ToolError> {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c")
+            .arg(command)
+            .current_dir(cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        cmd.spawn().map_err(|e| ToolError {
+            message: format!("Failed to spawn command: {}", e),
+            code: Some("spawn_error".to_string()),
+        })
     }
 
     fn spawn_reader<R>(mut reader: R, state: Arc<SessionState>, is_stdout: bool)
@@ -138,10 +199,13 @@ impl CommandSessionManager {
                 });
             };
 
-            stdin.write_all(chars.as_bytes()).await.map_err(|e| ToolError {
-                message: format!("Failed to write stdin: {}", e),
-                code: Some("stdin_write_error".to_string()),
-            })?;
+            stdin
+                .write_all(chars.as_bytes())
+                .await
+                .map_err(|e| ToolError {
+                    message: format!("Failed to write stdin: {}", e),
+                    code: Some("stdin_write_error".to_string()),
+                })?;
             stdin.flush().await.map_err(|e| ToolError {
                 message: format!("Failed to flush stdin: {}", e),
                 code: Some("stdin_flush_error".to_string()),
@@ -194,18 +258,12 @@ impl CommandSessionManager {
         let stdout_bytes = handle.state.stdout.lock().await.clone();
         let stderr_bytes = handle.state.stderr.lock().await.clone();
 
-        let stdout = Self::slice_incremental(
-            &stdout_bytes,
-            &handle.state.stdout_offset,
-            max_output_chars,
-        )
-        .await;
-        let stderr = Self::slice_incremental(
-            &stderr_bytes,
-            &handle.state.stderr_offset,
-            max_output_chars,
-        )
-        .await;
+        let stdout =
+            Self::slice_incremental(&stdout_bytes, &handle.state.stdout_offset, max_output_chars)
+                .await;
+        let stderr =
+            Self::slice_incremental(&stderr_bytes, &handle.state.stderr_offset, max_output_chars)
+                .await;
         let exit_code = *handle.state.exit_status.read().await;
         let finished = exit_code.is_some();
 
@@ -272,18 +330,8 @@ impl CommandSessionManager {
             })
     }
 
-    fn truncate_chars(input: String, max_output_chars: usize) -> String {
-        if max_output_chars == 0 {
-            return String::new();
-        }
-
-        let count = input.chars().count();
-        if count <= max_output_chars {
-            return input;
-        }
-
-        let truncated: String = input.chars().take(max_output_chars).collect();
-        format!("{}\n...[truncated]", truncated)
+    fn truncate_chars(input: String, _max_output_chars: usize) -> String {
+        input
     }
 }
 

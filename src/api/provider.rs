@@ -120,9 +120,13 @@ impl Provider for AnthropicProvider {
 
     fn resolve_model_id(&self, model: &str) -> String {
         match model.to_lowercase().as_str() {
-            "sonnet" | "claude-sonnet" | "claude-sonnet-4-6" => "claude-sonnet-4-6-20250514".to_string(),
+            "sonnet" | "claude-sonnet" | "claude-sonnet-4-6" => {
+                "claude-sonnet-4-6-20250514".to_string()
+            }
             "opus" | "claude-opus" | "claude-opus-4-7" => "claude-opus-4-7-20250514".to_string(),
-            "haiku" | "claude-haiku" | "claude-haiku-4-5" => "claude-haiku-4-5-20251001".to_string(),
+            "haiku" | "claude-haiku" | "claude-haiku-4-5" => {
+                "claude-haiku-4-5-20251001".to_string()
+            }
             other => other.to_string(),
         }
     }
@@ -185,10 +189,22 @@ mod tests {
     #[test]
     fn test_anthropic_model_mapping() {
         let provider = AnthropicProvider;
-        assert_eq!(provider.resolve_model_id("sonnet"), "claude-sonnet-4-6-20250514");
-        assert_eq!(provider.resolve_model_id("opus"), "claude-opus-4-7-20250514");
-        assert_eq!(provider.resolve_model_id("haiku"), "claude-haiku-4-5-20251001");
-        assert_eq!(provider.resolve_model_id("claude-sonnet-4-6"), "claude-sonnet-4-6-20250514");
+        assert_eq!(
+            provider.resolve_model_id("sonnet"),
+            "claude-sonnet-4-6-20250514"
+        );
+        assert_eq!(
+            provider.resolve_model_id("opus"),
+            "claude-opus-4-7-20250514"
+        );
+        assert_eq!(
+            provider.resolve_model_id("haiku"),
+            "claude-haiku-4-5-20251001"
+        );
+        assert_eq!(
+            provider.resolve_model_id("claude-sonnet-4-6"),
+            "claude-sonnet-4-6-20250514"
+        );
         assert_eq!(provider.resolve_model_id("custom-model"), "custom-model");
     }
 
