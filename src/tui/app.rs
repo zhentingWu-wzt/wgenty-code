@@ -813,7 +813,7 @@ impl App {
                 Constraint::Length(1),
                 Constraint::Min(3),
                 Constraint::Length(1),
-                Constraint::Length((self.input_box.textarea.lines().len() + 1).clamp(1, 12) as u16),
+                Constraint::Length((self.input_box.textarea.lines().len() + 2).clamp(3, 12) as u16),
             ]
         };
         let layout = Layout::default()
