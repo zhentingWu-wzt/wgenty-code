@@ -91,7 +91,7 @@ pub struct HistoryManager {
 impl HistoryManager {
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let history_path = home.join(".claude-code").join("history.json");
+        let history_path = home.join(".wgenty-code").join("history.json");
 
         Self {
             entries: Arc::new(RwLock::new(VecDeque::new())),

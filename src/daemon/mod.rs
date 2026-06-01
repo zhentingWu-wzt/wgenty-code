@@ -5,7 +5,7 @@
 //! - `POST /api/v1/tools/execute` — tool execution with permission checks
 //! - `GET  /api/v1/mcp/servers` — MCP server management
 //!
-//! Launch via: `claude-code daemon --port 8371`
+//! Launch via: `wgenty-code daemon --port 8371`
 
 pub mod handlers;
 pub mod models;

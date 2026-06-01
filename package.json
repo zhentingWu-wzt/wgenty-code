@@ -1,5 +1,5 @@
 {
-  "name": "claude-code-rust",
+  "name": "wgenty-code-rust",
   "private": true,
   "workspaces": [
     "packages/core",

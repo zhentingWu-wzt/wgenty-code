@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { useInput } from "ink";
-import type { SessionInfo } from "@claude-code/core";
+import type { SessionInfo } from "@wgenty-code/core";
 
 interface Props {
   sessions: SessionInfo[];

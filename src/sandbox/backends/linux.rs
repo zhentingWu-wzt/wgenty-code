@@ -29,7 +29,7 @@ impl LinuxBackend {
 
     /// Create a temporary cgroup directory for resource limits.
     fn create_cgroup(&self, profile: &SandboxProfile) -> Result<String, SandboxError> {
-        let cg_name = format!("claude-code-{}", std::process::id());
+        let cg_name = format!("wgenty-code-{}", std::process::id());
         let cg_dir = self.cgroup_base.join(&cg_name);
 
         std::fs::create_dir(&cg_dir).map_err(|e| SandboxError::ProfileBuild {

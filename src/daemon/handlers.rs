@@ -26,7 +26,7 @@ fn debug_log(msg: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("/tmp/claude-code-debug.log")
+        .open("/tmp/wgenty-code-debug.log")
     {
         let _ = writeln!(f, "{}", msg);
     }

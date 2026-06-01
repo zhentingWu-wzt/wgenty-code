@@ -1,6 +1,6 @@
-# English locale for Claude Code
+# English locale for Wgenty Code
 
-app-name = Claude Code
+app-name = Wgenty Code
 app-description = AI-powered coding assistant
 app-version = Version { $version }
 
@@ -30,7 +30,7 @@ status-loading = Loading...
 status-saving = Saving...
 status-done = Done
 
-welcome-message = Welcome to Claude Code!
+welcome-message = Welcome to Wgenty Code!
 welcome-user = Welcome, { $name }!
 
 plugin-install = Install

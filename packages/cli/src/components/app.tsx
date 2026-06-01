@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text, useInput } from "ink";
-import { ApiClient } from "@claude-code/core";
-import type { SessionInfo } from "@claude-code/core";
+import { ApiClient } from "@wgenty-code/core";
+import type { SessionInfo } from "@wgenty-code/core";
 import { useAgent } from "../hooks/use-agent.ts";
 import { ChatView } from "./chat-view.tsx";
 import { StatusBar } from "./status-bar.tsx";
@@ -249,7 +249,7 @@ const AgentView: React.FC<{
   return (
     <Box flexDirection="column">
       <Box height={1}>
-        <Text bold>Claude Code Rust — {model}</Text>
+        <Text bold>Wgenty Code Rust — {model}</Text>
         {workingDir ? <Text dimColor> — {workingDir}</Text> : null}
       </Box>
 

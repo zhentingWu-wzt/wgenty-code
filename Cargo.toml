@@ -1,11 +1,11 @@
 [package]
-name = "claude_code_rs"
+name = "wgenty_code"
 version = "0.1.0"
 edition = "2021"
-description = "High-performance Rust implementation of Claude Code CLI"
+description = "High-performance Rust implementation of Wgenty Code CLI"
 license = "MIT"
-repository = "https://github.com/lorryjovens-hub/claude-code-rust"
-default-run = "claude-code"
+repository = "https://github.com/lorryjovens-hub/wgenty-code"
+default-run = "wgenty-code"
 
 [dependencies]
 # CLI
@@ -127,15 +127,15 @@ i18n = ["fluent", "fluent-bundle", "unic-langid", "rust-embed"]
 full = ["wasm", "gui-egui", "web", "i18n", "daemon"]
 
 [[bin]]
-name = "claude-code"
+name = "wgenty-code"
 path = "src/main.rs"
 
 [[bin]]
-name = "claude-code-gui"
+name = "wgenty-code-gui"
 path = "src/gui/main.rs"
 required-features = ["gui-egui"]
 
 [[bin]]
-name = "claude-code-web"
+name = "wgenty-code-web"
 path = "src/web/main.rs"
 required-features = ["web"]

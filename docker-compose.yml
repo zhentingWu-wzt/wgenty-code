@@ -1,12 +1,12 @@
 version: '3.8'
 
 services:
-  claude-code:
+  wgenty-code:
     build:
       context: .
       dockerfile: Dockerfile
-    image: claude-code-rust:latest
-    container_name: claude-code
+    image: wgenty-code-rust:latest
+    container_name: wgenty-code
     
     # 交互式终端
     stdin_open: true
@@ -15,7 +15,7 @@ services:
     # 卷挂载
     volumes:
       # 配置文件持久化
-      - claude-config:/home/claude/.config/claude-code
+      - claude-config:/home/claude/.config/wgenty-code
       # 可选：挂载项目目录
       # - .:/workspace
     
@@ -49,19 +49,19 @@ networks:
 # ==========================================
 # 
 # 1. 启动 REPL 交互模式：
-#    docker-compose run --rm claude-code repl
+#    docker-compose run --rm wgenty-code repl
 #
 # 2. 执行单次查询：
-#    docker-compose run --rm claude-code query --prompt "你的问题"
+#    docker-compose run --rm wgenty-code query --prompt "你的问题"
 #
 # 3. 查看版本：
-#    docker-compose run --rm claude-code --version
+#    docker-compose run --rm wgenty-code --version
 #
 # 4. 查看帮助：
-#    docker-compose run --rm claude-code --help
+#    docker-compose run --rm wgenty-code --help
 #
 # 5. 使用环境变量配置 API（create .env file）：
 #    ANTHROPIC_API_KEY=sk-ant-xxxxxxx
 #    API_BASE_URL=https://api.anthropic.com
-#    docker-compose run --rm claude-code repl
+#    docker-compose run --rm wgenty-code repl
 #

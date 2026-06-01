@@ -11,7 +11,7 @@ use super::{
 };
 
 /// Main application state
-pub struct ClaudeCodeApp {
+pub struct WgentyCodeApp {
     theme: Theme,
     sidebar: Sidebar,
     chat_panel: ChatPanel,
@@ -32,7 +32,7 @@ pub struct ClaudeCodeApp {
     pending_message_id: Option<String>,
 }
 
-impl Default for ClaudeCodeApp {
+impl Default for WgentyCodeApp {
     fn default() -> Self {
         Self {
             theme: Theme::Dark,
@@ -52,7 +52,7 @@ impl Default for ClaudeCodeApp {
     }
 }
 
-impl ClaudeCodeApp {
+impl WgentyCodeApp {
     /// Create a new application instance
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let (message_tx, message_rx) = tokio::sync::mpsc::channel(100);
@@ -377,7 +377,7 @@ impl ClaudeCodeApp {
     }
 }
 
-impl eframe::App for ClaudeCodeApp {
+impl eframe::App for WgentyCodeApp {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         // Keyboard shortcuts (global)
         ctx.input(|i| {
@@ -580,6 +580,6 @@ pub fn run_gui() -> eframe::Result {
     eframe::run_native(
         "wgenty",
         options,
-        Box::new(|cc| Ok(Box::new(ClaudeCodeApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(WgentyCodeApp::new(cc)))),
     )
 }

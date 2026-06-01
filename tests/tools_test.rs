@@ -1,6 +1,6 @@
 //! Tests for Tools Module
 
-use claude_code_rs::tools::ToolRegistry;
+use wgenty_code::tools::ToolRegistry;
 
 #[tokio::test]
 async fn test_tool_registry_creation() {

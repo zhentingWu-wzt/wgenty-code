@@ -326,7 +326,7 @@ export class AgentLoop {
               success: true,
               outputType: "text",
               content:
-                "Conversation history has been compressed to save context. Full transcript archived to ~/.claude-code/transcripts/.",
+                "Conversation history has been compressed to save context. Full transcript archived to ~/.wgenty-code/transcripts/.",
             };
             this.callbacks.onToolStart(tc.function.name, args);
             await this.doAutoCompact();
@@ -655,7 +655,7 @@ export class AgentLoop {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const transcriptDir = path.join(
       os.homedir(),
-      ".claude-code",
+      ".wgenty-code",
       "transcripts",
     );
 

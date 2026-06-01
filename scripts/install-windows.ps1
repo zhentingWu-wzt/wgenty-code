@@ -1,14 +1,14 @@
 #!/usr/bin/env pwsh
 
-# Claude Code Rust - Windows Installation Script
-# This script installs Claude Code Rust CLI tool on Windows
+# Wgenty Code Rust - Windows Installation Script
+# This script installs Wgenty Code Rust CLI tool on Windows
 
 param(
-    [string]$InstallDir = "$env:LOCALAPPDATA\temp\claude-code\install"
+    [string]$InstallDir = "$env:LOCALAPPDATA\temp\wgenty-code\install"
 )
 
 Write-Host "==========================================="
-Write-Host "Claude Code Rust - Windows Installation"
+Write-Host "Wgenty Code Rust - Windows Installation"
 Write-Host "==========================================="
 Write-Host
 
@@ -35,7 +35,7 @@ if (-not (Test-Path $binDir)) {
     New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 }
 
-Write-Host "Installing Claude Code Rust to: $InstallDir"
+Write-Host "Installing Wgenty Code Rust to: $InstallDir"
 Write-Host
 
 # Use local source code
@@ -56,10 +56,10 @@ Write-Host "Copying executable..."
 if (-not (Test-Path $binDir)) {
     New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 }
-Copy-Item "$sourceDir\target\release\claude-code.exe" "$binDir\claude-code.exe"
+Copy-Item "$sourceDir\target\release\wgenty-code.exe" "$binDir\wgenty-code.exe"
 
 # Note about PATH
-Write-Host "Note: You may need to add $binDir to your PATH manually to use 'claude-code' command from any terminal."
+Write-Host "Note: You may need to add $binDir to your PATH manually to use 'wgenty-code' command from any terminal."
 
 # Create configuration directory
 $configDir = "$InstallDir\config"
@@ -86,18 +86,18 @@ level = "info"
 
 # Test installation
 Write-Host "Testing installation..."
-$testOutput = & "$binDir\claude-code.exe" --help
+$testOutput = & "$binDir\wgenty-code.exe" --help
 if ($LASTEXITCODE -eq 0) {
     Write-Host "==========================================="
     Write-Host "Installation successful!"
     Write-Host "==========================================="
-    Write-Host "Executable installed at: $binDir\claude-code.exe"
+    Write-Host "Executable installed at: $binDir\wgenty-code.exe"
     Write-Host ""
     Write-Host "To configure API key, run:"
-    Write-Host "  $binDir\claude-code.exe config set api_key "your-api-key""
+    Write-Host "  $binDir\wgenty-code.exe config set api_key "your-api-key""
     Write-Host ""
     Write-Host "To test the installation, run:"
-    Write-Host "  $binDir\claude-code.exe query --prompt "Hello!""
+    Write-Host "  $binDir\wgenty-code.exe query --prompt "Hello!""
     Write-Host ""
     Write-Host "Note: For easier access, consider adding $binDir to your PATH."
 } else {

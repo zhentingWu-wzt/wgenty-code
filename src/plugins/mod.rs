@@ -137,7 +137,7 @@ pub struct PluginManager {
 impl PluginManager {
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let plugins_dir = home.join(".claude-code").join("plugins");
+        let plugins_dir = home.join(".wgenty-code").join("plugins");
 
         Self {
             registry: Arc::new(PluginRegistry::new()),

@@ -1,6 +1,6 @@
 
-# 添加 Claude Code 到系统 PATH
-$installPath = "$env:USERPROFILE\.claude-code\bin"
+# 添加 Wgenty Code 到系统 PATH
+$installPath = "$env:USERPROFILE\.wgenty-code\bin"
 
 # 获取当前用户 PATH
 $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
@@ -16,5 +16,5 @@ if (-not $currentPath.Contains($installPath)) {
 }
 
 # 显示当前配置
-Write-Host "`n📋 当前 Claude Code 配置："
-&amp; "$installPath\claude-code.exe" config show
+Write-Host "`n📋 当前 Wgenty Code 配置："
+&amp; "$installPath\wgenty-code.exe" config show

@@ -4,7 +4,7 @@
 //! Safe: only allows http/https schemes, rejects file:// and private IPs.
 //! Uses Minimal sandbox (network full) with 30s timeout.
 //!
-//! Claude Code alignment:
+//! Wgenty Code alignment:
 //! - Domain whitelist for ~30 well-known doc sites (auto-approved)
 //! - Haiku-like summary layer: passes extracted text through a small model
 //!   for cost control, prompt injection defense, and context window protection
@@ -25,7 +25,7 @@ use crate::config::Settings;
 use crate::tools::{Tool, ToolError, ToolOutput};
 
 /// Well-known documentation and developer sites that are auto-approved
-/// (follows Claude Code's domain whitelist pattern).
+/// (follows Wgenty Code's domain whitelist pattern).
 const DOMAIN_WHITELIST: &[&str] = &[
     "docs.rs",
     "crates.io",
@@ -239,7 +239,7 @@ impl WebFetchTool {
 
     /// Summarize extracted text via a small model (Haiku layer).
     ///
-    /// Purpose (aligns with Claude Code's design):
+    /// Purpose (aligns with Wgenty Code's design):
     /// - **Cost control**: 10–100KB raw pages → ~500 tokens summary
     /// - **Prompt injection defense**: malicious web content isolated from main model
     /// - **Context window protection**: prevents web junk from consuming main context

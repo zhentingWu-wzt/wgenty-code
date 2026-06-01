@@ -1,6 +1,6 @@
 //! Internationalization (i18n) Module - Multi-language support
 //!
-//! This module provides localization support for Claude Code using
+//! This module provides localization support for Wgenty Code using
 //! Mozilla's Fluent localization system.
 
 pub mod loader;

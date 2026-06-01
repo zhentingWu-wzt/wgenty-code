@@ -32,7 +32,7 @@ pub struct UIMessage {
 
 - [ ] **Step 2: Verify compilation**
 
-Run: `cargo check --bin claude-code-rust 2>&1 | head -60`
+Run: `cargo check --bin wgenty-code-rust 2>&1 | head -60`
 Expected: compilation errors from missing field initializations in existing code — proceed to Task 2 to fix them.
 
 ---
@@ -160,7 +160,7 @@ AppEvent::StreamError(msg) => {
 
 - [ ] **Step 7: Check compilation**
 
-Run: `cargo check --bin claude-code-rust 2>&1 | head -30`
+Run: `cargo check --bin wgenty-code-rust 2>&1 | head -30`
 Expected: clean compile (no errors).
 
 ---
@@ -229,7 +229,7 @@ AppEvent::ToggleCollapseLatest => {
 
 - [ ] **Step 4: Check compilation**
 
-Run: `cargo check --bin claude-code-rust 2>&1 | head -30`
+Run: `cargo check --bin wgenty-code-rust 2>&1 | head -30`
 Expected: clean compile.
 
 ---
@@ -317,7 +317,7 @@ MessageRole::Tool => {
 
 - [ ] **Step 4: Check compilation**
 
-Run: `cargo check --bin claude-code-rust 2>&1 | head -30`
+Run: `cargo check --bin wgenty-code-rust 2>&1 | head -30`
 Expected: clean compile.
 
 ---
@@ -329,7 +329,7 @@ Expected: clean compile.
 
 - [ ] **Step 1: Full build**
 
-Run: `cargo build --bin claude-code-rust 2>&1 | tail -10`
+Run: `cargo build --bin wgenty-code-rust 2>&1 | tail -10`
 Expected: build success.
 
 - [ ] **Step 2: Commit TUI changes**
@@ -387,7 +387,7 @@ pub fn new(role: MessageRole, content: impl Into<String>) -> Self {
 
 - [ ] **Step 3: Check compilation**
 
-Run: `cargo check --bin claude-code-rust 2>&1 | head -30`
+Run: `cargo check --bin wgenty-code-rust 2>&1 | head -30`
 Expected: clean compile.
 
 ---
@@ -436,7 +436,7 @@ if message.content_collapsed {
 
 - [ ] **Step 2: Check compilation**
 
-Run: `cargo check --bin claude-code-rust 2>&1 | head -30`
+Run: `cargo check --bin wgenty-code-rust 2>&1 | head -30`
 Expected: clean compile.
 
 ---
@@ -494,7 +494,7 @@ pub fn with_error(mut self, error: impl Into<String>) -> Self {
 
 - [ ] **Step 2: Check compilation**
 
-Run: `cargo check --bin claude-code-rust 2>&1 | head -30`
+Run: `cargo check --bin wgenty-code-rust 2>&1 | head -30`
 Expected: clean compile.
 
 ---
@@ -502,11 +502,11 @@ Expected: clean compile.
 ### Task 9: Add Ctrl+E / Ctrl+O keyboard shortcuts in GUI
 
 **Files:**
-- Modify: `src/gui/app.rs` (`ClaudeCodeApp::update`)
+- Modify: `src/gui/app.rs` (`WgentyCodeApp::update`)
 
 - [ ] **Step 1: Add keyboard shortcut handling in `update` method**
 
-In `ClaudeCodeApp::update`, add a keyboard input check at the top (before processing messages):
+In `WgentyCodeApp::update`, add a keyboard input check at the top (before processing messages):
 
 ```rust
 fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
@@ -550,7 +550,7 @@ fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
 
 - [ ] **Step 2: Check compilation**
 
-Run: `cargo check --bin claude-code-rust 2>&1 | head -30`
+Run: `cargo check --bin wgenty-code-rust 2>&1 | head -30`
 Expected: clean compile.
 
 ---
@@ -562,7 +562,7 @@ Expected: clean compile.
 
 - [ ] **Step 1: Full build**
 
-Run: `cargo build --bin claude-code-rust 2>&1 | tail -10`
+Run: `cargo build --bin wgenty-code-rust 2>&1 | tail -10`
 Expected: build success.
 
 - [ ] **Step 2: Commit GUI changes**
@@ -577,7 +577,7 @@ git commit -m "feat(gui): add message collapse/expand with Ctrl+E/Ctrl+O shortcu
 ### TUI Verification Notes
 
 To manually verify the TUI:
-1. Run `cargo run --bin claude-code-rust`
+1. Run `cargo run --bin wgenty-code-rust`
 2. Send a message that produces a long assistant response (> 50 lines) → verify it's auto-collapsed
 3. Send a message that produces a tool call with > 10 lines of output → verify it's auto-collapsed
 4. Press `Ctrl+E` → verify all paragraphs collapse (if any expanded) or expand (if all collapsed)
@@ -586,6 +586,6 @@ To manually verify the TUI:
 ### GUI Verification Notes
 
 To manually verify the GUI:
-1. Run `cargo run --bin claude-code-gui`
+1. Run `cargo run --bin wgenty-code-gui`
 2. Same verification steps as TUI above
 3. Click individual paragraph headers to manually toggle

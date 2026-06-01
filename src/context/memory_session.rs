@@ -90,7 +90,7 @@ pub struct SessionManager {
 impl SessionManager {
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let sessions_dir = home.join(".claude-code").join("sessions");
+        let sessions_dir = home.join(".wgenty-code").join("sessions");
 
         Self {
             sessions_dir,

@@ -1,6 +1,6 @@
 //! Logging initialization
 //!
-//! Logs go to `~/.claude-code/logs/claude-code.log`, never to the terminal.
+//! Logs go to `~/.wgenty-code/logs/wgenty-code.log`, never to the terminal.
 //! If the log file cannot be opened, a sink layer is used as fallback.
 
 use crate::utils::config_dir;
@@ -9,12 +9,12 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Initialize the global tracing subscriber.
 ///
-/// - Reads `RUST_LOG` for the filter level; defaults to `claude_code_rs=info`.
-/// - Appends to `~/.claude-code/logs/claude-code.log`.
+/// - Reads `RUST_LOG` for the filter level; defaults to `wgenty_code=info`.
+/// - Appends to `~/.wgenty-code/logs/wgenty-code.log`.
 /// - Falls back to `/dev/null` sink if the log file is unavailable.
 pub fn init() {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("claude_code_rs=info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("wgenty_code=info"));
 
     let log_dir = config_dir().join("logs");
 
@@ -22,7 +22,7 @@ pub fn init() {
         if let Ok(log_file) = std::fs::File::options()
             .create(true)
             .append(true)
-            .open(log_dir.join("claude-code.log"))
+            .open(log_dir.join("wgenty-code.log"))
         {
             let file_layer = tracing_subscriber::fmt::layer()
                 .with_writer(Mutex::new(log_file))

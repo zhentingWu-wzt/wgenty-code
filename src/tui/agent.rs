@@ -647,7 +647,7 @@ impl AgentLoop {
         // Save transcript to disk
         let transcript_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".claude-code")
+            .join(".wgenty-code")
             .join("transcripts");
 
         tokio::fs::create_dir_all(&transcript_dir).await.ok();

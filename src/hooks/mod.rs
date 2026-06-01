@@ -1,7 +1,7 @@
 //! Hooks Module -- lifecycle event hooks for tool execution and sessions.
 //!
 //! Hooks wrap around the agent loop without modifying it.
-//! Configured in ~/.claude-code/settings.json under "hooks".
+//! Configured in ~/.wgenty-code/settings.json under "hooks".
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

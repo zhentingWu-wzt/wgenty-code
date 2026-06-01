@@ -1,4 +1,4 @@
-//! Claude Code Rust — harness-centric agent infrastructure.
+//! Wgenty Code Rust — harness-centric agent infrastructure.
 //!
 //! Module organization mirrors the harness component model:
 //!   agent/       — core agent loop (s01+s02)
@@ -68,10 +68,10 @@ pub use voice::VoiceService;
 
 // Feature-gated re-exports
 #[cfg(feature = "gui-egui")]
-pub use gui::ClaudeCodeApp;
+pub use gui::WgentyCodeApp;
 #[cfg(feature = "i18n")]
 pub use i18n::Translator;
 #[cfg(feature = "wasm")]
-pub use wasm::ClaudeCodeWasm;
+pub use wasm::WgentyCodeWasm;
 #[cfg(feature = "web")]
 pub use web::WebServer;

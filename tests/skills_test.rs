@@ -1,6 +1,6 @@
 //! Tests for Skills Framework
 
-use claude_code_rs::knowledge::{
+use wgenty_code::knowledge::{
     BuiltinSkills, SkillCategory, SkillContext, SkillExecutor, SkillRegistry,
 };
 use std::sync::Arc;

@@ -54,7 +54,7 @@ A collapsed paragraph shows: paragraph type label, first 3 lines as preview, lin
 ```
 ┌ Tool: bash ──────────────────────────────────────────────────┐
 │ $ cargo build --release                                      │
-│ Compiling claude-code v0.1.0                                 │
+│ Compiling wgenty-code v0.1.0                                 │
 │ ... (342 lines, collapsed)                                    │
 └──────────────────────────────────────────────────────────────┘
 ```

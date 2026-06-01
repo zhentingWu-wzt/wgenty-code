@@ -1,4 +1,4 @@
-//! Theme System - Claude Code UI themes
+//! Theme System - Wgenty Code UI themes
 //!
 //! Based on Claude.ai design system with warm orange/brown accent colors
 

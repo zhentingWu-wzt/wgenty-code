@@ -225,7 +225,7 @@ impl SettingsPanel {
                         .color(theme.text_color()),
                 );
                 ui.label(
-                    RichText::new("Help improve Claude Code by sharing anonymous usage data")
+                    RichText::new("Help improve Wgenty Code by sharing anonymous usage data")
                         .color(theme.muted_text_color())
                         .size(11.0),
                 );

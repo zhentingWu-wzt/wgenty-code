@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Claude Code Rust - 通用安装程序
+# Wgenty Code Rust - 通用安装程序
 # 自动检测操作系统并运行相应的安装脚本
 
 set -e
 
-REPO_URL="https://github.com/lorryjovens-hub/claude-code-rust"
+REPO_URL="https://github.com/lorryjovens-hub/wgenty-code-rust"
 INSTALL_URL="$REPO_URL/raw/master"
 
 # 颜色定义
@@ -59,8 +59,8 @@ detect_os() {
 
 # 检测已有版本
 check_existing() {
-    if command -v claude-code-rs &> /dev/null; then
-        EXISTING_VERSION=$(claude-code-rs --version 2>/dev/null | grep -oP 'v\d+\.\d+\.\d+' || echo "unknown")
+    if command -v wgenty-code-rs &> /dev/null; then
+        EXISTING_VERSION=$(wgenty-code-rs --version 2>/dev/null | grep -oP 'v\d+\.\d+\.\d+' || echo "unknown")
         print_warning "已安装版本: $EXISTING_VERSION"
         echo -e "${YELLOW}继续安装将覆盖现有版本${NC}"
         read -p "继续? (y/N) " -n 1 -r
@@ -130,7 +130,7 @@ get_latest_version() {
     echo ""
     print_header "获取最新版本"
     
-    LATEST_VERSION=$(curl -s https://api.github.com/repos/lorryjovens-hub/claude-code-rust/releases/latest \
+    LATEST_VERSION=$(curl -s https://api.github.com/repos/lorryjovens-hub/wgenty-code-rust/releases/latest \
         | grep '"tag_name"' \
         | cut -d'"' -f4)
     
@@ -147,8 +147,8 @@ download_binary() {
     echo ""
     print_header "下载二进制文件"
     
-    BINARY_NAME="claude-code-rust-${OS}-${ARCH}"
-    DOWNLOAD_URL="https://github.com/lorryjovens-hub/claude-code-rust/releases/download/${LATEST_VERSION}/${BINARY_NAME}"
+    BINARY_NAME="wgenty-code-rust-${OS}-${ARCH}"
+    DOWNLOAD_URL="https://github.com/lorryjovens-hub/wgenty-code-rust/releases/download/${LATEST_VERSION}/${BINARY_NAME}"
     TEMP_FILE="/tmp/${BINARY_NAME}.tmp"
     
     print_warning "下载中: $BINARY_NAME"
@@ -156,7 +156,7 @@ download_binary() {
     if ! curl -fsSL -o "$TEMP_FILE" "$DOWNLOAD_URL"; then
         print_error "下载失败: $DOWNLOAD_URL"
         print_error "请手动从以下地址下载:"
-        print_error "https://github.com/lorryjovens-hub/claude-code-rust/releases"
+        print_error "https://github.com/lorryjovens-hub/wgenty-code-rust/releases"
         exit 1
     fi
     
@@ -168,7 +168,7 @@ install_binary() {
     echo ""
     print_header "安装二进制"
     
-    INSTALL_FILE="$INSTALL_PATH/claude-code-rs"
+    INSTALL_FILE="$INSTALL_PATH/wgenty-code-rs"
     
     mv "$TEMP_FILE" "$INSTALL_FILE"
     chmod +x "$INSTALL_FILE"
@@ -211,17 +211,17 @@ verify_installation() {
     echo ""
     print_header "验证安装"
     
-    if command -v claude-code-rs &> /dev/null; then
-        VERSION=$(claude-code-rs --version)
+    if command -v wgenty-code-rs &> /dev/null; then
+        VERSION=$(wgenty-code-rs --version)
         print_success "安装成功!"
         echo ""
         echo "版本信息:"
         echo "  $VERSION"
         echo ""
         echo "快速开始:"
-        echo "  claude-code-rs --help       显示帮助信息"
-        echo "  claude-code-rs --version    显示版本"
-        echo "  claude-code-rs              启动 REPL 模式"
+        echo "  wgenty-code-rs --help       显示帮助信息"
+        echo "  wgenty-code-rs --version    显示版本"
+        echo "  wgenty-code-rs              启动 REPL 模式"
         echo ""
         print_success "准备好开始使用了!"
     else
@@ -234,9 +234,9 @@ verify_installation() {
 # 主流程
 main() {
     clear
-    print_header "Claude Code Rust 安装程序"
+    print_header "Wgenty Code Rust 安装程序"
     echo ""
-    echo "这个脚本将在你的系统上安装 Claude Code Rust"
+    echo "这个脚本将在你的系统上安装 Wgenty Code Rust"
     echo ""
     
     detect_os
@@ -250,12 +250,12 @@ main() {
     verify_installation
     
     echo ""
-    print_header "感谢使用 Claude Code Rust!"
+    print_header "感谢使用 Wgenty Code Rust!"
     echo ""
 }
 
 # 处理中断
-trap 'print_error "中止安装"; rm -f /tmp/claude-code-rust*.tmp; exit 1' INT TERM
+trap 'print_error "中止安装"; rm -f /tmp/wgenty-code-rust*.tmp; exit 1' INT TERM
 
 # 运行主程序
 main

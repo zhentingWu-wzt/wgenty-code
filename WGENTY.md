@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Wgenty Code (claude.ai/code) when working with code in this repository.
 
 ## 构建与运行命令
 
@@ -32,9 +32,9 @@ npm run -w packages/cli dev:ink      # 启动 Ink 富 CLI（推荐）
 - `dev:ink` — 运行 Ink React 终端 UI（`tsx src/ink-app.tsx`）
 
 Cargo.toml 中定义了三个二进制目标：
-- `claude-code`（默认，src/main.rs）
-- `claude-code-gui`（需要 `gui-egui` feature，src/gui/main.rs）
-- `claude-code-web`（需要 `web` feature，src/web/main.rs）
+- `wgenty-code`（默认，src/main.rs）
+- `wgenty-code-gui`（需要 `gui-egui` feature，src/gui/main.rs）
+- `wgenty-code-web`（需要 `web` feature，src/web/main.rs）
 
 ## Feature Flags
 
@@ -67,7 +67,7 @@ Rust 使用 **Tokio 异步优先架构**，调用 **OpenAI/DeepSeek 兼容的 ch
 ### 核心模块依赖
 
 - **`state`** — `AppState` 持有共享状态（配置、对话、工具注册表、内存）。按值传递或用 `Arc<RwLock<>>` 包装后传给服务层。
-- **`config`** — `Settings` 从 `~/.claude-code/settings.json` 加载。包含 `ApiConfig`、`McpConfig[]`、模型选择、内存/语音/插件设置。API Key 解析优先级：环境变量 `ANTHROPIC_API_KEY` > `DASHSCOPE_API_KEY` > `DEEPSEEK_API_KEY` > 配置文件值。
+- **`config`** — `Settings` 从 `~/.wgenty-code/settings.json` 加载。包含 `ApiConfig`、`McpConfig[]`、模型选择、内存/语音/插件设置。API Key 解析优先级：环境变量 `ANTHROPIC_API_KEY` > `DASHSCOPE_API_KEY` > `DEEPSEEK_API_KEY` > 配置文件值。
 - **`api`** — `ApiClient` 封装 reqwest，请求 `/v1/chat/completions`（OpenAI 兼容格式）。支持 `chat()` 和 `chat_stream()`。`ChatMessage` 支持角色：user、assistant、system、tool。工具调用使用 `ToolDefinition`/`ToolCall` 类型。
 - **`cli`** — CLI 参数解析和子命令分发（`CliArgs`、`Commands` 枚举）。交互式 REPL 使用 ratatui TUI（`src/tui/`），`cargo run` 直接启动。
 - **`daemon`** — HTTP API 服务（`src/daemon/`）。提供 REST + SSE 端点供 TypeScript 前端调用。启动：`cargo run -- daemon --port 8371`。
@@ -137,10 +137,10 @@ GET  /api/v1/mcp/servers     → [{ name, status }]
 
 ### 配置与环境变量
 
-- 配置文件：`~/.claude-code/settings.json`
+- 配置文件：`~/.wgenty-code/settings.json`
 - 环境变量：支持 `.env` 文件；关键变量：`ANTHROPIC_API_KEY`、`DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY`、`API_BASE_URL`、`CLAUDE_MODEL`、`RUST_LOG`
 - 前端环境变量：`CLAUDE_DAEMON_PORT`（默认 8371）、`CLAUDE_DAEMON_CMD`、`CLAUDE_PROJECT_ROOT`
-- 日志：使用 `tracing` + `EnvFilter`，默认级别 `claude_code_rs=info`
+- 日志：使用 `tracing` + `EnvFilter`，默认级别 `wgenty_code=info`
 
 ### CI
 

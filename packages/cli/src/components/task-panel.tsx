@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { ApiClient, TodoItemInfo } from "@claude-code/core";
+import type { ApiClient, TodoItemInfo } from "@wgenty-code/core";
 
 interface Props {
   client: ApiClient;

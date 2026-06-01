@@ -1,5 +1,5 @@
 #!/bin/bash
-# Claude Code Rust 安装脚本 - 完整版 (Linux/macOS)
+# Wgenty Code Rust 安装脚本 - 完整版 (Linux/macOS)
 # 用法: bash install-unix.sh
 
 set -e
@@ -84,7 +84,7 @@ get_latest_version() {
     echo ""
     print_header "获取最新版本"
     
-    LATEST_VERSION=$(curl -s https://api.github.com/repos/lorryjovens-hub/claude-code-rust/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+    LATEST_VERSION=$(curl -s https://api.github.com/repos/lorryjovens-hub/wgenty-code-rust/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
     [[ -z "$LATEST_VERSION" ]] && LATEST_VERSION="v0.1.0"
     print_success "最新版本: $LATEST_VERSION"
 }
@@ -94,10 +94,10 @@ download_and_install() {
     echo ""
     print_header "下载并安装"
     
-    BINARY_NAME="claude-code-rust-${OS}-${ARCH}"
-    DOWNLOAD_URL="https://github.com/lorryjovens-hub/claude-code-rust/releases/download/${LATEST_VERSION}/${BINARY_NAME}"
+    BINARY_NAME="wgenty-code-rust-${OS}-${ARCH}"
+    DOWNLOAD_URL="https://github.com/lorryjovens-hub/wgenty-code-rust/releases/download/${LATEST_VERSION}/${BINARY_NAME}"
     TEMP_FILE="/tmp/${BINARY_NAME}.tmp"
-    INSTALL_FILE="$INSTALL_PATH/claude-code-rs"
+    INSTALL_FILE="$INSTALL_PATH/wgenty-code-rs"
     
     print_warning "下载中: $BINARY_NAME"
     
@@ -116,17 +116,17 @@ verify_installation() {
     echo ""
     print_header "验证安装"
     
-    if command -v claude-code-rs &> /dev/null; then
-        VERSION=$(claude-code-rs --version)
+    if command -v wgenty-code-rs &> /dev/null; then
+        VERSION=$(wgenty-code-rs --version)
         print_success "安装成功!"
         
         echo ""
         echo "版本信息: $VERSION"
         echo ""
         echo "快速命令:"
-        echo "  claude-code-rs --help"
-        echo "  claude-code-rs --version"
-        echo "  claude-code-rs"
+        echo "  wgenty-code-rs --help"
+        echo "  wgenty-code-rs --version"
+        echo "  wgenty-code-rs"
         echo ""
         print_success "准备好开始使用了!"
     else
@@ -137,7 +137,7 @@ verify_installation() {
 
 main() {
     clear
-    print_header "Claude Code Rust 安装程序"
+    print_header "Wgenty Code Rust 安装程序"
     echo ""
     
     detect_os
@@ -147,6 +147,6 @@ main() {
     verify_installation
 }
 
-trap 'print_error "中止安装"; rm -f /tmp/claude-code-rust*.tmp; exit 1' INT TERM
+trap 'print_error "中止安装"; rm -f /tmp/wgenty-code-rust*.tmp; exit 1' INT TERM
 
 main

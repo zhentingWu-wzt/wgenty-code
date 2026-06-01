@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback } from "react";
-import { ApiClient, AgentLoop } from "@claude-code/core";
-import type { AgentCallbacks, ToolResult, ChatMessage, SessionInfo } from "@claude-code/core";
+import { ApiClient, AgentLoop } from "@wgenty-code/core";
+import type { AgentCallbacks, ToolResult, ChatMessage, SessionInfo } from "@wgenty-code/core";
 
 export type MsgRole = "user" | "assistant" | "tool" | "system";
 
