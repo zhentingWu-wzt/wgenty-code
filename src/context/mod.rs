@@ -103,7 +103,7 @@ pub struct MemoryManager {
 impl MemoryManager {
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let memory_path = home.join(".claude-code").join("memory");
+        let memory_path = home.join(".wgenty-code").join("memory");
 
         std::fs::create_dir_all(&memory_path).ok();
 

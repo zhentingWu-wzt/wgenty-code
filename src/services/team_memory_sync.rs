@@ -98,7 +98,7 @@ impl TeamMemorySyncService {
 
     pub async fn is_authenticated(&self) -> bool {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let token_path = home.join(".claude-code").join(".team_token");
+        let token_path = home.join(".wgenty-code").join(".team_token");
         token_path.exists()
     }
 
@@ -108,7 +108,7 @@ impl TeamMemorySyncService {
         println!("   https://claude.ai/team/{}/auth", team_id);
 
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let token_path = home.join(".claude-code").join(".team_token");
+        let token_path = home.join(".wgenty-code").join(".team_token");
 
         let token = format!("team_token_{}_{}", team_id, Utc::now().timestamp());
         tokio::fs::write(&token_path, &token).await?;
@@ -185,7 +185,7 @@ impl TeamMemorySyncService {
 
     async fn load_local_memories(&self) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let team_dir = home.join(".claude-code").join("team");
+        let team_dir = home.join(".wgenty-code").join("team");
 
         if !team_dir.exists() {
             return Ok(());
@@ -227,7 +227,7 @@ impl TeamMemorySyncService {
         println!("📥 Downloading memory: {}", memory.title);
 
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let team_dir = home.join(".claude-code").join("team");
+        let team_dir = home.join(".wgenty-code").join("team");
         tokio::fs::create_dir_all(&team_dir).await?;
 
         let memory_path = team_dir.join(format!("{}.json", memory.id));
@@ -287,7 +287,7 @@ impl TeamMemorySyncService {
         };
 
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let team_dir = home.join(".claude-code").join("team");
+        let team_dir = home.join(".wgenty-code").join("team");
         tokio::fs::create_dir_all(&team_dir).await?;
 
         let memory_path = team_dir.join(format!("{}.json", memory.id));
@@ -339,7 +339,7 @@ impl TeamMemorySyncService {
     pub async fn delete_memory(&self, id: &str) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let memory_path = home
-            .join(".claude-code")
+            .join(".wgenty-code")
             .join("team")
             .join(format!("{}.json", id));
 

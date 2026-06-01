@@ -129,7 +129,7 @@ impl Default for GuardianSettings {
 impl Default for Settings {
     fn default() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let config_dir = home.join(".claude-code");
+        let config_dir = home.join(".wgenty-code");
 
         Self {
             api: ApiConfig::default(),
@@ -172,7 +172,7 @@ impl Settings {
     /// Load settings from file
     pub fn load() -> anyhow::Result<Self> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let config_path = home.join(".claude-code").join("settings.json");
+        let config_path = home.join(".wgenty-code").join("settings.json");
 
         if config_path.exists() {
             let content = std::fs::read_to_string(&config_path)?;
@@ -188,7 +188,7 @@ impl Settings {
     /// Save settings to file
     pub fn save(&self) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let config_dir = home.join(".claude-code");
+        let config_dir = home.join(".wgenty-code");
         std::fs::create_dir_all(&config_dir)?;
 
         let config_path = config_dir.join("settings.json");

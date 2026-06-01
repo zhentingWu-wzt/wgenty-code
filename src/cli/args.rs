@@ -196,7 +196,7 @@ impl Cli {
             None => {
                 eprintln!("Error: API key not configured");
                 eprintln!("Set environment variable DEEPSEEK_API_KEY or run:");
-                eprintln!("  claude-code config set api_key \"your-api-key\"");
+                eprintln!("  wgenty-code config set api_key \"your-api-key\"");
                 std::process::exit(1);
             }
         };
@@ -458,7 +458,7 @@ impl Cli {
     }
 
     fn run_init(&self, name: Option<String>) -> anyhow::Result<()> {
-        let project_name = name.unwrap_or_else(|| "claude-code-project".to_string());
+        let project_name = name.unwrap_or_else(|| "wgenty-code-project".to_string());
         crate::utils::project::init_project(&project_name)?;
         println!("Initialized project: {}", project_name);
         Ok(())
@@ -572,7 +572,7 @@ impl Cli {
         let service = crate::teams::AgentsService::new(state);
 
         let agent_type = match agent_type.to_lowercase().as_str() {
-            "guide" | "claude-code-guide" => crate::teams::AgentType::ClaudeCodeGuide,
+            "guide" | "wgenty-code-guide" => crate::teams::AgentType::WgentyCodeGuide,
             "explore" => crate::teams::AgentType::Explore,
             "plan" => crate::teams::AgentType::Plan,
             "verify" | "verification" => crate::teams::AgentType::Verification,

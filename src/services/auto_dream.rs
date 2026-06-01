@@ -134,7 +134,7 @@ impl AutoDreamService {
 
     async fn count_recent_sessions(&self, since: &DateTime<Utc>) -> anyhow::Result<usize> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let sessions_dir = home.join(".claude-code").join("sessions");
+        let sessions_dir = home.join(".wgenty-code").join("sessions");
 
         if !sessions_dir.exists() {
             return Ok(0);
@@ -165,7 +165,7 @@ impl AutoDreamService {
         consolidation: &mut ConsolidationState,
     ) -> anyhow::Result<bool> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let lock_path = home.join(".claude-code").join(".consolidation.lock");
+        let lock_path = home.join(".wgenty-code").join(".consolidation.lock");
 
         if lock_path.exists() {
             let content = std::fs::read_to_string(&lock_path)?;
@@ -207,7 +207,7 @@ impl AutoDreamService {
 
     async fn load_memories(&self) -> anyhow::Result<Vec<MemoryEntry>> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let memory_path = home.join(".claude-code").join("memory.json");
+        let memory_path = home.join(".wgenty-code").join("memory.json");
 
         if !memory_path.exists() {
             return Ok(Vec::new());
@@ -264,7 +264,7 @@ impl AutoDreamService {
         insights: &[ConsolidatedInsight],
     ) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let consolidated_path = home.join(".claude-code").join("consolidated_memories.json");
+        let consolidated_path = home.join(".wgenty-code").join("consolidated_memories.json");
 
         let existing = if consolidated_path.exists() {
             let content = std::fs::read_to_string(&consolidated_path)?;
@@ -284,7 +284,7 @@ impl AutoDreamService {
 
     async fn save_state(&self, state: &ConsolidationState) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let state_path = home.join(".claude-code").join(".autodream_state.json");
+        let state_path = home.join(".wgenty-code").join(".autodream_state.json");
 
         let content = serde_json::to_string_pretty(state)?;
         std::fs::write(&state_path, content)?;

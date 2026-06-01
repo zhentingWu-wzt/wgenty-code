@@ -17,12 +17,12 @@ pub fn home_dir() -> PathBuf {
 
 /// Get the config directory
 pub fn config_dir() -> PathBuf {
-    home_dir().join(".claude-code")
+    home_dir().join(".wgenty-code")
 }
 
 /// Get the data directory
 pub fn data_dir() -> PathBuf {
-    home_dir().join(".claude-code").join("data")
+    home_dir().join(".wgenty-code").join("data")
 }
 
 /// Ensure a directory exists

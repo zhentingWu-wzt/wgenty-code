@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# 📊 Claude Code Rust - macOS Performance Benchmark
+# 📊 Wgenty Code Rust - macOS Performance Benchmark
 # ============================================================
 # 用法: chmod +x benchmark.sh && ./benchmark.sh
 # ============================================================
@@ -18,7 +18,7 @@ NC='\033[0m' # No Color
 
 # 配置
 RUNS=5
-RUST_BIN="./target/release/claude-code"
+RUST_BIN="./target/release/wgenty-code"
 RESULTS_DIR="./benchmark_results"
 
 # 创建结果目录
@@ -28,7 +28,7 @@ RESULT_FILE="$RESULTS_DIR/benchmark_${TIMESTAMP}.txt"
 
 echo -e "${BOLD}${CYAN}"
 echo "========================================"
-echo "  📊 Claude Code Rust - macOS Benchmark"
+echo "  📊 Wgenty Code Rust - macOS Benchmark"
 echo "========================================"
 echo -e "${NC}"
 
@@ -206,7 +206,7 @@ if command -v npx &> /dev/null; then
     echo -e "${BOLD}${GREEN}[Test 6] TypeScript 对比测试${NC}"
     echo "  检测到 Node.js: $(node --version)"
     
-    # 检查是否有 claude-code 的 TS 版本
+    # 检查是否有 wgenty-code 的 TS 版本
     if command -v claude &> /dev/null; then
         echo "  检测到 claude CLI，运行对比..."
         
@@ -224,7 +224,7 @@ if command -v npx &> /dev/null; then
         echo -e "  TypeScript 平均启动: ${TS_AVG}ms"
     else
         echo "  未检测到 claude CLI，跳过 TS 对比"
-        echo "  提示: 安装 claude code TS 版后可自动对比"
+        echo "  提示: 安装 wgenty code TS 版后可自动对比"
     fi
 else
     echo -e "${YELLOW}[Test 6] 跳过 - 未安装 Node.js${NC}"
@@ -275,7 +275,7 @@ fi
 
 # 保存结果到文件
 {
-    echo "Claude Code Rust Benchmark Results"
+    echo "Wgenty Code Rust Benchmark Results"
     echo "Date: $(date '+%Y-%m-%d %H:%M:%S')"
     echo "OS: $(sw_vers -productName) $(sw_vers -productVersion)"
     echo ""

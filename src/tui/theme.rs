@@ -1,6 +1,6 @@
 use ratatui::style::Color;
 
-// Brand colors matching the original Claude Code aesthetic
+// Brand colors matching the original Wgenty Code aesthetic
 pub const PRIMARY: Color = Color::Magenta;
 pub const ACCENT: Color = Color::Rgb(255, 140, 66);
 pub const DIM: Color = Color::Rgb(120, 120, 120);

@@ -1,6 +1,6 @@
 //! Tool Call Visualization - Display tool calls in chat interface
 //!
-//! Recreates Claude Code's tool call cards with:
+//! Recreates Wgenty Code's tool call cards with:
 //! - Expandable/collapsible details
 //! - File read/write visualization
 //! - Bash command execution display

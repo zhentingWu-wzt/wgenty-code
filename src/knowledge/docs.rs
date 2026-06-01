@@ -245,7 +245,7 @@ Output only the updated document content, nothing else."#,
 
     pub async fn save_state(&self) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let state_path = home.join(".claude-code").join("magic_docs_state.json");
+        let state_path = home.join(".wgenty-code").join("magic_docs_state.json");
 
         let docs = self.tracked_docs.read().await;
         let docs_vec: Vec<MagicDocInfo> = docs.values().cloned().collect();
@@ -258,7 +258,7 @@ Output only the updated document content, nothing else."#,
 
     pub async fn load_state(&self) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let state_path = home.join(".claude-code").join("magic_docs_state.json");
+        let state_path = home.join(".wgenty-code").join("magic_docs_state.json");
 
         if !state_path.exists() {
             return Ok(());
