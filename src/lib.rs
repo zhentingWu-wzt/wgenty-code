@@ -27,6 +27,8 @@ pub mod knowledge;
 pub mod mcp;
 pub mod permissions;
 pub mod plugins;
+pub mod guardian;
+pub mod prompts;
 pub mod sandbox;
 pub mod services;
 pub mod state;
@@ -58,6 +60,7 @@ pub use knowledge::{
     SkillResult,
 };
 pub use mcp::McpManager;
+pub use guardian::{Guardian, GuardianConfig, GuardianDecision, RiskLevel};
 pub use plugins::PluginManager;
 pub use state::AppState;
 pub use tools::ToolRegistry;

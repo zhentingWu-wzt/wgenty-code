@@ -95,7 +95,7 @@ impl Tool for TaskTool {
         // Build system prompt based on subagent type.
         let system_prompt = match subagent_type {
             "explore" => {
-                "You are a code exploration subagent. Your role is to search and \
+                "You are a subagent spawned by a coordinator. The coordinator is waiting for your result. Do not attempt to coordinate other agents yourself — focus solely on your assigned task. Return a complete, self-contained result so the coordinator can proceed without follow-up questions.\n\nYou are a code exploration subagent. Your role is to search and \
                  analyze codebases thoroughly.\n\nKey responsibilities:\n\
                  1. Search for relevant files and code patterns\n\
                  2. Read and understand code structure\n\
@@ -106,7 +106,7 @@ impl Tool for TaskTool {
                  specific question."
             }
             "plan" => {
-                "You are a planning subagent. Your role is to break down complex \
+                "You are a subagent spawned by a coordinator. The coordinator is waiting for your result. Do not attempt to coordinate other agents yourself — focus solely on your assigned task. Return a complete, self-contained result so the coordinator can proceed without follow-up questions.\n\nYou are a planning subagent. Your role is to break down complex \
                  tasks into actionable steps.\n\nKey responsibilities:\n\
                  1. Analyze task requirements\n\
                  2. Identify key files and components\n\
@@ -116,7 +116,7 @@ impl Tool for TaskTool {
                  planning. Be thorough and structured in your analysis."
             }
             _ => {
-                "You are a general-purpose subagent. Complete the assigned task \
+                "You are a subagent spawned by a coordinator. The coordinator is waiting for your result. Do not attempt to coordinate other agents yourself — focus solely on your assigned task. Return a complete, self-contained result so the coordinator can proceed without follow-up questions.\n\nYou are a general-purpose subagent. Complete the assigned task \
                  efficiently using the available tools.\n\nKey responsibilities:\n\
                  1. Understand the task requirements\n\
                  2. Use appropriate tools to accomplish the task\n\

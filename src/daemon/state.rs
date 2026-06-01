@@ -60,7 +60,7 @@ impl DaemonState {
 
         // Build registry with TodoWrite (s03) — the primary planning tool.
         // Note: task_management is NOT registered; TodoWrite replaces it.
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::new().with_settings(&app_state.settings);
         registry.register(Box::new(todo_write));
         registry.register(Box::new(BackgroundTool::new(bg_manager.clone())));
 

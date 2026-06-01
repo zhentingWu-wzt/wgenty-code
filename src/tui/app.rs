@@ -1,6 +1,8 @@
 //! Application main loop — event handling, layout, and daemon lifecycle.
 
+use crate::api::ChatMessage;
 use crate::state::AppState;
+use crate::prompts::{self, PromptContext};
 use crate::tui::agent::AgentLoop;
 use crate::tui::client::DaemonClient;
 use crate::tui::client::SessionInfo;
@@ -18,6 +20,7 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
+use std::collections::VecDeque;
 use std::io;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -81,6 +84,8 @@ pub enum AppEvent {
     },
     /// A stream error occurred
     StreamError(String),
+    /// A job (user-input → final response) completed; start next queued input if any
+    JobComplete,
     /// Tick for periodic refresh
     Tick,
     /// Toggle session popup
@@ -131,7 +136,18 @@ pub struct App {
     pub session_name: String,
     pub scroll_offset: u16,
     pub user_scrolled: bool,
-    pub agent: Arc<TokioMutex<AgentLoop>>,
+    /// Shared conversation history — all Jobs in this session read/write
+    /// through this Arc, so each Job inherits the accumulated context.
+    pub conversation_history: Arc<TokioMutex<Vec<ChatMessage>>>,
+    /// Pending user inputs queued while a Job is running.
+    pub pending_inputs: VecDeque<String>,
+    /// Handle for the currently executing Job (None when idle).
+    pub current_job_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Number of completed jobs (for UI / debugging).
+    pub job_count: usize,
+    /// Pre-assembled system messages (layered instructions from PromptAssembler).
+    /// Cloned into each new AgentLoop so every Job inherits the same base instructions.
+    pub assembled_system_messages: Vec<ChatMessage>,
     /// Channel sender for agent/input events
     event_tx: mpsc::UnboundedSender<AppEvent>,
     /// Channel receiver
@@ -154,7 +170,28 @@ pub struct App {
 impl App {
     pub fn new(daemon_client: DaemonClient, session_id: String) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let agent = AgentLoop::new(daemon_client.clone(), event_tx.clone(), session_id.clone());
+
+        // Build layered instructions from settings + context
+        let prompt_ctx = PromptContext::new()
+            .with_cwd(
+                std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    .display()
+                    .to_string(),
+            )
+            .with_shell(
+                std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string()),
+            )
+            .with_sandbox("workspace-write")
+            .with_approval("never");
+
+        let settings = crate::config::Settings::load().unwrap_or_default();
+        let prompt_ctx = prompt_ctx
+            .with_collaboration(settings.collaboration_mode.clone().unwrap_or_default());
+        let assembled = prompts::assemble_instructions(&settings, &prompt_ctx);
+        let system_messages = assembled.system_messages;
+
+        let conversation_history = Arc::new(TokioMutex::new(system_messages.clone()));
         Self {
             daemon_client,
             input_box: InputBox::new(),
@@ -166,7 +203,11 @@ impl App {
             session_name: "New Session".to_string(),
             scroll_offset: 0,
             user_scrolled: false,
-            agent: Arc::new(TokioMutex::new(agent)),
+            conversation_history,
+            assembled_system_messages: system_messages,
+            pending_inputs: VecDeque::new(),
+            current_job_handle: None,
+            job_count: 0,
             event_tx,
             event_rx,
             should_quit: false,
@@ -397,12 +438,15 @@ impl App {
                                 let id = session.id.clone();
                                 self.session_state.dismiss();
                                 let client = self.daemon_client.clone();
-                                let agent = self.agent.clone();
+                                let history = self.conversation_history.clone();
                                 let tx = self.event_tx.clone();
                                 tokio::spawn(async move {
                                     if let Ok(resp) = client.load_session(&id).await {
                                         let messages = resp.messages;
-                                        agent.lock().await.load_history(messages.clone());
+                                        {
+                                            let mut h = history.lock().await;
+                                            *h = messages.clone();
+                                        }
                                         let _ = tx.send(AppEvent::HistoryLoaded(messages));
                                     }
                                 });
@@ -504,24 +548,16 @@ impl App {
                     self.status = "idle".to_string();
                     self.scroll_offset = 0;
                     self.user_scrolled = false;
-                    let agent = self.agent.clone();
+                    self.cancel_all_jobs();
+                    let history = self.conversation_history.clone();
+                    let sys_msgs = self.assembled_system_messages.clone();
                     tokio::spawn(async move {
-                        agent.lock().await.reset();
+                        let mut h = history.lock().await;
+                        *h = sys_msgs;
                     });
                     return;
                 }
-                self.committed_messages.push(UIMessage {
-                    role: MessageRole::User,
-                    content: text.clone(),
-                    tool_name: None,
-                    content_collapsed: false,
-                    tool_collapsed: false,
-                });
-                self.status = "thinking".to_string();
-                let agent = self.agent.clone();
-                tokio::spawn(async move {
-                    agent.lock().await.process_input(text).await;
-                });
+                self.submit_input(text);
             }
             AppEvent::ContentDelta(text) => {
                 self.streaming_content.push_str(&text);
@@ -545,7 +581,12 @@ impl App {
                     });
                 }
                 self.streaming_active = false;
-                self.status = "idle".to_string();
+                let pending = self.pending_count();
+                if pending > 0 {
+                    self.status = format!("{} queued", pending);
+                } else {
+                    self.status = "idle".to_string();
+                }
                 self.scroll_offset = 0;
                 self.user_scrolled = false;
             }
@@ -596,6 +637,15 @@ impl App {
                 self.status = "idle".to_string();
             }
             AppEvent::Tick => { /* periodic refresh */ }
+            AppEvent::JobComplete => {
+                self.job_count += 1;
+                self.current_job_handle = None;
+                if !self.pending_inputs.is_empty() {
+                    self.start_next_job();
+                } else {
+                    self.status = "idle".to_string();
+                }
+            }
             AppEvent::PermissionRequired {
                 reason,
                 rule,
@@ -657,10 +707,10 @@ impl App {
                 let id = self.session_id.clone();
                 let name = self.session_name.clone();
                 let client = self.daemon_client.clone();
-                let agent = self.agent.clone();
+                let history = self.conversation_history.clone();
                 tokio::spawn(async move {
-                    let history = agent.lock().await.get_history().to_vec();
-                    let _ = client.save_session(&id, &name, &history).await;
+                    let h = history.lock().await.clone();
+                    let _ = client.save_session(&id, &name, &h).await;
                 });
             }
             AppEvent::CtrlCPressed => {
@@ -811,12 +861,18 @@ impl App {
     }
 
     fn render_status(&self, f: &mut Frame, area: Rect) {
+        let pending = self.pending_count();
+        let pending_text = if pending > 0 {
+            format!(" | ⏳ {} pending", pending)
+        } else {
+            String::new()
+        };
         let text = match self.status.as_str() {
-            "idle" => Span::styled(" Ready", Style::default().fg(theme::DIM)),
-            "thinking" => Span::styled(" Thinking...", Style::default().fg(theme::WARNING)),
-            "streaming" => Span::styled(" Streaming...", Style::default().fg(theme::WARNING)),
+            "idle" => Span::styled(format!(" Ready{}", pending_text), Style::default().fg(theme::DIM)),
+            "thinking" => Span::styled(format!(" Thinking...{}", pending_text), Style::default().fg(theme::WARNING)),
+            "streaming" => Span::styled(format!(" Streaming...{}", pending_text), Style::default().fg(theme::WARNING)),
             s if s.starts_with("executing") => {
-                Span::styled(format!(" {}", s), Style::default().fg(theme::ACCENT))
+                Span::styled(format!(" {}{}", s, pending_text), Style::default().fg(theme::ACCENT))
             }
             _ => Span::raw(format!(" {}", self.status)),
         };
@@ -825,6 +881,55 @@ impl App {
 
     fn render_input(&self, f: &mut Frame, area: Rect) {
         self.input_box.render(f, area);
+    }
+
+    /// Submit user input, automatically queueing if a Job is already running.
+    fn submit_input(&mut self, text: String) {
+        // /clear is handled before submit_input
+        self.pending_inputs.push_back(text);
+        if self.current_job_handle.is_none() {
+            self.start_next_job();
+        }
+    }
+
+    /// Start the next pending job (if any).
+    fn start_next_job(&mut self) {
+        if let Some(text) = self.pending_inputs.pop_front() {
+            // Push user message to UI immediately
+            self.committed_messages.push(UIMessage {
+                role: MessageRole::User,
+                content: text.clone(),
+                tool_name: None,
+                content_collapsed: false,
+                tool_collapsed: false,
+            });
+            self.status = "thinking".to_string();
+
+            let history = self.conversation_history.clone();
+            let client = self.daemon_client.clone();
+            let event_tx = self.event_tx.clone();
+            let session_id = self.session_id.clone();
+
+            let sys_msgs = self.assembled_system_messages.clone();
+            self.current_job_handle = Some(tokio::spawn(async move {
+                let mut agent = AgentLoop::new(client, event_tx.clone(), session_id, history, sys_msgs);
+                agent.process_input(text).await;
+                let _ = event_tx.send(AppEvent::JobComplete);
+            }));
+        }
+    }
+
+    /// Cancel the current job and flush all queued input.
+    fn cancel_all_jobs(&mut self) {
+        self.pending_inputs.clear();
+        if let Some(handle) = self.current_job_handle.take() {
+            handle.abort();
+        }
+    }
+
+    /// Number of inputs waiting in the queue (excluding the running one).
+    fn pending_count(&self) -> usize {
+        self.pending_inputs.len()
     }
 }
 
