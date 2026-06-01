@@ -1,6 +1,6 @@
 //! Stress Tests Module - Comprehensive load and stress testing for services
 //!
-//! This module provides stress testing utilities for all Claude Code services.
+//! This module provides stress testing utilities for all Wgenty Code services.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -9,12 +9,12 @@ use tokio::sync::RwLock;
 use crate::config::Settings;
 use crate::knowledge::{MagicDocsConfig, MagicDocsService};
 use crate::services::{
-    AutoDreamConfig, AutoDreamService, PluginConfig, PluginMarketplaceService,
-    TeamMemoryConfig, TeamMemorySyncService,
+    AutoDreamConfig, AutoDreamService, PluginConfig, PluginMarketplaceService, TeamMemoryConfig,
+    TeamMemorySyncService,
 };
+use crate::state::AppState;
 use crate::teams::AgentsService;
 use crate::voice::{VoiceConfig, VoiceService};
-use crate::state::AppState;
 
 #[derive(Debug, Clone)]
 pub struct StressTestResult {
@@ -134,7 +134,7 @@ impl StressTestRunner {
 
     pub async fn run_all_tests(&self) -> Vec<StressTestResult> {
         println!("\n{}", "🎯".repeat(35));
-        println!("🔧 Claude Code Services Stress Test Suite");
+        println!("🔧 Wgenty Code Services Stress Test Suite");
         println!("{}", "🎯".repeat(35));
         println!("\nConfiguration:");
         println!("  Iterations:   {}", self.iterations);

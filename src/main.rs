@@ -1,17 +1,14 @@
-//! Claude Code Rust - Main Entry Point
+//! Wgenty Code Rust - Main Entry Point
 
 use clap::Parser;
-use claude_code_rs::cli::Cli;
-use claude_code_rs::config::Settings;
-use claude_code_rs::state::AppState;
-use claude_code_rs::utils::logging;
+use wgenty_code::cli::Cli;
+use wgenty_code::config::Settings;
+use wgenty_code::state::AppState;
+use wgenty_code::utils::logging;
 use tracing::error;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // 防御性恢复终端模式（防止 TUI 异常退出后残留 raw mode）
-    let _ = crossterm::terminal::disable_raw_mode();
-
     logging::init();
 
     let cli = Cli::parse();

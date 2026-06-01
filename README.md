@@ -3,7 +3,7 @@
 https://github.com/user-attachments/assets/0b900bd2-58ff-4243-9034-32b3ed73cc4b
 
 
-本项目包含TS的claude code 源代码。完整的网站项目介绍：项目完整介绍，以及下载 https://claude-rust-gui.netlify.app/
+本项目包含TS的wgenty code 源代码。完整的网站项目介绍：项目完整介绍，以及下载 https://claude-rust-gui.netlify.app/
 2026.4.24更新GUI客户端：<img width="1071" height="543" alt="ScreenShot_2026-04-23_214124_728" src="https://github.com/user-attachments/assets/2748c7a9-4269-4952-8af9-9e1cacc735fb" />
 <img width="2379" height="1787" alt="ScreenShot_2026-04-24_012552_679" src="https://github.com/user-attachments/assets/f32fe710-1be8-4ac7-a99c-3181bcdb3340" />
 <img width="2376" height="1790" alt="ScreenShot_2026-04-24_012534_235" src="https://github.com/user-attachments/assets/8cc2c093-2dbd-4188-9720-1f9d5111c4ed" />
@@ -11,10 +11,10 @@ https://github.com/user-attachments/assets/0b900bd2-58ff-4243-9034-32b3ed73cc4b
 <img width="2397" height="1767" alt="ScreenShot_2026-04-24_012507_346" src="https://github.com/user-attachments/assets/7f5c4321-f433-4f0b-a3a8-91b290c1ba3e" />
 <img width="1725" height="1050" alt="ScreenShot_2026-04-23_235219_164" src="https://github.com/user-attachments/assets/67152893-e093-4011-ba75-a84eb3d9a023" />
 
-# Claude Code Rust 🦀
+# Wgenty Code Rust 🦀
 
 
-> 🚀 **Anthropic Claude Code 的 Rust 全量重构版本** - 性能提升 **2.5x**，体积减少 **97%**，零依赖原生安全
+> 🚀 **Anthropic Wgenty Code 的 Rust 全量重构版本** - 性能提升 **2.5x**，体积减少 **97%**，零依赖原生安全
 
 <div align="center">
 
@@ -32,15 +32,15 @@ https://github.com/user-attachments/assets/0b900bd2-58ff-4243-9034-32b3ed73cc4b
 
 | 网站 | 描述 |
 |:-----|:-----|
-| [Claude Code Rust](https://claudecode-rust.netlify.app/) | 官方项目网站 - 性能展示和安装指南 |
-| [Claude Code Rust Landing](https://lorryjovens-hub.github.io/claude-code-rust-landing/) | 项目介绍和特性展示 |
+| [Wgenty Code Rust](https://wgentycode-rust.netlify.app/) | 官方项目网站 - 性能展示和安装指南 |
+| [Wgenty Code Rust Landing](https://lorryjovens-hub.github.io/wgenty-code-rust-landing/) | 项目介绍和特性展示 |
 
 <div align="center">
-  <a href="https://claudecode-rust.netlify.app/" target="_blank">
-    <img src="https://claudecode-rust.netlify.app/og-image.png" alt="Claude Code Rust 网站" width="400" style="border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);" />
+  <a href="https://wgentycode-rust.netlify.app/" target="_blank">
+    <img src="https://wgentycode-rust.netlify.app/og-image.png" alt="Wgenty Code Rust 网站" width="400" style="border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);" />
   </a>
-  <a href="https://lorryjovens-hub.github.io/claude-code-rust-landing/" target="_blank">
-    <img src="https://lorryjovens-hub.github.io/claude-code-rust-landing/og-image.png" alt="Claude Code Rust Landing" width="400" style="border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); margin-left: 20px;" />
+  <a href="https://lorryjovens-hub.github.io/wgenty-code-rust-landing/" target="_blank">
+    <img src="https://lorryjovens-hub.github.io/wgenty-code-rust-landing/og-image.png" alt="Wgenty Code Rust Landing" width="400" style="border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); margin-left: 20px;" />
   </a>
 </div>
 
@@ -48,7 +48,7 @@ https://github.com/user-attachments/assets/0b900bd2-58ff-4243-9034-32b3ed73cc4b
 
 ## 🎯 项目概述
 
-这是一个**从零开始用 Rust 完整重构**的 Claude Code 工具链，在保持 100% 功能兼容性的同时：
+这是一个**从零开始用 Rust 完整重构**的 Wgenty Code 工具链，在保持 100% 功能兼容性的同时：
 
 - ⚡ **性能革命**：启动速度快 **2.5 倍**，命令执行快 **25 倍**
 - 📦 **轻量级**：从 164MB 减少到仅 **5MB**，部署体积减少 **97%**
@@ -210,7 +210,7 @@ https://github.com/user-attachments/assets/0b900bd2-58ff-4243-9034-32b3ed73cc4b
 ## 🏗️ 架构设计
 
 ```
-claude-code-rust/
+wgenty-code-rust/
 ├── src/
 │   ├── api/              # API 客户端 (支持 Anthropic/DeepSeek)
 │   ├── cli/              # CLI 命令解析
@@ -281,62 +281,62 @@ claude-code-rust/
 **Windows (PowerShell):**
 ```powershell
 # 克隆仓库
-git clone https://github.com/lorryjovens-hub/claude-code-rust.git
-cd claude-code-rust
+git clone https://github.com/lorryjovens-hub/wgenty-code-rust.git
+cd wgenty-code-rust
 
 # 运行安装脚本（默认安装到临时目录）
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
 .\scripts\install-windows.ps1
 
 # 或指定安装到D盘
-.\scripts\install-windows.ps1 -InstallDir "D:\claude-code\install"
+.\scripts\install-windows.ps1 -InstallDir "D:\wgenty-code\install"
 ```
 
 **Linux / macOS:**
 ```bash
 # 克隆仓库
-git clone https://github.com/lorryjovens-hub/claude-code-rust.git
-cd claude-code-rust
+git clone https://github.com/lorryjovens-hub/wgenty-code-rust.git
+cd wgenty-code-rust
 
 # 运行安装脚本
 chmod +x ./scripts/install-linux.sh
 ./scripts/install-linux.sh
 
 # 或指定安装目录
-./scripts/install-linux.sh --install-dir "/opt/claude-code"
+./scripts/install-linux.sh --install-dir "/opt/wgenty-code"
 ```
 
 #### 方式二：手动编译
 
 ```bash
 # 克隆仓库
-git clone https://github.com/lorryjovens-hub/claude-code-rust.git
-cd claude-code-rust
+git clone https://github.com/lorryjovens-hub/wgenty-code-rust.git
+cd wgenty-code-rust
 
 # 编译发布版本
 cargo build --release
 
 # 可执行文件位置
-./target/release/claude-code
+./target/release/wgenty-code
 ```
 
 #### 方式三：指定编译目录（解决磁盘空间问题）
 
 ```bash
 # 使用D盘作为编译目录
-cargo build --release --target-dir "D:\claude-code\target"
+cargo build --release --target-dir "D:\wgenty-code\target"
 
 # 可执行文件位置
-D:\claude-code\target\release\claude-code.exe
+D:\wgenty-code\target\release\wgenty-code.exe
 ```
 
 ### 配置 API
 
 ```bash
 # 方式 1: 使用命令行配置（推荐）
-claude-code config set api_key "your-api-key"
-claude-code config set base_url "https://api.deepseek.com"
-claude-code config set model "deepseek-reasoner"
+wgenty-code config set api_key "your-api-key"
+wgenty-code config set base_url "https://api.deepseek.com"
+wgenty-code config set model "deepseek-reasoner"
 
 # 方式 2: 环境变量
 export DEEPSEEK_API_KEY="your-api-key"
@@ -352,42 +352,42 @@ export API_BASE_URL="https://api.deepseek.com"
 
 ```bash
 # 查看版本
-claude-code --version
+wgenty-code --version
 
 # 查看帮助
-claude-code --help
+wgenty-code --help
 
 # 启动 REPL 交互模式
-claude-code repl
+wgenty-code repl
 
 # 执行单次查询
-claude-code query --prompt "分析这个项目的结构"
+wgenty-code query --prompt "分析这个项目的结构"
 
 # 初始化新项目
-claude-code init --name my-project --template rust
+wgenty-code init --name my-project --template rust
 
 # 管理配置
-claude-code config show
-claude-code config set model deepseek-reasoner
-claude-code config reset
+wgenty-code config show
+wgenty-code config set model deepseek-reasoner
+wgenty-code config reset
 
 # MCP 服务器管理
-claude-code mcp list
-claude-code mcp add filesystem --path /path/to/dir
+wgenty-code mcp list
+wgenty-code mcp add filesystem --path /path/to/dir
 
 # 内存管理
-claude-code memory status
-claude-code memory export --output memories.json
+wgenty-code memory status
+wgenty-code memory export --output memories.json
 
 # 插件管理
-claude-code plugin list
-claude-code plugin install my-plugin
+wgenty-code plugin list
+wgenty-code plugin install my-plugin
 
 # 语音输入模式
-claude-code voice
+wgenty-code voice
 
 # 运行压力测试
-claude-code stress-test
+wgenty-code stress-test
 ```
 
 ---
@@ -396,7 +396,7 @@ claude-code stress-test
 
 ```powershell
 # PowerShell
-cd claude-code-rust
+cd wgenty-code-rust
 .\benchmark.ps1
 ```
 
@@ -404,7 +404,7 @@ cd claude-code-rust
 
 ```
 ========================================
-Claude Code Performance Benchmark
+Wgenty Code Performance Benchmark
 ========================================
 
 Test 1: Startup Time (cold start)
@@ -539,8 +539,8 @@ Overall Performance Improvement: 60%
 
 ```bash
 # 开发环境设置
-git clone https://github.com/lorryjovens-hub/claude-code-rust.git
-cd claude-code-rust
+git clone https://github.com/lorryjovens-hub/wgenty-code-rust.git
+cd wgenty-code-rust
 
 # 安装开发工具
 cargo install clippy rustfmt
@@ -571,7 +571,7 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 ## 🙏 致谢
 
-- **Anthropic** - 原版 Claude Code 的创造者
+- **Anthropic** - 原版 Wgenty Code 的创造者
 - **Rust 社区** - 优秀的工具链和生态系统
 - **所有贡献者** - 感谢每一位贡献者
 
@@ -579,8 +579,8 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 
 ## 📞 联系方式
 
-- **Issues**: [GitHub Issues](https://github.com/lorryjovens-hub/claude-code-rust/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/lorryjovens-hub/claude-code-rust/discussions)
+- **Issues**: [GitHub Issues](https://github.com/lorryjovens-hub/wgenty-code-rust/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/lorryjovens-hub/wgenty-code-rust/discussions)
 
 ---
 

@@ -15,7 +15,7 @@ impl TemplateEngine {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Claude Code Plugin Marketplace</title>
+    <title>Wgenty Code Plugin Marketplace</title>
     <style>
         * {{
             margin: 0;
@@ -264,8 +264,8 @@ impl TemplateEngine {
 <body>
     <div class="container">
         <header>
-            <h1>🔌 Claude Code Plugin Marketplace</h1>
-            <p class="subtitle">Discover and install plugins to extend Claude Code's capabilities</p>
+            <h1>🔌 Wgenty Code Plugin Marketplace</h1>
+            <p class="subtitle">Discover and install plugins to extend Wgenty Code's capabilities</p>
             
             <div class="search-box">
                 <input type="text" placeholder="Search plugins..." id="searchInput">
@@ -336,7 +336,7 @@ impl TemplateEngine {
         </div>
         
         <footer>
-            <p>Claude Code Plugin Marketplace v{}</p>
+            <p>Wgenty Code Plugin Marketplace v{}</p>
             <p style="margin-top: 0.5rem; font-size: 0.875rem;">
                 <a href="/api/health" style="color: #667eea;">API Health</a> • 
                 <a href="/api/docs" style="color: #667eea;">API Docs</a>
@@ -437,7 +437,7 @@ impl TemplateEngine {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Plugin Details - Claude Code Marketplace</title>
+    <title>Plugin Details - Wgenty Code Marketplace</title>
     <style>
         * {{
             margin: 0;
@@ -677,7 +677,7 @@ impl TemplateEngine {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Search Plugins - Claude Code Marketplace</title>
+    <title>Search Plugins - Wgenty Code Marketplace</title>
     <style>
         * {{
             margin: 0;

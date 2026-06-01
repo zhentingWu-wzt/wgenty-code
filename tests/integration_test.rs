@@ -1,7 +1,7 @@
-//! Integration Tests for Claude Code Rust
+//! Integration Tests for Wgenty Code Rust
 
 use clap::Parser;
-use claude_code_rs::{
+use wgenty_code::{
     cli::Cli,
     config::Settings,
     knowledge::{BuiltinSkills, SkillCategory, SkillContext, SkillExecutor, SkillRegistry},
@@ -12,7 +12,7 @@ use std::sync::Arc;
 #[test]
 fn test_cli_initialization() {
     // Test that CLI can be parsed
-    let cli = Cli::try_parse_from(vec!["claude-code"]);
+    let cli = Cli::try_parse_from(vec!["wgenty-code"]);
     assert!(cli.is_ok());
 }
 
@@ -90,7 +90,7 @@ async fn test_skill_system_integration() {
 fn test_lib_exports() {
     // Verify all public types are exported
     #[allow(unused_imports)]
-    use claude_code_rs::{
+    use wgenty_code::{
         Skill, SkillCategory, SkillContext, SkillError, SkillExecutor, SkillParams, SkillRegistry,
         SkillResult,
     };

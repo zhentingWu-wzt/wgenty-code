@@ -64,9 +64,7 @@ impl Tool for ViewTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let path = input["path"]
-            .as_str()
-            .unwrap_or(".");
+        let path = input["path"].as_str().unwrap_or(".");
         let depth = input["depth"].as_u64().unwrap_or(3).min(10) as usize;
         let offset = input["offset"].as_u64().unwrap_or(0) as usize;
         let limit = input["limit"].as_u64().unwrap_or(200) as usize;
@@ -85,7 +83,16 @@ impl Tool for ViewTool {
 
         lines.push(format!("{}", base.display()));
 
-        walk_tree(&base, depth, "", &mut lines, &mut count, &mut skipped, offset, limit);
+        walk_tree(
+            &base,
+            depth,
+            "",
+            &mut lines,
+            &mut count,
+            &mut skipped,
+            offset,
+            limit,
+        );
 
         if skipped > 0 {
             lines.push(format!("...[{} entries skipped]...", skipped));
@@ -125,9 +132,9 @@ fn walk_tree(
     sorted.sort_by(|a, b| {
         let a_is_dir = a.file_type().map(|t| t.is_dir()).unwrap_or(false);
         let b_is_dir = b.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        b_is_dir.cmp(&a_is_dir).then_with(|| {
-            a.file_name().cmp(&b.file_name())
-        })
+        b_is_dir
+            .cmp(&a_is_dir)
+            .then_with(|| a.file_name().cmp(&b.file_name()))
     });
 
     // Skip hidden files/dirs (starting with .)
@@ -152,7 +159,16 @@ fn walk_tree(
         if *count < offset {
             *skipped += 1;
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                walk_tree(&entry.path(), depth - 1, &format!("{}{}", prefix, child_prefix), lines, count, skipped, offset, limit);
+                walk_tree(
+                    &entry.path(),
+                    depth - 1,
+                    &format!("{}{}", prefix, child_prefix),
+                    lines,
+                    count,
+                    skipped,
+                    offset,
+                    limit,
+                );
             }
             continue;
         }

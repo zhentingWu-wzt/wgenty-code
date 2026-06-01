@@ -6,16 +6,15 @@
 //!   - execution/   — shell commands, session management, git
 //!   - meta/        — think, lsp, ask_user_question, note_edit
 
+pub mod execution;
 pub mod executor;
 pub mod filesystem;
-pub mod search;
-pub mod execution;
 pub mod meta;
+pub mod search;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::tasks::TaskManagementTool;
 
 /// Tool trait for all tools
 #[async_trait]
@@ -61,7 +60,11 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        let command_sessions = std::sync::Arc::new(execution::session_manager::CommandSessionManager::new());
+        let sandbox = std::sync::Arc::new(crate::sandbox::SandboxManager::new());
+        let command_sessions = std::sync::Arc::new(
+            execution::session_manager::CommandSessionManager::new()
+                .with_sandbox(sandbox.clone()),
+        );
         let mut registry = Self {
             tools: HashMap::new(),
         };
@@ -74,7 +77,9 @@ impl ToolRegistry {
         registry.register(Box::new(filesystem::file_edit::FileEditTool::new()));
         registry.register(Box::new(filesystem::file_write::FileWriteTool::new()));
         // Execution tools
-        registry.register(Box::new(execution::execute_command::ExecuteCommandTool::new()));
+        registry.register(Box::new(
+            execution::execute_command::ExecuteCommandTool::with_sandbox(sandbox.clone()),
+        ));
         registry.register(Box::new(execution::exec_command::ExecCommandTool::new(
             command_sessions.clone(),
         )));
@@ -86,6 +91,8 @@ impl ToolRegistry {
         )));
         // Search tools
         registry.register(Box::new(search::search::SearchTool::new()));
+        registry.register(Box::new(search::web_search::WebSearchTool::new()));
+        registry.register(Box::new(search::web_fetch::WebFetchTool::new()));
         registry.register(Box::new(search::glob_search::GlobTool::new()));
         registry.register(Box::new(search::grep::GrepTool::new()));
         // Filesystem tools (more)
@@ -93,14 +100,47 @@ impl ToolRegistry {
         registry.register(Box::new(filesystem::view::ViewTool::new()));
         // Execution tools (git)
         registry.register(Box::new(execution::git_operations::GitOperationsTool::new()));
+        // Execution tools (test runner)
+        registry.register(Box::new(execution::run_test::RunTestTool::new(sandbox)));
         // Meta tools (more)
         registry.register(Box::new(meta::think::ThinkTool::new()));
+        registry.register(Box::new(meta::compact::CompactTool::new()));
         registry.register(Box::new(meta::lsp::LspTool::new()));
         registry.register(Box::new(meta::note_edit::NoteEditTool::new()));
-        // Task management (infrastructure tool)
-        registry.register(Box::new(TaskManagementTool::new()));
 
         registry
+    }
+
+    /// Apply provider-aware configuration after construction.
+    ///
+    /// Nearly all major providers now ship with built-in web search:
+    /// Anthropic (web_search_20250305), OpenAI, 百度/文心, 千问/通义,
+    /// Kimi/月之暗面, 豆包, 腾讯元宝, Gemini, etc.
+    ///
+    /// Only register a local web_search tool for providers that explicitly
+    /// lack native search capability (DeepSeek, self-hosted Ollama/vLLM).
+    /// The local tool uses DuckDuckGo by default (zero-config), with optional
+    /// Tavily fallback.
+    pub fn with_settings(mut self, settings: &crate::config::Settings) -> Self {
+        let provider = crate::api::provider::detect_provider(&settings.api.get_base_url());
+
+        // Whitelist: only these providers lack built-in web search.
+        const PROVIDERS_WITHOUT_BUILTIN_SEARCH: &[&str] = &["deepseek", "openai"];
+
+        // Note: "openai" here refers to the catch-all OpenAI-compatible path
+        // (Ollama, vLLM, local models, etc.) — the default fallback provider.
+        // The "openai" provider maps to unknown/self-hosted endpoints that
+        // typically don't have built-in search.
+
+        if !PROVIDERS_WITHOUT_BUILTIN_SEARCH.contains(&provider.name()) {
+            self.tools.remove("web_search");
+            tracing::info!(
+                "web_search tool skipped: {} has built-in search capability",
+                provider.name()
+            );
+        }
+
+        self
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
@@ -137,13 +177,16 @@ impl Default for ToolRegistry {
 }
 
 // Re-export all tool types
+pub use execution::{
+    BackgroundManager, BackgroundResult, BackgroundTool, CommandSessionManager, ExecCommandTool,
+    ExecuteCommandTool, GitOperationsTool, KillSessionTool, RunTestTool, WriteStdinTool,
+};
 pub use executor::ToolExecutor;
 pub use filesystem::{
     ApplyPatchTool, FileEditTool, FileReadTool, FileWriteTool, ListFilesTool, ViewTool,
 };
-pub use search::{GlobTool, GrepTool, SearchTool};
-pub use execution::{
-    CommandSessionManager, ExecCommandTool, ExecuteCommandTool, GitOperationsTool,
-    KillSessionTool, WriteStdinTool,
+pub use meta::{
+    AskUserQuestionTool, CompactTool, LoadSkillTool, LspTool, NoteEditTool, TaskTool,
+    TeamMessageTool, ThinkTool,
 };
-pub use meta::{AskUserQuestionTool, LspTool, NoteEditTool, ThinkTool};
+pub use search::{GlobTool, GrepTool, SearchTool, WebFetchTool, WebSearchTool};
