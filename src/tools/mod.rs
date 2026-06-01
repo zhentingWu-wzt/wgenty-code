@@ -60,7 +60,6 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        // Create sandbox manager (auto-selects best backend)
         let sandbox = std::sync::Arc::new(crate::sandbox::SandboxManager::new());
         let command_sessions = std::sync::Arc::new(
             execution::session_manager::CommandSessionManager::new()
@@ -92,6 +91,8 @@ impl ToolRegistry {
         )));
         // Search tools
         registry.register(Box::new(search::search::SearchTool::new()));
+        registry.register(Box::new(search::web_search::WebSearchTool::new()));
+        registry.register(Box::new(search::web_fetch::WebFetchTool::new()));
         registry.register(Box::new(search::glob_search::GlobTool::new()));
         registry.register(Box::new(search::grep::GrepTool::new()));
         // Filesystem tools (more)
@@ -104,9 +105,40 @@ impl ToolRegistry {
         registry.register(Box::new(meta::compact::CompactTool::new()));
         registry.register(Box::new(meta::lsp::LspTool::new()));
         registry.register(Box::new(meta::note_edit::NoteEditTool::new()));
-        // Task management is registered externally via DaemonState to share task store
 
         registry
+    }
+
+    /// Apply provider-aware configuration after construction.
+    ///
+    /// Nearly all major providers now ship with built-in web search:
+    /// Anthropic (web_search_20250305), OpenAI, 百度/文心, 千问/通义,
+    /// Kimi/月之暗面, 豆包, 腾讯元宝, Gemini, etc.
+    ///
+    /// Only register a local web_search tool for providers that explicitly
+    /// lack native search capability (DeepSeek, self-hosted Ollama/vLLM).
+    /// The local tool uses DuckDuckGo by default (zero-config), with optional
+    /// Tavily fallback.
+    pub fn with_settings(mut self, settings: &crate::config::Settings) -> Self {
+        let provider = crate::api::provider::detect_provider(&settings.api.get_base_url());
+
+        // Whitelist: only these providers lack built-in web search.
+        const PROVIDERS_WITHOUT_BUILTIN_SEARCH: &[&str] = &["deepseek", "openai"];
+
+        // Note: "openai" here refers to the catch-all OpenAI-compatible path
+        // (Ollama, vLLM, local models, etc.) — the default fallback provider.
+        // The "openai" provider maps to unknown/self-hosted endpoints that
+        // typically don't have built-in search.
+
+        if !PROVIDERS_WITHOUT_BUILTIN_SEARCH.contains(&provider.name()) {
+            self.tools.remove("web_search");
+            tracing::info!(
+                "web_search tool skipped: {} has built-in search capability",
+                provider.name()
+            );
+        }
+
+        self
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
@@ -145,7 +177,7 @@ impl Default for ToolRegistry {
 // Re-export all tool types
 pub use execution::{
     BackgroundManager, BackgroundResult, BackgroundTool, CommandSessionManager, ExecCommandTool,
-    ExecuteCommandTool, GitOperationsTool, KillSessionTool, WriteStdinTool,
+    ExecuteCommandTool, GitOperationsTool, KillSessionTool, RunTestTool, WriteStdinTool,
 };
 pub use executor::ToolExecutor;
 pub use filesystem::{
@@ -155,4 +187,4 @@ pub use meta::{
     AskUserQuestionTool, CompactTool, LoadSkillTool, LspTool, NoteEditTool, TaskTool,
     TeamMessageTool, ThinkTool,
 };
-pub use search::{GlobTool, GrepTool, SearchTool};
+pub use search::{GlobTool, GrepTool, SearchTool, WebFetchTool, WebSearchTool};

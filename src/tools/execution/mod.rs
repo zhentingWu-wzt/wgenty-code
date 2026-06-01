@@ -1,5 +1,7 @@
 pub mod background;
 pub mod exec_command;
+pub mod run_test;
+pub mod test_output;
 pub mod execute_command;
 pub mod git_operations;
 pub mod kill_session;
@@ -13,3 +15,5 @@ pub use git_operations::GitOperationsTool;
 pub use kill_session::KillSessionTool;
 pub use session_manager::CommandSessionManager;
 pub use write_stdin::WriteStdinTool;
+
+pub use run_test::RunTestTool;
