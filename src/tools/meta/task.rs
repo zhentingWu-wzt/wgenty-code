@@ -136,14 +136,14 @@ impl Tool for TaskTool {
         // Create a fresh API client from the stored settings.
         let api_client = ApiClient::new(self.settings.clone());
 
-        // Run the subagent loop (capped at 10 rounds).
+        // Run the subagent loop (capped at 30 rounds).
         match run_subagent_loop(
             &api_client,
             &tool_registry,
             system_prompt,
             &full_prompt,
             &allowed_tools,
-            10,
+            30,
         )
         .await
         {

@@ -13,6 +13,7 @@ use crate::tui::components::permission::PermissionState;
 use crate::tui::components::question::QuestionState;
 use crate::tui::components::session::SessionState;
 use crate::tui::components::task_panel::TaskPanelState;
+use crate::state::agent_phase::{AgentPhase, TurnId, TurnAbortReason};
 use crate::tui::theme;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -84,8 +85,12 @@ pub enum AppEvent {
     },
     /// A stream error occurred
     StreamError(String),
-    /// A job (user-input → final response) completed; start next queued input if any
-    JobComplete,
+    /// A turn (user-input → final response) completed; start next queued input if any
+    TurnComplete,
+    /// A turn began processing
+    TurnStarted { turn_id: TurnId },
+    /// A turn was aborted before normal completion
+    TurnAborted { reason: TurnAbortReason },
     /// Tick for periodic refresh
     Tick,
     /// Toggle session popup
@@ -131,22 +136,24 @@ pub struct App {
     pub committed_messages: Vec<UIMessage>,
     pub streaming_content: String,
     pub streaming_active: bool,
-    pub status: String,
+    pub phase: AgentPhase,
     pub session_id: String,
     pub session_name: String,
     pub scroll_offset: u16,
     pub user_scrolled: bool,
-    /// Shared conversation history — all Jobs in this session read/write
-    /// through this Arc, so each Job inherits the accumulated context.
+    /// Shared conversation history — all Turns in this session read/write
+    /// through this Arc, so each Turn inherits the accumulated context.
     pub conversation_history: Arc<TokioMutex<Vec<ChatMessage>>>,
-    /// Pending user inputs queued while a Job is running.
+    /// Pending user inputs queued while a Turn is running.
     pub pending_inputs: VecDeque<String>,
-    /// Handle for the currently executing Job (None when idle).
-    pub current_job_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Number of completed jobs (for UI / debugging).
-    pub job_count: usize,
+    /// Handle for the currently executing Turn (None when idle).
+    pub current_turn_handle: Option<tokio::task::JoinHandle<()>>,
+    /// ID of the currently executing turn (for lifecycle tracking).
+    pub current_turn_id: Option<TurnId>,
+    /// Number of completed turns (for UI / debugging).
+    pub turn_count: usize,
     /// Pre-assembled system messages (layered instructions from PromptAssembler).
-    /// Cloned into each new AgentLoop so every Job inherits the same base instructions.
+    /// Cloned into each new AgentLoop so every Turn inherits the same base instructions.
     pub assembled_system_messages: Vec<ChatMessage>,
     /// Channel sender for agent/input events
     event_tx: mpsc::UnboundedSender<AppEvent>,
@@ -198,7 +205,7 @@ impl App {
             committed_messages: Vec::new(),
             streaming_content: String::new(),
             streaming_active: false,
-            status: "idle".to_string(),
+            phase: AgentPhase::Idle,
             session_id,
             session_name: "New Session".to_string(),
             scroll_offset: 0,
@@ -206,8 +213,9 @@ impl App {
             conversation_history,
             assembled_system_messages: system_messages,
             pending_inputs: VecDeque::new(),
-            current_job_handle: None,
-            job_count: 0,
+            current_turn_handle: None,
+            current_turn_id: None,
+            turn_count: 0,
             event_tx,
             event_rx,
             should_quit: false,
@@ -320,6 +328,10 @@ impl App {
     }
 
     async fn handle_event(&mut self, event: AppEvent) {
+        // Derive phase from event (pure function); fall back to current
+        if let Some(next_phase) = agent_phase_from_event(&event) {
+            self.phase = next_phase;
+        }
         match event {
             AppEvent::KeyEvent(key) => {
                 // Permission panel handling (inline, not popup)
@@ -545,10 +557,9 @@ impl App {
                     self.committed_messages.clear();
                     self.streaming_content.clear();
                     self.streaming_active = false;
-                    self.status = "idle".to_string();
                     self.scroll_offset = 0;
                     self.user_scrolled = false;
-                    self.cancel_all_jobs();
+                    self.cancel_current_turn();
                     let history = self.conversation_history.clone();
                     let sys_msgs = self.assembled_system_messages.clone();
                     tokio::spawn(async move {
@@ -562,7 +573,6 @@ impl App {
             AppEvent::ContentDelta(text) => {
                 self.streaming_content.push_str(&text);
                 self.streaming_active = true;
-                self.status = "streaming".to_string();
                 // Auto-scroll: keep at bottom when streaming and user hasn't manually scrolled
                 if !self.user_scrolled {
                     self.scroll_offset = 0;
@@ -583,15 +593,12 @@ impl App {
                 self.streaming_active = false;
                 let pending = self.pending_count();
                 if pending > 0 {
-                    self.status = format!("{} queued", pending);
                 } else {
-                    self.status = "idle".to_string();
                 }
                 self.scroll_offset = 0;
                 self.user_scrolled = false;
             }
             AppEvent::ToolStart { name } => {
-                self.status = format!("executing {}", name);
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::Tool,
                     content: String::new(),
@@ -623,7 +630,6 @@ impl App {
                         });
                     }
                 }
-                self.status = "thinking".to_string();
             }
             AppEvent::StreamError(msg) => {
                 self.committed_messages.push(UIMessage {
@@ -634,16 +640,14 @@ impl App {
                     tool_collapsed: false,
                 });
                 self.streaming_active = false;
-                self.status = "idle".to_string();
             }
             AppEvent::Tick => { /* periodic refresh */ }
-            AppEvent::JobComplete => {
-                self.job_count += 1;
-                self.current_job_handle = None;
+            AppEvent::TurnComplete => {
+                self.turn_count += 1;
+                self.current_turn_handle = None;
                 if !self.pending_inputs.is_empty() {
-                    self.start_next_job();
+                    self.start_next_turn();
                 } else {
-                    self.status = "idle".to_string();
                 }
             }
             AppEvent::PermissionRequired {
@@ -845,7 +849,7 @@ impl App {
     }
 
     fn render_header(&self, f: &mut Frame, area: Rect) {
-        components::status::render(f, area, &self.status, &self.session_name);
+        components::status::render(f, area, &self.phase, &self.session_name);
     }
 
     fn render_chat(&self, f: &mut Frame, area: Rect) {
@@ -863,37 +867,38 @@ impl App {
     fn render_status(&self, f: &mut Frame, area: Rect) {
         let pending = self.pending_count();
         let pending_text = if pending > 0 {
-            format!(" | ⏳ {} pending", pending)
+            format!(" | {} pending", pending)
         } else {
             String::new()
         };
-        let text = match self.status.as_str() {
-            "idle" => Span::styled(format!(" Ready{}", pending_text), Style::default().fg(theme::DIM)),
-            "thinking" => Span::styled(format!(" Thinking...{}", pending_text), Style::default().fg(theme::WARNING)),
-            "streaming" => Span::styled(format!(" Streaming...{}", pending_text), Style::default().fg(theme::WARNING)),
-            s if s.starts_with("executing") => {
-                Span::styled(format!(" {}{}", s, pending_text), Style::default().fg(theme::ACCENT))
-            }
-            _ => Span::raw(format!(" {}", self.status)),
+        let (label, color) = match &self.phase {
+            AgentPhase::Idle | AgentPhase::Completed => (format!(" Ready{}", pending_text), theme::DIM),
+            AgentPhase::Thinking => (format!(" Thinking...{}", pending_text), theme::WARNING),
+            AgentPhase::StreamingResponse => (format!(" Streaming...{}", pending_text), theme::WARNING),
+            AgentPhase::ExecutingTool { name } => (format!(" Executing {}{}", name, pending_text), theme::ACCENT),
+            AgentPhase::AwaitingPermission { .. } => (format!(" Permission Required{}", pending_text), theme::WARNING),
+            AgentPhase::AwaitingUserInput { .. } => (format!(" Question{}", pending_text), theme::WARNING),
+            AgentPhase::Compacting => (format!(" Compacting...{}", pending_text), theme::WARNING),
+            AgentPhase::Errored(e) => (format!(" Error: {}{}", e, pending_text), theme::ERROR),
         };
-        f.render_widget(Paragraph::new(text), area);
+        f.render_widget(Paragraph::new(Span::styled(label, Style::default().fg(color))), area);
     }
 
     fn render_input(&self, f: &mut Frame, area: Rect) {
         self.input_box.render(f, area);
     }
 
-    /// Submit user input, automatically queueing if a Job is already running.
+    /// Submit user input, automatically queueing if a Turn is already running.
     fn submit_input(&mut self, text: String) {
         // /clear is handled before submit_input
         self.pending_inputs.push_back(text);
-        if self.current_job_handle.is_none() {
-            self.start_next_job();
+        if self.current_turn_handle.is_none() {
+            self.start_next_turn();
         }
     }
 
-    /// Start the next pending job (if any).
-    fn start_next_job(&mut self) {
+    /// Start the next pending turn (if any).
+    fn start_next_turn(&mut self) {
         if let Some(text) = self.pending_inputs.pop_front() {
             // Push user message to UI immediately
             self.committed_messages.push(UIMessage {
@@ -903,7 +908,10 @@ impl App {
                 content_collapsed: false,
                 tool_collapsed: false,
             });
-            self.status = "thinking".to_string();
+            self.phase = AgentPhase::Thinking;
+            let turn_id = TurnId::new();
+            self.current_turn_id = Some(turn_id.clone());
+            let _ = self.event_tx.send(AppEvent::TurnStarted { turn_id: turn_id.clone() });
 
             let history = self.conversation_history.clone();
             let client = self.daemon_client.clone();
@@ -911,20 +919,34 @@ impl App {
             let session_id = self.session_id.clone();
 
             let sys_msgs = self.assembled_system_messages.clone();
-            self.current_job_handle = Some(tokio::spawn(async move {
+            self.current_turn_handle = Some(tokio::spawn(async move {
                 let mut agent = AgentLoop::new(client, event_tx.clone(), session_id, history, sys_msgs);
-                agent.process_input(text).await;
-                let _ = event_tx.send(AppEvent::JobComplete);
+                let result = agent.process_input(text).await;
+                if let Err(ref e) = result {
+                    let reason = if e.contains("timed out") {
+                        TurnAbortReason::TimedOut
+                    } else if e.contains("max rounds") {
+                        TurnAbortReason::MaxRoundsExceeded
+                    } else {
+                        TurnAbortReason::StreamError
+                    };
+                    let _ = event_tx.send(AppEvent::TurnAborted { reason });
+                }
+                let _ = event_tx.send(AppEvent::TurnComplete);
             }));
         }
     }
 
-    /// Cancel the current job and flush all queued input.
-    fn cancel_all_jobs(&mut self) {
+    /// Cancel the current turn and flush all queued input.
+    fn cancel_current_turn(&mut self) {
         self.pending_inputs.clear();
-        if let Some(handle) = self.current_job_handle.take() {
+        if let Some(handle) = self.current_turn_handle.take() {
             handle.abort();
+            let _ = self.event_tx.send(AppEvent::TurnAborted {
+                reason: TurnAbortReason::Interrupted,
+            });
         }
+        self.current_turn_id = None;
     }
 
     /// Number of inputs waiting in the queue (excluding the running one).
@@ -1025,6 +1047,56 @@ fn format_tool_result(name: &str, raw_json: &str) -> String {
     format!("{}:\n{}", name, content)
 }
 
+/// Pure function: derive the next AgentPhase from a single AppEvent.
+fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
+    match event {
+        AppEvent::Submit(_) => Some(AgentPhase::Thinking),
+        AppEvent::ContentDelta(_) | AppEvent::ReasoningDelta(_) => {
+            Some(AgentPhase::StreamingResponse)
+        }
+        AppEvent::StreamDone { .. } => Some(AgentPhase::Thinking),
+        AppEvent::ToolStart { name } => Some(AgentPhase::ExecutingTool {
+            name: name.clone(),
+        }),
+        AppEvent::ToolResult { .. } => Some(AgentPhase::Thinking),
+        AppEvent::PermissionRequired { reason, rule, .. } => {
+            Some(AgentPhase::AwaitingPermission {
+                tool: rule.clone(),
+                rule: reason.clone(),
+            })
+        }
+        AppEvent::QuestionAsked { question, .. } => {
+            Some(AgentPhase::AwaitingUserInput {
+                question: question.clone(),
+            })
+        }
+        AppEvent::StreamError(_) => Some(AgentPhase::Errored(
+            "Stream error".to_string(),
+        )),
+        AppEvent::TurnComplete => Some(AgentPhase::Idle),
+        AppEvent::TurnAborted { reason } => match reason {
+            TurnAbortReason::TimedOut => {
+                Some(AgentPhase::Errored("Agent loop timed out".to_string()))
+            }
+            _ => Some(AgentPhase::Idle),
+        },
+        // Events that don't change phase
+        AppEvent::KeyEvent(_)
+        | AppEvent::Tick
+        | AppEvent::ToggleSessions
+        | AppEvent::ToggleTaskPanel
+        | AppEvent::CtrlCPressed
+        | AppEvent::SessionListLoaded(_)
+        | AppEvent::HistoryLoaded(_)
+        | AppEvent::SaveSession
+        | AppEvent::ToggleCollapseAll
+        | AppEvent::ToggleCollapseLatest
+        | AppEvent::TodosUpdated(_)
+        | AppEvent::TurnStarted { .. } => None,
+    }
+}
+
+
 /// Helper: create a centered rectangle of the given percentage size within `area`.
 /// Used by popup components (session).
 pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -1033,4 +1105,72 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let x = (area.width - popup_width) / 2;
     let y = (area.height - popup_height) / 2;
     Rect::new(x, y, popup_width, popup_height)
+
+
+
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use super::*;
+
+    #[test]
+    fn test_phase_transitions() {
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::Submit("hello".into())),
+            Some(AgentPhase::Thinking)
+        );
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::ContentDelta("text".into())),
+            Some(AgentPhase::StreamingResponse)
+        );
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::StreamDone { finish_reason: "stop".into() }),
+            Some(AgentPhase::Thinking)
+        );
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::ToolStart { name: "file_read".into() }),
+            Some(AgentPhase::ExecutingTool { name: "file_read".into() })
+        );
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::ToolResult { name: "x".into(), content: "y".into() }),
+            Some(AgentPhase::Thinking)
+        );
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::StreamError("fail".into())),
+            Some(AgentPhase::Errored("Stream error".into()))
+        );
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::TurnComplete),
+            Some(AgentPhase::Idle)
+        );
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::TurnAborted { reason: TurnAbortReason::TimedOut }),
+            Some(AgentPhase::Errored("Agent loop timed out".into()))
+        );
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::TurnAborted { reason: TurnAbortReason::Interrupted }),
+            Some(AgentPhase::Idle)
+        );
+    }
+
+    #[test]
+    fn test_non_phase_events_return_none() {
+        assert_eq!(agent_phase_from_event(&AppEvent::Tick), None);
+        assert_eq!(agent_phase_from_event(&AppEvent::SaveSession), None);
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::TurnStarted { turn_id: TurnId::new() }),
+            None
+        );
+    }
+
+    #[test]
+    fn test_phase_is_busy() {
+        assert!(!AgentPhase::Idle.is_busy());
+        assert!(!AgentPhase::Completed.is_busy());
+        assert!(AgentPhase::Thinking.is_busy());
+        assert!(AgentPhase::StreamingResponse.is_busy());
+        assert!(AgentPhase::ExecutingTool { name: "x".into() }.is_busy());
+        assert!(!AgentPhase::Errored("e".into()).is_busy());
+    }
 }
