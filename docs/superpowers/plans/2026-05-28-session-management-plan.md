@@ -4,7 +4,7 @@
 
 **Goal:** Add full session management (save/restore/named sessions, session list, search) to the project via daemon REST API + TS frontend integration.
 
-**Architecture:** Daemon exposes 6 REST endpoints for session CRUD + search, backed by JSON files in `~/.claude-code/sessions/`. The TS frontend calls these endpoints from `ApiClient`, and `useAgent` manages session state with auto-save after each round-trip. A new `SessionModal` Ink component provides terminal UI for session browsing.
+**Architecture:** Daemon exposes 6 REST endpoints for session CRUD + search, backed by JSON files in `~/.wgenty-code/sessions/`. The TS frontend calls these endpoints from `ApiClient`, and `useAgent` manages session state with auto-save after each round-trip. A new `SessionModal` Ink component provides terminal UI for session browsing.
 
 **Tech Stack:** Rust (axum, serde, tokio), TypeScript (Ink React), JSON file storage
 
@@ -36,7 +36,7 @@ impl SessionManager {
     /// Create a new session manager
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let sessions_dir = home.join(".claude-code").join("sessions");
+        let sessions_dir = home.join(".wgenty-code").join("sessions");
 
         Self { sessions_dir }
     }
@@ -810,8 +810,8 @@ git commit -m "feat: export SessionInfo and Session types from core"
 Add to the imports at the top:
 
 ```typescript
-import { ApiClient, AgentLoop } from "@claude-code/core";
-import type { AgentCallbacks, ToolResult, ChatMessage, SessionInfo } from "@claude-code/core";
+import { ApiClient, AgentLoop } from "@wgenty-code/core";
+import type { AgentCallbacks, ToolResult, ChatMessage, SessionInfo } from "@wgenty-code/core";
 ```
 
 - [ ] **Step 2: Add session state and logic to useAgent**
@@ -1078,7 +1078,7 @@ Create the file with this content:
 import React from "react";
 import { Box, Text } from "ink";
 import { useInput } from "ink";
-import type { SessionInfo } from "@claude-code/core";
+import type { SessionInfo } from "@wgenty-code/core";
 
 interface Props {
   sessions: SessionInfo[];
@@ -1257,7 +1257,7 @@ import { Box, Text, useInput } from "ink";
 Add the new component and type imports after existing imports:
 ```typescript
 import { SessionModal } from "./session-modal.tsx";
-import type { SessionInfo } from "@claude-code/core";
+import type { SessionInfo } from "@wgenty-code/core";
 ```
 
 - [ ] **Step 2: Destructure new session values from useAgent**
@@ -1463,7 +1463,7 @@ Manual test checklist:
 - [ ] esc to close modal without changing session
 - [ ] Delete a session with ⌫
 - [ ] Restart CLI → recent session auto-restores
-- [ ] Check `~/.claude-code/sessions/` for JSON files
+- [ ] Check `~/.wgenty-code/sessions/` for JSON files
 
 - [ ] **Step 10: Commit**
 

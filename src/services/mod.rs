@@ -1,4 +1,4 @@
-//! Services Module — background services for Claude Code.
+//! Services Module — background services for Wgenty Code.
 //!
 //! Long-running daemon services: AutoDream (memory consolidation),
 //! team memory synchronization, and the plugin marketplace.

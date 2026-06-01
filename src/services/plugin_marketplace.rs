@@ -102,7 +102,7 @@ impl PluginMarketplaceService {
 
     async fn load_installed_plugins(&self) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let plugin_dir = home.join(".claude-code").join("plugins");
+        let plugin_dir = home.join(".wgenty-code").join("plugins");
 
         if !plugin_dir.exists() {
             return;
@@ -203,7 +203,7 @@ impl PluginMarketplaceService {
 
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let plugin_dir = home
-            .join(".claude-code")
+            .join(".wgenty-code")
             .join("plugins")
             .join(&marketplace_plugin.name);
         tokio::fs::create_dir_all(&plugin_dir).await?;
@@ -254,7 +254,7 @@ module.exports = {
 
     pub async fn remove(&self, plugin_name: &str) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let plugin_dir = home.join(".claude-code").join("plugins").join(plugin_name);
+        let plugin_dir = home.join(".wgenty-code").join("plugins").join(plugin_name);
 
         if plugin_dir.exists() {
             tokio::fs::remove_dir_all(&plugin_dir).await?;
@@ -278,7 +278,7 @@ module.exports = {
             plugin.updated_at = Some(Utc::now());
 
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-            let plugin_dir = home.join(".claude-code").join("plugins").join(plugin_name);
+            let plugin_dir = home.join(".wgenty-code").join("plugins").join(plugin_name);
             let manifest_path = plugin_dir.join("plugin.json");
             let manifest_content = serde_json::to_string_pretty(&*plugin)?;
             tokio::fs::write(&manifest_path, manifest_content).await?;

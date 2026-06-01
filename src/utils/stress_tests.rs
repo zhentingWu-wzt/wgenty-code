@@ -1,6 +1,6 @@
 //! Stress Tests Module - Comprehensive load and stress testing for services
 //!
-//! This module provides stress testing utilities for all Claude Code services.
+//! This module provides stress testing utilities for all Wgenty Code services.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -134,7 +134,7 @@ impl StressTestRunner {
 
     pub async fn run_all_tests(&self) -> Vec<StressTestResult> {
         println!("\n{}", "🎯".repeat(35));
-        println!("🔧 Claude Code Services Stress Test Suite");
+        println!("🔧 Wgenty Code Services Stress Test Suite");
         println!("{}", "🎯".repeat(35));
         println!("\nConfiguration:");
         println!("  Iterations:   {}", self.iterations);

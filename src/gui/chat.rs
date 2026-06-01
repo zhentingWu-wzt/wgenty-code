@@ -1,4 +1,4 @@
-//! Chat UI Component - Full recreation of Claude Code chat interface
+//! Chat UI Component - Full recreation of Wgenty Code chat interface
 //!
 //! Features:
 //! - Exact Claude.ai message styling
@@ -88,7 +88,7 @@ impl ChatMessage {
     }
 }
 
-/// Chat panel - full recreation of Claude Code interface
+/// Chat panel - full recreation of Wgenty Code interface
 pub struct ChatPanel {
     pub messages: Vec<ChatMessage>,
     pub input_text: String,

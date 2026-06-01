@@ -14,7 +14,7 @@ pub fn init_project(name: &str) -> anyhow::Result<()> {
 
     // Create CLAUDE.md file
     let claude_md = format!(
-        "# {}\n\nThis project was initialized with Claude Code.\n\n## Structure\n\n- `src/` - Source code\n- `CLAUDE.md` - Project documentation for Claude\n\n## Getting Started\n\nStart coding with Claude Code!\n",
+        "# {}\n\nThis project was initialized with Wgenty Code.\n\n## Structure\n\n- `src/` - Source code\n- `CLAUDE.md` - Project documentation for Claude\n\n## Getting Started\n\nStart coding with Wgenty Code!\n",
         name
     );
     std::fs::write(project_dir.join("CLAUDE.md"), claude_md)?;

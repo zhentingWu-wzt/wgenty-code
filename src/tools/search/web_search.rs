@@ -5,7 +5,7 @@
 //! 2. Tavily API (if TAVILY_API_KEY is set) — enhanced quality
 //!
 //! Returns title + URL only (no snippets — use web_fetch to read page content).
-//! Max 8 uses per session (following Claude Code's pattern).
+//! Max 8 uses per session (following Wgenty Code's pattern).
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -293,7 +293,7 @@ impl Tool for WebSearchTool {
             code: Some("missing_parameter".to_string()),
         })?;
 
-        // Enforce max_uses limit (Claude Code pattern: max 8 web_search calls)
+        // Enforce max_uses limit (Wgenty Code pattern: max 8 web_search calls)
         let count = self.use_count.fetch_add(1, Ordering::SeqCst);
         if count >= self.max_uses {
             return Ok(ToolOutput {

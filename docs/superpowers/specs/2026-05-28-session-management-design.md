@@ -13,14 +13,14 @@ TS Frontend (AgentLoop / useAgent)
 Daemon REST API (new endpoints)
     │  read/write JSON files
     ▼
-~/.claude-code/sessions/{id}.json
+~/.wgenty-code/sessions/{id}.json
 ```
 
 The daemon's `chat_stream` remains a stateless pass-through. Session persistence is a separate concern from chat streaming.
 
 ## Data Model
 
-### Session file: `~/.claude-code/sessions/{id}.json`
+### Session file: `~/.wgenty-code/sessions/{id}.json`
 
 ```json
 {
@@ -82,7 +82,7 @@ Implementation notes:
 - `PUT` does a full replace of the messages array. No incremental append.
 - `PUT` uses upsert semantics: create the session file if it doesn't exist yet. This is necessary because the frontend generates session IDs at mount time and saves via PUT before any POST.
 - Search scans all session files, loading only metadata (not full messages). Performance is fine for <1000 sessions.
-- Sessions directory is `~/.claude-code/sessions/`.
+- Sessions directory is `~/.wgenty-code/sessions/`.
 
 ## TS Frontend Changes
 

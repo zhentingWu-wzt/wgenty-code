@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
-import { ApiClient, AgentLoop } from "@claude-code/core";
-import type { AgentCallbacks, ToolResult } from "@claude-code/core";
+import { ApiClient, AgentLoop } from "@wgenty-code/core";
+import type { AgentCallbacks, ToolResult } from "@wgenty-code/core";
 import {
   printWelcome,
   printUserMessage,

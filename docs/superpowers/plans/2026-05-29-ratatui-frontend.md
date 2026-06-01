@@ -67,7 +67,7 @@ pub mod theme;
 ```rust
 use ratatui::style::Color;
 
-// Brand colors matching the original Claude Code aesthetic
+// Brand colors matching the original Wgenty Code aesthetic
 pub const PRIMARY: Color = Color::Magenta;
 pub const ACCENT: Color = Color::Rgb(255, 140, 66);
 pub const DIM: Color = Color::Rgb(120, 120, 120);
@@ -882,13 +882,13 @@ pub async fn start_daemon(
 - [ ] **Step 2: 修改 `src/main.rs` — 添加 tui 启动路径**
 
 ```rust
-//! Claude Code Rust - Main Entry Point
+//! Wgenty Code Rust - Main Entry Point
 
 use clap::Parser;
-use claude_code_rs::cli::Cli;
-use claude_code_rs::config::Settings;
-use claude_code_rs::state::AppState;
-use claude_code_rs::utils::logging;
+use wgenty_code::cli::Cli;
+use wgenty_code::config::Settings;
+use wgenty_code::state::AppState;
+use wgenty_code::utils::logging;
 use tracing::error;
 
 #[tokio::main]
@@ -970,7 +970,7 @@ use ratatui::Frame;
 pub fn render(f: &mut Frame, area: Rect) {
     let banner = vec![
         "  ╔══════════════════════════════════╗",
-        "  ║      Claude Code Rust            ║",
+        "  ║      Wgenty Code Rust            ║",
         "  ║      ratatui frontend             ║",
         "  ╚══════════════════════════════════╝",
         "",
@@ -1470,7 +1470,7 @@ impl AgentLoop {
         // Save transcript to disk
         let transcript_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".claude-code")
+            .join(".wgenty-code")
             .join("transcripts");
 
         tokio::fs::create_dir_all(&transcript_dir).await.ok();

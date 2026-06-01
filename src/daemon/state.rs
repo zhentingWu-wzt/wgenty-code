@@ -73,7 +73,7 @@ impl DaemonState {
         let skill_loader = {
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
             let base_dirs = vec![
-                home.join(".claude-code"),
+                home.join(".wgenty-code"),
                 app_state.settings.working_dir.clone(),
             ];
             let loader = SkillLoader::load_from_dirs(&base_dirs);

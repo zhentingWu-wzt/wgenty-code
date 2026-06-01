@@ -7,7 +7,7 @@
 ## 架构
 
 ```
-claude-code (单二进制)
+wgenty-code (单二进制)
   ├── tokio::spawn → axum daemon server (127.0.0.1:随机端口)
   ├── 等待 daemon ready (GET /api/v1/health)
   └── main thread → ratatui Terminal + App::run()
@@ -157,7 +157,7 @@ crossterm = "0.28"
 ## 构建产物
 
 ```bash
-cargo build --release  # → target/release/claude-code（单二进制）
+cargo build --release  # → target/release/wgenty-code（单二进制）
 ```
 
 零外部依赖，无需 Node / npm。

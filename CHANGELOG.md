@@ -9,9 +9,9 @@
 
 ## [0.1.0] - 2024-2025 🚀
 
-### 🎉 项目启动 - Claude Code Rust 正式发布
+### 🎉 项目启动 - Wgenty Code Rust 正式发布
 
-这是一次**伟大的技术改造**，从零开始用 Rust 完整重构 Claude Code 工具链。
+这是一次**伟大的技术改造**，从零开始用 Rust 完整重构 Wgenty Code 工具链。
 
 #### ✨ 核心功能
 
@@ -92,17 +92,17 @@
 
 ```bash
 # 方式 1: 直接下载二进制
-curl -fsSL https://github.com/.../releases/download/v0.1.0/claude-code-rs
+curl -fsSL https://github.com/.../releases/download/v0.1.0/wgenty-code-rs
 
 # 方式 2: 从源代码编译
-git clone https://github.com/.../claude-code-rust
-cd claude-code-rust && cargo build --release
+git clone https://github.com/.../wgenty-code-rust
+cd wgenty-code-rust && cargo build --release
 
 # 方式 3: Docker 容器
-docker run -it claude-code-rs:latest --version
+docker run -it wgenty-code-rs:latest --version
 
 # 方式 4: npm 全局安装 (包装器)
-npm install -g claude-code-rs
+npm install -g wgenty-code-rs
 ```
 
 #### ⚡ 关键成就
@@ -111,7 +111,7 @@ npm install -g claude-code-rs
 - 🏆 **体积**：从 164MB → 5MB (减少 97%)
 - 🏆 **内存**：从 100MB → 10MB (减少 90%)
 - 🏆 **可靠性**：零运行时安全隐患
-- 🏆 **速度**：最快的 Claude Code 工具实现
+- 🏆 **速度**：最快的 Wgenty Code 工具实现
 
 #### 📝 破坏性变更
 

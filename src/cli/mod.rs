@@ -13,12 +13,12 @@ pub use args::Cli;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Claude Code - AI-powered coding assistant
+/// Wgenty Code - AI-powered coding assistant
 #[derive(Parser, Debug)]
-#[command(name = "claude-code")]
+#[command(name = "wgenty-code")]
 #[command(author = "Anthropic")]
 #[command(version = "0.1.0")]
-#[command(about = "High-performance Rust implementation of Claude Code CLI")]
+#[command(about = "High-performance Rust implementation of Wgenty Code CLI")]
 #[command(disable_version_flag = true)]
 #[command(disable_help_subcommand = true)]
 pub struct CliArgs {

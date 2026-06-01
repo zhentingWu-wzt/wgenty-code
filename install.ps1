@@ -1,15 +1,15 @@
-# Claude Code Rust 安装脚本 (Windows PowerShell)
-# 用法: irm https://install.claude-code-rs.io/ps1 | iex
+# Wgenty Code Rust 安装脚本 (Windows PowerShell)
+# 用法: irm https://install.wgenty-code-rs.io/ps1 | iex
 
 param(
-    [string]$InstallPath = "$env:LOCALAPPDATA\claude-code-rust",
+    [string]$InstallPath = "$env:LOCALAPPDATA\wgenty-code-rust",
     [switch]$AddToPath = $false,
     [switch]$SystemWide = $false
 )
 
 # 常量
-$REPO = "lorryjovens-hub/claude-code-rust"
-$APP_NAME = "Claude Code Rust"
+$REPO = "lorryjovens-hub/wgenty-code-rust"
+$APP_NAME = "Wgenty Code Rust"
 
 # 颜色函数
 function Write-Success { Write-Host "✓ $args" -ForegroundColor Green }
@@ -39,9 +39,9 @@ function Test-PowerShellVersion {
 function Test-ExistingInstallation {
     Write-Header "检查现有安装"
     
-    if (Get-Command claude-code-rs -ErrorAction SilentlyContinue) {
+    if (Get-Command wgenty-code-rs -ErrorAction SilentlyContinue) {
         try {
-            $version = & claude-code-rs --version
+            $version = & wgenty-code-rs --version
             Write-Warning "已安装版本: $version"
             
             $confirm = Read-Host "继续安装将覆盖现有版本，是否继续? (y/N)"
@@ -90,10 +90,10 @@ function Install-Binary {
     
     Write-Header "下载并安装"
     
-    $binary = "claude-code-rust-windows-x86_64.exe"
+    $binary = "wgenty-code-rust-windows-x86_64.exe"
     $downloadUrl = "https://github.com/$REPO/releases/download/$Version/$binary"
-    $exePath = Join-Path $InstallPath "claude-code-rs.exe"
-    $tempFile = Join-Path $env:TEMP "claude-code-rs.tmp"
+    $exePath = Join-Path $InstallPath "wgenty-code-rs.exe"
+    $tempFile = Join-Path $env:TEMP "wgenty-code-rs.tmp"
     
     Write-Host "从以下地址下载: " -NoNewline
     Write-Host $downloadUrl -ForegroundColor Cyan
@@ -156,7 +156,7 @@ function Add-ToSystemPath {
 function Test-Installation {
     Write-Header "验证安装"
     
-    $exePath = Join-Path $InstallPath "claude-code-rs.exe"
+    $exePath = Join-Path $InstallPath "wgenty-code-rs.exe"
     
     if (Test-Path $exePath) {
         Write-Success "安装成功!"

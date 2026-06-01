@@ -1,8 +1,8 @@
-# Gap Analysis: claude-code-rust vs learn-claude-code
+# Gap Analysis: wgenty-code-rust vs learn-wgenty-code
 
-## learn-claude-code 的设计哲学
+## learn-wgenty-code 的设计哲学
 
-`learn-claude-code` 是一个教学项目，通过 12 个渐进式 Python 脚本演示 AI 编码 Agent 框架的构建。
+`learn-wgenty-code` 是一个教学项目，通过 12 个渐进式 Python 脚本演示 AI 编码 Agent 框架的构建。
 其核心理念是：**智能体能力来自模型训练，而非代码编排** —— 框架只是"载体"。
 
 关键设计原则：
@@ -18,7 +18,7 @@
 
 ## 机制对照表：12 层逐项对比
 
-| 层 | 机制 | learn-claude-code | claude-code-rust 现状 | 差距 |
+| 层 | 机制 | learn-wgenty-code | wgenty-code-rust 现状 | 差距 |
 |----|------|-------------------|----------------------|------|
 | s01 | Agent Loop (核心) | `agent_loop()` 最小循环，tool dispatch | `agent-loop.ts` 完整实现 | **已实现** |
 | s02 | 工具分发表 | bash/read/write/edit 4 工具 | 17 个工具（filesystem/search/execution/meta） | **已实现** |
@@ -71,7 +71,7 @@
 
 ### 5. 事件总线 / Hook 系统缺失
 
-learn 项目的 s12 有最小化的 `EventBus`（JSONL 追加）。当前 repo 无任何生命周期事件系统。Claude Code 生产环境有完整的 Hook 系统（`PreToolUse`、`PostToolUse`、`SessionStart`、`SessionEnd` 等）。
+learn 项目的 s12 有最小化的 `EventBus`（JSONL 追加）。当前 repo 无任何生命周期事件系统。Wgenty Code 生产环境有完整的 Hook 系统（`PreToolUse`、`PostToolUse`、`SessionStart`、`SessionEnd` 等）。
 
 ### 6. 团队协作完全缺失
 
@@ -95,7 +95,7 @@ learn 项目：文件即数据库（JSON 任务文件、JSONL 邮箱、SKILL.md 
 | 优先级 | 功能 | 原因 |
 |--------|------|------|
 | **P0** | 上下文压缩（s06 微压缩 + 自动压缩） | 当前无任何上下文管理，长对话必定崩溃 |
-| **P0** | 子代理系统（s04） | Agent tool 是 Claude Code 的关键差异化能力 |
+| **P0** | 子代理系统（s04） | Agent tool 是 Wgenty Code 的关键差异化能力 |
 | **P1** | Skill 接入 agent loop | skills/ 目录已在用，但机制未接入 |
 
 ### 阶段 2：完善协作机制
