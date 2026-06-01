@@ -1,22 +1,34 @@
 //! AgentLoop — the core agent loop: SSE streaming + tool execution + context compaction.
 //! Port of TypeScript agent-loop.ts to Rust.
+//!
+//! Each Job (one user input → final response) creates its own AgentLoop instance
+//! backed by a *shared* conversation_history (Arc<Mutex<Vec<ChatMessage>>>).
+//! This allows multiple user inputs to be queued while one is processing:
+//! each pending input becomes a new AgentLoop that inherits the accumulated history.
 
 use crate::agent::{StreamEvent, StreamProcessor, StreamResult};
 use crate::api::ChatMessage;
+use crate::guardian::classify_risk;
 use crate::tui::app::AppEvent;
 use crate::tui::client::DaemonClient;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 const MAX_RETRIES: u32 = 2;
 const MAX_ESTIMATED_TOKENS: usize = 50_000;
 const MAX_ROUNDS: usize = 10;
 
-#[derive(Clone)]
 pub struct AgentLoop {
     client: DaemonClient,
     event_tx: mpsc::UnboundedSender<AppEvent>,
-    conversation_history: Vec<ChatMessage>,
+    /// Shared conversation history across all Jobs in this session.
+    /// Each AgentLoop instance reads/writes through this Arc, so the
+    /// accumulated context is inherited by the next Job in the queue.
+    conversation_history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
+    /// Pre-assembled system messages (layered instructions from PromptAssembler).
+    /// Used when initializing or resetting the conversation history.
+    assembled_system_messages: Vec<ChatMessage>,
     rounds_since_todo: usize,
     compacted_summary: String,
     session_id: String,
@@ -27,11 +39,14 @@ impl AgentLoop {
         client: DaemonClient,
         event_tx: mpsc::UnboundedSender<AppEvent>,
         session_id: String,
+        conversation_history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
+        system_messages: Vec<ChatMessage>,
     ) -> Self {
         Self {
             client,
             event_tx,
-            conversation_history: vec![ChatMessage::system(build_system_prompt())],
+            conversation_history,
+            assembled_system_messages: system_messages,
             rounds_since_todo: 0,
             compacted_summary: String::new(),
             session_id,
@@ -42,10 +57,13 @@ impl AgentLoop {
     pub async fn process_input(&mut self, input: String) {
         self.inject_background_results().await;
 
-        self.conversation_history.push(ChatMessage::user(&input));
+        {
+            let mut history = self.conversation_history.lock().await;
+            history.push(ChatMessage::user(&input));
+        }
 
         for _round in 0..MAX_ROUNDS {
-            let messages = self.micro_compact();
+            let messages = self.micro_compact().await;
 
             if self.needs_compaction(&messages) {
                 self.do_auto_compact().await;
@@ -67,7 +85,10 @@ impl AgentLoop {
                     result.reasoning_content,
                     result.tool_calls.clone(),
                 );
-                self.conversation_history.push(assistant_msg);
+                {
+                    let mut history = self.conversation_history.lock().await;
+                    history.push(assistant_msg);
+                }
 
                 let mut used_todo = false;
                 for tc in &result.tool_calls {
@@ -77,8 +98,10 @@ impl AgentLoop {
                     // Handle ask_user_question locally
                     if tc.function.name == "ask_user_question" {
                         let tool_result = self.handle_ask_user_question(&args).await;
-                        self.conversation_history
-                            .push(ChatMessage::tool(&tc.id, tool_result));
+                        {
+                            let mut history = self.conversation_history.lock().await;
+                            history.push(ChatMessage::tool(&tc.id, tool_result));
+                        }
                         continue;
                     }
 
@@ -92,7 +115,8 @@ impl AgentLoop {
                             name: "compact".to_string(),
                             content: "Conversation history compressed.".to_string(),
                         });
-                        self.conversation_history.push(ChatMessage::tool(
+                        let mut history = self.conversation_history.lock().await;
+                        history.push(ChatMessage::tool(
                             &tc.id,
                             r#"{"success":true,"content":"Conversation compressed"}"#,
                         ));
@@ -117,8 +141,10 @@ impl AgentLoop {
                         content: exec_result.clone(),
                     });
 
-                    self.conversation_history
-                        .push(ChatMessage::tool(&tc.id, exec_result));
+                    {
+                        let mut history = self.conversation_history.lock().await;
+                        history.push(ChatMessage::tool(&tc.id, exec_result));
+                    }
                 }
 
                 // s03: nag reminder — inject after 3 rounds without TodoWrite
@@ -128,7 +154,8 @@ impl AgentLoop {
                     self.rounds_since_todo + 1
                 };
                 if self.rounds_since_todo >= 3 {
-                    if let Some(last) = self.conversation_history.last_mut() {
+                    let mut history = self.conversation_history.lock().await;
+                    if let Some(last) = history.last_mut() {
                         if last.role == "tool" {
                             if let Some(ref mut content) = last.content {
                                 content.push_str(
@@ -150,13 +177,16 @@ impl AgentLoop {
                 } else {
                     Some(result.reasoning_content)
                 };
-                self.conversation_history.push(ChatMessage {
-                    role: "assistant".to_string(),
-                    content: Some(result.content),
-                    reasoning_content: reasoning,
-                    tool_calls: None,
-                    tool_call_id: None,
-                });
+                {
+                    let mut history = self.conversation_history.lock().await;
+                    history.push(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: Some(result.content),
+                        reasoning_content: reasoning,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
             }
 
             let _ = self.event_tx.send(AppEvent::StreamDone {
@@ -274,6 +304,21 @@ impl AgentLoop {
         name: &str,
         args: serde_json::Value,
     ) -> String {
+        // Guardian: block critical-risk commands before they reach the daemon
+        if name == "execute_command" || name == "exec_command" {
+            if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+                let risk = classify_risk(cmd);
+                if risk >= crate::guardian::RiskLevel::Critical {
+                    let msg = format!(
+                        "GUARDIAN BLOCK: critical-risk command rejected. {}",
+                        cmd
+                    );
+                    tracing::warn!("{}", msg);
+                    return format!(r#"{{"success":false,"error":"{}"}}"#, msg);
+                }
+            }
+        }
+
         let result = match self
             .client
             .execute_tool(name, args.clone(), &self.session_id)
@@ -440,8 +485,10 @@ impl AgentLoop {
                     })
                     .collect::<Vec<_>>()
                     .join("\n\n");
-                self.conversation_history
-                    .push(ChatMessage::user(notification));
+                {
+                    let mut history = self.conversation_history.lock().await;
+                    history.push(ChatMessage::user(notification));
+                }
             }
             _ => {}
         }
@@ -451,9 +498,10 @@ impl AgentLoop {
 
     /// Micro-compaction: replace old tool results with short markers.
     /// Keeps the last 3 tool messages as-is; always preserves read_file results.
-    fn micro_compact(&self) -> Vec<ChatMessage> {
+    async fn micro_compact(&self) -> Vec<ChatMessage> {
+        let history = self.conversation_history.lock().await;
         let mut id_to_name = std::collections::HashMap::new();
-        for msg in &self.conversation_history {
+        for msg in history.iter() {
             if msg.role == "assistant" {
                 if let Some(ref tcs) = msg.tool_calls {
                     for tc in tcs {
@@ -463,8 +511,7 @@ impl AgentLoop {
             }
         }
 
-        let tool_indices: Vec<usize> = self
-            .conversation_history
+        let tool_indices: Vec<usize> = history
             .iter()
             .enumerate()
             .filter(|(_, m)| m.role == "tool")
@@ -476,7 +523,7 @@ impl AgentLoop {
         let keep_indices: std::collections::HashSet<usize> =
             tool_indices[keep_start..].iter().copied().collect();
 
-        self.conversation_history
+        history
             .iter()
             .enumerate()
             .map(|(i, msg)| {
@@ -528,12 +575,15 @@ impl AgentLoop {
         let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
         let transcript_path = transcript_dir.join(format!("session_{}.json", timestamp));
 
-        let json = serde_json::to_string_pretty(&self.conversation_history).unwrap_or_default();
+        let history_snapshot = {
+            let history = self.conversation_history.lock().await;
+            history.clone()
+        };
+        let json = serde_json::to_string_pretty(&history_snapshot).unwrap_or_default();
         tokio::fs::write(&transcript_path, json).await.ok();
 
         // Build plain-text transcript for summarization
-        let transcript_text: String = self
-            .conversation_history
+        let transcript_text: String = history_snapshot
             .iter()
             .map(|m| format!("[{}]: {}", m.role, m.content.as_deref().unwrap_or("")))
             .collect::<Vec<_>>()
@@ -563,49 +613,36 @@ impl AgentLoop {
 
             if !summary.is_empty() {
                 self.compacted_summary = summary.clone();
-
-                self.conversation_history = vec![
-                    ChatMessage::system(build_system_prompt()),
-                    ChatMessage::system(format!(
+            
+                {
+                    let mut history = self.conversation_history.lock().await;
+                    let mut new_history = self.assembled_system_messages.clone();
+                    new_history.push(ChatMessage::system(format!(
                         "<previous_conversation_summary>\n{}\n</previous_conversation_summary>",
                         summary
-                    )),
-                ];
+                    )));
+                    *history = new_history;
+                }
             }
         }
     }
 
     // ── Session state ────────────────────────────────────────────────────
 
-    pub fn load_history(&mut self, messages: Vec<ChatMessage>) {
-        self.rounds_since_todo = 0;
-        self.compacted_summary.clear();
-        self.conversation_history = messages;
+    pub async fn load_history(&self, messages: Vec<ChatMessage>) {
+        let mut history = self.conversation_history.lock().await;
+        *history = messages;
     }
 
-    pub fn get_history(&self) -> &[ChatMessage] {
-        &self.conversation_history
+    pub async fn get_history(&self) -> Vec<ChatMessage> {
+        self.conversation_history.lock().await.clone()
     }
 
-    pub fn reset(&mut self) {
-        self.rounds_since_todo = 0;
-        self.compacted_summary.clear();
-        self.conversation_history = vec![ChatMessage::system(build_system_prompt())];
+    pub async fn reset(&self) {
+        let mut history = self.conversation_history.lock().await;
+        *history = self.assembled_system_messages.clone();
     }
 }
 
-/// Build the system prompt matching the TypeScript frontend's prompt.
-fn build_system_prompt() -> String {
-    r#"You are a coding agent with access to tools for reading/writing files, executing commands, searching code, git operations, and task tracking.
+// System prompt is now assembled via crate::prompts::assemble_instructions()
 
-## Planning
-
-Before any non-trivial multi-step task, use TodoWrite to break it down into a checklist. Replace the ENTIRE list each call — it's a batch update, not CRUD. Mark the current task in_progress (with activeForm) before starting, completed when done. Only ONE in_progress at a time. Max 20 items.
-
-Prefer tools over prose. Update TodoWrite as you progress.
-
-## Skills (on-demand)
-
-Use load_skill to load full skill instructions when you need detailed guidance for a specific task. Call load_skill with no name to list available skills."#
-    .to_string()
-}

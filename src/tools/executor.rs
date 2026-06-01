@@ -1,4 +1,5 @@
 use crate::api::ChatMessage;
+use crate::guardian::{Guardian, GuardianDecision};
 use crate::hooks::{HookEvent, HookManager};
 use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
 use crate::tools::ToolRegistry;
@@ -11,6 +12,7 @@ pub struct ToolExecutor {
     policy: ToolPermissionPolicy,
     session_rules: Arc<RwLock<HashSet<String>>>,
     hook_manager: Arc<HookManager>,
+    guardian: Guardian,
 }
 
 impl ToolExecutor {
@@ -20,6 +22,7 @@ impl ToolExecutor {
             policy,
             session_rules: Arc::new(RwLock::new(HashSet::new())),
             hook_manager: Arc::new(HookManager::default()),
+            guardian: Guardian::default(),
         }
     }
 
@@ -63,6 +66,28 @@ impl ToolExecutor {
     }
 
     /// Execute a tool call directly (policy already passed).
+    /// Run a guardian security check before executing a high-risk tool.
+    /// Returns Some(decision) if the tool was blocked by guardian.
+    pub fn guardian_check(&self, tool_name: &str, input: &serde_json::Value) -> Option<GuardianDecision> {
+        if tool_name != "execute_command" && tool_name != "exec_command" {
+            return None;
+        }
+        if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
+            let decision = self.guardian.check(tool_name, cmd);
+            if !decision.allowed {
+                return Some(decision);
+            }
+            if decision.requires_approval {
+                tracing::warn!(
+                    risk = ?decision.risk_level,
+                    tool = tool_name,
+                    "Guardian flagged command for approval"
+                );
+            }
+        }
+        None
+    }
+
     pub async fn execute_tool_call(
         &self,
         tool_call_id: &str,
