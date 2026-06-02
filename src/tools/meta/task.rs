@@ -15,20 +15,28 @@ use crate::teams::subagent_loop::run_subagent_loop;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 pub struct TaskTool {
     settings: Settings,
     tool_registry: std::sync::Weak<crate::tools::ToolRegistry>,
+    background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
+    /// Tracks currently running subagents to enforce max_concurrent limit.
+    active_count: Arc<AtomicUsize>,
 }
 
 impl TaskTool {
     pub fn new(
         settings: Settings,
         tool_registry: std::sync::Weak<crate::tools::ToolRegistry>,
+        background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
     ) -> Self {
         Self {
             settings,
             tool_registry,
+            background_manager,
+            active_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -63,6 +71,14 @@ impl Tool for TaskTool {
                 "description": {
                     "type": "string",
                     "description": "Short (3-5 word) description of the task"
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Run subagent in background. Returns task_id immediately; result delivered later. Default: false"
+                },
+                "use_small_model": {
+                    "type": "boolean",
+                    "description": "When true and a small model is configured, run the subagent with a smaller/cheaper model. Use for simple, self-contained tasks (e.g., reading files, searching, running a single command). Default: false"
                 },
                 "prompt": {
                     "type": "string",
@@ -133,20 +149,74 @@ impl Tool for TaskTool {
             description, prompt
         );
 
-        // Create a fresh API client from the stored settings.
-        let api_client = ApiClient::new(self.settings.clone());
+        // ── Guard: depth limit ──────────────────────────────────────────
+        let depth = input["_subagent_depth"].as_u64().unwrap_or(0) as usize;
+        if depth >= self.settings.max_subagent_depth {
+            return Ok(ToolOutput {
+                output_type: "text".to_string(),
+                content: format!(
+                    "Maximum subagent depth ({}) reached. Refusing to spawn deeper subagent.",
+                    self.settings.max_subagent_depth
+                ),
+                metadata: HashMap::new(),
+            });
+        }
+
+        // ── Guard: concurrency limit ────────────────────────────────────
+        let current = self.active_count.load(Ordering::SeqCst);
+        if current >= self.settings.max_concurrent_subagents {
+            return Ok(ToolOutput {
+                output_type: "text".to_string(),
+                content: format!(
+                    "Maximum concurrent subagents ({}) reached ({} running). Try again later.",
+                    self.settings.max_concurrent_subagents, current
+                ),
+                metadata: HashMap::new(),
+            });
+        }
+        self.active_count.fetch_add(1, Ordering::SeqCst);
+
+        // Use small model when requested and configured.
+        // Falls back to main model's base_url/api_key when small_model fields are absent.
+        let use_small = input["use_small_model"].as_bool().unwrap_or(false);
+        let api_client = if use_small {
+            if let Some(ref small_model) = self.settings.small_model {
+                let mut small_settings = self.settings.clone();
+                small_settings.model = small_model.clone();
+                small_settings.api.max_tokens = 2048;
+                if let Some(ref url) = self.settings.small_model_base_url {
+                    small_settings.api.base_url = url.clone();
+                }
+                if let Some(ref key) = self.settings.small_model_api_key {
+                    small_settings.api.api_key = Some(key.clone());
+                }
+                if let Some(ref appkey) = self.settings.small_model_appkey {
+                    small_settings.api.api_key = Some(appkey.clone());
+                }
+                ApiClient::new(small_settings)
+            } else {
+                ApiClient::new(self.settings.clone())
+            }
+        } else {
+            ApiClient::new(self.settings.clone())
+        };
 
         // Run the subagent loop (capped at 30 rounds).
-        match run_subagent_loop(
+        let result = {
+            let res = run_subagent_loop(
             &api_client,
             &tool_registry,
             system_prompt,
             &full_prompt,
             &allowed_tools,
             30,
-        )
-        .await
-        {
+            )
+            .await;
+            res
+        };
+        self.active_count.fetch_sub(1, Ordering::SeqCst);
+
+        match result {
             Ok(result) => {
                 let mut metadata = HashMap::new();
                 metadata.insert(

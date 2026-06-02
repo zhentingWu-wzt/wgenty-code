@@ -45,11 +45,22 @@ impl DaemonClient {
         messages: Vec<ChatMessage>,
         max_tokens: Option<usize>,
     ) -> anyhow::Result<reqwest::Response> {
+        self.chat_stream_with_plan(messages, max_tokens, None).await
+    }
+
+    /// Chat stream with optional plan_mode flag.
+    pub async fn chat_stream_with_plan(
+        &self,
+        messages: Vec<ChatMessage>,
+        max_tokens: Option<usize>,
+        plan_mode: Option<bool>,
+    ) -> anyhow::Result<reqwest::Response> {
         let url = format!("{}/api/v1/chat/stream", self.base_url);
         let body = ChatStreamRequest {
             messages,
             model: None,
             max_tokens,
+            plan_mode,
         };
         let resp = self
             .http
@@ -243,6 +254,8 @@ struct ChatStreamRequest {
     model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plan_mode: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]

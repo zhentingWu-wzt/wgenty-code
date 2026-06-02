@@ -65,7 +65,9 @@ pub async fn chat_stream(
 
     // Build messages and tools
     let messages = body.messages;
-    let tools: Option<Vec<ToolDefinition>> = {
+    let tools: Option<Vec<ToolDefinition>> = if body.plan_mode.unwrap_or(false) {
+        None
+    } else {
         let defs = state.tool_executor.tool_definitions();
         if defs.is_empty() {
             None

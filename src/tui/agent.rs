@@ -32,6 +32,10 @@ pub struct AgentLoop {
     assembled_system_messages: Vec<ChatMessage>,
     rounds_since_todo: usize,
     compacted_summary: String,
+    plan_mode: bool,
+    /// Optional ApiClient for a dedicated planner model. Used for plan
+    /// generation when PlanMode is active and planner_model is configured.
+    planner_client: Option<crate::api::ApiClient>,
     session_id: String,
 }
 
@@ -42,6 +46,8 @@ impl AgentLoop {
         session_id: String,
         conversation_history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
         system_messages: Vec<ChatMessage>,
+        plan_mode: bool,
+        planner_client: Option<crate::api::ApiClient>,
     ) -> Self {
         Self {
             client,
@@ -51,6 +57,8 @@ impl AgentLoop {
             rounds_since_todo: 0,
             compacted_summary: String::new(),
             session_id,
+            plan_mode,
+            planner_client,
         }
     }
 
@@ -71,6 +79,24 @@ impl AgentLoop {
         }
     }
     
+    /// Generate a plan using a dedicated planner model (non-streaming).
+    /// Returns the plan text or an error message.
+    async fn plan_with_model(
+        &self,
+        planner: &crate::api::ApiClient,
+        messages: &[ChatMessage],
+    ) -> Result<String, String> {
+        let response = planner
+            .chat(messages.to_vec(), None)
+            .await
+            .map_err(|e| format!("Planner model call failed: {}", e))?;
+        Ok(response
+            .choices
+            .first()
+            .map(|c| c.message.content.clone().unwrap_or_default())
+            .unwrap_or_default())
+    }
+
     /// Inner implementation of the agent loop.
     async fn process_input_inner(&mut self, input: String) -> Result<(), String> {
         self.inject_background_results().await;
@@ -110,6 +136,39 @@ impl AgentLoop {
             };
 
             llm_rounds += 1;
+
+            if self.plan_mode {
+                // Plan mode: if a dedicated planner model is configured,
+                // use it instead of the main model for plan generation.
+                let plan_content = if let Some(ref planner) = self.planner_client {
+                    let _ = self.event_tx.send(AppEvent::ContentDelta(
+                        "(using planner model)...".to_string()
+                    ));
+                    match self.plan_with_model(planner, &messages).await {
+                        Ok(plan) => plan,
+                        Err(e) => {
+                            let _ = self.event_tx.send(AppEvent::StreamError(e.clone()));
+                            return Err(e);
+                        }
+                    }
+                } else {
+                    result.content.clone()
+                };
+                let plan = plan_content;
+                let _ = self.event_tx.send(AppEvent::StreamDone { finish_reason: result.finish_reason.clone() });
+                if !plan.is_empty() {
+                    let mut history = self.conversation_history.lock().await;
+                    history.push(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: Some(plan.clone()),
+                        reasoning_content: Some(result.reasoning_content.clone()),
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+                let _ = self.event_tx.send(AppEvent::PlanGenerated { plan: plan.clone() });
+                return Ok(());
+            }
 
             if result.has_tool_calls && !result.tool_calls.is_empty() {
                 // Build and push assistant message with tool calls
@@ -561,12 +620,18 @@ impl AgentLoop {
                     .iter()
                     .map(|r| {
                         let task_id = r["task_id"].as_str().unwrap_or("unknown");
-                        let success = r["success"].as_bool().unwrap_or(false);
-                        format!(
-                            "[Background task {} completed: {}]",
-                            task_id,
-                            if success { "SUCCESS" } else { "FAILED" }
-                        )
+                        let result_type = r["result_type"].as_str().unwrap_or("command");
+                        if result_type == "subagent" {
+                            let result = r["stdout"].as_str().unwrap_or("");
+                            format!("[Subagent {} completed]\n{}", task_id, result)
+                        } else {
+                            let success = r["success"].as_bool().unwrap_or(false);
+                            format!(
+                                "[Background task {} completed: {}]",
+                                task_id,
+                                if success { "SUCCESS" } else { "FAILED" }
+                            )
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join("\n\n");
