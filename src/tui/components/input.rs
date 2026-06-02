@@ -22,11 +22,10 @@ impl InputBox {
                 .title(" Input (Enter 提交 · Shift+Enter 换行) "),
         );
 
-        textarea.set_style(Style::default().fg(Color::White).bg(Color::Rgb(40, 40, 45)));
+        textarea.set_style(Style::default().fg(Color::White));
         textarea.set_placeholder_style(
             Style::default()
                 .fg(Color::Rgb(100, 100, 110))
-                .bg(Color::Rgb(40, 40, 45)),
         );
         textarea.set_placeholder_text("在这里输入你的消息...");
 

@@ -59,6 +59,13 @@ impl Tool for FileWriteTool {
 
         let path = Path::new(file_path);
 
+        // Read old content before writing (for diff)
+        let old_content = if path.exists() {
+            std::fs::read_to_string(path).ok()
+        } else {
+            None
+        };
+
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| ToolError {
@@ -72,10 +79,16 @@ impl Tool for FileWriteTool {
             code: Some("write_error".to_string()),
         })?;
 
+        let mut metadata = std::collections::HashMap::new();
+        if let Some(old) = old_content {
+            metadata.insert("old_content".to_string(), serde_json::json!(old));
+            metadata.insert("new_content".to_string(), serde_json::json!(content));
+        }
+
         Ok(ToolOutput {
             output_type: "text".to_string(),
             content: format!("Successfully wrote {}", file_path),
-            metadata: std::collections::HashMap::new(),
+            metadata,
         })
     }
 }

@@ -20,6 +20,15 @@ pub struct AssembledInstructions {
     pub system_messages: Vec<ChatMessage>,
 }
 
+/// A single skill entry for system prompt injection (Layer 1).
+/// Contains name and one-line description only; full body is loaded
+/// on demand by the agent via the `load_skill` tool (Layer 2).
+#[derive(Debug, Clone)]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+}
+
 /// Context needed for dynamic layers (permissions + environment).
 #[derive(Debug, Clone)]
 pub struct PromptContext {
@@ -29,6 +38,8 @@ pub struct PromptContext {
     pub approval_policy: Option<String>,
     pub collaboration_mode: Option<String>,
     pub agents_md_sections: Vec<String>,
+    /// Skills discoverable by the agent. Layer 1: name + description only.
+    pub skills_inventory: Vec<SkillEntry>,
 }
 
 impl PromptContext {
@@ -40,6 +51,7 @@ impl PromptContext {
             approval_policy: None,
             collaboration_mode: None,
             agents_md_sections: Vec::new(),
+            skills_inventory: Vec::new(),
         }
     }
 
@@ -65,6 +77,11 @@ impl PromptContext {
 
     pub fn with_collaboration(mut self, mode: impl Into<String>) -> Self {
         self.collaboration_mode = Some(mode.into());
+        self
+    }
+
+    pub fn with_skills(mut self, skills: Vec<SkillEntry>) -> Self {
+        self.skills_inventory = skills;
         self
     }
 }
@@ -106,7 +123,24 @@ pub fn assemble_instructions(
     let env_text = build_environment_layer(context);
     system_messages.push(ChatMessage::system(env_text));
 
-    // ── Layer 6: AGENTS.md Convention ───────────────────────────────────
+    // ── Layer 6: Skills (discoverable + on-demand via load_skill tool) ──
+    if settings.include_skill_instructions && !context.skills_inventory.is_empty() {
+        let mut skills_lines = Vec::new();
+        for skill in &context.skills_inventory {
+            skills_lines.push(format!("- `{}`: {}", skill.name, skill.description));
+        }
+        system_messages.push(ChatMessage::system(format!(
+            "## Available skills
+
+The following skills are available. Use the `load_skill` tool to read a skill's full instructions when needed.
+
+{}",
+            skills_lines.join("
+")
+        )));
+    }
+
+    // ── Layer 7: AGENTS.md Convention ───────────────────────────────────
     if !context.agents_md_sections.is_empty() {
         let agents_text = context.agents_md_sections.join("\n\n");
         system_messages.push(ChatMessage::system(format!(

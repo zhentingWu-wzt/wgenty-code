@@ -8,6 +8,7 @@
 
 pub mod execution;
 pub mod executor;
+pub mod checkpoint;
 pub mod filesystem;
 pub mod meta;
 pub mod search;
@@ -68,7 +69,11 @@ impl ToolRegistry {
         let mut registry = Self {
             tools: HashMap::new(),
         };
+        let checkpoint_manager = std::sync::Arc::new(checkpoint::CheckpointManager::new());
 
+        // Checkpoint tools
+        registry.register(Box::new(checkpoint::CheckpointTool::new(checkpoint_manager.clone())));
+        registry.register(Box::new(checkpoint::UndoTool::new(checkpoint_manager.clone())));
         // Meta tools
         registry.register(Box::new(meta::ask_user_question::AskUserQuestionTool::new()));
         // Filesystem tools
@@ -182,6 +187,7 @@ pub use execution::{
     ExecuteCommandTool, GitOperationsTool, KillSessionTool, RunTestTool, WriteStdinTool,
 };
 pub use executor::ToolExecutor;
+pub use checkpoint::{CheckpointManager, CheckpointTool, UndoTool};
 pub use filesystem::{
     ApplyPatchTool, FileEditTool, FileReadTool, FileWriteTool, ListFilesTool, ViewTool,
 };

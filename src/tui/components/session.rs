@@ -1,8 +1,9 @@
 use crate::tui::client::SessionInfo;
 use crate::tui::theme;
-use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 pub struct SessionState {
@@ -46,6 +47,18 @@ impl SessionState {
     pub fn selected_session(&self) -> Option<&SessionInfo> {
         self.sessions.get(self.selected)
     }
+
+    pub fn delete_selected(&mut self) -> Option<String> {
+        if self.sessions.is_empty() {
+            return None;
+        }
+        let id = self.sessions[self.selected].id.clone();
+        self.sessions.remove(self.selected);
+        if self.selected >= self.sessions.len() && !self.sessions.is_empty() {
+            self.selected = self.sessions.len() - 1;
+        }
+        Some(id)
+    }
 }
 
 /// Render session list popup.
@@ -59,9 +72,10 @@ pub fn render(
     }
 
     let area = f.area();
-    let popup_area = centered_rect_fn(60, 50, area);
+    let popup_area = centered_rect_fn(72, 60, area);
     f.render_widget(Clear, popup_area);
 
+    // Build session list items
     let items: Vec<ListItem> = state
         .sessions
         .iter()
@@ -73,28 +87,79 @@ pub fn render(
             } else {
                 &s.name
             };
-            ListItem::new(format!(
-                "{}{}  ({} msgs, {})",
-                prefix,
-                name,
-                s.message_count,
-                &s.updated_at[..s.updated_at.len().min(16)]
-            ))
+            let created = format_timestamp(&s.created_at);
+            let updated = format_timestamp(&s.updated_at);
+            let mut line = format!(
+                "{}{}  {} msgs  created {}  updated {}",
+                prefix, name, s.message_count, created, updated
+            );
+            // Append summary if present, truncated to fit
+            if let Some(summary) = &s.summary {
+                let max_summary_len = 50;
+                let summary_trunc: String = if summary.len() > max_summary_len {
+                    format!(
+                        "{}…",
+                        &summary.chars().take(max_summary_len).collect::<String>()
+                    )
+                } else {
+                    summary.clone()
+                };
+                line.push_str(&format!("  ─ {}", summary_trunc));
+            }
+            ListItem::new(line)
         })
         .collect();
 
-    let title = if state.search_query.is_empty() {
-        " Sessions (Ctrl+S toggle, ↑↓ select, Enter load, / search) ".to_string()
+    let count_str = if state.sessions.is_empty() {
+        "(empty)".to_string()
     } else {
-        format!(" Sessions — search: {} ", state.search_query)
+        state.sessions.len().to_string()
     };
+    let title = format!(" Sessions ({}) ", count_str);
+
+    // Footer with shortcut hints
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled(" ↑↓", Style::default().fg(Color::Cyan)),
+        Span::raw(" nav  "),
+        Span::styled("Enter", Style::default().fg(Color::Cyan)),
+        Span::raw(" load  "),
+        Span::styled("d", Style::default().fg(Color::Red)),
+        Span::raw(" delete  "),
+        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        Span::raw(" close"),
+    ]))
+    .alignment(Alignment::Center)
+    .block(
+        Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(theme::PRIMARY)),
+    );
+
+    // Layout: list on top, footer at bottom
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(3)])
+        .split(popup_area);
 
     let list = List::new(items).block(
         Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
             .border_style(Style::default().fg(theme::PRIMARY))
             .title(title),
     );
 
-    f.render_widget(list, popup_area);
+    f.render_widget(list, chunks[0]);
+    f.render_widget(footer, chunks[1]);
+}
+
+/// Format an ISO timestamp to a compact display format: "MM/DD HH:MM"
+fn format_timestamp(iso: &str) -> String {
+    // ISO 8601 format: "2026-06-01T14:30:00..." → "06/01 14:30"
+    if iso.len() >= 16 {
+        format!("{}/{} {}", &iso[5..7], &iso[8..10], &iso[11..16])
+    } else if iso.len() >= 10 {
+        iso[..10].to_string()
+    } else {
+        iso.to_string()
+    }
 }

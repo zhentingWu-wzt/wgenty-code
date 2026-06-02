@@ -1,6 +1,44 @@
 //! Application main loop — event handling, layout, and daemon lifecycle.
 use crate::api::ChatMessage;
 use crate::state::AppState;
+
+/// Agent operating mode, cycled via Shift+Tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentMode {
+    Normal,
+    PlanMode,
+    AcceptEdits,
+    Yolo,
+}
+
+impl AgentMode {
+    pub fn label(&self) -> &str {
+        match self {
+            AgentMode::Normal => "NORMAL",
+            AgentMode::PlanMode => "PLAN",
+            AgentMode::AcceptEdits => "ACCEPT",
+            AgentMode::Yolo => "YOLO",
+        }
+    }
+
+    pub fn color(&self) -> Color {
+        match self {
+            AgentMode::Normal => Color::Rgb(100, 200, 255),
+            AgentMode::PlanMode => Color::Rgb(255, 200, 80),
+            AgentMode::AcceptEdits => Color::Rgb(80, 220, 120),
+            AgentMode::Yolo => Color::Rgb(255, 90, 90),
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            AgentMode::Normal => AgentMode::PlanMode,
+            AgentMode::PlanMode => AgentMode::AcceptEdits,
+            AgentMode::AcceptEdits => AgentMode::Yolo,
+            AgentMode::Yolo => AgentMode::Normal,
+        }
+    }
+}
 use crate::prompts::{self, PromptContext};
 use crate::tui::agent::AgentLoop;
 use crate::tui::client::DaemonClient;
@@ -10,13 +48,15 @@ use crate::tui::components;
 use crate::tui::components::input::InputBox;
 use crate::tui::components::permission::PermissionState;
 use crate::tui::components::question::QuestionState;
+use crate::tui::components::plan_panel::PlanPanelState;
 use crate::tui::components::session::SessionState;
 use crate::tui::components::task_panel::TaskPanelState;
 use crate::state::agent_phase::{AgentPhase, TurnId, TurnAbortReason};
+use crate::agent::StreamProcessor;
 use crate::tui::theme;
 use crossterm::event::{self, Event, EnableBracketedPaste, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
@@ -90,6 +130,12 @@ pub enum AppEvent {
     ToggleSessions,
     /// Toggle task panel
     ToggleTaskPanel,
+    /// Plan mode: plan text generated, show review panel
+    PlanGenerated { plan: String },
+    /// Plan mode: user approved the plan, start execution
+    PlanApproved,
+    /// Plan mode: user rejected the plan, discard
+    PlanRejected,
     /// Pasted text from bracketed paste
     Paste(String),
     /// Mouse scroll (positive = up, negative = down)
@@ -100,12 +146,16 @@ pub enum AppEvent {
     SessionListLoaded(Vec<SessionInfo>),
     HistoryLoaded(Vec<crate::api::ChatMessage>),
     SaveSession,
+    /// Delete a session by id
+    DeleteSession(String),
     /// Toggle collapse all paragraphs
     ToggleCollapseAll,
     /// Toggle collapse latest message paragraphs
     ToggleCollapseLatest,
     /// Todo items updated from daemon
     TodosUpdated(Vec<TodoItem>),
+    /// Settings were hot-reloaded from disk
+    ConfigChanged(crate::config::Settings),
 }
 /// UI state for a single message in the chat view.
 #[derive(Debug, Clone, PartialEq)]
@@ -123,6 +173,15 @@ pub struct UIMessage {
     pub tool_args: Option<serde_json::Value>,
     pub content_collapsed: bool,
     pub tool_collapsed: bool,
+    pub diff_data: Option<DiffData>,
+}
+
+/// Structured diff data for syntax-highlighted diff rendering in the TUI.
+#[derive(Debug, Clone)]
+pub struct DiffData {
+    pub file_path: String,
+    pub old_content: String,
+    pub new_content: String,
 }
 /// Application state for the TUI.
 pub struct App {
@@ -148,6 +207,7 @@ pub struct App {
     pub current_turn_id: Option<TurnId>,
     /// Number of completed turns (for UI / debugging).
     pub turn_count: usize,
+    pub mode: AgentMode,
     /// Pre-assembled system messages (layered instructions from PromptAssembler).
     /// Cloned into each new AgentLoop so every Turn inherits the same base instructions.
     pub assembled_system_messages: Vec<ChatMessage>,
@@ -160,6 +220,11 @@ pub struct App {
     pub question_state: QuestionState,
     pub session_state: SessionState,
     pub task_panel: TaskPanelState,
+    /// Shared settings handle — updated by the config watcher on file change.
+    pub settings_lock: crate::config::watcher::SettingsHandle,
+    pub plan_panel: PlanPanelState,
+    /// Original user text pending plan approval; used to re-queue input after approval.
+    pending_plan_user_text: Option<String>,
     /// Timestamp of last Ctrl+C press for double-press detection
     last_ctrl_c: Option<std::time::Instant>,
     /// Cancellation flag for blocking input reader task
@@ -170,7 +235,11 @@ pub struct App {
     pub permission_responder: Option<PermissionResponder>,
 }
 impl App {
-    pub fn new(daemon_client: DaemonClient, session_id: String) -> Self {
+    pub fn new(
+        daemon_client: DaemonClient,
+        session_id: String,
+        settings_lock: crate::config::watcher::SettingsHandle,
+    ) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         // Build layered instructions from settings + context
         let prompt_ctx = PromptContext::new()
@@ -185,9 +254,28 @@ impl App {
             )
             .with_sandbox("workspace-write")
             .with_approval("never");
-        let settings = crate::config::Settings::load().unwrap_or_default();
+        let settings = {
+            let guard = settings_lock.read().unwrap();
+            guard.clone()
+        };
         let prompt_ctx = prompt_ctx
             .with_collaboration(settings.collaboration_mode.clone().unwrap_or_default());
+
+        // Load skills inventory for system prompt injection
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let skills_dirs = vec![
+            home.join(".wgenty-code").join("skills"),
+        ];
+        let skill_loader = crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);
+        let mut skill_inventory: Vec<prompts::SkillEntry> = Vec::new();
+        for name in skill_loader.skill_names() {
+            if let Some(skill) = skill_loader.load_skill(&name) {
+                let desc = skill.description.clone();
+                skill_inventory.push(prompts::SkillEntry { name, description: desc });
+            }
+        }
+        let prompt_ctx = prompt_ctx.with_skills(skill_inventory);
+
         let assembled = prompts::assemble_instructions(&settings, &prompt_ctx);
         let system_messages = assembled.system_messages;
         let conversation_history = Arc::new(TokioMutex::new(system_messages.clone()));
@@ -209,6 +297,7 @@ impl App {
             current_turn_handle: None,
             current_turn_id: None,
             turn_count: 0,
+            mode: if settings.plan_mode { AgentMode::PlanMode } else { AgentMode::Normal },
             event_tx,
             event_rx,
             should_quit: false,
@@ -216,10 +305,13 @@ impl App {
             question_state: QuestionState::new(),
             session_state: SessionState::new(),
             task_panel: TaskPanelState::new(),
+            plan_panel: PlanPanelState::new(),
+            pending_plan_user_text: None,
             last_ctrl_c: None,
             shutdown_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             question_responder: None,
             permission_responder: None,
+            settings_lock,
         }
     }
     pub fn event_sender(&self) -> mpsc::UnboundedSender<AppEvent> {
@@ -337,7 +429,42 @@ impl App {
         }
         match event {
             AppEvent::KeyEvent(key) => {
+                // Plan panel key handling
+                if self.plan_panel.visible {
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Enter => {
+                            let _ = self.event_tx.send(AppEvent::PlanApproved);
+                        }
+                        KeyCode::Char('n') | KeyCode::Esc => {
+                            let _ = self.event_tx.send(AppEvent::PlanRejected);
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
                 // Permission panel handling (inline, not popup)
+                // Shift+Tab: cycle agent mode
+                if key.code == KeyCode::BackTab {
+                    self.mode = self.mode.next();
+                    return;
+                }
+                // Ctrl+P: toggle plan mode
+                if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    let is_plan = self.mode == AgentMode::PlanMode;
+                    self.mode = if is_plan { AgentMode::Normal } else { AgentMode::PlanMode };
+                    let msg = if !is_plan { "Plan mode enabled" } else { "Plan mode disabled" };
+                    self.committed_messages.push(UIMessage {
+                        role: MessageRole::System,
+                        content: msg.to_string(),
+                        tool_name: None,
+                        content_collapsed: false,
+                        tool_collapsed: false,
+                        tool_args: None,
+                        diff_data: None,
+                    });
+                    return;
+                }
+                // Permission panel key handling
                 if self.permission_state.visible {
                     match key.code {
                         KeyCode::Char('y') => {
@@ -465,6 +592,16 @@ impl App {
                                 });
                             }
                         }
+                        KeyCode::Char('d') => {
+                            if let Some(id) = self.session_state.delete_selected() {
+                                let _ = self.event_tx.send(AppEvent::DeleteSession(id));
+                            }
+                        }
+                        KeyCode::Delete | KeyCode::Backspace => {
+                            if let Some(id) = self.session_state.delete_selected() {
+                                let _ = self.event_tx.send(AppEvent::DeleteSession(id));
+                            }
+                        }
                         KeyCode::Esc => {
                             self.session_state.dismiss();
                         }
@@ -561,22 +698,6 @@ impl App {
                 }
             }
             AppEvent::Submit(text) => {
-                // Slash commands
-                if text.trim() == "/clear" {
-                    self.committed_messages.clear();
-                    self.streaming_content.clear();
-                    self.streaming_active = false;
-                    self.scroll_offset = 0;
-                    self.user_scrolled = false;
-                    self.cancel_current_turn();
-                    let history = self.conversation_history.clone();
-                    let sys_msgs = self.assembled_system_messages.clone();
-                    tokio::spawn(async move {
-                        let mut h = history.lock().await;
-                        *h = sys_msgs;
-                    });
-                    return;
-                }
                 self.submit_input(text);
             }
             AppEvent::ContentDelta(text) => {
@@ -598,6 +719,7 @@ impl App {
                         tool_args: None,
                         content_collapsed: false,
                         tool_collapsed: false,
+                        diff_data: None,
                     });
                 }
                 self.streaming_active = false;
@@ -613,13 +735,15 @@ impl App {
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::Tool,
                     content: String::new(),
-                    tool_name: Some(name),
-                    tool_args: Some(args),
+                    tool_name: Some(name.clone()),
+                            tool_args: Some(args.clone()),
                     content_collapsed: false,
                     tool_collapsed: false,
+                    diff_data: None,
                 });
             }
             AppEvent::ToolResult { name, args, content } => {
+                let diff_data = extract_diff_data(&name, &args, &content);
                 // Replace the placeholder ToolStart message with the result
                 if let Some(last) = self.committed_messages.last_mut() {
                     if last.role == MessageRole::Tool
@@ -627,18 +751,18 @@ impl App {
                         && last.tool_name.as_deref() == Some(&name)
                     {
                         last.content = format_tool_result(&name, &args, &content);
-                        // Live tool results: always expanded by default
-                        last.content_collapsed = false;
                         last.tool_collapsed = false;
+                        last.diff_data = diff_data;
                     } else {
                         let formatted = format_tool_result(&name, &args, &content);
                         self.committed_messages.push(UIMessage {
                             role: MessageRole::Tool,
                             content: formatted,
                             tool_name: Some(name),
-                    tool_args: Some(args),
+                            tool_args: Some(args),
                             content_collapsed: false,
                             tool_collapsed: false,
+                            diff_data,
                         });
                     }
                 }
@@ -651,10 +775,59 @@ impl App {
                     content_collapsed: false,
                     tool_collapsed: false,
                     tool_args: None,
+                    diff_data: None,
                 });
                 self.streaming_active = false;
             }
             AppEvent::Tick => { /* periodic refresh */ }
+            AppEvent::PlanGenerated { plan } => {
+                self.streaming_active = false;
+                self.streaming_content.clear();
+                self.phase = AgentPhase::Planning;
+                self.plan_panel.show(plan);
+            }
+            AppEvent::PlanApproved => {
+                self.plan_panel.dismiss();
+                if let Some(original_text) = self.pending_plan_user_text.take() {
+                    self.pending_inputs.push_back(original_text);
+                }
+                self.start_next_turn();
+            }
+            AppEvent::PlanRejected => {
+                self.plan_panel.dismiss();
+                self.phase = AgentPhase::Idle;
+                self.pending_plan_user_text = None;
+                // Remove the user message that was pushed for the plan
+                self.committed_messages.pop();
+                self.pending_inputs.clear();
+            }
+            AppEvent::ConfigChanged(new_settings) => {
+                // Rebuild system messages from new settings
+                let prompt_ctx = PromptContext::new()
+                    .with_cwd(
+                        std::env::current_dir()
+                            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                            .display()
+                            .to_string(),
+                    )
+                    .with_shell(
+                        std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string()),
+                    )
+                    .with_sandbox("workspace-write")
+                    .with_approval("never")
+                    .with_collaboration(new_settings.collaboration_mode.clone().unwrap_or_default());
+                let assembled = prompts::assemble_instructions(&new_settings, &prompt_ctx);
+                self.assembled_system_messages = assembled.system_messages;
+                self.committed_messages.push(UIMessage {
+                    role: MessageRole::System,
+                    content: "Settings reloaded".to_string(),
+                    tool_name: None,
+                    content_collapsed: false,
+                    tool_collapsed: false,
+                    tool_args: None,
+                    diff_data: None,
+                });
+            }
             AppEvent::TurnComplete => {
                 self.turn_count += 1;
                 self.current_turn_handle = None;
@@ -669,6 +842,18 @@ impl App {
                 responder,
             } => {
                 tracing::info!("🔐 App: showing permission panel for '{}'", rule);
+                // Yolo mode: auto-approve all permissions
+                if self.mode == AgentMode::Yolo {
+                    let _ = responder.0.unwrap().send(PermissionResponse::AllowOnce);
+                    return;
+                }
+                // AcceptEdits mode: auto-approve file-edit permissions
+                if self.mode == AgentMode::AcceptEdits
+                    && (rule == "apply_patch" || rule == "file_edit" || rule == "file_write")
+                {
+                    let _ = responder.0.unwrap().send(PermissionResponse::AllowOnce);
+                    return;
+                }
                 self.permission_responder = Some(responder);
                 self.permission_state.show(reason, rule);
             }
@@ -697,6 +882,17 @@ impl App {
             AppEvent::SessionListLoaded(sessions) => {
                 self.session_state.show(sessions);
             }
+            AppEvent::DeleteSession(id) => {
+                let client = self.daemon_client.clone();
+                let tx = self.event_tx.clone();
+                tokio::spawn(async move {
+                    let _ = client.delete_session(&id).await;
+                    // Refresh session list after deletion
+                    if let Ok(sessions) = client.list_sessions().await {
+                        let _ = tx.send(AppEvent::SessionListLoaded(sessions));
+                    }
+                });
+            }
             AppEvent::HistoryLoaded(messages) => {
                 // Convert ChatMessage to UIMessage for display
                 self.committed_messages.clear();
@@ -716,6 +912,7 @@ impl App {
                         tool_args: None,
                         content_collapsed,
                         tool_collapsed,
+                        diff_data: None,
                     });
                 }
                 self.scroll_offset = 0;
@@ -772,6 +969,7 @@ impl App {
                 content_collapsed: false,
                 tool_collapsed: false,
                 tool_args: None,
+                diff_data: None,
         });
     }
     fn push_permission_result(&mut self, reason: &str, decision: &str) {
@@ -782,6 +980,7 @@ impl App {
                 content_collapsed: false,
                 tool_collapsed: false,
                 tool_args: None,
+                diff_data: None,
         });
     }
     fn render(&self, f: &mut Frame) {
@@ -792,20 +991,26 @@ impl App {
         //   permission: header | chat | permission-panel | status | input(hidden)
         let has_question = self.question_state.visible;
         let has_permission = self.permission_state.visible;
-        let show_panel = has_question || has_permission;
+        let has_plan = self.plan_panel.visible;
+        let show_panel = has_question || has_permission || has_plan;
         let panel_height = if has_question {
             self.question_state.height_needed()
         } else if has_permission {
             self.permission_state.height_needed()
+        } else if has_plan {
+            plan_panel_height(&self.plan_panel.plan_text)
         } else {
             0
         };
+        let pending_height = self.pending_count().min(5) as u16;
+        let has_pending = pending_height > 0;
         let constraints: Vec<Constraint> = if show_panel {
             vec![
                 Constraint::Length(1),
                 Constraint::Min(3),
                 Constraint::Length(panel_height),
                 Constraint::Length(1),
+                Constraint::Length(if has_pending { pending_height } else { 0 }),
                 Constraint::Length(0),
             ]
         } else {
@@ -813,7 +1018,8 @@ impl App {
                 Constraint::Length(1),
                 Constraint::Min(3),
                 Constraint::Length(1),
-                Constraint::Length((self.input_box.textarea.lines().len() + 2).clamp(3, 12) as u16),
+                Constraint::Length(if has_pending { pending_height } else { 0 }),
+                Constraint::Length((self.input_box.textarea.lines().len() + 3).clamp(4, 13) as u16),
             ]
         };
         let layout = Layout::default()
@@ -823,7 +1029,8 @@ impl App {
         let chat_idx = 1;
         let panel_idx = if show_panel { 2 } else { 0 };
         let status_idx = if show_panel { 3 } else { 2 };
-        let input_idx = if show_panel { 4 } else { 3 };
+        let pending_idx = if show_panel { 4 } else { 3 };
+        let input_idx = if show_panel { 5 } else { 4 };
         self.render_header(f, layout[chat_idx - 1]);
         let main_area = if self.task_panel.visible {
             let split = Layout::default()
@@ -840,13 +1047,18 @@ impl App {
         } else {
             self.render_chat(f, main_area);
         }
-        // Inline question / permission panel
+        // Inline question / permission / plan panel
         if self.question_state.visible {
             components::question::render(f, layout[panel_idx], &self.question_state);
+        } else if self.plan_panel.visible {
+            components::plan_panel::render(f, layout[panel_idx], &self.plan_panel);
         } else if self.permission_state.visible {
             components::permission::render(f, layout[panel_idx], &self.permission_state);
         }
         self.render_status(f, layout[status_idx]);
+        if has_pending {
+            self.render_pending_inputs(f, layout[pending_idx]);
+        }
         self.render_input(f, layout[input_idx]);
         // Session is still a popup overlay
         components::session::render(f, &self.session_state, centered_rect);
@@ -866,31 +1078,124 @@ impl App {
         );
     }
     fn render_status(&self, f: &mut Frame, area: Rect) {
-        let pending = self.pending_count();
-        let tool_display = self.last_tool_name.clone().unwrap_or_default();
-        let pending_text = if pending > 0 {
-            format!(" | {} pending", pending)
+        components::status::render(f, area, &self.phase, &self.session_name);
+    }
+    fn render_input(&self, f: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(area);
+        self.render_mode_label(f, chunks[0]);
+        self.input_box.render(f, chunks[1]);
+    }
+
+    /// Render the agent mode label at the top-left of the input area.
+    fn render_mode_label(&self, f: &mut Frame, area: Rect) {
+        let color = self.mode.color();
+        let label = format!(" {} ", self.mode.label());
+        let paragraph = Paragraph::new(label)
+            .style(Style::default().fg(color))
+            .alignment(ratatui::layout::Alignment::Left);
+        f.render_widget(paragraph, area);
+    }
+    /// Display queued user inputs waiting to be processed.
+    fn render_pending_inputs(&self, f: &mut Frame, area: Rect) {
+        let pending_count = self.pending_inputs.len();
+        if pending_count == 0 {
+            return;
+        }
+        let max_show = (area.height as usize).min(pending_count);
+        if max_show == 0 {
+            return;
+        }
+        let mut lines: Vec<String> = Vec::new();
+        for (i, input) in self.pending_inputs.iter().enumerate().take(max_show) {
+            let first_line = input.lines().next().unwrap_or("");
+            let trunc = if first_line.len() > 60 {
+                format!("{}...", &first_line[..57])
+            } else {
+                first_line.to_string()
+            };
+            lines.push(format!("  {}. {}", i + 1, trunc));
+        }
+        let more = if pending_count > max_show {
+            format!(" ... and {} more", pending_count - max_show)
         } else {
             String::new()
         };
-        let (label, color) = match &self.phase {
-            AgentPhase::Idle | AgentPhase::Completed => (format!(" Ready{}", pending_text), theme::DIM),
-            AgentPhase::Thinking => (format!(" Thinking...{}", pending_text), theme::WARNING),
-            AgentPhase::StreamingResponse => (format!(" Streaming...{}", pending_text), theme::WARNING),
-            AgentPhase::ExecutingTool { name } => (format!(" Executing {}{}", name, if tool_display.is_empty() { String::new() } else { format!(": {}", tool_display) }), theme::ACCENT),
-            AgentPhase::AwaitingPermission { .. } => (format!(" Permission Required{}", pending_text), theme::WARNING),
-            AgentPhase::AwaitingUserInput { .. } => (format!(" Question{}", pending_text), theme::WARNING),
-            AgentPhase::Compacting => (format!(" Compacting...{}", pending_text), theme::WARNING),
-            AgentPhase::Errored(e) => (format!(" Error: {}{}", e, pending_text), theme::ERROR),
-        };
-        f.render_widget(Paragraph::new(Span::styled(label, Style::default().fg(color))), area);
-    }
-    fn render_input(&self, f: &mut Frame, area: Rect) {
-        self.input_box.render(f, area);
+        let text = format!("⏳ Queued ({}){}:\n{}", pending_count, more, lines.join("\n"));
+        f.render_widget(
+            Paragraph::new(Span::styled(text, Style::default().fg(theme::DIM))),
+            area,
+        );
     }
     /// Submit user input, automatically queueing if a Turn is already running.
     fn submit_input(&mut self, text: String) {
+        // Slash commands
+        if text.trim() == "/clear" {
+            self.committed_messages.clear();
+            self.streaming_content.clear();
+            self.streaming_active = false;
+            self.scroll_offset = 0;
+            self.user_scrolled = false;
+            self.cancel_current_turn();
+            let history = self.conversation_history.clone();
+            let sys_msgs = self.assembled_system_messages.clone();
+            tokio::spawn(async move {
+                let mut h = history.lock().await;
+                *h = sys_msgs;
+            });
+            return;
+        }
+        if text.trim() == "/plan" {
+            let is_plan = self.mode == AgentMode::PlanMode;
+            self.mode = if is_plan { AgentMode::Normal } else { AgentMode::PlanMode };
+            let msg = if !is_plan { "Plan mode enabled" } else { "Plan mode disabled" };
+            self.committed_messages.push(UIMessage {
+                role: MessageRole::System,
+                content: msg.to_string(),
+                tool_name: None,
+                content_collapsed: false,
+                tool_collapsed: false,
+                tool_args: None,
+                diff_data: None,
+            });
+            return;
+        }
+        if text.trim() == "/undo" {
+            self.committed_messages.push(UIMessage {
+                role: MessageRole::System,
+                content: "Undo requested".to_string(),
+                tool_name: None,
+                content_collapsed: false,
+                tool_collapsed: false,
+                tool_args: None,
+                diff_data: None,
+            });
+            self.pending_inputs.push_back("undo the most recent operation".to_string());
+            if self.current_turn_handle.is_none() {
+                self.start_next_turn();
+            }
+            return;
+        }
         // /clear is handled before submit_input
+        if self.mode == AgentMode::PlanMode {
+            // Plan mode: push user message, spawn planning agent
+            self.committed_messages.push(UIMessage {
+                role: MessageRole::User,
+                content: text.clone(),
+                tool_name: None,
+                content_collapsed: false,
+                tool_collapsed: false,
+                tool_args: None,
+                diff_data: None,
+            });
+            self.phase = AgentPhase::Thinking;
+            self.pending_plan_user_text = Some(text.clone());
+            self.pending_inputs.push_back(text);
+            self.start_next_turn();
+            return;
+        }
         self.pending_inputs.push_back(text);
         if self.current_turn_handle.is_none() {
             self.start_next_turn();
@@ -907,6 +1212,7 @@ impl App {
                 content_collapsed: false,
                 tool_collapsed: false,
                 tool_args: None,
+                diff_data: None,
             });
             // Auto-name the session from the first user message
             if self.session_name == "New Session" {
@@ -922,8 +1228,26 @@ impl App {
             let event_tx = self.event_tx.clone();
             let session_id = self.session_id.clone();
             let sys_msgs = self.assembled_system_messages.clone();
+            let plan_mode = self.mode == AgentMode::PlanMode;
+            // Build planner ApiClient if planner_model is configured
+            let planner_client = {
+                let s = self.settings_lock.read().unwrap();
+                if let Some(ref pm) = s.planner_model {
+                    let mut planner_settings = s.clone();
+                    planner_settings.model = pm.clone();
+                    if let Some(ref url) = s.planner_model_base_url {
+                        planner_settings.api.base_url = url.clone();
+                    }
+                    if let Some(ref key) = s.planner_model_api_key {
+                        planner_settings.api.api_key = Some(key.clone());
+                    }
+                    Some(crate::api::ApiClient::new(planner_settings))
+                } else {
+                    None
+                }
+            };
             self.current_turn_handle = Some(tokio::spawn(async move {
-                let mut agent = AgentLoop::new(client, event_tx.clone(), session_id, history, sys_msgs);
+                let mut agent = AgentLoop::new(client, event_tx.clone(), session_id, history, sys_msgs, plan_mode, planner_client);
                 let result = agent.process_input(text).await;
                 if let Err(ref e) = result {
                     let reason = if e.contains("timed out") {
@@ -954,6 +1278,12 @@ impl App {
     fn pending_count(&self) -> usize {
         self.pending_inputs.len()
     }
+}
+
+/// Calculate height needed for plan panel.
+fn plan_panel_height(plan_text: &str) -> u16 {
+    let lines = plan_text.lines().count() as u16;
+    (lines + 4).min(20).max(5)
 }
 
 /// Truncate a user message to a short session name (max ~50 chars, no newlines).
@@ -1023,6 +1353,24 @@ fn compute_collapse_state(role: &MessageRole, content: &str) -> (bool, bool) {
         _ => (false, false),
     }
 }
+/// Extract DiffData from tool result metadata (for file_edit, file_write, apply_patch).
+fn extract_diff_data(
+    _name: &str,
+    args: &serde_json::Value,
+    raw_json: &str,
+) -> Option<DiffData> {
+    let file_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let parsed: serde_json::Value = serde_json::from_str(raw_json).ok()?;
+    let metadata = parsed.get("metadata")?;
+    let old_content = metadata.get("old_content")?.as_str()?;
+    let new_content = metadata.get("new_content")?.as_str()?;
+    Some(DiffData {
+        file_path,
+        old_content: old_content.to_string(),
+        new_content: new_content.to_string(),
+    })
+}
+
 /// Parse the JSON wrapper from execute_tool_with_permission and extract the
 /// meaningful content for display. Strips metadata noise like success/output_type.
 /// Format a tool result for codex-style tree display. The header bullet is
@@ -1110,10 +1458,15 @@ fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::SessionListLoaded(_)
         | AppEvent::HistoryLoaded(_)
         | AppEvent::SaveSession
+        | AppEvent::DeleteSession(_)
         | AppEvent::ToggleCollapseAll
         | AppEvent::ToggleCollapseLatest
         | AppEvent::TodosUpdated(_)
-        | AppEvent::TurnStarted { .. } => None,
+        | AppEvent::TurnStarted { .. }
+        | AppEvent::PlanGenerated { .. }
+        | AppEvent::PlanApproved
+        | AppEvent::PlanRejected
+        | AppEvent::ConfigChanged(_) => None,
     }
 }
 /// Helper: create a centered rectangle of the given percentage size within `area`.

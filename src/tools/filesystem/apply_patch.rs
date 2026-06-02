@@ -77,6 +77,22 @@ impl Tool for ApplyPatchTool {
             .unwrap_or_else(|| PathBuf::from("."));
 
         let operations = parse_patch(patch, &workdir)?;
+        // Collect diff data before applying (read originals while they still exist)
+        let mut diffs_json = serde_json::Map::new();
+        for op in &operations {
+            if let PatchOperation::Update { path, hunks } = op {
+                let original = std::fs::read_to_string(path).unwrap_or_default();
+                let modified = apply_hunks(&original, hunks, path).unwrap_or_default();
+                diffs_json.insert(
+                    path.display().to_string(),
+                    serde_json::json!({
+                        "old_content": original,
+                        "new_content": modified,
+                    }),
+                );
+            }
+        }
+
         apply_operations(&operations)?;
 
         let mut metadata = HashMap::new();
@@ -91,6 +107,9 @@ impl Tool for ApplyPatchTool {
                 })
                 .collect::<Vec<_>>()),
         );
+        if !diffs_json.is_empty() {
+            metadata.insert("diffs".to_string(), serde_json::Value::Object(diffs_json));
+        }
 
         Ok(ToolOutput {
             output_type: "text".to_string(),

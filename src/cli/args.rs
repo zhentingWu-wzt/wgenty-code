@@ -146,7 +146,15 @@ impl Cli {
         // Create client and app
         let client = DaemonClient::new(base_url);
         let session_id = uuid::Uuid::new_v4().to_string();
-        let mut app = App::new(client, session_id);
+                // Create shared settings handle (loaded immediately)
+        let settings_lock = crate::config::watcher::create_handle();
+        let mut app = App::new(client, session_id, settings_lock.clone());
+
+        // Start the config file watcher
+        let tx = app.event_sender();
+        crate::config::watcher::start_watching(settings_lock, move |new_settings| {
+            let _ = tx.send(crate::tui::app::AppEvent::ConfigChanged(new_settings));
+        });
 
         // Send initial prompt if given
         if let Some(p) = prompt {

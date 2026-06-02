@@ -31,6 +31,8 @@ pub struct ChatStreamRequest {
     pub model: Option<String>,
     #[serde(default)]
     pub max_tokens: Option<usize>,
+    #[serde(default)]
+    pub plan_mode: Option<bool>,
 }
 
 // ── Tools ────────────────────────────────────────────────────────────────────
