@@ -28,6 +28,8 @@ pub enum AgentPhase {
     Completed,
     /// Turn ended with an error.
     Errored(String),
+    /// Plan mode: agent has generated a plan, awaiting user review.
+    Planning,
 }
 
 impl AgentPhase {
@@ -43,12 +45,13 @@ impl AgentPhase {
             AgentPhase::Compacting => "compacting",
             AgentPhase::Completed => "idle",
             AgentPhase::Errored(_) => "error",
+            AgentPhase::Planning => "plan review",
         }
     }
 
     /// Whether the phase is a "busy" state (non-idle, non-error).
     pub fn is_busy(&self) -> bool {
-        !matches!(self, AgentPhase::Idle | AgentPhase::Completed | AgentPhase::Errored(_))
+        !matches!(self, AgentPhase::Idle | AgentPhase::Completed | AgentPhase::Errored(_) | AgentPhase::Planning)
     }
 }
 

@@ -56,7 +56,7 @@ use crate::agent::StreamProcessor;
 use crate::tui::theme;
 use crossterm::event::{self, Event, EnableBracketedPaste, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::{Frame, Terminal};
@@ -154,8 +154,6 @@ pub enum AppEvent {
     ToggleCollapseLatest,
     /// Todo items updated from daemon
     TodosUpdated(Vec<TodoItem>),
-    /// Settings were hot-reloaded from disk
-    ConfigChanged(crate::config::Settings),
 }
 /// UI state for a single message in the chat view.
 #[derive(Debug, Clone, PartialEq)]
@@ -207,6 +205,7 @@ pub struct App {
     pub current_turn_id: Option<TurnId>,
     /// Number of completed turns (for UI / debugging).
     pub turn_count: usize,
+    pub plan_mode: bool,
     pub mode: AgentMode,
     /// Pre-assembled system messages (layered instructions from PromptAssembler).
     /// Cloned into each new AgentLoop so every Turn inherits the same base instructions.
@@ -220,11 +219,7 @@ pub struct App {
     pub question_state: QuestionState,
     pub session_state: SessionState,
     pub task_panel: TaskPanelState,
-    /// Shared settings handle — updated by the config watcher on file change.
-    pub settings_lock: crate::config::watcher::SettingsHandle,
     pub plan_panel: PlanPanelState,
-    /// Original user text pending plan approval; used to re-queue input after approval.
-    pending_plan_user_text: Option<String>,
     /// Timestamp of last Ctrl+C press for double-press detection
     last_ctrl_c: Option<std::time::Instant>,
     /// Cancellation flag for blocking input reader task
@@ -235,11 +230,7 @@ pub struct App {
     pub permission_responder: Option<PermissionResponder>,
 }
 impl App {
-    pub fn new(
-        daemon_client: DaemonClient,
-        session_id: String,
-        settings_lock: crate::config::watcher::SettingsHandle,
-    ) -> Self {
+    pub fn new(daemon_client: DaemonClient, session_id: String) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         // Build layered instructions from settings + context
         let prompt_ctx = PromptContext::new()
@@ -254,28 +245,9 @@ impl App {
             )
             .with_sandbox("workspace-write")
             .with_approval("never");
-        let settings = {
-            let guard = settings_lock.read().unwrap();
-            guard.clone()
-        };
+        let settings = crate::config::Settings::load().unwrap_or_default();
         let prompt_ctx = prompt_ctx
             .with_collaboration(settings.collaboration_mode.clone().unwrap_or_default());
-
-        // Load skills inventory for system prompt injection
-        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        let skills_dirs = vec![
-            home.join(".wgenty-code").join("skills"),
-        ];
-        let skill_loader = crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);
-        let mut skill_inventory: Vec<prompts::SkillEntry> = Vec::new();
-        for name in skill_loader.skill_names() {
-            if let Some(skill) = skill_loader.load_skill(&name) {
-                let desc = skill.description.clone();
-                skill_inventory.push(prompts::SkillEntry { name, description: desc });
-            }
-        }
-        let prompt_ctx = prompt_ctx.with_skills(skill_inventory);
-
         let assembled = prompts::assemble_instructions(&settings, &prompt_ctx);
         let system_messages = assembled.system_messages;
         let conversation_history = Arc::new(TokioMutex::new(system_messages.clone()));
@@ -297,6 +269,7 @@ impl App {
             current_turn_handle: None,
             current_turn_id: None,
             turn_count: 0,
+            plan_mode: settings.plan_mode,
             mode: if settings.plan_mode { AgentMode::PlanMode } else { AgentMode::Normal },
             event_tx,
             event_rx,
@@ -306,12 +279,10 @@ impl App {
             session_state: SessionState::new(),
             task_panel: TaskPanelState::new(),
             plan_panel: PlanPanelState::new(),
-            pending_plan_user_text: None,
             last_ctrl_c: None,
             shutdown_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             question_responder: None,
             permission_responder: None,
-            settings_lock,
         }
     }
     pub fn event_sender(&self) -> mpsc::UnboundedSender<AppEvent> {
@@ -446,13 +417,14 @@ impl App {
                 // Shift+Tab: cycle agent mode
                 if key.code == KeyCode::BackTab {
                     self.mode = self.mode.next();
+                    self.plan_mode = self.mode == AgentMode::PlanMode;
                     return;
                 }
                 // Ctrl+P: toggle plan mode
                 if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                    let is_plan = self.mode == AgentMode::PlanMode;
-                    self.mode = if is_plan { AgentMode::Normal } else { AgentMode::PlanMode };
-                    let msg = if !is_plan { "Plan mode enabled" } else { "Plan mode disabled" };
+                    self.plan_mode = !self.plan_mode;
+                    self.mode = if self.plan_mode { AgentMode::PlanMode } else { AgentMode::Normal };
+                    let msg = if self.plan_mode { "Plan mode enabled" } else { "Plan mode disabled" };
                     self.committed_messages.push(UIMessage {
                         role: MessageRole::System,
                         content: msg.to_string(),
@@ -464,8 +436,8 @@ impl App {
                     });
                     return;
                 }
-                // Permission panel key handling
-                if self.permission_state.visible {
+                // Plan panel key handling
+                if self.plan_panel.visible {
                     match key.code {
                         KeyCode::Char('y') => {
                             let (reason, _rule) = self.permission_state.dismiss();
@@ -788,45 +760,14 @@ impl App {
             }
             AppEvent::PlanApproved => {
                 self.plan_panel.dismiss();
-                if let Some(original_text) = self.pending_plan_user_text.take() {
-                    self.pending_inputs.push_back(original_text);
-                }
                 self.start_next_turn();
             }
             AppEvent::PlanRejected => {
                 self.plan_panel.dismiss();
                 self.phase = AgentPhase::Idle;
-                self.pending_plan_user_text = None;
                 // Remove the user message that was pushed for the plan
                 self.committed_messages.pop();
                 self.pending_inputs.clear();
-            }
-            AppEvent::ConfigChanged(new_settings) => {
-                // Rebuild system messages from new settings
-                let prompt_ctx = PromptContext::new()
-                    .with_cwd(
-                        std::env::current_dir()
-                            .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                            .display()
-                            .to_string(),
-                    )
-                    .with_shell(
-                        std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string()),
-                    )
-                    .with_sandbox("workspace-write")
-                    .with_approval("never")
-                    .with_collaboration(new_settings.collaboration_mode.clone().unwrap_or_default());
-                let assembled = prompts::assemble_instructions(&new_settings, &prompt_ctx);
-                self.assembled_system_messages = assembled.system_messages;
-                self.committed_messages.push(UIMessage {
-                    role: MessageRole::System,
-                    content: "Settings reloaded".to_string(),
-                    tool_name: None,
-                    content_collapsed: false,
-                    tool_collapsed: false,
-                    tool_args: None,
-                    diff_data: None,
-                });
             }
             AppEvent::TurnComplete => {
                 self.turn_count += 1;
@@ -842,18 +783,6 @@ impl App {
                 responder,
             } => {
                 tracing::info!("🔐 App: showing permission panel for '{}'", rule);
-                // Yolo mode: auto-approve all permissions
-                if self.mode == AgentMode::Yolo {
-                    let _ = responder.0.unwrap().send(PermissionResponse::AllowOnce);
-                    return;
-                }
-                // AcceptEdits mode: auto-approve file-edit permissions
-                if self.mode == AgentMode::AcceptEdits
-                    && (rule == "apply_patch" || rule == "file_edit" || rule == "file_write")
-                {
-                    let _ = responder.0.unwrap().send(PermissionResponse::AllowOnce);
-                    return;
-                }
                 self.permission_responder = Some(responder);
                 self.permission_state.show(reason, rule);
             }
@@ -1019,7 +948,7 @@ impl App {
                 Constraint::Min(3),
                 Constraint::Length(1),
                 Constraint::Length(if has_pending { pending_height } else { 0 }),
-                Constraint::Length((self.input_box.textarea.lines().len() + 3).clamp(4, 13) as u16),
+                Constraint::Length((self.input_box.textarea.lines().len() + 2).clamp(3, 12) as u16),
             ]
         };
         let layout = Layout::default()
@@ -1081,22 +1010,7 @@ impl App {
         components::status::render(f, area, &self.phase, &self.session_name);
     }
     fn render_input(&self, f: &mut Frame, area: Rect) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
-            .split(area);
-        self.render_mode_label(f, chunks[0]);
-        self.input_box.render(f, chunks[1]);
-    }
-
-    /// Render the agent mode label at the top-left of the input area.
-    fn render_mode_label(&self, f: &mut Frame, area: Rect) {
-        let color = self.mode.color();
-        let label = format!(" {} ", self.mode.label());
-        let paragraph = Paragraph::new(label)
-            .style(Style::default().fg(color))
-            .alignment(ratatui::layout::Alignment::Left);
-        f.render_widget(paragraph, area);
+        self.input_box.render(f, area);
     }
     /// Display queued user inputs waiting to be processed.
     fn render_pending_inputs(&self, f: &mut Frame, area: Rect) {
@@ -1148,9 +1062,9 @@ impl App {
             return;
         }
         if text.trim() == "/plan" {
-            let is_plan = self.mode == AgentMode::PlanMode;
-            self.mode = if is_plan { AgentMode::Normal } else { AgentMode::PlanMode };
-            let msg = if !is_plan { "Plan mode enabled" } else { "Plan mode disabled" };
+            self.plan_mode = !self.plan_mode;
+            self.mode = if self.plan_mode { AgentMode::PlanMode } else { AgentMode::Normal };
+            let msg = if self.plan_mode { "Plan mode enabled" } else { "Plan mode disabled" };
             self.committed_messages.push(UIMessage {
                 role: MessageRole::System,
                 content: msg.to_string(),
@@ -1179,7 +1093,7 @@ impl App {
             return;
         }
         // /clear is handled before submit_input
-        if self.mode == AgentMode::PlanMode {
+        if self.plan_mode {
             // Plan mode: push user message, spawn planning agent
             self.committed_messages.push(UIMessage {
                 role: MessageRole::User,
@@ -1191,7 +1105,6 @@ impl App {
                 diff_data: None,
             });
             self.phase = AgentPhase::Thinking;
-            self.pending_plan_user_text = Some(text.clone());
             self.pending_inputs.push_back(text);
             self.start_next_turn();
             return;
@@ -1228,26 +1141,9 @@ impl App {
             let event_tx = self.event_tx.clone();
             let session_id = self.session_id.clone();
             let sys_msgs = self.assembled_system_messages.clone();
-            let plan_mode = self.mode == AgentMode::PlanMode;
-            // Build planner ApiClient if planner_model is configured
-            let planner_client = {
-                let s = self.settings_lock.read().unwrap();
-                if let Some(ref pm) = s.planner_model {
-                    let mut planner_settings = s.clone();
-                    planner_settings.model = pm.clone();
-                    if let Some(ref url) = s.planner_model_base_url {
-                        planner_settings.api.base_url = url.clone();
-                    }
-                    if let Some(ref key) = s.planner_model_api_key {
-                        planner_settings.api.api_key = Some(key.clone());
-                    }
-                    Some(crate::api::ApiClient::new(planner_settings))
-                } else {
-                    None
-                }
-            };
+            let plan_mode = self.plan_mode;
             self.current_turn_handle = Some(tokio::spawn(async move {
-                let mut agent = AgentLoop::new(client, event_tx.clone(), session_id, history, sys_msgs, plan_mode, planner_client);
+                let mut agent = AgentLoop::new(client, event_tx.clone(), session_id, history, sys_msgs, plan_mode);
                 let result = agent.process_input(text).await;
                 if let Err(ref e) = result {
                     let reason = if e.contains("timed out") {
@@ -1465,8 +1361,7 @@ fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::TurnStarted { .. }
         | AppEvent::PlanGenerated { .. }
         | AppEvent::PlanApproved
-        | AppEvent::PlanRejected
-        | AppEvent::ConfigChanged(_) => None,
+        | AppEvent::PlanRejected => None,
     }
 }
 /// Helper: create a centered rectangle of the given percentage size within `area`.

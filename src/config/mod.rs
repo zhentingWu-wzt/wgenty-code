@@ -2,6 +2,7 @@
 
 pub mod api_config;
 pub mod mcp_config;
+pub mod watcher;
 
 pub use api_config::ApiConfig;
 pub use mcp_config::{McpConfig, McpServerStatus};
@@ -18,6 +19,49 @@ pub struct Settings {
     pub mcp_servers: Vec<McpConfig>,
     /// Model selection
     pub model: String,
+    /// Small model for delegating simple tasks (e.g., "haiku", "gpt-4o-mini").
+    /// When set, the agent can call the `task` tool with `use_small_model: true`
+    /// to spawn subagents with this model instead of the main model.
+    #[serde(default)]
+    pub small_model: Option<String>,
+    /// Base URL for the small model API. Falls back to api.base_url if not set.
+    #[serde(default)]
+    pub small_model_base_url: Option<String>,
+    /// API key for the small model. Falls back to api.get_api_key() if not set.
+    #[serde(default)]
+    pub small_model_api_key: Option<String>,
+    /// App key for the small model API (provider-specific, e.g., OpenRouter).
+    /// When absent, falls back to small_model_api_key.
+    #[serde(default)]
+    pub small_model_appkey: Option<String>,
+    /// Maximum subagent nesting depth. Subagents cannot spawn further
+    /// subagents once this depth is reached. Default: 3.
+    #[serde(default = "default_subagent_depth")]
+    pub max_subagent_depth: usize,
+    /// Maximum concurrent subagents. The task tool will refuse new
+    /// subagent spawns when this many are already running. Default: 5.
+    #[serde(default = "default_max_concurrent_subagents")]
+    pub max_concurrent_subagents: usize,
+    /// Token budget in thousands (k). When cumulative token usage across
+    /// all models exceeds this limit, the agent stops and signals budget
+    /// exhaustion. 0 = unlimited. Default: 0.
+    #[serde(default)]
+    pub token_budget_k: usize,
+    /// Planner model name. When set and PlanMode is active, this model is
+    /// used for plan generation while the main model handles execution.
+    /// Falls back to main `model` if not configured.
+    #[serde(default)]
+    pub planner_model: Option<String>,
+    /// Base URL for the planner model API. Falls back to api.base_url.
+    #[serde(default)]
+    pub planner_model_base_url: Option<String>,
+    /// API key for the planner model. Falls back to api.get_api_key().
+    #[serde(default)]
+    pub planner_model_api_key: Option<String>,
+    /// Enable plan mode: agent generates a plan before executing tools.
+    /// User reviews and approves the plan before execution begins.
+    #[serde(default)]
+    pub plan_mode: bool,
     /// Enable verbose logging
     pub verbose: bool,
     /// Working directory
@@ -64,6 +108,14 @@ pub struct Settings {
 }
 
 /// Default helper for serde: returns true.
+fn default_subagent_depth() -> usize {
+    3
+}
+
+fn default_max_concurrent_subagents() -> usize {
+    5
+}
+
 fn default_true() -> bool {
     true
 }
@@ -135,6 +187,17 @@ impl Default for Settings {
             api: ApiConfig::default(),
             mcp_servers: Vec::new(),
             model: "sonnet".to_string(),
+            small_model: None,
+            small_model_base_url: None,
+            small_model_api_key: None,
+            small_model_appkey: None,
+            max_subagent_depth: 3,
+            max_concurrent_subagents: 5,
+            token_budget_k: 0,
+            planner_model: None,
+            planner_model_base_url: None,
+            planner_model_api_key: None,
+            plan_mode: false,
             verbose: false,
             working_dir: PathBuf::from("."),
             memory: MemorySettings {
@@ -198,6 +261,29 @@ impl Settings {
         Ok(())
     }
 
+    /// Reload settings from file, returning a new instance.
+    /// This is intentionally a full reload rather than merge to avoid stale partial state.
+    pub fn reload() -> anyhow::Result<Self> {
+        Self::load()
+    }
+
+    /// Build settings for the small model. Falls back to main model config when
+    /// small_model fields are absent.
+    pub fn small_model_settings(&self) -> Self {
+        let mut s = self.clone();
+        if let Some(ref m) = self.small_model {
+            s.model = m.clone();
+        }
+        s.api.max_tokens = 2048;
+        if let Some(ref url) = self.small_model_base_url {
+            s.api.base_url = url.clone();
+        }
+        if let Some(ref key) = self.small_model_api_key {
+            s.api.api_key = Some(key.clone());
+        }
+        s
+    }
+
     /// Set a configuration value
     pub fn set(key: &str, value: &str) -> anyhow::Result<()> {
         let mut settings = Self::load()?;
@@ -207,6 +293,17 @@ impl Settings {
             "verbose" => settings.verbose = value.parse().unwrap_or(false),
             "api_key" => settings.api.api_key = Some(value.to_string()),
             "base_url" => settings.api.base_url = value.to_string(),
+            "small_model" => settings.small_model = Some(value.to_string()),
+            "small_model_base_url" => settings.small_model_base_url = Some(value.to_string()),
+            "small_model_api_key" => settings.small_model_api_key = Some(value.to_string()),
+            "small_model_appkey" => settings.small_model_appkey = Some(value.to_string()),
+            "max_subagent_depth" => settings.max_subagent_depth = value.parse().unwrap_or(3),
+            "max_concurrent_subagents" => settings.max_concurrent_subagents = value.parse().unwrap_or(5),
+            "token_budget_k" => settings.token_budget_k = value.parse().unwrap_or(0),
+            "planner_model" => settings.planner_model = Some(value.to_string()),
+            "planner_model_base_url" => settings.planner_model_base_url = Some(value.to_string()),
+            "planner_model_api_key" => settings.planner_model_api_key = Some(value.to_string()),
+            "plan_mode" => settings.plan_mode = value.parse().unwrap_or(false),
             "max_tokens" => settings.api.max_tokens = value.parse().unwrap_or(4096),
             "timeout" => settings.api.timeout = value.parse().unwrap_or(120),
             "streaming" => settings.api.streaming = value.parse().unwrap_or(true),

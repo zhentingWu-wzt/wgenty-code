@@ -94,7 +94,7 @@ impl DaemonState {
         let mut registry = Arc::into_inner(temp_arc)
             .expect("only weak references exist — into_inner must succeed");
         let task_tool =
-            crate::tools::meta::task::TaskTool::new(app_state.settings.clone(), weak_reg);
+            crate::tools::meta::task::TaskTool::new(app_state.settings.clone(), weak_reg, bg_manager.clone());
         registry.register(Box::new(task_tool));
         let tool_registry = Arc::new(registry);
 

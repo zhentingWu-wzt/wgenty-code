@@ -10,8 +10,13 @@ const ASSISTANT_COLOR: Color = Color::Rgb(147, 112, 219);
 const TEXT_COLOR: Color = Color::Rgb(220, 220, 230);
 const DIM_COLOR: Color = Color::Rgb(100, 100, 110);
 const TOOL_COLOR: Color = Color::Rgb(100, 200, 255);
+const TURN_SEP_COLOR: Color = Color::Rgb(80, 80, 90);
+const SEP_COLOR: Color = Color::Rgb(60, 60, 70);
 
-/// Render the chat message list.
+/// Render the chat message list with turn-based grouping.
+/// Messages are grouped into turns: each user message starts a new turn,
+/// followed by the assistant's streaming response and any tool calls.
+/// A gray separator line is drawn between turns.
 pub fn render(
     f: &mut Frame,
     area: Rect,
@@ -23,11 +28,28 @@ pub fn render(
 ) {
     let mut lines: Vec<Line> = Vec::new();
 
-    for msg in committed_messages {
+    let mut prev_role: Option<MessageRole> = None;
+    for msg in committed_messages.iter() {
+        if msg.role == MessageRole::User {
+            add_turn_separator(&mut lines, area.width);
+        } else if matches!(prev_role, Some(MessageRole::Tool)) && msg.role == MessageRole::Assistant {
+            // Within-turn: tool results → new thinking round
+            add_inline_separator(&mut lines, area.width);
+        }
         lines.extend(message_to_lines(msg, area.width));
+        if msg.role == MessageRole::User {
+            add_inline_separator(&mut lines, area.width);
+        }
+        prev_role = Some(msg.role.clone());
     }
 
-    // Streaming content as a transient final block
+    if let Some(last) = committed_messages.last() {
+        if last.role != MessageRole::User {
+            add_turn_separator(&mut lines, area.width);
+        }
+    }
+
+    // Streaming assistant content: continues the current turn without a separator
     if streaming_active && !streaming_content.is_empty() {
         let wrap_w = area.width.saturating_sub(4) as usize;
         for line in streaming_content.lines() {
@@ -48,13 +70,41 @@ pub fn render(
     f.render_widget(para, area);
 }
 
+/// Draw a full-width separator line between turns.
+fn add_turn_separator(lines: &mut Vec<Line<'static>>, width: u16) {
+    let w = width.saturating_sub(2) as usize;
+    if w > 0 {
+        let bar = "\u{2500}".repeat(w);
+        lines.push(Line::from(Span::styled(
+            format!("  {}", bar),
+            Style::default().fg(TURN_SEP_COLOR),
+        )));
+    }
+}
+
+/// Draw a subtle dotted separator between user input and assistant response within a turn.
+fn add_inline_separator(lines: &mut Vec<Line<'static>>, width: u16) {
+    let w = width.saturating_sub(2) as usize;
+    if w == 0 {
+        return;
+    }
+    let count = w / 3;
+    if count > 0 {
+        let bar = std::iter::repeat(" \u{2500}").take(count).collect::<String>();
+        lines.push(Line::from(Span::styled(
+            format!("  {}", bar),
+            Style::default().fg(SEP_COLOR),
+        )));
+    }
+}
+
 fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
     let max_w = width.saturating_sub(4) as usize;
 
     match msg.role {
         MessageRole::User => {
             let mut lines = Vec::new();
-            lines.push(Line::from(Span::styled(">>> You:", Style::default().fg(USER_COLOR).add_modifier(Modifier::BOLD))));
+            lines.push(Line::from(Span::styled("\u{203a} You", Style::default().fg(USER_COLOR).add_modifier(Modifier::BOLD))));
             for line in msg.content.lines() {
                 push_wrapped(&mut lines, line, "  ", Color::White, Color::White, max_w + 2);
             }
@@ -105,17 +155,29 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
                     .unwrap_or_default();
                 let mut lines: Vec<Line<'static>> = Vec::new();
 
-                // Header: \u{2022} {verb} {detail}
+                // Header: • {verb} {detail}
                 lines.push(Line::from(vec![
                     Span::styled("\u{2022} ", Style::default().fg(DIM_COLOR)),
                     Span::styled(verb.clone(), Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD)),
                     Span::styled(
-                        format!(" {} {}", verb, detail),
+                        format!(" {}", detail),
                         Style::default().fg(DIM_COLOR),
                     ),
                 ]));
 
-                // Body lines: indented, auto-collapsed if > MAX_TOOL_LINES
+                // If diff data is available, render it inline after the header
+                if let Some(ref diff) = msg.diff_data {
+                    let diff_lines = diff_to_lines(
+                        &diff.file_path,
+                        &diff.old_content,
+                        &diff.new_content,
+                        width,
+                    );
+                    lines.extend(diff_lines);
+                    return lines;
+                }
+
+                // Body lines: indented
                 let content_lines: Vec<&str> = msg.content.lines().collect();
                 let total = content_lines.len();
                 let show = if msg.tool_collapsed {
@@ -220,6 +282,71 @@ fn tool_label(name: &str, args: &serde_json::Value) -> String {
         _ => String::new(),
     }
 }
+
+/// Convert diff data into ratatui Lines for inline rendering in chat.
+fn diff_to_lines(
+    file_path: &str,
+    old: &str,
+    new: &str,
+    _width: u16,
+) -> Vec<Line<'static>> {
+    use similar::{ChangeTag, TextDiff};
+
+    let diff = TextDiff::from_lines(old, new);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Header
+    lines.push(Line::from(Span::styled(
+        format!("  {} {}", '\u{25B8}', file_path),
+        Style::default().fg(Color::Rgb(180, 180, 200)),
+    )));
+
+    let max_show = 25usize;
+    let mut shown = 0usize;
+    let mut change_count = 0usize;
+
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            ChangeTag::Equal => continue,
+            ChangeTag::Delete => {
+                for line in change.value().lines() {
+                    if shown >= max_show { break; }
+                    let text = format!("  - {}", line);
+                    lines.push(Line::from(Span::styled(text, Style::default().fg(DEL_COLOR))));
+                    shown += 1;
+                }
+                change_count += 1;
+            }
+            ChangeTag::Insert => {
+                for line in change.value().lines() {
+                    if shown >= max_show { break; }
+                    let text = format!("  + {}", line);
+                    lines.push(Line::from(Span::styled(text, Style::default().fg(ADD_COLOR))));
+                    shown += 1;
+                }
+                change_count += 1;
+            }
+        }
+        if shown >= max_show {
+            lines.push(Line::from(Span::styled(
+                format!("  ... (truncated)"),
+                Style::default().fg(DIM_COLOR),
+            )));
+            break;
+        }
+    }
+
+    if change_count == 0 {
+        lines.push(Line::from(Span::styled("  (no changes)", Style::default().fg(DIM_COLOR))));
+    }
+
+    lines.push(Line::raw(""));
+    lines
+}
+
+/// Diff line colors
+const ADD_COLOR: Color = Color::Rgb(80, 200, 120);
+const DEL_COLOR: Color = Color::Rgb(240, 100, 100);
 
 /// Render a collapsed paragraph: first 3 lines + "... (N lines total, collapsed)" indicator.
 fn render_collapsed(

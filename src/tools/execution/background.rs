@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 #[derive(Debug, Clone, Serialize)]
 pub struct BackgroundResult {
     pub task_id: String,
+    pub result_type: String,
     pub command: String,
     pub stdout: String,
     pub stderr: String,
@@ -61,6 +62,7 @@ impl BackgroundManager {
                 match output {
                     Ok(out) => BackgroundResult {
                         task_id: task_id_clone.clone(),
+                        result_type: "command".to_string(),
                         command: cmd_inner.clone(),
                         stdout: String::from_utf8_lossy(&out.stdout).to_string(),
                         stderr: String::from_utf8_lossy(&out.stderr).to_string(),
@@ -69,6 +71,7 @@ impl BackgroundManager {
                     },
                     Err(e) => BackgroundResult {
                         task_id: task_id_clone.clone(),
+                        result_type: "command".to_string(),
                         command: cmd_inner,
                         stdout: String::new(),
                         stderr: format!("Failed to execute: {}", e),
@@ -81,6 +84,7 @@ impl BackgroundManager {
 
             let final_result = result.unwrap_or(BackgroundResult {
                 task_id: task_id_clone,
+                result_type: "command".to_string(),
                 command: command_clone,
                 stdout: String::new(),
                 stderr: "Command timed out".to_string(),
@@ -124,6 +128,28 @@ impl BackgroundManager {
             ));
         }
         Some(lines.join("\n"))
+    }
+
+    /// Store a subagent result for later retrieval.
+    pub async fn store_subagent_result(&self, task_id: impl Into<String>, result: impl Into<String>) {
+        let mut results = self.results.lock().await;
+        results.push(BackgroundResult {
+            task_id: task_id.into(),
+            result_type: "subagent".to_string(),
+            command: String::new(),
+            stdout: result.into(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            success: true,
+        });
+    }
+
+    /// Generate a unique task ID for a background subagent.
+    pub async fn next_task_id(&self) -> String {
+        let mut id_lock = self.next_id.lock().await;
+        let task_id = format!("bg_{}", *id_lock);
+        *id_lock += 1;
+        task_id
     }
 }
 

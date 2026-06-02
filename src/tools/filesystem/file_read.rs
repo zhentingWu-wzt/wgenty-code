@@ -109,7 +109,7 @@ impl Tool for FileReadTool {
         let mut rendered = lines[start_idx..end_idx]
             .iter()
             .enumerate()
-            .map(|(idx, line)| format!("{:>6}\t{}", start_idx + idx + 1, line))
+            .map(|(idx, line)| format!("{:>4}\t{}", start_idx + idx + 1, line))
             .collect::<Vec<_>>()
             .join("\n");
 
