@@ -33,28 +33,22 @@ pub fn render(
         if msg.role == MessageRole::User {
             add_turn_separator(&mut lines, area.width);
         } else if matches!(prev_role, Some(MessageRole::Tool)) && msg.role == MessageRole::Assistant {
+            // Within-turn: tool results → new thinking round
             add_inline_separator(&mut lines, area.width);
-        }
         lines.extend(message_to_lines(msg, area.width));
         if msg.role == MessageRole::User {
             add_inline_separator(&mut lines, area.width);
-        }
         prev_role = Some(msg.role.clone());
-    }
 
     if let Some(last) = committed_messages.last() {
         if last.role != MessageRole::User {
             add_turn_separator(&mut lines, area.width);
-        }
-    }
 
     // Streaming assistant content: continues the current turn without a separator
     if streaming_active && !streaming_content.is_empty() {
         let wrap_w = area.width.saturating_sub(4) as usize;
         for line in streaming_content.lines() {
             push_wrapped(&mut lines, line, "  ", TEXT_COLOR, TEXT_COLOR, wrap_w + 2);
-        }
-    }
 
     let total_lines = lines.len() as u16;
     let viewport = area.height;
@@ -78,7 +72,6 @@ fn add_turn_separator(lines: &mut Vec<Line<'static>>, width: u16) {
             format!("  {}", bar),
             Style::default().fg(TURN_SEP_COLOR),
         )));
-    }
 }
 
 /// Draw a subtle dotted separator between user input and assistant response within a turn.
@@ -86,15 +79,11 @@ fn add_inline_separator(lines: &mut Vec<Line<'static>>, width: u16) {
     let w = width.saturating_sub(2) as usize;
     if w == 0 {
         return;
-    }
-    let count = w / 3;
-    if count > 0 {
-        let bar = std::iter::repeat(" \u{2500}").take(count).collect::<String>();
+    let bar = "\u{2500}".repeat(w);
         lines.push(Line::from(Span::styled(
             format!("  {}", bar),
             Style::default().fg(SEP_COLOR),
         )));
-    }
 }
 
 fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
@@ -106,10 +95,8 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
             lines.push(Line::from(Span::styled("\u{203a} You", Style::default().fg(USER_COLOR).add_modifier(Modifier::BOLD))));
             for line in msg.content.lines() {
                 push_wrapped(&mut lines, line, "  ", Color::White, Color::White, max_w + 2);
-            }
             lines.push(Line::raw(""));
             lines
-        }
         MessageRole::Assistant => {
             let mut lines = Vec::new();
             if msg.content.is_empty() {
@@ -119,11 +106,8 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
             } else {
                 for line in msg.content.lines() {
                     push_wrapped(&mut lines, line, "  ", TEXT_COLOR, TEXT_COLOR, max_w + 2);
-                }
-            }
             lines.push(Line::raw(""));
             lines
-        }
         MessageRole::Tool => {
             if msg.content.is_empty() {
                 // ToolStart placeholder: compact running indicator
@@ -141,7 +125,7 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
                     text,
                     Style::default().fg(TOOL_COLOR),
                 )])]
-            } else if msg.tool_collapsed {
+            } else {
                 // ToolResult: codex-style tree display
                 let name = msg.tool_name.as_deref().unwrap_or("Tool").to_string();
                 let verb = tool_verb(&name).to_string();
@@ -174,7 +158,6 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
                     );
                     lines.extend(diff_lines);
                     return lines;
-                }
 
                 // Body lines: indented
                 let content_lines: Vec<&str> = msg.content.lines().collect();
@@ -190,8 +173,6 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
                         lines.push(Line::from(Span::styled("  ", Style::default().fg(DIM_COLOR))));
                     } else {
                         push_wrapped(&mut lines, line, "  ", DIM_COLOR, DIM_COLOR, wrap_width + 2);
-                    }
-                }
                 if total > show.len() {
                     lines.push(Line::from(vec![Span::styled(
                         format!(
@@ -201,22 +182,8 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
                         ),
                         Style::default().fg(DIM_COLOR),
                     )]));
-                }
                 lines.push(Line::raw(""));
                 lines
-            } else {
-                // ToolResult — content already formatted by format_tool_result
-                msg.content
-                    .lines()
-                    .map(|line| {
-                        Line::from(Span::styled(
-                            line.to_string(),
-                            Style::default().fg(DIM_COLOR),
-                        ))
-                    })
-                    .collect()
-            }
-        }
         MessageRole::System => {
             msg.content
                 .lines()
@@ -227,8 +194,6 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
                     ))
                 })
                 .collect()
-        }
-    }
 }
 
 /// Max lines to show in tool result before truncating.
@@ -250,7 +215,6 @@ fn tool_verb(name: &str) -> &str {
         "task" | "TodoWrite" => "Planned",
         "compact" => "Compacted",
         _ => "Used",
-    }
 }
 
 /// Extract a human-readable label from tool args (e.g., command string, file path).
@@ -261,13 +225,11 @@ fn tool_label(name: &str, args: &serde_json::Value) -> String {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string()
-        }
         "file_read" | "read_file" | "file_write" | "file_edit" | "apply_patch" | "view" => {
             args.get("path")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string()
-        }
         "grep" | "search" => args
             .get("pattern")
             .and_then(|v| v.as_str())
@@ -290,7 +252,6 @@ fn tool_label(name: &str, args: &serde_json::Value) -> String {
             .unwrap_or("")
             .to_string(),
         _ => String::new(),
-    }
 }
 
 /// Convert diff data into ratatui Lines for inline rendering in chat.
@@ -324,31 +285,23 @@ fn diff_to_lines(
                     let text = format!("  - {}", line);
                     lines.push(Line::from(Span::styled(text, Style::default().fg(DEL_COLOR))));
                     shown += 1;
-                }
                 change_count += 1;
-            }
             ChangeTag::Insert => {
                 for line in change.value().lines() {
                     if shown >= max_show { break; }
                     let text = format!("  + {}", line);
                     lines.push(Line::from(Span::styled(text, Style::default().fg(ADD_COLOR))));
                     shown += 1;
-                }
                 change_count += 1;
-            }
-        }
         if shown >= max_show {
             lines.push(Line::from(Span::styled(
                 format!("  ... (truncated)"),
                 Style::default().fg(DIM_COLOR),
             )));
             break;
-        }
-    }
 
     if change_count == 0 {
         lines.push(Line::from(Span::styled("  (no changes)", Style::default().fg(DIM_COLOR))));
-    }
 
     lines.push(Line::raw(""));
     lines
@@ -366,10 +319,10 @@ fn render_collapsed(
     prefix_color: Color,
     max_w: usize,
 ) {
+    let preview_lines: Vec<&str> = content.lines().take(3).collect();
     let total_lines = content.lines().count();
-    for line in content.lines().take(3) {
+    for line in &preview_lines {
         push_wrapped(lines_buf, line, prefix, prefix_color, DIM_COLOR, max_w);
-    }
     let indicator = format!("   ... ({} lines total, collapsed)", total_lines);
     lines_buf.push(Line::from(Span::styled(
         indicator,
@@ -385,50 +338,21 @@ fn push_wrapped(
     text_color: Color,
     max_w: usize,
 ) {
-    let prefix_len = prefix.chars().count();
-    let content_w = max_w.saturating_sub(prefix_len);
-
     if text.is_empty() {
         lines.push(Line::from(Span::styled(
             prefix.to_string(),
             Style::default().fg(prefix_color),
         )));
         return;
-    }
+
+    let prefix_width = prefix.chars().count();
+    let wrap_width = max_w.saturating_sub(prefix_width).max(1);
 
     let prefix_owned = prefix.to_string();
-    let chars: Vec<char> = text.chars().collect();
-    let mut start = 0;
-
-    while start < chars.len() {
-        let end = (start + content_w).min(chars.len());
-        let end = if end < chars.len() {
-            let mut break_at = end;
-            for i in (start..end).rev() {
-                if chars[i] == ' ' {
-                    break_at = i;
-                    break;
-                }
-            }
-            if break_at == start {
-                end
-            } else {
-                break_at
-            }
-        } else {
-            end
-        };
-
-        let chunk: String = chars[start..end].iter().collect();
+    let wrapped = textwrap::wrap(text, textwrap::Options::new(wrap_width));
+    for line in wrapped {
         lines.push(Line::from(vec![
             Span::styled(prefix_owned.clone(), Style::default().fg(prefix_color)),
-            Span::styled(chunk, Style::default().fg(text_color)),
+            Span::styled(line.into_owned(), Style::default().fg(text_color)),
         ]));
-
-        start = if end < chars.len() && chars[end] == ' ' {
-            end + 1
-        } else {
-            end
-        };
-    }
 }

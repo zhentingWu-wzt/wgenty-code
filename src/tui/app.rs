@@ -16,14 +16,14 @@ impl AgentMode {
         match self {
             AgentMode::Normal => "NORMAL",
             AgentMode::PlanMode => "PLAN",
-            AgentMode::AcceptEdits => "ACCEPT",
+            AgentMode::AcceptEdits => "ACCEPT EDIT",
             AgentMode::Yolo => "YOLO",
         }
     }
 
     pub fn color(&self) -> Color {
         match self {
-            AgentMode::Normal => Color::Rgb(100, 200, 255),
+            AgentMode::Normal => Color::Rgb(147, 112, 219),
             AgentMode::PlanMode => Color::Rgb(255, 200, 80),
             AgentMode::AcceptEdits => Color::Rgb(80, 220, 120),
             AgentMode::Yolo => Color::Rgb(255, 90, 90),
@@ -48,11 +48,12 @@ use crate::tui::components;
 use crate::tui::components::input::InputBox;
 use crate::tui::components::permission::PermissionState;
 use crate::tui::components::question::QuestionState;
-use crate::tui::components::plan_panel::PlanPanelState;
+
 use crate::tui::components::session::SessionState;
 use crate::tui::components::task_panel::TaskPanelState;
 use crate::state::agent_phase::{AgentPhase, TurnId, TurnAbortReason};
-use crate::agent::StreamProcessor;
+
+
 use crate::tui::theme;
 use crossterm::event::{self, Event, EnableBracketedPaste, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -130,12 +131,6 @@ pub enum AppEvent {
     ToggleSessions,
     /// Toggle task panel
     ToggleTaskPanel,
-    /// Plan mode: plan text generated, show review panel
-    PlanGenerated { plan: String },
-    /// Plan mode: user approved the plan, start execution
-    PlanApproved,
-    /// Plan mode: user rejected the plan, discard
-    PlanRejected,
     /// Pasted text from bracketed paste
     Paste(String),
     /// Mouse scroll (positive = up, negative = down)
@@ -222,9 +217,8 @@ pub struct App {
     pub task_panel: TaskPanelState,
     /// Shared settings handle — updated by the config watcher on file change.
     pub settings_lock: crate::config::watcher::SettingsHandle,
-    pub plan_panel: PlanPanelState,
-    /// Original user text pending plan approval; used to re-queue input after approval.
-    pending_plan_user_text: Option<String>,
+
+
     /// Timestamp of last Ctrl+C press for double-press detection
     last_ctrl_c: Option<std::time::Instant>,
     /// Cancellation flag for blocking input reader task
@@ -305,8 +299,8 @@ impl App {
             question_state: QuestionState::new(),
             session_state: SessionState::new(),
             task_panel: TaskPanelState::new(),
-            plan_panel: PlanPanelState::new(),
-            pending_plan_user_text: None,
+
+
             last_ctrl_c: None,
             shutdown_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             question_responder: None,
@@ -429,19 +423,6 @@ impl App {
         }
         match event {
             AppEvent::KeyEvent(key) => {
-                // Plan panel key handling
-                if self.plan_panel.visible {
-                    match key.code {
-                        KeyCode::Char('y') | KeyCode::Enter => {
-                            let _ = self.event_tx.send(AppEvent::PlanApproved);
-                        }
-                        KeyCode::Char('n') | KeyCode::Esc => {
-                            let _ = self.event_tx.send(AppEvent::PlanRejected);
-                        }
-                        _ => {}
-                    }
-                    return;
-                }
                 // Permission panel handling (inline, not popup)
                 // Shift+Tab: cycle agent mode
                 if key.code == KeyCode::BackTab {
@@ -780,27 +761,6 @@ impl App {
                 self.streaming_active = false;
             }
             AppEvent::Tick => { /* periodic refresh */ }
-            AppEvent::PlanGenerated { plan } => {
-                self.streaming_active = false;
-                self.streaming_content.clear();
-                self.phase = AgentPhase::Planning;
-                self.plan_panel.show(plan);
-            }
-            AppEvent::PlanApproved => {
-                self.plan_panel.dismiss();
-                if let Some(original_text) = self.pending_plan_user_text.take() {
-                    self.pending_inputs.push_back(original_text);
-                }
-                self.start_next_turn();
-            }
-            AppEvent::PlanRejected => {
-                self.plan_panel.dismiss();
-                self.phase = AgentPhase::Idle;
-                self.pending_plan_user_text = None;
-                // Remove the user message that was pushed for the plan
-                self.committed_messages.pop();
-                self.pending_inputs.clear();
-            }
             AppEvent::ConfigChanged(new_settings) => {
                 // Rebuild system messages from new settings
                 let prompt_ctx = PromptContext::new()
@@ -991,14 +951,11 @@ impl App {
         //   permission: header | chat | permission-panel | status | input(hidden)
         let has_question = self.question_state.visible;
         let has_permission = self.permission_state.visible;
-        let has_plan = self.plan_panel.visible;
-        let show_panel = has_question || has_permission || has_plan;
+        let show_panel = has_question || has_permission;
         let panel_height = if has_question {
             self.question_state.height_needed()
         } else if has_permission {
             self.permission_state.height_needed()
-        } else if has_plan {
-            plan_panel_height(&self.plan_panel.plan_text)
         } else {
             0
         };
@@ -1019,7 +976,7 @@ impl App {
                 Constraint::Min(3),
                 Constraint::Length(1),
                 Constraint::Length(if has_pending { pending_height } else { 0 }),
-                Constraint::Length((self.input_box.textarea.lines().len() + 3).clamp(4, 13) as u16),
+                Constraint::Length((self.input_box.textarea.lines().len() + 3).clamp(6, 16) as u16),
             ]
         };
         let layout = Layout::default()
@@ -1047,11 +1004,9 @@ impl App {
         } else {
             self.render_chat(f, main_area);
         }
-        // Inline question / permission / plan panel
+        // Inline question / permission panel
         if self.question_state.visible {
             components::question::render(f, layout[panel_idx], &self.question_state);
-        } else if self.plan_panel.visible {
-            components::plan_panel::render(f, layout[panel_idx], &self.plan_panel);
         } else if self.permission_state.visible {
             components::permission::render(f, layout[panel_idx], &self.permission_state);
         }
@@ -1083,10 +1038,10 @@ impl App {
     fn render_input(&self, f: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
             .split(area);
-        self.render_mode_label(f, chunks[0]);
-        self.input_box.render(f, chunks[1]);
+        self.render_mode_label(f, chunks[1]);
+        self.input_box.render(f, chunks[0]);
     }
 
     /// Render the agent mode label at the top-left of the input area.
@@ -1178,22 +1133,11 @@ impl App {
             }
             return;
         }
-        // /clear is handled before submit_input
         if self.mode == AgentMode::PlanMode {
-            // Plan mode: push user message, spawn planning agent
-            self.committed_messages.push(UIMessage {
-                role: MessageRole::User,
-                content: text.clone(),
-                tool_name: None,
-                content_collapsed: false,
-                tool_collapsed: false,
-                tool_args: None,
-                diff_data: None,
-            });
             self.phase = AgentPhase::Thinking;
-            self.pending_plan_user_text = Some(text.clone());
             self.pending_inputs.push_back(text);
             self.start_next_turn();
+            self.mode = AgentMode::Normal;
             return;
         }
         self.pending_inputs.push_back(text);
@@ -1278,12 +1222,6 @@ impl App {
     fn pending_count(&self) -> usize {
         self.pending_inputs.len()
     }
-}
-
-/// Calculate height needed for plan panel.
-fn plan_panel_height(plan_text: &str) -> u16 {
-    let lines = plan_text.lines().count() as u16;
-    (lines + 4).min(20).max(5)
 }
 
 /// Truncate a user message to a short session name (max ~50 chars, no newlines).
@@ -1463,9 +1401,6 @@ fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::ToggleCollapseLatest
         | AppEvent::TodosUpdated(_)
         | AppEvent::TurnStarted { .. }
-        | AppEvent::PlanGenerated { .. }
-        | AppEvent::PlanApproved
-        | AppEvent::PlanRejected
         | AppEvent::ConfigChanged(_) => None,
     }
 }
