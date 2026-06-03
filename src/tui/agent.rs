@@ -138,51 +138,6 @@ impl AgentLoop {
 
             llm_rounds += 1;
 
-            if self.plan_mode {
-                let confirmation = "\n\n---\nPlan generated. Reply with **execute** to proceed, or describe any changes you'd like.";
-                if let Some(ref planner) = self.planner_client {
-                    match self.plan_with_model(planner, &messages).await {
-                        Ok(plan) => {
-                            let _ = self.event_tx.send(AppEvent::ContentDelta(plan.clone()));
-                            let _ = self.event_tx.send(AppEvent::ContentDelta(confirmation.to_string()));
-                            let _ = self.event_tx.send(AppEvent::StreamDone { finish_reason: "stop".to_string() });
-                            {
-                                let mut history = self.conversation_history.lock().await;
-                                history.push(ChatMessage {
-                                    role: "assistant".to_string(),
-                                    content: Some(format!("{}{}", plan, confirmation)),
-                                    reasoning_content: None,
-                                    tool_calls: None,
-                                    tool_call_id: None,
-                                });
-                            }
-                        }
-                        Err(e) => {
-                            let _ = self.event_tx.send(AppEvent::StreamError(e.clone()));
-                            return Err(e);
-                        }
-                    }
-                } else {
-                    let _ = self.event_tx.send(AppEvent::ContentDelta(confirmation.to_string()));
-                    if !result.content.is_empty() {
-                        let plan = format!("{}{}", result.content, confirmation);
-                        let _ = self.event_tx.send(AppEvent::StreamDone { finish_reason: result.finish_reason.clone() });
-                        {
-                            let mut history = self.conversation_history.lock().await;
-                            history.push(ChatMessage {
-                                role: "assistant".to_string(),
-                                content: Some(plan),
-                                reasoning_content: Some(result.reasoning_content.clone()),
-                                tool_calls: None,
-                                tool_call_id: None,
-                            });
-                        }
-                    }
-                }
-                let _ = self.event_tx.send(AppEvent::SaveSession);
-                return Ok(());
-            }
-
             if result.has_tool_calls && !result.tool_calls.is_empty() {
                 let assistant_msg = StreamProcessor::build_assistant_message(
                     result.content,
@@ -297,6 +252,51 @@ impl AgentLoop {
 
                 let _ = self.event_tx.send(AppEvent::SaveSession);
                 continue;
+            }
+
+            if self.plan_mode {
+                let confirmation = "\n\n---\nPlan generated. Reply with **execute** to proceed, or describe any changes you'd like.";
+                if let Some(ref planner) = self.planner_client {
+                    let _ = self.event_tx.send(AppEvent::ContentDelta("(generating plan)...".to_string()));
+                    match self.plan_with_model(planner, &messages).await {
+                        Ok(plan) => {
+                            let _ = self.event_tx.send(AppEvent::ContentDelta(plan.clone()));
+                            let _ = self.event_tx.send(AppEvent::ContentDelta(confirmation.to_string()));
+                            let _ = self.event_tx.send(AppEvent::StreamDone { finish_reason: "stop".to_string() });
+                            {
+                                let mut history = self.conversation_history.lock().await;
+                                history.push(ChatMessage {
+                                    role: "assistant".to_string(),
+                                    content: Some(format!("{}{}", plan, confirmation)),
+                                    reasoning_content: None,
+                                    tool_calls: None,
+                                    tool_call_id: None,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            let _ = self.event_tx.send(AppEvent::StreamError(e.clone()));
+                            return Err(e);
+                        }
+                    }
+                } else {
+                    // Content already streamed via ContentDelta during stream_with_retry.
+                    // Just append confirmation prompt and finish.
+                    let _ = self.event_tx.send(AppEvent::ContentDelta(confirmation.to_string()));
+                    {
+                        let mut history = self.conversation_history.lock().await;
+                        history.push(ChatMessage {
+                            role: "assistant".to_string(),
+                            content: Some(format!("{}{}", result.content, confirmation)),
+                            reasoning_content: Some(result.reasoning_content.clone()),
+                            tool_calls: None,
+                            tool_call_id: None,
+                        });
+                    }
+                    let _ = self.event_tx.send(AppEvent::StreamDone { finish_reason: result.finish_reason.clone() });
+                }
+                let _ = self.event_tx.send(AppEvent::SaveSession);
+                return Ok(());
             }
 
             if !result.content.is_empty() {
