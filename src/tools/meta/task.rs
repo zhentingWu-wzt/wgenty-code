@@ -21,7 +21,7 @@ use std::sync::Arc;
 pub struct TaskTool {
     settings: Settings,
     tool_registry: std::sync::Weak<crate::tools::ToolRegistry>,
-    background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
+    _background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
     /// Tracks currently running subagents to enforce max_concurrent limit.
     active_count: Arc<AtomicUsize>,
 }
@@ -30,12 +30,12 @@ impl TaskTool {
     pub fn new(
         settings: Settings,
         tool_registry: std::sync::Weak<crate::tools::ToolRegistry>,
-        background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
+        _background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
     ) -> Self {
         Self {
             settings,
             tool_registry,
-            background_manager,
+            _background_manager,
             active_count: Arc::new(AtomicUsize::new(0)),
         }
     }

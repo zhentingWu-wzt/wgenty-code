@@ -33,7 +33,6 @@ pub fn render(
         if msg.role == MessageRole::User {
             add_turn_separator(&mut lines, area.width);
         } else if matches!(prev_role, Some(MessageRole::Tool)) && msg.role == MessageRole::Assistant {
-            // Within-turn: tool results → new thinking round
             add_inline_separator(&mut lines, area.width);
         }
         lines.extend(message_to_lines(msg, area.width));
@@ -142,7 +141,7 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
                     text,
                     Style::default().fg(TOOL_COLOR),
                 )])]
-            } else {
+            } else if msg.tool_collapsed {
                 // ToolResult: codex-style tree display
                 let name = msg.tool_name.as_deref().unwrap_or("Tool").to_string();
                 let verb = tool_verb(&name).to_string();
@@ -205,6 +204,17 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
                 }
                 lines.push(Line::raw(""));
                 lines
+            } else {
+                // ToolResult — content already formatted by format_tool_result
+                msg.content
+                    .lines()
+                    .map(|line| {
+                        Line::from(Span::styled(
+                            line.to_string(),
+                            Style::default().fg(DIM_COLOR),
+                        ))
+                    })
+                    .collect()
             }
         }
         MessageRole::System => {
@@ -356,9 +366,8 @@ fn render_collapsed(
     prefix_color: Color,
     max_w: usize,
 ) {
-    let preview_lines: Vec<&str> = content.lines().take(3).collect();
     let total_lines = content.lines().count();
-    for line in &preview_lines {
+    for line in content.lines().take(3) {
         push_wrapped(lines_buf, line, prefix, prefix_color, DIM_COLOR, max_w);
     }
     let indicator = format!("   ... ({} lines total, collapsed)", total_lines);
@@ -376,6 +385,9 @@ fn push_wrapped(
     text_color: Color,
     max_w: usize,
 ) {
+    let prefix_len = prefix.chars().count();
+    let content_w = max_w.saturating_sub(prefix_len);
+
     if text.is_empty() {
         lines.push(Line::from(Span::styled(
             prefix.to_string(),
@@ -384,15 +396,39 @@ fn push_wrapped(
         return;
     }
 
-    let prefix_width = prefix.chars().count();
-    let wrap_width = max_w.saturating_sub(prefix_width).max(1);
-
     let prefix_owned = prefix.to_string();
-    let wrapped = textwrap::wrap(text, textwrap::Options::new(wrap_width));
-    for line in wrapped {
+    let chars: Vec<char> = text.chars().collect();
+    let mut start = 0;
+
+    while start < chars.len() {
+        let end = (start + content_w).min(chars.len());
+        let end = if end < chars.len() {
+            let mut break_at = end;
+            for i in (start..end).rev() {
+                if chars[i] == ' ' {
+                    break_at = i;
+                    break;
+                }
+            }
+            if break_at == start {
+                end
+            } else {
+                break_at
+            }
+        } else {
+            end
+        };
+
+        let chunk: String = chars[start..end].iter().collect();
         lines.push(Line::from(vec![
             Span::styled(prefix_owned.clone(), Style::default().fg(prefix_color)),
-            Span::styled(line.into_owned(), Style::default().fg(text_color)),
+            Span::styled(chunk, Style::default().fg(text_color)),
         ]));
+
+        start = if end < chars.len() && chars[end] == ' ' {
+            end + 1
+        } else {
+            end
+        };
     }
 }
