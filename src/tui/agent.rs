@@ -106,11 +106,12 @@ impl AgentLoop {
             history.push(ChatMessage::user(&input));
         }
 
+        self.run_agent_loop().await
+    }
+
+    /// Core LLM loop: stream, handle tools, compaction, etc.
+    async fn run_agent_loop(&mut self) -> Result<(), String> {
         let mut llm_rounds = 0;
-        // Soft limit: model-driven exit with tool-use rounds as safety valve.
-        // Codex uses no hard limit — the model declares when it's done via
-        // finish_reason != "tool_calls". Here we keep a generous ceiling (50)
-        // to catch runaway loops without cutting off legitimate tasks.
         const MAX_LLM_ROUNDS: usize = 50;
         loop {
             if llm_rounds >= MAX_LLM_ROUNDS {
@@ -138,40 +139,51 @@ impl AgentLoop {
             llm_rounds += 1;
 
             if self.plan_mode {
-                // Plan mode: if a dedicated planner model is configured,
-                // use it instead of the main model for plan generation.
-                let plan_content = if let Some(ref planner) = self.planner_client {
-                    let _ = self.event_tx.send(AppEvent::ContentDelta(
-                        "(using planner model)...".to_string()
-                    ));
+                let confirmation = "\n\n---\nPlan generated. Reply with **execute** to proceed, or describe any changes you'd like.";
+                if let Some(ref planner) = self.planner_client {
                     match self.plan_with_model(planner, &messages).await {
-                        Ok(plan) => plan,
+                        Ok(plan) => {
+                            let _ = self.event_tx.send(AppEvent::ContentDelta(plan.clone()));
+                            let _ = self.event_tx.send(AppEvent::ContentDelta(confirmation.to_string()));
+                            let _ = self.event_tx.send(AppEvent::StreamDone { finish_reason: "stop".to_string() });
+                            {
+                                let mut history = self.conversation_history.lock().await;
+                                history.push(ChatMessage {
+                                    role: "assistant".to_string(),
+                                    content: Some(format!("{}{}", plan, confirmation)),
+                                    reasoning_content: None,
+                                    tool_calls: None,
+                                    tool_call_id: None,
+                                });
+                            }
+                        }
                         Err(e) => {
                             let _ = self.event_tx.send(AppEvent::StreamError(e.clone()));
                             return Err(e);
                         }
                     }
                 } else {
-                    result.content.clone()
-                };
-                let plan = plan_content;
-                let _ = self.event_tx.send(AppEvent::StreamDone { finish_reason: result.finish_reason.clone() });
-                if !plan.is_empty() {
-                    let mut history = self.conversation_history.lock().await;
-                    history.push(ChatMessage {
-                        role: "assistant".to_string(),
-                        content: Some(plan.clone()),
-                        reasoning_content: Some(result.reasoning_content.clone()),
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
+                    let _ = self.event_tx.send(AppEvent::ContentDelta(confirmation.to_string()));
+                    if !result.content.is_empty() {
+                        let plan = format!("{}{}", result.content, confirmation);
+                        let _ = self.event_tx.send(AppEvent::StreamDone { finish_reason: result.finish_reason.clone() });
+                        {
+                            let mut history = self.conversation_history.lock().await;
+                            history.push(ChatMessage {
+                                role: "assistant".to_string(),
+                                content: Some(plan),
+                                reasoning_content: Some(result.reasoning_content.clone()),
+                                tool_calls: None,
+                                tool_call_id: None,
+                            });
+                        }
+                    }
                 }
-                let _ = self.event_tx.send(AppEvent::PlanGenerated { plan: plan.clone() });
+                let _ = self.event_tx.send(AppEvent::SaveSession);
                 return Ok(());
             }
 
             if result.has_tool_calls && !result.tool_calls.is_empty() {
-                // Build and push assistant message with tool calls
                 let assistant_msg = StreamProcessor::build_assistant_message(
                     result.content,
                     result.reasoning_content,
@@ -187,7 +199,6 @@ impl AgentLoop {
                     let args: serde_json::Value =
                         serde_json::from_str(&tc.function.arguments).unwrap_or_default();
 
-                    // Handle ask_user_question locally
                     if tc.function.name == "ask_user_question" {
                         let tool_result = self.handle_ask_user_question(&args).await;
                         {
@@ -197,7 +208,6 @@ impl AgentLoop {
                         continue;
                     }
 
-                    // Handle compact locally
                     if tc.function.name == "compact" {
                         let _ = self.event_tx.send(AppEvent::ToolStart {
                             name: "compact".to_string(),
@@ -217,7 +227,6 @@ impl AgentLoop {
                         continue;
                     }
 
-                    // Track TodoWrite usage for nag reminder
                     if tc.function.name == "TodoWrite" {
                         used_todo = true;
                     }
@@ -227,7 +236,6 @@ impl AgentLoop {
                         args: args.clone(),
                     });
 
-                    // Per-tool timeout: subagents get 5min, others get 2min
                     let tool_timeout = if tc.function.name == "task" {
                         Duration::from_secs(300)
                     } else {
@@ -269,7 +277,6 @@ impl AgentLoop {
                     }
                 }
 
-                // s03: nag reminder — inject after 3 rounds without TodoWrite
                 self.rounds_since_todo = if used_todo {
                     0
                 } else {
@@ -289,11 +296,9 @@ impl AgentLoop {
                 }
 
                 let _ = self.event_tx.send(AppEvent::SaveSession);
-                continue; // Continue the tool call loop
+                continue;
             }
 
-            // Model decided it's done: finish_reason != "tool_calls".
-            // This is the primary exit path — no hard round limit needed.
             if !result.content.is_empty() {
                 let reasoning = if result.reasoning_content.is_empty() {
                     None
@@ -318,8 +323,6 @@ impl AgentLoop {
             let _ = self.event_tx.send(AppEvent::SaveSession);
             return Ok(());
         }
-        
-        // Unreachable: loop header handles max rounds exit
     }
 
     /// Stream with retry logic. Retries up to MAX_RETRIES on network/stream errors.

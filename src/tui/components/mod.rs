@@ -1,7 +1,7 @@
 pub mod chat;
 pub mod input;
 pub mod permission;
-pub mod plan_panel;
+
 pub mod question;
 pub mod session;
 pub mod status;

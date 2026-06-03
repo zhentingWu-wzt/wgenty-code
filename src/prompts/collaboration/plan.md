@@ -24,4 +24,9 @@ Keep asking until you can state: goal + success criteria, audience, in/out of sc
 Once intent is stable, keep asking until the spec is decision complete: approach, interfaces, data flow, edge cases, testing, rollout.
 
 ## Finalization
-Only output the final plan when it is decision complete. Wrap it in a `<proposed_plan>` block. The plan must include: title, summary, key changes, test plan, assumptions.
+
+Once the plan is decision complete, present it to the user. End your response by asking whether to proceed with execution or if the user would like any modifications. For example:
+
+"---\nWould you like me to execute this plan, or would you prefer any changes?"
+
+Do NOT start executing — wait for the user's response.
