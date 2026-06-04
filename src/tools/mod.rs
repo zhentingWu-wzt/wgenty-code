@@ -76,6 +76,7 @@ impl ToolRegistry {
         registry.register(Box::new(checkpoint::UndoTool::new(checkpoint_manager.clone())));
         // Meta tools
         registry.register(Box::new(meta::ask_user_question::AskUserQuestionTool::new()));
+        registry.register(Box::new(meta::update_plan::UpdatePlanTool::new()));
         // Filesystem tools
         registry.register(Box::new(filesystem::apply_patch::ApplyPatchTool::new()));
         registry.register(Box::new(filesystem::file_read::FileReadTool::new()));
@@ -193,6 +194,6 @@ pub use filesystem::{
 };
 pub use meta::{
     AskUserQuestionTool, CompactTool, LoadSkillTool, LspTool, NoteEditTool, TaskTool,
-    TeamMessageTool, ThinkTool,
+    TeamMessageTool, ThinkTool, UpdatePlanTool,
 };
 pub use search::{GlobTool, GrepTool, SearchTool, WebFetchTool, WebSearchTool};

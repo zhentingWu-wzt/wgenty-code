@@ -163,6 +163,18 @@ impl AgentLoop {
                         continue;
                     }
 
+                    if tc.function.name == "update_plan" {
+                        let _ = self.event_tx.send(AppEvent::PlanUpdate(args.clone()));
+                        {
+                            let mut history = self.conversation_history.lock().await;
+                            history.push(ChatMessage::tool(
+                                &tc.id,
+                                serde_json::json!({"success":true,"message":"Plan updated"}).to_string(),
+                            ));
+                        }
+                        continue;
+                    }
+
                     if tc.function.name == "compact" {
                         let _ = self.event_tx.send(AppEvent::ToolStart {
                             name: "compact".to_string(),

@@ -15,3 +15,5 @@ pub use note_edit::NoteEditTool;
 pub use task::TaskTool;
 pub use team_message::TeamMessageTool;
 pub use think::ThinkTool;
+pub mod update_plan;
+pub use update_plan::UpdatePlanTool;

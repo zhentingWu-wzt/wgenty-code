@@ -1,6 +1,32 @@
 //! Project utilities
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Read WGENTY.md sections from project root (split by `---`).
+pub fn read_wgenty_md_sections(project_root: &Path) -> Vec<String> {
+    read_md_sections(project_root, "WGENTY.md")
+}
+
+/// Read AGENTS.md sections from project root (split by `---`).
+pub fn read_agents_md_sections(project_root: &Path) -> Vec<String> {
+    read_md_sections(project_root, "AGENTS.md")
+}
+
+fn read_md_sections(root: &Path, filename: &str) -> Vec<String> {
+    let path = root.join(filename);
+    if !path.exists() {
+        return Vec::new();
+    }
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    content
+        .split("\n---\n")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
 
 /// Initialize a new project
 pub fn init_project(name: &str) -> anyhow::Result<()> {
