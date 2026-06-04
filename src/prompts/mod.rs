@@ -40,6 +40,8 @@ pub struct PromptContext {
     pub agents_md_sections: Vec<String>,
     /// Skills discoverable by the agent. Layer 1: name + description only.
     pub skills_inventory: Vec<SkillEntry>,
+    /// Sections from the project's WGENTY.md (split by `---`). Layer 8.
+    pub wgenty_md_sections: Vec<String>,
 }
 
 impl PromptContext {
@@ -52,6 +54,7 @@ impl PromptContext {
             collaboration_mode: None,
             agents_md_sections: Vec::new(),
             skills_inventory: Vec::new(),
+            wgenty_md_sections: Vec::new(),
         }
     }
 
@@ -82,6 +85,16 @@ impl PromptContext {
 
     pub fn with_skills(mut self, skills: Vec<SkillEntry>) -> Self {
         self.skills_inventory = skills;
+        self
+    }
+
+    pub fn with_wgenty_md(mut self, sections: Vec<String>) -> Self {
+        self.wgenty_md_sections = sections;
+        self
+    }
+
+    pub fn with_agents_md(mut self, sections: Vec<String>) -> Self {
+        self.agents_md_sections = sections;
         self
     }
 }
@@ -146,6 +159,15 @@ The following skills are available. Use the `load_skill` tool to read a skill's 
         system_messages.push(ChatMessage::system(format!(
             "# AGENTS.md\n\n{}",
             agents_text
+        )));
+    }
+
+    // ── Layer 8: WGENTY.md 项目事实 ──────────────────────────────────
+    if !context.wgenty_md_sections.is_empty() {
+        let wgenty_text = context.wgenty_md_sections.join("\n\n");
+        system_messages.push(ChatMessage::system(format!(
+            "# WGENTY.md — 项目规则与约定\n\n{}",
+            wgenty_text
         )));
     }
 
@@ -214,6 +236,11 @@ fn build_environment_layer(ctx: &PromptContext) -> String {
         cwd = ctx.cwd,
         shell = ctx.shell,
     )
+}
+
+/// Return the /init command prompt text for LLM-based codebase analysis.
+pub fn get_init_prompt() -> &'static str {
+    include_str!("init_instructions.md")
 }
 
 #[cfg(test)]

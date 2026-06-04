@@ -126,21 +126,7 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
         }
         MessageRole::Tool => {
             if msg.content.is_empty() {
-                // ToolStart placeholder: compact running indicator
-                let name = msg.tool_name.as_deref().unwrap_or("tool").to_string();
-                let verb = tool_verb(&name).to_string();
-                let detail = msg
-                    .tool_args
-                    .as_ref()
-                    .map(|a| tool_label(&name, a))
-                    .filter(|s| !s.is_empty())
-                    .map(|s| format!(": {}", s))
-                    .unwrap_or_default();
-                let text = format!("\u{2699} {} {}{}", verb, name, detail);
-                vec![Line::from(vec![Span::styled(
-                    text,
-                    Style::default().fg(TOOL_COLOR),
-                )])]
+                Vec::new()
             } else if msg.tool_collapsed {
                 // ToolResult: codex-style tree display
                 let name = msg.tool_name.as_deref().unwrap_or("Tool").to_string();
