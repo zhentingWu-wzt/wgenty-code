@@ -50,6 +50,7 @@ use crate::tui::components::permission::PermissionState;
 use crate::tui::components::question::QuestionState;
 
 use crate::tui::components::session::SessionState;
+use crate::tui::components::plan_panel::PlanPanelState;
 use crate::tui::components::task_panel::TaskPanelState;
 use crate::state::agent_phase::{AgentPhase, TurnId, TurnAbortReason};
 
@@ -137,6 +138,8 @@ pub enum AppEvent {
     MouseScrolled(i16),
     /// Ctrl+C pressed (double-press to quit)
     CtrlCPressed,
+    /// Structured plan updated via update_plan tool
+    PlanUpdate(serde_json::Value),
     /// Sessions loaded from daemon
     SessionListLoaded(Vec<SessionInfo>),
     HistoryLoaded(Vec<crate::api::ChatMessage>),
@@ -215,6 +218,8 @@ pub struct App {
     pub question_state: QuestionState,
     pub session_state: SessionState,
     pub task_panel: TaskPanelState,
+    /// Structured plan panel state (Codex-style update_plan tool)
+    pub plan_panel_state: PlanPanelState,
     /// Shared settings handle — updated by the config watcher on file change.
     pub settings_lock: crate::config::watcher::SettingsHandle,
 
@@ -270,6 +275,14 @@ impl App {
         }
         let prompt_ctx = prompt_ctx.with_skills(skill_inventory);
 
+        // Load WGENTY.md and AGENTS.md sections from project root
+        let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let wgenty_sections = crate::utils::project::read_wgenty_md_sections(&project_root);
+        let agents_sections = crate::utils::project::read_agents_md_sections(&project_root);
+        let prompt_ctx = prompt_ctx
+            .with_wgenty_md(wgenty_sections)
+            .with_agents_md(agents_sections);
+
         let assembled = prompts::assemble_instructions(&settings, &prompt_ctx);
         let system_messages = assembled.system_messages;
         let conversation_history = Arc::new(TokioMutex::new(system_messages.clone()));
@@ -299,6 +312,7 @@ impl App {
             question_state: QuestionState::new(),
             session_state: SessionState::new(),
             task_panel: TaskPanelState::new(),
+            plan_panel_state: PlanPanelState::new(),
 
 
             last_ctrl_c: None,
@@ -439,7 +453,7 @@ impl App {
                         content: msg.to_string(),
                         tool_name: None,
                         content_collapsed: false,
-                        tool_collapsed: false,
+                        tool_collapsed: true,
                         tool_args: None,
                         diff_data: None,
                     });
@@ -699,7 +713,7 @@ impl App {
                         tool_name: None,
                         tool_args: None,
                         content_collapsed: false,
-                        tool_collapsed: false,
+                        tool_collapsed: true,
                         diff_data: None,
                     });
                 }
@@ -719,7 +733,7 @@ impl App {
                     tool_name: Some(name.clone()),
                             tool_args: Some(args.clone()),
                     content_collapsed: false,
-                    tool_collapsed: false,
+                    tool_collapsed: true,
                     diff_data: None,
                 });
             }
@@ -732,7 +746,7 @@ impl App {
                         && last.tool_name.as_deref() == Some(&name)
                     {
                         last.content = format_tool_result(&name, &args, &content);
-                        last.tool_collapsed = false;
+                        last.tool_collapsed = true;
                         last.diff_data = diff_data;
                     } else {
                         let formatted = format_tool_result(&name, &args, &content);
@@ -742,7 +756,7 @@ impl App {
                             tool_name: Some(name),
                             tool_args: Some(args),
                             content_collapsed: false,
-                            tool_collapsed: false,
+                            tool_collapsed: true,
                             diff_data,
                         });
                     }
@@ -754,7 +768,7 @@ impl App {
                     content: format!("⚠ {}", msg),
                     tool_name: None,
                     content_collapsed: false,
-                    tool_collapsed: false,
+                    tool_collapsed: true,
                     tool_args: None,
                     diff_data: None,
                 });
@@ -776,6 +790,12 @@ impl App {
                     .with_sandbox("workspace-write")
                     .with_approval("never")
                     .with_collaboration(new_settings.collaboration_mode.clone().unwrap_or_default());
+                let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let wgenty_sections = crate::utils::project::read_wgenty_md_sections(&project_root);
+                let agents_sections = crate::utils::project::read_agents_md_sections(&project_root);
+                let prompt_ctx = prompt_ctx
+                    .with_wgenty_md(wgenty_sections)
+                    .with_agents_md(agents_sections);
                 let assembled = prompts::assemble_instructions(&new_settings, &prompt_ctx);
                 self.assembled_system_messages = assembled.system_messages;
                 self.committed_messages.push(UIMessage {
@@ -783,7 +803,7 @@ impl App {
                     content: "Settings reloaded".to_string(),
                     tool_name: None,
                     content_collapsed: false,
-                    tool_collapsed: false,
+                    tool_collapsed: true,
                     tool_args: None,
                     diff_data: None,
                 });
@@ -899,6 +919,19 @@ impl App {
                 }
                 self.last_ctrl_c = Some(now);
             }
+            AppEvent::PlanUpdate(value) => {
+                use crate::tui::components::plan_panel::PlanItem;
+                use crate::tui::components::plan_panel::PlanStatus;
+                if let Some(plan_array) = value.get("plan").and_then(|p| p.as_array()) {
+                    let items: Vec<PlanItem> = plan_array.iter().filter_map(|v| {
+                        let step = v.get("step")?.as_str()?.to_string();
+                        let status_str = v.get("status")?.as_str().unwrap_or("pending");
+                        let status = PlanStatus::from_str(status_str);
+                        Some(PlanItem { step, status })
+                    }).collect();
+                    self.plan_panel_state.update(items);
+                }
+            }
             AppEvent::ToggleTaskPanel => {
                 self.task_panel.toggle();
                 // Fetch todos from daemon if opening
@@ -1009,6 +1042,8 @@ impl App {
             components::question::render(f, layout[panel_idx], &self.question_state);
         } else if self.permission_state.visible {
             components::permission::render(f, layout[panel_idx], &self.permission_state);
+        } else if self.plan_panel_state.visible {
+            components::plan_panel::render(f, &self.plan_panel_state, layout[panel_idx]);
         }
         self.render_status(f, layout[status_idx]);
         if has_pending {
@@ -1128,6 +1163,22 @@ impl App {
                 diff_data: None,
             });
             self.pending_inputs.push_back("undo the most recent operation".to_string());
+            if self.current_turn_handle.is_none() {
+                self.start_next_turn();
+            }
+            return;
+        }
+        if text.trim() == "/init" {
+            self.committed_messages.push(UIMessage {
+                role: MessageRole::System,
+                content: "🔄 Running /init — 正在分析代码库以生成 WGENTY.md 和 AGENTS.md...".to_string(),
+                tool_name: None,
+                content_collapsed: false,
+                tool_collapsed: false,
+                tool_args: None,
+                diff_data: None,
+            });
+            self.pending_inputs.push_back(crate::prompts::get_init_prompt().to_string());
             if self.current_turn_handle.is_none() {
                 self.start_next_turn();
             }
@@ -1286,7 +1337,7 @@ fn compute_collapse_state(role: &MessageRole, content: &str) -> (bool, bool) {
             (line_count > 50, false)
         }
         MessageRole::Tool => {
-            (false, line_count > 10)
+            (false, true)
         }
         _ => (false, false),
     }
@@ -1395,6 +1446,7 @@ fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::CtrlCPressed
         | AppEvent::SessionListLoaded(_)
         | AppEvent::HistoryLoaded(_)
+        | AppEvent::PlanUpdate(_)
         | AppEvent::SaveSession
         | AppEvent::DeleteSession(_)
         | AppEvent::ToggleCollapseAll
