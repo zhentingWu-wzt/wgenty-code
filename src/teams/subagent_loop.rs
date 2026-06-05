@@ -88,8 +88,17 @@ pub async fn run_subagent_loop(
         // Execute each tool call and push results back as tool-result messages.
         for tool_call in tool_calls.unwrap() {
             let tool_name = &tool_call.function.name;
-            let args: serde_json::Value =
-                serde_json::from_str(&tool_call.function.arguments).unwrap_or_default();
+            let (args, parse_err) = crate::utils::lenient_json::parse_tool_args_lenient(
+                &tool_call.function.arguments,
+                tool_name,
+            );
+            if let Some(ref e) = parse_err {
+                tracing::warn!(
+                    tool = %tool_name,
+                    error = %e,
+                    "Subagent: tool call arguments parse issue (lenient recovery attempted)"
+                );
+            }
 
             let result = tool_registry.execute(tool_name, args).await;
 

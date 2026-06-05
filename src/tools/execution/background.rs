@@ -99,6 +99,25 @@ impl BackgroundManager {
         task_id
     }
 
+    /// Push a subagent result into the completed queue (for background subagents).
+    pub async fn push_subagent_result(&self, description: &str, stdout: &str, success: bool) {
+        let mut id_lock = self.next_id.lock().await;
+        let task_id = format!("subagent_{}", *id_lock);
+        *id_lock += 1;
+        drop(id_lock);
+
+        let mut results = self.results.lock().await;
+        results.push(BackgroundResult {
+            task_id,
+            result_type: "subagent".to_string(),
+            command: description.to_string(),
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+            exit_code: if success { Some(0) } else { Some(1) },
+            success,
+        });
+    }
+
     /// Drain all completed results from the queue.
     pub async fn drain_results(&self) -> Vec<BackgroundResult> {
         let mut results = self.results.lock().await;

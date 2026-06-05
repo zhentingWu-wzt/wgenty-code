@@ -101,6 +101,8 @@ pub enum AppEvent {
     ReasoningDelta(String),
     /// Streaming completed
     StreamDone { finish_reason: String },
+    /// LLM started generating tool calls (bridge between text and execution)
+    PreparingTools,
     /// A tool call started
     ToolStart { name: String, args: serde_json::Value },
     /// A tool result arrived
@@ -279,6 +281,22 @@ impl App {
         let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let wgenty_sections = crate::utils::project::read_wgenty_md_sections(&project_root);
         let agents_sections = crate::utils::project::read_agents_md_sections(&project_root);
+
+        // Warn if WGENTY.md + AGENTS.md exceed token budget (fires once per session)
+        let wgenty_tokens: usize = wgenty_sections.iter().map(|s| crate::utils::estimate_tokens(s)).sum();
+        let agents_tokens: usize = agents_sections.iter().map(|s| crate::utils::estimate_tokens(s)).sum();
+        let total_md_tokens = wgenty_tokens + agents_tokens;
+        if total_md_tokens > 2000 {
+            tracing::warn!(
+                wgenty_tokens,
+                agents_tokens,
+                total = total_md_tokens,
+                "WGENTY.md + AGENTS.md sections estimate ~{} tokens ({} + {}). \
+                 Consider trimming to keep session startup lean.",
+                total_md_tokens, wgenty_tokens, agents_tokens,
+            );
+        }
+
         let prompt_ctx = prompt_ctx
             .with_wgenty_md(wgenty_sections)
             .with_agents_md(agents_sections);
@@ -695,6 +713,7 @@ impl App {
             AppEvent::Submit(text) => {
                 self.submit_input(text);
             }
+            AppEvent::PreparingTools => { /* phase transitions automatically */ }
             AppEvent::ContentDelta(text) => {
                 self.streaming_content.push_str(&text);
                 self.streaming_active = true;
@@ -1178,9 +1197,9 @@ impl App {
                 tool_args: None,
                 diff_data: None,
             });
-            self.pending_inputs.push_back(crate::prompts::get_init_prompt().to_string());
             if self.current_turn_handle.is_none() {
-                self.start_next_turn();
+                let init_prompt = crate::prompts::get_init_prompt().to_string();
+                self.spawn_agent_turn(init_prompt, true);
             }
             return;
         }
@@ -1214,49 +1233,65 @@ impl App {
                 let name = truncate_session_name(&text);
                 self.session_name = name;
             }
-            self.phase = AgentPhase::Thinking;
-            let turn_id = TurnId::new();
-            self.current_turn_id = Some(turn_id.clone());
-            let _ = self.event_tx.send(AppEvent::TurnStarted { turn_id: turn_id.clone() });
-            let history = self.conversation_history.clone();
-            let client = self.daemon_client.clone();
-            let event_tx = self.event_tx.clone();
-            let session_id = self.session_id.clone();
-            let sys_msgs = self.assembled_system_messages.clone();
-            let plan_mode = self.mode == AgentMode::PlanMode;
-            // Build planner ApiClient if planner_model is configured
-            let planner_client = {
-                let s = self.settings_lock.read().unwrap();
-                if let Some(ref pm) = s.planner_model {
-                    let mut planner_settings = s.clone();
-                    planner_settings.model = pm.clone();
-                    if let Some(ref url) = s.planner_model_base_url {
-                        planner_settings.api.base_url = url.clone();
-                    }
-                    if let Some(ref key) = s.planner_model_api_key {
-                        planner_settings.api.api_key = Some(key.clone());
-                    }
-                    Some(crate::api::ApiClient::new(planner_settings))
-                } else {
-                    None
-                }
-            };
-            self.current_turn_handle = Some(tokio::spawn(async move {
-                let mut agent = AgentLoop::new(client, event_tx.clone(), session_id, history, sys_msgs, plan_mode, planner_client);
-                let result = agent.process_input(text).await;
-                if let Err(ref e) = result {
-                    let reason = if e.contains("timed out") {
-                        TurnAbortReason::TimedOut
-                    } else if e.contains("max rounds") {
-                        TurnAbortReason::MaxRoundsExceeded
-                    } else {
-                        TurnAbortReason::StreamError
-                    };
-                    let _ = event_tx.send(AppEvent::TurnAborted { reason });
-                }
-                let _ = event_tx.send(AppEvent::TurnComplete);
-            }));
+            self.spawn_agent_turn(text, false);
         }
+    }
+
+    /// Spawn an agent turn with `input_text` as the initial user message.
+    /// When `hide_input` is true, the input is not displayed as a user message
+    /// in the chat (used for internal prompts like /init).
+    fn spawn_agent_turn(&mut self, input_text: String, hide_input: bool) {
+        if hide_input {
+            // Auto-name session from a short label instead of the full prompt
+            if self.session_name == "New Session" {
+                self.session_name = "Init Project".to_string();
+            }
+        } else if self.session_name == "New Session" {
+            let name = truncate_session_name(&input_text);
+            self.session_name = name;
+        }
+        self.phase = AgentPhase::Thinking;
+        let turn_id = TurnId::new();
+        self.current_turn_id = Some(turn_id.clone());
+        let _ = self.event_tx.send(AppEvent::TurnStarted { turn_id: turn_id.clone() });
+        let history = self.conversation_history.clone();
+        let client = self.daemon_client.clone();
+        let event_tx = self.event_tx.clone();
+        let session_id = self.session_id.clone();
+        let sys_msgs = self.assembled_system_messages.clone();
+        let plan_mode = self.mode == AgentMode::PlanMode;
+        // Build planner ApiClient if planner_model is configured
+        let planner_client = {
+            let s = self.settings_lock.read().unwrap();
+            if let Some(ref pm) = s.planner_model {
+                let mut planner_settings = s.clone();
+                planner_settings.model = pm.clone();
+                if let Some(ref url) = s.planner_model_base_url {
+                    planner_settings.api.base_url = url.clone();
+                }
+                if let Some(ref key) = s.planner_model_api_key {
+                    planner_settings.api.api_key = Some(key.clone());
+                }
+                Some(crate::api::ApiClient::new(planner_settings))
+            } else {
+                None
+            }
+        };
+        self.current_turn_handle = Some(tokio::spawn(async move {
+            let mut agent = AgentLoop::new(client, event_tx.clone(), session_id, history, sys_msgs, plan_mode, planner_client);
+            let result = agent.process_input(input_text).await;
+            if let Err(ref e) = result {
+                let reason = if e.contains("timed out") {
+                    TurnAbortReason::TimedOut
+                } else if e.contains("max rounds") {
+                    TurnAbortReason::MaxRoundsExceeded
+                } else {
+                    TurnAbortReason::StreamError
+                };
+                let _ = event_tx.send(AppEvent::TurnAborted { reason });
+            }
+            let _ = event_tx.send(AppEvent::TurnComplete);
+        }));
     }
     /// Cancel the current turn and flush all queued input.
     fn cancel_current_turn(&mut self) {
@@ -1407,6 +1442,7 @@ fn tool_label(name: &str, args: &serde_json::Value) -> String {
 fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
     match event {
         AppEvent::Submit(_) => Some(AgentPhase::Thinking),
+        AppEvent::PreparingTools => Some(AgentPhase::PreparingTools),
         AppEvent::ContentDelta(_) | AppEvent::ReasoningDelta(_) => {
             Some(AgentPhase::StreamingResponse)
         }

@@ -21,7 +21,7 @@ use std::sync::Arc;
 pub struct TaskTool {
     settings: Settings,
     tool_registry: std::sync::Weak<crate::tools::ToolRegistry>,
-    _background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
+    background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
     /// Tracks currently running subagents to enforce max_concurrent limit.
     active_count: Arc<AtomicUsize>,
 }
@@ -30,12 +30,12 @@ impl TaskTool {
     pub fn new(
         settings: Settings,
         tool_registry: std::sync::Weak<crate::tools::ToolRegistry>,
-        _background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
+        background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
     ) -> Self {
         Self {
             settings,
             tool_registry,
-            _background_manager,
+            background_manager,
             active_count: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -93,6 +93,7 @@ impl Tool for TaskTool {
         let subagent_type = input["subagent_type"].as_str().unwrap_or("general-purpose");
         let description = input["description"].as_str().unwrap_or("Subagent task");
         let prompt = input["prompt"].as_str().unwrap_or("");
+        let background = input["background"].as_bool().unwrap_or(false);
 
         // Upgrade the Weak reference to the tool registry.
         let tool_registry = self.tool_registry.upgrade().ok_or_else(|| ToolError {
@@ -202,39 +203,85 @@ impl Tool for TaskTool {
         };
 
         // Run the subagent loop (capped at 30 rounds).
-        let result = {
-            let res = run_subagent_loop(
-            &api_client,
-            &tool_registry,
-            system_prompt,
-            &full_prompt,
-            &allowed_tools,
-            30,
+        if background {
+            // ── Background mode: spawn and return immediately ──────────────
+            let desc = description.to_string();
+            let prompt_owned = full_prompt;
+            let sys_prompt = system_prompt.to_string();
+            let bg = self.background_manager.clone();
+            let active = self.active_count.clone();
+            let reg = tool_registry.clone();
+            let tools = allowed_tools.clone();
+            let api_client_bg = ApiClient::new(self.settings.clone());
+
+            tokio::spawn(async move {
+                let result = run_subagent_loop(
+                    &api_client_bg,
+                    &reg,
+                    &sys_prompt,
+                    &prompt_owned,
+                    &tools,
+                    30,
+                )
+                .await;
+
+                active.fetch_sub(1, Ordering::SeqCst);
+
+                let (success, content) = match result {
+                    Ok(r) => (true, r),
+                    Err(e) => (false, format!("Subagent error: {}", e)),
+                };
+
+                bg.push_subagent_result(&desc, &content, success).await;
+            });
+
+            Ok(ToolOutput {
+                output_type: "text".to_string(),
+                content: format!(
+                    "[Subagent launched in background]\ntype: {}\ndescription: {}\nstatus: running\n\nThe subagent result will be delivered when it completes.",
+                    subagent_type, description
+                ),
+                metadata: {
+                    let mut m = HashMap::new();
+                    m.insert("subagent_type".to_string(), serde_json::json!(subagent_type));
+                    m.insert("description".to_string(), serde_json::json!(description));
+                    m.insert("background".to_string(), serde_json::json!(true));
+                    m
+                },
+            })
+        } else {
+            // ── Synchronous mode: block until complete ─────────────────────
+            let result = run_subagent_loop(
+                &api_client,
+                &tool_registry,
+                system_prompt,
+                &full_prompt,
+                &allowed_tools,
+                30,
             )
             .await;
-            res
-        };
-        self.active_count.fetch_sub(1, Ordering::SeqCst);
+            self.active_count.fetch_sub(1, Ordering::SeqCst);
 
-        match result {
-            Ok(result) => {
-                let mut metadata = HashMap::new();
-                metadata.insert(
-                    "subagent_type".to_string(),
-                    serde_json::json!(subagent_type),
-                );
-                metadata.insert("description".to_string(), serde_json::json!(description));
+            match result {
+                Ok(result) => {
+                    let mut metadata = HashMap::new();
+                    metadata.insert(
+                        "subagent_type".to_string(),
+                        serde_json::json!(subagent_type),
+                    );
+                    metadata.insert("description".to_string(), serde_json::json!(description));
 
-                Ok(ToolOutput {
-                    output_type: "text".to_string(),
-                    content: result,
-                    metadata,
-                })
+                    Ok(ToolOutput {
+                        output_type: "text".to_string(),
+                        content: result,
+                        metadata,
+                    })
+                }
+                Err(e) => Err(ToolError {
+                    message: e,
+                    code: Some("subagent_error".to_string()),
+                }),
             }
-            Err(e) => Err(ToolError {
-                message: e,
-                code: Some("subagent_error".to_string()),
-            }),
         }
     }
 }

@@ -1,1 +1,221 @@
-test
+# WGENTY.md
+
+此文件为 Wgenty Code（claude.ai/code）在此仓库中工作时提供指导。
+
+## 项目元信息
+
+- **名称**: `wgenty_code`
+- **版本**: `0.1.0`
+- **描述**: High-performance Rust implementation of Wgenty Code CLI
+- **语言**: Rust 2021 edition (MSRV 1.75+)
+- **许可证**: MIT
+- **仓库**: https://github.com/lorryjovens-hub/wgenty-code
+
+## 构建与运行
+
+```bash
+cargo build                          # Debug
+cargo build --release                # Release
+cargo run -- repl                    # REPL（默认）
+cargo run -- repl --prompt "分析项目"
+cargo run -- query --prompt "hello"  # 单次查询
+cargo run -- --version / --help
+```
+
+### CLI 子命令
+
+`Repl | Query | Config | Mcp | Plugin | Memory | Voice | Init | Update | Services | Agent | MagicDocs | TeamSync | Skills | Sandbox | StressTest | Daemon`
+
+- **Config**: `show | set <key> <value> | reset`
+- **Mcp**: `add --name <n> [--path] | remove --name | list | restart`
+- **Plugin**: `install | remove | update | enable | disable | search | list`
+- **Memory**: `status | clear | dream | autodream`
+- **Agent**: `--agent-type <explore|plan|general-purpose> --prompt <text>`
+- **Skills**: `list | execute <name> [args...] | search <query>`
+- **Sandbox**: `status | enable | disable`
+- **Daemon**: `--port <port>`（默认 8371）
+
+### Docker
+
+```bash
+docker build -t wgenty-code-rust:latest .
+docker run --rm wgenty-code-rust --version
+docker run -it --rm -v ~/.config/wgenty-code:/home/claude/.config/wgenty-code wgenty-code-rust repl
+```
+
+---
+
+## 测试、Lint 与格式化
+
+```bash
+cargo test                                     # 全部测试
+cargo test --all                               # 所有 target
+cargo test <test_name>                         # 单测过滤
+cargo fmt --check                              # 格式检查（CI 强制）
+cargo fmt                                      # 自动格式化
+cargo clippy -- -D warnings                    # 零 warning（CI 强制）
+cargo clippy --all-targets -- -D warnings
+cargo clippy --fix -- -D warnings              # 自动修复
+```
+
+---
+
+## Feature Flags
+
+```toml
+default = ["gui-egui", "i18n", "daemon"]
+wasm = ["wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys"]
+gui-egui = ["eframe", "egui", "egui_extras"]
+daemon = ["axum", "tower", "tower-http", "tokio-stream"]
+web = ["axum", "tower", "tower-http", "askama"]
+i18n = ["fluent", "fluent-bundle", "unic-langid", "rust-embed"]
+full = ["wasm", "gui-egui", "web", "i18n", "daemon"]
+```
+
+按需构建：`cargo build --release --no-default-features`(纯CLI)，`--features full`(全量)
+
+### 多个二进制目标
+
+| 目标 | 入口 | Required Features |
+|------|------|------------------|
+| `wgenty-code` | `src/main.rs` | 无（default-run） |
+| `wgenty-code-gui` | `src/gui/main.rs` | `gui-egui` |
+| `wgenty-code-web` | `src/web/main.rs` | `web` |
+
+---
+
+## 架构概述
+
+基于 **Harness Component Model**（s01-s12 机制模块）：
+
+```
+前端层 (CLI/TUI/GUI/Web/Daemon)
+  -> Agent Loop (agent/)          s01+s02: 核心循环 + SSE 流
+  -> Prompt Assembly (prompts/)   8 层指令注入
+  -> 业务层
+     tools/        s01: Agent 工具（文件/搜索/执行/元操作）
+     context/      s06+s07: 记忆/会话/压缩
+     tasks/        s03+s07: 任务追踪
+     teams/        s04,s09-s12: 子代理/团队
+  -> 安全层
+     guardian/     命令安全审查（规则+LLM 两阶段）
+     sandbox/      OS 进程隔离
+  -> 基础设施层
+     api/          多 Provider 客户端
+     mcp/          MCP 协议
+     plugins/      插件系统
+     config/       配置管理
+```
+
+请求链路：`用户输入 -> CLI解析 -> Settings加载 -> Prompt组装(8层) -> API SSE -> 工具调用 -> Guardian审查 -> Sandbox执行 -> 流式返回`
+
+Prompt 8 层：base_instructions → permissions → developer → environment → agents_md → collaboration → skills_inventory → wgenty_md_sections
+
+---
+
+## 核心模块
+
+- **agent/**: `StreamProcessor` 共享 SSE 流解析，产生 `StreamEvent`(Chunk/ToolCall/Error/Done)
+- **api/**: `ApiClient` 多 Provider 支持(Anthropic/DeepSeek/DashScope)，`detect_provider()` 自动路由；模型映射: sonnet->claude-3-5-sonnet-20241022
+- **tools/**: `Tool` trait(name/description/input_schema/execute/is_read_only)，**`is_read_only()` 默认 false**，只读工具必须显式返回 true。25个内置工具：filesystem(read/write/edit/apply_patch/list/view)、search(grep/glob/search/web_search/web_fetch)、execution(exec_command/kill_session/git/run_test/background)、meta(think/lsp/ask_user/update_plan/note_edit/compact)、checkpoint。`with_settings()` 按 provider 动态移除不兼容工具
+- **guardian/**: 两阶段审查（规则+LLM），RiskLevel: Low/Medium/High/Critical
+- **sandbox/**: `SandboxBackend` trait，macOS(Seatbelt)/Linux(seccomp-bpf)/Windows(Job Objects)，无内核时降级 no-op
+- **context/**: `ConsolidationEngine` 3层压缩，`ContextWindow`/`HistoryManager` 窗口管理
+- **tasks/**: `TodoWrite` 会话清单(max 20, 1 in_progress)，`TaskManagement` 持久化 CRUD
+- **teams/**: `AgentSession` 子代理(explore/plan/general-purpose)，`mailbox` 异步 JSONL
+- **mcp/**: JSON-RPC 2.0，tools/resources/prompts/sampling
+- **plugins/**: `PluginManifest`，热加载+隔离
+- **services/**: `ServiceManager` 管理 auto_dream/voice/magic_docs/team_sync
+- **i18n/**: Fluent 格式，10 语言，feature-gated (`i18n`)
+
+---
+
+## 配置
+
+**文件**: `~/.wgenty-code/settings.json`（JSON 格式，首次自动生成）
+
+| 配置路径 | 类型 | 默认值 | 说明 |
+|---------|------|--------|------|
+| `api.api_key` | Option | env var | API 密钥（每次调用从环境变量重新读取） |
+| `api.base_url` | String | `https://api.anthropic.com` | API 地址 |
+| `api.max_tokens` | usize | 4096 | 最大 token 数 |
+| `api.timeout` | u64 | 120 | 请求超时(秒) |
+| `model` | String | `sonnet` | 主模型（自动映射到完整 ID） |
+| `small_model` | Option | None | 小模型（子代理用） |
+| `small_model_appkey` | Option | None | 小模型独立 key |
+| `max_subagent_depth` | usize | 3 | 子代理最大嵌套 |
+| `max_concurrent_subagents` | usize | 5 | 最大并发子代理 |
+| `token_budget_k` | usize | 0 | Token 预算(千)，0=无限 |
+| `plan_mode` | bool | false | 规划模式 |
+| `planner_model` | Option | None | 规划模型 |
+| `developer_instructions` | Option | None | 用户自定义指令 |
+| `model_instructions_file` | Option | None | 模型指令文件路径 |
+| `collaboration_mode` | Option | None | 协作模式 |
+| `guardian.enabled` | bool | true | 安全审查开关 |
+| `guardian.llm_review` | bool | false | LLM 审查开关 |
+| `guardian.auto_deny_critical` | bool | true | 自动拒绝 Critical |
+
+**环境变量优先级**: `ANTHROPIC_API_KEY` > `DASHSCOPE_API_KEY` > `DEEPSEEK_API_KEY`，`API_BASE_URL` 覆盖配置文件，`RUST_LOG` 控制日志级别
+
+---
+
+## 关键依赖
+
+| 依赖 | 用途 |
+|------|------|
+| clap 4.5 | CLI 参数解析 |
+| tokio 1.37 + futures 0.3 | 异步运行时 |
+| reqwest 0.12 | HTTP 客户端（json+stream+rustls） |
+| ratatui 0.29 + crossterm 0.28 | 终端 TUI |
+| axum 0.7 + tower-http 0.5 | Daemon/Web HTTP |
+| serde + serde_json | 序列化 |
+| eframe/egui 0.31.1 | 桌面 GUI |
+| tracing 0.1 + tracing-subscriber 0.3 | 日志 |
+| fluent 0.16 + unic-langid 0.9 | 国际化 |
+| pulldown-cmark 0.10 + syntect 5.2 | Markdown + 语法高亮 |
+| walkdir 2.5 + glob 0.3 | 文件系统遍历 |
+| regex 1.10 + nom 7.1 | 解析 |
+| similar 2.5 | Diff 算法 |
+| thiserror 1.0 + anyhow 1.0 | 错误处理 |
+| dashmap 5.5 + lru 0.12 | 并发缓存 |
+| config 0.14 + toml 0.8 + dirs 5.0 | 配置管理 |
+| sha2 0.10 + base64 0.22 + jsonwebtoken 9.3 | 加密鉴权 |
+| async-trait 0.1 | 异步 trait |
+| uuid 1.8 + chrono 0.4 | UUID + 时间 |
+| which 6.0 + notify 6.1 | 进程查找 + 文件系统监控 |
+| http 1 + fs_extra 1.3 + image 0.25 | HTTP 类型 + 文件操作 + 图像处理 |
+| textwrap 0.16 + tui-textarea 0.7 | TUI 文本排版 |
+| tempfile 3.10 + mockall 0.12 | 测试工具(dev) |
+
+---
+
+## CI/CD
+
+`.github/workflows/ci.yml` — push main/develop 或 PR 触发：
+
+| Job | 命令 |
+|-----|------|
+| check | `cargo check --all-targets` |
+| test | `cargo test --all` |
+| fmt | `cargo fmt -- --check` |
+| clippy | `cargo clippy --all-targets -- -D warnings` |
+| build | `cargo build --release`（ubuntu/windows/macos 三平台） |
+
+`.github/workflows/release.yml` — push `v*` tag 触发：三平台 Release 构建 + Docker 镜像
+
+---
+
+## 设计决策与已知限制
+
+1. **iced GUI 禁用**: iced 的 web-sys 与 eframe 冲突，仅用 egui
+2. **子代理限制**: max_subagent_depth=3, max_concurrent_subagents=5
+3. **token_budget_k=0**: 无限，可设置累计 token 上限
+4. **API key 运行时重新读取**: 每次调用从环境变量重新读取，支持切换不重启
+5. **Prompts 8 层可选**: 各 include_xxx 开关控制，优雅降级
+6. **Sandbox 多平台**: 统一 SandboxBackend trait，无内核支持降级 no-op
+7. **技能按需加载**: 仅注入名称+描述到 Layer 7，完整内容由 agent 动态获取
+8. **多 Provider API 路由**: 根据 base_url 自动检测，透明转换请求格式
+9. **模型名简写映射**: sonnet/haiku/opus 自动映射完整 Anthropic model ID
+10. **CI 中 binary_name**: release.yml 使用 `wgenty_code_rs`，与 Cargo.toml 的 `wgenty-code` 不一致（历史遗留）
+11. **wgenty-code-gui 与 web 不可同时运行**（不同 binary）
+12. **待补充文档**: `PERFORMANCE_BENCHMARKS.md`、`MIGRATION_GUIDE.md`、`src/README.md`、`docs/API.md` 在 CHANGELOG 中引用但尚未创建

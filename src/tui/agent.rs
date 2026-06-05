@@ -32,6 +32,7 @@ pub struct AgentLoop {
     assembled_system_messages: Vec<ChatMessage>,
     rounds_since_todo: usize,
     compacted_summary: String,
+    preparing_tools_fired: bool,
     plan_mode: bool,
     /// Optional ApiClient for a dedicated planner model. Used for plan
     /// generation when PlanMode is active and planner_model is configured.
@@ -56,6 +57,7 @@ impl AgentLoop {
             assembled_system_messages: system_messages,
             rounds_since_todo: 0,
             compacted_summary: String::new(),
+            preparing_tools_fired: false,
             session_id,
             plan_mode,
             planner_client,
@@ -65,7 +67,7 @@ impl AgentLoop {
     /// Process a single user input. Handles the full agent loop (SSE + tools).
     /// Returns Ok(()) on normal completion, Err if cancelled or timed out.
     pub async fn process_input(&mut self, input: String) -> Result<(), String> {
-        const AGENT_LOOP_TIMEOUT: Duration = Duration::from_secs(600);
+        const AGENT_LOOP_TIMEOUT: Duration = Duration::from_secs(3600);
         
         match tokio::time::timeout(AGENT_LOOP_TIMEOUT, self.process_input_inner(input)).await {
             Ok(result) => result,
@@ -128,6 +130,7 @@ impl AgentLoop {
                 continue;
             }
 
+            self.preparing_tools_fired = false;
             let result = match self.stream_with_retry(&messages).await {
                 Ok(r) => r,
                 Err(e) => {
@@ -150,97 +153,215 @@ impl AgentLoop {
                 }
 
                 let mut used_todo = false;
-                for tc in &result.tool_calls {
-                    let args: serde_json::Value =
-                        serde_json::from_str(&tc.function.arguments).unwrap_or_default();
 
-                    if tc.function.name == "ask_user_question" {
-                        let tool_result = self.handle_ask_user_question(&args).await;
-                        {
-                            let mut history = self.conversation_history.lock().await;
-                            history.push(ChatMessage::tool(&tc.id, tool_result));
+                // Fire all task tools in parallel when every executable tool is a task.
+                let all_task = result.tool_calls.iter().all(|tc| {
+                    matches!(tc.function.name.as_str(), "task" | "TodoWrite" | "ask_user_question" | "update_plan" | "compact")
+                }) && result.tool_calls.iter().any(|tc| tc.function.name == "task")
+                  && result.tool_calls.iter().filter(|tc| tc.function.name == "task").count() > 1;
+
+                if all_task {
+                    // ── Parallel task execution ──────────────────────────
+                    let client = self.client.clone();
+                    let session_id = self.session_id.clone();
+                    let event_tx = self.event_tx.clone();
+                    let history = self.conversation_history.clone();
+
+                    // Handle non-task tools first (ask, plan, compact, todo)
+                    for tc in &result.tool_calls {
+                        match tc.function.name.as_str() {
+                            "TodoWrite" => used_todo = true,
+                            "ask_user_question" => {
+                                let (args, _) = crate::utils::lenient_json::parse_tool_args_lenient(
+                                    &tc.function.arguments, &tc.function.name,
+                                );
+                                let result = self.handle_ask_user_question(&args).await;
+                                history.lock().await.push(ChatMessage::tool(&tc.id, result));
+                            }
+                            "update_plan" => {
+                                let (args, _) = crate::utils::lenient_json::parse_tool_args_lenient(
+                                    &tc.function.arguments, &tc.function.name,
+                                );
+                                let _ = event_tx.send(AppEvent::PlanUpdate(args.clone()));
+                                history.lock().await.push(ChatMessage::tool(
+                                    &tc.id,
+                                    serde_json::json!({"success":true,"message":"Plan updated"}).to_string(),
+                                ));
+                            }
+                            "compact" => {
+                                let _ = event_tx.send(AppEvent::ToolStart {
+                                    name: "compact".to_string(),
+                                    args: serde_json::json!({}),
+                                });
+                                self.do_auto_compact().await;
+                                let _ = event_tx.send(AppEvent::ToolResult {
+                                    name: "compact".to_string(),
+                                    args: serde_json::json!({}),
+                                    content: "Conversation history compressed.".to_string(),
+                                });
+                                history.lock().await.push(ChatMessage::tool(
+                                    &tc.id,
+                                    r#"{"success":true,"content":"Conversation compressed"}"#,
+                                ));
+                            }
+                            _ => {} // task tools handled below
                         }
-                        continue;
                     }
 
-                    if tc.function.name == "update_plan" {
-                        let _ = self.event_tx.send(AppEvent::PlanUpdate(args.clone()));
-                        {
-                            let mut history = self.conversation_history.lock().await;
-                            history.push(ChatMessage::tool(
-                                &tc.id,
-                                serde_json::json!({"success":true,"message":"Plan updated"}).to_string(),
-                            ));
-                        }
-                        continue;
-                    }
+                    // Collect and fire all task tools in parallel
+                    let task_calls: Vec<_> = result.tool_calls.iter()
+                        .filter(|tc| tc.function.name == "task")
+                        .collect();
 
-                    if tc.function.name == "compact" {
-                        let _ = self.event_tx.send(AppEvent::ToolStart {
-                            name: "compact".to_string(),
-                            args: serde_json::json!({}),
+                    let mut tasks: Vec<(String, String, serde_json::Value)> = Vec::new();
+                    for tc in &task_calls {
+                        let (args, _) = crate::utils::lenient_json::parse_tool_args_lenient(
+                            &tc.function.arguments,
+                            &tc.function.name,
+                        );
+                        let _ = event_tx.send(AppEvent::ToolStart {
+                            name: "task".to_string(),
+                            args: args.clone(),
                         });
-                        self.do_auto_compact().await;
-                        let _ = self.event_tx.send(AppEvent::ToolResult {
-                            name: "compact".to_string(),
-                            args: serde_json::json!({}),
-                            content: "Conversation history compressed.".to_string(),
-                        });
-                        let mut history = self.conversation_history.lock().await;
-                        history.push(ChatMessage::tool(
-                            &tc.id,
-                            r#"{"success":true,"content":"Conversation compressed"}"#,
-                        ));
-                        continue;
+                        tasks.push((tc.id.clone(), "task".to_string(), args));
                     }
 
-                    if tc.function.name == "TodoWrite" {
-                        used_todo = true;
-                    }
-
-                    let _ = self.event_tx.send(AppEvent::ToolStart {
-                        name: tc.function.name.clone(),
-                        args: args.clone(),
-                    });
-
-                    let tool_timeout = if tc.function.name == "task" {
-                        Duration::from_secs(300)
-                    } else {
-                        Duration::from_secs(120)
-                    };
-                    let exec_result = match tokio::time::timeout(
-                        tool_timeout,
-                        self.execute_tool_with_permission(&tc.function.name, args.clone()),
-                    ).await {
-                        Ok(result) => result,
-                        Err(_elapsed) => {
-                            let msg = format!(
-                                r#"{{"success":false,"error":"Tool '{}' timed out after {}s"}}"#,
-                                tc.function.name,
-                                tool_timeout.as_secs()
-                            );
-                            let _ = self.event_tx.send(AppEvent::ToolResult {
-                                name: tc.function.name.clone(),
-                                args: args.clone(),
-                                content: msg.clone(),
+                    let handles: Vec<_> = tasks.into_iter().map(|(id, name, args)| {
+                        let client = client.clone();
+                        let session_id = session_id.clone();
+                        let event_tx = event_tx.clone();
+                        tokio::spawn(async move {
+                            let result = tokio::time::timeout(
+                                Duration::from_secs(300),
+                                Self::execute_tool_static(&client, &name, args.clone(), &session_id),
+                            ).await;
+                            let content = match result {
+                                Ok(r) => r,
+                                Err(_) => format!(
+                                    r#"{{"success":false,"error":"Tool '{}' timed out after 300s"}}"#,
+                                    name
+                                ),
+                            };
+                            let _ = event_tx.send(AppEvent::ToolResult {
+                                name,
+                                args,
+                                content: content.clone(),
                             });
+                            (id, content)
+                        })
+                    }).collect();
+
+                    let results = futures::future::join_all(handles).await;
+                    let mut history = history.lock().await;
+                    for handle_result in results {
+                        if let Ok((id, content)) = handle_result {
+                            history.push(ChatMessage::tool(&id, content));
+                        }
+                    }
+                } else {
+                    // ── Sequential execution (original path) ─────────────
+                    for tc in &result.tool_calls {
+                        let (args, parse_err) = crate::utils::lenient_json::parse_tool_args_lenient(
+                            &tc.function.arguments,
+                            &tc.function.name,
+                        );
+                        if let Some(ref e) = parse_err {
+                            tracing::warn!(
+                                tool = %tc.function.name,
+                                error = %e,
+                                args_len = tc.function.arguments.len(),
+                                "Tool call arguments parse issue (lenient recovery attempted)"
+                            );
+                        }
+
+                        if tc.function.name == "ask_user_question" {
+                            let tool_result = self.handle_ask_user_question(&args).await;
                             {
                                 let mut history = self.conversation_history.lock().await;
-                                history.push(ChatMessage::tool(&tc.id, msg));
+                                history.push(ChatMessage::tool(&tc.id, tool_result));
                             }
                             continue;
                         }
-                    };
 
-                    let _ = self.event_tx.send(AppEvent::ToolResult {
-                        name: tc.function.name.clone(),
-                        args: args.clone(),
-                        content: exec_result.clone(),
-                    });
+                        if tc.function.name == "update_plan" {
+                            let _ = self.event_tx.send(AppEvent::PlanUpdate(args.clone()));
+                            {
+                                let mut history = self.conversation_history.lock().await;
+                                history.push(ChatMessage::tool(
+                                    &tc.id,
+                                    serde_json::json!({"success":true,"message":"Plan updated"}).to_string(),
+                                ));
+                            }
+                            continue;
+                        }
 
-                    {
-                        let mut history = self.conversation_history.lock().await;
-                        history.push(ChatMessage::tool(&tc.id, exec_result));
+                        if tc.function.name == "compact" {
+                            let _ = self.event_tx.send(AppEvent::ToolStart {
+                                name: "compact".to_string(),
+                                args: serde_json::json!({}),
+                            });
+                            self.do_auto_compact().await;
+                            let _ = self.event_tx.send(AppEvent::ToolResult {
+                                name: "compact".to_string(),
+                                args: serde_json::json!({}),
+                                content: "Conversation history compressed.".to_string(),
+                            });
+                            let mut history = self.conversation_history.lock().await;
+                            history.push(ChatMessage::tool(
+                                &tc.id,
+                                r#"{"success":true,"content":"Conversation compressed"}"#,
+                            ));
+                            continue;
+                        }
+
+                        if tc.function.name == "TodoWrite" {
+                            used_todo = true;
+                        }
+
+                        let _ = self.event_tx.send(AppEvent::ToolStart {
+                            name: tc.function.name.clone(),
+                            args: args.clone(),
+                        });
+
+                        let tool_timeout = if tc.function.name == "task" {
+                            Duration::from_secs(300)
+                        } else {
+                            Duration::from_secs(120)
+                        };
+                        let exec_result = match tokio::time::timeout(
+                            tool_timeout,
+                            self.execute_tool_with_permission(&tc.function.name, args.clone()),
+                        ).await {
+                            Ok(result) => result,
+                            Err(_elapsed) => {
+                                let msg = format!(
+                                    r#"{{"success":false,"error":"Tool '{}' timed out after {}s"}}"#,
+                                    tc.function.name,
+                                    tool_timeout.as_secs()
+                                );
+                                let _ = self.event_tx.send(AppEvent::ToolResult {
+                                    name: tc.function.name.clone(),
+                                    args: args.clone(),
+                                    content: msg.clone(),
+                                });
+                                {
+                                    let mut history = self.conversation_history.lock().await;
+                                    history.push(ChatMessage::tool(&tc.id, msg));
+                                }
+                                continue;
+                            }
+                        };
+
+                        let _ = self.event_tx.send(AppEvent::ToolResult {
+                            name: tc.function.name.clone(),
+                            args: args.clone(),
+                            content: exec_result.clone(),
+                        });
+
+                        {
+                            let mut history = self.conversation_history.lock().await;
+                            history.push(ChatMessage::tool(&tc.id, exec_result));
+                        }
                     }
                 }
 
@@ -433,7 +554,7 @@ impl AgentLoop {
         Ok(processor.finish())
     }
 
-    fn dispatch_event(&self, event: StreamEvent) {
+    fn dispatch_event(&mut self, event: StreamEvent) {
         match event {
             StreamEvent::ContentDelta(text) => {
                 let _ = self.event_tx.send(AppEvent::ContentDelta(text));
@@ -442,11 +563,58 @@ impl AgentLoop {
                 let _ = self.event_tx.send(AppEvent::ReasoningDelta(text));
             }
             StreamEvent::ToolCallDelta { .. } => {
-                // Accumulated internally by StreamProcessor, no UI action needed
+                // Fire once to show "preparing tools..." before execution starts
+                if !self.preparing_tools_fired {
+                    self.preparing_tools_fired = true;
+                    let _ = self.event_tx.send(AppEvent::PreparingTools);
+                }
             }
             StreamEvent::StreamDone { finish_reason } => {
                 let _ = self.event_tx.send(AppEvent::StreamDone { finish_reason });
             }
+        }
+    }
+
+    /// Static version of tool execution for use in parallel spawned tasks.
+    /// Skips the interactive permission flow (tools requiring permission should
+    /// not be executed in parallel batches).
+    async fn execute_tool_static(
+        client: &DaemonClient,
+        name: &str,
+        args: serde_json::Value,
+        session_id: &str,
+    ) -> String {
+        // Guardian: inline safety check (no UI interaction in parallel path)
+        if name == "execute_command" || name == "exec_command" {
+            if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+                let risk = classify_risk(cmd);
+                if risk >= crate::guardian::RiskLevel::Critical {
+                    return format!(
+                        r#"{{"success":false,"error":"GUARDIAN BLOCK: critical-risk command rejected. {}"}}"#,
+                        cmd
+                    );
+                }
+            }
+        }
+
+        match client.execute_tool(name, args, session_id).await {
+            Ok(resp) => {
+                if let Some(perm) = resp.permission_required {
+                    format!(
+                        r#"{{"success":false,"error":"PERMISSION REQUIRED: {} (cannot prompt in parallel mode)"}}"#,
+                        perm.reason
+                    )
+                } else {
+                    format!(
+                        r#"{{"success":{},"output_type":{},"content":{},"error":{}}}"#,
+                        resp.success,
+                        serde_json::to_string(&resp.output_type).unwrap_or_default(),
+                        serde_json::to_string(&resp.content).unwrap_or_default(),
+                        serde_json::to_string(&resp.error).unwrap_or_default(),
+                    )
+                }
+            }
+            Err(e) => format!(r#"{{"success":false,"error":"{}"}}"#, e),
         }
     }
 

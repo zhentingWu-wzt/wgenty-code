@@ -9,7 +9,6 @@ const USER_COLOR: Color = Color::Rgb(255, 140, 66);
 const ASSISTANT_COLOR: Color = Color::Rgb(147, 112, 219);
 const TEXT_COLOR: Color = Color::Rgb(220, 220, 230);
 const DIM_COLOR: Color = Color::Rgb(100, 100, 110);
-const TOOL_COLOR: Color = Color::Rgb(100, 200, 255);
 const TURN_SEP_COLOR: Color = Color::Rgb(80, 80, 90);
 const SEP_COLOR: Color = Color::Rgb(60, 60, 70);
 
@@ -125,9 +124,10 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
             lines
         }
         MessageRole::Tool => {
-            if msg.content.is_empty() {
+            if msg.content.is_empty() && !msg.tool_collapsed {
+                // Empty expanded tool result — nothing to show
                 Vec::new()
-            } else if msg.tool_collapsed {
+            } else if msg.tool_collapsed || msg.content.is_empty() {
                 // ToolResult: codex-style tree display
                 let name = msg.tool_name.as_deref().unwrap_or("Tool").to_string();
                 let verb = tool_verb(&name).to_string();
@@ -140,14 +140,28 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
                     .unwrap_or_default();
                 let mut lines: Vec<Line<'static>> = Vec::new();
 
-                // Header: • {verb} {detail}
+                // Header: • {verb} {detail}  — or • ⏳ {verb} {detail} while running
+                let is_running = msg.content.is_empty();
+                let (prefix, verb_style) = if is_running {
+                    ("\u{23F3} ", Style::default().fg(Color::Rgb(200, 200, 100)).add_modifier(Modifier::BOLD))
+                } else {
+                    ("\u{2022} ", Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD))
+                };
                 lines.push(Line::from(vec![
-                    Span::styled("\u{2022} ", Style::default().fg(DIM_COLOR)),
-                    Span::styled(verb.clone(), Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD)),
+                    Span::styled(prefix, Style::default().fg(DIM_COLOR)),
+                    Span::styled(verb.clone(), verb_style),
                     Span::styled(
                         format!(" {}", detail),
                         Style::default().fg(DIM_COLOR),
                     ),
+                    if is_running {
+                        Span::styled(
+                            " running...",
+                            Style::default().fg(Color::Rgb(180, 180, 100)),
+                        )
+                    } else {
+                        Span::styled("", Style::default())
+                    },
                 ]));
 
                 // If diff data is available, render it inline after the header
@@ -233,7 +247,8 @@ fn tool_verb(name: &str) -> &str {
         "web_search" => "Searched web",
         "web_fetch" => "Fetched",
         "view" => "Viewed",
-        "task" | "TodoWrite" => "Planned",
+        "task" => "Agent",
+        "TodoWrite" => "Planned",
         "compact" => "Compacted",
         _ => "Used",
     }
@@ -275,6 +290,21 @@ fn tool_label(name: &str, args: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
+        "task" => {
+            let desc = args
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let sub_type = args
+                .get("subagent_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if sub_type.is_empty() {
+                desc.to_string()
+            } else {
+                format!("[{}] {}", sub_type, desc)
+            }
+        }
         _ => String::new(),
     }
 }
