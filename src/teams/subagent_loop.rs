@@ -32,6 +32,14 @@ pub async fn run_subagent_loop(
     allowed_tools: &[String],
     max_rounds: usize,
 ) -> Result<String, String> {
+    tracing::info!(
+        target: "subagent",
+        prompt_len = user_prompt.len(),
+        tool_count = allowed_tools.len(),
+        max_rounds = max_rounds,
+        "Subagent: starting agent loop"
+    );
+
     let mut messages: Vec<ChatMessage> = vec![
         ChatMessage::system(system_prompt),
         ChatMessage::user(user_prompt),
@@ -47,8 +55,15 @@ pub async fn run_subagent_loop(
 
     let has_tools = !tool_defs.is_empty();
 
-    for _round in 0..max_rounds {
+    for round in 0..max_rounds {
         // Call the API with current message history and filtered tools.
+        tracing::debug!(
+            target: "subagent",
+            round = round,
+            message_count = messages.len(),
+            "Subagent: calling API"
+        );
+
         let response = api_client
             .chat(
                 messages.clone(),
@@ -100,6 +115,12 @@ pub async fn run_subagent_loop(
                 );
             }
 
+            tracing::debug!(
+                    target: "subagent",
+                    tool = %tool_name,
+                    round = round,
+                    "Subagent: executing tool"
+                );
             let result = tool_registry.execute(tool_name, args).await;
 
             let content = match result {
@@ -111,5 +132,10 @@ pub async fn run_subagent_loop(
         }
     }
 
+    tracing::info!(
+        target: "subagent",
+        max_rounds = max_rounds,
+        "Subagent: exceeded max rounds"
+    );
     Err("Subagent exceeded maximum number of rounds".to_string())
 }
