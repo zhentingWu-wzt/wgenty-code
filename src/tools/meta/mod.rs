@@ -17,3 +17,5 @@ pub use team_message::TeamMessageTool;
 pub use think::ThinkTool;
 pub mod update_plan;
 pub use update_plan::UpdatePlanTool;
+pub mod rlm;
+pub use rlm::RlmDelegateTool;
