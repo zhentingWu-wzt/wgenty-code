@@ -24,6 +24,7 @@ fn phase_label(phase: &AgentPhase) -> String {
     match phase {
         AgentPhase::Idle | AgentPhase::Completed => "Ready".to_string(),
         AgentPhase::Thinking => "Thinking...".to_string(),
+        AgentPhase::PreparingTools => "Preparing tools...".to_string(),
         AgentPhase::StreamingResponse => "Streaming...".to_string(),
         AgentPhase::ExecutingTool { name } => format!("Executing {}", name),
         AgentPhase::AwaitingPermission { .. } => "Permission Required".to_string(),

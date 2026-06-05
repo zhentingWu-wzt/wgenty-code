@@ -103,8 +103,25 @@ impl Tool for FileReadTool {
 
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
-        let start_idx = start_line.saturating_sub(1).min(total_lines);
-        let end_idx = end_line.unwrap_or(total_lines).min(total_lines);
+
+        if total_lines == 0 {
+            return Ok(ToolOutput {
+                output_type: "text".to_string(),
+                content: String::new(),
+                metadata: {
+                    let mut m = HashMap::new();
+                    m.insert("path".to_string(), serde_json::json!(file_path));
+                    m.insert("total_lines".to_string(), serde_json::json!(0));
+                    m
+                },
+            });
+        }
+
+        let start_idx = (start_line.saturating_sub(1)).min(total_lines.saturating_sub(1));
+        let end_idx = end_line
+            .unwrap_or(total_lines)
+            .min(total_lines)
+            .max(start_idx + 1); // ensure end > start, at least 1 line
 
         let mut rendered = lines[start_idx..end_idx]
             .iter()
