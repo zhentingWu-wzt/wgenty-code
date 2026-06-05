@@ -18,6 +18,49 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+
+/// Detect whether a prompt is complex enough to warrant RLM delegation.
+fn is_complex_task(prompt: &str, use_small_model: bool) -> bool {
+    if use_small_model {
+        return false; // User explicitly asked for cheap model
+    }
+
+    let prompt = prompt.trim();
+    let len = prompt.len();
+
+    // Long prompts are likely complex
+    if len > 500 {
+        return true;
+    }
+
+    // Multi-step indicators
+    let keywords = [
+        "refactor", "implement", "migrate", "restructure", "redesign",
+        "rewrite", "create", "build", "develop", "analyze", "research",
+        "first", "second", "third", "then", "after", "before",
+        "step", "phase", "stage", "component", "module", "system",
+    ];
+
+    let lower = prompt.to_lowercase();
+    let hits = keywords.iter().filter(|kw| lower.contains(*kw)).count();
+
+    // Multiple complexity keywords
+    if hits >= 4 {
+        return true;
+    }
+
+    // Multiple sections (separated by blank lines or numbered lists)
+    let sections = prompt.split("\n\n").count();
+    let digits = prompt.matches(|c: char| c.is_ascii_digit()).count();
+
+    if sections >= 3 || digits > 5 {
+        return true;
+    }
+
+    false
+}
+
+
 pub struct TaskTool {
     settings: Settings,
     tool_registry: std::sync::Weak<crate::tools::ToolRegistry>,
@@ -90,7 +133,7 @@ impl Tool for TaskTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let subagent_type = input["subagent_type"].as_str().unwrap_or("general-purpose");
+        let _subagent_type = input["subagent_type"].as_str().unwrap_or("general-purpose");
         let description = input["description"].as_str().unwrap_or("Subagent task");
         let prompt = input["prompt"].as_str().unwrap_or("");
         let background = input["background"].as_bool().unwrap_or(false);
@@ -110,7 +153,7 @@ impl Tool for TaskTool {
             .collect();
 
         // Build system prompt based on subagent type.
-        let system_prompt = match subagent_type {
+        let system_prompt = match _subagent_type {
             "explore" => {
                 "You are a subagent spawned by a coordinator. The coordinator is waiting for your result. Do not attempt to coordinate other agents yourself — focus solely on your assigned task. Return a complete, self-contained result so the coordinator can proceed without follow-up questions.\n\nYou are a code exploration subagent. Your role is to search and \
                  analyze codebases thoroughly.\n\nKey responsibilities:\n\
@@ -239,11 +282,11 @@ impl Tool for TaskTool {
                 output_type: "text".to_string(),
                 content: format!(
                     "[Subagent launched in background]\ntype: {}\ndescription: {}\nstatus: running\n\nThe subagent result will be delivered when it completes.",
-                    subagent_type, description
+                    _subagent_type, description
                 ),
                 metadata: {
                     let mut m = HashMap::new();
-                    m.insert("subagent_type".to_string(), serde_json::json!(subagent_type));
+                    m.insert("subagent_type".to_string(), serde_json::json!(_subagent_type));
                     m.insert("description".to_string(), serde_json::json!(description));
                     m.insert("background".to_string(), serde_json::json!(true));
                     m
@@ -251,15 +294,30 @@ impl Tool for TaskTool {
             })
         } else {
             // ── Synchronous mode: block until complete ─────────────────────
-            let result = run_subagent_loop(
-                &api_client,
-                &tool_registry,
-                system_prompt,
-                &full_prompt,
-                &allowed_tools,
-                30,
-            )
-            .await;
+            let result = if is_complex_task(&full_prompt, use_small) {
+                tracing::info!(
+                    target: "rlm",
+                    phase = "auto_route",
+                    "Complex task detected, routing to RLM pipeline"
+                );
+                crate::tools::meta::rlm::run_rlm_pipeline(
+                    &self.settings,
+                    tool_registry.clone(),
+                    description,
+                    prompt,
+                )
+                .await
+            } else {
+                run_subagent_loop(
+                    &api_client,
+                    &tool_registry,
+                    system_prompt,
+                    &full_prompt,
+                    &allowed_tools,
+                    30,
+                )
+                .await
+            };
             self.active_count.fetch_sub(1, Ordering::SeqCst);
 
             match result {
@@ -267,7 +325,7 @@ impl Tool for TaskTool {
                     let mut metadata = HashMap::new();
                     metadata.insert(
                         "subagent_type".to_string(),
-                        serde_json::json!(subagent_type),
+                        serde_json::json!(_subagent_type),
                     );
                     metadata.insert("description".to_string(), serde_json::json!(description));
 

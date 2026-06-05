@@ -193,7 +193,7 @@ pub use filesystem::{
     ApplyPatchTool, FileEditTool, FileReadTool, FileWriteTool, ListFilesTool, ViewTool,
 };
 pub use meta::{
-    AskUserQuestionTool, CompactTool, LoadSkillTool, LspTool, NoteEditTool, TaskTool,
+    AskUserQuestionTool, CompactTool, LoadSkillTool, LspTool, NoteEditTool, RlmDelegateTool, TaskTool,
     TeamMessageTool, ThinkTool, UpdatePlanTool,
 };
 pub use search::{GlobTool, GrepTool, SearchTool, WebFetchTool, WebSearchTool};
