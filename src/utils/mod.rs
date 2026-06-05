@@ -2,6 +2,7 @@
 //!
 //! Non-domain utilities that don't fit into a specific harness mechanism.
 
+pub mod lenient_json;
 pub mod logging;
 pub mod project;
 pub mod stress_tests;
@@ -60,4 +61,32 @@ pub fn format_duration(duration: std::time::Duration) -> String {
     } else {
         format!("{}s", secs)
     }
+}
+
+/// Rough token estimate for a string (≈ chars / 4 for English, ≈ chars / 2 for CJK).
+/// Conservative: uses chars / 3 to avoid underestimating.
+pub fn estimate_tokens(text: &str) -> usize {
+    let chars = text.chars().count();
+    if chars == 0 {
+        return 0;
+    }
+    // Count CJK characters (they consume more tokens per char)
+    let cjk = text.chars().filter(|c| is_cjk(*c)).count();
+    let non_cjk = chars - cjk;
+    // CJK: ~1.5 chars/token, non-CJK: ~4 chars/token
+    (cjk as f64 / 1.5 + non_cjk as f64 / 4.0).ceil() as usize
+}
+
+fn is_cjk(c: char) -> bool {
+    matches!(c,
+        '\u{4E00}'..='\u{9FFF}'   // CJK Unified Ideographs
+        | '\u{3400}'..='\u{4DBF}' // CJK Unified Ideographs Extension A
+        | '\u{2E80}'..='\u{2EFF}' // CJK Radicals Supplement
+        | '\u{3000}'..='\u{303F}' // CJK Symbols and Punctuation
+        | '\u{FF00}'..='\u{FFEF}' // Halfwidth and Fullwidth Forms
+        | '\u{F900}'..='\u{FAFF}' // CJK Compatibility Ideographs
+        | '\u{3040}'..='\u{309F}' // Hiragana
+        | '\u{30A0}'..='\u{30FF}' // Katakana
+        | '\u{AC00}'..='\u{D7AF}' // Hangul Syllables
+    )
 }

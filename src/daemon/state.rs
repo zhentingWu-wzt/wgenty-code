@@ -58,18 +58,7 @@ impl DaemonState {
             TeamManager::load(root).map(Arc::new)
         };
 
-        // Build registry with TodoWrite (s03) — the primary planning tool.
-        // Note: task_management is NOT registered; TodoWrite replaces it.
-        let mut registry = ToolRegistry::new().with_settings(&app_state.settings);
-        registry.register(Box::new(todo_write));
-        registry.register(Box::new(BackgroundTool::new(bg_manager.clone())));
-
-        // Register team message tool if team is configured
-        if team_manager.is_some() {
-            registry.register(Box::new(TeamMessageTool::new(team_manager.clone())));
-        }
-
-        // Initialize skill loader and register load_skill tool if skills exist
+        // Initialize skill loader (needed before registry so TaskTool can use it).
         let skill_loader = {
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
             let base_dirs = vec![
@@ -77,26 +66,40 @@ impl DaemonState {
                 app_state.settings.working_dir.clone(),
             ];
             let loader = SkillLoader::load_from_dirs(&base_dirs);
-            let arc_loader = Arc::new(loader);
-            if !arc_loader.is_empty() {
-                registry.register(Box::new(
-                    crate::tools::meta::load_skill::LoadSkillTool::new(arc_loader.clone()),
-                ));
-            }
-            arc_loader
+            Arc::new(loader)
         };
 
-        // Register TaskTool (subagent spawner). We need a Weak<ToolRegistry> for
-        // TaskTool (to break circular dependency), so temporarily wrap in Arc, get
-        // the Weak, then unwrap back to register TaskTool before the final Arc.
-        let temp_arc = Arc::new(registry);
-        let weak_reg = Arc::downgrade(&temp_arc);
-        let mut registry = Arc::into_inner(temp_arc)
-            .expect("only weak references exist — into_inner must succeed");
-        let task_tool =
-            crate::tools::meta::task::TaskTool::new(app_state.settings.clone(), weak_reg, bg_manager.clone());
-        registry.register(Box::new(task_tool));
-        let tool_registry = Arc::new(registry);
+        // Use Arc::new_cyclic so the TaskTool holds a valid Weak<ToolRegistry>
+        // that points to the *final* Arc allocation — not a temporary one that
+        // gets dropped (which would leave a dangling weak reference).
+        let tool_registry = Arc::new_cyclic(|weak_reg| {
+            let mut registry = ToolRegistry::new().with_settings(&app_state.settings);
+            registry.register(Box::new(todo_write));
+            registry.register(Box::new(BackgroundTool::new(bg_manager.clone())));
+
+            // Register team message tool if team is configured
+            if team_manager.is_some() {
+                registry.register(Box::new(TeamMessageTool::new(team_manager.clone())));
+            }
+
+            // Register load_skill tool if skills exist
+            if !skill_loader.is_empty() {
+                registry.register(Box::new(
+                    crate::tools::meta::load_skill::LoadSkillTool::new(skill_loader.clone()),
+                ));
+            }
+
+            // TaskTool gets a Weak<ToolRegistry> that is valid for the lifetime
+            // of this Arc (created by Arc::new_cyclic).
+            let task_tool = crate::tools::meta::task::TaskTool::new(
+                app_state.settings.clone(),
+                weak_reg.clone(),
+                bg_manager.clone(),
+            );
+            registry.register(Box::new(task_tool));
+
+            registry
+        });
 
         // Initialize HookManager from settings hooks configuration
         let hooks_config = app_state
