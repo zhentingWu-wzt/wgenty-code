@@ -143,7 +143,7 @@ pub struct TeamManager {
 
 impl TeamManager {
     /// Load team configuration from .team/config.json
-    pub fn load(project_root: &PathBuf) -> Option<Self> {
+    pub fn load(project_root: &std::path::Path) -> Option<Self> {
         let config_path = project_root.join(".team").join("config.json");
         if !config_path.exists() {
             return None;

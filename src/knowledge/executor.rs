@@ -28,7 +28,7 @@ impl SkillExecutor {
         for token in tokens {
             if token.starts_with("--") {
                 // Named parameter or flag
-                let parts: Vec<&str> = token[2..].splitn(2, '=').collect();
+                let parts: Vec<&str> = token.strip_prefix("--").unwrap().splitn(2, '=').collect();
                 if parts.len() == 2 {
                     // Named parameter: --key=value
                     named_params.insert(parts[0].to_string(), parts[1].to_string());
@@ -38,7 +38,7 @@ impl SkillExecutor {
                 }
             } else if token.starts_with('-') && token.len() > 1 {
                 // Short flag: -f
-                for c in token[1..].chars() {
+                for c in token.strip_prefix('-').unwrap().chars() {
                     flags.insert(c.to_string(), true);
                 }
             } else {
@@ -124,7 +124,7 @@ impl SkillExecutor {
             for (i, example) in examples.iter().enumerate() {
                 help.push_str(&format!("  {}. {}\n", i + 1, example));
             }
-            help.push_str("\n");
+            help.push('\n');
         }
 
         help.push_str(&format!(

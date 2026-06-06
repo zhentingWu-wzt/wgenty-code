@@ -74,6 +74,7 @@ pub struct HookOutcome {
 }
 
 /// Manages registered hooks and their execution
+#[derive(Default)]
 pub struct HookManager {
     hooks: HashMap<HookEvent, Vec<HookDefinition>>,
 }
@@ -291,14 +292,6 @@ impl HookManager {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default(),
             timestamp: chrono::Utc::now().to_rfc3339(),
-        }
-    }
-}
-
-impl Default for HookManager {
-    fn default() -> Self {
-        Self {
-            hooks: HashMap::new(),
         }
     }
 }

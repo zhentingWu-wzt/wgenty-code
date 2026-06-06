@@ -88,7 +88,7 @@ fn add_inline_separator(lines: &mut Vec<Line<'static>>, width: u16) {
     }
     let count = w / 3;
     if count > 0 {
-        let bar = std::iter::repeat(" \u{2500}").take(count).collect::<String>();
+        let bar = " \u{2500}".repeat(count);
         lines.push(Line::from(Span::styled(
             format!("  {}", bar),
             Style::default().fg(SEP_COLOR),
@@ -355,7 +355,7 @@ fn diff_to_lines(
         }
         if shown >= max_show {
             lines.push(Line::from(Span::styled(
-                format!("  ... (truncated)"),
+                "  ... (truncated)",
                 Style::default().fg(DIM_COLOR),
             )));
             break;

@@ -20,6 +20,12 @@ pub struct LinuxBackend {
     cgroup_base: std::path::PathBuf,
 }
 
+impl Default for LinuxBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LinuxBackend {
     pub fn new() -> Self {
         Self {

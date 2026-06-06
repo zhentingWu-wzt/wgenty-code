@@ -140,7 +140,7 @@ impl MagicDocsService {
             let current_content = tokio::fs::read_to_string(&path).await?;
 
             let updated_content = self
-                .generate_update(&doc_info, &current_content, context)
+                .generate_update(doc_info, &current_content, context)
                 .await?;
 
             tokio::fs::write(&path, &updated_content).await?;

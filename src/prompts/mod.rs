@@ -44,6 +44,12 @@ pub struct PromptContext {
     pub wgenty_md_sections: Vec<String>,
 }
 
+impl Default for PromptContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PromptContext {
     pub fn new() -> Self {
         Self {
@@ -290,7 +296,7 @@ mod tests {
             .any(|m| {
                 m.content
                     .as_deref()
-                    .map_or(false, |c| c.contains("<permissions_instructions>"))
+                    .is_some_and(|c| c.contains("<permissions_instructions>"))
             });
         assert!(!has_permissions);
     }
