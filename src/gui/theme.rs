@@ -5,9 +5,10 @@
 use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Visuals};
 
 /// Application theme
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
     Light,
+    #[default]
     Dark,
     System,
 }
@@ -456,11 +457,5 @@ impl Theme {
     /// Check if dark mode
     pub fn is_dark(&self) -> bool {
         matches!(self, Theme::Dark | Theme::System)
-    }
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        Theme::Dark
     }
 }

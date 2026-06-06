@@ -157,8 +157,8 @@ impl ChatPanel {
                         self.render_message(ui, message, theme, idx == msg_count - 1);
                     }
                     // 更新展开状态
-                    for i in 0..msg_count {
-                        self.messages[i].thinking_expanded = messages_clone[i].thinking_expanded;
+                    for (i, msg) in messages_clone.iter().enumerate() {
+                        self.messages[i].thinking_expanded = msg.thinking_expanded;
                     }
 
                     // Loading indicator

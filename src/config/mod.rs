@@ -47,6 +47,9 @@ pub struct Settings {
     /// exhaustion. 0 = unlimited. Default: 0.
     #[serde(default)]
     pub token_budget_k: usize,
+    /// Maximum LLM rounds per turn. None = use internal default (100).
+    #[serde(default)]
+    pub max_rounds: Option<usize>,
     /// Planner model name. When set and PlanMode is active, this model is
     /// used for plan generation while the main model handles execution.
     /// Falls back to main `model` if not configured.
@@ -194,6 +197,7 @@ impl Default for Settings {
             max_subagent_depth: 3,
             max_concurrent_subagents: 5,
             token_budget_k: 0,
+            max_rounds: None,
             planner_model: None,
             planner_model_base_url: None,
             planner_model_api_key: None,

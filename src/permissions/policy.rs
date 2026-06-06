@@ -192,10 +192,8 @@ fn split_shell_commands(command: &str) -> Vec<&str> {
         match b {
             b'\'' if !in_double => in_single = !in_single,
             b'"' if !in_single => in_double = !in_double,
-            b'$' if !in_single && !in_double => {
-                if i + 1 < bytes.len() && bytes[i + 1] == b'(' {
-                    depth += 1;
-                }
+            b'$' if !in_single && !in_double && i + 1 < bytes.len() && bytes[i + 1] == b'(' => {
+                depth += 1;
             }
             b')' if !in_single && !in_double && depth > 0 => {
                 depth -= 1;

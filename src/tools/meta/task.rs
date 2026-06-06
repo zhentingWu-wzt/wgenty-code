@@ -144,12 +144,13 @@ impl Tool for TaskTool {
             code: Some("registry_dropped".to_string()),
         })?;
 
-        // Filter tools: exclude "task" to prevent recursive subagent spawning.
+        // Filter tools: exclude "task" when depth exceeds limit.
+        let depth = input["_subagent_depth"].as_u64().unwrap_or(0) as usize;
         let allowed_tools: Vec<String> = tool_registry
             .list()
             .iter()
             .map(|t| t.name().to_string())
-            .filter(|name| name != "task")
+            .filter(|name| { if name == "task" { depth < self.settings.max_subagent_depth } else { true } })
             .collect();
 
         // Build system prompt based on subagent type.

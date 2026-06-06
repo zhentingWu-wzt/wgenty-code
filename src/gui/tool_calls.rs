@@ -68,14 +68,9 @@ impl ToolCall {
 }
 
 /// Tool call manager
+#[derive(Default)]
 pub struct ToolCallManager {
     pub calls: Vec<ToolCall>,
-}
-
-impl Default for ToolCallManager {
-    fn default() -> Self {
-        Self { calls: Vec::new() }
-    }
 }
 
 impl ToolCallManager {

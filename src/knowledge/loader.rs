@@ -35,11 +35,11 @@ impl SkillLoader {
     }
 
     /// Scan a single directory for skills/ subdirectories.
-    pub fn load_from_dir(base_dir: &PathBuf) -> Self {
-        Self::load_from_dirs(&[base_dir.clone()])
+    pub fn load_from_dir(base_dir: &std::path::Path) -> Self {
+        Self::load_from_dirs(&[base_dir.to_path_buf()])
     }
 
-    fn scan_skills_dir(skills_dir: &PathBuf, skills: &mut HashMap<String, SkillInfo>) {
+    fn scan_skills_dir(skills_dir: &std::path::Path, skills: &mut HashMap<String, SkillInfo>) {
         if !skills_dir.exists() {
             return;
         }

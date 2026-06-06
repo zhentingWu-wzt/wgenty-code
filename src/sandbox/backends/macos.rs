@@ -14,6 +14,12 @@ use super::super::profile::NetworkPolicy;
 
 pub struct MacOSBackend;
 
+impl Default for MacOSBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MacOSBackend {
     pub fn new() -> Self {
         Self

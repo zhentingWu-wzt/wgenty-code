@@ -84,7 +84,7 @@ impl ConsolidationEngine {
             consolidated.push(merged);
         }
 
-        let insights_generated = self.extract_insights(&memories, &mut consolidated);
+        let insights_generated = self.extract_insights(memories, &mut consolidated);
 
         let result = ConsolidationResult {
             memories_before,

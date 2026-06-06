@@ -92,7 +92,7 @@ impl std::fmt::Debug for PermissionResponder {
 #[derive(Debug)]
 pub enum AppEvent {
     /// Full key event for tui-textarea processing (CJK/IME support)
-    KeyEvent(KeyEvent),
+    KeyEvent(Box<KeyEvent>),
     /// User submitted input text
     Submit(String),
     /// An SSE content delta arrived
@@ -190,10 +190,12 @@ pub struct App {
     pub committed_messages: Vec<UIMessage>,
     pub streaming_content: String,
     pub streaming_active: bool,
+    pub token_counter: crate::api::token_counter::TokenCounter,
     pub phase: AgentPhase,
     pub session_id: String,
     pub session_name: String,
     pub last_tool_name: Option<String>,
+    pub last_abort_reason: Option<TurnAbortReason>,
     pub scroll_offset: u16,
     pub user_scrolled: bool,
     /// Shared conversation history — all Turns in this session read/write
@@ -310,10 +312,15 @@ impl App {
             committed_messages: Vec::new(),
             streaming_content: String::new(),
             streaming_active: false,
+            token_counter: {
+                let s = settings_lock.read().unwrap();
+                crate::api::token_counter::TokenCounter::new(s.token_budget_k)
+            },
             phase: AgentPhase::Idle,
             session_id,
             session_name: "New Session".to_string(),
             last_tool_name: None,
+            last_abort_reason: None,
             scroll_offset: 0,
             user_scrolled: false,
             conversation_history,
@@ -441,7 +448,7 @@ impl App {
                             let _ = tx.send(AppEvent::ToggleCollapseLatest);
                             continue;
                         }
-                        let _ = tx.send(AppEvent::KeyEvent(key));
+                        let _ = tx.send(AppEvent::KeyEvent(Box::new(key)));
                     }
                 }
             }
@@ -669,7 +676,7 @@ impl App {
                 }
                 // Feed to tui-textarea for CJK/IME input.
                 // Returns true if tui-textarea consumed the key.
-                let handled = self.input_box.textarea.input(key);
+                let handled = self.input_box.textarea.input(*key);
                 if !handled {
                     match key.code {
                         KeyCode::Esc => {
@@ -737,10 +744,6 @@ impl App {
                     });
                 }
                 self.streaming_active = false;
-                let pending = self.pending_count();
-                if pending > 0 {
-                } else {
-                }
                 self.scroll_offset = 0;
                 self.user_scrolled = false;
             }
@@ -830,10 +833,13 @@ impl App {
             AppEvent::TurnComplete => {
                 self.turn_count += 1;
                 self.current_turn_handle = None;
+                self.last_abort_reason = None; // normal completion clears
                 if !self.pending_inputs.is_empty() {
                     self.start_next_turn();
-                } else {
                 }
+            }
+            AppEvent::TurnAborted { ref reason } => {
+                self.last_abort_reason = Some(reason.clone());
             }
             AppEvent::PermissionRequired {
                 reason,
@@ -1171,6 +1177,50 @@ impl App {
             });
             return;
         }
+        if text.trim() == "/continue" {
+            if let Some(ref reason) = self.last_abort_reason {
+                let label = match reason {
+                    TurnAbortReason::MaxRoundsExceeded => "max rounds limit",
+                    TurnAbortReason::TimedOut => "timeout",
+                    _ => "recoverable error",
+                };
+                self.committed_messages.push(UIMessage {
+                    role: MessageRole::System,
+                    content: format!("\u{267B}\u{FE0F} Continuing after {}...", label),
+                    tool_name: None,
+                    content_collapsed: false,
+                    tool_collapsed: false,
+                    tool_args: None,
+                    diff_data: None,
+                });
+                // Inject system message into conversation history
+                let history = self.conversation_history.clone();
+                let label_clone = label.to_string();
+                tokio::spawn(async move {
+                    let mut h = history.lock().await;
+                    h.push(ChatMessage::system(&format!(
+                        "[User pressed /continue after {}. Continue working on the previous task from where you left off.]",
+                        label_clone
+                    )));
+                });
+                self.last_abort_reason = None;
+                self.pending_inputs.push_back("Continue the current task from where you left off.".to_string());
+                if self.current_turn_handle.is_none() {
+                    self.start_next_turn();
+                }
+            } else {
+                self.committed_messages.push(UIMessage {
+                    role: MessageRole::System,
+                    content: "No interrupted turn to continue. The last turn completed normally.".to_string(),
+                    tool_name: None,
+                    content_collapsed: false,
+                    tool_collapsed: false,
+                    tool_args: None,
+                    diff_data: None,
+                });
+            }
+            return;
+        }
         if text.trim() == "/undo" {
             self.committed_messages.push(UIMessage {
                 role: MessageRole::System,
@@ -1260,10 +1310,10 @@ impl App {
         let session_id = self.session_id.clone();
         let sys_msgs = self.assembled_system_messages.clone();
         let plan_mode = self.mode == AgentMode::PlanMode;
-        // Build planner ApiClient if planner_model is configured
-        let planner_client = {
+        // Read agent config from settings
+        let (planner_client, max_rounds) = {
             let s = self.settings_lock.read().unwrap();
-            if let Some(ref pm) = s.planner_model {
+            let planner = if let Some(ref pm) = s.planner_model {
                 let mut planner_settings = s.clone();
                 planner_settings.model = pm.clone();
                 if let Some(ref url) = s.planner_model_base_url {
@@ -1275,15 +1325,17 @@ impl App {
                 Some(crate::api::ApiClient::new(planner_settings))
             } else {
                 None
-            }
+            };
+            (planner, s.max_rounds.unwrap_or(100))
         };
+        let token_counter = self.token_counter.clone();
         self.current_turn_handle = Some(tokio::spawn(async move {
-            let mut agent = AgentLoop::new(client, event_tx.clone(), session_id, history, sys_msgs, plan_mode, planner_client);
+            let mut agent = AgentLoop::new(client, event_tx.clone(), session_id, history, sys_msgs, plan_mode, planner_client, max_rounds, token_counter);
             let result = agent.process_input(input_text).await;
             if let Err(ref e) = result {
                 let reason = if e.contains("timed out") {
                     TurnAbortReason::TimedOut
-                } else if e.contains("max rounds") {
+                } else if e.contains("max rounds") || e.contains("LLM rounds") || e.contains("Token budget exhausted") {
                     TurnAbortReason::MaxRoundsExceeded
                 } else {
                     TurnAbortReason::StreamError

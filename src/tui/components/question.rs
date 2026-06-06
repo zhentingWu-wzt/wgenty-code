@@ -161,7 +161,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &QuestionState) {
         lines.push(option_line(
             i,
             opt,
-            &state,
+            state,
         ));
     }
 

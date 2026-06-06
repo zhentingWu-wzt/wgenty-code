@@ -8,9 +8,10 @@
 // ── Agent Phase ──────────────────────────────────────────────────────────
 
 /// Formal agent lifecycle phase, replacing the raw `status: String`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum AgentPhase {
     /// Nothing in progress; waiting for user input.
+    #[default]
     Idle,
     /// Streaming LLM response chunks back to the UI.
     StreamingResponse,
@@ -42,7 +43,7 @@ impl AgentPhase {
             AgentPhase::StreamingResponse => "streaming",
             AgentPhase::Thinking => "thinking",
             AgentPhase::PreparingTools => "preparing tools...",
-            AgentPhase::ExecutingTool { name } => return name.as_str(),
+            AgentPhase::ExecutingTool { name } => name.as_str(),
             AgentPhase::AwaitingPermission { .. } => "permission required",
             AgentPhase::AwaitingUserInput { .. } => "question",
             AgentPhase::Compacting => "compacting",
@@ -55,12 +56,6 @@ impl AgentPhase {
     /// Whether the phase is a "busy" state (non-idle, non-error).
     pub fn is_busy(&self) -> bool {
         !matches!(self, AgentPhase::Idle | AgentPhase::Completed | AgentPhase::Errored(_) | AgentPhase::Planning)
-    }
-}
-
-impl Default for AgentPhase {
-    fn default() -> Self {
-        AgentPhase::Idle
     }
 }
 
@@ -102,6 +97,12 @@ pub enum ReviewDecision {
 /// Unique identifier for a single user-input → agent-response cycle.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TurnId(pub String);
+
+impl Default for TurnId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TurnId {
     pub fn new() -> Self {

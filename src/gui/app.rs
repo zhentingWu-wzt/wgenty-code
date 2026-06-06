@@ -298,7 +298,7 @@ impl WgentyCodeApp {
         // Add error message as system message
         self.chat_panel
             .messages
-            .push(crate::gui::chat::ChatMessage::system(&format!(
+            .push(crate::gui::chat::ChatMessage::system(format!(
                 "Error: {}",
                 error
             )));
@@ -326,7 +326,7 @@ impl WgentyCodeApp {
         self.settings_panel.save_to_settings(&mut self.settings);
 
         if let Err(e) = self.settings.save() {
-            self.show_status(&format!("Failed to save settings: {}", e));
+            self.show_status(format!("Failed to save settings: {}", e));
             return;
         }
 

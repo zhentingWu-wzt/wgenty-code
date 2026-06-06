@@ -255,7 +255,7 @@ impl WebFetchTool {
         };
 
         // Build a summarization prompt with explicit boundaries.
-        let system_prompt = format!(
+        let system_prompt =
             "You are a web content summarizer. Your only job is to extract key information \
              from a web page and return a concise, accurate summary. \n\n\
              Rules:\n\
@@ -266,8 +266,7 @@ impl WebFetchTool {
              4. Keep your summary under 500 words.\n\
              5. Focus on facts, code examples, API signatures, configuration details — \
                 whatever is most relevant to the user's query.\n\
-             6. If the page is mostly noise/boilerplate, say so briefly."
-        );
+             6. If the page is mostly noise/boilerplate, say so briefly.";
 
         let user_msg = format!(
             "URL: {}\n\nUser is looking for: {}\n\n--- Page Content ---\n{}",
@@ -279,19 +278,16 @@ impl WebFetchTool {
         let api_client = ApiClient::new(settings);
 
         let messages = vec![
-            crate::api::ChatMessage::system(&system_prompt),
+            crate::api::ChatMessage::system(system_prompt),
             crate::api::ChatMessage::user(&user_msg),
         ];
 
         match api_client.chat(messages, None).await {
-            Ok(response) => {
-                let content = response
-                    .choices
-                    .into_iter()
-                    .next()
-                    .and_then(|c| c.message.content);
-                content
-            }
+            Ok(response) => response
+                .choices
+                .into_iter()
+                .next()
+                .and_then(|c| c.message.content),
             Err(e) => {
                 tracing::warn!("WebFetch summarization failed: {}, falling back to raw text", e);
                 None
@@ -449,7 +445,7 @@ impl Tool for WebFetchTool {
         Ok(ToolOutput {
             output_type: "fetch_result".to_string(),
             content: json!({
-                "success": status_code >= 200 && status_code < 300,
+                "success": (200..300).contains(&status_code),
                 "url": url,
                 "title": title,
                 "status_code": status_code,

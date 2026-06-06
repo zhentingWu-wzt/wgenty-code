@@ -6,6 +6,7 @@
 
 use crate::api::{ApiClient, ChatMessage, ToolDefinition};
 use crate::tools::ToolRegistry;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Run a subagent with an isolated agent loop.
 ///
@@ -39,6 +40,9 @@ pub async fn run_subagent_loop(
         max_rounds = max_rounds,
         "Subagent: starting agent loop"
     );
+    static SUBAGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let trace_id = SUBAGENT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    tracing::info!(target: "subagent", trace_id = trace_id, "Subagent: trace context");
 
     let mut messages: Vec<ChatMessage> = vec![
         ChatMessage::system(system_prompt),

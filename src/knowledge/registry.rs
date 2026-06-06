@@ -29,7 +29,7 @@ impl SkillRegistry {
         for category in categories {
             self.categories
                 .entry(category)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(name.clone());
         }
     }

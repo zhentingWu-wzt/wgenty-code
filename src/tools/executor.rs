@@ -140,7 +140,7 @@ impl ToolExecutor {
             if outcome.blocked {
                 return ChatMessage::tool(
                     tool_call_id,
-                    &format!("Tool '{}' blocked by hook: {}", tool_name, outcome.output),
+                    format!("Tool '{}' blocked by hook: {}", tool_name, outcome.output),
                 );
             }
         }
