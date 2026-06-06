@@ -1,581 +1,171 @@
-# Wgenty Code Rust 🦀
-
-> 🚀 **Anthropic Wgenty Code 的 Rust 全量重构版本** - 性能提升 **2.5x**，体积减少 **97%**，零依赖原生安全
-
-<div align="center">
-
 [![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg)]()
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)]()
-[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)]()
 
-**[快速开始](#-快速开始) • [性能基准](#-性能基准数据) • [功能特性](#-核心特性) • [架构设计](#-架构设计) • [文档](#-文档)**
+# Wgenty Code 🦀
 
-</div>
+> **高性能 Coding Agent CLI，用 Rust 重写** — 启动快 2.5 倍，二进制体积缩小 97%，零运行时依赖。
 
-## 🌐 项目网站
-
-| 网站 | 描述 |
-|:-----|:-----|
-| [Wgenty Code Rust](https://wgentycode-rust.netlify.app/) | 官方项目网站 - 性能展示和安装指南 |
-| [Wgenty Code Rust Landing](https://lorryjovens-hub.github.io/wgenty-code-rust-landing/) | 项目介绍和特性展示 |
-
-<div align="center">
-  <a href="https://wgentycode-rust.netlify.app/" target="_blank">
-    <img src="https://wgentycode-rust.netlify.app/og-image.png" alt="Wgenty Code Rust 网站" width="400" style="border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);" />
-  </a>
-  <a href="https://lorryjovens-hub.github.io/wgenty-code-rust-landing/" target="_blank">
-    <img src="https://lorryjovens-hub.github.io/wgenty-code-rust-landing/og-image.png" alt="Wgenty Code Rust Landing" width="400" style="border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); margin-left: 20px;" />
-  </a>
-</div>
+Wgenty Code 是一个 LLM 驱动的编程助手，通过终端界面读取、编写和重构代码。支持多种 AI 提供商（Anthropic、DeepSeek、DashScope），以单一自包含二进制发布，无需 Node.js 或 Python 运行时。
 
 ---
 
-## 🎯 项目概述
+## 为什么用 Rust？
 
-这是一个**从零开始用 Rust 完整重构**的 Wgenty Code 工具链，在保持 100% 功能兼容性的同时：
+原始 TypeScript 实现携带了整个 Node.js 运行时 — 164 MB 的依赖、100 MB 的空闲内存、每次调用的 JIT 预热延迟。用 Rust 重写消除了这一切：
 
-- ⚡ **性能革命**：启动速度快 **2.5 倍**，命令执行快 **25 倍**
-- 📦 **轻量级**：从 164MB 减少到仅 **5MB**，部署体积减少 **97%**
-- 🔒 **内存安全**：Rust 编译器保证零运行时安全隐患
-- 🚀 **开箱即用**：单文件分发，无需任何依赖安装
-- 🏗️ **完整功能**：CLI、REPL、MCP 服务、插件系统一应俱全
+| 指标 | Rust | TypeScript | 提升 |
+|:-----|:----:|:---------:|:----:|
+| 冷启动 | **58 ms** | 152 ms | **2.6 倍** |
+| 二进制大小 | **5 MB** | 164 MB | **缩小 97%** |
+| 空闲内存 | **10 MB** | 100 MB | **减少 90%** |
+| 配置读取 | **6 ms** | 150 ms | **快 25 倍** |
+| REPL 按键响应 | **<1 ms** | 100 ms | **即时** |
 
-这是一次**伟大的技术改造**，将现代系统编程语言的优势引入 AI IDE 工具链。
+超出数字之外，Rust 的所有权模型消除了整个类别的 bug：没有空指针异常、没有数据竞争、没有 GC 暂停。编译器在构建时证明内存安全和线程安全 — 在二进制运行之前。
 
----
-
-## 📊 性能基准数据对比
-
-### ⚡ 启动速度基准 (越低越好 ↓)
-
-| 指标 | Rust 版本 | TypeScript 版本 | 性能提升 |
-|:----:|:----------:|:---------------:|:--------:|
-| 平均启动时间 | **63ms** ⚡ | 158ms | **2.5x 更快** 🚀 |
-| 冷启动 | **58ms** | 152ms | **2.6x 更快** |
-| 热启动 (缓存) | **61ms** | 156ms | **2.5x 更快** |
-| 最快启动 | 51ms | 145ms | **2.8x 更快** |
-| 最慢启动 | 74ms | 172ms | **2.3x 更快** |
-
-### 📦 部署体积对比 (越小越好 ↓)
-
-| 指标 | Rust 版本 | TypeScript 版本 | 减少比例 |
-|:----:|:----------:|:---------------:|:--------:|
-| **单文件可执行体** | **5.07 MB** 🎯 | - | - |
-| **npm 安装后体积** | 仅需编译 | **164.32 MB** 📦 | **97% 减少** |
-| **node_modules 大小** | **0 MB** (无依赖) | **~156 MB** | **100% 消除** |
-| **运行时依赖** | **0 MB** (内置) | **~8 MB** (Node.js) | **100% 消除** |
-| **Docker 镜像** | **~20 MB** (含OS) | **~600 MB+** | **96% 减少** |
-
-### 🚀 命令执行速度对比 (越低越好 ↓)
-
-| 命令操作 | Rust 版本 | TypeScript 版本 | 提升倍数 |
-|:---------|:----------:|:---------------:|:--------:|
-| `--version` | **63ms** | 158ms | **2.5x** ⚡ |
-| `--help` | **73ms** | 176ms | **2.4x** ⚡ |
-| 查看配置 | **6ms** ✨ | ~150ms | **25x** 🔥 |
-| 初始化项目 | **85ms** | ~200ms | **2.3x** ⚡ |
-| REPL 响应 | **<1ms** | ~100ms | **100x** 🚀 |
-
-### 💾 内存占用对比 (越低越好 ↓)
-
-| 指标 | Rust 版本 | TypeScript 版本 | 优势 |
-|:----:|:----------:|:---------------:|:------:|
-| 基础内存占用 | **~10 MB** 🎯 | ~50+ MB | **5x 更轻** |
-| 实际工作内存 | **~15 MB** | ~150+ MB | **10x 更轻** |
-| 峰值内存 | **~25 MB** | 300+ MB | **12x 更轻** |
-| 垃圾回收暂停 | **0ms** (无 GC) | ~50-200ms | **完全消除** |
-| 线程开销 | **极低** | 100+ MB (Node 多线程) | **无显著开销** |
-
-### 📈 资源效率总结
-
-```
-性能指标                Rust        TypeScript    改进倍数
-─────────────────────────────────────────────────────────
-启动速度              63ms         158ms         2.5x ⚡
-体积大小              5MB          164MB         32x  📦
-内存占用              10MB         100MB         10x  💾
-配置查询              6ms          150ms         25x  🚀
-冷启动时间            58ms         152ms         2.6x ⚡
-─────────────────────────────────────────────────────────
-总体优势指数          ▓▓▓▓▓▓▓█░    基准线        3x+ 🏆
-```
+详见 [PERFORMANCE_BENCHMARKS.md](PERFORMANCE_BENCHMARKS.md)。
 
 ---
 
-## ✨ 核心特性
+## 设计亮点
 
-### 🏃 极致性能 - 2.5x 更快的执行速度
+### 🔒 默认安全
 
-| 特性 | 优势 | 实际影响 |
-|:--:|:--:|:--|
-| **原生编译** | 无 JIT 延迟，直接执行机器码 | 启动时间从 158ms → **63ms** |
-| **零运行时** | 无需 Node.js/Bun 等依赖 | 部署体积从 164MB → **5MB** |
-| **快速启动** | 60ms 内完成初始化 | 适合服务端高频调用场景 |
-| **低内存占用** | 仅占用 10MB 基础内存 | 同时运行 50+ 实例无压力 |
+Agent 要执行的每条命令都经过**两级 Guardian 审查**：
 
-**测试场景**：
-- ✅ 启动 100 次：Rust 耗时 6.3 秒，TypeScript 耗时 15.8 秒
-- ✅ 并发 50 实例：Rust 占用 500MB，TypeScript 占用 5GB
-- ✅ 配置查询性能：Rust 6ms vs TypeScript 150ms **（25x 差距）**
+1. **规则过滤** — 静态模式阻止明显危险的操作（如 `rm -rf /`、`curl | sh`）
+2. **LLM 审查**（可选）— 模型评估模糊命令的风险，分类为 `低 / 中 / 高 / 严重`
 
-### 🔒 内存安全 - 编译器保证的可靠性
+严重风险操作自动拒绝。执行面还通过 **OS 级沙箱** 进一步隔离：macOS Seatbelt、Linux seccomp-bpf、Windows Job Objects。
 
-| 安全特性 | 技术方案 | 结果 |
-|:--:|:--:|:--|
-| **编译时检查** | Rust 的所有权系统 | 发现 100% 的内存错误 |
-| **无运行时崩溃** | 消除空指针、缓冲区溢出 | 零内存泄漏、零段错误 |
-| **确定性释放** | 无 GC 停顿 | 延迟可预测、无突刺现象 |
-| **线程安全** | 数据竞争自动检测 | 完全避免多线程 Bug |
+### 🧩 25 种工具，一个抽象
 
-**安全性改进**：
-- ✅ 比 TypeScript 版本少 0 个已知安全漏洞
-- ✅ 内存泄漏风险降低 **99.9%**
-- ✅ 崩溃率从 0.1% (Node.js) → **0.0%** (Rust)
+所有 Agent 能力 — 文件操作、代码搜索、命令执行、网页访问 — 实现单一 `Tool` trait，关键设计选择：**`is_read_only()` 默认为 `false`**。每个只读工具必须显式声明自己是安全的。
 
-### 📦 轻量部署 - 从 164MB 到 5MB
+### 📐 8 层 Prompt 组装
+
+系统 prompt 按 8 层可独立开关的指令组装：
 
 ```
-部署对比 (单个实例)
-├─ Rust 版本
-│  ├─ 可执行文件: 5.07 MB
-│  ├─ node_modules: 0 MB
-│  ├─ 依赖项: 0 个
-│  └─ 总计: 5 MB ✨
-│
-└─ TypeScript 版本
-   ├─ dist: 2.5 MB
-   ├─ node_modules: 156 MB
-   ├─ 依赖项: 200+ 个
-   └─ 总计: 164+ MB 📦
+base_instructions → permissions → developer → collaboration
+  → environment → skills → agents_md → wgenty_md
 ```
 
-**部署优势**：
-- ✅ Docker 镜像：从 600MB+ → **20MB**（96% 减少）
-- ✅ 网络传输：下载时间从 30秒 → **0.5秒**
-- ✅ 磁盘成本：1000 个副本从 164GB → **5GB**
+### 👥 RLM 架构 — 递归语言模型
 
-### 🔄 完整功能 - 100% 特性兼容
-
-终端交互与官方版本完全一致：
+复杂任务通过 **Planner → Executor → Aggregator** 管道自动分解为独立子任务：
 
 ```
-🚀 主要功能模块
-├─ 🎯 CLI 命令行工具
-│  ├─ 单次查询执行
-│  ├─ REPL 交互模式
-│  ├─ 配置管理
-│  └─ 帮助信息
-├─ 🔌 MCP 服务器
-│  ├─ 工具注册和执行
-│  ├─ 资源管理
-│  ├─ 提示词系统
-│  └─ 采样程序支持
-├─ 🧩 插件系统
-│  ├─ 自定义命令
-│  ├─ 钩子系统
-│  ├─ 热加载支持
-│  └─ 插件隔离
-├─ 💾 内存管理
-│  ├─ 会话管理
-│  ├─ 历史记录
-│  ├─ 上下文维护
-│  └─ 持久化存储
-└─ 🎤 高级功能
-   ├─ 语音输入模式
-   ├─ 项目初始化
-   ├─ SSH 连接支持
-   └─ 远程调用能力
+模型 → task 工具（简单任务）
+      → delegate 工具（复杂：自动分解 → 并行执行 → 合并）
+      → dispatch 工具（map-reduce：grep 结果 → 逐项分析 → 聚合）
 ```
 
-**特性完整性**：✅ 100% 功能兼容性，零学习成本
+**RLM 管道（delegate 工具）：**
+- Planner 调用 LLM 将任务分解为结构化 JSON 子任务
+- Executor 按依赖层级并行运行子任务
+- Aggregator 合并所有结果为一致性响应
+
+**自动路由（task 工具）：**
+`task` 工具检测复杂 prompt（>500 字符、多步骤指示）自动路由到 RLM 管道。
+
+**递归控制：**
+- 深度传播：每个子 agent 知道自身层级
+- 硬限制：`max_subagent_depth`（默认 3）
+- 自指：子 agent 可在深度允许时继续委托
+
+### 🏗️ Plan Mode
+
+配置中开启 `plan_mode` 或在 REPL 中按 `Ctrl+P`：
+
+1. Agent 探索代码库，阅读相关文件，提出澄清问题
+2. 调用 `update_plan` 在 UI 面板展示结构化计划
+3. 等待用户批准后才执行变更
+
+计划面板展示每步的状态标记：`○ 待办 / ◐ 进行中 / ✓ 已完成`。
+
+### 🖥️ TUI 特性
+
+基于 [ratatui](https://ratatui.rs/) 构建的终端界面：
+
+- **基于 Turn 的聊天** — Turn 之间实线分隔，Turn 内虚线分隔
+- **结构化 Plan 面板** — 带状态标记的内联计划渲染
+- **折叠的工具结果** — 工具输出默认折叠（Ctrl+O 展开），减少噪音
+- **Agent 模式切换** — `Normal / Plan / Accept Edits / Yolo` 带颜色编码标签
+- **多行输入** — Shift+Enter 换行，完整 IME/CJK 支持
+- **会话管理** — 保存/加载/删除/搜索会话
 
 ---
 
-## 🏗️ 架构设计
+## 快速开始
 
-```
-wgenty-code-rust/
-├── src/
-│   ├── api/              # API 客户端 (支持 Anthropic/DeepSeek)
-│   ├── cli/              # CLI 命令解析
-│   │   ├── args.rs       # 参数定义
-│   │   ├── commands.rs   # 命令实现
-│   │   └── repl.rs       # REPL 循环
-│   ├── config/           # 配置管理
-│   │   ├── api_config.rs # API 配置
-│   │   ├── settings.rs   # 全局设置
-│   │   └── mcp_config.rs # MCP 配置
-│   ├── mcp/              # MCP 协议实现
-│   │   ├── server.rs     # MCP 服务器
-│   │   ├── tools.rs      # 工具注册
-│   │   ├── resources.rs  # 资源管理
-│   │   ├── prompts.rs    # 提示词系统
-│   │   └── sampling.rs   # 采样支持
-│   ├── memory/           # 内存/会话管理
-│   │   ├── session.rs    # 会话管理
-│   │   ├── history.rs    # 历史记录
-│   │   ├── context.rs    # 上下文维护
-│   │   ├── storage.rs    # 持久化存储
-│   │   └── consolidation.rs # 内存整合
-│   ├── plugins/          # 插件系统
-│   │   ├── registry.rs   # 插件注册
-│   │   ├── loader.rs     # 插件加载
-│   │   ├── commands.rs   # 自定义命令
-│   │   ├── hooks.rs      # 钩子系统
-│   │   └── isolation.rs  # 插件隔离
-│   ├── services/         # 服务层
-│   │   ├── agents.rs     # 内置代理
-│   │   ├── auto_dream.rs # AutoDream
-│   │   ├── voice.rs      # 语音输入
-│   │   ├── magic_docs.rs # Magic Docs
-│   │   ├── team_memory_sync.rs # 团队记忆同步
-│   │   └── plugin_marketplace.rs # 插件市场
-│   ├── advanced/         # 高级功能
-│   │   ├── ssh.rs        # SSH 连接
-│   │   ├── remote.rs     # 远程调用
-│   │   └── project_init.rs # 项目初始化
-│   ├── state/            # 状态管理
-│   ├── terminal/         # 终端交互
-│   ├── tools/            # 工具实现
-│   ├── voice/            # 语音输入
-│   ├── lib.rs            # 库入口
-│   └── main.rs           # 主入口
-├── scripts/              # 安装脚本
-│   ├── install-windows.ps1
-│   └── install-linux.sh
-├── Cargo.toml            # Rust 配置
-├── INSTALL.md            # 安装指南
-└── README.md             # 本文档
-```
+### 前置条件
+- **Rust** 1.75+ ([rustup.rs](https://rustup.rs/))
+- **Git**
 
----
-
-## 🚀 快速开始
-
-### 系统要求
-
-- **Rust**: 1.75+ (从 [rustup.rs](https://rustup.rs/) 安装)
-- **Git**: 用于克隆仓库
-- **操作系统**: Windows / Linux / macOS
-
-### 安装
-
-#### 方式一：使用安装脚本 ⚡ **推荐**
-
-**Windows (PowerShell):**
-```powershell
-# 克隆仓库
-git clone https://github.com/lorryjovens-hub/wgenty-code-rust.git
-cd wgenty-code-rust
-
-# 运行安装脚本（默认安装到临时目录）
-Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-.\scripts\install-windows.ps1
-
-# 或指定安装到D盘
-.\scripts\install-windows.ps1 -InstallDir "D:\wgenty-code\install"
-```
-
-**Linux / macOS:**
-```bash
-# 克隆仓库
-git clone https://github.com/lorryjovens-hub/wgenty-code-rust.git
-cd wgenty-code-rust
-
-# 运行安装脚本
-chmod +x ./scripts/install-linux.sh
-./scripts/install-linux.sh
-
-# 或指定安装目录
-./scripts/install-linux.sh --install-dir "/opt/wgenty-code"
-```
-
-#### 方式二：手动编译
+### 安装运行
 
 ```bash
-# 克隆仓库
-git clone https://github.com/lorryjovens-hub/wgenty-code-rust.git
-cd wgenty-code-rust
-
-# 编译发布版本
+git clone https://github.com/zhentingWu-wzt/wgenty-code.git
+cd wgenty-code
 cargo build --release
 
-# 可执行文件位置
-./target/release/wgenty-code
+# 设置 API key
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# 开始编码
+./target/release/wgenty-code repl
 ```
 
-#### 方式三：指定编译目录（解决磁盘空间问题）
+### Docker
 
 ```bash
-# 使用D盘作为编译目录
-cargo build --release --target-dir "D:\wgenty-code\target"
-
-# 可执行文件位置
-D:\wgenty-code\target\release\wgenty-code.exe
+docker build -t wgenty-code:latest .
+docker run -it --rm -v ~/.wgenty-code:/root/.wgenty-code wgenty-code:latest repl
 ```
 
-### 配置 API
+### 配置
+
+配置文件位于 `~/.wgenty-code/settings.json`（自动生成）。关键选项：
+
+| 配置项 | 默认值 | 用途 |
+|:-------|:-------|:-----|
+| `api.base_url` | `https://api.anthropic.com` | AI 提供商端点 |
+| `model` | `sonnet` | 模型别名（自动映射） |
+| `small_model` | *(无)* | 委托子任务的小型/廉价模型 |
+| `plan_mode` | `false` | 启用先计划后执行模式 |
+| `max_subagent_depth` | `3` | 嵌套子 agent 最大深度 |
+| `max_concurrent_subagents` | `5` | 并行子 agent 最大数量 |
+| `token_budget_k` | `0` | 累计 token 限制（0 = 无限制） |
+
+---
+
+## CLI 速览
 
 ```bash
-# 方式 1: 使用命令行配置（推荐）
-wgenty-code config set api_key "your-api-key"
-wgenty-code config set base_url "https://api.deepseek.com"
-wgenty-code config set model "deepseek-reasoner"
-
-# 方式 2: 环境变量
-export DEEPSEEK_API_KEY="your-api-key"
-export API_BASE_URL="https://api.deepseek.com"
-
-# 方式 3: 配置文件 (.env)
-# DEEPSEEK_API_KEY=your-api-key
-# API_BASE_URL=https://api.deepseek.com
-# CLAUDE_MODEL=deepseek-reasoner
+wgenty-code repl                      # 交互式 TUI 会话
+wgenty-code query -p "重构这段代码"    # 一次性查询
+wgenty-code config set model haiku    # 切换模型
+wgenty-code mcp add --name fs         # 注册 MCP 服务器
+wgenty-code sandbox status            # 检查沙箱状态
+wgenty-code agent --agent-type plan --prompt "设计一个 API"
 ```
 
-### 使用示例
+### REPL 快捷键
 
-```bash
-# 查看版本
-wgenty-code --version
-
-# 查看帮助
-wgenty-code --help
-
-# 启动 REPL 交互模式
-wgenty-code repl
-
-# 执行单次查询
-wgenty-code query --prompt "分析这个项目的结构"
-
-# 初始化新项目
-wgenty-code init --name my-project --template rust
-
-# 管理配置
-wgenty-code config show
-wgenty-code config set model deepseek-reasoner
-wgenty-code config reset
-
-# MCP 服务器管理
-wgenty-code mcp list
-wgenty-code mcp add filesystem --path /path/to/dir
-
-# 内存管理
-wgenty-code memory status
-wgenty-code memory export --output memories.json
-
-# 插件管理
-wgenty-code plugin list
-wgenty-code plugin install my-plugin
-
-# 语音输入模式
-wgenty-code voice
-
-# 运行压力测试
-wgenty-code stress-test
-```
+| 按键 | 功能 |
+|:-----|:-----|
+| `Ctrl+P` | 切换 Plan 模式 |
+| `Ctrl+O` | 展开/折叠工具输出 |
+| `Shift+Enter` | 输入中换行 |
+| `Enter` | 提交输入 |
+| `Ctrl+C` (双击) | 退出 |
 
 ---
 
-## 📈 运行基准测试
+## License
 
-```powershell
-# PowerShell
-cd wgenty-code-rust
-.enchmark.ps1
-```
+MIT — 详见 [LICENSE](LICENSE)。
 
-### 示例输出
-
-```
-========================================
-Wgenty Code Performance Benchmark
-========================================
-
-Test 1: Startup Time (cold start)
-  Rust Run 1: 62ms
-  Rust Run 2: 64ms
-  Rust Run 3: 63ms
-  Rust Run 4: 63ms
-  Rust Run 5: 63ms
-  Rust Average: 63ms
-  TypeScript Run 1: 156ms
-  TypeScript Run 2: 159ms
-  TypeScript Run 3: 158ms
-  TypeScript Run 4: 161ms
-  TypeScript Run 5: 156ms
-  TypeScript Average: 158ms
-
-  Startup Speedup: 2.5x faster (Rust)
-
-Test 2: Help Command Execution
-  Rust Average: 73ms
-  TypeScript Average: 176ms
-  Help Command Speedup: 2.4x faster (Rust)
-
-Test 3: Binary Size Comparison
-  Rust Binary: 5.07 MB
-  TypeScript node_modules: 164.32 MB
-
-========================================
-BENCHMARK SUMMARY
-========================================
-
-Overall Performance Improvement: 60%
-```
-
----
-
-## 🔧 技术栈
-
-| 组件 | 技术 | 版本 | 用途 |
-|------|------|------|------|
-| 语言 | Rust | 1.75+ | 核心语言 |
-| CLI 框架 | clap | 4.x | 命令行解析 |
-| 序列化 | serde | 1.x | JSON/TOML 序列化 |
-| HTTP 客户端 | reqwest | 0.12 | API 调用 |
-| 异步运行时 | tokio | 1.x | 异步任务 |
-| 终端 UI | crossterm + ratatui | 0.27/0.26 | TUI 界面 |
-| 文件系统 | walkdir + glob | 2.5/0.3 | 文件操作 |
-| 配置管理 | config + toml | 0.14/0.8 | 配置解析 |
-| 内存缓存 | lru + dashmap | 0.12/5.5 | 缓存管理 |
-| 加密 | sha2 + jsonwebtoken | 0.10/9.3 | 安全认证 |
-
----
-
-## 🆚 全面对比
-
-| 特性 | Rust 版本 | TypeScript 版本 |
-|:-----|:---------:|:---------------:|
-| **运行时依赖** | ❌ 无 | ✅ Node.js/Bun |
-| **启动时间** | 63ms | 158ms |
-| **内存占用** | ~10MB | ~100MB+ |
-| **部署体积** | 5MB | 164MB+ |
-| **内存安全** | 编译时保证 | 运行时检查 |
-| **并发模型** | 多线程 | 单线程事件循环 |
-| **CPU 效率** | 原生代码 | JIT 编译 |
-| **跨平台** | 编译即可 | npm install |
-| **分发方式** | 单文件 | npm 包 |
-| **容器镜像** | ~20MB | ~200MB+ |
-
----
-
-## 🎯 适用场景
-
-### ✅ 最佳场景
-- **CI/CD 管道**: 快速启动，适合频繁调用
-- **容器化部署**: 更小的镜像体积
-- **嵌入式/边缘设备**: 低资源占用
-- **高频调用场景**: 命令行脚本集成
-- **资源受限环境**: 服务器、容器
-
-### ⚠️ 原版优势场景
-- 快速原型开发
-- 需要完整生态支持
-- 动态配置热更新
-- 插件动态加载
-
----
-
-## 📝 开发路线
-
-### 已完成 ✅
-- [x] CLI 基础命令框架
-- [x] 配置管理系统
-- [x] REPL 交互模式
-- [x] MCP 协议支持
-- [x] 工具系统 (文件操作、命令执行)
-- [x] 内存管理模块
-- [x] 插件系统架构
-- [x] 语音输入模式
-- [x] 会话管理
-- [x] AutoDream 服务
-- [x] Magic Docs 服务
-- [x] 团队记忆同步
-- [x] 插件市场
-- [x] 内置代理系统
-- [x] SSH 连接支持
-- [x] 远程调用能力
-- [x] 项目初始化
-- [x] 安装脚本
-- [x] 压力测试框架
-
-### 进行中 🚧
-- [ ] API 流式响应优化
-- [ ] 完整的 API 集成测试
-
-### 计划中 📋
-- [ ] WebAssembly 支持
-- [ ] GUI 版本 (egui/iced)
-- [ ] 插件市场 Web 界面
-- [ ] 多语言支持
-
----
-
-## 🤝 贡献指南
-
-欢迎贡献代码、报告问题或提出建议！
-
-```bash
-# 开发环境设置
-git clone https://github.com/lorryjovens-hub/wgenty-code-rust.git
-cd wgenty-code-rust
-
-# 安装开发工具
-cargo install clippy rustfmt
-
-# 运行检查
-cargo clippy
-cargo fmt --check
-cargo test
-
-# 运行开发版本
-cargo run -- --version
-```
-
-### 贡献方式
-1. Fork 本仓库
-2. 创建功能分支 (`git checkout -b feature/amazing-feature`)
-3. 提交更改 (`git commit -m 'Add amazing feature'`)
-4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 创建 Pull Request
-
----
-
-## 📄 许可证
-
-MIT License - 详见 [LICENSE](LICENSE) 文件
-
----
-
-## 🙏 致谢
-
-- **Anthropic** - 原版 Wgenty Code 的创造者
-- **Rust 社区** - 优秀的工具链和生态系统
-- **所有贡献者** - 感谢每一位贡献者
-
----
-
-## 📞 联系方式
-
-- **Issues**: [GitHub Issues](https://github.com/lorryjovens-hub/wgenty-code-rust/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/lorryjovens-hub/wgenty-code-rust/discussions)
-
----
-
-<p align="center">
-  <strong>Made with ❤️ and Rust 🦀</strong>
-</p>
-
-## ⭐️ Star 趋势
-
-<div align="center">
-  <a href="https://github.com/lorryjovens-hub/wgenty-code-rust/stargazers" target="_blank">
-    <img src="https://starchart.cc/lorryjovens-hub/wgenty-code-rust.svg" alt="Wgenty Code Rust Star History" width="800" />
-  </a>
-</div>
-
-<p align="center">
-  <sub>如果这个项目对你有帮助，请给一个 ⭐️ Star 支持一下！</sub>
-</p>
+**仓库**: [github.com/zhentingWu-wzt/wgenty-code](https://github.com/zhentingWu-wzt/wgenty-code)
