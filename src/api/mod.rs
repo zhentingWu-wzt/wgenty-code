@@ -2,6 +2,7 @@
 
 pub mod anthropic_types;
 pub mod provider;
+pub mod token_counter;
 
 use crate::config::Settings;
 use reqwest::Client;
@@ -29,7 +30,7 @@ impl ApiClient {
             .unwrap_or_default();
 
         let provider: Arc<dyn Provider> =
-            provider::detect_provider(&settings.api.get_base_url()).into();
+            Arc::from(provider::detect_provider(&settings.api.get_base_url()));
 
         Self {
             settings,

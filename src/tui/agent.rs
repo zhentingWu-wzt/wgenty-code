@@ -18,7 +18,67 @@ use tokio::sync::mpsc;
 
 const MAX_RETRIES: u32 = 2;
 const MAX_ESTIMATED_TOKENS: usize = 50_000;
-// MAX_LLM_ROUNDS (50) defined inside process_input_inner as safety valve.
+// MAX_LLM_ROUNDS (100 default, configurable via settings.json) defined inside run_agent_loop as safety valve.
+
+/// Tracks consecutive tool-call patterns to detect when the LLM is stuck
+/// repeating identical operations without making progress.
+struct StuckDetector {
+    prev_signatures: Vec<(String, String)>,
+    stale_rounds: usize,
+}
+
+impl StuckDetector {
+    fn new() -> Self {
+        Self { prev_signatures: Vec::new(), stale_rounds: 0 }
+    }
+
+    /// Record a round of tool calls. Returns `true` if the agent should abort
+    /// (3+ consecutive identical rounds), `false` otherwise. On round 2,
+    /// returns a warning message for injection into tool results.
+    fn record_round(&mut self, tool_calls: &[crate::api::ToolCall]) -> StuckStatus {
+        let signatures: Vec<(String, String)> = tool_calls.iter().map(|tc| {
+            let keys = sorted_arg_keys(&tc.function.arguments);
+            (tc.function.name.clone(), keys)
+        }).collect();
+
+        if signatures == self.prev_signatures && !signatures.is_empty() {
+            self.stale_rounds += 1;
+        } else {
+            self.stale_rounds = 0;
+        }
+        self.prev_signatures = signatures;
+
+        match self.stale_rounds {
+            0 => StuckStatus::Ok,
+            1 => StuckStatus::Ok, // first repeat could be legitimate
+            2 => StuckStatus::Warn(
+                "\n\n\u{26A0}\u{FE0F} You have repeated the same tool calls multiple times. \
+                 Consider a different approach or ask the user for guidance.".to_string()
+            ),
+            _ => StuckStatus::Abort(
+                "Stuck in loop: repeated identical tool calls 3+ times".to_string()
+            ),
+        }
+    }
+}
+
+enum StuckStatus {
+    Ok,
+    Warn(String),
+    Abort(String),
+}
+
+/// Extract sorted JSON keys from tool arguments for signature comparison.
+fn sorted_arg_keys(args_json: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(args_json) {
+        if let Some(obj) = v.as_object() {
+            let mut keys: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
+            keys.sort();
+            return keys.join(",");
+        }
+    }
+    String::new()
+}
 
 pub struct AgentLoop {
     client: DaemonClient,
@@ -33,6 +93,9 @@ pub struct AgentLoop {
     rounds_since_todo: usize,
     compacted_summary: String,
     preparing_tools_fired: bool,
+    max_rounds: usize,
+    stuck_detector: StuckDetector,
+    token_counter: crate::api::token_counter::TokenCounter,
     plan_mode: bool,
     /// Optional ApiClient for a dedicated planner model. Used for plan
     /// generation when PlanMode is active and planner_model is configured.
@@ -49,6 +112,8 @@ impl AgentLoop {
         system_messages: Vec<ChatMessage>,
         plan_mode: bool,
         planner_client: Option<crate::api::ApiClient>,
+        max_rounds: usize,
+        token_counter: crate::api::token_counter::TokenCounter,
     ) -> Self {
         Self {
             client,
@@ -58,6 +123,9 @@ impl AgentLoop {
             rounds_since_todo: 0,
             compacted_summary: String::new(),
             preparing_tools_fired: false,
+            max_rounds,
+            stuck_detector: StuckDetector::new(),
+            token_counter,
             session_id,
             plan_mode,
             planner_client,
@@ -114,13 +182,20 @@ impl AgentLoop {
     /// Core LLM loop: stream, handle tools, compaction, etc.
     async fn run_agent_loop(&mut self) -> Result<(), String> {
         let mut llm_rounds = 0;
-        const MAX_LLM_ROUNDS: usize = 50;
+        let max_rounds = self.max_rounds;
+        let warn_rounds = max_rounds * 8 / 10;
         loop {
-            if llm_rounds >= MAX_LLM_ROUNDS {
+            if llm_rounds >= max_rounds {
                 let _ = self.event_tx.send(AppEvent::StreamError(
-                    format!("Agent exceeded {} LLM rounds", MAX_LLM_ROUNDS)
+                    format!("Agent exceeded {} LLM rounds", max_rounds)
                 ));
-                return Err(format!("Exceeded {} LLM rounds", MAX_LLM_ROUNDS));
+                return Err(format!("Exceeded {} LLM rounds", max_rounds));
+            }
+            if llm_rounds == warn_rounds {
+                tracing::warn!(
+                    rounds = llm_rounds,
+                    "Approaching max LLM rounds ({})", max_rounds
+                );
             }
 
             let messages = self.micro_compact().await;
@@ -128,6 +203,16 @@ impl AgentLoop {
             if self.needs_compaction(&messages) {
                 self.do_auto_compact().await;
                 continue;
+            }
+
+            // Check token budget before each LLM call
+            if self.token_counter.is_exhausted() {
+                let msg = format!(
+                    "Token budget exhausted ({}k). Type /continue to resume or increase token_budget_k in settings.json.",
+                    self.token_counter.budget_tokens() / 1000
+                );
+                let _ = self.event_tx.send(AppEvent::StreamError(msg.clone()));
+                return Err(msg);
             }
 
             self.preparing_tools_fired = false;
@@ -140,6 +225,26 @@ impl AgentLoop {
             };
 
             llm_rounds += 1;
+
+            // Estimate tokens consumed this round (prompt + completion)
+            let input_est: usize = messages.iter()
+                .map(|m| m.content.as_deref().unwrap_or("").len())
+                .sum::<usize>() * 2 / 3; // ~1.5 chars per token
+            let output_est: usize = (result.content.len()
+                + result.tool_calls.iter()
+                    .map(|tc| tc.function.arguments.len())
+                    .sum::<usize>()) * 2 / 3;
+            self.token_counter.add(input_est + output_est);
+
+            // Check budget after accounting
+            if self.token_counter.is_exhausted() {
+                let msg = format!(
+                    "Token budget exhausted ({}k). Type /continue to resume or increase token_budget_k in settings.json.",
+                    self.token_counter.budget_tokens() / 1000
+                );
+                let _ = self.event_tx.send(AppEvent::StreamError(msg.clone()));
+                return Err(msg);
+            }
 
             if result.has_tool_calls && !result.tool_calls.is_empty() {
                 let assistant_msg = StreamProcessor::build_assistant_message(
@@ -253,10 +358,8 @@ impl AgentLoop {
 
                     let results = futures::future::join_all(handles).await;
                     let mut history = history.lock().await;
-                    for handle_result in results {
-                        if let Ok((id, content)) = handle_result {
-                            history.push(ChatMessage::tool(&id, content));
-                        }
+                    for (id, content) in results.into_iter().flatten() {
+                        history.push(ChatMessage::tool(&id, content));
                     }
                 } else {
                     // ── Sequential execution (original path) ─────────────
@@ -381,6 +484,25 @@ impl AgentLoop {
                             }
                         }
                     }
+                }
+
+                // ── Stuck detection ─────────────────────────────────
+                match self.stuck_detector.record_round(&result.tool_calls) {
+                    StuckStatus::Warn(msg) => {
+                        let mut history = self.conversation_history.lock().await;
+                        if let Some(last) = history.last_mut() {
+                            if last.role == "tool" {
+                                if let Some(ref mut c) = last.content {
+                                    c.push_str(&msg);
+                                }
+                            }
+                        }
+                    }
+                    StuckStatus::Abort(msg) => {
+                        let _ = self.event_tx.send(AppEvent::StreamError(msg.clone()));
+                        return Err(msg);
+                    }
+                    StuckStatus::Ok => {}
                 }
 
                 let _ = self.event_tx.send(AppEvent::SaveSession);

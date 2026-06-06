@@ -363,6 +363,12 @@ pub struct AnthropicStreamState {
     pub usage: Option<AnthropicUsage>,
 }
 
+impl Default for AnthropicStreamState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AnthropicStreamState {
     pub fn new() -> Self {
         Self {

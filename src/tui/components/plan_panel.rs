@@ -52,6 +52,12 @@ pub struct PlanPanelState {
     pub visible: bool,
 }
 
+impl Default for PlanPanelState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PlanPanelState {
     pub fn new() -> Self {
         Self { items: Vec::new(), visible: false }

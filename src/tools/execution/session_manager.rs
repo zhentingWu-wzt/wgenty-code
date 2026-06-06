@@ -66,8 +66,8 @@ impl CommandSessionManager {
     }
 
     /// Build a Default sandbox profile for the given workspace.
-    fn default_profile(&self, cwd: &PathBuf) -> SandboxProfile {
-        SandboxConfig::builder(cwd.clone())
+    fn default_profile(&self, cwd: &std::path::Path) -> SandboxProfile {
+        SandboxConfig::builder(cwd.to_path_buf())
             .security_level(SecurityLevel::Minimal)
             .build()
     }

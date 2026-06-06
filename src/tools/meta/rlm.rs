@@ -127,7 +127,7 @@ Context: {context}
         .list()
         .iter()
         .map(|t| t.name().to_string())
-        .filter(|name| name != "task" && name != "delegate")
+        .filter(|name| { if name == "task" { 0 < settings.max_subagent_depth } else if name == "delegate" { false } else { true } })
         .collect();
 
     let n = sub_tasks.len();
@@ -475,7 +475,7 @@ Context: {context}
             .list()
             .iter()
             .map(|t| t.name().to_string())
-            .filter(|name| name != "task" && name != "delegate")
+            .filter(|name| { if name == "task" { 0 < self.settings.max_subagent_depth } else if name == "delegate" { false } else { true } })
             .collect();
 
         // Build dependency graph: compute execution order

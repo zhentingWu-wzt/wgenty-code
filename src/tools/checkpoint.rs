@@ -9,6 +9,12 @@ pub struct CheckpointManager {
     count: std::sync::atomic::AtomicU32,
 }
 
+impl Default for CheckpointManager {
+    fn default() -> Self {
+        Self { count: std::sync::atomic::AtomicU32::new(0) }
+    }
+}
+
 impl CheckpointManager {
     pub fn new() -> Self {
         Self { count: std::sync::atomic::AtomicU32::new(0) }

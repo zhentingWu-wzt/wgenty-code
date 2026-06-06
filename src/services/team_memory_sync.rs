@@ -197,7 +197,7 @@ impl TeamMemorySyncService {
         let mut entries = tokio::fs::read_dir(&team_dir).await?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "json") {
+            if path.extension().is_some_and(|ext| ext == "json") {
                 if let Ok(content) = tokio::fs::read_to_string(&path).await {
                     if let Ok(memory) = serde_json::from_str::<TeamMemory>(&content) {
                         memories.insert(memory.id.clone(), memory);
