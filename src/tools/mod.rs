@@ -16,6 +16,7 @@ pub mod search;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Tool trait for all tools
 #[async_trait]
@@ -57,6 +58,7 @@ pub struct ToolError {
 
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
+    pub checkpoint_manager: Arc<CheckpointManager>,
 }
 
 impl ToolRegistry {
@@ -68,6 +70,7 @@ impl ToolRegistry {
         );
         let mut registry = Self {
             tools: HashMap::new(),
+            checkpoint_manager: Arc::new(checkpoint::CheckpointManager::new()),
         };
         let checkpoint_manager = std::sync::Arc::new(checkpoint::CheckpointManager::new());
 
