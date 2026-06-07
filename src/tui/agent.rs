@@ -11,6 +11,7 @@ use crate::api::ChatMessage;
 use crate::guardian::classify_risk;
 use crate::tui::app::AppEvent;
 use crate::tui::client::DaemonClient;
+use crate::utils::stuck_detector::{StuckDetector, StuckStatus};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,66 +20,6 @@ use tokio::sync::mpsc;
 const MAX_RETRIES: u32 = 2;
 const MAX_ESTIMATED_TOKENS: usize = 50_000;
 // MAX_LLM_ROUNDS (100 default, configurable via settings.json) defined inside run_agent_loop as safety valve.
-
-/// Tracks consecutive tool-call patterns to detect when the LLM is stuck
-/// repeating identical operations without making progress.
-struct StuckDetector {
-    prev_signatures: Vec<(String, String)>,
-    stale_rounds: usize,
-}
-
-impl StuckDetector {
-    fn new() -> Self {
-        Self { prev_signatures: Vec::new(), stale_rounds: 0 }
-    }
-
-    /// Record a round of tool calls. Returns `true` if the agent should abort
-    /// (3+ consecutive identical rounds), `false` otherwise. On round 2,
-    /// returns a warning message for injection into tool results.
-    fn record_round(&mut self, tool_calls: &[crate::api::ToolCall]) -> StuckStatus {
-        let signatures: Vec<(String, String)> = tool_calls.iter().map(|tc| {
-            let keys = sorted_arg_keys(&tc.function.arguments);
-            (tc.function.name.clone(), keys)
-        }).collect();
-
-        if signatures == self.prev_signatures && !signatures.is_empty() {
-            self.stale_rounds += 1;
-        } else {
-            self.stale_rounds = 0;
-        }
-        self.prev_signatures = signatures;
-
-        match self.stale_rounds {
-            0 => StuckStatus::Ok,
-            1 => StuckStatus::Ok, // first repeat could be legitimate
-            2 => StuckStatus::Warn(
-                "\n\n\u{26A0}\u{FE0F} You have repeated the same tool calls multiple times. \
-                 Consider a different approach or ask the user for guidance.".to_string()
-            ),
-            _ => StuckStatus::Abort(
-                "Stuck in loop: repeated identical tool calls 3+ times".to_string()
-            ),
-        }
-    }
-}
-
-enum StuckStatus {
-    Ok,
-    Warn(String),
-    Abort(String),
-}
-
-/// Extract sorted JSON keys from tool arguments for signature comparison.
-fn sorted_arg_keys(args_json: &str) -> String {
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(args_json) {
-        if let Some(obj) = v.as_object() {
-            let mut keys: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
-            keys.sort();
-            return keys.join(",");
-        }
-    }
-    String::new()
-}
 
 pub struct AgentLoop {
     client: DaemonClient,

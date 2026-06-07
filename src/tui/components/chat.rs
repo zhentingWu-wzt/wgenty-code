@@ -12,6 +12,19 @@ const DIM_COLOR: Color = Color::Rgb(100, 100, 110);
 const TURN_SEP_COLOR: Color = Color::Rgb(80, 80, 90);
 const SEP_COLOR: Color = Color::Rgb(60, 60, 70);
 
+/// Braille spinner animation frames (10 frames)
+const SPINNER_CHARS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// Return animated ellipsis dots based on frame
+fn running_suffix(frame: u8) -> &'static str {
+    match (frame / 2) % 4 {
+        0 => "running",
+        1 => "running.",
+        2 => "running..",
+        _ => "running...",
+    }
+}
+
 /// Render the chat message list with turn-based grouping.
 /// Messages are grouped into turns: each user message starts a new turn,
 /// followed by the assistant's streaming response and any tool calls.
@@ -24,6 +37,7 @@ pub fn render(
     streaming_active: bool,
     scroll_offset: u16,
     user_scrolled: bool,
+    spinner_frame: u8,
 ) {
     let mut lines: Vec<Line> = Vec::new();
 
@@ -34,7 +48,7 @@ pub fn render(
         } else if matches!(prev_role, Some(MessageRole::Tool)) && msg.role == MessageRole::Assistant {
             add_inline_separator(&mut lines, area.width);
         }
-        lines.extend(message_to_lines(msg, area.width));
+        lines.extend(message_to_lines(msg, area.width, spinner_frame));
         if msg.role == MessageRole::User {
             add_inline_separator(&mut lines, area.width);
         }
@@ -96,7 +110,7 @@ fn add_inline_separator(lines: &mut Vec<Line<'static>>, width: u16) {
     }
 }
 
-fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
+fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<'static>> {
     let max_w = width.saturating_sub(4) as usize;
 
     match msg.role {
@@ -140,23 +154,38 @@ fn message_to_lines(msg: &UIMessage, width: u16) -> Vec<Line<'static>> {
                     .unwrap_or_default();
                 let mut lines: Vec<Line<'static>> = Vec::new();
 
-                // Header: • {verb} {detail}  — or • ⏳ {verb} {detail} while running
+                // Header: • {verb} [mode] {detail} — or spinner {verb} [mode] {detail} while running
                 let is_running = msg.content.is_empty();
-                let (prefix, verb_style) = if is_running {
-                    ("\u{23F3} ", Style::default().fg(Color::Rgb(200, 200, 100)).add_modifier(Modifier::BOLD))
-                } else {
-                    ("\u{2022} ", Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD))
+                let execution_mode = msg
+                    .tool_metadata
+                    .as_ref()
+                    .and_then(|m| m.get("execution_mode"))
+                    .and_then(|v| v.as_str());
+
+                // Mode tag: [RLM], [BG], or nothing for simple
+                let mode_tag = match execution_mode {
+                    Some("rlm") => " [RLM]",
+                    Some("background") | Some("bg") => " [BG]",
+                    _ => "",
                 };
+
+                let (prefix, verb_style) = if is_running {
+                    let spinner = SPINNER_CHARS[spinner_frame as usize % SPINNER_CHARS.len()];
+                    (format!("{} ", spinner), Style::default().fg(Color::Rgb(200, 200, 100)).add_modifier(Modifier::BOLD))
+                } else {
+                    ("\u{2022} ".to_string(), Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD))
+                };
+                let verb_with_mode = format!("{}{}", verb, mode_tag);
                 lines.push(Line::from(vec![
                     Span::styled(prefix, Style::default().fg(DIM_COLOR)),
-                    Span::styled(verb.clone(), verb_style),
+                    Span::styled(verb_with_mode.clone(), verb_style),
                     Span::styled(
                         format!(" {}", detail),
                         Style::default().fg(DIM_COLOR),
                     ),
                     if is_running {
                         Span::styled(
-                            " running...",
+                            format!(" {}", running_suffix(spinner_frame)),
                             Style::default().fg(Color::Rgb(180, 180, 100)),
                         )
                     } else {
@@ -247,7 +276,8 @@ fn tool_verb(name: &str) -> &str {
         "web_search" => "Searched web",
         "web_fetch" => "Fetched",
         "view" => "Viewed",
-        "task" => "Agent",
+        "task" => "Subagent",
+        "delegate" => "Delegated",
         "TodoWrite" => "Planned",
         "compact" => "Compacted",
         _ => "Used",

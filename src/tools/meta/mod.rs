@@ -19,3 +19,5 @@ pub mod update_plan;
 pub use update_plan::UpdatePlanTool;
 pub mod rlm;
 pub use rlm::RlmDelegateTool;
+pub mod run_script;
+pub use run_script::RunScriptTool;

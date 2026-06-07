@@ -152,6 +152,8 @@ pub enum AppEvent {
     ToggleCollapseAll,
     /// Toggle collapse latest message paragraphs
     ToggleCollapseLatest,
+    /// Undo checkpoint result with diff
+    UndoResult(String),
     /// Todo items updated from daemon
     TodosUpdated(Vec<TodoItem>),
     /// Settings were hot-reloaded from disk
@@ -174,6 +176,7 @@ pub struct UIMessage {
     pub content_collapsed: bool,
     pub tool_collapsed: bool,
     pub diff_data: Option<DiffData>,
+    pub tool_metadata: Option<serde_json::Value>,
 }
 
 /// Structured diff data for syntax-highlighted diff rendering in the TUI.
@@ -230,6 +233,10 @@ pub struct App {
 
     /// Timestamp of last Ctrl+C press for double-press detection
     last_ctrl_c: Option<std::time::Instant>,
+    /// True while a tool is executing (for spinner animation)
+    pub has_running_tool: bool,
+    /// Spinner animation frame (0-9), advanced on Tick when has_running_tool
+    pub spinner_frame: u8,
     /// Cancellation flag for blocking input reader task
     shutdown_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Pending oneshot sender for question response
@@ -341,6 +348,8 @@ impl App {
 
 
             last_ctrl_c: None,
+            has_running_tool: false,
+            spinner_frame: 0,
             shutdown_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             question_responder: None,
             permission_responder: None,
@@ -481,6 +490,7 @@ impl App {
                         tool_collapsed: true,
                         tool_args: None,
                         diff_data: None,
+                        tool_metadata: None,
                     });
                     return;
                 }
@@ -741,6 +751,7 @@ impl App {
                         content_collapsed: false,
                         tool_collapsed: true,
                         diff_data: None,
+                        tool_metadata: None,
                     });
                 }
                 self.streaming_active = false;
@@ -748,6 +759,7 @@ impl App {
                 self.user_scrolled = false;
             }
             AppEvent::ToolStart { name, args } => {
+                self.has_running_tool = true;
                 self.last_tool_name = Some(tool_label(&name, &args));
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::Tool,
@@ -757,10 +769,14 @@ impl App {
                     content_collapsed: false,
                     tool_collapsed: true,
                     diff_data: None,
+                    tool_metadata: None,
                 });
             }
             AppEvent::ToolResult { name, args, content } => {
                 let diff_data = extract_diff_data(&name, &args, &content);
+                let tool_metadata = extract_tool_metadata(&content);
+                // Tool completed, clear running state for spinner
+                self.has_running_tool = false;
                 // Replace the placeholder ToolStart message with the result
                 if let Some(last) = self.committed_messages.last_mut() {
                     if last.role == MessageRole::Tool
@@ -770,6 +786,7 @@ impl App {
                         last.content = format_tool_result(&name, &args, &content);
                         last.tool_collapsed = true;
                         last.diff_data = diff_data;
+                        last.tool_metadata = tool_metadata;
                     } else {
                         let formatted = format_tool_result(&name, &args, &content);
                         self.committed_messages.push(UIMessage {
@@ -780,6 +797,7 @@ impl App {
                             content_collapsed: false,
                             tool_collapsed: true,
                             diff_data,
+                            tool_metadata,
                         });
                     }
                 }
@@ -793,10 +811,15 @@ impl App {
                     tool_collapsed: true,
                     tool_args: None,
                     diff_data: None,
+                    tool_metadata: None,
                 });
                 self.streaming_active = false;
             }
-            AppEvent::Tick => { /* periodic refresh */ }
+            AppEvent::Tick => {
+                if self.has_running_tool {
+                    self.spinner_frame = self.spinner_frame.wrapping_add(1);
+                }
+            }
             AppEvent::ConfigChanged(new_settings) => {
                 // Rebuild system messages from new settings
                 let prompt_ctx = PromptContext::new()
@@ -828,6 +851,7 @@ impl App {
                     tool_collapsed: true,
                     tool_args: None,
                     diff_data: None,
+                    tool_metadata: None,
                 });
             }
             AppEvent::TurnComplete => {
@@ -918,10 +942,23 @@ impl App {
                         content_collapsed,
                         tool_collapsed,
                         diff_data: None,
+                        tool_metadata: None,
                     });
                 }
                 self.scroll_offset = 0;
                 self.user_scrolled = false;
+            }
+            AppEvent::UndoResult(output) => {
+                self.committed_messages.push(UIMessage {
+                    role: MessageRole::Tool,
+                    content: output.clone(),
+                    tool_name: Some("undo".to_string()),
+                    tool_args: Some(serde_json::json!({})),
+                    tool_metadata: None,
+                    content_collapsed: false,
+                    tool_collapsed: false,
+                    diff_data: extract_diff_data("undo", &serde_json::json!({}), &output),
+                });
             }
             AppEvent::SaveSession => {
                 let id = self.session_id.clone();
@@ -988,6 +1025,7 @@ impl App {
                 tool_collapsed: false,
                 tool_args: None,
                 diff_data: None,
+                tool_metadata: None,
         });
     }
     fn push_permission_result(&mut self, reason: &str, decision: &str) {
@@ -999,6 +1037,7 @@ impl App {
                 tool_collapsed: false,
                 tool_args: None,
                 diff_data: None,
+                tool_metadata: None,
         });
     }
     fn render(&self, f: &mut Frame) {
@@ -1090,6 +1129,7 @@ impl App {
             self.streaming_active,
             self.scroll_offset,
             self.user_scrolled,
+            self.spinner_frame,
         );
     }
     fn render_status(&self, f: &mut Frame, area: Rect) {
@@ -1174,6 +1214,7 @@ impl App {
                 tool_collapsed: false,
                 tool_args: None,
                 diff_data: None,
+                tool_metadata: None,
             });
             return;
         }
@@ -1192,6 +1233,7 @@ impl App {
                     tool_collapsed: false,
                     tool_args: None,
                     diff_data: None,
+                    tool_metadata: None,
                 });
                 // Inject system message into conversation history
                 let history = self.conversation_history.clone();
@@ -1217,6 +1259,7 @@ impl App {
                     tool_collapsed: false,
                     tool_args: None,
                     diff_data: None,
+                    tool_metadata: None,
                 });
             }
             return;
@@ -1230,6 +1273,7 @@ impl App {
                 tool_collapsed: false,
                 tool_args: None,
                 diff_data: None,
+                tool_metadata: None,
             });
             self.pending_inputs.push_back("undo the most recent operation".to_string());
             if self.current_turn_handle.is_none() {
@@ -1246,6 +1290,7 @@ impl App {
                 tool_collapsed: false,
                 tool_args: None,
                 diff_data: None,
+                tool_metadata: None,
             });
             if self.current_turn_handle.is_none() {
                 let init_prompt = crate::prompts::get_init_prompt().to_string();
@@ -1277,6 +1322,7 @@ impl App {
                 tool_collapsed: false,
                 tool_args: None,
                 diff_data: None,
+                tool_metadata: None,
             });
             // Auto-name the session from the first user message
             if self.session_name == "New Session" {
@@ -1429,22 +1475,82 @@ fn compute_collapse_state(role: &MessageRole, content: &str) -> (bool, bool) {
         _ => (false, false),
     }
 }
-/// Extract DiffData from tool result metadata (for file_edit, file_write, apply_patch).
+/// Extract DiffData from tool result. Tries metadata first, then auto-detects
+/// unified diff content (lines with @@ / +++ / --- markers).
 fn extract_diff_data(
     _name: &str,
     args: &serde_json::Value,
     raw_json: &str,
 ) -> Option<DiffData> {
     let file_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    // Try structured metadata first
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw_json) {
+        if let Some(metadata) = parsed.get("metadata") {
+            if let (Some(old), Some(new)) = (
+                metadata.get("old_content").and_then(|v| v.as_str()),
+                metadata.get("new_content").and_then(|v| v.as_str()),
+            ) {
+                return Some(DiffData {
+                    file_path,
+                    old_content: old.to_string(),
+                    new_content: new.to_string(),
+                });
+            }
+        }
+    }
+    // Auto-detect unified diff in content
+    let content = raw_json.trim();
+    let has_diff_markers = content.contains("@@") && content.contains("+++") && content.contains("---");
+    if has_diff_markers {
+        let (old, new) = split_unified_diff(content);
+        if !old.is_empty() || !new.is_empty() {
+            return Some(DiffData {
+                file_path,
+                old_content: old,
+                new_content: new,
+            });
+        }
+    }
+    None
+}
+
+/// Split a unified diff string into old and new content for diff rendering.
+fn split_unified_diff(content: &str) -> (String, String) {
+    let mut old = String::new();
+    let mut new = String::new();
+    for line in content.lines() {
+        if line.starts_with("@@") { continue; }
+        if line.starts_with("---") { 
+            old.push_str(line.trim_start_matches("--- "));
+            old.push('\n');
+            continue;
+        }
+        if line.starts_with("+++") {
+            new.push_str(line.trim_start_matches("+++ "));
+            new.push('\n');
+            continue;
+        }
+        if line.starts_with('-') && !line.starts_with("---") {
+            old.push_str(&line[1..]);
+            old.push('\n');
+        } else if line.starts_with('+') && !line.starts_with("+++") {
+            new.push_str(&line[1..]);
+            new.push('\n');
+        } else {
+            old.push_str(line);
+            old.push('\n');
+            new.push_str(line);
+            new.push('\n');
+        }
+    }
+    (old, new)
+}
+
+/// Extract execution metadata from a raw tool result JSON.
+/// Returns the "metadata" sub-object if present, None otherwise.
+fn extract_tool_metadata(raw_json: &str) -> Option<serde_json::Value> {
     let parsed: serde_json::Value = serde_json::from_str(raw_json).ok()?;
-    let metadata = parsed.get("metadata")?;
-    let old_content = metadata.get("old_content")?.as_str()?;
-    let new_content = metadata.get("new_content")?.as_str()?;
-    Some(DiffData {
-        file_path,
-        old_content: old_content.to_string(),
-        new_content: new_content.to_string(),
-    })
+    parsed.get("metadata").cloned()
 }
 
 /// Parse the JSON wrapper from execute_tool_with_permission and extract the
@@ -1535,6 +1641,7 @@ fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::SessionListLoaded(_)
         | AppEvent::HistoryLoaded(_)
         | AppEvent::PlanUpdate(_)
+        | AppEvent::UndoResult(_)
         | AppEvent::SaveSession
         | AppEvent::DeleteSession(_)
         | AppEvent::ToggleCollapseAll

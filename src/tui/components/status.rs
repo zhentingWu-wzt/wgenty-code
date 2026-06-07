@@ -26,7 +26,11 @@ fn phase_label(phase: &AgentPhase) -> String {
         AgentPhase::Thinking => "Thinking...".to_string(),
         AgentPhase::PreparingTools => "Preparing tools...".to_string(),
         AgentPhase::StreamingResponse => "Streaming...".to_string(),
-        AgentPhase::ExecutingTool { name } => format!("Executing {}", name),
+        AgentPhase::ExecutingTool { name } => match name.as_str() {
+            "task" => "Subagent running".to_string(),
+            "delegate" => "RLM Pipeline".to_string(),
+            _ => format!("Executing {}", name),
+        },
         AgentPhase::AwaitingPermission { .. } => "Permission Required".to_string(),
         AgentPhase::AwaitingUserInput { .. } => "Question".to_string(),
         AgentPhase::Compacting => "Compacting...".to_string(),
