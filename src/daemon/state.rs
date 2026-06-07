@@ -9,7 +9,7 @@ use crate::tasks::{TaskManagementTool, TodoState, TodoWriteTool};
 use crate::teams::mailbox::TeamManager;
 use crate::tools::execution::background::{BackgroundManager, BackgroundTool};
 use crate::tools::meta::team_message::TeamMessageTool;
-use crate::tools::{ToolExecutor, ToolRegistry};
+use crate::tools::{CheckpointManager, ToolExecutor, ToolRegistry};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,6 +33,7 @@ pub struct DaemonState {
     pub app_state: AppState,
     pub tool_registry: Arc<ToolRegistry>,
     pub tool_executor: ToolExecutor,
+    pub checkpoint_manager: Arc<CheckpointManager>,
     pub task_manager: Arc<TaskManagementTool>,
     pub todo_state: Arc<RwLock<TodoState>>,
     pub skill_loader: Arc<SkillLoader>,
@@ -104,8 +105,15 @@ impl DaemonState {
             );
             registry.register(Box::new(rlm_tool));
 
+            let run_script_tool = crate::tools::meta::run_script::RunScriptTool::new(
+                app_state.settings.clone(),
+                weak_reg.clone(),
+            );
+            registry.register(Box::new(run_script_tool));
+
             registry
         });
+        let checkpoint_manager = tool_registry.checkpoint_manager.clone();
 
         // Initialize HookManager from settings hooks configuration
         let hooks_config = app_state
@@ -122,6 +130,7 @@ impl DaemonState {
             tool_executor: ToolExecutor::new(tool_registry.clone(), policy)
                 .with_hooks(hook_manager.clone()),
             tool_registry,
+            checkpoint_manager,
             task_manager,
             todo_state,
             skill_loader,

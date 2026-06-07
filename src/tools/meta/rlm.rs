@@ -555,7 +555,7 @@ Context: {context}
                 } else {
                     &main_client
                 };
-                let api_client = client.clone();
+                let _api_client = client.clone();
 
                 let allowed = allowed_tools.clone();
                 let client = if use_small {

@@ -6,6 +6,7 @@ pub mod lenient_json;
 pub mod logging;
 pub mod project;
 pub mod stress_tests;
+pub mod stuck_detector;
 
 pub use stress_tests::{run_stress_test, StressTestResult, StressTestRunner};
 
