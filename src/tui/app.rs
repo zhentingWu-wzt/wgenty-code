@@ -1,6 +1,5 @@
 //! Application main loop — event handling, layout, and daemon lifecycle.
 use crate::api::ChatMessage;
-use crate::state::AppState;
 
 /// Agent operating mode, cycled via Shift+Tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +55,8 @@ use crate::state::agent_phase::{AgentPhase, TurnId, TurnAbortReason};
 
 
 use crate::tui::theme;
-use crossterm::event::{self, Event, EnableBracketedPaste, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crate::tui::traits::Component;
+use crossterm::event::{EnableBracketedPaste, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
@@ -241,10 +241,8 @@ pub struct App {
     turn_started_at: Option<std::time::Instant>,
     /// Cancellation flag for blocking input reader task
     shutdown_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Pending oneshot sender for question response
-    pub question_responder: Option<QuestionResponder>,
-    /// Pending oneshot sender for permission response
-    pub permission_responder: Option<PermissionResponder>,
+
+
 }
 impl App {
     pub fn new(
@@ -354,8 +352,7 @@ impl App {
             spinner_frame: 0,
             turn_started_at: None,
             shutdown_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            question_responder: None,
-            permission_responder: None,
+
             settings_lock,
         }
     }
@@ -372,7 +369,7 @@ impl App {
         let tx = self.event_tx.clone();
         let shutdown = self.shutdown_flag.clone();
         tokio::task::spawn_blocking(move || {
-            let _ = Self::read_input(tx, shutdown);
+            let _ = super::input_reader::read_input(tx, shutdown);
         });
         // Spawn ticker for periodic refresh
         let tx = self.event_tx.clone();
@@ -402,6 +399,7 @@ impl App {
         }
         Ok(())
     }
+<<<<<<< HEAD
     
     fn read_input(
         tx: mpsc::UnboundedSender<AppEvent>,
@@ -468,6 +466,8 @@ impl App {
         }
         Ok(())
     }
+=======
+>>>>>>> 5307f1d (优化代码)
     async fn handle_event(&mut self, event: AppEvent) {
         // Derive phase from event (pure function); fall back to current
         if let Some(next_phase) = agent_phase_from_event(&event) {
@@ -505,102 +505,14 @@ impl App {
                     });
                     return;
                 }
-                // Permission panel key handling
-                if self.permission_state.visible {
-                    match key.code {
-                        KeyCode::Char('y') => {
-                            let (reason, _rule) = self.permission_state.dismiss();
-                            self.push_permission_result(&reason, "Allowed once");
-                            if let Some(responder) = self.permission_responder.take() {
-                                let _ = responder.0.unwrap().send(PermissionResponse::AllowOnce);
-                            }
-                        }
-                        KeyCode::Char('a') => {
-                            let (reason, _rule) = self.permission_state.dismiss();
-                            self.push_permission_result(&reason, "Always allow");
-                            if let Some(responder) = self.permission_responder.take() {
-                                let _ = responder.0.unwrap().send(PermissionResponse::AlwaysAllow);
-                            }
-                        }
-                        KeyCode::Char('n') | KeyCode::Esc => {
-                            let (reason, _rule) = self.permission_state.dismiss();
-                            self.push_permission_result(&reason, "Denied");
-                            if let Some(responder) = self.permission_responder.take() {
-                                let _ = responder.0.unwrap().send(PermissionResponse::Deny);
-                            }
-                        }
-                        _ => {}
-                    }
+                // Permission panel key handling — delegated to Component
+                if self.permission_state.handle_key(&key) {
                     return;
                 }
-                // Question panel handling (inline, not popup)
-                if self.question_state.visible {
-                    // Text input mode: cursor is on "Other" option
-                    if self.question_state.cursor_on_other() {
-                        match key.code {
-                            KeyCode::Char(c) => {
-                                self.question_state.other_value.push(c);
-                            }
-                            KeyCode::Backspace => {
-                                self.question_state.other_value.pop();
-                            }
-                            KeyCode::Enter => {
-                                let answers = self.question_state.dismiss();
-                                self.push_question_answer(&answers);
-                                if let Some(responder) = self.question_responder.take() {
-                                    let _ = responder.0.unwrap().send(answers);
-                                }
-                            }
-                            KeyCode::Up => {
-                                self.question_state.move_up();
-                            }
-                            KeyCode::Down => {
-                                self.question_state.move_down();
-                            }
-                            KeyCode::Esc => {
-                                self.question_state.dismiss();
-                                self.question_responder = None;
-                            }
-                            _ => {}
-                        }
-                        return;
-                    }
-                    match key.code {
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            self.question_state.move_up();
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            self.question_state.move_down();
-                        }
-                        KeyCode::Enter => {
-                            let can_submit = !self.question_state.multi_select
-                                || !self.question_state.selected.is_empty();
-                            if can_submit {
-                                let answers = self.question_state.dismiss();
-                                self.push_question_answer(&answers);
-                                if let Some(responder) = self.question_responder.take() {
-                                    let _ = responder.0.unwrap().send(answers);
-                                }
-                            }
-                        }
-                        KeyCode::Char(' ') => {
-                            self.question_state.toggle_selection();
-                        }
-                        KeyCode::Esc => {
-                            self.question_state.dismiss();
-                            self.question_responder = None;
-                        }
-                        KeyCode::Char(c) if c.is_ascii_digit() => {
-                            let n = c.to_digit(10).unwrap() as usize;
-                            if self.question_state.select_number(n) {
-                                let answers = self.question_state.dismiss();
-                                self.push_question_answer(&answers);
-                                if let Some(responder) = self.question_responder.take() {
-                                    let _ = responder.0.unwrap().send(answers);
-                                }
-                            }
-                        }
-                        _ => {}
+                // Question panel handling — delegated to Component
+                if self.question_state.handle_key(&key) {
+                    if let Some(answers) = self.question_state.take_response() {
+                        self.push_question_answer(&answers);
                     }
                     return;
                 }
@@ -912,8 +824,7 @@ impl App {
                     let _ = responder.0.unwrap().send(PermissionResponse::AllowOnce);
                     return;
                 }
-                self.permission_responder = Some(responder);
-                self.permission_state.show(reason, rule);
+                self.permission_state.show(reason, rule, responder);
             }
             AppEvent::QuestionAsked {
                 question,
@@ -921,8 +832,7 @@ impl App {
                 multi_select,
                 responder,
             } => {
-                self.question_responder = Some(responder);
-                self.question_state.show(question, options, multi_select);
+                self.question_state.show(question, options, multi_select, responder);
             }
             AppEvent::ToggleSessions => {
                 if self.session_state.visible {
@@ -1432,317 +1342,14 @@ impl App {
 }
 
 /// Truncate a user message to a short session name (max ~50 chars, no newlines).
-fn truncate_session_name(text: &str) -> String {
-    let first_line = text.lines().next().unwrap_or("");
-    let trimmed = first_line.trim();
-    if trimmed.len() <= 50 {
-        trimmed.to_string()
-    } else {
-        let end = trimmed.char_indices().take(50).last().map(|(i, _)| i).unwrap_or(0);
-        format!("{}...", &trimmed[..end])
-    }
-}
+pub use super::util::truncate_session_name;
+pub use super::util::start_daemon;
+pub use super::util::compute_collapse_state;
+pub use super::util::extract_diff_data;
+pub use super::util::split_unified_diff;
+pub use super::util::extract_tool_metadata;
+pub use super::util::format_tool_result;
+pub use super::util::tool_label;
+pub use super::util::agent_phase_from_event;
+pub use super::util::centered_rect;
 
-/// Start the daemon in a background tokio task and wait for it to be ready.
-/// Returns the base URL (including port) and a shutdown sender.
-#[cfg(feature = "daemon")]
-pub async fn start_daemon(
-    app_state: AppState,
-) -> anyhow::Result<(String, tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>)> {
-    // Bind to a random available port
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let port = listener.local_addr()?.port();
-    let base_url = format!("http://127.0.0.1:{}", port);
-    use crate::daemon::routes;
-    use crate::daemon::state::DaemonState;
-    use std::sync::Arc;
-    use tower_http::cors::{Any, CorsLayer};
-    let daemon_state = Arc::new(DaemonState::new(app_state));
-    let app = routes::create_router(daemon_state).layer(
-        CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any),
-    );
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = shutdown_rx.await;
-            })
-            .await
-            .ok();
-    });
-    // Wait for daemon to be ready (poll health endpoint)
-    let client = DaemonClient::new(base_url.clone());
-    for _attempt in 0..50 {
-        if client.health().await.is_ok() {
-            tracing::info!("daemon ready on port {}", port);
-            return Ok((base_url, shutdown_tx, handle));
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    }
-    anyhow::bail!("daemon did not become ready within 5 seconds");
-}
-/// Compute initial collapse state based on line-count thresholds.
-/// Returns (content_collapsed, tool_collapsed) tuple.
-fn compute_collapse_state(role: &MessageRole, content: &str) -> (bool, bool) {
-    let line_count = content.lines().count();
-    match role {
-        MessageRole::Assistant => {
-            (line_count > 50, false)
-        }
-        MessageRole::Tool => {
-            (false, true)
-        }
-        _ => (false, false),
-    }
-}
-/// Extract DiffData from tool result. Tries metadata first, then auto-detects
-/// unified diff content (lines with @@ / +++ / --- markers).
-fn extract_diff_data(
-    _name: &str,
-    args: &serde_json::Value,
-    raw_json: &str,
-) -> Option<DiffData> {
-    let file_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    // Try structured metadata first
-    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw_json) {
-        if let Some(metadata) = parsed.get("metadata") {
-            if let (Some(old), Some(new)) = (
-                metadata.get("old_content").and_then(|v| v.as_str()),
-                metadata.get("new_content").and_then(|v| v.as_str()),
-            ) {
-                return Some(DiffData {
-                    file_path,
-                    old_content: old.to_string(),
-                    new_content: new.to_string(),
-                });
-            }
-        }
-    }
-    // Auto-detect unified diff in content
-    let content = raw_json.trim();
-    let has_diff_markers = content.contains("@@") && content.contains("+++") && content.contains("---");
-    if has_diff_markers {
-        let (old, new) = split_unified_diff(content);
-        if !old.is_empty() || !new.is_empty() {
-            return Some(DiffData {
-                file_path,
-                old_content: old,
-                new_content: new,
-            });
-        }
-    }
-    None
-}
-
-/// Split a unified diff string into old and new content for diff rendering.
-fn split_unified_diff(content: &str) -> (String, String) {
-    let mut old = String::new();
-    let mut new = String::new();
-    for line in content.lines() {
-        if line.starts_with("@@") { continue; }
-        if line.starts_with("---") { 
-            old.push_str(line.trim_start_matches("--- "));
-            old.push('\n');
-            continue;
-        }
-        if line.starts_with("+++") {
-            new.push_str(line.trim_start_matches("+++ "));
-            new.push('\n');
-            continue;
-        }
-        if line.starts_with('-') && !line.starts_with("---") {
-            old.push_str(&line[1..]);
-            old.push('\n');
-        } else if line.starts_with('+') && !line.starts_with("+++") {
-            new.push_str(&line[1..]);
-            new.push('\n');
-        } else {
-            old.push_str(line);
-            old.push('\n');
-            new.push_str(line);
-            new.push('\n');
-        }
-    }
-    (old, new)
-}
-
-/// Extract execution metadata from a raw tool result JSON.
-/// Returns the "metadata" sub-object if present, None otherwise.
-fn extract_tool_metadata(raw_json: &str) -> Option<serde_json::Value> {
-    let parsed: serde_json::Value = serde_json::from_str(raw_json).ok()?;
-    parsed.get("metadata").cloned()
-}
-
-/// Parse the JSON wrapper from execute_tool_with_permission and extract the
-/// meaningful content for display. Strips metadata noise like success/output_type.
-/// Format a tool result for codex-style tree display. The header bullet is
-/// rendered by chat.rs; this produces the content body with action verb,
-/// key parameter, and indented output.
-fn format_tool_result(_name: &str, _args: &serde_json::Value, raw_json: &str) -> String {
-    let parsed: serde_json::Value = match serde_json::from_str(raw_json) {
-        Ok(v) => v,
-        Err(_) => return raw_json.trim_end().to_string(),
-    };
-    let error = parsed["error"].as_str().unwrap_or("");
-    if !error.is_empty() {
-        return error.to_string();
-    }
-    parsed["content"].as_str().unwrap_or("").to_string()
-}
-
-fn tool_label(name: &str, args: &serde_json::Value) -> String {
-    match name {
-        "exec_command" | "execute_command" => {
-            args.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "file_read" | "read_file" => {
-            args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "file_write" | "file_edit" | "apply_patch" => {
-            args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "grep" | "search" => {
-            args.get("pattern").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "glob_search" | "glob" | "list_files" => {
-            args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "web_search" => {
-            args.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "web_fetch" => {
-            args.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        _ => String::new(),
-    }
-}
-/// Pure function: derive the next AgentPhase from a single AppEvent.
-fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
-    match event {
-        AppEvent::Submit(_) => Some(AgentPhase::Thinking),
-        AppEvent::PreparingTools => Some(AgentPhase::PreparingTools),
-        AppEvent::ContentDelta(_) | AppEvent::ReasoningDelta(_) => {
-            Some(AgentPhase::StreamingResponse)
-        }
-        AppEvent::StreamDone { .. } => Some(AgentPhase::Thinking),
-        AppEvent::ToolStart { name, args: _ } => Some(AgentPhase::ExecutingTool {
-            name: name.clone(),
-        }),
-        AppEvent::ToolResult { .. } => Some(AgentPhase::Thinking),
-        AppEvent::PermissionRequired { reason, rule, .. } => {
-            Some(AgentPhase::AwaitingPermission {
-                tool: rule.clone(),
-                rule: reason.clone(),
-            })
-        }
-        AppEvent::QuestionAsked { question, .. } => {
-            Some(AgentPhase::AwaitingUserInput {
-                question: question.clone(),
-            })
-        }
-        AppEvent::StreamError(_) => Some(AgentPhase::Errored(
-            "Stream error".to_string(),
-        )),
-        AppEvent::TurnComplete => Some(AgentPhase::Idle),
-        AppEvent::TurnAborted { reason } => match reason {
-            TurnAbortReason::TimedOut => {
-                Some(AgentPhase::Errored("Agent loop timed out".to_string()))
-            }
-            _ => Some(AgentPhase::Idle),
-        },
-        // Events that don't change phase
-        AppEvent::MouseScrolled(_)
-        | AppEvent::Paste(_)
-        | AppEvent::KeyEvent(_)
-        | AppEvent::Tick
-        | AppEvent::ToggleSessions
-        | AppEvent::ToggleTaskPanel
-        | AppEvent::CtrlCPressed
-        | AppEvent::SessionListLoaded(_)
-        | AppEvent::HistoryLoaded(_)
-        | AppEvent::PlanUpdate(_)
-        | AppEvent::UndoResult(_)
-        | AppEvent::SaveSession
-        | AppEvent::DeleteSession(_)
-        | AppEvent::ToggleCollapseAll
-        | AppEvent::ToggleCollapseLatest
-        | AppEvent::TodosUpdated(_)
-        | AppEvent::TurnStarted { .. }
-        | AppEvent::ConfigChanged(_) => None,
-    }
-}
-/// Helper: create a centered rectangle of the given percentage size within `area`.
-/// Used by popup components (session).
-pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_width = area.width * percent_x / 100;
-    let popup_height = area.height * percent_y / 100;
-    let x = (area.width - popup_width) / 2;
-    let y = (area.height - popup_height) / 2;
-    Rect::new(x, y, popup_width, popup_height)
-}
-#[cfg(test)]
-mod phase_tests {
-    use super::*;
-    #[test]
-    fn test_phase_transitions() {
-        assert_eq!(
-            agent_phase_from_event(&AppEvent::Submit("hello".into())),
-            Some(AgentPhase::Thinking)
-        );
-        assert_eq!(
-            agent_phase_from_event(&AppEvent::ContentDelta("text".into())),
-            Some(AgentPhase::StreamingResponse)
-        );
-        assert_eq!(
-            agent_phase_from_event(&AppEvent::StreamDone { finish_reason: "stop".into() }),
-            Some(AgentPhase::Thinking)
-        );
-        assert_eq!(
-            agent_phase_from_event(&AppEvent::ToolStart { name: "file_read".into(), args: serde_json::json!({}) }),
-            Some(AgentPhase::ExecutingTool { name: "file_read".into() })
-        );
-        assert_eq!(
-            agent_phase_from_event(&AppEvent::ToolResult { name: "x".into(), args: serde_json::json!({}), content: "y".into() }),
-            Some(AgentPhase::Thinking)
-        );
-        assert_eq!(
-            agent_phase_from_event(&AppEvent::StreamError("fail".into())),
-            Some(AgentPhase::Errored("Stream error".into()))
-        );
-        assert_eq!(
-            agent_phase_from_event(&AppEvent::TurnComplete),
-            Some(AgentPhase::Idle)
-        );
-        assert_eq!(
-            agent_phase_from_event(&AppEvent::TurnAborted { reason: TurnAbortReason::TimedOut }),
-            Some(AgentPhase::Errored("Agent loop timed out".into()))
-        );
-        assert_eq!(
-            agent_phase_from_event(&AppEvent::TurnAborted { reason: TurnAbortReason::Interrupted }),
-            Some(AgentPhase::Idle)
-        );
-    }
-    #[test]
-    fn test_non_phase_events_return_none() {
-        assert_eq!(agent_phase_from_event(&AppEvent::Tick), None);
-        assert_eq!(agent_phase_from_event(&AppEvent::MouseScrolled(3)), None);
-        assert_eq!(agent_phase_from_event(&AppEvent::Paste("test".into())), None);
-        assert_eq!(agent_phase_from_event(&AppEvent::SaveSession), None);
-        assert_eq!(
-            agent_phase_from_event(&AppEvent::TurnStarted { turn_id: TurnId::new() }),
-            None
-        );
-    }
-    #[test]
-    fn test_phase_is_busy() {
-        assert!(!AgentPhase::Idle.is_busy());
-        assert!(!AgentPhase::Completed.is_busy());
-        assert!(AgentPhase::Thinking.is_busy());
-        assert!(AgentPhase::StreamingResponse.is_busy());
-        assert!(AgentPhase::ExecutingTool { name: "x".into() }.is_busy());
-        assert!(!AgentPhase::Errored("e".into()).is_busy());
-    }
-}

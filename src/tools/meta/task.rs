@@ -320,6 +320,7 @@ impl Tool for TaskTool {
                     depth,
                 )
                 .await
+                .map(|r| r.aggregated)
             } else {
                 run_subagent_loop(
                     &api_client,

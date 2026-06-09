@@ -190,7 +190,7 @@ impl WgentyCodeApp {
         let tx = self.message_tx.clone().unwrap();
 
         // Create placeholder assistant message
-        let mut assistant_msg = crate::gui::chat::ChatMessage::assistant("");
+        let mut assistant_msg = crate::gui::chat_types::ChatMessage::assistant("");
         assistant_msg.is_streaming = true;
         self.pending_message_id = Some(assistant_msg.id.clone());
         self.chat_panel.messages.push(assistant_msg);
@@ -298,7 +298,7 @@ impl WgentyCodeApp {
         // Add error message as system message
         self.chat_panel
             .messages
-            .push(crate::gui::chat::ChatMessage::system(format!(
+            .push(crate::gui::chat_types::ChatMessage::system(format!(
                 "Error: {}",
                 error
             )));

@@ -6,6 +6,8 @@
 pub mod app;
 pub mod brand_icon;
 pub mod chat;
+pub mod chat_types;
+mod content_parser;
 pub mod settings;
 pub mod sidebar;
 pub mod syntax_highlight;
@@ -13,6 +15,7 @@ pub mod theme;
 pub mod tool_calls;
 
 pub use app::WgentyCodeApp;
+pub use chat_types::{Attachment, ChatMessage, MessageRole};
 pub use theme::Theme;
 
 /// Async message type for GUI communication

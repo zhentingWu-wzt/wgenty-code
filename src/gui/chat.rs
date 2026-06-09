@@ -8,85 +8,14 @@
 //! - Thinking process expand/collapse
 //! - Perfect markdown rendering
 
+use super::chat_types::{Attachment, ChatMessage, MessageRole};
+use super::content_parser::{split_by_code_blocks, ContentPart};
 use super::syntax_highlight::format_code_block;
 use super::tool_calls::ToolCall;
-use chrono::{DateTime, Utc};
 use egui::{
     Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, ScrollArea, Stroke, TextEdit,
     Ui, Vec2,
 };
-
-/// A chat message - matches Claude.ai structure
-#[derive(Debug, Clone)]
-pub struct ChatMessage {
-    pub id: String,
-    pub role: MessageRole,
-    pub content: String,
-    pub timestamp: DateTime<Utc>,
-    pub is_streaming: bool,
-    pub tool_calls: Vec<ToolCall>,
-    pub attachments: Vec<Attachment>,
-    pub thinking: Option<String>,
-    pub thinking_expanded: bool,
-    /// Whether the body text is collapsed (long content)
-    pub content_collapsed: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MessageRole {
-    User,
-    Assistant,
-    System,
-}
-
-#[derive(Debug, Clone)]
-pub struct Attachment {
-    pub name: String,
-    pub content_type: String,
-    pub size: usize,
-}
-
-impl ChatMessage {
-    pub fn new(role: MessageRole, content: impl Into<String>) -> Self {
-        let content_str: String = content.into();
-        let line_count = content_str.lines().count();
-        let content_collapsed = matches!(role, MessageRole::Assistant) && line_count > 50;
-        Self {
-            id: uuid::Uuid::new_v4().to_string(),
-            role,
-            content: content_str,
-            timestamp: Utc::now(),
-            is_streaming: false,
-            tool_calls: Vec::new(),
-            attachments: Vec::new(),
-            thinking: None,
-            thinking_expanded: false,
-            content_collapsed,
-        }
-    }
-
-    pub fn user(content: impl Into<String>) -> Self {
-        Self::new(MessageRole::User, content)
-    }
-
-    pub fn assistant(content: impl Into<String>) -> Self {
-        Self::new(MessageRole::Assistant, content)
-    }
-
-    pub fn system(content: impl Into<String>) -> Self {
-        Self::new(MessageRole::System, content)
-    }
-
-    pub fn with_thinking(mut self, thinking: impl Into<String>) -> Self {
-        self.thinking = Some(thinking.into());
-        self
-    }
-
-    pub fn with_tool_calls(mut self, calls: Vec<ToolCall>) -> Self {
-        self.tool_calls = calls;
-        self
-    }
-}
 
 /// Chat panel - full recreation of Wgenty Code interface
 pub struct ChatPanel {
@@ -923,84 +852,4 @@ impl ChatPanel {
             last.content = content.into();
         }
     }
-}
-
-// Content parts for parsing
-enum ContentPart<'a> {
-    Text(&'a str),
-    CodeBlock {
-        language: Option<&'a str>,
-        code: &'a str,
-    },
-    InlineCode(&'a str),
-}
-
-fn split_by_code_blocks(content: &str) -> Vec<ContentPart<'_>> {
-    let mut parts = Vec::new();
-    let mut remaining = content;
-
-    while !remaining.is_empty() {
-        if let Some(start_idx) = remaining.find("```") {
-            // Text before code block
-            if start_idx > 0 {
-                let text = &remaining[..start_idx];
-                parts.extend(split_inline_code(text));
-            }
-
-            // Find end of code block
-            let after_start = &remaining[start_idx + 3..];
-            let newline_idx = after_start.find('\n').unwrap_or(0);
-            let language = if newline_idx > 0 {
-                Some(after_start[..newline_idx].trim())
-            } else {
-                None
-            };
-
-            let code_start = start_idx + 3 + newline_idx + if newline_idx > 0 { 1 } else { 0 };
-
-            if let Some(end_idx) = remaining[code_start..].find("```") {
-                let code = remaining[code_start..code_start + end_idx].trim_end();
-                parts.push(ContentPart::CodeBlock { language, code });
-                remaining = &remaining[code_start + end_idx + 3..];
-            } else {
-                // Unclosed code block
-                let code = remaining[code_start..].trim_end();
-                parts.push(ContentPart::CodeBlock { language, code });
-                break;
-            }
-        } else {
-            parts.extend(split_inline_code(remaining));
-            break;
-        }
-    }
-
-    parts
-}
-
-fn split_inline_code(text: &str) -> Vec<ContentPart<'_>> {
-    let mut parts = Vec::new();
-    let mut remaining = text;
-
-    while !remaining.is_empty() {
-        if let Some(start_idx) = remaining.find('`') {
-            if start_idx > 0 {
-                parts.push(ContentPart::Text(&remaining[..start_idx]));
-            }
-
-            let after_start = &remaining[start_idx + 1..];
-            if let Some(end_idx) = after_start.find('`') {
-                let code = &after_start[..end_idx];
-                parts.push(ContentPart::InlineCode(code));
-                remaining = &after_start[end_idx + 1..];
-            } else {
-                parts.push(ContentPart::Text(&remaining[start_idx..]));
-                break;
-            }
-        } else {
-            parts.push(ContentPart::Text(remaining));
-            break;
-        }
-    }
-
-    parts
 }
