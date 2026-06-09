@@ -254,7 +254,6 @@ impl ApiClient {
             Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>,
         >();
 
-<<<<<<< HEAD
         tokio::spawn(async move {
             use anthropic_types::AnthropicStreamState;
             use futures::StreamExt;
@@ -297,19 +296,6 @@ impl ApiClient {
                         let _ = tx.unbounded_send(Err(Box::new(e)));
                         return;
                     }
-=======
-        for line in body.lines() {
-            let line = line.trim().to_string();
-            if line.is_empty() || !line.starts_with("data: ") {
-                continue;
-            }
-            if let Some(chunks) = anthropic::parse_anthropic_sse_line(&line, &mut state) {
-                for chunk in &chunks {
-                    sse_out.push_str("data: ");
-                    sse_out.push_str(&serde_json::to_string(chunk).unwrap_or_default());
-                    sse_out.push('\n');
-                    sse_out.push('\n');
->>>>>>> 5307f1d (优化代码)
                 }
             }
             // Signal end of stream
