@@ -237,6 +237,8 @@ pub struct App {
     pub has_running_tool: bool,
     /// Spinner animation frame (0-9), advanced on Tick when has_running_tool
     pub spinner_frame: u8,
+    /// When the current turn started (for elapsed-time display).
+    turn_started_at: Option<std::time::Instant>,
     /// Cancellation flag for blocking input reader task
     shutdown_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Pending oneshot sender for question response
@@ -350,6 +352,7 @@ impl App {
             last_ctrl_c: None,
             has_running_tool: false,
             spinner_frame: 0,
+            turn_started_at: None,
             shutdown_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             question_responder: None,
             permission_responder: None,
@@ -399,6 +402,7 @@ impl App {
         }
         Ok(())
     }
+    
     fn read_input(
         tx: mpsc::UnboundedSender<AppEvent>,
         shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -467,6 +471,13 @@ impl App {
     async fn handle_event(&mut self, event: AppEvent) {
         // Derive phase from event (pure function); fall back to current
         if let Some(next_phase) = agent_phase_from_event(&event) {
+            if self.phase != next_phase {
+                tracing::info!(
+                    prev = ?self.phase,
+                    next = ?next_phase,
+                    "Agent phase transition"
+                );
+            }
             self.phase = next_phase;
         }
         match event {
@@ -605,6 +616,9 @@ impl App {
                         KeyCode::Enter => {
                             if let Some(session) = self.session_state.selected_session() {
                                 let id = session.id.clone();
+                                // Adopt the loaded session's ID so subsequent saves
+                                // go back to the original file, not a forked copy.
+                                self.session_id = id.clone();
                                 self.session_name = session.name.clone();
                                 self.session_state.dismiss();
                                 let client = self.daemon_client.clone();
@@ -730,7 +744,13 @@ impl App {
             AppEvent::Submit(text) => {
                 self.submit_input(text);
             }
-            AppEvent::PreparingTools => { /* phase transitions automatically */ }
+            AppEvent::PreparingTools => {
+                // Show "preparing..." hint in streaming area immediately
+                if self.streaming_content.is_empty() {
+                    self.streaming_content = "\u{23F3} preparing tools...".to_string();
+                    self.streaming_active = true;
+                }
+            }
             AppEvent::ContentDelta(text) => {
                 self.streaming_content.push_str(&text);
                 self.streaming_active = true;
@@ -740,9 +760,10 @@ impl App {
                 }
             }
             AppEvent::StreamDone { .. } => {
-                if !self.streaming_content.is_empty() {
-                    let content = std::mem::take(&mut self.streaming_content);
-                    // Last response always expanded (never auto-collapse the latest reply)
+                // Commit real streamed content (skip the "preparing tools..." hint)
+                let content = std::mem::take(&mut self.streaming_content);
+                let is_hint = content.starts_with('\u{23F3}');
+                if !content.is_empty() && !is_hint {
                     self.committed_messages.push(UIMessage {
                         role: MessageRole::Assistant,
                         content,
@@ -759,6 +780,9 @@ impl App {
                 self.user_scrolled = false;
             }
             AppEvent::ToolStart { name, args } => {
+                // Clear any "preparing tools..." hint
+                self.streaming_content.clear();
+                self.streaming_active = false;
                 self.has_running_tool = true;
                 self.last_tool_name = Some(tool_label(&name, &args));
                 self.committed_messages.push(UIMessage {
@@ -854,16 +878,21 @@ impl App {
                     tool_metadata: None,
                 });
             }
+            AppEvent::TurnStarted { .. } => {
+                self.turn_started_at = Some(std::time::Instant::now());
+            }
             AppEvent::TurnComplete => {
                 self.turn_count += 1;
                 self.current_turn_handle = None;
                 self.last_abort_reason = None; // normal completion clears
+                self.turn_started_at = None;
                 if !self.pending_inputs.is_empty() {
                     self.start_next_turn();
                 }
             }
             AppEvent::TurnAborted { ref reason } => {
                 self.last_abort_reason = Some(reason.clone());
+                self.turn_started_at = None;
             }
             AppEvent::PermissionRequired {
                 reason,
@@ -1042,10 +1071,7 @@ impl App {
     }
     fn render(&self, f: &mut Frame) {
         let area = f.area();
-        // Layout changes when question or permission is active:
-        //   normal:    header | chat | status | input
-        //   question:  header | chat | question-panel | status | input(hidden)
-        //   permission: header | chat | permission-panel | status | input(hidden)
+        // Layout: chat | [panel] | status | pending | input
         let has_question = self.question_state.visible;
         let has_permission = self.permission_state.visible;
         let show_panel = has_question || has_permission;
@@ -1060,7 +1086,6 @@ impl App {
         let has_pending = pending_height > 0;
         let constraints: Vec<Constraint> = if show_panel {
             vec![
-                Constraint::Length(1),
                 Constraint::Min(3),
                 Constraint::Length(panel_height),
                 Constraint::Length(1),
@@ -1069,7 +1094,6 @@ impl App {
             ]
         } else {
             vec![
-                Constraint::Length(1),
                 Constraint::Min(3),
                 Constraint::Length(1),
                 Constraint::Length(if has_pending { pending_height } else { 0 }),
@@ -1080,12 +1104,11 @@ impl App {
             .direction(Direction::Vertical)
             .constraints(constraints)
             .split(area);
-        let chat_idx = 1;
-        let panel_idx = if show_panel { 2 } else { 0 };
-        let status_idx = if show_panel { 3 } else { 2 };
-        let pending_idx = if show_panel { 4 } else { 3 };
-        let input_idx = if show_panel { 5 } else { 4 };
-        self.render_header(f, layout[chat_idx - 1]);
+        let chat_idx = 0;
+        let panel_idx = if show_panel { 1 } else { 0 };
+        let status_idx = if show_panel { 2 } else { 1 };
+        let pending_idx = if show_panel { 3 } else { 2 };
+        let input_idx = if show_panel { 4 } else { 3 };
         let main_area = if self.task_panel.visible {
             let split = Layout::default()
                 .direction(Direction::Horizontal)
@@ -1117,9 +1140,6 @@ impl App {
         // Session is still a popup overlay
         components::session::render(f, &self.session_state, centered_rect);
     }
-    fn render_header(&self, f: &mut Frame, area: Rect) {
-        components::status::render(f, area, &self.phase, &self.session_name);
-    }
     fn render_chat(&self, f: &mut Frame, area: Rect) {
         components::chat::render(
             f,
@@ -1133,7 +1153,10 @@ impl App {
         );
     }
     fn render_status(&self, f: &mut Frame, area: Rect) {
-        components::status::render(f, area, &self.phase, &self.session_name);
+        let elapsed = self.turn_started_at.map(|t| t.elapsed().as_secs());
+        let tokens = self.token_counter.used_tokens();
+        let mode = self.mode.label();
+        components::status::render(f, area, &self.phase, &self.session_name, self.spinner_frame, elapsed, tokens, mode);
     }
     fn render_input(&self, f: &mut Frame, area: Rect) {
         let chunks = Layout::default()

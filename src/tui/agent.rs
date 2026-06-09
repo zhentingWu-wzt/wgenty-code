@@ -669,11 +669,12 @@ impl AgentLoop {
                     )
                 } else {
                     format!(
-                        r#"{{"success":{},"output_type":{},"content":{},"error":{}}}"#,
+                        r#"{{"success":{},"output_type":{},"content":{},"error":{},"metadata":{}}}"#,
                         resp.success,
                         serde_json::to_string(&resp.output_type).unwrap_or_default(),
                         serde_json::to_string(&resp.content).unwrap_or_default(),
                         serde_json::to_string(&resp.error).unwrap_or_default(),
+                        serde_json::to_string(&resp.metadata).unwrap_or_else(|_| "null".to_string()),
                     )
                 }
             }
@@ -749,11 +750,12 @@ impl AgentLoop {
                     match result {
                         Ok(resp) => {
                             return format!(
-                                r#"{{"success":{},"output_type":{},"content":{},"error":{}}}"#,
+                                r#"{{"success":{},"output_type":{},"content":{},"error":{},"metadata":{}}}"#,
                                 resp.success,
                                 serde_json::to_string(&resp.output_type).unwrap_or_default(),
                                 serde_json::to_string(&resp.content).unwrap_or_default(),
                                 serde_json::to_string(&resp.error).unwrap_or_default(),
+                                serde_json::to_string(&resp.metadata).unwrap_or_else(|_| "null".to_string()),
                             );
                         }
                         Err(e) => {
@@ -774,11 +776,12 @@ impl AgentLoop {
                     {
                         Ok(resp) => {
                             return format!(
-                                r#"{{"success":{},"output_type":{},"content":{},"error":{}}}"#,
+                                r#"{{"success":{},"output_type":{},"content":{},"error":{},"metadata":{}}}"#,
                                 resp.success,
                                 serde_json::to_string(&resp.output_type).unwrap_or_default(),
                                 serde_json::to_string(&resp.content).unwrap_or_default(),
                                 serde_json::to_string(&resp.error).unwrap_or_default(),
+                                serde_json::to_string(&resp.metadata).unwrap_or_else(|_| "null".to_string()),
                             );
                         }
                         Err(e) => {
@@ -804,11 +807,12 @@ impl AgentLoop {
 
         // No permission required — return result directly
         format!(
-            r#"{{"success":{},"output_type":{},"content":{},"error":{}}}"#,
+            r#"{{"success":{},"output_type":{},"content":{},"error":{},"metadata":{}}}"#,
             result.success,
             serde_json::to_string(&result.output_type).unwrap_or_default(),
             serde_json::to_string(&result.content).unwrap_or_default(),
             serde_json::to_string(&result.error).unwrap_or_default(),
+            serde_json::to_string(&result.metadata).unwrap_or_else(|_| "null".to_string()),
         )
     }
 
@@ -999,7 +1003,19 @@ impl AgentLoop {
             let mut processor = StreamProcessor::new();
             let mut stream = response.bytes_stream();
             use futures::StreamExt;
-            while let Some(chunk) = stream.next().await {
+            const COMPACT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+            loop {
+                let chunk = match tokio::time::timeout(COMPACT_STREAM_IDLE_TIMEOUT, stream.next()).await {
+                    Ok(Some(chunk)) => chunk,
+                    Ok(None) => break,
+                    Err(_elapsed) => {
+                        tracing::warn!(
+                            "Auto-compact: summarization stream stalled (no data for {}s), using partial result",
+                            COMPACT_STREAM_IDLE_TIMEOUT.as_secs()
+                        );
+                        break;
+                    }
+                };
                 if let Ok(bytes) = chunk {
                     processor.feed_bytes(&bytes);
                 }

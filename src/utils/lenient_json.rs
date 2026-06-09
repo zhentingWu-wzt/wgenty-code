@@ -10,44 +10,119 @@ use regex::Regex;
 
 /// Try to parse tool arguments, falling back to field extraction on failure.
 ///
-/// Returns `(parsed_value, parse_error)` — if `serde_json::from_str` succeeds,
+/// Strategy (in order):
+/// 1. Direct `serde_json::from_str`
+/// 2. Pre-process to fix common regex escape errors, then retry `serde_json::from_str`
+/// 3. Regex-based partial field extraction as last resort
+///
+/// Returns `(parsed_value, parse_error)` — if any step succeeds,
 /// `parse_error` is `None`. Otherwise, extracts known fields via regex and
 /// returns a partial JSON object with an `_parse_error` key.
 pub fn parse_tool_args_lenient(raw: &str, _tool_name: &str) -> (serde_json::Value, Option<String>) {
-    match serde_json::from_str::<serde_json::Value>(raw) {
-        Ok(v) => (v, None),
-        Err(e) => {
-            let partial = extract_partial_fields(raw);
-            let mut obj = if let serde_json::Value::Object(m) = partial {
-                m
-            } else {
-                serde_json::Map::new()
-            };
-            // Collect field names before mutating obj
-            let field_names: Vec<String> = obj.keys()
-                .filter(|k| !k.starts_with('_'))
-                .cloned()
-                .collect();
-            obj.insert(
-                "_parse_error".to_string(),
-                serde_json::json!({
-                    "message": e.to_string(),
-                    "raw_length": raw.len(),
-                    "raw_preview": truncate_for_display(raw, 200),
-                    "is_truncated": looks_truncated(raw),
-                }),
-            );
-            obj.insert("_raw_arguments".to_string(), serde_json::json!(raw));
-            (
-                serde_json::Value::Object(obj),
-                Some(format!(
-                    "JSON parse error: {}. Extracted partial fields: {}",
-                    e,
-                    field_names.join(", ")
-                )),
-            )
+    // Step 1: direct parse
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+        return (v, None);
+    }
+
+    // Step 2: pre-process to fix common regex escape errors, retry
+    let preprocessed = preprocess_json_args(raw);
+    if preprocessed != raw {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&preprocessed) {
+            return (v, None);
         }
     }
+
+    // Step 3: partial field extraction as last resort
+    let e = serde_json::from_str::<serde_json::Value>(raw).unwrap_err();
+    let partial = extract_partial_fields(raw);
+    let mut obj = if let serde_json::Value::Object(m) = partial {
+        m
+    } else {
+        serde_json::Map::new()
+    };
+    // Collect field names before mutating obj
+    let field_names: Vec<String> = obj.keys()
+        .filter(|k| !k.starts_with('_'))
+        .cloned()
+        .collect();
+    obj.insert(
+        "_parse_error".to_string(),
+        serde_json::json!({
+            "message": e.to_string(),
+            "raw_length": raw.len(),
+            "raw_preview": truncate_for_display(raw, 200),
+            "is_truncated": looks_truncated(raw),
+        }),
+    );
+    obj.insert("_raw_arguments".to_string(), serde_json::json!(raw));
+    (
+        serde_json::Value::Object(obj),
+        Some(format!(
+            "JSON parse error: {}. Extracted partial fields: {}",
+            e,
+            field_names.join(", ")
+        )),
+    )
+}
+
+/// Pre-process raw tool-call arguments to fix common JSON escaping errors
+/// that LLMs make when generating regex patterns.
+///
+/// Specifically, regex escape sequences like `\d`, `\w`, `\s`, `\D`, `\W`,
+/// `\S`, `\B`, `\A`, `\Z` etc. are NOT valid JSON escape sequences.
+/// When the LLM generates a grep pattern containing these, `serde_json` fails.
+///
+/// This function detects backslash-char pairs where `char` is not a valid
+/// JSON escape target and inserts an additional backslash to produce valid JSON.
+///
+/// # Valid JSON escape sequences (left untouched):
+/// `\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, `\uXXXX`
+///
+/// # Invalid JSON escapes that are auto-fixed (common in regex):
+/// `\d`, `\D`, `\w`, `\W`, `\s`, `\S`, `\B`, `\A`, `\Z`, `\xNN`,
+/// backreferences `\1`-`\9`, and any other `\X` where X is not a JSON-valid target.
+fn preprocess_json_args(raw: &str) -> String {
+    // Fast path: no backslashes means nothing to fix
+    if !raw.contains('\\') {
+        return raw.to_string();
+    }
+
+    let chars: Vec<char> = raw.chars().collect();
+    let mut result = String::with_capacity(raw.len() + 16);
+    let mut i = 0;
+
+    while i < chars.len() {
+        if chars[i] == '\\' && i + 1 < chars.len() {
+            let next = chars[i + 1];
+            if is_valid_json_escape_target(next) {
+                // Valid JSON escape — keep as-is
+                result.push('\\');
+                result.push(next);
+                i += 2;
+            } else if next == '\\' {
+                // Already escaped backslash — keep as-is
+                result.push_str("\\\\");
+                i += 2;
+            } else {
+                // Invalid JSON escape (e.g. \d, \w, \s) — add extra backslash
+                result.push_str("\\\\");
+                result.push(next);
+                i += 2;
+            }
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    result
+}
+
+/// Check if a character is a valid target for a JSON backslash escape.
+///
+/// Valid per RFC 7159: `"` `\` `/` `b` `f` `n` `r` `t` `u`
+fn is_valid_json_escape_target(c: char) -> bool {
+    matches!(c, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u')
 }
 
 /// Extract known fields from a potentially truncated JSON string using regex.

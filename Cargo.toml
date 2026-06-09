@@ -19,6 +19,7 @@ futures = "0.3"
 # HTTP & API
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "blocking"] }
 http = "1"
+bytes = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rhai = "1"

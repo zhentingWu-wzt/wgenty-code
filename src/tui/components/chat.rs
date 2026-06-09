@@ -8,9 +8,9 @@ use ratatui::Frame;
 const USER_COLOR: Color = Color::Rgb(255, 140, 66);
 const ASSISTANT_COLOR: Color = Color::Rgb(147, 112, 219);
 const TEXT_COLOR: Color = Color::Rgb(220, 220, 230);
-const DIM_COLOR: Color = Color::Rgb(100, 100, 110);
-const TURN_SEP_COLOR: Color = Color::Rgb(80, 80, 90);
-const SEP_COLOR: Color = Color::Rgb(60, 60, 70);
+const DIM_COLOR: Color = Color::Rgb(150, 150, 165);
+const TURN_SEP_COLOR: Color = Color::Rgb(110, 110, 125);
+const SEP_COLOR: Color = Color::Rgb(85, 85, 100);
 
 /// Braille spinner animation frames (10 frames)
 const SPINNER_CHARS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
