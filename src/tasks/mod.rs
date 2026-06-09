@@ -6,6 +6,8 @@
 
 pub mod management;
 pub mod todo_write;
+pub mod types;
 
 pub use management::TaskManagementTool;
 pub use todo_write::{TodoItem, TodoState, TodoWriteTool};
+pub use types::{Task, TaskPriority, TaskStatus};

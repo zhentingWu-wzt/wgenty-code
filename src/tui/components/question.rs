@@ -1,3 +1,6 @@
+use crate::tui::app::QuestionResponder;
+use crate::tui::traits::Component;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -17,6 +20,8 @@ pub struct QuestionState {
     pub cursor: usize,
     /// Custom text typed into the "Other" option.
     pub other_value: String,
+    /// Pending oneshot sender for question response.
+    pub responder: Option<QuestionResponder>,
 }
 
 const ACCENT_COLOR: Color = Color::Rgb(255, 200, 100);
@@ -34,10 +39,11 @@ impl QuestionState {
             selected: Vec::new(),
             cursor: 0,
             other_value: String::new(),
+            responder: None,
         }
     }
 
-    pub fn show(&mut self, question: String, options: Vec<String>, multi_select: bool) {
+    pub fn show(&mut self, question: String, options: Vec<String>, multi_select: bool, responder: QuestionResponder) {
         self.visible = true;
         self.question = question;
         self.options = options;
@@ -45,6 +51,7 @@ impl QuestionState {
         self.selected = if multi_select { vec![] } else { vec![0] };
         self.cursor = 0;
         self.other_value.clear();
+        self.responder = Some(responder);
     }
 
     pub fn cursor_on_other(&self) -> bool {
@@ -55,10 +62,10 @@ impl QuestionState {
         self.options.len() // last index = Other
     }
 
-    /// Returns the selected labels. Clears visibility.
+    /// Returns the selected labels and sends response. Clears visibility.
     pub fn dismiss(&mut self) -> Vec<String> {
         self.visible = false;
-        if self.cursor_on_other() {
+        let answers = if self.cursor_on_other() {
             vec![std::mem::take(&mut self.other_value)]
         } else if self.multi_select {
             self.selected
@@ -71,6 +78,29 @@ impl QuestionState {
                 .cloned()
                 .into_iter()
                 .collect()
+        };
+        // Send response via oneshot channel
+        if let Some(responder) = self.responder.take() {
+            let _ = responder.0.map(|tx| tx.send(answers.clone()));
+        }
+        answers
+    }
+
+    /// Take pending response if any (after handle_key triggered a submission).
+    pub fn take_response(&mut self) -> Option<Vec<String>> {
+        if let Some(responder) = self.responder.take() {
+            let answers = if self.cursor_on_other() {
+                vec![std::mem::take(&mut self.other_value)]
+            } else if self.multi_select {
+                self.selected.iter().filter_map(|&i| self.options.get(i).cloned()).collect()
+            } else {
+                self.options.get(self.cursor).cloned().into_iter().collect()
+            };
+            let _ = responder.0.map(|tx| tx.send(answers.clone()));
+            self.visible = false;
+            Some(answers)
+        } else {
+            None
         }
     }
 
@@ -129,6 +159,82 @@ impl QuestionState {
     pub fn height_needed(&self) -> u16 {
         // border(2) + question(2) + hint(1) + options(N) + Other(1) + padding
         (self.options.len() + 7) as u16
+    }
+}
+
+impl Component for QuestionState {
+    fn handle_key(&mut self, key: &KeyEvent) -> bool {
+        if !self.visible {
+            return false;
+        }
+
+        // Text input mode: cursor is on "Other" option
+        if self.cursor_on_other() {
+            match key.code {
+                KeyCode::Char(c) => {
+                    self.other_value.push(c);
+                    true
+                }
+                KeyCode::Backspace => {
+                    self.other_value.pop();
+                    true
+                }
+                KeyCode::Enter => {
+                    self.take_response();
+                    true
+                }
+                KeyCode::Up => {
+                    self.move_up();
+                    true
+                }
+                KeyCode::Down => {
+                    self.move_down();
+                    true
+                }
+                KeyCode::Esc => {
+                    self.visible = false;
+                    self.responder = None;
+                    true
+                }
+                _ => false,
+            }
+        } else {
+            // Navigation mode
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.move_up();
+                    true
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.move_down();
+                    true
+                }
+                KeyCode::Enter => {
+                    let can_submit = !self.multi_select || !self.selected.is_empty();
+                    if can_submit {
+                        self.take_response();
+                    }
+                    true
+                }
+                KeyCode::Char(' ') => {
+                    self.toggle_selection();
+                    true
+                }
+                KeyCode::Esc => {
+                    self.visible = false;
+                    self.responder = None;
+                    true
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() => {
+                    let n = c.to_digit(10).unwrap() as usize;
+                    if self.select_number(n) {
+                        self.take_response();
+                    }
+                    true
+                }
+                _ => false,
+            }
+        }
     }
 }
 

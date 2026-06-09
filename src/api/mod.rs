@@ -1,6 +1,8 @@
 //! API Module - OpenAI/DeepSeek compatible API Client
 
-pub mod anthropic_types;
+pub mod anthropic;
+/// Backward-compatible alias for the old module path.
+pub use anthropic as anthropic_types;
 pub mod provider;
 pub mod token_counter;
 
@@ -10,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anthropic_types::{
+use anthropic::{
     convert_anthropic_response, convert_messages_to_anthropic, convert_tools_to_anthropic,
 };
 use provider::Provider;
@@ -117,7 +119,7 @@ impl ApiClient {
         let (anthropic_msgs, system_prompt) = convert_messages_to_anthropic(&messages);
         let anthropic_tools = tools.as_ref().map(|t| convert_tools_to_anthropic(t));
 
-        let request = anthropic_types::AnthropicRequest {
+        let request = anthropic::AnthropicRequest {
             model: self.provider.resolve_model_id(&self.settings.model),
             messages: anthropic_msgs,
             max_tokens: self.settings.api.max_tokens,
@@ -148,7 +150,7 @@ impl ApiClient {
             ));
         }
 
-        let anthropic_resp: anthropic_types::AnthropicResponse = response.json().await?;
+        let anthropic_resp: anthropic::AnthropicResponse = response.json().await?;
         Ok(convert_anthropic_response(&anthropic_resp))
     }
 
@@ -206,7 +208,7 @@ impl ApiClient {
         messages: Vec<ChatMessage>,
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<reqwest::Response> {
-        use anthropic_types::{
+        use anthropic::{
             convert_messages_to_anthropic, convert_tools_to_anthropic, AnthropicRequest,
         };
 
@@ -252,6 +254,7 @@ impl ApiClient {
             Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>,
         >();
 
+<<<<<<< HEAD
         tokio::spawn(async move {
             use anthropic_types::AnthropicStreamState;
             use futures::StreamExt;
@@ -294,6 +297,19 @@ impl ApiClient {
                         let _ = tx.unbounded_send(Err(Box::new(e)));
                         return;
                     }
+=======
+        for line in body.lines() {
+            let line = line.trim().to_string();
+            if line.is_empty() || !line.starts_with("data: ") {
+                continue;
+            }
+            if let Some(chunks) = anthropic::parse_anthropic_sse_line(&line, &mut state) {
+                for chunk in &chunks {
+                    sse_out.push_str("data: ");
+                    sse_out.push_str(&serde_json::to_string(chunk).unwrap_or_default());
+                    sse_out.push('\n');
+                    sse_out.push('\n');
+>>>>>>> 5307f1d (优化代码)
                 }
             }
             // Signal end of stream
