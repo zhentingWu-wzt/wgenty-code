@@ -42,6 +42,18 @@ pub struct Settings {
     /// subagent spawns when this many are already running. Default: 5.
     #[serde(default = "default_max_concurrent_subagents")]
     pub max_concurrent_subagents: usize,
+    /// Maximum wall-clock seconds for a single subagent execution.
+    /// Subagent loops that exceed this duration are aborted. Default: 240.
+    #[serde(default = "default_subagent_timeout")]
+    pub subagent_timeout_secs: u64,
+    /// Whether RLM pipeline retries failed sub-tasks once with a different
+    /// prompt angle. Default: true.
+    #[serde(default = "default_rlm_retry")]
+    pub rlm_retry_enabled: bool,
+    /// Maximum re-plan cycles when RLM executor failure rate exceeds 50%.
+    /// 0 = disabled (no feedback loop). Default: 2.
+    #[serde(default = "default_rlm_max_replan")]
+    pub rlm_max_replan_cycles: usize,
     /// Token budget in thousands (k). When cumulative token usage across
     /// all models exceeds this limit, the agent stops and signals budget
     /// exhaustion. 0 = unlimited. Default: 0.
@@ -117,6 +129,15 @@ fn default_subagent_depth() -> usize {
 
 fn default_max_concurrent_subagents() -> usize {
     5
+}
+fn default_subagent_timeout() -> u64 {
+    240
+}
+fn default_rlm_retry() -> bool {
+    true
+}
+fn default_rlm_max_replan() -> usize {
+    2
 }
 
 fn default_true() -> bool {
@@ -196,6 +217,9 @@ impl Default for Settings {
             small_model_appkey: None,
             max_subagent_depth: 3,
             max_concurrent_subagents: 5,
+            subagent_timeout_secs: 240,
+            rlm_retry_enabled: true,
+            rlm_max_replan_cycles: 2,
             token_budget_k: 0,
             max_rounds: None,
             planner_model: None,
@@ -303,6 +327,9 @@ impl Settings {
             "small_model_appkey" => settings.small_model_appkey = Some(value.to_string()),
             "max_subagent_depth" => settings.max_subagent_depth = value.parse().unwrap_or(3),
             "max_concurrent_subagents" => settings.max_concurrent_subagents = value.parse().unwrap_or(5),
+            "subagent_timeout_secs" => settings.subagent_timeout_secs = value.parse().unwrap_or(240),
+            "rlm_retry_enabled" => settings.rlm_retry_enabled = value.parse().unwrap_or(true),
+            "rlm_max_replan_cycles" => settings.rlm_max_replan_cycles = value.parse().unwrap_or(2),
             "token_budget_k" => settings.token_budget_k = value.parse().unwrap_or(0),
             "planner_model" => settings.planner_model = Some(value.to_string()),
             "planner_model_base_url" => settings.planner_model_base_url = Some(value.to_string()),

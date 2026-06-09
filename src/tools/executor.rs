@@ -128,6 +128,11 @@ impl ToolExecutor {
         args: serde_json::Value,
         session_id: Option<&str>,
     ) -> ChatMessage {
+        tracing::info!(
+            tool = tool_name,
+            args_len = serde_json::to_string(&args).map(|s| s.len()).unwrap_or(0),
+            "ToolExecutor: executing with hooks"
+        );
         // PreToolUse hook
         let pre_ctx = HookManager::pre_tool_context(tool_name, &args, session_id);
         let pre_outcomes = self

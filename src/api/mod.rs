@@ -208,7 +208,6 @@ impl ApiClient {
     ) -> anyhow::Result<reqwest::Response> {
         use anthropic_types::{
             convert_messages_to_anthropic, convert_tools_to_anthropic, AnthropicRequest,
-            AnthropicStreamState,
         };
 
         let (anthropic_msgs, system_prompt) = convert_messages_to_anthropic(&messages);
@@ -245,31 +244,67 @@ impl ApiClient {
             ));
         }
 
-        // Read Anthropic SSE stream, convert to OpenAI-compatible SSE bytes
-        let mut state = AnthropicStreamState::new();
-        let body = response.text().await?;
-        let mut sse_out = String::new();
+        // Stream Anthropic SSE events, convert to OpenAI-compatible SSE on the fly.
+        // Uses an mpsc channel so the caller can start consuming SSE events immediately,
+        // rather than waiting for the entire Anthropic response body to arrive.
+        let byte_stream = response.bytes_stream();
+        let (tx, rx) = futures::channel::mpsc::unbounded::<
+            Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>,
+        >();
 
-        for line in body.lines() {
-            let line = line.trim().to_string();
-            if line.is_empty() || !line.starts_with("data: ") {
-                continue;
-            }
-            if let Some(chunks) = anthropic_types::parse_anthropic_sse_line(&line, &mut state) {
-                for chunk in &chunks {
-                    sse_out.push_str("data: ");
-                    sse_out.push_str(&serde_json::to_string(chunk).unwrap_or_default());
-                    sse_out.push('\n');
-                    sse_out.push('\n');
+        tokio::spawn(async move {
+            use anthropic_types::AnthropicStreamState;
+            use futures::StreamExt;
+            let mut stream = byte_stream;
+            let mut state = AnthropicStreamState::new();
+            let mut buffer = String::new();
+
+            while let Some(chunk_result) = stream.next().await {
+                match chunk_result {
+                    Ok(b) => {
+                        buffer.push_str(&String::from_utf8_lossy(&b));
+                        // Process all complete lines from the buffer
+                        while let Some(nl) = buffer.find('\n') {
+                            let line = buffer[..nl].trim().to_string();
+                            buffer = buffer[nl + 1..].to_string();
+
+                            if line.is_empty() || !line.starts_with("data: ") {
+                                continue;
+                            }
+                            if let Some(chunks) =
+                                anthropic_types::parse_anthropic_sse_line(&line, &mut state)
+                            {
+                                for chunk in &chunks {
+                                    let mut sse = String::from("data: ");
+                                    sse.push_str(
+                                        &serde_json::to_string(chunk).unwrap_or_default(),
+                                    );
+                                    sse.push_str("\n\n");
+                                    if tx
+                                        .unbounded_send(Ok(bytes::Bytes::from(sse)))
+                                        .is_err()
+                                    {
+                                        return; // receiver dropped
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.unbounded_send(Err(Box::new(e)));
+                        return;
+                    }
                 }
             }
-        }
-        sse_out.push_str("data: [DONE]\n\n");
+            // Signal end of stream
+            let _ = tx.unbounded_send(Ok(bytes::Bytes::from("data: [DONE]\n\n")));
+        });
 
+        let body = reqwest::Body::wrap_stream(rx);
         let http_resp = http::Response::builder()
             .status(200)
             .header("Content-Type", "text/event-stream")
-            .body(reqwest::Body::from(sse_out))
+            .body(body)
             .map_err(|e| anyhow::anyhow!("Failed to build response: {}", e))?;
 
         Ok(reqwest::Response::from(http_resp))

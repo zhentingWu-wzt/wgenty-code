@@ -138,6 +138,14 @@ impl Tool for TaskTool {
         let prompt = input["prompt"].as_str().unwrap_or("");
         let background = input["background"].as_bool().unwrap_or(false);
 
+        tracing::info!(
+            subagent_type = _subagent_type,
+            description = description,
+            prompt_len = prompt.len(),
+            background = background,
+            "TaskTool: executing subagent"
+        );
+
         // Upgrade the Weak reference to the tool registry.
         let tool_registry = self.tool_registry.upgrade().ok_or_else(|| ToolError {
             message: "Tool registry is no longer available".to_string(),
@@ -257,6 +265,7 @@ impl Tool for TaskTool {
             let reg = tool_registry.clone();
             let tools = allowed_tools.clone();
             let api_client_bg = ApiClient::new(self.settings.clone());
+            let timeout_secs = self.settings.subagent_timeout_secs;
 
             tokio::spawn(async move {
                 let result = run_subagent_loop(
@@ -266,6 +275,7 @@ impl Tool for TaskTool {
                     &prompt_owned,
                     &tools,
                     30,
+                    timeout_secs,
                 )
                 .await;
 
@@ -290,6 +300,7 @@ impl Tool for TaskTool {
                     m.insert("subagent_type".to_string(), serde_json::json!(_subagent_type));
                     m.insert("description".to_string(), serde_json::json!(description));
                     m.insert("background".to_string(), serde_json::json!(true));
+                    m.insert("execution_mode".to_string(), serde_json::json!("background"));
                     m
                 },
             })
@@ -306,6 +317,7 @@ impl Tool for TaskTool {
                     tool_registry.clone(),
                     description,
                     prompt,
+                    depth,
                 )
                 .await
             } else {
@@ -316,6 +328,7 @@ impl Tool for TaskTool {
                     &full_prompt,
                     &allowed_tools,
                     30,
+                    self.settings.subagent_timeout_secs,
                 )
                 .await
             };
