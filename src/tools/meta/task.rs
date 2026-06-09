@@ -317,7 +317,6 @@ impl Tool for TaskTool {
                     tool_registry.clone(),
                     description,
                     prompt,
-                    depth,
                 )
                 .await
                 .map(|r| r.aggregated)

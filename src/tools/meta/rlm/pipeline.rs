@@ -199,6 +199,7 @@ Context: {context}
         );
 
         let mut handles = Vec::new();
+        let timeout_secs = settings.subagent_timeout_secs;
 
         for (idx, registry, api_client, prompt, allowed) in level_data {
             let handle = tokio::spawn(async move {
@@ -209,6 +210,7 @@ Context: {context}
                     &prompt,
                     &allowed,
                     20,
+                    timeout_secs,
                 )
                 .await;
                 (result, idx)
