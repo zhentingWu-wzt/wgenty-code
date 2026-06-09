@@ -10,9 +10,10 @@
 //! - blocked: List all tasks that are blocked by dependencies
 //! - get: Get task details
 
+// Re-export types for backward compatibility (e.g., daemon/handlers.rs imports from this module)
+pub use super::types::{Task, TaskPriority, TaskStatus};
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::HashMap;
 use std::io::Write;
@@ -27,37 +28,6 @@ fn debug_log(msg: &str) {
     {
         let _ = writeln!(f, "{}", msg);
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Task {
-    pub id: String,
-    pub subject: String,
-    pub description: String,
-    pub status: TaskStatus,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-    pub metadata: HashMap<String, serde_json::Value>,
-    pub tags: Vec<String>,
-    pub priority: TaskPriority,
-    #[serde(default)]
-    pub blocked_by: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum TaskStatus {
-    Pending,
-    InProgress,
-    Completed,
-    Deleted,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum TaskPriority {
-    Low,
-    Medium,
-    High,
-    Critical,
 }
 
 pub struct TaskManagementTool {
@@ -647,34 +617,6 @@ impl TaskManagementTool {
             .to_string(),
             metadata: std::collections::HashMap::new(),
         })
-    }
-}
-
-impl std::str::FromStr for TaskStatus {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "pending" => Ok(TaskStatus::Pending),
-            "in_progress" => Ok(TaskStatus::InProgress),
-            "completed" => Ok(TaskStatus::Completed),
-            "deleted" => Ok(TaskStatus::Deleted),
-            _ => Err(()),
-        }
-    }
-}
-
-impl std::str::FromStr for TaskPriority {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "low" => Ok(TaskPriority::Low),
-            "medium" => Ok(TaskPriority::Medium),
-            "high" => Ok(TaskPriority::High),
-            "critical" => Ok(TaskPriority::Critical),
-            _ => Err(()),
-        }
     }
 }
 
