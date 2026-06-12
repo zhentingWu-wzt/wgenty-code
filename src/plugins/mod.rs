@@ -166,7 +166,7 @@ impl PluginManager {
         let plugin_dir = self.plugins_dir.join(plugin_name);
 
         if source.starts_with("http") || source.starts_with("git") {
-            println!("📥 Cloning plugin from {}...", source);
+            tracing::info!(source, "cloning plugin");
             let output = tokio::process::Command::new("git")
                 .args(["clone", source, &plugin_dir.to_string_lossy()])
                 .output()
@@ -179,7 +179,7 @@ impl PluginManager {
                 ));
             }
         } else if std::path::Path::new(source).exists() {
-            println!("📁 Copying plugin from {}...", source);
+            tracing::info!(source, "copying plugin");
             fs_extra::dir::copy(
                 source,
                 &self.plugins_dir,
@@ -192,7 +192,7 @@ impl PluginManager {
         let manifest = self.loader.load_manifest(&plugin_dir).await?;
         self.registry.register(manifest).await?;
 
-        println!("✅ Plugin installed: {}", plugin_name);
+        tracing::info!(plugin_name, "plugin installed");
         Ok(())
     }
 
@@ -204,7 +204,7 @@ impl PluginManager {
             std::fs::remove_dir_all(&plugin_dir)?;
         }
 
-        println!("🗑️ Plugin removed: {}", name);
+        tracing::info!(name, "plugin removed");
         Ok(())
     }
 
@@ -227,7 +227,7 @@ impl PluginManager {
         }
 
         self.registry.set_loaded(name, loaded).await?;
-        println!("✅ Plugin loaded: {}", name);
+        tracing::info!(name, "plugin loaded");
         Ok(())
     }
 
@@ -247,7 +247,7 @@ impl PluginManager {
         }
 
         self.registry.set_unloaded(name).await?;
-        println!("⏹️ Plugin unloaded: {}", name);
+        tracing::info!(name, "plugin unloaded");
         Ok(())
     }
 
@@ -270,7 +270,7 @@ impl PluginManager {
         let plugin_dir = self.plugins_dir.join(name);
 
         if plugin_dir.join(".git").exists() {
-            println!("⬆️ Updating plugin: {}", name);
+            tracing::info!(name, "updating plugin");
             let output = tokio::process::Command::new("git")
                 .args(["pull"])
                 .current_dir(&plugin_dir)
@@ -279,7 +279,7 @@ impl PluginManager {
 
             if output.status.success() {
                 self.reload(name).await?;
-                println!("✅ Plugin updated: {}", name);
+                tracing::info!(name, "plugin updated");
             } else {
                 return Err(anyhow::anyhow!(
                     "Failed to update plugin: {}",
@@ -287,7 +287,7 @@ impl PluginManager {
                 ));
             }
         } else {
-            println!("⚠️ Plugin is not a git repository, skipping update");
+            tracing::warn!(name, "plugin is not a git repository, skipping update");
         }
 
         Ok(())
@@ -313,7 +313,7 @@ impl PluginManager {
             if entry.path().is_dir() {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if let Err(e) = self.load(&name).await {
-                    println!("⚠️ Failed to load plugin {}: {}", name, e);
+                    tracing::warn!(name, error = %e, "failed to load plugin");
                 }
             }
         }

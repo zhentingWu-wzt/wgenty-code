@@ -151,28 +151,48 @@ impl TeamMemorySyncService {
         self.load_local_memories().await?;
         self.fetch_remote_memories().await?;
 
-        {
+        // Phase 1: Snapshot the data while holding locks, then release
+        // before performing any async operations that acquire other locks.
+        // This avoids the deadlock where do_sync holds local_memories.read()
+        // and then calls download_memory() which needs local_memories.write().
+        let to_upload: Vec<TeamMemory> = {
             let local = self.local_memories.read().await;
-            let remote = self.remote_memories.write().await;
+            let remote = self.remote_memories.read().await;
 
+            let mut uploads = Vec::new();
             for (id, local_mem) in local.iter() {
                 if let Some(remote_mem) = remote.get(id) {
                     if local_mem.etag != remote_mem.etag {
                         conflicts += 1;
-                        self.resolve_conflict(local_mem, remote_mem).await?;
                     }
                 } else {
-                    self.upload_memory(local_mem).await?;
-                    uploaded += 1;
+                    uploads.push(local_mem.clone());
                 }
             }
+            uploads
+        }; // locks released
 
-            for (id, remote_mem) in remote.iter() {
-                if !local.contains_key(id) {
-                    self.download_memory(remote_mem).await?;
-                    downloaded += 1;
-                }
-            }
+        // Phase 2: Perform uploads without holding any lock
+        for mem in &to_upload {
+            self.upload_memory(mem).await?;
+            uploaded += 1;
+        }
+
+        // Phase 3: Determine downloads needed (snapshot again)
+        let to_download: Vec<TeamMemory> = {
+            let local = self.local_memories.read().await;
+            let remote = self.remote_memories.read().await;
+            remote
+                .iter()
+                .filter(|(id, _)| !local.contains_key(*id))
+                .map(|(_, m)| m.clone())
+                .collect()
+        }; // locks released
+
+        // Phase 4: Perform downloads without holding any lock
+        for mem in &to_download {
+            self.download_memory(mem).await?;
+            downloaded += 1;
         }
 
         Ok(SyncResult {

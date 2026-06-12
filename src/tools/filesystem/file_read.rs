@@ -67,16 +67,21 @@ impl Tool for FileReadTool {
 
         let path = Path::new(file_path);
 
-        if !path.exists() {
-            return Err(ToolError {
-                message: format!("File does not exist: {}", file_path),
-                code: Some("file_not_found".to_string()),
-            });
-        }
-
-        let bytes = std::fs::read(path).map_err(|e| ToolError {
-            message: format!("Failed to read file: {}", e),
-            code: Some("read_error".to_string()),
+        // Use tokio::fs to avoid blocking the async runtime.
+        // Skip the exists() TOCTOU check — read already returns a clear
+        // error if the file doesn't exist.
+        let bytes = tokio::fs::read(path).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                ToolError {
+                    message: format!("File does not exist: {}", file_path),
+                    code: Some("file_not_found".to_string()),
+                }
+            } else {
+                ToolError {
+                    message: format!("Failed to read file: {}", e),
+                    code: Some("read_error".to_string()),
+                }
+            }
         })?;
 
         if bytes.contains(&0) {

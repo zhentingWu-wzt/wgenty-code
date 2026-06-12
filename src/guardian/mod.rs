@@ -25,29 +25,39 @@ pub struct GuardianDecision {
 }
 
 /// Patterns that indicate elevated risk.
+/// Note: critical patterns must be specific to avoid false positives on
+/// legitimate operations like `rm -rf /tmp`.
 const CRITICAL_PATTERNS: &[&str] = &[
-    "rm -rf / ",
+    "rm -rf / ",        // rm -rf / (with trailing space)
+    "rm -rf /*",        // rm -rf /* (glob)
+    "rm -rf /$",        // rm -rf / at end of string
+    "rm -rf --no-preserve-root",
     "mkfs.",
     "dd if=",
     "> /dev/sda",
-    ":(){ :|:& };:", // fork bomb
+    ":(){ :|:& };:",   // fork bomb
     "chmod 777 /",
 ];
 
 const HIGH_PATTERNS: &[&str] = &[
     "sudo ",
+    "sudo\t",
     "rm -rf",
+    "rm -fr",
     "git push --force",
+    "git push -f",
     "git reset --hard",
-    "DROP TABLE",
-    "DELETE FROM",
+    "drop table",
+    "delete from",
     "shutdown",
     "reboot",
-    "chmod -R 777",
-    "chown -R",
+    "chmod -r 777",
+    "chown -r",
     "> /etc/",
     "curl | bash",
-    "wget -O - | sh",
+    "curl | sh",
+    "wget -o - | sh",
+    "wget | bash",
 ];
 
 const MEDIUM_PATTERNS: &[&str] = &[
@@ -61,24 +71,69 @@ const MEDIUM_PATTERNS: &[&str] = &[
     "npm uninstall",
 ];
 
+/// Detect command substitution patterns that could hide dangerous commands.
+const SUBSTITUTION_INDICATORS: &[&str] = &["$(", "`"];
+
+/// Check if `command` contains `pattern` as a word-boundary match.
+/// This prevents "rm -rf /" from matching "rm -rf /tmp".
+fn matches_pattern(command: &str, pattern: &str) -> bool {
+    let pat_lower = pattern.to_lowercase();
+    let cmd_lower = command.to_lowercase();
+
+    if !cmd_lower.contains(&pat_lower) {
+        return false;
+    }
+
+    // For patterns ending with '/' (like "rm -rf /"), ensure the next
+    // character is whitespace, end-of-string, or a flag (starts with '-'),
+    // NOT a path component (which would mean a subdirectory).
+    if pat_lower.ends_with('/') {
+        if let Some(pos) = cmd_lower.find(&pat_lower) {
+            let after_pos = pos + pat_lower.len();
+            if after_pos < cmd_lower.len() {
+                let next_char = cmd_lower.as_bytes()[after_pos];
+                // Allow: space, tab, newline, '-', end of string
+                // Reject: alphanumeric (indicates a subpath like /tmp)
+                if next_char.is_ascii_alphanumeric() || next_char == b'_' {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
+}
+
 /// Classify the risk level of a shell command.
 pub fn classify_risk(command: &str) -> RiskLevel {
     let cmd_lower = command.to_lowercase();
 
+    // Check for command substitution that could hide dangerous operations
+    for indicator in SUBSTITUTION_INDICATORS {
+        if cmd_lower.contains(indicator) {
+            for pattern in HIGH_PATTERNS.iter().chain(CRITICAL_PATTERNS.iter()) {
+                let pattern_trimmed = pattern.trim();
+                if matches_pattern(&cmd_lower, pattern_trimmed) {
+                    return RiskLevel::High;
+                }
+            }
+        }
+    }
+
     for pattern in CRITICAL_PATTERNS {
-        if cmd_lower.contains(&pattern.to_lowercase()) {
+        if matches_pattern(&cmd_lower, pattern) {
             return RiskLevel::Critical;
         }
     }
 
     for pattern in HIGH_PATTERNS {
-        if cmd_lower.contains(&pattern.to_lowercase()) {
+        if matches_pattern(&cmd_lower, pattern) {
             return RiskLevel::High;
         }
     }
 
     for pattern in MEDIUM_PATTERNS {
-        if cmd_lower.contains(&pattern.to_lowercase()) {
+        if matches_pattern(&cmd_lower, pattern) {
             return RiskLevel::Medium;
         }
     }

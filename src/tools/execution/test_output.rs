@@ -98,11 +98,15 @@ impl TestOutput {
         let skipped = 0usize;
         let summary;
 
+        static PASSED_RE: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r"(\d+)\s*passed").unwrap()
+        });
+
         if let Some(caps) = RE.captures(output) {
             failed = caps[1].parse().unwrap_or(0);
             let total: usize = caps[3].parse().unwrap_or(0);
             // Try to find passed count
-            if let Some(pass_caps) = Regex::new(r"(\d+)\s*passed").unwrap().captures(output) {
+            if let Some(pass_caps) = PASSED_RE.captures(output) {
                 passed = pass_caps[1].parse().unwrap_or(0);
             } else {
                 passed = total.saturating_sub(failed);
@@ -228,9 +232,10 @@ impl TestOutput {
                 summary = format!("Ran {} tests in {:.3}s — OK", total, duration_ms as f64 / 1000.0);
             } else {
                 // Try to extract failure count
-                if let Some(fail_caps) =
-                    Regex::new(r"failures=(\d+)").unwrap().captures(output)
-                {
+                static FAILURES_RE: LazyLock<Regex> = LazyLock::new(|| {
+                    Regex::new(r"failures=(\d+)").unwrap()
+                });
+                if let Some(fail_caps) = FAILURES_RE.captures(output) {
                     failed = fail_caps[1].parse().unwrap_or(0);
                     passed = total.saturating_sub(failed);
                 }

@@ -29,7 +29,10 @@ impl ApiClient {
         let http_client = Client::builder()
             .timeout(Duration::from_secs(settings.api.timeout))
             .build()
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "failed to build HTTP client, using default");
+                Client::default()
+            });
 
         let provider: Arc<dyn Provider> =
             Arc::from(provider::detect_provider(&settings.api.get_base_url()));
@@ -102,7 +105,9 @@ impl ApiClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = response.text().await.unwrap_or_else(|e| {
+                format!("[failed to read error body: {}]", e)
+            });
             return Err(anyhow::anyhow!("API error ({}): {}", status, body));
         }
 
@@ -268,7 +273,7 @@ impl ApiClient {
                         // Process all complete lines from the buffer
                         while let Some(nl) = buffer.find('\n') {
                             let line = buffer[..nl].trim().to_string();
-                            buffer = buffer[nl + 1..].to_string();
+                            buffer.drain(..=nl);
 
                             if line.is_empty() || !line.starts_with("data: ") {
                                 continue;
@@ -277,11 +282,9 @@ impl ApiClient {
                                 anthropic_types::parse_anthropic_sse_line(&line, &mut state)
                             {
                                 for chunk in &chunks {
-                                    let mut sse = String::from("data: ");
-                                    sse.push_str(
-                                        &serde_json::to_string(chunk).unwrap_or_default(),
-                                    );
-                                    sse.push_str("\n\n");
+                                    // chunk is already formatted as "data: {...}" by
+                                    // process_event(); just append the SSE double-newline
+                                    let sse = format!("{}\n\n", chunk);
                                     if tx
                                         .unbounded_send(Ok(bytes::Bytes::from(sse)))
                                         .is_err()

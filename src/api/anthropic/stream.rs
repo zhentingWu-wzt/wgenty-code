@@ -1,17 +1,26 @@
 //! Anthropic SSE stream processing — converts Anthropic SSE to OpenAI format.
 
+use std::collections::HashMap;
+
 use super::types::*;
 use crate::api::{
     Delta, StreamChoice, StreamChunk, StreamToolCall, StreamToolCallFunction,
 };
 
+/// Accumulated state for a single in-progress tool use content block.
+struct ToolUseAccumulator {
+    id: String,
+    name: String,
+    input: String,
+}
+
 pub struct AnthropicStreamState {
     pub message_id: Option<String>,
     pub model: Option<String>,
     pub content_blocks: Vec<AnthropicContentBlock>,
-    current_tool_use_id: Option<String>,
-    current_tool_use_name: Option<String>,
-    current_tool_use_input: String,
+    /// Per-index accumulator for concurrent tool use blocks.
+    /// Keyed by the content block `index` from the Anthropic SSE events.
+    tool_use_accumulators: HashMap<usize, ToolUseAccumulator>,
     pub stop_reason: Option<String>,
     pub usage: Option<AnthropicUsage>,
 }
@@ -28,9 +37,7 @@ impl AnthropicStreamState {
             message_id: None,
             model: None,
             content_blocks: Vec::new(),
-            current_tool_use_id: None,
-            current_tool_use_name: None,
-            current_tool_use_input: String::new(),
+            tool_use_accumulators: HashMap::new(),
             stop_reason: None,
             usage: None,
         }
@@ -51,7 +58,7 @@ impl AnthropicStreamState {
                 }
             }
             AnthropicSseEvent::ContentBlockStart {
-                index: _,
+                index,
                 content_block,
             } => match content_block {
                 AnthropicContentBlock::Text { text } => {
@@ -78,18 +85,22 @@ impl AnthropicStreamState {
                     ));
                 }
                 AnthropicContentBlock::ToolUse { id, name, input: _ } => {
-                    self.current_tool_use_id = Some(id.clone());
-                    self.current_tool_use_name = Some(name.clone());
-                    self.current_tool_use_input.clear();
+                    self.tool_use_accumulators.insert(*index, ToolUseAccumulator {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: String::new(),
+                    });
                 }
                 AnthropicContentBlock::ServerToolUse { id, name, input: _ } => {
-                    self.current_tool_use_id = Some(id.clone());
-                    self.current_tool_use_name = Some(name.clone());
-                    self.current_tool_use_input.clear();
+                    self.tool_use_accumulators.insert(*index, ToolUseAccumulator {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: String::new(),
+                    });
                 }
                 _ => {}
             },
-            AnthropicSseEvent::ContentBlockDelta { index: _, delta } => match delta {
+            AnthropicSseEvent::ContentBlockDelta { index, delta } => match delta {
                 AnthropicSseDelta::TextDelta { text } => {
                     let d = Delta {
                         role: None,
@@ -114,25 +125,24 @@ impl AnthropicStreamState {
                     ));
                 }
                 AnthropicSseDelta::InputJsonDelta { partial_json } => {
-                    self.current_tool_use_input.push_str(partial_json);
+                    if let Some(accum) = self.tool_use_accumulators.get_mut(index) {
+                        accum.input.push_str(partial_json);
+                    }
                 }
             },
-            AnthropicSseEvent::ContentBlockStop { index: _ } => {
-                if let (Some(id), Some(name)) =
-                    (self.current_tool_use_id.take(), self.current_tool_use_name.take())
-                {
-                    let arguments = std::mem::take(&mut self.current_tool_use_input);
+            AnthropicSseEvent::ContentBlockStop { index } => {
+                if let Some(accum) = self.tool_use_accumulators.remove(index) {
                     let delta = Delta {
                         role: None,
                         content: None,
                         reasoning_content: None,
                         tool_calls: Some(vec![StreamToolCall {
-                            index: 0,
-                            id: Some(id),
+                            index: *index as i32,
+                            id: Some(accum.id),
                             r#type: Some("function".to_string()),
                             function: Some(StreamToolCallFunction {
-                                name: Some(name),
-                                arguments: Some(arguments),
+                                name: Some(accum.name),
+                                arguments: Some(accum.input),
                             }),
                         }]),
                     };
@@ -197,27 +207,10 @@ impl AnthropicStreamState {
                 ));
             }
             AnthropicSseEvent::MessageStop => {
-                let d = Delta {
-                    role: None,
-                    content: None,
-                    reasoning_content: None,
-                    tool_calls: None,
-                };
-                let chunk = StreamChunk {
-                    id: self.message_id.clone().unwrap_or_default(),
-                    object: "chat.completion.chunk".to_string(),
-                    created: 0,
-                    model: self.model.clone().unwrap_or_default(),
-                    choices: vec![StreamChoice {
-                        index: 0,
-                        delta: d,
-                        finish_reason: Some("stop".to_string()),
-                    }],
-                };
-                sse_events.push(format!(
-                    "data: {}",
-                    serde_json::to_string(&chunk).unwrap_or_default()
-                ));
+                // MessageDelta already emitted the correct finish_reason.
+                // MessageStop only signals the [DONE] sentinel — don't emit
+                // a duplicate chunk with a hardcoded "stop" finish_reason
+                // that would override the real one (e.g. "tool_calls").
                 sse_events.push("data: [DONE]".to_string());
             }
             _ => {}
