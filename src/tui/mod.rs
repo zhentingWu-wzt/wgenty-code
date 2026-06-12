@@ -1,7 +1,7 @@
 //! TUI frontend — ratatui-based terminal UI replacing the TypeScript frontend.
 //!
 //! Architecture:
-//!   app.rs       — main event loop + layout
+//!   app/         — main event loop + layout (mod.rs, types.rs, event.rs, render.rs, input.rs, turn.rs)
 //!   agent/       — AgentLoop (SSE streaming + tool execution loop)
 //!   client.rs    — HTTP client for the daemon API
 //!   theme.rs     — color/styling constants
