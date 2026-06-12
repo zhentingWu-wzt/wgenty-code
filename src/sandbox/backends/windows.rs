@@ -32,7 +32,7 @@ impl WindowsBackend {
 
 impl SandboxBackend for WindowsBackend {
     fn name(&self) -> &str {
-        "job-object"
+        "windows-env-filter"
     }
 
     fn is_available() -> bool {
@@ -40,11 +40,13 @@ impl SandboxBackend for WindowsBackend {
     }
 
     fn is_hardware_enforced(&self) -> bool {
-        true
+        // TODO(phase4): implement actual Job Object + Restricted Token
+        // isolation. Currently only environment variable filtering.
+        false
     }
 
     fn capabilities(&self) -> Vec<&str> {
-        vec!["filesystem", "memory-limit", "cpu-limit", "process-tree"]
+        vec!["env-filter"]
     }
 
     fn spawn(

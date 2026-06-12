@@ -35,14 +35,38 @@ impl TokenCounter {
     }
 
     /// Add `tokens` to the cumulative count. Returns `true` if still
-    /// within budget, `false` if budget was just exceeded.
+    /// within budget, `false` if budget would be exceeded.
+    ///
+    /// Uses compare-exchange loop to ensure the budget check and increment
+    /// are atomic — two concurrent calls cannot both pass the check when
+    /// only one should.
     pub fn add(&self, tokens: usize) -> bool {
-        let new_total = self.used.fetch_add(tokens, Ordering::Relaxed) + tokens;
-        self.budget == 0 || new_total <= self.budget
+        if self.budget == 0 {
+            // Unlimited — just accumulate
+            self.used.fetch_add(tokens, Ordering::Relaxed);
+            return true;
+        }
+
+        loop {
+            let current = self.used.load(Ordering::Acquire);
+            let new_total = current + tokens;
+            if new_total > self.budget {
+                return false;
+            }
+            match self.used.compare_exchange(
+                current,
+                new_total,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(_) => continue, // another thread updated; retry
+            }
+        }
     }
 
     /// Check whether the budget is already exhausted.
     pub fn is_exhausted(&self) -> bool {
-        self.budget > 0 && self.used.load(Ordering::Relaxed) >= self.budget
+        self.budget > 0 && self.used.load(Ordering::Acquire) >= self.budget
     }
 }

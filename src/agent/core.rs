@@ -15,7 +15,10 @@ use crate::api::{ChatMessage, StreamChunk, ToolCall};
 /// 2. Handle each `StreamEvent` returned (render text, accumulate tool calls, etc.).
 /// 3. When the stream ends, call `finish()` to get the final `StreamResult`.
 pub struct StreamProcessor {
-    buffer: String,
+    /// Raw byte buffer to avoid UTF-8 corruption when multi-byte characters
+    /// are split across SSE chunks. Only converted to String after finding
+    /// a complete line (terminated by `\n`).
+    buffer: Vec<u8>,
     full_content: String,
     reasoning_content: String,
     tool_calls_accum: Vec<serde_json::Value>,
@@ -26,7 +29,7 @@ pub struct StreamProcessor {
 impl StreamProcessor {
     pub fn new() -> Self {
         Self {
-            buffer: String::with_capacity(4096),
+            buffer: Vec::with_capacity(4096),
             full_content: String::with_capacity(4096),
             reasoning_content: String::with_capacity(4096),
             tool_calls_accum: Vec::new(),
@@ -37,7 +40,7 @@ impl StreamProcessor {
 
     /// Feed a raw byte chunk from the SSE stream. Returns any new events.
     pub fn feed_bytes(&mut self, bytes: &[u8]) -> Vec<StreamEvent> {
-        self.buffer.push_str(&String::from_utf8_lossy(bytes));
+        self.buffer.extend_from_slice(bytes);
         self.drain_buffer()
     }
 
@@ -45,11 +48,14 @@ impl StreamProcessor {
     fn drain_buffer(&mut self) -> Vec<StreamEvent> {
         let mut events = Vec::new();
 
-        while let Some(pos) = self.buffer.find('\n') {
-            let line = self.buffer[..pos].trim().to_string();
-            self.buffer = self.buffer[pos + 1..].to_string();
+        while let Some(pos) = self.buffer.iter().position(|&b| b == b'\n') {
+            // Extract the complete line (up to but not including \n) and
+            // convert to UTF-8 only after we know the line is complete.
+            let line_bytes: Vec<u8> = self.buffer.drain(..=pos).collect();
+            let line = String::from_utf8_lossy(&line_bytes);
+            let line = line.trim();
 
-            if let Some(event) = self.process_line(&line) {
+            if let Some(event) = self.process_line(line) {
                 events.push(event);
             }
         }
@@ -62,30 +68,20 @@ impl StreamProcessor {
         let chunk: StreamChunk = crate::api::parse_sse_line(line)?;
         let choice = chunk.choices.first()?;
 
-        // Check for finish reason first
-        if let Some(fr) = &choice.finish_reason {
-            self.finish_reason = fr.clone();
-            return Some(StreamEvent::StreamDone {
-                finish_reason: fr.clone(),
-            });
-        }
-
-        // Content delta
+        // Accumulate content/reasoning deltas FIRST, before checking
+        // finish_reason — some providers send both in the same chunk,
+        // and returning early on finish_reason would lose the content.
         if let Some(content) = &choice.delta.content {
             self.full_content.push_str(content);
-            return Some(StreamEvent::ContentDelta(content.clone()));
         }
-
-        // Reasoning delta
         if let Some(rc) = &choice.delta.reasoning_content {
             self.reasoning_content.push_str(rc);
-            return Some(StreamEvent::ReasoningDelta(rc.clone()));
         }
 
-        // Tool call deltas — one event per SSE line
+        // Process ALL tool call deltas (a chunk may contain multiple)
         if let Some(tc_deltas) = &choice.delta.tool_calls {
             self.has_tool_calls = true;
-            if let Some(tc) = tc_deltas.first() {
+            for tc in tc_deltas {
                 let idx = tc.index as usize;
                 while self.tool_calls_accum.len() <= idx {
                     self.tool_calls_accum.push(serde_json::json!({
@@ -110,9 +106,28 @@ impl StreamProcessor {
                         }
                     }
                 }
+            }
+        }
 
+        // Check for finish reason AFTER accumulating all deltas
+        if let Some(fr) = &choice.finish_reason {
+            self.finish_reason = fr.clone();
+            return Some(StreamEvent::StreamDone {
+                finish_reason: fr.clone(),
+            });
+        }
+
+        // Return the most significant delta as the event
+        if let Some(content) = &choice.delta.content {
+            return Some(StreamEvent::ContentDelta(content.clone()));
+        }
+        if let Some(rc) = &choice.delta.reasoning_content {
+            return Some(StreamEvent::ReasoningDelta(rc.clone()));
+        }
+        if let Some(tc_deltas) = &choice.delta.tool_calls {
+            if let Some(tc) = tc_deltas.first() {
                 return Some(StreamEvent::ToolCallDelta {
-                    index: idx,
+                    index: tc.index as usize,
                     id: tc.id.clone(),
                     name: tc.function.as_ref().and_then(|f| f.name.clone()),
                     arguments: tc.function.as_ref().and_then(|f| f.arguments.clone()),
@@ -125,14 +140,21 @@ impl StreamProcessor {
 
     /// Flush any remaining buffered data and return events.
     pub fn flush(&mut self) -> Vec<StreamEvent> {
+        let mut events = Vec::new();
         if !self.buffer.is_empty() {
             let remaining = std::mem::take(&mut self.buffer);
-            // Process whatever we have, even without a newline
-            if let Some(event) = self.process_line(&remaining) {
-                return vec![event];
+            // Split on newlines in case there are multiple lines remaining
+            for line_bytes in remaining.split(|&b| b == b'\n') {
+                let line = String::from_utf8_lossy(line_bytes);
+                let line = line.trim();
+                if !line.is_empty() {
+                    if let Some(event) = self.process_line(line) {
+                        events.push(event);
+                    }
+                }
             }
         }
-        vec![]
+        events
     }
 
     /// After streaming is complete, parse accumulated tool calls and return the result.

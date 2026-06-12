@@ -330,8 +330,33 @@ impl CommandSessionManager {
             })
     }
 
-    fn truncate_chars(input: String, _max_output_chars: usize) -> String {
-        input
+    fn truncate_chars(input: String, max_output_chars: usize) -> String {
+        if max_output_chars == 0 || input.len() <= max_output_chars {
+            return input;
+        }
+        // Find the nearest char boundary at or before max_output_chars
+        // to avoid panicking on multi-byte UTF-8 characters.
+        let safe_end = input
+            .char_indices()
+            .take_while(|(i, _)| *i < max_output_chars)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+
+        if safe_end >= input.len() {
+            return input;
+        }
+
+        let truncated = &input[..safe_end];
+        let total_chars = input.chars().count();
+        let shown_chars = truncated.chars().count();
+        format!(
+            "{}\n\n... (truncated: {} of {} chars shown, {} chars omitted)",
+            truncated,
+            shown_chars,
+            total_chars,
+            total_chars - shown_chars
+        )
     }
 }
 
