@@ -3,7 +3,6 @@
 
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
-use std::process::Command;
 
 pub struct CheckpointManager {
     count: std::sync::atomic::AtomicU32,
@@ -20,12 +19,15 @@ impl CheckpointManager {
         Self { count: std::sync::atomic::AtomicU32::new(0) }
     }
 
-    pub fn create(&self, description: &str) -> Result<String, String> {
+    /// Create a git stash checkpoint. Uses tokio::process::Command to
+    /// avoid blocking the async runtime during the git operation.
+    pub async fn create(&self, description: &str) -> Result<String, String> {
         let n = self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let msg = format!("wgenty-checkpoint-{}: {}", n, description);
-        let output = Command::new("git")
+        let output = tokio::process::Command::new("git")
             .args(["stash", "push", "--include-untracked", "-m", &msg])
             .output()
+            .await
             .map_err(|e| format!("git stash failed: {}", e))?;
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).to_string());
@@ -33,10 +35,12 @@ impl CheckpointManager {
         Ok(msg)
     }
 
-    pub fn undo(&self) -> Result<String, String> {
-        let output = Command::new("git")
+    /// Undo the most recent checkpoint via git stash pop.
+    pub async fn undo(&self) -> Result<String, String> {
+        let output = tokio::process::Command::new("git")
             .args(["stash", "pop"])
             .output()
+            .await
             .map_err(|e| format!("git stash pop failed: {}", e))?;
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr).to_string();
@@ -48,10 +52,12 @@ impl CheckpointManager {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    pub fn list(&self) -> Result<String, String> {
-        let output = Command::new("git")
+    /// List all wgenty checkpoints.
+    pub async fn list(&self) -> Result<String, String> {
+        let output = tokio::process::Command::new("git")
             .args(["stash", "list", "--grep=wgenty-checkpoint"])
             .output()
+            .await
             .map_err(|e| format!("git stash list failed: {}", e))?;
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
@@ -84,7 +90,7 @@ impl Tool for CheckpointTool {
     }
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let desc = input["description"].as_str().unwrap_or("checkpoint");
-        match self.manager.create(desc) {
+        match self.manager.create(desc).await {
             Ok(id) => Ok(ToolOutput {
                 output_type: "text".to_string(),
                 content: format!("Checkpoint created: {}", id),
@@ -115,7 +121,7 @@ impl Tool for UndoTool {
         serde_json::json!({ "type": "object", "properties": {} })
     }
     async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        match self.manager.undo() {
+        match self.manager.undo().await {
             Ok(output) => Ok(ToolOutput {
                 output_type: "text".to_string(),
                 content: format!("Checkpoint restored:\n{}", output),

@@ -92,6 +92,9 @@ impl WebFetchTool {
             client: Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .user_agent("wgenty-code/1.0")
+                // Disable automatic redirect following to prevent SSRF via
+                // redirects to internal/private IPs (e.g. evil.com → 169.254.169.254).
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
             settings: Mutex::new(None),
@@ -157,9 +160,9 @@ impl WebFetchTool {
             ));
         }
 
-        // Reject private IPs
-        for prefix in &["http://127.", "http://10.", "http://192.168.", "http://172.16.", "http://localhost", "https://localhost"] {
-            if url_lower.starts_with(prefix) {
+        // Reject localhost variants
+        for host in &["localhost", "[::1]", "0.0.0.0", "[::]", "[fe80::]"] {
+            if url_lower.contains(host) {
                 return Err(format!(
                     "Private/internal network URLs are not allowed: {}",
                     url
@@ -167,7 +170,69 @@ impl WebFetchTool {
             }
         }
 
+        // Parse and check the host IP against private/reserved ranges
+        if let Some(host) = Self::extract_host(&url_lower) {
+            // Try parsing as IP address
+            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                if Self::is_private_ip(ip) {
+                    return Err(format!(
+                        "Private/internal network URLs are not allowed: {}",
+                        url
+                    ));
+                }
+            } else {
+                // Check IPv4-in-hostname (e.g., "127.0.0.1" in "http://127.0.0.1:8080/")
+                // Also check decimal/octal IP representations
+                let host_clean = host.trim_start_matches('[').trim_end_matches(']');
+                if host_clean.chars().all(|c| c.is_ascii_digit() || c == '.') {
+                    // Might be a decimal IP like "2130706433" (= 127.0.0.1)
+                    if let Ok(num) = host_clean.parse::<u32>() {
+                        let ip = std::net::Ipv4Addr::from(num);
+                        if Self::is_private_ip(std::net::IpAddr::V4(ip)) {
+                            return Err(format!(
+                                "Private/internal network URLs are not allowed: {}",
+                                url
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
+    }
+
+    /// Extract the hostname (without port) from a URL.
+    fn extract_host(url: &str) -> Option<String> {
+        let after_scheme = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))?;
+        let host_port = after_scheme.split('/').next()?;
+        let host = host_port.split(':').next()?;
+        Some(host.to_string())
+    }
+
+    /// Check if an IP address is private, loopback, link-local, or otherwise reserved.
+    fn is_private_ip(ip: std::net::IpAddr) -> bool {
+        match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_broadcast()
+                    || v4.is_unspecified()
+                    // CGNAT range 100.64.0.0/10
+                    || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    // Link-local fe80::/10
+                    || (v6.segments()[0] & 0xFFC0) == 0xFE80
+                    // Unique local fc00::/7
+                    || (v6.segments()[0] & 0xFE00) == 0xFC00
+            }
+        }
     }
 
     /// Extract readable text from HTML.

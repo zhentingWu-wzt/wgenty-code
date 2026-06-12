@@ -68,11 +68,11 @@ impl ToolRegistry {
             execution::session_manager::CommandSessionManager::new()
                 .with_sandbox(sandbox.clone()),
         );
+        let checkpoint_manager = std::sync::Arc::new(checkpoint::CheckpointManager::new());
         let mut registry = Self {
             tools: HashMap::new(),
-            checkpoint_manager: Arc::new(checkpoint::CheckpointManager::new()),
+            checkpoint_manager: checkpoint_manager.clone(),
         };
-        let checkpoint_manager = std::sync::Arc::new(checkpoint::CheckpointManager::new());
 
         // Checkpoint tools
         registry.register(Box::new(checkpoint::CheckpointTool::new(checkpoint_manager.clone())));

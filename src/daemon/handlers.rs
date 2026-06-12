@@ -207,7 +207,7 @@ pub async fn execute_tool(
             if state.is_rule_approved(session_id, &req.session_rule).await {
                 let mutating = matches!(tool_name.as_str(), "apply_patch" | "file_edit" | "file_write" | "exec_command");
                 if mutating {
-                    let _ = state.checkpoint_manager.create(&format!("before {}", tool_name));
+                    let _ = state.checkpoint_manager.create(&format!("before {}", tool_name)).await;
                 }
                 let msg = state
                     .tool_executor
@@ -529,7 +529,7 @@ pub async fn search_sessions(
 pub async fn undo_checkpoint(
     State(state): State<Arc<DaemonState>>,
 ) -> Result<String, StatusCode> {
-    match state.checkpoint_manager.undo() {
+    match state.checkpoint_manager.undo().await {
         Ok(output) => Ok(output),
         Err(_e) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }

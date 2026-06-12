@@ -90,15 +90,17 @@ impl ConsolidationEngine {
             memories_before,
             memories_after: consolidated.len(),
             memories_consolidated: to_merge.len(),
-            memories_removed: memories_before - consolidated.len(),
+            memories_removed: memories_before.saturating_sub(consolidated.len()),
             insights_generated,
             duration_ms: start.elapsed().as_millis() as u64,
             timestamp: Utc::now(),
         };
 
-        println!(
-            "🧠 Consolidation complete: {} -> {} memories ({} insights)",
-            result.memories_before, result.memories_after, result.insights_generated
+        tracing::info!(
+            memories_before = result.memories_before,
+            memories_after = result.memories_after,
+            insights = result.insights_generated,
+            "consolidation complete"
         );
 
         Ok(consolidated)
@@ -109,7 +111,10 @@ impl ConsolidationEngine {
             return true;
         }
 
-        let age = (Utc::now() - memory.timestamp).num_hours() as u64;
+        // Guard against future timestamps (clock skew) which would produce
+        // a negative i64 that wraps to a huge u64 (~18 quintillion hours).
+        let age_hours = (Utc::now() - memory.timestamp).num_hours();
+        let age = age_hours.max(0) as u64;
         if age < self.config.age_threshold_hours {
             return true;
         }

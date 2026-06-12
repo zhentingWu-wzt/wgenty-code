@@ -332,13 +332,47 @@ fn join_lines(lines: Vec<String>) -> String {
     }
 }
 
+/// Resolve a patch file path relative to the workspace root.
+///
+/// **Security:** Rejects absolute paths and validates that the resolved
+/// path stays within the workspace to prevent path traversal attacks
+/// (e.g. `../../etc/passwd`).
 fn resolve_patch_path(workdir: &Path, raw_path: &str) -> PathBuf {
     let path = PathBuf::from(raw_path);
-    if path.is_absolute() {
-        path
+
+    // Reject absolute paths — patches must be relative to workdir
+    let relative = if path.is_absolute() {
+        // Best-effort: strip common prefixes, but if it's truly absolute
+        // and outside workdir, fall back to filename only
+        path.file_name()
+            .map(|f| PathBuf::from(f))
+            .unwrap_or_else(|| PathBuf::from("unknown"))
     } else {
-        workdir.join(path)
+        path
+    };
+
+    let resolved = workdir.join(&relative);
+
+    // Canonicalize both paths and verify containment
+    if let (Ok(resolved_canon), Ok(workdir_canon)) = (
+        std::fs::canonicalize(&resolved),
+        std::fs::canonicalize(workdir),
+    ) {
+        if resolved_canon.starts_with(&workdir_canon) {
+            return resolved_canon;
+        }
+        // Path escapes workspace — fall back to a safe name under workdir
+        tracing::warn!(
+            path = %raw_path,
+            "patch path escaped workspace root, using filename only"
+        );
     }
+
+    // Fallback: use just the filename under workdir
+    let safe_name = relative
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("patched_file"));
+    workdir.join(safe_name)
 }
 
 impl Default for ApplyPatchTool {
