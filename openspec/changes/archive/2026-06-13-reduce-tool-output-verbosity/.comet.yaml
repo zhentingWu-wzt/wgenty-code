@@ -16,6 +16,6 @@ verification_report: docs/superpowers/reports/2026-06-14-reduce-tool-output-verb
 branch_status: handled
 created_at: 2026-06-13
 verified_at: 2026-06-13
-archived: false
+archived: true
 handoff_context: openspec/changes/reduce-tool-output-verbosity/.comet/handoff/design-context.json
 handoff_hash: 2faea4421893a21aea0497edc0f226d834aa025ec51c52c7a1b065ef99ee6c64
