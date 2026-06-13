@@ -36,14 +36,14 @@ pub fn for_each_icon_pixel(mut f: impl FnMut(u32, u32, [u8; 4])) {
         debug_assert_eq!(row.len(), HALF_WIDTH);
         let bytes = row.as_bytes();
 
-        for x in 0..HALF_WIDTH {
-            if let Some(color) = palette(bytes[x]) {
+        for (x, &byte) in bytes.iter().enumerate() {
+            if let Some(color) = palette(byte) {
                 f(x as u32, y as u32, color);
             }
         }
 
-        for x in 0..HALF_WIDTH {
-            if let Some(color) = palette(bytes[HALF_WIDTH - 1 - x]) {
+        for (x, &byte) in bytes.iter().rev().enumerate() {
+            if let Some(color) = palette(byte) {
                 f((HALF_WIDTH + x) as u32, y as u32, color);
             }
         }

@@ -203,15 +203,19 @@ impl MemoryManager {
         let content = tokio::fs::read_to_string(input).await?;
         let imported: Vec<MemoryEntry> = serde_json::from_str(&content)?;
         let mut memories = self.memories.write().await;
+        for entry in &imported {
+            self.storage.save_memory(entry).await?;
+        }
         memories.extend(imported);
         Ok(())
     }
 
     pub async fn consolidate(&self) -> anyhow::Result<()> {
-        let memories = self.memories.read().await;
-        let consolidated = self.consolidation.consolidate(&memories).await?;
-        drop(memories);
+        // Hold the write lock for the entire operation to prevent
+        // concurrent add_memory() calls from inserting entries that
+        // would be overwritten by the stale consolidated result.
         let mut memories = self.memories.write().await;
+        let consolidated = self.consolidation.consolidate(&memories).await?;
         *memories = consolidated;
         Ok(())
     }

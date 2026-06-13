@@ -63,9 +63,8 @@ impl TestOutput {
         let failures = Self::extract_cargo_failures(output);
 
         // Extract duration
-        static DURATION_RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"finished in ([\d.]+)s").unwrap()
-        });
+        static DURATION_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"finished in ([\d.]+)s").unwrap());
         let duration_ms = DURATION_RE
             .captures(output)
             .and_then(|c| c[1].parse::<f64>().ok())
@@ -90,24 +89,29 @@ impl TestOutput {
 
         // "Tests: 12 passed, 3 failed, 1 skipped, 16 total"
         static RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"Tests:\s*(\d+)\s*failed,\s*(\d+)\s*passed.*?(\d+)\s*total")
-                .unwrap()
+            Regex::new(r"Tests:\s*(\d+)\s*failed,\s*(\d+)\s*passed.*?(\d+)\s*total").unwrap()
         });
 
         let (mut passed, mut failed) = (0usize, 0usize);
         let skipped = 0usize;
         let summary;
 
+        static PASSED_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"(\d+)\s*passed").unwrap());
+
         if let Some(caps) = RE.captures(output) {
             failed = caps[1].parse().unwrap_or(0);
             let total: usize = caps[3].parse().unwrap_or(0);
             // Try to find passed count
-            if let Some(pass_caps) = Regex::new(r"(\d+)\s*passed").unwrap().captures(output) {
+            if let Some(pass_caps) = PASSED_RE.captures(output) {
                 passed = pass_caps[1].parse().unwrap_or(0);
             } else {
                 passed = total.saturating_sub(failed);
             }
-            summary = format!("Tests: {} failed, {} passed, {} total", failed, passed, total);
+            summary = format!(
+                "Tests: {} failed, {} passed, {} total",
+                failed, passed, total
+            );
         } else if !success {
             summary = "Test execution failed.".to_string();
             failed = 1;
@@ -125,9 +129,8 @@ impl TestOutput {
             .collect();
 
         // Duration: "Time: 3.4 s"
-        static DURATION_RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"Time:\s*([\d.]+)\s*s").unwrap()
-        });
+        static DURATION_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"Time:\s*([\d.]+)\s*s").unwrap());
         let duration_ms = DURATION_RE
             .captures(output)
             .and_then(|c| c[1].parse::<f64>().ok())
@@ -162,10 +165,7 @@ impl TestOutput {
             passed = caps[1].parse().unwrap_or(0);
             failed = caps[2].parse().unwrap_or(0);
             skipped = caps[3].parse().unwrap_or(0);
-            summary = format!(
-                "{} passed, {} failed, {} skipped",
-                passed, failed, skipped
-            );
+            summary = format!("{} passed, {} failed, {} skipped", passed, failed, skipped);
         } else if !success {
             summary = "Test execution failed.".to_string();
             failed = 1;
@@ -183,9 +183,8 @@ impl TestOutput {
             .collect();
 
         // Duration: "in 3.45s"
-        static DURATION_RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"in\s*([\d.]+)\s*s").unwrap()
-        });
+        static DURATION_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"in\s*([\d.]+)\s*s").unwrap());
         let duration_ms = DURATION_RE
             .captures(output)
             .and_then(|c| c[1].parse::<f64>().ok())
@@ -209,9 +208,8 @@ impl TestOutput {
         let success = exit_code == 0;
 
         // "Ran 12 tests in 0.123s" and "OK" or "FAILED (failures=3)"
-        static RAN_RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"Ran\s*(\d+)\s*tests?\s*in\s*([\d.]+)\s*s").unwrap()
-        });
+        static RAN_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"Ran\s*(\d+)\s*tests?\s*in\s*([\d.]+)\s*s").unwrap());
 
         let (mut passed, mut failed) = (0usize, 0usize);
         let summary;
@@ -225,12 +223,16 @@ impl TestOutput {
                 .unwrap_or(0);
             if success {
                 passed = total;
-                summary = format!("Ran {} tests in {:.3}s — OK", total, duration_ms as f64 / 1000.0);
+                summary = format!(
+                    "Ran {} tests in {:.3}s — OK",
+                    total,
+                    duration_ms as f64 / 1000.0
+                );
             } else {
                 // Try to extract failure count
-                if let Some(fail_caps) =
-                    Regex::new(r"failures=(\d+)").unwrap().captures(output)
-                {
+                static FAILURES_RE: LazyLock<Regex> =
+                    LazyLock::new(|| Regex::new(r"failures=(\d+)").unwrap());
+                if let Some(fail_caps) = FAILURES_RE.captures(output) {
                     failed = fail_caps[1].parse().unwrap_or(0);
                     passed = total.saturating_sub(failed);
                 }
@@ -350,7 +352,10 @@ impl TestOutput {
         for line in output.lines() {
             if line.starts_with("---- ") && line.contains("stdout") {
                 _in_failure = true;
-                if let Some(name) = line.strip_prefix("---- ").and_then(|s| s.strip_suffix(" stdout ----")) {
+                if let Some(name) = line
+                    .strip_prefix("---- ")
+                    .and_then(|s| s.strip_suffix(" stdout ----"))
+                {
                     failures.push(name.trim().to_string());
                 }
             } else if line.starts_with("failures:") {

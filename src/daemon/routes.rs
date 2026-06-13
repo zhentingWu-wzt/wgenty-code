@@ -29,6 +29,11 @@ pub fn create_router(state: Arc<DaemonState>) -> Router {
             "/api/v1/background/results",
             get(handlers::get_background_results),
         )
+        // Subagent progress
+        .route(
+            "/api/v1/subagent/progress",
+            get(handlers::get_subagent_progress),
+        )
         // MCP
         .route("/api/v1/mcp/servers", get(handlers::list_mcp_servers))
         // Sessions — list/create at base path

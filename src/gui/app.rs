@@ -190,7 +190,7 @@ impl WgentyCodeApp {
         let tx = self.message_tx.clone().unwrap();
 
         // Create placeholder assistant message
-        let mut assistant_msg = crate::gui::chat::ChatMessage::assistant("");
+        let mut assistant_msg = crate::gui::chat_types::ChatMessage::assistant("");
         assistant_msg.is_streaming = true;
         self.pending_message_id = Some(assistant_msg.id.clone());
         self.chat_panel.messages.push(assistant_msg);
@@ -298,7 +298,7 @@ impl WgentyCodeApp {
         // Add error message as system message
         self.chat_panel
             .messages
-            .push(crate::gui::chat::ChatMessage::system(&format!(
+            .push(crate::gui::chat_types::ChatMessage::system(format!(
                 "Error: {}",
                 error
             )));
@@ -326,7 +326,7 @@ impl WgentyCodeApp {
         self.settings_panel.save_to_settings(&mut self.settings);
 
         if let Err(e) = self.settings.save() {
-            self.show_status(&format!("Failed to save settings: {}", e));
+            self.show_status(format!("Failed to save settings: {}", e));
             return;
         }
 
@@ -384,7 +384,8 @@ impl eframe::App for WgentyCodeApp {
             if i.key_pressed(egui::Key::E) && i.modifiers.ctrl && !i.modifiers.shift {
                 // Ctrl+E: toggle collapse all messages
                 let any_expanded = self.chat_panel.messages.iter().any(|m| {
-                    !m.content_collapsed || !m.thinking_expanded
+                    !m.content_collapsed
+                        || !m.thinking_expanded
                         || m.tool_calls.iter().any(|tc| tc.expanded)
                 });
                 let new_state = any_expanded;

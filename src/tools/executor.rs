@@ -68,7 +68,11 @@ impl ToolExecutor {
     /// Execute a tool call directly (policy already passed).
     /// Run a guardian security check before executing a high-risk tool.
     /// Returns Some(decision) if the tool was blocked by guardian.
-    pub fn guardian_check(&self, tool_name: &str, input: &serde_json::Value) -> Option<GuardianDecision> {
+    pub fn guardian_check(
+        &self,
+        tool_name: &str,
+        input: &serde_json::Value,
+    ) -> Option<GuardianDecision> {
         if tool_name != "execute_command" && tool_name != "exec_command" {
             return None;
         }
@@ -128,6 +132,11 @@ impl ToolExecutor {
         args: serde_json::Value,
         session_id: Option<&str>,
     ) -> ChatMessage {
+        tracing::info!(
+            tool = tool_name,
+            args_len = serde_json::to_string(&args).map(|s| s.len()).unwrap_or(0),
+            "ToolExecutor: executing with hooks"
+        );
         // PreToolUse hook
         let pre_ctx = HookManager::pre_tool_context(tool_name, &args, session_id);
         let pre_outcomes = self
@@ -140,7 +149,7 @@ impl ToolExecutor {
             if outcome.blocked {
                 return ChatMessage::tool(
                     tool_call_id,
-                    &format!("Tool '{}' blocked by hook: {}", tool_name, outcome.output),
+                    format!("Tool '{}' blocked by hook: {}", tool_name, outcome.output),
                 );
             }
         }
