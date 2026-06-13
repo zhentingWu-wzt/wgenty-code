@@ -62,6 +62,7 @@ pub async fn run_subagent_loop(
     tracing::info!( trace_id = trace_id, "Subagent: trace context");
 
     let start = Instant::now();
+    let started_at_ms = chrono::Utc::now().timestamp_millis();
     let on_progress_inner = on_progress.clone();
 
     let loop_future = async {
@@ -93,7 +94,7 @@ pub async fn run_subagent_loop(
                     round,
                     max_rounds: Some(max_rounds),
                     current_tool,
-                    started_at: chrono::Utc::now().timestamp_millis(),
+                    started_at: started_at_ms,
                     elapsed_ms: elapsed.as_millis() as u64,
                     metadata: error_msg.map(|e| SubagentMetadata {
                         token_count: None,
@@ -382,7 +383,7 @@ pub async fn run_subagent_loop(
                     round: None,
                     max_rounds: Some(max_rounds),
                     current_tool: None,
-                    started_at: chrono::Utc::now().timestamp_millis(),
+                    started_at: started_at_ms,
                     elapsed_ms: start.elapsed().as_millis() as u64,
                     metadata: Some(SubagentMetadata {
                         token_count: None,
