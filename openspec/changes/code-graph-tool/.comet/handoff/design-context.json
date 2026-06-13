@@ -1,0 +1,17 @@
+{
+  "change": "code-graph-tool",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "d84064d051c7feb3864efe1f59a4b55c63ec77d0f24939826208106901eb5ae4",
+  "files": [
+    { "path": "openspec/changes/code-graph-tool/proposal.md", "sha256": "e604f08062aa32068a757fa0f0bc26009ba28b5ceb3848e2fa1775333e6080db" },
+    { "path": "openspec/changes/code-graph-tool/design.md", "sha256": "1ef418798a70a7616c6f7c42e24693f0425e64aa2abb44b738311a168c9ddfdd" },
+    { "path": "openspec/changes/code-graph-tool/tasks.md", "sha256": "eb90ad84785fb43988acf4005df0ee2777d8e3d7c609f92891968f3919f9bcee" },
+    { "path": "openspec/changes/code-graph-tool/specs/call-graph/spec.md", "sha256": "5836fd6ecbb7e2d8d11d2944132b2df5e9e515873af1ece797db79e99d0cb6b1" },
+    { "path": "openspec/changes/code-graph-tool/specs/code-indexing/spec.md", "sha256": "aa99d0ed674632084c881f011afb76d84ec21407dd3417cbfca90a9bd426bb29" },
+    { "path": "openspec/changes/code-graph-tool/specs/codegraph-mcp/spec.md", "sha256": "e1c94db94f8be61f082852e4ea2ad8fde08e18d65738b8a7f411dcd8e2c372e2" },
+    { "path": "openspec/changes/code-graph-tool/specs/symbol-query/spec.md", "sha256": "f0764d93684994984ca682d728e300956582740307897c3742396394f2b13427" }
+  ]
+}
