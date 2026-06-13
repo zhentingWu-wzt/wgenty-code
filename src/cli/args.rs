@@ -126,6 +126,10 @@ impl Cli {
         use ratatui::{backend::CrosstermBackend, Terminal};
         use std::io;
 
+        // Clone settings before state is consumed by start_daemon
+        let settings_handle: crate::config::watcher::SettingsHandle =
+            std::sync::Arc::new(std::sync::RwLock::new(state.settings.clone()));
+
         // Start daemon in background
         let (base_url, shutdown_tx, daemon_handle) = app::start_daemon(state).await?;
 
@@ -149,7 +153,7 @@ impl Cli {
         // Create client and app
         let client = DaemonClient::new(base_url);
         let session_id = uuid::Uuid::new_v4().to_string();
-        let mut app = App::new(client, session_id);
+        let mut app = App::new(client, session_id, settings_handle);
 
         // Send initial prompt if given
         if let Some(p) = prompt {

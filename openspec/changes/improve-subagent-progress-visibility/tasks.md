@@ -17,7 +17,7 @@
 - [x] 3.1 Change `DaemonState.subagent_progress` from `HashMap<NodeId, SubagentProgress>` to `HashMap<SessionId, HashMap<NodeId, SubagentProgress>>` in `src/daemon/state.rs`
 - [x] 3.2 Update progress write path (the callback registered by task tool) to accept and use `session_id`
 - [x] 3.3 Update `/api/v1/subagent/progress` endpoint to accept `?session_id=` param and filter results in `src/daemon/handlers.rs`
-- [ ] 3.4 Add cleanup: remove session progress entries after 60s of no polling (ttl-based eviction)
+- [x] 3.4 Add cleanup: remove session progress entries after 60s of no polling (ttl-based eviction)
 
 ## 4. Task Complexity Detection — Refined Routing
 

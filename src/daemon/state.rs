@@ -13,6 +13,7 @@ use crate::tools::{CheckpointManager, ToolExecutor, ToolRegistry};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 
 /// Per-session permission rules.
@@ -44,6 +45,8 @@ pub struct DaemonState {
     /// Subagent progress store, scoped by session_id → node_id.
     pub subagent_progress:
         Arc<RwLock<HashMap<String, HashMap<String, crate::agent::progress::SubagentProgress>>>>,
+    /// Last poll timestamp per session, used for TTL-based eviction.
+    pub subagent_poll_times: Arc<RwLock<HashMap<String, Instant>>>,
 }
 
 impl DaemonState {
@@ -148,6 +151,7 @@ impl DaemonState {
             session_manager,
             sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             subagent_progress: progress_store,
+            subagent_poll_times: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -175,6 +179,40 @@ impl DaemonState {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(session_id) {
             s.approved.remove(rule);
+        }
+    }
+
+    /// Record a poll time for the given session.
+    pub async fn touch_subagent_session(&self, session_id: &str) {
+        let mut poll_times = self.subagent_poll_times.write().await;
+        poll_times.insert(session_id.to_string(), Instant::now());
+    }
+
+    /// Remove subagent progress entries for sessions that haven't been polled
+    /// within `ttl` duration.
+    pub async fn cleanup_stale_subagent_sessions(&self, ttl: std::time::Duration) {
+        let now = Instant::now();
+        let mut poll_times = self.subagent_poll_times.write().await;
+        let mut progress = self.subagent_progress.write().await;
+
+        // Collect stale session IDs
+        let stale: Vec<String> = poll_times
+            .iter()
+            .filter(|(_, last)| now.duration_since(**last) > ttl)
+            .map(|(sid, _)| sid.clone())
+            .collect();
+
+        for sid in &stale {
+            poll_times.remove(sid);
+            progress.remove(sid);
+        }
+
+        if !stale.is_empty() {
+            tracing::debug!(
+                "Cleaned up {} stale subagent session(s) (TTL={:?})",
+                stale.len(),
+                ttl
+            );
         }
     }
 }

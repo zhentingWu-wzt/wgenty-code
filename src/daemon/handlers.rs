@@ -381,6 +381,8 @@ pub async fn get_subagent_progress(
         .get("session_id")
         .map(|s| s.as_str())
         .unwrap_or("default");
+    // Record poll time for TTL-based eviction
+    state.touch_subagent_session(session_id).await;
     let store = state.subagent_progress.read().await;
     let result = store.get(session_id).cloned().unwrap_or_default();
     Json(result)
