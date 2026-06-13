@@ -14,25 +14,51 @@ mod pipeline;
 
 pub use pipeline::{extract_json, run_rlm_pipeline, RlmResult};
 
+use crate::agent::progress::{ProgressCallback, SubagentProgress, SubagentStatus};
 use crate::config::Settings;
 use crate::tools::{Tool, ToolError, ToolOutput, ToolRegistry};
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 pub struct RlmDelegateTool {
     settings: Settings,
     tool_registry: std::sync::Weak<ToolRegistry>,
+    progress_store: Arc<RwLock<HashMap<String, SubagentProgress>>>,
 }
 
 impl RlmDelegateTool {
     pub fn new(
         settings: Settings,
         tool_registry: std::sync::Weak<ToolRegistry>,
+        progress_store: Arc<RwLock<HashMap<String, SubagentProgress>>>,
     ) -> Self {
         Self {
             settings,
             tool_registry,
+            progress_store,
         }
+    }
+
+    /// Create a ProgressCallback that writes to the shared progress store.
+    fn make_progress_callback(
+        store: Arc<RwLock<HashMap<String, SubagentProgress>>>,
+        node_id: String,
+        parent_id: Option<String>,
+        label: String,
+    ) -> ProgressCallback {
+        Arc::new(move |mut progress: SubagentProgress| {
+            progress.node_id = node_id.clone();
+            progress.parent_id = parent_id.clone();
+            progress.label = label.clone();
+            let store = store.clone();
+            let node_id = node_id.clone();
+            tokio::spawn(async move {
+                let mut store = store.write().await;
+                store.insert(node_id, progress);
+            });
+        })
     }
 }
 
@@ -76,7 +102,31 @@ impl Tool for RlmDelegateTool {
             code: Some("registry_dropped".to_string()),
         })?;
 
-        let result = run_rlm_pipeline(&self.settings, tool_registry, task, context, None)
+        // Register root node in progress store.
+        let root_node_id = uuid::Uuid::new_v4().to_string();
+        {
+            let mut store = self.progress_store.write().await;
+            store.insert(root_node_id.clone(), SubagentProgress {
+                node_id: root_node_id.clone(),
+                parent_id: None,
+                label: format!("delegate: {}", task),
+                status: SubagentStatus::Running,
+                round: None,
+                max_rounds: None,
+                current_tool: None,
+                started_at: chrono::Utc::now().timestamp_millis(),
+                elapsed_ms: 0,
+                metadata: None,
+            });
+        }
+        let cb = Self::make_progress_callback(
+            self.progress_store.clone(),
+            root_node_id.clone(),
+            None,
+            format!("delegate: {}", task),
+        );
+
+        let result = run_rlm_pipeline(&self.settings, tool_registry, task, context, Some(cb))
             .await
             .map_err(|e| ToolError {
                 message: e.clone(),
