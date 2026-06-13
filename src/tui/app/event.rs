@@ -197,6 +197,7 @@ impl App {
                 }
             }
             AppEvent::Submit(text) => {
+                self.subagent_tree.clear();
                 self.submit_input(text);
             }
             AppEvent::PreparingTools => {
@@ -441,6 +442,12 @@ impl App {
                     tool_collapsed: false,
                     diff_data: extract_diff_data("undo", &serde_json::json!({}), &output),
                 });
+            }
+            AppEvent::SubagentUpdate(progress) => {
+                self.subagent_tree.upsert(progress);
+            }
+            AppEvent::ToggleSubagentPanel => {
+                self.subagent_panel_visible = !self.subagent_panel_visible;
             }
             AppEvent::SaveSession => {
                 let id = self.session_id.clone();
