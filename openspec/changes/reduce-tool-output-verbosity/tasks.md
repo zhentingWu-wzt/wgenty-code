@@ -25,4 +25,4 @@
 - [x] 5.1 Run `cargo test --lib` — all existing tests pass
 - [x] 5.2 Run `cargo build` — compiles without errors
 - [x] 5.3 Run `cargo clippy --all-targets -- -D warnings` — no new warnings introduced
-- [ ] 5.4 Manual verification: trigger grep with `files_with_matches: true`, verify compact output
+- [x] 5.4 Manual verification: trigger grep with `files_with_matches: true`, verify compact output
