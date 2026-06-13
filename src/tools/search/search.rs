@@ -51,6 +51,10 @@ impl Tool for SearchTool {
                 "max_results": {
                     "type": "integer",
                     "description": "Maximum number of matching lines to return"
+                },
+                "files_with_matches": {
+                    "type": "boolean",
+                    "description": "Only show file paths with match counts, not individual lines"
                 }
             },
             "required": ["path", "pattern"]

@@ -24,6 +24,9 @@ impl GrepTool {
         let include = parse_patterns(&input["include"]);
         let exclude = parse_patterns(&input["exclude"]);
         let max_results = input["max_results"].as_u64().unwrap_or(200) as usize;
+        let files_with_matches = input["files_with_matches"]
+            .as_bool()
+            .unwrap_or(false);
 
         let base = Path::new(path);
         if !base.exists() {
@@ -38,7 +41,7 @@ impl GrepTool {
             code: Some("invalid_pattern".to_string()),
         })?;
 
-        let mut matches = Vec::new();
+        let mut matches: Vec<String> = Vec::new();
         let mut truncated = false;
 
         for entry in walkdir::WalkDir::new(base)
@@ -58,23 +61,40 @@ impl GrepTool {
                 continue;
             };
 
-            for (line_num, line) in content.lines().enumerate() {
-                if regex.is_match(line) {
-                    matches.push(format!(
-                        "{}:{}: {}",
-                        entry_path.display(),
-                        line_num + 1,
-                        line
-                    ));
+            if files_with_matches {
+                // --files-with-matches mode: only file paths with match counts
+                let count = content.lines().filter(|l| regex.is_match(l)).count();
+                if count > 0 {
+                    matches.push(format!("{} ({} matches)", entry_path.display(), count));
                     if matches.len() >= max_results {
                         truncated = true;
                         break;
                     }
                 }
-            }
-
-            if truncated {
-                break;
+            } else {
+                for (line_num, line) in content.lines().enumerate() {
+                    if regex.is_match(line) {
+                        // Truncate long lines to keep output compact
+                        let display_line = if line.chars().count() > 200 {
+                            format!("{}…[truncated]", line.chars().take(200).collect::<String>())
+                        } else {
+                            line.to_string()
+                        };
+                        matches.push(format!(
+                            "{}:{}: {}",
+                            entry_path.display(),
+                            line_num + 1,
+                            display_line
+                        ));
+                        if matches.len() >= max_results {
+                            truncated = true;
+                            break;
+                        }
+                    }
+                }
+                if truncated {
+                    break;
+                }
             }
         }
 
@@ -129,6 +149,10 @@ impl Tool for GrepTool {
                 "max_results": {
                     "type": "integer",
                     "description": "Maximum number of matching lines to return"
+                },
+                "files_with_matches": {
+                    "type": "boolean",
+                    "description": "Only show file paths with match counts, not individual lines. Useful for scoping searches before diving into details."
                 }
             },
             "required": ["path", "pattern"]
