@@ -22,6 +22,17 @@ use tracing::info;
 /// Start the daemon HTTP server. Blocks until the server exits.
 pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
     let daemon_state = Arc::new(DaemonState::new(app_state));
+
+    // Spawn background task to evict stale subagent progress sessions (60s TTL).
+    let cleanup_state = daemon_state.clone();
+    tokio::spawn(async move {
+        let ttl = std::time::Duration::from_secs(60);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            cleanup_state.cleanup_stale_subagent_sessions(ttl).await;
+        }
+    });
+
     let app = routes::create_router(daemon_state).layer(
         CorsLayer::new()
             .allow_origin(Any)
