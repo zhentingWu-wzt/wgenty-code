@@ -1,5 +1,5 @@
 workflow: full
-phase: verify
+phase: archive
 context_compression: off
 build_mode: direct
 build_pause: null
@@ -11,11 +11,11 @@ auto_transition: true
 base_ref: 557e1242628e8cc920e4d120f002d8f887998094
 design_doc: docs/superpowers/specs/2026-06-14-codegraph-lazy-init-design.md
 plan: docs/superpowers/plans/2026-06-14-codegraph-lazy-init.md
-verify_result: pending
+verify_result: pass
 verification_report: docs/superpowers/reports/2026-06-14-codegraph-tool-auto-registration-verify.md
 branch_status: handled
 created_at: 2026-06-13
-verified_at: null
+verified_at: 2026-06-13
 archived: false
 handoff_context: openspec/changes/codegraph-tool-auto-registration/.comet/handoff/design-context.json
 handoff_hash: 1d11efc6efe32ad0d0dad7dd0a769d23feae56c2591b93be529b46ef2215f275
