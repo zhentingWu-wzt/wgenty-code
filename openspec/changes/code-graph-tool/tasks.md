@@ -37,34 +37,34 @@
 
 ## 6. CLI 命令
 
-- [ ] 6.1 在 `src/cli/args.rs` 中添加 `Codegraph` 子命令（index/query/clean）
-- [ ] 6.2 实现 `codegraph index` 命令：调用索引引擎的全量/增量索引
-- [ ] 6.3 实现 `codegraph query <symbol>` 命令：CLI 下行 `codegraph_node` 查询
-- [ ] 6.4 实现 `codegraph clean` 命令：删除 `.codegraph/` 目录
+- [x] 6.1 在 `src/cli/args.rs` 中添加 `Codegraph` 子命令（index/query/clean）
+- [x] 6.2 实现 `codegraph index` 命令：调用索引引擎的全量/增量索引
+- [x] 6.3 实现 `codegraph query <symbol>` 命令：CLI 下行 `codegraph_node` 查询
+- [x] 6.4 实现 `codegraph clean` 命令：删除 `.codegraph/` 目录
 
 ## 7. MCP Server 集成
 
-- [ ] 7.1 实现 MCP 工具适配层：将 `codegraph_explore`/`codegraph_node` 包装为 MCP tools
-- [ ] 7.2 在 MCP 服务注册表中注册 codegraph MCP tools
-- [ ] 7.3 实现 MCP 查询时的索引存在性检查和错误消息
+- [x] 7.1 实现 MCP 工具适配层：将 `codegraph_explore`/`codegraph_node` 包装为 MCP tools
+- [x] 7.2 在 MCP 服务注册表中注册 codegraph MCP tools
+- [x] 7.3 实现 MCP 查询时的索引存在性检查和错误消息
 
 ## 8. 与现有 lsp.rs 整合
 
-- [ ] 8.1 在 `lsp.rs` 中添加 codegraph 索引作为首选查询源（index-first, regex-fallback）
-- [ ] 8.2 确保 `lsp.rs` goToDefinition/findReferences 在 codegraph 可用时优先使用索引结果
+- [x] 8.1 在 `lsp.rs` 中添加 codegraph 索引作为首选查询源（index-first, regex-fallback）
+- [x] 8.2 确保 `lsp.rs` goToDefinition/findReferences 在 codegraph 可用时优先使用索引结果
 
 ## 9. 测试
 
-- [ ] 9.1 单元测试：types 序列化/反序列化
-- [ ] 9.2 单元测试：IndexStore CRUD 操作
-- [ ] 9.3 单元测试：tree-sitter 解析器符号提取（用 wgenty-code 自身源码作为测试输入）
-- [ ] 9.4 集成测试：全量索引 + codegraph_node 查询端到端
-- [ ] 9.5 集成测试：增量索引（修改文件 → 重新索引 → 验证仅有变更文件被更新）
-- [ ] 9.6 集成测试：调用图查询（callers/callees/depth）
-- [ ] 9.7 集成测试：MCP tools/list 和 tools/call
-- [ ] 9.8 验证：`cargo clippy --all-targets -- -D warnings` 和 `cargo fmt -- --check` 通过
+- [x] 9.1 单元测试：types 序列化/反序列化
+- [x] 9.2 单元测试：IndexStore CRUD 操作
+- [x] 9.3 单元测试：tree-sitter 解析器符号提取（用 wgenty-code 自身源码作为测试输入）
+- [x] 9.4 集成测试：全量索引 + codegraph_node 查询端到端
+- [x] 9.5 集成测试：增量索引（修改文件 → 重新索引 → 验证仅有变更文件被更新）
+- [x] 9.6 集成测试：调用图查询（callers/callees/depth）
+- [x] 9.7 集成测试：MCP tools/list 和 tools/call
+- [x] 9.8 验证：`cargo clippy --all-targets -- -D warnings` 和 `cargo fmt -- --check` 通过
 
 ## 10. 收尾
 
-- [ ] 10.1 将 `.codegraph/` 添加到项目 `.gitignore`
-- [ ] 10.2 更新 CLAUDE.md 中关于 CodeGraph 的说明，标注 codegraph 工具已可用
+- [x] 10.1 将 `.codegraph/` 添加到项目 `.gitignore`
+- [x] 10.2 更新 CLAUDE.md 中关于 CodeGraph 的说明，标注 codegraph 工具已可用
