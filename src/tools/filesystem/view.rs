@@ -5,6 +5,17 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Context bundled to keep [`walk_tree`] under 8-argument clippy limit.
+struct WalkCtx<'a> {
+    depth: usize,
+    prefix: String,
+    lines: &'a mut Vec<String>,
+    count: &'a mut usize,
+    skipped: &'a mut usize,
+    offset: usize,
+    limit: usize,
+}
+
 pub struct ViewTool;
 
 impl ViewTool {
@@ -85,13 +96,15 @@ impl Tool for ViewTool {
 
         walk_tree(
             &base,
-            depth,
-            "",
-            &mut lines,
-            &mut count,
-            &mut skipped,
-            offset,
-            limit,
+            WalkCtx {
+                depth,
+                prefix: String::new(),
+                lines: &mut lines,
+                count: &mut count,
+                skipped: &mut skipped,
+                offset,
+                limit,
+            },
         );
 
         if skipped > 0 {
@@ -109,17 +122,8 @@ impl Tool for ViewTool {
     }
 }
 
-fn walk_tree(
-    dir: &std::path::Path,
-    depth: usize,
-    prefix: &str,
-    lines: &mut Vec<String>,
-    count: &mut usize,
-    skipped: &mut usize,
-    offset: usize,
-    limit: usize,
-) {
-    if depth == 0 {
+fn walk_tree(dir: &std::path::Path, ctx: WalkCtx) {
+    if ctx.depth == 0 {
         return;
     }
 
@@ -156,42 +160,48 @@ fn walk_tree(
         let name = entry.file_name().to_string_lossy().to_string();
 
         // Respect offset/limit
-        if *count < offset {
-            *skipped += 1;
+        if *ctx.count < ctx.offset {
+            *ctx.skipped += 1;
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 walk_tree(
                     &entry.path(),
-                    depth - 1,
-                    &format!("{}{}", prefix, child_prefix),
-                    lines,
-                    count,
-                    skipped,
-                    offset,
-                    limit,
+                    WalkCtx {
+                        depth: ctx.depth - 1,
+                        prefix: format!("{}{}", ctx.prefix, child_prefix),
+                        lines: ctx.lines,
+                        count: ctx.count,
+                        skipped: ctx.skipped,
+                        offset: ctx.offset,
+                        limit: ctx.limit,
+                    },
                 );
             }
             continue;
         }
-        if *count >= offset + limit {
+        if *ctx.count >= ctx.offset + ctx.limit {
             return;
         }
 
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            lines.push(format!("{}{}{}/", prefix, connector, name));
-            *count += 1;
+            ctx.lines
+                .push(format!("{}{}{}/", ctx.prefix, connector, name));
+            *ctx.count += 1;
             walk_tree(
                 &entry.path(),
-                depth - 1,
-                &format!("{}{}", prefix, if is_last { "    " } else { "│   " }),
-                lines,
-                count,
-                skipped,
-                offset,
-                limit,
+                WalkCtx {
+                    depth: ctx.depth - 1,
+                    prefix: format!("{}{}", ctx.prefix, if is_last { "    " } else { "│   " }),
+                    lines: ctx.lines,
+                    count: ctx.count,
+                    skipped: ctx.skipped,
+                    offset: ctx.offset,
+                    limit: ctx.limit,
+                },
             );
         } else {
-            lines.push(format!("{}{}{}", prefix, connector, name));
-            *count += 1;
+            ctx.lines
+                .push(format!("{}{}{}", ctx.prefix, connector, name));
+            *ctx.count += 1;
         }
     }
 }

@@ -1,7 +1,10 @@
 //! API Module - OpenAI/DeepSeek compatible API Client
 
-pub mod anthropic_types;
+pub mod anthropic;
+/// Backward-compatible alias for the old module path.
+pub use anthropic as anthropic_types;
 pub mod provider;
+pub mod token_counter;
 
 use crate::config::Settings;
 use reqwest::Client;
@@ -9,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anthropic_types::{
+use anthropic::{
     convert_anthropic_response, convert_messages_to_anthropic, convert_tools_to_anthropic,
 };
 use provider::Provider;
@@ -26,10 +29,13 @@ impl ApiClient {
         let http_client = Client::builder()
             .timeout(Duration::from_secs(settings.api.timeout))
             .build()
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "failed to build HTTP client, using default");
+                Client::default()
+            });
 
         let provider: Arc<dyn Provider> =
-            provider::detect_provider(&settings.api.get_base_url()).into();
+            Arc::from(provider::detect_provider(&settings.api.get_base_url()));
 
         Self {
             settings,
@@ -84,6 +90,7 @@ impl ApiClient {
             stream: false,
             temperature: 0.7,
             tools,
+            stream_options: None,
         };
 
         let url = format!("{}/v1/chat/completions", self.get_base_url());
@@ -99,7 +106,10 @@ impl ApiClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("[failed to read error body: {}]", e));
             return Err(anyhow::anyhow!("API error ({}): {}", status, body));
         }
 
@@ -116,7 +126,7 @@ impl ApiClient {
         let (anthropic_msgs, system_prompt) = convert_messages_to_anthropic(&messages);
         let anthropic_tools = tools.as_ref().map(|t| convert_tools_to_anthropic(t));
 
-        let request = anthropic_types::AnthropicRequest {
+        let request = anthropic::AnthropicRequest {
             model: self.provider.resolve_model_id(&self.settings.model),
             messages: anthropic_msgs,
             max_tokens: self.settings.api.max_tokens,
@@ -147,7 +157,7 @@ impl ApiClient {
             ));
         }
 
-        let anthropic_resp: anthropic_types::AnthropicResponse = response.json().await?;
+        let anthropic_resp: anthropic::AnthropicResponse = response.json().await?;
         Ok(convert_anthropic_response(&anthropic_resp))
     }
 
@@ -181,6 +191,9 @@ impl ApiClient {
             stream: true,
             temperature: 0.7,
             tools,
+            stream_options: Some(StreamOptions {
+                include_usage: true,
+            }),
         };
 
         let url = format!("{}/v1/chat/completions", self.get_base_url());
@@ -205,9 +218,8 @@ impl ApiClient {
         messages: Vec<ChatMessage>,
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<reqwest::Response> {
-        use anthropic_types::{
+        use anthropic::{
             convert_messages_to_anthropic, convert_tools_to_anthropic, AnthropicRequest,
-            AnthropicStreamState,
         };
 
         let (anthropic_msgs, system_prompt) = convert_messages_to_anthropic(&messages);
@@ -244,31 +256,62 @@ impl ApiClient {
             ));
         }
 
-        // Read Anthropic SSE stream, convert to OpenAI-compatible SSE bytes
-        let mut state = AnthropicStreamState::new();
-        let body = response.text().await?;
-        let mut sse_out = String::new();
+        // Stream Anthropic SSE events, convert to OpenAI-compatible SSE on the fly.
+        // Uses an mpsc channel so the caller can start consuming SSE events immediately,
+        // rather than waiting for the entire Anthropic response body to arrive.
+        let byte_stream = response.bytes_stream();
+        let (tx, rx) = futures::channel::mpsc::unbounded::<
+            Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>,
+        >();
 
-        for line in body.lines() {
-            let line = line.trim().to_string();
-            if line.is_empty() || !line.starts_with("data: ") {
-                continue;
-            }
-            if let Some(chunks) = anthropic_types::parse_anthropic_sse_line(&line, &mut state) {
-                for chunk in &chunks {
-                    sse_out.push_str("data: ");
-                    sse_out.push_str(&serde_json::to_string(chunk).unwrap_or_default());
-                    sse_out.push('\n');
-                    sse_out.push('\n');
+        tokio::spawn(async move {
+            use anthropic_types::AnthropicStreamState;
+            use futures::StreamExt;
+            let mut stream = byte_stream;
+            let mut state = AnthropicStreamState::new();
+            let mut buffer = String::new();
+
+            while let Some(chunk_result) = stream.next().await {
+                match chunk_result {
+                    Ok(b) => {
+                        buffer.push_str(&String::from_utf8_lossy(&b));
+                        // Process all complete lines from the buffer
+                        while let Some(nl) = buffer.find('\n') {
+                            let line = buffer[..nl].trim().to_string();
+                            buffer.drain(..=nl);
+
+                            if line.is_empty() || !line.starts_with("data: ") {
+                                continue;
+                            }
+                            if let Some(chunks) =
+                                anthropic_types::parse_anthropic_sse_line(&line, &mut state)
+                            {
+                                for chunk in &chunks {
+                                    // chunk is already formatted as "data: {...}" by
+                                    // process_event(); just append the SSE double-newline
+                                    let sse = format!("{}\n\n", chunk);
+                                    if tx.unbounded_send(Ok(bytes::Bytes::from(sse))).is_err() {
+                                        return; // receiver dropped
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.unbounded_send(Err(Box::new(e)));
+                        return;
+                    }
                 }
             }
-        }
-        sse_out.push_str("data: [DONE]\n\n");
+            // Signal end of stream
+            let _ = tx.unbounded_send(Ok(bytes::Bytes::from("data: [DONE]\n\n")));
+        });
 
+        let body = reqwest::Body::wrap_stream(rx);
         let http_resp = http::Response::builder()
             .status(200)
             .header("Content-Type", "text/event-stream")
-            .body(reqwest::Body::from(sse_out))
+            .body(body)
             .map_err(|e| anyhow::anyhow!("Failed to build response: {}", e))?;
 
         Ok(reqwest::Response::from(http_resp))
@@ -392,6 +435,13 @@ struct ChatRequest {
     temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ToolDefinition>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct StreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -411,7 +461,7 @@ pub struct Choice {
     pub finish_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Usage {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
@@ -425,6 +475,8 @@ pub struct StreamChunk {
     pub created: i64,
     pub model: String,
     pub choices: Vec<StreamChoice>,
+    #[serde(default)]
+    pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

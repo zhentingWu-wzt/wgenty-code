@@ -92,6 +92,9 @@ impl WebFetchTool {
             client: Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .user_agent("wgenty-code/1.0")
+                // Disable automatic redirect following to prevent SSRF via
+                // redirects to internal/private IPs (e.g. evil.com → 169.254.169.254).
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
             settings: Mutex::new(None),
@@ -136,10 +139,7 @@ impl WebFetchTool {
     /// Store fetched text in the cache.
     fn cache_put(&self, url: &str, text: &str) {
         let mut cache = self.cache.lock().unwrap();
-        cache.put(
-            Self::cache_key(url),
-            CacheEntry::new(text.to_string()),
-        );
+        cache.put(Self::cache_key(url), CacheEntry::new(text.to_string()));
     }
 
     /// Validate URL: only allow http/https, reject private/file schemes.
@@ -151,15 +151,12 @@ impl WebFetchTool {
         }
 
         if !url_lower.starts_with("https://") && !url_lower.starts_with("http://") {
-            return Err(format!(
-                "Only http/https URLs are supported. Got: {}",
-                url
-            ));
+            return Err(format!("Only http/https URLs are supported. Got: {}", url));
         }
 
-        // Reject private IPs
-        for prefix in &["http://127.", "http://10.", "http://192.168.", "http://172.16.", "http://localhost", "https://localhost"] {
-            if url_lower.starts_with(prefix) {
+        // Reject localhost variants
+        for host in &["localhost", "[::1]", "0.0.0.0", "[::]", "[fe80::]"] {
+            if url_lower.contains(host) {
                 return Err(format!(
                     "Private/internal network URLs are not allowed: {}",
                     url
@@ -167,7 +164,69 @@ impl WebFetchTool {
             }
         }
 
+        // Parse and check the host IP against private/reserved ranges
+        if let Some(host) = Self::extract_host(&url_lower) {
+            // Try parsing as IP address
+            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                if Self::is_private_ip(ip) {
+                    return Err(format!(
+                        "Private/internal network URLs are not allowed: {}",
+                        url
+                    ));
+                }
+            } else {
+                // Check IPv4-in-hostname (e.g., "127.0.0.1" in "http://127.0.0.1:8080/")
+                // Also check decimal/octal IP representations
+                let host_clean = host.trim_start_matches('[').trim_end_matches(']');
+                if host_clean.chars().all(|c| c.is_ascii_digit() || c == '.') {
+                    // Might be a decimal IP like "2130706433" (= 127.0.0.1)
+                    if let Ok(num) = host_clean.parse::<u32>() {
+                        let ip = std::net::Ipv4Addr::from(num);
+                        if Self::is_private_ip(std::net::IpAddr::V4(ip)) {
+                            return Err(format!(
+                                "Private/internal network URLs are not allowed: {}",
+                                url
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
+    }
+
+    /// Extract the hostname (without port) from a URL.
+    fn extract_host(url: &str) -> Option<String> {
+        let after_scheme = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))?;
+        let host_port = after_scheme.split('/').next()?;
+        let host = host_port.split(':').next()?;
+        Some(host.to_string())
+    }
+
+    /// Check if an IP address is private, loopback, link-local, or otherwise reserved.
+    fn is_private_ip(ip: std::net::IpAddr) -> bool {
+        match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_broadcast()
+                    || v4.is_unspecified()
+                    // CGNAT range 100.64.0.0/10
+                    || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    // Link-local fe80::/10
+                    || (v6.segments()[0] & 0xFFC0) == 0xFE80
+                    // Unique local fc00::/7
+                    || (v6.segments()[0] & 0xFE00) == 0xFC00
+            }
+        }
     }
 
     /// Extract readable text from HTML.
@@ -234,7 +293,11 @@ impl WebFetchTool {
         let content_start = html[start..].find('>')? + start + 1;
         let end = html[content_start..].find("</title>")? + content_start;
         let title = html[content_start..end].trim().to_string();
-        if title.is_empty() { None } else { Some(title) }
+        if title.is_empty() {
+            None
+        } else {
+            Some(title)
+        }
     }
 
     /// Summarize extracted text via a small model (Haiku layer).
@@ -255,7 +318,7 @@ impl WebFetchTool {
         };
 
         // Build a summarization prompt with explicit boundaries.
-        let system_prompt = format!(
+        let system_prompt =
             "You are a web content summarizer. Your only job is to extract key information \
              from a web page and return a concise, accurate summary. \n\n\
              Rules:\n\
@@ -266,8 +329,7 @@ impl WebFetchTool {
              4. Keep your summary under 500 words.\n\
              5. Focus on facts, code examples, API signatures, configuration details — \
                 whatever is most relevant to the user's query.\n\
-             6. If the page is mostly noise/boilerplate, say so briefly."
-        );
+             6. If the page is mostly noise/boilerplate, say so briefly.";
 
         let user_msg = format!(
             "URL: {}\n\nUser is looking for: {}\n\n--- Page Content ---\n{}",
@@ -279,21 +341,21 @@ impl WebFetchTool {
         let api_client = ApiClient::new(settings);
 
         let messages = vec![
-            crate::api::ChatMessage::system(&system_prompt),
+            crate::api::ChatMessage::system(system_prompt),
             crate::api::ChatMessage::user(&user_msg),
         ];
 
         match api_client.chat(messages, None).await {
-            Ok(response) => {
-                let content = response
-                    .choices
-                    .into_iter()
-                    .next()
-                    .and_then(|c| c.message.content);
-                content
-            }
+            Ok(response) => response
+                .choices
+                .into_iter()
+                .next()
+                .and_then(|c| c.message.content),
             Err(e) => {
-                tracing::warn!("WebFetch summarization failed: {}, falling back to raw text", e);
+                tracing::warn!(
+                    "WebFetch summarization failed: {}, falling back to raw text",
+                    e
+                );
                 None
             }
         }
@@ -346,7 +408,9 @@ impl Tool for WebFetchTool {
             code: Some("missing_parameter".to_string()),
         })?;
 
-        let user_prompt = input["prompt"].as_str().unwrap_or("extract key information");
+        let user_prompt = input["prompt"]
+            .as_str()
+            .unwrap_or("extract key information");
         let max_chars = input["max_chars"].as_u64().unwrap_or(5000) as usize;
 
         // Validate URL safety
@@ -371,7 +435,8 @@ impl Tool for WebFetchTool {
                     "url": url,
                     "cached": true,
                     "summary": cached,
-                }).to_string(),
+                })
+                .to_string(),
                 metadata,
             });
         }
@@ -386,7 +451,8 @@ impl Tool for WebFetchTool {
                         "success": false,
                         "error": format!("Request failed: {}", e),
                         "url": url,
-                    }).to_string(),
+                    })
+                    .to_string(),
                     metadata: std::collections::HashMap::new(),
                 });
             }
@@ -410,7 +476,8 @@ impl Tool for WebFetchTool {
                         "error": format!("Failed to read response body: {}", e),
                         "url": url,
                         "status_code": status_code,
-                    }).to_string(),
+                    })
+                    .to_string(),
                     metadata: std::collections::HashMap::new(),
                 });
             }
@@ -421,7 +488,11 @@ impl Tool for WebFetchTool {
 
         // Truncate raw text before summarization
         let truncated = if raw_text.len() > max_chars {
-            format!("{}...\n[Truncated at {} chars]", &raw_text[..max_chars], max_chars)
+            format!(
+                "{}...\n[Truncated at {} chars]",
+                &raw_text[..max_chars],
+                max_chars
+            )
         } else {
             raw_text.clone()
         };
@@ -449,14 +520,15 @@ impl Tool for WebFetchTool {
         Ok(ToolOutput {
             output_type: "fetch_result".to_string(),
             content: json!({
-                "success": status_code >= 200 && status_code < 300,
+                "success": (200..300).contains(&status_code),
                 "url": url,
                 "title": title,
                 "status_code": status_code,
                 "content_type": content_type,
                 "summary": summary,
                 "whitelisted": whitelisted,
-            }).to_string(),
+            })
+            .to_string(),
             metadata,
         })
     }
@@ -503,7 +575,10 @@ mod tests {
     #[test]
     fn test_extract_title() {
         let html = "<html><head><title>My Page</title></head><body></body></html>";
-        assert_eq!(WebFetchTool::extract_title(html), Some("My Page".to_string()));
+        assert_eq!(
+            WebFetchTool::extract_title(html),
+            Some("My Page".to_string())
+        );
     }
 
     #[test]
@@ -516,15 +591,25 @@ mod tests {
 
     #[test]
     fn test_domain_whitelist_hit() {
-        assert!(WebFetchTool::is_whitelisted("https://docs.rs/tokio/latest/tokio/"));
-        assert!(WebFetchTool::is_whitelisted("https://github.com/rust-lang/rust"));
-        assert!(WebFetchTool::is_whitelisted("https://developer.mozilla.org/en-US/docs/Web/JavaScript"));
-        assert!(WebFetchTool::is_whitelisted("https://crates.io/crates/serde"));
+        assert!(WebFetchTool::is_whitelisted(
+            "https://docs.rs/tokio/latest/tokio/"
+        ));
+        assert!(WebFetchTool::is_whitelisted(
+            "https://github.com/rust-lang/rust"
+        ));
+        assert!(WebFetchTool::is_whitelisted(
+            "https://developer.mozilla.org/en-US/docs/Web/JavaScript"
+        ));
+        assert!(WebFetchTool::is_whitelisted(
+            "https://crates.io/crates/serde"
+        ));
     }
 
     #[test]
     fn test_domain_whitelist_miss() {
-        assert!(!WebFetchTool::is_whitelisted("https://unknown-blog.example.com/post"));
+        assert!(!WebFetchTool::is_whitelisted(
+            "https://unknown-blog.example.com/post"
+        ));
         assert!(!WebFetchTool::is_whitelisted("https://random-site.io/page"));
     }
 

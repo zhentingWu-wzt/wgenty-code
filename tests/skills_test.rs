@@ -1,9 +1,9 @@
 //! Tests for Skills Framework
 
+use std::sync::Arc;
 use wgenty_code::knowledge::{
     BuiltinSkills, SkillCategory, SkillContext, SkillExecutor, SkillRegistry,
 };
-use std::sync::Arc;
 
 #[test]
 fn test_skill_registry_creation() {

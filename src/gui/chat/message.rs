@@ -1,279 +1,18 @@
-//! Chat UI Component - Full recreation of Wgenty Code chat interface
-//!
-//! Features:
-//! - Exact Claude.ai message styling
-//! - Syntax highlighted code blocks with copy button
-//! - Tool call visualization
-//! - File attachments
-//! - Thinking process expand/collapse
-//! - Perfect markdown rendering
+//! Chat message rendering — avatars, bubbles, markdown, tool calls, indicators.
 
-use super::syntax_highlight::format_code_block;
-use super::tool_calls::ToolCall;
-use chrono::{DateTime, Utc};
-use egui::{
-    Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, ScrollArea, Stroke, TextEdit,
-    Ui, Vec2,
-};
-
-/// A chat message - matches Claude.ai structure
-#[derive(Debug, Clone)]
-pub struct ChatMessage {
-    pub id: String,
-    pub role: MessageRole,
-    pub content: String,
-    pub timestamp: DateTime<Utc>,
-    pub is_streaming: bool,
-    pub tool_calls: Vec<ToolCall>,
-    pub attachments: Vec<Attachment>,
-    pub thinking: Option<String>,
-    pub thinking_expanded: bool,
-    /// Whether the body text is collapsed (long content)
-    pub content_collapsed: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MessageRole {
-    User,
-    Assistant,
-    System,
-}
-
-#[derive(Debug, Clone)]
-pub struct Attachment {
-    pub name: String,
-    pub content_type: String,
-    pub size: usize,
-}
-
-impl ChatMessage {
-    pub fn new(role: MessageRole, content: impl Into<String>) -> Self {
-        let content_str: String = content.into();
-        let line_count = content_str.lines().count();
-        let content_collapsed = matches!(role, MessageRole::Assistant) && line_count > 50;
-        Self {
-            id: uuid::Uuid::new_v4().to_string(),
-            role,
-            content: content_str,
-            timestamp: Utc::now(),
-            is_streaming: false,
-            tool_calls: Vec::new(),
-            attachments: Vec::new(),
-            thinking: None,
-            thinking_expanded: false,
-            content_collapsed,
-        }
-    }
-
-    pub fn user(content: impl Into<String>) -> Self {
-        Self::new(MessageRole::User, content)
-    }
-
-    pub fn assistant(content: impl Into<String>) -> Self {
-        Self::new(MessageRole::Assistant, content)
-    }
-
-    pub fn system(content: impl Into<String>) -> Self {
-        Self::new(MessageRole::System, content)
-    }
-
-    pub fn with_thinking(mut self, thinking: impl Into<String>) -> Self {
-        self.thinking = Some(thinking.into());
-        self
-    }
-
-    pub fn with_tool_calls(mut self, calls: Vec<ToolCall>) -> Self {
-        self.tool_calls = calls;
-        self
-    }
-}
-
-/// Chat panel - full recreation of Wgenty Code interface
-pub struct ChatPanel {
-    pub messages: Vec<ChatMessage>,
-    pub input_text: String,
-    pub is_loading: bool,
-    pub scroll_to_bottom: bool,
-    current_model: String,
-
-    /// Callback for sending messages
-    on_send_message: Option<Box<dyn Fn(Vec<crate::api::ChatMessage>) + Send>>,
-}
-
-impl Default for ChatPanel {
-    fn default() -> Self {
-        Self {
-            messages: vec![
-                ChatMessage::assistant("Hello! I'm wgenty, your AI coding companion. I can help you with:")
-                    .with_thinking("The user has started a new conversation. I should greet them and explain my capabilities.")
-            ],
-            input_text: String::new(),
-            is_loading: false,
-            scroll_to_bottom: true,
-            current_model: "claude-3-5-sonnet-20241022".to_string(),
-            on_send_message: None,
-        }
-    }
-}
+use super::super::chat_types::{Attachment, ChatMessage, MessageRole};
+use super::super::content_parser::{split_by_code_blocks, ContentPart};
+use super::super::syntax_highlight::format_code_block;
+use super::super::tool_calls::{ToolCall, ToolCallStatus};
+use super::ChatPanel;
+use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke, Ui, Vec2};
 
 impl ChatPanel {
-    pub fn set_on_send_message<F>(&mut self, callback: F)
-    where
-        F: Fn(Vec<crate::api::ChatMessage>) + Send + 'static,
-    {
-        self.on_send_message = Some(Box::new(callback));
-    }
-
-    pub fn set_current_model(&mut self, model: impl Into<String>) {
-        self.current_model = model.into();
-    }
-
-    /// Render the complete chat panel
-    pub fn ui(&mut self, ui: &mut Ui, theme: &super::Theme) {
-        let available_height = ui.available_height();
-        let input_height = 120.0;
-        let messages_height = available_height - input_height - 16.0;
-
-        // Messages area with exact Claude styling
-        Frame::NONE.fill(theme.background_darkest()).show(ui, |ui| {
-            ui.set_min_height(messages_height);
-
-            ScrollArea::vertical()
-                .auto_shrink([false; 2])
-                .stick_to_bottom(self.scroll_to_bottom)
-                .show(ui, |ui| {
-                    ui.add_space(24.0);
-
-                    // Welcome banner for first load
-                    if self.messages.len() <= 1 {
-                        self.render_welcome_banner(ui, theme);
-                    }
-
-                    // Render all messages
-                    let msg_count = self.messages.len();
-                    // 先克隆所有消息，避免借用冲突
-                    let mut messages_clone = self.messages.clone();
-                    for (idx, message) in messages_clone.iter_mut().enumerate() {
-                        self.render_message(ui, message, theme, idx == msg_count - 1);
-                    }
-                    // 更新展开状态
-                    for i in 0..msg_count {
-                        self.messages[i].thinking_expanded = messages_clone[i].thinking_expanded;
-                    }
-
-                    // Loading indicator
-                    if self.is_loading && !self.messages.iter().any(|m| m.is_streaming) {
-                        self.render_loading_indicator(ui, theme);
-                    }
-
-                    ui.add_space(24.0);
-                });
-        });
-
-        // Input area - fixed at bottom
-        Frame::NONE.fill(theme.background_darkest()).show(ui, |ui| {
-            self.render_input_area(ui, theme);
-        });
-    }
-
-    fn render_welcome_banner(&self, ui: &mut Ui, theme: &super::Theme) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(40.0);
-
-            Frame::NONE
-                .fill(theme.surface_color())
-                .corner_radius(CornerRadius::same(20))
-                .stroke(Stroke::new(1.0, theme.border_color()))
-                .inner_margin(Margin::symmetric(24, 22))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width().min(520.0));
-                    ui.horizontal(|ui| {
-                        super::brand_icon::show(ui, Vec2::new(112.0, 112.0));
-                        ui.add_space(20.0);
-
-                        ui.vertical(|ui| {
-                            ui.add_space(8.0);
-                            ui.label(
-                                RichText::new("wgenty")
-                                    .size(32.0)
-                                    .strong()
-                                    .color(theme.text_color())
-                            );
-                            ui.add_space(6.0);
-                            ui.label(
-                                RichText::new(format!("Model: {}", self.current_model))
-                                    .size(14.0)
-                                    .color(theme.muted_text_color())
-                            );
-                            ui.add_space(10.0);
-                            ui.label(
-                                RichText::new("Code, files, search, and terminal operations in one workspace.")
-                                    .size(14.0)
-                                    .color(theme.text_color())
-                            );
-                        });
-                    });
-                });
-
-            ui.add_space(24.0);
-
-            let capabilities = vec![
-                ("Code", "Write & edit code", "Generate and modify code in your project"),
-                ("Files", "Read files", "Inspect source, configs, and generated output"),
-                ("Search", "Search", "Locate symbols and patterns across the workspace"),
-                ("Shell", "Run commands", "Execute terminal commands and inspect results"),
-            ];
-
-            for (tag, title, desc) in capabilities {
-                Frame::NONE
-                    .fill(theme.surface_color())
-                    .corner_radius(CornerRadius::same(8))
-                    .inner_margin(Margin::symmetric(16, 12))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width().min(460.0));
-                        ui.horizontal(|ui| {
-                            Frame::NONE
-                                .fill(theme.background_darkest())
-                                .corner_radius(CornerRadius::same(6))
-                                .inner_margin(Margin::symmetric(10, 6))
-                                .show(ui, |ui| {
-                                    ui.label(
-                                        RichText::new(tag)
-                                            .size(11.0)
-                                            .strong()
-                                            .color(theme.primary_color())
-                                    );
-                                });
-                            ui.add_space(12.0);
-
-                            ui.vertical(|ui| {
-                                ui.label(
-                                    RichText::new(title)
-                                        .size(14.0)
-                                        .strong()
-                                        .color(theme.text_color())
-                                );
-                                ui.label(
-                                    RichText::new(desc)
-                                        .size(12.0)
-                                        .color(theme.muted_text_color())
-                                );
-                            });
-                        });
-                    });
-
-                ui.add_space(8.0);
-            }
-
-            ui.add_space(40.0);
-        });
-    }
-
-    fn render_message(
+    pub(super) fn render_message(
         &self,
         ui: &mut Ui,
         message: &mut ChatMessage,
-        theme: &super::Theme,
+        theme: &super::super::Theme,
         is_last: bool,
     ) {
         let is_user = matches!(message.role, MessageRole::User);
@@ -358,17 +97,17 @@ impl ChatPanel {
         ui.add_space(24.0);
     }
 
-    fn render_claude_avatar(&self, ui: &mut Ui, theme: &super::Theme) {
+    fn render_claude_avatar(&self, ui: &mut Ui, theme: &super::super::Theme) {
         Frame::NONE
             .fill(theme.surface_color())
             .corner_radius(CornerRadius::same(8))
             .stroke(Stroke::new(1.0, theme.border_color()))
             .show(ui, |ui| {
-                super::brand_icon::show(ui, Vec2::new(32.0, 32.0));
+                super::super::brand_icon::show(ui, Vec2::new(32.0, 32.0));
             });
     }
 
-    fn render_user_avatar(&self, ui: &mut Ui, _theme: &super::Theme) {
+    fn render_user_avatar(&self, ui: &mut Ui, _theme: &super::super::Theme) {
         Frame::NONE
             .fill(Color32::from_rgb(80, 80, 80))
             .corner_radius(CornerRadius::same(8))
@@ -381,7 +120,12 @@ impl ChatPanel {
             });
     }
 
-    fn render_user_message_bubble(&self, ui: &mut Ui, message: &ChatMessage, theme: &super::Theme) {
+    fn render_user_message_bubble(
+        &self,
+        ui: &mut Ui,
+        message: &ChatMessage,
+        theme: &super::super::Theme,
+    ) {
         let max_width = 600.0f32.min(ui.available_width() * 0.8);
 
         Frame::NONE
@@ -410,7 +154,7 @@ impl ChatPanel {
         &self,
         ui: &mut Ui,
         message: &mut ChatMessage,
-        theme: &super::Theme,
+        theme: &super::super::Theme,
         is_last: bool,
     ) {
         let max_width = 720.0f32.min(ui.available_width());
@@ -455,17 +199,16 @@ impl ChatPanel {
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         for line in &preview_lines {
-                            ui.label(
-                                RichText::new(*line)
-                                    .size(14.0)
-                                    .color(theme.text_color()),
-                            );
+                            ui.label(RichText::new(*line).size(14.0).color(theme.text_color()));
                         }
                         ui.label(
-                            RichText::new(format!("... ({} lines total, click to expand)", total_lines))
-                                .size(12.0)
-                                .color(theme.muted_text_color())
-                                .italics(),
+                            RichText::new(format!(
+                                "... ({} lines total, click to expand)",
+                                total_lines
+                            ))
+                            .size(12.0)
+                            .color(theme.muted_text_color())
+                            .italics(),
                         );
                     });
             } else {
@@ -502,7 +245,7 @@ impl ChatPanel {
         ui: &mut Ui,
         thinking: &str,
         expanded: &mut bool,
-        theme: &super::Theme,
+        theme: &super::super::Theme,
     ) {
         let header_text = if *expanded {
             "▼ Thinking"
@@ -539,7 +282,7 @@ impl ChatPanel {
         }
     }
 
-    fn render_markdown_content(&self, ui: &mut Ui, content: &str, theme: &super::Theme) {
+    fn render_markdown_content(&self, ui: &mut Ui, content: &str, theme: &super::super::Theme) {
         // Split content by code blocks
         let parts = split_by_code_blocks(content);
         let mut in_list = false;
@@ -670,12 +413,17 @@ impl ChatPanel {
         }
     }
 
-    fn apply_inline_formatting(&self, text: &str, theme: &super::Theme) -> RichText {
+    fn apply_inline_formatting(&self, text: &str, theme: &super::super::Theme) -> RichText {
         // For now, just return the text without formatting
         RichText::new(text).color(theme.text_color())
     }
 
-    fn render_tool_call_card(&self, ui: &mut Ui, tool_call: &ToolCall, theme: &super::Theme) {
+    fn render_tool_call_card(
+        &self,
+        ui: &mut Ui,
+        tool_call: &ToolCall,
+        theme: &super::super::Theme,
+    ) {
         // Use the tool_calls module rendering
         // This is a simplified version inline here
         let (icon, title, border_color) = match tool_call.name.as_str() {
@@ -710,10 +458,10 @@ impl ChatPanel {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(12.0);
                         let status_icon = match tool_call.status {
-                            super::tool_calls::ToolCallStatus::Pending => "⏳",
-                            super::tool_calls::ToolCallStatus::Running => "🔄",
-                            super::tool_calls::ToolCallStatus::Success => "✅",
-                            super::tool_calls::ToolCallStatus::Error => "❌",
+                            ToolCallStatus::Pending => "⏳",
+                            ToolCallStatus::Running => "🔄",
+                            ToolCallStatus::Success => "✅",
+                            ToolCallStatus::Error => "❌",
                         };
                         ui.label(RichText::new(status_icon).size(14.0));
                     });
@@ -723,7 +471,7 @@ impl ChatPanel {
             });
     }
 
-    fn render_attachment(&self, ui: &mut Ui, attachment: &Attachment, theme: &super::Theme) {
+    fn render_attachment(&self, ui: &mut Ui, attachment: &Attachment, theme: &super::super::Theme) {
         Frame::NONE
             .fill(Color32::from_rgb(50, 50, 55))
             .corner_radius(CornerRadius::same(8))
@@ -767,7 +515,7 @@ impl ChatPanel {
         }
     }
 
-    fn render_loading_indicator(&self, ui: &mut Ui, theme: &super::Theme) {
+    pub(super) fn render_loading_indicator(&self, ui: &mut Ui, theme: &super::super::Theme) {
         ui.horizontal(|ui| {
             ui.add_space(80.0);
 
@@ -795,212 +543,4 @@ impl ChatPanel {
                 });
         });
     }
-
-    fn render_input_area(&mut self, ui: &mut Ui, theme: &super::Theme) {
-        Frame::NONE
-            .fill(theme.background_darkest())
-            .inner_margin(Margin::same(16))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-
-                // Input container
-                Frame::NONE
-                    .fill(theme.surface_color())
-                    .corner_radius(CornerRadius::same(16))
-                    .stroke(Stroke::new(1.0, theme.border_color()))
-                    .inner_margin(Margin::same(12))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-
-                        // Text input
-                        let text_edit = TextEdit::multiline(&mut self.input_text)
-                            .hint_text("Message wgenty... (Shift+Enter for new line)")
-                            .desired_width(ui.available_width() - 60.0)
-                            .min_size(Vec2::new(0.0, 48.0))
-                            .margin(egui::vec2(8.0, 8.0))
-                            .font(egui::TextStyle::Body);
-
-                        let response = ui.add(text_edit);
-
-                        // Send button
-                        ui.add_space(8.0);
-
-                        let button_enabled = !self.input_text.trim().is_empty() && !self.is_loading;
-                        let button_color = if button_enabled {
-                            theme.primary_color()
-                        } else {
-                            Color32::from_rgb(60, 60, 60)
-                        };
-
-                        let send_button = ui.add_sized(
-                            Vec2::new(44.0, 44.0),
-                            egui::Button::new(
-                                RichText::new(if self.is_loading { "⏳" } else { "➤" })
-                                    .size(20.0)
-                                    .color(if button_enabled {
-                                        Color32::WHITE
-                                    } else {
-                                        theme.muted_text_color()
-                                    }),
-                            )
-                            .fill(button_color)
-                            .corner_radius(CornerRadius::same(10)),
-                        );
-
-                        // Handle send
-                        let enter_pressed = response.lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
-
-                        if (send_button.clicked() || enter_pressed) && button_enabled {
-                            self.send_message();
-                        }
-                    });
-
-                // Hint text
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("Shift + Enter for new line • Enter to send")
-                            .color(theme.muted_text_color())
-                            .size(11.0),
-                    );
-                });
-            });
-    }
-
-    fn send_message(&mut self) {
-        let content = self.input_text.trim().to_string();
-        if content.is_empty() {
-            return;
-        }
-
-        // Add user message
-        let user_msg = ChatMessage::user(&content);
-        self.messages.push(user_msg);
-
-        self.input_text.clear();
-        self.is_loading = true;
-        self.scroll_to_bottom = true;
-
-        // Send via callback
-        if let Some(callback) = &self.on_send_message {
-            let api_messages = self.convert_to_api_messages();
-            callback(api_messages);
-        }
-    }
-
-    fn convert_to_api_messages(&self) -> Vec<crate::api::ChatMessage> {
-        self.messages
-            .iter()
-            .filter_map(|msg| match msg.role {
-                MessageRole::User => Some(crate::api::ChatMessage::user(&msg.content)),
-                MessageRole::Assistant => Some(crate::api::ChatMessage::assistant(&msg.content)),
-                MessageRole::System => None,
-            })
-            .collect()
-    }
-
-    // Public API
-    pub fn add_message(&mut self, message: ChatMessage) {
-        self.messages.push(message);
-        self.scroll_to_bottom = true;
-    }
-
-    pub fn clear_messages(&mut self) {
-        self.messages.clear();
-        self.messages.push(ChatMessage::assistant(
-            "Hello! I'm wgenty. How can I help you today?",
-        ));
-    }
-
-    pub fn set_loading(&mut self, loading: bool) {
-        self.is_loading = loading;
-    }
-
-    pub fn update_last_message(&mut self, content: impl Into<String>) {
-        if let Some(last) = self.messages.last_mut() {
-            last.content = content.into();
-        }
-    }
-}
-
-// Content parts for parsing
-enum ContentPart<'a> {
-    Text(&'a str),
-    CodeBlock {
-        language: Option<&'a str>,
-        code: &'a str,
-    },
-    InlineCode(&'a str),
-}
-
-fn split_by_code_blocks(content: &str) -> Vec<ContentPart<'_>> {
-    let mut parts = Vec::new();
-    let mut remaining = content;
-
-    while !remaining.is_empty() {
-        if let Some(start_idx) = remaining.find("```") {
-            // Text before code block
-            if start_idx > 0 {
-                let text = &remaining[..start_idx];
-                parts.extend(split_inline_code(text));
-            }
-
-            // Find end of code block
-            let after_start = &remaining[start_idx + 3..];
-            let newline_idx = after_start.find('\n').unwrap_or(0);
-            let language = if newline_idx > 0 {
-                Some(after_start[..newline_idx].trim())
-            } else {
-                None
-            };
-
-            let code_start = start_idx + 3 + newline_idx + if newline_idx > 0 { 1 } else { 0 };
-
-            if let Some(end_idx) = remaining[code_start..].find("```") {
-                let code = remaining[code_start..code_start + end_idx].trim_end();
-                parts.push(ContentPart::CodeBlock { language, code });
-                remaining = &remaining[code_start + end_idx + 3..];
-            } else {
-                // Unclosed code block
-                let code = remaining[code_start..].trim_end();
-                parts.push(ContentPart::CodeBlock { language, code });
-                break;
-            }
-        } else {
-            parts.extend(split_inline_code(remaining));
-            break;
-        }
-    }
-
-    parts
-}
-
-fn split_inline_code(text: &str) -> Vec<ContentPart<'_>> {
-    let mut parts = Vec::new();
-    let mut remaining = text;
-
-    while !remaining.is_empty() {
-        if let Some(start_idx) = remaining.find('`') {
-            if start_idx > 0 {
-                parts.push(ContentPart::Text(&remaining[..start_idx]));
-            }
-
-            let after_start = &remaining[start_idx + 1..];
-            if let Some(end_idx) = after_start.find('`') {
-                let code = &after_start[..end_idx];
-                parts.push(ContentPart::InlineCode(code));
-                remaining = &after_start[end_idx + 1..];
-            } else {
-                parts.push(ContentPart::Text(&remaining[start_idx..]));
-                break;
-            }
-        } else {
-            parts.push(ContentPart::Text(remaining));
-            break;
-        }
-    }
-
-    parts
 }

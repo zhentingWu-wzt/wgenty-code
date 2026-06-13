@@ -10,6 +10,8 @@
 
 pub mod core;
 pub mod events;
+pub mod progress;
 
 pub use core::StreamProcessor;
 pub use events::{StreamEvent, StreamResult};
+pub use progress::{ProgressCallback, SubagentMetadata, SubagentProgress, SubagentStatus};

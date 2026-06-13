@@ -12,12 +12,17 @@
 use std::path::Path;
 
 use crate::sandbox::{
-    CleanupType, SandboxBackend, SandboxCleanup, SandboxError,
-    SandboxProfile, SandboxedChild,
+    CleanupType, SandboxBackend, SandboxCleanup, SandboxError, SandboxProfile, SandboxedChild,
 };
 
 pub struct LinuxBackend {
     cgroup_base: std::path::PathBuf,
+}
+
+impl Default for LinuxBackend {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LinuxBackend {
@@ -47,11 +52,7 @@ impl LinuxBackend {
                 profile.resources.max_cpu_seconds.saturating_mul(1_000_000)
             ),
         )?;
-        Self::write_cg_limit(
-            &cg_dir,
-            "pids.max",
-            profile.resources.max_processes as u64,
-        )?;
+        Self::write_cg_limit(&cg_dir, "pids.max", profile.resources.max_processes as u64)?;
         // Enable memory and pids controllers
         let _ = Self::write_cg_limit(&cg_dir, "cgroup.subtree_control", "+memory +pids +cpu");
 
@@ -65,10 +66,8 @@ impl LinuxBackend {
     ) -> Result<(), SandboxError> {
         let path = cg_dir.join(file);
         if path.exists() {
-            std::fs::write(&path, value.to_string()).map_err(|e| {
-                SandboxError::ProfileBuild {
-                    reason: format!("failed to write cgroup {}: {}", file, e),
-                }
+            std::fs::write(&path, value.to_string()).map_err(|e| SandboxError::ProfileBuild {
+                reason: format!("failed to write cgroup {}: {}", file, e),
             })?;
         }
         Ok(())
@@ -78,10 +77,8 @@ impl LinuxBackend {
     fn add_to_cgroup(&self, cg_dir: &str, pid: u32) -> Result<(), SandboxError> {
         let procs = std::path::Path::new(cg_dir).join("cgroup.procs");
         if procs.exists() {
-            std::fs::write(&procs, pid.to_string()).map_err(|e| {
-                SandboxError::ProfileBuild {
-                    reason: format!("failed to add pid to cgroup: {}", e),
-                }
+            std::fs::write(&procs, pid.to_string()).map_err(|e| SandboxError::ProfileBuild {
+                reason: format!("failed to add pid to cgroup: {}", e),
             })?;
         }
         Ok(())
@@ -115,7 +112,13 @@ impl SandboxBackend for LinuxBackend {
     }
 
     fn capabilities(&self) -> Vec<&str> {
-        vec!["filesystem", "network", "syscall-filter", "memory-limit", "cpu-limit"]
+        vec![
+            "filesystem",
+            "network",
+            "syscall-filter",
+            "memory-limit",
+            "cpu-limit",
+        ]
     }
 
     fn spawn(
@@ -132,9 +135,9 @@ impl SandboxBackend for LinuxBackend {
         // a future version can use libc::clone directly for more control.
         let mut cmd = tokio::process::Command::new("unshare");
         cmd.arg("--mount") // mount namespace: private /tmp
-            .arg("--net")   // network namespace: no NICs
-            .arg("--fork")  // fork before unsharing
-            .arg("--pid")   // pid namespace
+            .arg("--net") // network namespace: no NICs
+            .arg("--fork") // fork before unsharing
+            .arg("--pid") // pid namespace
             .arg("--mount-proc") // mount /proc in new pid ns
             .arg("sh")
             .arg("-c")

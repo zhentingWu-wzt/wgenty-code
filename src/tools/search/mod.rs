@@ -1,5 +1,6 @@
 pub mod glob_search;
 pub mod grep;
+#[allow(clippy::module_inception)]
 pub mod search;
 pub mod web_fetch;
 pub mod web_search;
