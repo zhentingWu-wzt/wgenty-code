@@ -1,5 +1,5 @@
 workflow: full
-phase: design
+phase: build
 context_compression: off
 build_mode: null
 build_pause: null
@@ -9,7 +9,7 @@ isolation: null
 verify_mode: null
 auto_transition: true
 base_ref: 557e1242628e8cc920e4d120f002d8f887998094
-design_doc: null
+design_doc: docs/superpowers/specs/2026-06-14-codegraph-lazy-init-design.md
 plan: null
 verify_result: pending
 verification_report: null
@@ -17,3 +17,5 @@ branch_status: pending
 created_at: 2026-06-13
 verified_at: null
 archived: false
+handoff_context: openspec/changes/codegraph-tool-auto-registration/.comet/handoff/design-context.json
+handoff_hash: 1d11efc6efe32ad0d0dad7dd0a769d23feae56c2591b93be529b46ef2215f275
