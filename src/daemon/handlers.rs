@@ -181,13 +181,19 @@ pub async fn execute_tool(
         .validate_tool_call(tool_name, args)
         .await;
     tracing::info!("🔐 Daemon: policy for '{}' = {:?}", tool_name, decision);
-    match decision
-    {
+    match decision {
         Ok(PolicyDecision::Allow) => {
+            // Inject session_id for tools that need it (task, delegate).
+            let mut args = args.clone();
+            if tool_name == "task" || tool_name == "delegate" {
+                if let Some(obj) = args.as_object_mut() {
+                    obj.insert("_session_id".to_string(), serde_json::json!(session_id));
+                }
+            }
             // Execute directly with hooks
             let msg = state
                 .tool_executor
-                .execute_with_hooks("api", tool_name, args.clone(), Some(session_id))
+                .execute_with_hooks("api", tool_name, args, Some(session_id))
                 .await;
             let content = msg.content.unwrap_or_default();
             let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
@@ -207,13 +213,25 @@ pub async fn execute_tool(
         Ok(PolicyDecision::Ask(req)) => {
             // Check if rule was already approved for this session
             if state.is_rule_approved(session_id, &req.session_rule).await {
-                let mutating = matches!(tool_name.as_str(), "apply_patch" | "file_edit" | "file_write" | "exec_command");
+                let mutating = matches!(
+                    tool_name.as_str(),
+                    "apply_patch" | "file_edit" | "file_write" | "exec_command"
+                );
                 if mutating {
-                    let _ = state.checkpoint_manager.create(&format!("before {}", tool_name)).await;
+                    let _ = state
+                        .checkpoint_manager
+                        .create(&format!("before {}", tool_name))
+                        .await;
+                }
+                let mut args = args.clone();
+                if tool_name == "task" || tool_name == "delegate" {
+                    if let Some(obj) = args.as_object_mut() {
+                        obj.insert("_session_id".to_string(), serde_json::json!(session_id));
+                    }
                 }
                 let msg = state
                     .tool_executor
-                    .execute_with_hooks("api", tool_name, args.clone(), Some(session_id))
+                    .execute_with_hooks("api", tool_name, args, Some(session_id))
                     .await;
                 let content = msg.content.unwrap_or_default();
                 let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
@@ -354,12 +372,18 @@ pub async fn get_background_results(
 
 // ── Subagent Progress ────────────────────────────────────────────────────────
 
-/// GET /api/v1/subagent/progress
+/// GET /api/v1/subagent/progress?session_id=<id>
 pub async fn get_subagent_progress(
     State(state): State<Arc<DaemonState>>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Json<HashMap<String, SubagentProgress>> {
+    let session_id = params
+        .get("session_id")
+        .map(|s| s.as_str())
+        .unwrap_or("default");
     let store = state.subagent_progress.read().await;
-    Json(store.clone())
+    let result = store.get(session_id).cloned().unwrap_or_default();
+    Json(result)
 }
 
 // ── MCP ──────────────────────────────────────────────────────────────────────
@@ -535,12 +559,9 @@ pub async fn search_sessions(
     ))
 }
 
-
 // ── Undo ───────────────────────────────────────────────────────────────────
 
-pub async fn undo_checkpoint(
-    State(state): State<Arc<DaemonState>>,
-) -> Result<String, StatusCode> {
+pub async fn undo_checkpoint(State(state): State<Arc<DaemonState>>) -> Result<String, StatusCode> {
     match state.checkpoint_manager.undo().await {
         Ok(output) => Ok(output),
         Err(_e) => Err(StatusCode::INTERNAL_SERVER_ERROR),

@@ -41,8 +41,9 @@ pub struct DaemonState {
     pub team_manager: Option<Arc<TeamManager>>,
     pub session_manager: SessionManager,
     sessions: Arc<RwLock<std::collections::HashMap<String, SessionRules>>>,
+    /// Subagent progress store, scoped by session_id → node_id.
     pub subagent_progress:
-        Arc<RwLock<HashMap<String, crate::agent::progress::SubagentProgress>>>,
+        Arc<RwLock<HashMap<String, HashMap<String, crate::agent::progress::SubagentProgress>>>>,
 }
 
 impl DaemonState {
@@ -72,8 +73,9 @@ impl DaemonState {
             Arc::new(loader)
         };
 
-        let progress_store: Arc<RwLock<HashMap<String, crate::agent::progress::SubagentProgress>>> =
-            Arc::new(RwLock::new(HashMap::new()));
+        let progress_store: Arc<
+            RwLock<HashMap<String, HashMap<String, crate::agent::progress::SubagentProgress>>>,
+        > = Arc::new(RwLock::new(HashMap::new()));
 
         // Use Arc::new_cyclic so the TaskTool holds a valid Weak<ToolRegistry>
         // that points to the *final* Arc allocation — not a temporary one that

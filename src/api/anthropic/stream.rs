@@ -3,9 +3,7 @@
 use std::collections::HashMap;
 
 use super::types::*;
-use crate::api::{
-    Delta, StreamChoice, StreamChunk, StreamToolCall, StreamToolCallFunction,
-};
+use crate::api::{Delta, StreamChoice, StreamChunk, StreamToolCall, StreamToolCallFunction};
 
 /// Accumulated state for a single in-progress tool use content block.
 struct ToolUseAccumulator {
@@ -78,6 +76,7 @@ impl AnthropicStreamState {
                             delta,
                             finish_reason: None,
                         }],
+                        usage: None,
                     };
                     sse_events.push(format!(
                         "data: {}",
@@ -85,18 +84,24 @@ impl AnthropicStreamState {
                     ));
                 }
                 AnthropicContentBlock::ToolUse { id, name, input: _ } => {
-                    self.tool_use_accumulators.insert(*index, ToolUseAccumulator {
-                        id: id.clone(),
-                        name: name.clone(),
-                        input: String::new(),
-                    });
+                    self.tool_use_accumulators.insert(
+                        *index,
+                        ToolUseAccumulator {
+                            id: id.clone(),
+                            name: name.clone(),
+                            input: String::new(),
+                        },
+                    );
                 }
                 AnthropicContentBlock::ServerToolUse { id, name, input: _ } => {
-                    self.tool_use_accumulators.insert(*index, ToolUseAccumulator {
-                        id: id.clone(),
-                        name: name.clone(),
-                        input: String::new(),
-                    });
+                    self.tool_use_accumulators.insert(
+                        *index,
+                        ToolUseAccumulator {
+                            id: id.clone(),
+                            name: name.clone(),
+                            input: String::new(),
+                        },
+                    );
                 }
                 _ => {}
             },
@@ -118,6 +123,7 @@ impl AnthropicStreamState {
                             delta: d,
                             finish_reason: None,
                         }],
+                        usage: None,
                     };
                     sse_events.push(format!(
                         "data: {}",
@@ -156,6 +162,7 @@ impl AnthropicStreamState {
                             delta,
                             finish_reason: None,
                         }],
+                        usage: None,
                     };
                     sse_events.push(format!(
                         "data: {}",
@@ -167,11 +174,7 @@ impl AnthropicStreamState {
                 self.stop_reason = delta.stop_reason.clone();
                 if let Some(u) = usage {
                     self.usage = Some(AnthropicUsage {
-                        input_tokens: self
-                            .usage
-                            .as_ref()
-                            .map(|u| u.input_tokens)
-                            .unwrap_or(0),
+                        input_tokens: self.usage.as_ref().map(|u| u.input_tokens).unwrap_or(0),
                         output_tokens: u.output_tokens,
                     });
                 }
@@ -200,6 +203,11 @@ impl AnthropicStreamState {
                         delta: d,
                         finish_reason,
                     }],
+                    usage: self.usage.as_ref().map(|u| crate::api::Usage {
+                        prompt_tokens: u.input_tokens,
+                        completion_tokens: u.output_tokens,
+                        total_tokens: u.input_tokens + u.output_tokens,
+                    }),
                 };
                 sse_events.push(format!(
                     "data: {}",
@@ -310,12 +318,16 @@ mod tests {
 
     #[test]
     fn test_convert_tools_web_search_to_anthropic() {
-        let tools = vec![ToolDefinition::new("web_search", "search the web", serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"}
-            }
-        }))];
+        let tools = vec![ToolDefinition::new(
+            "web_search",
+            "search the web",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"}
+                }
+            }),
+        )];
         let anthropic_tools = convert_tools_to_anthropic(&tools);
         assert_eq!(anthropic_tools.len(), 1);
         match &anthropic_tools[0] {
@@ -333,12 +345,16 @@ mod tests {
 
     #[test]
     fn test_convert_tools_custom_to_anthropic() {
-        let tools = vec![ToolDefinition::new("get_weather", "gets weather", serde_json::json!({
-            "type": "object",
-            "properties": {
-                "location": {"type": "string"}
-            }
-        }))];
+        let tools = vec![ToolDefinition::new(
+            "get_weather",
+            "gets weather",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string"}
+                }
+            }),
+        )];
         let anthropic_tools = convert_tools_to_anthropic(&tools);
         assert_eq!(anthropic_tools.len(), 1);
         match &anthropic_tools[0] {

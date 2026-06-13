@@ -245,9 +245,7 @@ impl ToolCallManager {
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
 
-                                ui.monospace(
-                                    RichText::new(result).color(result_color).size(11.0),
-                                );
+                                ui.monospace(RichText::new(result).color(result_color).size(11.0));
                             });
                     }
                 }

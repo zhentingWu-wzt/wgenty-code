@@ -22,31 +22,27 @@ pub fn create_handle() -> SettingsHandle {
 
 /// Spawn a blocking watcher thread. When settings.json changes it reloads the
 /// file, updates `handle`, and calls `on_change` with the new Settings.
-pub fn start_watching(
-    handle: SettingsHandle,
-    on_change: impl Fn(Settings) + Send + 'static,
-) {
+pub fn start_watching(handle: SettingsHandle, on_change: impl Fn(Settings) + Send + 'static) {
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
     let config_path = home.join(".wgenty-code").join("settings.json");
 
     std::thread::spawn(move || {
         let (tx, rx) = mpsc::channel::<()>();
 
-        let mut watcher = match notify::recommended_watcher(
-            move |res: Result<Event, notify::Error>| {
+        let mut watcher =
+            match notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
                 if let Ok(event) = res {
                     if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                         let _ = tx.send(());
                     }
                 }
-            },
-        ) {
-            Ok(w) => w,
-            Err(e) => {
-                tracing::warn!("Failed to create config watcher: {}", e);
-                return;
-            }
-        };
+            }) {
+                Ok(w) => w,
+                Err(e) => {
+                    tracing::warn!("Failed to create config watcher: {}", e);
+                    return;
+                }
+            };
 
         if let Err(e) = watcher.watch(&config_path, RecursiveMode::NonRecursive) {
             tracing::warn!("Failed to watch config file {:?}: {}", config_path, e);

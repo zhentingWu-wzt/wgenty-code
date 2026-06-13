@@ -1,8 +1,6 @@
 //! Utility functions extracted from app.rs — pure functions with no App state dependency.
 
-use super::app::{
-    AppEvent, DiffData, MessageRole,
-};
+use super::app::{AppEvent, DiffData, MessageRole};
 use crate::state::agent_phase::{AgentPhase, TurnAbortReason};
 use ratatui::layout::Rect;
 
@@ -13,7 +11,12 @@ pub fn truncate_session_name(text: &str) -> String {
     if trimmed.len() <= 50 {
         trimmed.to_string()
     } else {
-        let end = trimmed.char_indices().take(50).last().map(|(i, _)| i).unwrap_or(0);
+        let end = trimmed
+            .char_indices()
+            .take(50)
+            .last()
+            .map(|(i, _)| i)
+            .unwrap_or(0);
         format!("{}...", &trimmed[..end])
     }
 }
@@ -23,7 +26,11 @@ pub fn truncate_session_name(text: &str) -> String {
 #[cfg(feature = "daemon")]
 pub async fn start_daemon(
     app_state: crate::state::AppState,
-) -> anyhow::Result<(String, tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>)> {
+) -> anyhow::Result<(
+    String,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+)> {
     // Bind to a random available port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
@@ -65,12 +72,8 @@ pub async fn start_daemon(
 pub fn compute_collapse_state(role: &MessageRole, content: &str) -> (bool, bool) {
     let line_count = content.lines().count();
     match role {
-        MessageRole::Assistant => {
-            (line_count > 50, false)
-        }
-        MessageRole::Tool => {
-            (false, true)
-        }
+        MessageRole::Assistant => (line_count > 50, false),
+        MessageRole::Tool => (false, true),
         _ => (false, false),
     }
 }
@@ -82,7 +85,11 @@ pub fn extract_diff_data(
     args: &serde_json::Value,
     raw_json: &str,
 ) -> Option<DiffData> {
-    let file_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let file_path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     // Try structured metadata first
     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw_json) {
         if let Some(metadata) = parsed.get("metadata") {
@@ -100,7 +107,8 @@ pub fn extract_diff_data(
     }
     // Auto-detect unified diff in content
     let content = raw_json.trim();
-    let has_diff_markers = content.contains("@@") && content.contains("+++") && content.contains("---");
+    let has_diff_markers =
+        content.contains("@@") && content.contains("+++") && content.contains("---");
     if has_diff_markers {
         let (old, new) = split_unified_diff(content);
         if !old.is_empty() || !new.is_empty() {
@@ -119,7 +127,9 @@ pub fn split_unified_diff(content: &str) -> (String, String) {
     let mut old = String::new();
     let mut new = String::new();
     for line in content.lines() {
-        if line.starts_with("@@") { continue; }
+        if line.starts_with("@@") {
+            continue;
+        }
         if line.starts_with("---") {
             old.push_str(line.trim_start_matches("--- "));
             old.push('\n');
@@ -170,27 +180,41 @@ pub fn format_tool_result(_name: &str, _args: &serde_json::Value, raw_json: &str
 
 pub fn tool_label(name: &str, args: &serde_json::Value) -> String {
     match name {
-        "exec_command" | "execute_command" => {
-            args.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "file_read" | "read_file" => {
-            args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "file_write" | "file_edit" | "apply_patch" => {
-            args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "grep" | "search" => {
-            args.get("pattern").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "glob_search" | "glob" | "list_files" => {
-            args.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "web_search" => {
-            args.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
-        "web_fetch" => {
-            args.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string()
-        }
+        "exec_command" | "execute_command" => args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "file_read" | "read_file" => args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "file_write" | "file_edit" | "apply_patch" => args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "grep" | "search" => args
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "glob_search" | "glob" | "list_files" => args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "web_search" => args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "web_fetch" => args
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         _ => String::new(),
     }
 }
@@ -204,24 +228,18 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
             Some(AgentPhase::StreamingResponse)
         }
         AppEvent::StreamDone { .. } => Some(AgentPhase::Thinking),
-        AppEvent::ToolStart { name, args: _ } => Some(AgentPhase::ExecutingTool {
-            name: name.clone(),
-        }),
+        AppEvent::ToolStart { name, args: _ } => {
+            Some(AgentPhase::ExecutingTool { name: name.clone() })
+        }
         AppEvent::ToolResult { .. } => Some(AgentPhase::Thinking),
-        AppEvent::PermissionRequired { reason, rule, .. } => {
-            Some(AgentPhase::AwaitingPermission {
-                tool: rule.clone(),
-                rule: reason.clone(),
-            })
-        }
-        AppEvent::QuestionAsked { question, .. } => {
-            Some(AgentPhase::AwaitingUserInput {
-                question: question.clone(),
-            })
-        }
-        AppEvent::StreamError(_) => Some(AgentPhase::Errored(
-            "Stream error".to_string(),
-        )),
+        AppEvent::PermissionRequired { reason, rule, .. } => Some(AgentPhase::AwaitingPermission {
+            tool: rule.clone(),
+            rule: reason.clone(),
+        }),
+        AppEvent::QuestionAsked { question, .. } => Some(AgentPhase::AwaitingUserInput {
+            question: question.clone(),
+        }),
+        AppEvent::StreamError(_) => Some(AgentPhase::Errored("Stream error".to_string())),
         AppEvent::TurnComplete => Some(AgentPhase::Idle),
         AppEvent::TurnAborted { reason } => match reason {
             TurnAbortReason::TimedOut => {
@@ -280,15 +298,26 @@ mod tests {
             Some(AgentPhase::StreamingResponse)
         );
         assert_eq!(
-            agent_phase_from_event(&AppEvent::StreamDone { finish_reason: "stop".into() }),
+            agent_phase_from_event(&AppEvent::StreamDone {
+                finish_reason: "stop".into()
+            }),
             Some(AgentPhase::Thinking)
         );
         assert_eq!(
-            agent_phase_from_event(&AppEvent::ToolStart { name: "file_read".into(), args: serde_json::json!({}) }),
-            Some(AgentPhase::ExecutingTool { name: "file_read".into() })
+            agent_phase_from_event(&AppEvent::ToolStart {
+                name: "file_read".into(),
+                args: serde_json::json!({})
+            }),
+            Some(AgentPhase::ExecutingTool {
+                name: "file_read".into()
+            })
         );
         assert_eq!(
-            agent_phase_from_event(&AppEvent::ToolResult { name: "x".into(), args: serde_json::json!({}), content: "y".into() }),
+            agent_phase_from_event(&AppEvent::ToolResult {
+                name: "x".into(),
+                args: serde_json::json!({}),
+                content: "y".into()
+            }),
             Some(AgentPhase::Thinking)
         );
         assert_eq!(
@@ -300,11 +329,15 @@ mod tests {
             Some(AgentPhase::Idle)
         );
         assert_eq!(
-            agent_phase_from_event(&AppEvent::TurnAborted { reason: TurnAbortReason::TimedOut }),
+            agent_phase_from_event(&AppEvent::TurnAborted {
+                reason: TurnAbortReason::TimedOut
+            }),
             Some(AgentPhase::Errored("Agent loop timed out".into()))
         );
         assert_eq!(
-            agent_phase_from_event(&AppEvent::TurnAborted { reason: TurnAbortReason::Interrupted }),
+            agent_phase_from_event(&AppEvent::TurnAborted {
+                reason: TurnAbortReason::Interrupted
+            }),
             Some(AgentPhase::Idle)
         );
     }
@@ -313,10 +346,15 @@ mod tests {
     fn test_non_phase_events_return_none() {
         assert_eq!(agent_phase_from_event(&AppEvent::Tick), None);
         assert_eq!(agent_phase_from_event(&AppEvent::MouseScrolled(3)), None);
-        assert_eq!(agent_phase_from_event(&AppEvent::Paste("test".into())), None);
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::Paste("test".into())),
+            None
+        );
         assert_eq!(agent_phase_from_event(&AppEvent::SaveSession), None);
         assert_eq!(
-            agent_phase_from_event(&AppEvent::TurnStarted { turn_id: TurnId::new() }),
+            agent_phase_from_event(&AppEvent::TurnStarted {
+                turn_id: TurnId::new()
+            }),
             None
         );
     }

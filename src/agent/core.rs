@@ -6,7 +6,7 @@
 //! in its own rendering model.
 
 use crate::agent::events::{StreamEvent, StreamResult};
-use crate::api::{ChatMessage, StreamChunk, ToolCall};
+use crate::api::{ChatMessage, StreamChunk, ToolCall, Usage};
 
 /// Processes raw SSE byte chunks into structured StreamEvents.
 ///
@@ -24,6 +24,9 @@ pub struct StreamProcessor {
     tool_calls_accum: Vec<serde_json::Value>,
     has_tool_calls: bool,
     finish_reason: String,
+    /// Token usage captured from the final SSE chunk (OpenAI-compat) or
+    /// the MessageDelta event (Anthropic). None if the API didn't report it.
+    last_usage: Option<Usage>,
 }
 
 impl StreamProcessor {
@@ -35,6 +38,7 @@ impl StreamProcessor {
             tool_calls_accum: Vec::new(),
             has_tool_calls: false,
             finish_reason: String::new(),
+            last_usage: None,
         }
     }
 
@@ -66,6 +70,12 @@ impl StreamProcessor {
     /// Process a single SSE text line, returning an event if one was produced.
     fn process_line(&mut self, line: &str) -> Option<StreamEvent> {
         let chunk: StreamChunk = crate::api::parse_sse_line(line)?;
+
+        // Capture usage from any chunk that reports it (typically the final one).
+        if chunk.usage.is_some() {
+            self.last_usage = chunk.usage;
+        }
+
         let choice = chunk.choices.first()?;
 
         // Accumulate content/reasoning deltas FIRST, before checking
@@ -166,6 +176,7 @@ impl StreamProcessor {
             has_tool_calls: self.has_tool_calls,
             tool_calls,
             finish_reason: self.finish_reason,
+            usage: self.last_usage,
         }
     }
 

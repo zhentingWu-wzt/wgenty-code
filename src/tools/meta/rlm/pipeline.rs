@@ -17,6 +17,9 @@ pub struct RlmResult {
     pub failed: usize,
 }
 
+/// Tuple for a single sub-task execution entry in a dependency level.
+type SubTaskExecItem = (usize, Arc<ToolRegistry>, ApiClient, String, Vec<String>);
+
 /// Run the full RLM pipeline: Planner → Executor → Aggregator.
 /// Used by both the `delegate` tool and auto-routing in `task` tool.
 pub async fn run_rlm_pipeline(
@@ -64,7 +67,9 @@ Context: {context}
     );
 
     let planner_messages = vec![
-        ChatMessage::system("You are a precise task decomposition planner. Always return valid JSON."),
+        ChatMessage::system(
+            "You are a precise task decomposition planner. Always return valid JSON.",
+        ),
         ChatMessage::user(&planner_prompt),
     ];
 
@@ -127,7 +132,15 @@ Context: {context}
         .list()
         .iter()
         .map(|t| t.name().to_string())
-        .filter(|name| { if name == "task" { 0 < settings.max_subagent_depth } else if name == "delegate" { false } else { true } })
+        .filter(|name| {
+            if name == "task" {
+                0 < settings.max_subagent_depth
+            } else if name == "delegate" {
+                false
+            } else {
+                true
+            }
+        })
         .collect();
 
     let n = sub_tasks.len();
@@ -166,12 +179,13 @@ Context: {context}
     );
 
     for level in 0..max_depth {
-        let level_data: Vec<(usize, Arc<ToolRegistry>, ApiClient, String, Vec<String>)> = sub_tasks
+        let level_data: Vec<SubTaskExecItem> = sub_tasks
             .iter()
             .enumerate()
             .filter(|(i, _)| depth[*i] == level)
             .map(|(idx, task_def)| {
-                let prompt = task_def.get("prompt")
+                let prompt = task_def
+                    .get("prompt")
                     .and_then(|p| p.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -184,7 +198,13 @@ Context: {context}
                 } else {
                     main_client.clone()
                 };
-                (idx, tool_registry.clone(), client, prompt, allowed_tools.clone())
+                (
+                    idx,
+                    tool_registry.clone(),
+                    client,
+                    prompt,
+                    allowed_tools.clone(),
+                )
             })
             .collect();
 

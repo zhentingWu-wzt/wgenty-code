@@ -150,7 +150,11 @@ impl BackgroundManager {
     }
 
     /// Store a subagent result for later retrieval.
-    pub async fn store_subagent_result(&self, task_id: impl Into<String>, result: impl Into<String>) {
+    pub async fn store_subagent_result(
+        &self,
+        task_id: impl Into<String>,
+        result: impl Into<String>,
+    ) {
         let mut results = self.results.lock().await;
         results.push(BackgroundResult {
             task_id: task_id.into(),

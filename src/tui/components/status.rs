@@ -1,4 +1,5 @@
 use crate::state::agent_phase::AgentPhase;
+use crate::tui::components::subagent_tree::SubagentTree;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -9,29 +10,29 @@ const IDLE_ICON: &str = "●";
 const DIM: Color = Color::Rgb(100, 100, 115);
 const ACTIVE: Color = Color::Rgb(100, 200, 255);
 const ERROR: Color = Color::Rgb(255, 100, 100);
-const MUTED: Color = Color::Rgb(130, 130, 150);
+#[allow(dead_code)]
+const WARN: Color = Color::Rgb(255, 180, 50);
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Render a Claude Code-style status line:
-///   ⠋ Thinking… (12s · ↓ 4.5k tokens · NORMAL)
+/// Render a status line:
+///   ⠋ Subagent 3 active · 5/8 done (12s · ↓ 4.5k tokens · NORMAL)
 ///   ● Ready (↓ 1.2k tokens)
 pub fn render(
     f: &mut Frame,
     area: Rect,
     phase: &AgentPhase,
-    session_name: &str,
     spinner_frame: u8,
     elapsed_secs: Option<u64>,
     tokens_used: usize,
     mode_label: &str,
+    subagent_tree: Option<&SubagentTree>,
 ) {
-    let area_w = area.width as usize;
-    if area_w < 5 {
+    if area.width < 5 {
         return;
     }
 
-    let label = phase_label(phase);
+    let label = phase_label(phase, subagent_tree);
     let is_active = phase.is_busy();
     let is_error = matches!(phase, AgentPhase::Errored(_));
 
@@ -74,42 +75,66 @@ pub fn render(
         format!("({})", meta_parts.join(" · "))
     };
 
-    // ── Left: session name ──────────────────────────────────────────────
-    let left = Span::styled(
-        format!("  {}", session_name),
-        Style::default().fg(MUTED),
-    );
-
-    // ── Center: icon + phase label ──────────────────────────────────────
-    let center_text = if right_meta.is_empty() {
+    // ── Status line: icon + phase label + meta, left-aligned ─────────────
+    let status_text = if right_meta.is_empty() {
         format!("{} {}", icon, label)
     } else {
         format!("{} {} {}", icon, label, right_meta)
     };
-    let center = Span::styled(center_text, Style::default().fg(phase_color).add_modifier(Modifier::BOLD));
+    let status = Span::styled(
+        status_text,
+        Style::default()
+            .fg(phase_color)
+            .add_modifier(Modifier::BOLD),
+    );
 
-    // ── Assemble line ───────────────────────────────────────────────────
-    let left_width = session_name.len() + 2;
-    let center_width = icon.chars().count()
-        + 1 // space
-        + label.len()
-        + if right_meta.is_empty() { 0 } else { 1 + right_meta.len() }; // space + meta
-    let padding = area_w.saturating_sub(left_width + center_width);
-
-    let line = Line::from(vec![left, Span::raw(" ".repeat(padding)), center]);
+    let line = Line::from(vec![Span::raw("  "), status]);
 
     f.render_widget(Paragraph::new(line), area);
 }
 
-fn phase_label(phase: &AgentPhase) -> String {
+fn phase_label(phase: &AgentPhase, subagent_tree: Option<&SubagentTree>) -> String {
     match phase {
         AgentPhase::Idle | AgentPhase::Completed => "Ready".to_string(),
         AgentPhase::Thinking => "Thinking…".to_string(),
         AgentPhase::PreparingTools => "Preparing tools…".to_string(),
         AgentPhase::StreamingResponse => "Streaming…".to_string(),
         AgentPhase::ExecutingTool { name } => match name.as_str() {
-            "task" => "Subagent running…".to_string(),
-            "delegate" => "RLM Pipeline".to_string(),
+            "task" | "delegate" => {
+                if let Some(tree) = subagent_tree {
+                    if !tree.is_empty() {
+                        let active = tree.active_count();
+                        let done = tree.completed_count();
+                        let failed = tree.failed_count();
+                        let total = tree.total_count();
+                        let mut label = String::new();
+                        if active > 0 {
+                            label.push_str(&format!("{} active", active));
+                        }
+                        if done > 0 || total > 0 {
+                            if !label.is_empty() {
+                                label.push_str(" · ");
+                            }
+                            label.push_str(&format!("{}/{} done", done, total));
+                        }
+                        if failed > 0 {
+                            if !label.is_empty() {
+                                label.push_str(" · ");
+                            }
+                            label.push_str(&format!("{} failed", failed));
+                        }
+                        if label.is_empty() {
+                            label.push_str("Subagent running…");
+                        }
+                        return label;
+                    }
+                }
+                if name == "task" {
+                    "Subagent running…".to_string()
+                } else {
+                    "RLM Pipeline".to_string()
+                }
+            }
             _ => format!("Executing {}…", name),
         },
         AgentPhase::AwaitingPermission { .. } => "Permission required".to_string(),

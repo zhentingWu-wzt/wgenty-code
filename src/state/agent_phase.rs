@@ -4,7 +4,6 @@
 //! and introduces explicit TurnStarted / TurnComplete / TurnAborted events
 //! so the agent loop can propagate cancellation and timeout signals.
 
-
 // ── Agent Phase ──────────────────────────────────────────────────────────
 
 /// Formal agent lifecycle phase, replacing the raw `status: String`.
@@ -55,7 +54,13 @@ impl AgentPhase {
 
     /// Whether the phase is a "busy" state (non-idle, non-error).
     pub fn is_busy(&self) -> bool {
-        !matches!(self, AgentPhase::Idle | AgentPhase::Completed | AgentPhase::Errored(_) | AgentPhase::Planning)
+        !matches!(
+            self,
+            AgentPhase::Idle
+                | AgentPhase::Completed
+                | AgentPhase::Errored(_)
+                | AgentPhase::Planning
+        )
     }
 }
 

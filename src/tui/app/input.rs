@@ -26,8 +26,16 @@ impl App {
         }
         if text.trim() == "/plan" {
             let is_plan = self.mode == AgentMode::PlanMode;
-            self.mode = if is_plan { AgentMode::Normal } else { AgentMode::PlanMode };
-            let msg = if !is_plan { "Plan mode enabled" } else { "Plan mode disabled" };
+            self.mode = if is_plan {
+                AgentMode::Normal
+            } else {
+                AgentMode::PlanMode
+            };
+            let msg = if !is_plan {
+                "Plan mode enabled"
+            } else {
+                "Plan mode disabled"
+            };
             self.committed_messages.push(UIMessage {
                 role: MessageRole::System,
                 content: msg.to_string(),
@@ -68,14 +76,16 @@ impl App {
                     )));
                 });
                 self.last_abort_reason = None;
-                self.pending_inputs.push_back("Continue the current task from where you left off.".to_string());
+                self.pending_inputs
+                    .push_back("Continue the current task from where you left off.".to_string());
                 if self.current_turn_handle.is_none() {
                     self.start_next_turn();
                 }
             } else {
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::System,
-                    content: "No interrupted turn to continue. The last turn completed normally.".to_string(),
+                    content: "No interrupted turn to continue. The last turn completed normally."
+                        .to_string(),
                     tool_name: None,
                     content_collapsed: false,
                     tool_collapsed: false,
@@ -97,7 +107,8 @@ impl App {
                 diff_data: None,
                 tool_metadata: None,
             });
-            self.pending_inputs.push_back("undo the most recent operation".to_string());
+            self.pending_inputs
+                .push_back("undo the most recent operation".to_string());
             if self.current_turn_handle.is_none() {
                 self.start_next_turn();
             }
@@ -106,7 +117,8 @@ impl App {
         if text.trim() == "/init" {
             self.committed_messages.push(UIMessage {
                 role: MessageRole::System,
-                content: "🔄 Running /init — 正在分析代码库以生成 WGENTY.md 和 AGENTS.md...".to_string(),
+                content: "🔄 Running /init — 正在分析代码库以生成 WGENTY.md 和 AGENTS.md..."
+                    .to_string(),
                 tool_name: None,
                 content_collapsed: false,
                 tool_collapsed: false,

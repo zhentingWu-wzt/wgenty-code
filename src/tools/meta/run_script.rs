@@ -20,17 +20,19 @@ pub struct RunScriptTool {
 }
 
 impl RunScriptTool {
-    pub fn new(
-        settings: Settings,
-        tool_registry: std::sync::Weak<ToolRegistry>,
-    ) -> Self {
-        Self { settings, tool_registry }
+    pub fn new(settings: Settings, tool_registry: std::sync::Weak<ToolRegistry>) -> Self {
+        Self {
+            settings,
+            tool_registry,
+        }
     }
 }
 
 #[async_trait]
 impl Tool for RunScriptTool {
-    fn name(&self) -> &str { "run_script" }
+    fn name(&self) -> &str {
+        "run_script"
+    }
     fn description(&self) -> &str {
         "Execute a Rhai script to orchestrate multiple agent operations with loops, conditions, and variables. Exposed functions: task(prompt), grep(pattern), read(path), exec(cmd), log(msg). Use for complex multi-step workflows. Rhai syntax is similar to Rust/JS."
     }
@@ -57,9 +59,10 @@ impl Tool for RunScriptTool {
         // ── Build Rhai engine with sandboxed functions ──────────────────
         let mut engine = Engine::new_raw();
         engine.set_max_operations(5000);
-        
 
-        let allowed_tools: Vec<String> = tool_registry.list().iter()
+        let allowed_tools: Vec<String> = tool_registry
+            .list()
+            .iter()
             .map(|t| t.name().to_string())
             .filter(|n| n != "task" && n != "delegate" && n != "run_script")
             .collect();
@@ -106,12 +109,19 @@ impl Tool for RunScriptTool {
 
         // register exec(cmd) -> String
         engine.register_fn("exec", move |cmd: String| -> String {
-            let output = std::process::Command::new("sh").arg("-c").arg(&cmd).output();
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&cmd)
+                .output();
             match output {
                 Ok(o) => {
                     let stdout = String::from_utf8_lossy(&o.stdout).to_string();
                     let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                    let stderr_part = if stderr.is_empty() { String::new() } else { format!("\n[stderr]\n{}", stderr) };
+                    let stderr_part = if stderr.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n[stderr]\n{}", stderr)
+                    };
                     format!("{}{}", stdout, stderr_part)
                 }
                 Err(e) => format!("[ERROR] exec failed: {}", e),
@@ -141,14 +151,21 @@ impl Tool for RunScriptTool {
         })?;
 
         let log_output = output.lock().unwrap().clone();
-        let final_output = if log_output.is_empty() { result } else { format!("{}\n[Log]\n{}", result, log_output) };
+        let final_output = if log_output.is_empty() {
+            result
+        } else {
+            format!("{}\n[Log]\n{}", result, log_output)
+        };
 
         Ok(ToolOutput {
             output_type: "text".to_string(),
             content: final_output,
             metadata: {
                 let mut m = HashMap::new();
-                m.insert("subagent_calls".to_string(), serde_json::json!(call_count.load(Ordering::Relaxed)));
+                m.insert(
+                    "subagent_calls".to_string(),
+                    serde_json::json!(call_count.load(Ordering::Relaxed)),
+                );
                 m
             },
         })
