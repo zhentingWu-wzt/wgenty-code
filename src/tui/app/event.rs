@@ -34,8 +34,16 @@ impl App {
                 // Ctrl+P: toggle plan mode
                 if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     let is_plan = self.mode == AgentMode::PlanMode;
-                    self.mode = if is_plan { AgentMode::Normal } else { AgentMode::PlanMode };
-                    let msg = if !is_plan { "Plan mode enabled" } else { "Plan mode disabled" };
+                    self.mode = if is_plan {
+                        AgentMode::Normal
+                    } else {
+                        AgentMode::PlanMode
+                    };
+                    let msg = if !is_plan {
+                        "Plan mode enabled"
+                    } else {
+                        "Plan mode disabled"
+                    };
                     self.committed_messages.push(UIMessage {
                         role: MessageRole::System,
                         content: msg.to_string(),
@@ -187,9 +195,10 @@ impl App {
                 self.user_scrolled = true;
             }
             AppEvent::ToggleCollapseAll => {
-                let any_expanded = self.committed_messages.iter().any(|m| {
-                    !m.content_collapsed || !m.tool_collapsed
-                });
+                let any_expanded = self
+                    .committed_messages
+                    .iter()
+                    .any(|m| !m.content_collapsed || !m.tool_collapsed);
                 let new_state = any_expanded;
                 for m in &mut self.committed_messages {
                     m.content_collapsed = new_state;
@@ -206,6 +215,7 @@ impl App {
             }
             AppEvent::Submit(text) => {
                 self.subagent_tree.clear();
+                self.subagent_panel_state.reset();
                 self.submit_input(text);
             }
             AppEvent::PreparingTools => {
@@ -253,14 +263,18 @@ impl App {
                     role: MessageRole::Tool,
                     content: String::new(),
                     tool_name: Some(name.clone()),
-                            tool_args: Some(args.clone()),
+                    tool_args: Some(args.clone()),
                     content_collapsed: false,
                     tool_collapsed: true,
                     diff_data: None,
                     tool_metadata: None,
                 });
             }
-            AppEvent::ToolResult { name, args, content } => {
+            AppEvent::ToolResult {
+                name,
+                args,
+                content,
+            } => {
                 let diff_data = extract_diff_data(&name, &args, &content);
                 let tool_metadata = extract_tool_metadata(&content);
                 // Tool completed, clear running state for spinner
@@ -317,13 +331,14 @@ impl App {
                             .display()
                             .to_string(),
                     )
-                    .with_shell(
-                        std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string()),
-                    )
+                    .with_shell(std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string()))
                     .with_sandbox("workspace-write")
                     .with_approval("never")
-                    .with_collaboration(new_settings.collaboration_mode.clone().unwrap_or_default());
-                let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    .with_collaboration(
+                        new_settings.collaboration_mode.clone().unwrap_or_default(),
+                    );
+                let project_root =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let wgenty_sections = crate::utils::project::read_wgenty_md_sections(&project_root);
                 let agents_sections = crate::utils::project::read_agents_md_sections(&project_root);
                 let prompt_ctx = prompt_ctx
@@ -387,7 +402,8 @@ impl App {
                 multi_select,
                 responder,
             } => {
-                self.question_state.show(question, options, multi_select, responder);
+                self.question_state
+                    .show(question, options, multi_select, responder);
             }
             AppEvent::ToggleSessions => {
                 if self.session_state.visible {
@@ -427,7 +443,8 @@ impl App {
                         _ => MessageRole::System,
                     };
                     let content = msg.content.clone().unwrap_or_default();
-                    let (content_collapsed, tool_collapsed) = compute_collapse_state(&role, &content);
+                    let (content_collapsed, tool_collapsed) =
+                        compute_collapse_state(&role, &content);
                     self.committed_messages.push(UIMessage {
                         role,
                         content,
@@ -474,7 +491,8 @@ impl App {
                 let now = std::time::Instant::now();
                 if let Some(last) = self.last_ctrl_c {
                     if last.elapsed().as_millis() < 500 {
-                        self.shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                        self.shutdown_flag
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
                         self.should_quit = true;
                         return;
                     }
@@ -485,12 +503,15 @@ impl App {
                 use crate::tui::components::plan_panel::PlanItem;
                 use crate::tui::components::plan_panel::PlanStatus;
                 if let Some(plan_array) = value.get("plan").and_then(|p| p.as_array()) {
-                    let items: Vec<PlanItem> = plan_array.iter().filter_map(|v| {
-                        let step = v.get("step")?.as_str()?.to_string();
-                        let status_str = v.get("status")?.as_str().unwrap_or("pending");
-                        let status = PlanStatus::from_str(status_str);
-                        Some(PlanItem { step, status })
-                    }).collect();
+                    let items: Vec<PlanItem> = plan_array
+                        .iter()
+                        .filter_map(|v| {
+                            let step = v.get("step")?.as_str()?.to_string();
+                            let status_str = v.get("status")?.as_str().unwrap_or("pending");
+                            let status = PlanStatus::from_str(status_str);
+                            Some(PlanItem { step, status })
+                        })
+                        .collect();
                     self.plan_panel_state.update(items);
                 }
             }
@@ -522,11 +543,11 @@ impl App {
             role: MessageRole::System,
             content: format!("Q: {}\nA: {}", q, a),
             tool_name: Some("ask".to_string()),
-                content_collapsed: false,
-                tool_collapsed: false,
-                tool_args: None,
-                diff_data: None,
-                tool_metadata: None,
+            content_collapsed: false,
+            tool_collapsed: false,
+            tool_args: None,
+            diff_data: None,
+            tool_metadata: None,
         });
     }
 
@@ -536,11 +557,11 @@ impl App {
             role: MessageRole::System,
             content: format!("🔐 {} — {}", reason, decision),
             tool_name: Some("permission".to_string()),
-                content_collapsed: false,
-                tool_collapsed: false,
-                tool_args: None,
-                diff_data: None,
-                tool_metadata: None,
+            content_collapsed: false,
+            tool_collapsed: false,
+            tool_args: None,
+            diff_data: None,
+            tool_metadata: None,
         });
     }
 }
