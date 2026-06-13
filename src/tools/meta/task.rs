@@ -276,6 +276,7 @@ impl Tool for TaskTool {
                     &tools,
                     30,
                     timeout_secs,
+                    None,
                 )
                 .await;
 
@@ -317,6 +318,7 @@ impl Tool for TaskTool {
                     tool_registry.clone(),
                     description,
                     prompt,
+                    None,
                 )
                 .await
                 .map(|r| r.aggregated)
@@ -329,6 +331,7 @@ impl Tool for TaskTool {
                     &allowed_tools,
                     30,
                     self.settings.subagent_timeout_secs,
+                    None,
                 )
                 .await
             };

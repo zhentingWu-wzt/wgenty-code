@@ -76,7 +76,7 @@ impl Tool for RlmDelegateTool {
             code: Some("registry_dropped".to_string()),
         })?;
 
-        let result = run_rlm_pipeline(&self.settings, tool_registry, task, context)
+        let result = run_rlm_pipeline(&self.settings, tool_registry, task, context, None)
             .await
             .map_err(|e| ToolError {
                 message: e.clone(),
