@@ -1,3 +1,7 @@
+---
+archived-with: 2026-06-13-code-graph-tool
+status: final
+---
 ```yaml
 ---
 change: code-graph-tool
