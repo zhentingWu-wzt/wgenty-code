@@ -442,7 +442,7 @@ git commit -m "feat(codegraph): define core types (Symbol, Reference, Relationsh
 **Files:**
 - Create: `src/tools/codegraph/store.rs`
 
-- [ ] **Step 3.1: 实现 `IndexStore` 结构和 SQLite schema 创建**
+- [x] **Step 3.1: 实现 `IndexStore` 结构和 SQLite schema 创建**
 
 文件 `src/tools/codegraph/store.rs`：
 
@@ -538,7 +538,7 @@ impl IndexStore {
 }
 ```
 
-- [ ] **Step 3.2: 实现文件哈希变更检测**
+- [x] **Step 3.2: 实现文件哈希变更检测**
 
 ```rust
 impl IndexStore {
@@ -571,7 +571,7 @@ impl IndexStore {
 }
 ```
 
-- [ ] **Step 3.3: 实现符号 CRUD 操作**
+- [x] **Step 3.3: 实现符号 CRUD 操作**
 
 ```rust
 impl IndexStore {
@@ -641,7 +641,7 @@ impl IndexStore {
 }
 ```
 
-- [ ] **Step 3.4: 实现引用和关系 CRUD + 传递闭包查询**
+- [x] **Step 3.4: 实现引用和关系 CRUD + 传递闭包查询**
 
 ```rust
 impl IndexStore {
@@ -831,7 +831,7 @@ impl IndexStore {
 }
 ```
 
-- [ ] **Step 3.5: 编写 IndexStore 单元测试**
+- [x] **Step 3.5: 编写 IndexStore 单元测试**
 
 ```rust
 #[cfg(test)]
@@ -901,7 +901,7 @@ cargo test -- tools::codegraph::store::tests 2>&1
 ```
 预期：5 个测试通过。
 
-- [ ] **Step 3.6: 提交**
+- [x] **Step 3.6: 提交**
 
 ```bash
 git add src/tools/codegraph/store.rs

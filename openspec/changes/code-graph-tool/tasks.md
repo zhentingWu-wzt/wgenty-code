@@ -7,11 +7,11 @@
 ## 2. 数据模型与存储层
 
 - [x] 2.1 定义核心类型：`Symbol`, `SymbolKind`, `Reference`, `Relationship`, `Visibility` 在 `types.rs`
-- [ ] 2.2 实现 `IndexStore`：SQLite schema 创建（symbols, references, relationships, files 表）在 `store.rs`
-- [ ] 2.3 实现 `IndexStore::upsert_symbol` / `delete_symbol` / `get_symbol` CRUD 方法
-- [ ] 2.4 实现 `IndexStore::insert_reference` / `get_references` 引用管理
-- [ ] 2.5 实现 `IndexStore::insert_relationship` / `get_callers` / `get_callees` 关系查询
-- [ ] 2.6 实现 `IndexStore` 的文件哈希变更检测方法
+- [x] 2.2 实现 `IndexStore`：SQLite schema 创建（symbols, references, relationships, files 表）在 `store.rs`
+- [x] 2.3 实现 `IndexStore::upsert_symbol` / `delete_symbol` / `get_symbol` CRUD 方法
+- [x] 2.4 实现 `IndexStore::insert_reference` / `get_references` 引用管理
+- [x] 2.5 实现 `IndexStore::insert_relationship` / `get_callers` / `get_callees` 关系查询
+- [x] 2.6 实现 `IndexStore` 的文件哈希变更检测方法
 
 ## 3. 索引引擎
 
