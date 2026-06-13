@@ -35,9 +35,8 @@ fn validate_id(id: &str) -> bool {
     let upper = id.to_uppercase();
     let stem = upper.split('.').next().unwrap_or(&upper);
     const RESERVED: &[&str] = &[
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5",
-        "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4",
-        "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
     if RESERVED.contains(&stem) {
         return false;
@@ -219,7 +218,11 @@ impl Storage {
                 // (size_of_val on Vec only returns the header, not heap data)
                 let approx: u64 = cache
                     .iter()
-                    .map(|e| serde_json::to_string(e).map(|s| s.len() as u64).unwrap_or(0))
+                    .map(|e| {
+                        serde_json::to_string(e)
+                            .map(|s| s.len() as u64)
+                            .unwrap_or(0)
+                    })
                     .sum();
                 Ok(approx)
             }

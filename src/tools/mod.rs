@@ -6,9 +6,9 @@
 //!   - execution/   — shell commands, session management, git
 //!   - meta/        — think, lsp, ask_user_question, note_edit
 
+pub mod checkpoint;
 pub mod execution;
 pub mod executor;
-pub mod checkpoint;
 pub mod filesystem;
 pub mod meta;
 pub mod search;
@@ -65,8 +65,7 @@ impl ToolRegistry {
     pub fn new() -> Self {
         let sandbox = std::sync::Arc::new(crate::sandbox::SandboxManager::new());
         let command_sessions = std::sync::Arc::new(
-            execution::session_manager::CommandSessionManager::new()
-                .with_sandbox(sandbox.clone()),
+            execution::session_manager::CommandSessionManager::new().with_sandbox(sandbox.clone()),
         );
         let checkpoint_manager = std::sync::Arc::new(checkpoint::CheckpointManager::new());
         let mut registry = Self {
@@ -75,8 +74,12 @@ impl ToolRegistry {
         };
 
         // Checkpoint tools
-        registry.register(Box::new(checkpoint::CheckpointTool::new(checkpoint_manager.clone())));
-        registry.register(Box::new(checkpoint::UndoTool::new(checkpoint_manager.clone())));
+        registry.register(Box::new(checkpoint::CheckpointTool::new(
+            checkpoint_manager.clone(),
+        )));
+        registry.register(Box::new(checkpoint::UndoTool::new(
+            checkpoint_manager.clone(),
+        )));
         // Meta tools
         registry.register(Box::new(meta::ask_user_question::AskUserQuestionTool::new()));
         registry.register(Box::new(meta::update_plan::UpdatePlanTool::new()));
@@ -186,17 +189,17 @@ impl Default for ToolRegistry {
 }
 
 // Re-export all tool types
+pub use checkpoint::{CheckpointManager, CheckpointTool, UndoTool};
 pub use execution::{
     BackgroundManager, BackgroundResult, BackgroundTool, CommandSessionManager, ExecCommandTool,
     ExecuteCommandTool, GitOperationsTool, KillSessionTool, RunTestTool, WriteStdinTool,
 };
 pub use executor::ToolExecutor;
-pub use checkpoint::{CheckpointManager, CheckpointTool, UndoTool};
 pub use filesystem::{
     ApplyPatchTool, FileEditTool, FileReadTool, FileWriteTool, ListFilesTool, ViewTool,
 };
 pub use meta::{
-    AskUserQuestionTool, CompactTool, LoadSkillTool, LspTool, NoteEditTool, RlmDelegateTool, TaskTool,
-    TeamMessageTool, ThinkTool, UpdatePlanTool,
+    AskUserQuestionTool, CompactTool, LoadSkillTool, LspTool, NoteEditTool, RlmDelegateTool,
+    TaskTool, TeamMessageTool, ThinkTool, UpdatePlanTool,
 };
 pub use search::{GlobTool, GrepTool, SearchTool, WebFetchTool, WebSearchTool};

@@ -1,7 +1,7 @@
 //! HTML Templates - Template engine for web pages
 
-mod index;
 mod detail;
+mod index;
 mod search;
 
 pub struct TemplateEngine;

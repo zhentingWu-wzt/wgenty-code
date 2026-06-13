@@ -28,14 +28,14 @@ pub struct GuardianDecision {
 /// Note: critical patterns must be specific to avoid false positives on
 /// legitimate operations like `rm -rf /tmp`.
 const CRITICAL_PATTERNS: &[&str] = &[
-    "rm -rf / ",        // rm -rf / (with trailing space)
-    "rm -rf /*",        // rm -rf /* (glob)
-    "rm -rf /$",        // rm -rf / at end of string
+    "rm -rf / ", // rm -rf / (with trailing space)
+    "rm -rf /*", // rm -rf /* (glob)
+    "rm -rf /$", // rm -rf / at end of string
     "rm -rf --no-preserve-root",
     "mkfs.",
     "dd if=",
     "> /dev/sda",
-    ":(){ :|:& };:",   // fork bomb
+    ":(){ :|:& };:", // fork bomb
     "chmod 777 /",
 ];
 
@@ -227,10 +227,7 @@ impl Guardian {
         // Override for critical-risk: auto-deny if configured
         if self.config.auto_deny_critical && decision.risk_level >= RiskLevel::Critical {
             decision.allowed = false;
-            decision.rationale = format!(
-                "AUTO-DENIED: {}",
-                decision.rationale
-            );
+            decision.rationale = format!("AUTO-DENIED: {}", decision.rationale);
         }
 
         decision
@@ -268,7 +265,10 @@ mod tests {
 
     #[test]
     fn test_classify_critical_risk() {
-        assert_eq!(classify_risk("rm -rf / --no-preserve-root"), RiskLevel::Critical);
+        assert_eq!(
+            classify_risk("rm -rf / --no-preserve-root"),
+            RiskLevel::Critical
+        );
     }
 
     #[test]

@@ -1,9 +1,9 @@
 //! Execute Command Tool — runs shell commands with sandbox isolation.
 
 use crate::sandbox::{SandboxConfig, SandboxManager, SandboxProfile, SecurityLevel};
-use std::path::PathBuf;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
+use std::path::PathBuf;
 
 pub struct ExecuteCommandTool {
     sandbox: Option<std::sync::Arc<SandboxManager>>,

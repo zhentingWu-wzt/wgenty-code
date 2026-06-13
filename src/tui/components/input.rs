@@ -23,10 +23,7 @@ impl InputBox {
         );
 
         textarea.set_style(Style::default().fg(Color::White));
-        textarea.set_placeholder_style(
-            Style::default()
-                .fg(Color::Rgb(100, 100, 110))
-        );
+        textarea.set_placeholder_style(Style::default().fg(Color::Rgb(100, 100, 110)));
         textarea.set_placeholder_text("在这里输入你的消息...");
 
         Self { textarea }

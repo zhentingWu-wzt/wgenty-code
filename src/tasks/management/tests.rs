@@ -116,8 +116,7 @@ async fn test_shared_task_store() {
         }))
         .await
         .unwrap();
-    let blocked_data: serde_json::Value =
-        serde_json::from_str(&blocked_result.content).unwrap();
+    let blocked_data: serde_json::Value = serde_json::from_str(&blocked_result.content).unwrap();
     assert_eq!(blocked_data["count"].as_u64().unwrap(), 0);
 
     // Test set_dependencies operation with invalid blocker

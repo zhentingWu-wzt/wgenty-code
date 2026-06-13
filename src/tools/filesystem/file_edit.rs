@@ -95,8 +95,14 @@ impl Tool for FileEditTool {
         });
 
         let mut metadata = std::collections::HashMap::new();
-        metadata.insert("old_content".to_string(), serde_json::json!(old_file_content));
-        metadata.insert("new_content".to_string(), serde_json::json!(new_file_content));
+        metadata.insert(
+            "old_content".to_string(),
+            serde_json::json!(old_file_content),
+        );
+        metadata.insert(
+            "new_content".to_string(),
+            serde_json::json!(new_file_content),
+        );
 
         write_result?;
 

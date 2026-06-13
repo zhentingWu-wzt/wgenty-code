@@ -43,7 +43,13 @@ impl QuestionState {
         }
     }
 
-    pub fn show(&mut self, question: String, options: Vec<String>, multi_select: bool, responder: QuestionResponder) {
+    pub fn show(
+        &mut self,
+        question: String,
+        options: Vec<String>,
+        multi_select: bool,
+        responder: QuestionResponder,
+    ) {
         self.visible = true;
         self.question = question;
         self.options = options;
@@ -73,11 +79,7 @@ impl QuestionState {
                 .filter_map(|&i| self.options.get(i).cloned())
                 .collect()
         } else {
-            self.options
-                .get(self.cursor)
-                .cloned()
-                .into_iter()
-                .collect()
+            self.options.get(self.cursor).cloned().into_iter().collect()
         };
         // Send response via oneshot channel
         if let Some(responder) = self.responder.take() {
@@ -92,7 +94,10 @@ impl QuestionState {
             let answers = if self.cursor_on_other() {
                 vec![std::mem::take(&mut self.other_value)]
             } else if self.multi_select {
-                self.selected.iter().filter_map(|&i| self.options.get(i).cloned()).collect()
+                self.selected
+                    .iter()
+                    .filter_map(|&i| self.options.get(i).cloned())
+                    .collect()
             } else {
                 self.options.get(self.cursor).cloned().into_iter().collect()
             };
@@ -259,16 +264,15 @@ pub fn render(f: &mut Frame, area: Rect, state: &QuestionState) {
     } else {
         " [↑↓] navigate · [Enter] select · [1-9] quick select · [Esc] cancel"
     };
-    lines.push(Line::from(Span::styled(hint, Style::default().fg(DIM_COLOR))));
+    lines.push(Line::from(Span::styled(
+        hint,
+        Style::default().fg(DIM_COLOR),
+    )));
     lines.push(Line::raw(""));
 
     // Numbered options
     for (i, opt) in state.options.iter().enumerate() {
-        lines.push(option_line(
-            i,
-            opt,
-            state,
-        ));
+        lines.push(option_line(i, opt, state));
     }
 
     // "Other" option — inline text input when highlighted
@@ -323,7 +327,11 @@ fn option_line(idx: usize, label: &str, state: &QuestionState) -> Line<'static> 
 
     let cursor_char = if is_cursor { "❯" } else { " " };
     let marker = if state.multi_select {
-        if is_selected { "◉" } else { "○" }
+        if is_selected {
+            "◉"
+        } else {
+            "○"
+        }
     } else if is_cursor {
         "●"
     } else {

@@ -186,9 +186,7 @@ fn build_permissions_layer(ctx: &PromptContext) -> Option<String> {
 
     if let Some(ref mode) = ctx.sandbox_mode {
         let sandbox_text = match mode.as_str() {
-            "workspace-write" => {
-                include_str!("permissions/sandbox_workspace_write.md").to_string()
-            }
+            "workspace-write" => include_str!("permissions/sandbox_workspace_write.md").to_string(),
             "read-only" => include_str!("permissions/sandbox_read_only.md").to_string(),
             other => format!("Sandbox mode: {other}"),
         };
@@ -256,14 +254,12 @@ mod tests {
     #[test]
     fn test_assemble_base_only() {
         let settings = Settings::default();
-        let ctx = PromptContext::new()
-            .with_cwd("/tmp")
-            .with_shell("zsh");
+        let ctx = PromptContext::new().with_cwd("/tmp").with_shell("zsh");
 
         let instructions = assemble_instructions(&settings, &ctx);
         // Should have: base + environment = at least 2 messages
         assert!(instructions.system_messages.len() >= 2); // base + env
-        // First message is the base instructions
+                                                          // First message is the base instructions
         assert_eq!(instructions.system_messages[0].role, "system");
     }
 
@@ -283,21 +279,16 @@ mod tests {
     #[test]
     fn test_graceful_degradation_no_permissions() {
         let settings = Settings::default();
-        let ctx = PromptContext::new()
-            .with_cwd("/tmp")
-            .with_shell("zsh");
+        let ctx = PromptContext::new().with_cwd("/tmp").with_shell("zsh");
         // No sandbox/approval set
 
         let instructions = assemble_instructions(&settings, &ctx);
         // No permissions layer injected
-        let has_permissions = instructions
-            .system_messages
-            .iter()
-            .any(|m| {
-                m.content
-                    .as_deref()
-                    .is_some_and(|c| c.contains("<permissions_instructions>"))
-            });
+        let has_permissions = instructions.system_messages.iter().any(|m| {
+            m.content
+                .as_deref()
+                .is_some_and(|c| c.contains("<permissions_instructions>"))
+        });
         assert!(!has_permissions);
     }
 }

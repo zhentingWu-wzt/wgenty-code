@@ -36,7 +36,9 @@ impl Platform {
     /// Whether this platform has a kernel-level sandbox mechanism available.
     pub fn has_kernel_sandbox(&self) -> bool {
         match self {
-            Platform::MacOS => cfg!(target_os = "macos") && std::path::Path::new("/usr/bin/sandbox-exec").exists(),
+            Platform::MacOS => {
+                cfg!(target_os = "macos") && std::path::Path::new("/usr/bin/sandbox-exec").exists()
+            }
             Platform::Linux => cfg!(target_os = "linux") && Self::linux_cgroup_v2_available(),
             Platform::Windows => cfg!(target_os = "windows"),
             Platform::Unknown => false,

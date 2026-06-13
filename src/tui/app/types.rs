@@ -81,13 +81,22 @@ pub enum AppEvent {
     /// An SSE reasoning delta arrived
     ReasoningDelta(String),
     /// Streaming completed
-    StreamDone { finish_reason: String },
+    StreamDone {
+        finish_reason: String,
+    },
     /// LLM started generating tool calls (bridge between text and execution)
     PreparingTools,
     /// A tool call started
-    ToolStart { name: String, args: serde_json::Value },
+    ToolStart {
+        name: String,
+        args: serde_json::Value,
+    },
     /// A tool result arrived
-    ToolResult { name: String, args: serde_json::Value, content: String },
+    ToolResult {
+        name: String,
+        args: serde_json::Value,
+        content: String,
+    },
     /// Permission is needed
     PermissionRequired {
         reason: String,
@@ -106,9 +115,13 @@ pub enum AppEvent {
     /// A turn (user-input → final response) completed; start next queued input if any
     TurnComplete,
     /// A turn began processing
-    TurnStarted { turn_id: TurnId },
+    TurnStarted {
+        turn_id: TurnId,
+    },
     /// A turn was aborted before normal completion
-    TurnAborted { reason: TurnAbortReason },
+    TurnAborted {
+        reason: TurnAbortReason,
+    },
     /// Tick for periodic refresh
     Tick,
     /// Toggle session popup

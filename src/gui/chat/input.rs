@@ -1,10 +1,8 @@
 //! Chat input area — text editor, send button, message conversion.
 
-use super::ChatPanel;
 use super::super::chat_types::{ChatMessage, MessageRole};
-use egui::{
-    Color32, CornerRadius, Frame, Margin, RichText, Stroke, TextEdit, Ui, Vec2,
-};
+use super::ChatPanel;
+use egui::{Color32, CornerRadius, Frame, Margin, RichText, Stroke, TextEdit, Ui, Vec2};
 
 impl ChatPanel {
     pub(super) fn render_input_area(&mut self, ui: &mut Ui, theme: &super::super::Theme) {
