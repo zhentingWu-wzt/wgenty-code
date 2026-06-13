@@ -48,6 +48,14 @@ impl App {
                     });
                     return;
                 }
+                // Ctrl+Shift+T toggles subagent monitor panel
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.modifiers.contains(KeyModifiers::SHIFT)
+                    && (key.code == KeyCode::Char('T') || key.code == KeyCode::Char('t'))
+                {
+                    let _ = self.event_tx.send(AppEvent::ToggleSubagentPanel);
+                    return;
+                }
                 // Permission panel key handling — delegated to Component
                 if self.permission_state.handle_key(&key) {
                     return;
