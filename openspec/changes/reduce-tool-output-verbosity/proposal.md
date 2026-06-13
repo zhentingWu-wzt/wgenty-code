@@ -12,6 +12,9 @@ Searched (grep) and Read (file_read) tools produce excessively verbose output in
 - **Reduced default `max_chars`**: Lower from 12000 to 6000.
 - **Per-line truncation**: Lines exceeding 300 characters are truncated.
 
+### Stuck Detector Signature Fix
+- **Include argument values in signatures**: The stuck detector previously only compared parameter names (keys), so `file_read("a.rs")` and `file_read("b.rs")` had identical signatures. Now includes values for correct deduplication.
+
 ## Capabilities
 
 ### New Capabilities
@@ -26,3 +29,4 @@ Searched (grep) and Read (file_read) tools produce excessively verbose output in
 - `src/tools/search/grep.rs`: Add `files_with_matches` mode, line truncation at 200 chars
 - `src/tools/search/search.rs`: Add `files_with_matches` input parameter schema
 - `src/tools/filesystem/file_read.rs`: Lower default max_chars (12000→6000), add per-line truncation at 300 chars
+- `src/utils/stuck_detector.rs`: Fix signature comparison to include argument values, not just keys
