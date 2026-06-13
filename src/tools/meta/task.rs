@@ -9,6 +9,7 @@
 //! - `explore`                   — codebase search and analysis
 //! - `plan`                      — architecture planning and breakdown
 
+use crate::agent::progress::{ProgressCallback, SubagentProgress, SubagentStatus};
 use crate::api::ApiClient;
 use crate::config::Settings;
 use crate::teams::subagent_loop::run_subagent_loop;
@@ -17,6 +18,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 
 /// Detect whether a prompt is complex enough to warrant RLM delegation.
@@ -67,6 +69,8 @@ pub struct TaskTool {
     background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
     /// Tracks currently running subagents to enforce max_concurrent limit.
     active_count: Arc<AtomicUsize>,
+    /// Shared store for subagent progress updates (keyed by node_id).
+    progress_store: Arc<RwLock<HashMap<String, SubagentProgress>>>,
 }
 
 impl TaskTool {
@@ -74,13 +78,35 @@ impl TaskTool {
         settings: Settings,
         tool_registry: std::sync::Weak<crate::tools::ToolRegistry>,
         background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
+        progress_store: Arc<RwLock<HashMap<String, SubagentProgress>>>,
     ) -> Self {
         Self {
             settings,
             tool_registry,
             background_manager,
             active_count: Arc::new(AtomicUsize::new(0)),
+            progress_store,
         }
+    }
+
+    /// Create a ProgressCallback that writes to the shared progress store.
+    fn make_progress_callback(
+        store: Arc<RwLock<HashMap<String, SubagentProgress>>>,
+        node_id: String,
+        parent_id: Option<String>,
+        label: String,
+    ) -> ProgressCallback {
+        Arc::new(move |mut progress: SubagentProgress| {
+            progress.node_id = node_id.clone();
+            progress.parent_id = parent_id.clone();
+            progress.label = label.clone();
+            let store = store.clone();
+            let node_id = node_id.clone();
+            tokio::spawn(async move {
+                let mut store = store.write().await;
+                store.insert(node_id, progress);
+            });
+        })
     }
 }
 
@@ -145,6 +171,24 @@ impl Tool for TaskTool {
             background = background,
             "TaskTool: executing subagent"
         );
+
+        // Register root node in progress store.
+        let root_node_id = uuid::Uuid::new_v4().to_string();
+        {
+            let mut store = self.progress_store.write().await;
+            store.insert(root_node_id.clone(), SubagentProgress {
+                node_id: root_node_id.clone(),
+                parent_id: None,
+                label: format!("task: {}", description),
+                status: SubagentStatus::Running,
+                round: None,
+                max_rounds: None,
+                current_tool: None,
+                started_at: chrono::Utc::now().timestamp_millis(),
+                elapsed_ms: 0,
+                metadata: None,
+            });
+        }
 
         // Upgrade the Weak reference to the tool registry.
         let tool_registry = self.tool_registry.upgrade().ok_or_else(|| ToolError {
@@ -267,6 +311,29 @@ impl Tool for TaskTool {
             let api_client_bg = ApiClient::new(self.settings.clone());
             let timeout_secs = self.settings.subagent_timeout_secs;
 
+            let subagent_node_id = uuid::Uuid::new_v4().to_string();
+            {
+                let mut store = self.progress_store.write().await;
+                store.insert(subagent_node_id.clone(), SubagentProgress {
+                    node_id: subagent_node_id.clone(),
+                    parent_id: Some(root_node_id.clone()),
+                    label: format!("subagent: {}", desc),
+                    status: SubagentStatus::Pending,
+                    round: None,
+                    max_rounds: Some(30),
+                    current_tool: None,
+                    started_at: chrono::Utc::now().timestamp_millis(),
+                    elapsed_ms: 0,
+                    metadata: None,
+                });
+            }
+            let cb = Self::make_progress_callback(
+                self.progress_store.clone(),
+                subagent_node_id.clone(),
+                Some(root_node_id.clone()),
+                format!("subagent: {}", desc),
+            );
+
             tokio::spawn(async move {
                 let result = run_subagent_loop(
                     &api_client_bg,
@@ -276,7 +343,7 @@ impl Tool for TaskTool {
                     &tools,
                     30,
                     timeout_secs,
-                    None,
+                    Some(cb),
                 )
                 .await;
 
@@ -307,6 +374,29 @@ impl Tool for TaskTool {
             })
         } else {
             // ── Synchronous mode: block until complete ─────────────────────
+            let subagent_node_id = uuid::Uuid::new_v4().to_string();
+            {
+                let mut store = self.progress_store.write().await;
+                store.insert(subagent_node_id.clone(), SubagentProgress {
+                    node_id: subagent_node_id.clone(),
+                    parent_id: Some(root_node_id.clone()),
+                    label: format!("subagent: {}", description),
+                    status: SubagentStatus::Pending,
+                    round: None,
+                    max_rounds: Some(30),
+                    current_tool: None,
+                    started_at: chrono::Utc::now().timestamp_millis(),
+                    elapsed_ms: 0,
+                    metadata: None,
+                });
+            }
+            let cb = Self::make_progress_callback(
+                self.progress_store.clone(),
+                subagent_node_id.clone(),
+                Some(root_node_id.clone()),
+                format!("subagent: {}", description),
+            );
+
             let result = if is_complex_task(&full_prompt, use_small) {
                 tracing::info!(
                     target: "rlm",
@@ -318,7 +408,7 @@ impl Tool for TaskTool {
                     tool_registry.clone(),
                     description,
                     prompt,
-                    None,
+                    Some(cb),
                 )
                 .await
                 .map(|r| r.aggregated)
@@ -331,7 +421,7 @@ impl Tool for TaskTool {
                     &allowed_tools,
                     30,
                     self.settings.subagent_timeout_secs,
-                    None,
+                    Some(cb),
                 )
                 .await
             };
