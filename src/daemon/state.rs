@@ -10,7 +10,7 @@ use crate::teams::mailbox::TeamManager;
 use crate::tools::execution::background::{BackgroundManager, BackgroundTool};
 use crate::tools::meta::team_message::TeamMessageTool;
 use crate::tools::{CheckpointManager, ToolExecutor, ToolRegistry};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -41,6 +41,8 @@ pub struct DaemonState {
     pub team_manager: Option<Arc<TeamManager>>,
     pub session_manager: SessionManager,
     sessions: Arc<RwLock<std::collections::HashMap<String, SessionRules>>>,
+    pub subagent_progress:
+        Arc<RwLock<HashMap<String, crate::agent::progress::SubagentProgress>>>,
 }
 
 impl DaemonState {
@@ -70,6 +72,9 @@ impl DaemonState {
             Arc::new(loader)
         };
 
+        let progress_store: Arc<RwLock<HashMap<String, crate::agent::progress::SubagentProgress>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
         // Use Arc::new_cyclic so the TaskTool holds a valid Weak<ToolRegistry>
         // that points to the *final* Arc allocation — not a temporary one that
         // gets dropped (which would leave a dangling weak reference).
@@ -96,12 +101,14 @@ impl DaemonState {
                 app_state.settings.clone(),
                 weak_reg.clone(),
                 bg_manager.clone(),
+                progress_store.clone(),
             );
             registry.register(Box::new(task_tool));
 
             let rlm_tool = crate::tools::meta::rlm::RlmDelegateTool::new(
                 app_state.settings.clone(),
                 weak_reg.clone(),
+                progress_store.clone(),
             );
             registry.register(Box::new(rlm_tool));
 
@@ -138,6 +145,7 @@ impl DaemonState {
             team_manager,
             session_manager,
             sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            subagent_progress: progress_store,
         }
     }
 
