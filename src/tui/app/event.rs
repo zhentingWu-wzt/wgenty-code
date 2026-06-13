@@ -530,6 +530,7 @@ impl App {
         });
     }
 
+    #[allow(dead_code)]
     fn push_permission_result(&mut self, reason: &str, decision: &str) {
         self.committed_messages.push(UIMessage {
             role: MessageRole::System,
