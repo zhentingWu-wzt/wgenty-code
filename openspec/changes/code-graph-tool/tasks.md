@@ -1,8 +1,8 @@
 ## 1. 项目基础设施
 
-- [ ] 1.1 添加 tree-sitter、tree-sitter-rust、rusqlite 依赖到 Cargo.toml
-- [ ] 1.2 创建 `src/tools/codegraph/` 模块目录结构和 `mod.rs` 入口
-- [ ] 1.3 在 `src/tools/mod.rs` 中注册 codegraph 模块
+- [x] 1.1 添加 tree-sitter、tree-sitter-rust、rusqlite 依赖到 Cargo.toml
+- [x] 1.2 创建 `src/tools/codegraph/` 模块目录结构和 `mod.rs` 入口
+- [x] 1.3 在 `src/tools/mod.rs` 中注册 codegraph 模块
 
 ## 2. 数据模型与存储层
 
