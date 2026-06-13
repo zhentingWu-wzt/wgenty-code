@@ -149,7 +149,7 @@ git commit -m "feat(codegraph): add dependencies, module scaffold"
 **Files:**
 - Create: `src/tools/codegraph/types.rs`
 
-- [ ] **Step 2.1: 定义 `SymbolKind` 枚举**
+- [x] **Step 2.1: 定义 `SymbolKind` 枚举**
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -204,7 +204,7 @@ impl SymbolKind {
 }
 ```
 
-- [ ] **Step 2.2: 定义 `Visibility` 枚举**
+- [x] **Step 2.2: 定义 `Visibility` 枚举**
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,7 +236,7 @@ impl Visibility {
 }
 ```
 
-- [ ] **Step 2.3: 定义核心结构体：`Symbol`、`Reference`、`Relationship`**
+- [x] **Step 2.3: 定义核心结构体：`Symbol`、`Reference`、`Relationship`**
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -361,7 +361,7 @@ impl Confidence {
 }
 ```
 
-- [ ] **Step 2.4: 编写并运行单元测试（JSON 往返 + 枚举映射）**
+- [x] **Step 2.4: 编写并运行单元测试（JSON 往返 + 枚举映射）**
 
 追加到 `types.rs` 底部：
 
@@ -428,7 +428,7 @@ cargo test -- tools::codegraph::types::tests 2>&1
 ```
 预期：4 个测试通过。
 
-- [ ] **Step 2.5: 提交**
+- [x] **Step 2.5: 提交**
 
 ```bash
 git add src/tools/codegraph/types.rs
