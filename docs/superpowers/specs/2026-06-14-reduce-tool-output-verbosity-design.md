@@ -2,6 +2,8 @@
 comet_change: reduce-tool-output-verbosity
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-13-reduce-tool-output-verbosity
+status: final
 ---
 
 # Technical Design: Reduce Tool Output Verbosity

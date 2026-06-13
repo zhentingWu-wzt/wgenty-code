@@ -2,6 +2,7 @@
 change: reduce-tool-output-verbosity
 design-doc: docs/superpowers/specs/2026-06-14-reduce-tool-output-verbosity-design.md
 base-ref: cd36fd2d7f664fea53cc4f82ca48d222ff4a4ca3
+archived-with: 2026-06-13-reduce-tool-output-verbosity
 ---
 
 # Implementation Plan: Reduce Tool Output Verbosity
