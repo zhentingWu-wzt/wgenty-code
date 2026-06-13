@@ -146,7 +146,7 @@ impl Cli {
         // Create client and app
         let client = DaemonClient::new(base_url);
         let session_id = uuid::Uuid::new_v4().to_string();
-                // Create shared settings handle (loaded immediately)
+        // Create shared settings handle (loaded immediately)
         let settings_lock = crate::config::watcher::create_handle();
         let mut app = App::new(client, session_id, settings_lock.clone());
 
@@ -780,5 +780,4 @@ impl Cli {
         }
         Ok(())
     }
-
 }

@@ -68,7 +68,11 @@ impl ToolExecutor {
     /// Execute a tool call directly (policy already passed).
     /// Run a guardian security check before executing a high-risk tool.
     /// Returns Some(decision) if the tool was blocked by guardian.
-    pub fn guardian_check(&self, tool_name: &str, input: &serde_json::Value) -> Option<GuardianDecision> {
+    pub fn guardian_check(
+        &self,
+        tool_name: &str,
+        input: &serde_json::Value,
+    ) -> Option<GuardianDecision> {
         if tool_name != "execute_command" && tool_name != "exec_command" {
             return None;
         }

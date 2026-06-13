@@ -139,10 +139,7 @@ impl WebFetchTool {
     /// Store fetched text in the cache.
     fn cache_put(&self, url: &str, text: &str) {
         let mut cache = self.cache.lock().unwrap();
-        cache.put(
-            Self::cache_key(url),
-            CacheEntry::new(text.to_string()),
-        );
+        cache.put(Self::cache_key(url), CacheEntry::new(text.to_string()));
     }
 
     /// Validate URL: only allow http/https, reject private/file schemes.
@@ -154,10 +151,7 @@ impl WebFetchTool {
         }
 
         if !url_lower.starts_with("https://") && !url_lower.starts_with("http://") {
-            return Err(format!(
-                "Only http/https URLs are supported. Got: {}",
-                url
-            ));
+            return Err(format!("Only http/https URLs are supported. Got: {}", url));
         }
 
         // Reject localhost variants
@@ -299,7 +293,11 @@ impl WebFetchTool {
         let content_start = html[start..].find('>')? + start + 1;
         let end = html[content_start..].find("</title>")? + content_start;
         let title = html[content_start..end].trim().to_string();
-        if title.is_empty() { None } else { Some(title) }
+        if title.is_empty() {
+            None
+        } else {
+            Some(title)
+        }
     }
 
     /// Summarize extracted text via a small model (Haiku layer).
@@ -354,7 +352,10 @@ impl WebFetchTool {
                 .next()
                 .and_then(|c| c.message.content),
             Err(e) => {
-                tracing::warn!("WebFetch summarization failed: {}, falling back to raw text", e);
+                tracing::warn!(
+                    "WebFetch summarization failed: {}, falling back to raw text",
+                    e
+                );
                 None
             }
         }
@@ -407,7 +408,9 @@ impl Tool for WebFetchTool {
             code: Some("missing_parameter".to_string()),
         })?;
 
-        let user_prompt = input["prompt"].as_str().unwrap_or("extract key information");
+        let user_prompt = input["prompt"]
+            .as_str()
+            .unwrap_or("extract key information");
         let max_chars = input["max_chars"].as_u64().unwrap_or(5000) as usize;
 
         // Validate URL safety
@@ -432,7 +435,8 @@ impl Tool for WebFetchTool {
                     "url": url,
                     "cached": true,
                     "summary": cached,
-                }).to_string(),
+                })
+                .to_string(),
                 metadata,
             });
         }
@@ -447,7 +451,8 @@ impl Tool for WebFetchTool {
                         "success": false,
                         "error": format!("Request failed: {}", e),
                         "url": url,
-                    }).to_string(),
+                    })
+                    .to_string(),
                     metadata: std::collections::HashMap::new(),
                 });
             }
@@ -471,7 +476,8 @@ impl Tool for WebFetchTool {
                         "error": format!("Failed to read response body: {}", e),
                         "url": url,
                         "status_code": status_code,
-                    }).to_string(),
+                    })
+                    .to_string(),
                     metadata: std::collections::HashMap::new(),
                 });
             }
@@ -482,7 +488,11 @@ impl Tool for WebFetchTool {
 
         // Truncate raw text before summarization
         let truncated = if raw_text.len() > max_chars {
-            format!("{}...\n[Truncated at {} chars]", &raw_text[..max_chars], max_chars)
+            format!(
+                "{}...\n[Truncated at {} chars]",
+                &raw_text[..max_chars],
+                max_chars
+            )
         } else {
             raw_text.clone()
         };
@@ -517,7 +527,8 @@ impl Tool for WebFetchTool {
                 "content_type": content_type,
                 "summary": summary,
                 "whitelisted": whitelisted,
-            }).to_string(),
+            })
+            .to_string(),
             metadata,
         })
     }
@@ -564,7 +575,10 @@ mod tests {
     #[test]
     fn test_extract_title() {
         let html = "<html><head><title>My Page</title></head><body></body></html>";
-        assert_eq!(WebFetchTool::extract_title(html), Some("My Page".to_string()));
+        assert_eq!(
+            WebFetchTool::extract_title(html),
+            Some("My Page".to_string())
+        );
     }
 
     #[test]
@@ -577,15 +591,25 @@ mod tests {
 
     #[test]
     fn test_domain_whitelist_hit() {
-        assert!(WebFetchTool::is_whitelisted("https://docs.rs/tokio/latest/tokio/"));
-        assert!(WebFetchTool::is_whitelisted("https://github.com/rust-lang/rust"));
-        assert!(WebFetchTool::is_whitelisted("https://developer.mozilla.org/en-US/docs/Web/JavaScript"));
-        assert!(WebFetchTool::is_whitelisted("https://crates.io/crates/serde"));
+        assert!(WebFetchTool::is_whitelisted(
+            "https://docs.rs/tokio/latest/tokio/"
+        ));
+        assert!(WebFetchTool::is_whitelisted(
+            "https://github.com/rust-lang/rust"
+        ));
+        assert!(WebFetchTool::is_whitelisted(
+            "https://developer.mozilla.org/en-US/docs/Web/JavaScript"
+        ));
+        assert!(WebFetchTool::is_whitelisted(
+            "https://crates.io/crates/serde"
+        ));
     }
 
     #[test]
     fn test_domain_whitelist_miss() {
-        assert!(!WebFetchTool::is_whitelisted("https://unknown-blog.example.com/post"));
+        assert!(!WebFetchTool::is_whitelisted(
+            "https://unknown-blog.example.com/post"
+        ));
         assert!(!WebFetchTool::is_whitelisted("https://random-site.io/page"));
     }
 

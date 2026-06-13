@@ -64,6 +64,36 @@ impl App {
                     let _ = self.event_tx.send(AppEvent::ToggleSubagentPanel);
                     return;
                 }
+                // If subagent panel is visible, route keys to it
+                if self.subagent_panel_visible {
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.subagent_panel_visible = false;
+                            return;
+                        }
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            self.subagent_panel_state.move_down(&self.subagent_tree);
+                            return;
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            self.subagent_panel_state.move_up(&self.subagent_tree);
+                            return;
+                        }
+                        KeyCode::Enter => {
+                            self.subagent_panel_state.toggle_expand(&self.subagent_tree);
+                            return;
+                        }
+                        KeyCode::Char('g') => {
+                            self.subagent_panel_state.move_first(&self.subagent_tree);
+                            return;
+                        }
+                        KeyCode::Char('G') => {
+                            self.subagent_panel_state.move_last(&self.subagent_tree);
+                            return;
+                        }
+                        _ => {} // pass through
+                    }
+                }
                 // Permission panel key handling — delegated to Component
                 if self.permission_state.handle_key(&key) {
                     return;

@@ -6,10 +6,10 @@
 //! This allows multiple user inputs to be queued while one is processing:
 //! each pending input becomes a new AgentLoop that inherits the accumulated history.
 
+mod compaction;
 mod core;
 mod stream;
 mod tool_dispatch;
-mod compaction;
 
 use crate::api::ChatMessage;
 use crate::tui::app::AppEvent;

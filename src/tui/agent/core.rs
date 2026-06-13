@@ -13,15 +13,17 @@ impl AgentLoop {
         let warn_rounds = max_rounds * 8 / 10;
         loop {
             if llm_rounds >= max_rounds {
-                let _ = self.event_tx.send(AppEvent::StreamError(
-                    format!("Agent exceeded {} LLM rounds", max_rounds)
-                ));
+                let _ = self.event_tx.send(AppEvent::StreamError(format!(
+                    "Agent exceeded {} LLM rounds",
+                    max_rounds
+                )));
                 return Err(format!("Exceeded {} LLM rounds", max_rounds));
             }
             if llm_rounds == warn_rounds {
                 tracing::warn!(
                     rounds = llm_rounds,
-                    "Approaching max LLM rounds ({})", max_rounds
+                    "Approaching max LLM rounds ({})",
+                    max_rounds
                 );
             }
 
@@ -53,15 +55,26 @@ impl AgentLoop {
 
             llm_rounds += 1;
 
-            // Estimate tokens consumed this round (prompt + completion)
-            let input_est: usize = messages.iter()
-                .map(|m| m.content.as_deref().unwrap_or("").len())
-                .sum::<usize>() * 2 / 3; // ~1.5 chars per token
-            let output_est: usize = (result.content.len()
-                + result.tool_calls.iter()
-                    .map(|tc| tc.function.arguments.len())
-                    .sum::<usize>()) * 2 / 3;
-            self.token_counter.add(input_est + output_est);
+            // Token accounting: prefer API-reported usage, fall back to character estimation.
+            if let Some(ref usage) = result.usage {
+                self.token_counter.add(usage.total_tokens);
+            } else {
+                // Fallback: estimate from character count (~4 chars per token for English,
+                // conservative so we don't undercount).
+                let input_est: usize = messages
+                    .iter()
+                    .map(|m| m.content.as_deref().unwrap_or("").len())
+                    .sum::<usize>()
+                    / 4;
+                let output_est: usize = (result.content.len()
+                    + result
+                        .tool_calls
+                        .iter()
+                        .map(|tc| tc.function.arguments.len())
+                        .sum::<usize>())
+                    / 4;
+                self.token_counter.add(input_est + output_est);
+            }
 
             // Check budget after accounting
             if self.token_counter.is_exhausted() {
@@ -88,9 +101,20 @@ impl AgentLoop {
 
                 // Fire all task tools in parallel when every executable tool is a task.
                 let all_task = result.tool_calls.iter().all(|tc| {
-                    matches!(tc.function.name.as_str(), "task" | "TodoWrite" | "ask_user_question" | "update_plan" | "compact")
-                }) && result.tool_calls.iter().any(|tc| tc.function.name == "task")
-                  && result.tool_calls.iter().filter(|tc| tc.function.name == "task").count() > 1;
+                    matches!(
+                        tc.function.name.as_str(),
+                        "task" | "TodoWrite" | "ask_user_question" | "update_plan" | "compact"
+                    )
+                }) && result
+                    .tool_calls
+                    .iter()
+                    .any(|tc| tc.function.name == "task")
+                    && result
+                        .tool_calls
+                        .iter()
+                        .filter(|tc| tc.function.name == "task")
+                        .count()
+                        > 1;
 
                 if all_task {
                     // ── Parallel task execution ──────────────────────────
@@ -105,19 +129,22 @@ impl AgentLoop {
                             "TodoWrite" => used_todo = true,
                             "ask_user_question" => {
                                 let (args, _) = crate::utils::lenient_json::parse_tool_args_lenient(
-                                    &tc.function.arguments, &tc.function.name,
+                                    &tc.function.arguments,
+                                    &tc.function.name,
                                 );
                                 let result = self.handle_ask_user_question(&args).await;
                                 history.lock().await.push(ChatMessage::tool(&tc.id, result));
                             }
                             "update_plan" => {
                                 let (args, _) = crate::utils::lenient_json::parse_tool_args_lenient(
-                                    &tc.function.arguments, &tc.function.name,
+                                    &tc.function.arguments,
+                                    &tc.function.name,
                                 );
                                 let _ = event_tx.send(AppEvent::PlanUpdate(args.clone()));
                                 history.lock().await.push(ChatMessage::tool(
                                     &tc.id,
-                                    serde_json::json!({"success":true,"message":"Plan updated"}).to_string(),
+                                    serde_json::json!({"success":true,"message":"Plan updated"})
+                                        .to_string(),
                                 ));
                             }
                             "compact" => {
@@ -141,7 +168,9 @@ impl AgentLoop {
                     }
 
                     // Collect and fire all task tools in parallel
-                    let task_calls: Vec<_> = result.tool_calls.iter()
+                    let task_calls: Vec<_> = result
+                        .tool_calls
+                        .iter()
                         .filter(|tc| tc.function.name == "task")
                         .collect();
 
@@ -219,7 +248,8 @@ impl AgentLoop {
                                 let mut history = self.conversation_history.lock().await;
                                 history.push(ChatMessage::tool(
                                     &tc.id,
-                                    serde_json::json!({"success":true,"message":"Plan updated"}).to_string(),
+                                    serde_json::json!({"success":true,"message":"Plan updated"})
+                                        .to_string(),
                                 ));
                             }
                             continue;
@@ -254,11 +284,13 @@ impl AgentLoop {
                         });
 
                         // Spawn progress poller for task/delegate tools in sequential path
-                        let poll_handle = if (tc.function.name == "task" || tc.function.name == "delegate")
+                        let poll_handle = if (tc.function.name == "task"
+                            || tc.function.name == "delegate")
                             && self.event_tx.is_closed() == false
                         {
                             let tx = self.event_tx.clone();
                             let client = self.client.clone();
+                            let session_id = self.session_id.clone();
                             Some(tokio::spawn(async move {
                                 let start = tokio::time::Instant::now();
                                 let max_duration = Duration::from_secs(120);
@@ -267,7 +299,7 @@ impl AgentLoop {
                                         break;
                                     }
                                     tokio::time::sleep(Duration::from_millis(500)).await;
-                                    match client.poll_subagent_progress().await {
+                                    match client.poll_subagent_progress(&session_id).await {
                                         Ok(map) => {
                                             for (_id, progress) in map {
                                                 let _ = tx.send(AppEvent::SubagentUpdate(progress));
@@ -289,7 +321,9 @@ impl AgentLoop {
                         let exec_result = match tokio::time::timeout(
                             tool_timeout,
                             self.execute_tool_with_permission(&tc.function.name, args.clone()),
-                        ).await {
+                        )
+                        .await
+                        {
                             Ok(result) => result,
                             Err(_elapsed) => {
                                 let msg = format!(
@@ -373,12 +407,18 @@ impl AgentLoop {
             if self.plan_mode {
                 let confirmation = "\n\n---\nPlan generated. Reply with **execute** to proceed, or describe any changes you'd like.";
                 if let Some(ref planner) = self.planner_client {
-                    let _ = self.event_tx.send(AppEvent::ContentDelta("(generating plan)...".to_string()));
+                    let _ = self
+                        .event_tx
+                        .send(AppEvent::ContentDelta("(generating plan)...".to_string()));
                     match self.plan_with_model(planner, &messages).await {
                         Ok(plan) => {
                             let _ = self.event_tx.send(AppEvent::ContentDelta(plan.clone()));
-                            let _ = self.event_tx.send(AppEvent::ContentDelta(confirmation.to_string()));
-                            let _ = self.event_tx.send(AppEvent::StreamDone { finish_reason: "stop".to_string() });
+                            let _ = self
+                                .event_tx
+                                .send(AppEvent::ContentDelta(confirmation.to_string()));
+                            let _ = self.event_tx.send(AppEvent::StreamDone {
+                                finish_reason: "stop".to_string(),
+                            });
                             {
                                 let mut history = self.conversation_history.lock().await;
                                 history.push(ChatMessage {
@@ -398,7 +438,9 @@ impl AgentLoop {
                 } else {
                     // Content already streamed via ContentDelta during stream_with_retry.
                     // Just append confirmation prompt and finish.
-                    let _ = self.event_tx.send(AppEvent::ContentDelta(confirmation.to_string()));
+                    let _ = self
+                        .event_tx
+                        .send(AppEvent::ContentDelta(confirmation.to_string()));
                     {
                         let mut history = self.conversation_history.lock().await;
                         history.push(ChatMessage {
@@ -409,7 +451,9 @@ impl AgentLoop {
                             tool_call_id: None,
                         });
                     }
-                    let _ = self.event_tx.send(AppEvent::StreamDone { finish_reason: result.finish_reason.clone() });
+                    let _ = self.event_tx.send(AppEvent::StreamDone {
+                        finish_reason: result.finish_reason.clone(),
+                    });
                 }
                 let _ = self.event_tx.send(AppEvent::SaveSession);
                 return Ok(());

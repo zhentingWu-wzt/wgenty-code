@@ -90,6 +90,7 @@ impl ApiClient {
             stream: false,
             temperature: 0.7,
             tools,
+            stream_options: None,
         };
 
         let url = format!("{}/v1/chat/completions", self.get_base_url());
@@ -105,9 +106,10 @@ impl ApiClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_else(|e| {
-                format!("[failed to read error body: {}]", e)
-            });
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("[failed to read error body: {}]", e));
             return Err(anyhow::anyhow!("API error ({}): {}", status, body));
         }
 
@@ -189,6 +191,9 @@ impl ApiClient {
             stream: true,
             temperature: 0.7,
             tools,
+            stream_options: Some(StreamOptions {
+                include_usage: true,
+            }),
         };
 
         let url = format!("{}/v1/chat/completions", self.get_base_url());
@@ -285,10 +290,7 @@ impl ApiClient {
                                     // chunk is already formatted as "data: {...}" by
                                     // process_event(); just append the SSE double-newline
                                     let sse = format!("{}\n\n", chunk);
-                                    if tx
-                                        .unbounded_send(Ok(bytes::Bytes::from(sse)))
-                                        .is_err()
-                                    {
+                                    if tx.unbounded_send(Ok(bytes::Bytes::from(sse))).is_err() {
                                         return; // receiver dropped
                                     }
                                 }
@@ -433,6 +435,13 @@ struct ChatRequest {
     temperature: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ToolDefinition>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct StreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -452,7 +461,7 @@ pub struct Choice {
     pub finish_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Usage {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
@@ -466,6 +475,8 @@ pub struct StreamChunk {
     pub created: i64,
     pub model: String,
     pub choices: Vec<StreamChoice>,
+    #[serde(default)]
+    pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

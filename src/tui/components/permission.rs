@@ -57,7 +57,11 @@ impl PermissionState {
         let (reason, _rule) = self.dismiss();
         self.responder.take().map(|r| {
             let _ = r.0.unwrap(); // note: actual send happens in caller
-            (reason, "Allowed once".to_string(), PermissionResponse::AllowOnce)
+            (
+                reason,
+                "Allowed once".to_string(),
+                PermissionResponse::AllowOnce,
+            )
         })
     }
 }

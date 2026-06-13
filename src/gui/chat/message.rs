@@ -1,13 +1,11 @@
 //! Chat message rendering — avatars, bubbles, markdown, tool calls, indicators.
 
-use super::ChatPanel;
 use super::super::chat_types::{Attachment, ChatMessage, MessageRole};
 use super::super::content_parser::{split_by_code_blocks, ContentPart};
 use super::super::syntax_highlight::format_code_block;
 use super::super::tool_calls::{ToolCall, ToolCallStatus};
-use egui::{
-    Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke, Ui, Vec2,
-};
+use super::ChatPanel;
+use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke, Ui, Vec2};
 
 impl ChatPanel {
     pub(super) fn render_message(
@@ -122,7 +120,12 @@ impl ChatPanel {
             });
     }
 
-    fn render_user_message_bubble(&self, ui: &mut Ui, message: &ChatMessage, theme: &super::super::Theme) {
+    fn render_user_message_bubble(
+        &self,
+        ui: &mut Ui,
+        message: &ChatMessage,
+        theme: &super::super::Theme,
+    ) {
         let max_width = 600.0f32.min(ui.available_width() * 0.8);
 
         Frame::NONE
@@ -196,17 +199,16 @@ impl ChatPanel {
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         for line in &preview_lines {
-                            ui.label(
-                                RichText::new(*line)
-                                    .size(14.0)
-                                    .color(theme.text_color()),
-                            );
+                            ui.label(RichText::new(*line).size(14.0).color(theme.text_color()));
                         }
                         ui.label(
-                            RichText::new(format!("... ({} lines total, click to expand)", total_lines))
-                                .size(12.0)
-                                .color(theme.muted_text_color())
-                                .italics(),
+                            RichText::new(format!(
+                                "... ({} lines total, click to expand)",
+                                total_lines
+                            ))
+                            .size(12.0)
+                            .color(theme.muted_text_color())
+                            .italics(),
                         );
                     });
             } else {
@@ -416,7 +418,12 @@ impl ChatPanel {
         RichText::new(text).color(theme.text_color())
     }
 
-    fn render_tool_call_card(&self, ui: &mut Ui, tool_call: &ToolCall, theme: &super::super::Theme) {
+    fn render_tool_call_card(
+        &self,
+        ui: &mut Ui,
+        tool_call: &ToolCall,
+        theme: &super::super::Theme,
+    ) {
         // Use the tool_calls module rendering
         // This is a simplified version inline here
         let (icon, title, border_color) = match tool_call.name.as_str() {

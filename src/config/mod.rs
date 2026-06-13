@@ -326,8 +326,12 @@ impl Settings {
             "small_model_api_key" => settings.small_model_api_key = Some(value.to_string()),
             "small_model_appkey" => settings.small_model_appkey = Some(value.to_string()),
             "max_subagent_depth" => settings.max_subagent_depth = value.parse().unwrap_or(3),
-            "max_concurrent_subagents" => settings.max_concurrent_subagents = value.parse().unwrap_or(5),
-            "subagent_timeout_secs" => settings.subagent_timeout_secs = value.parse().unwrap_or(240),
+            "max_concurrent_subagents" => {
+                settings.max_concurrent_subagents = value.parse().unwrap_or(5)
+            }
+            "subagent_timeout_secs" => {
+                settings.subagent_timeout_secs = value.parse().unwrap_or(240)
+            }
             "rlm_retry_enabled" => settings.rlm_retry_enabled = value.parse().unwrap_or(true),
             "rlm_max_replan_cycles" => settings.rlm_max_replan_cycles = value.parse().unwrap_or(2),
             "token_budget_k" => settings.token_budget_k = value.parse().unwrap_or(0),

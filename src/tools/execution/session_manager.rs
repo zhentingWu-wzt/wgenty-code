@@ -10,7 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{Mutex, RwLock};
 
-use crate::sandbox::{SandboxManager, SandboxProfile, SandboxConfig, SecurityLevel};
+use crate::sandbox::{SandboxConfig, SandboxManager, SandboxProfile, SecurityLevel};
 
 pub struct CommandSessionManager {
     sandbox: Option<Arc<SandboxManager>>,
@@ -102,7 +102,11 @@ impl CommandSessionManager {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Sandbox spawn failed ({}), falling back to direct: {:?}", sb.status().backend_name, e);
+                    tracing::warn!(
+                        "Sandbox spawn failed ({}), falling back to direct: {:?}",
+                        sb.status().backend_name,
+                        e
+                    );
                     self.spawn_direct(command, &cwd)?
                 }
             }
@@ -143,7 +147,11 @@ impl CommandSessionManager {
     }
 
     /// Direct spawn without sandbox (fallback / no-sandbox mode).
-    fn spawn_direct(&self, command: &str, cwd: &PathBuf) -> Result<tokio::process::Child, ToolError> {
+    fn spawn_direct(
+        &self,
+        command: &str,
+        cwd: &PathBuf,
+    ) -> Result<tokio::process::Child, ToolError> {
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c")
             .arg(command)

@@ -85,9 +85,13 @@ impl App {
         // Subagent monitor panel (overlay, below session to render on top)
         if self.subagent_panel_visible {
             let panel_area = crate::tui::util::centered_rect(60, 70, f.area());
+            let is_executing = self.subagent_tree.count_by_status(SubagentStatus::Running) > 0;
             components::subagent_panel::render(
-                f, panel_area, &self.subagent_tree,
-                self.subagent_tree.count_by_status(SubagentStatus::Running) > 0,
+                f,
+                panel_area,
+                &self.subagent_tree,
+                &self.subagent_panel_state,
+                is_executing,
             );
         }
     }
@@ -111,7 +115,16 @@ impl App {
         let elapsed = self.turn_started_at.map(|t| t.elapsed().as_secs());
         let tokens = self.token_counter.used_tokens();
         let mode = self.mode.label();
-        components::status::render(f, area, &self.phase, &self.session_name, self.spinner_frame, elapsed, tokens, mode);
+        components::status::render(
+            f,
+            area,
+            &self.phase,
+            self.spinner_frame,
+            elapsed,
+            tokens,
+            mode,
+            Some(&self.subagent_tree),
+        );
     }
 
     fn render_input(&self, f: &mut Frame, area: Rect) {
@@ -158,7 +171,12 @@ impl App {
         } else {
             String::new()
         };
-        let text = format!("⏳ Queued ({}){}:\n{}", pending_count, more, lines.join("\n"));
+        let text = format!(
+            "⏳ Queued ({}){}:\n{}",
+            pending_count,
+            more,
+            lines.join("\n")
+        );
         f.render_widget(
             Paragraph::new(Span::styled(text, Style::default().fg(theme::DIM))),
             area,

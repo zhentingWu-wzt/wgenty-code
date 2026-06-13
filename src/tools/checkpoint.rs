@@ -10,13 +10,17 @@ pub struct CheckpointManager {
 
 impl Default for CheckpointManager {
     fn default() -> Self {
-        Self { count: std::sync::atomic::AtomicU32::new(0) }
+        Self {
+            count: std::sync::atomic::AtomicU32::new(0),
+        }
     }
 }
 
 impl CheckpointManager {
     pub fn new() -> Self {
-        Self { count: std::sync::atomic::AtomicU32::new(0) }
+        Self {
+            count: std::sync::atomic::AtomicU32::new(0),
+        }
     }
 
     /// Create a git stash checkpoint. Uses tokio::process::Command to
@@ -75,7 +79,9 @@ impl CheckpointTool {
 
 #[async_trait]
 impl Tool for CheckpointTool {
-    fn name(&self) -> &str { "checkpoint" }
+    fn name(&self) -> &str {
+        "checkpoint"
+    }
     fn description(&self) -> &str {
         "Create a git stash checkpoint before potentially destructive operations. Returns checkpoint ID."
     }
@@ -96,7 +102,10 @@ impl Tool for CheckpointTool {
                 content: format!("Checkpoint created: {}", id),
                 metadata: std::collections::HashMap::new(),
             }),
-            Err(e) => Err(ToolError { message: e, code: None }),
+            Err(e) => Err(ToolError {
+                message: e,
+                code: None,
+            }),
         }
     }
 }
@@ -113,7 +122,9 @@ impl UndoTool {
 
 #[async_trait]
 impl Tool for UndoTool {
-    fn name(&self) -> &str { "undo" }
+    fn name(&self) -> &str {
+        "undo"
+    }
     fn description(&self) -> &str {
         "Undo the most recent checkpoint, restoring files to their previous state via git stash pop."
     }
@@ -127,7 +138,10 @@ impl Tool for UndoTool {
                 content: format!("Checkpoint restored:\n{}", output),
                 metadata: std::collections::HashMap::new(),
             }),
-            Err(e) => Err(ToolError { message: e, code: None }),
+            Err(e) => Err(ToolError {
+                message: e,
+                code: None,
+            }),
         }
     }
 }

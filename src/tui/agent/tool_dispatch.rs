@@ -35,6 +35,7 @@ impl AgentLoop {
         let poll_handle = if is_long_running && event_tx.is_some() {
             let tx = event_tx.as_ref().unwrap().clone();
             let client_clone = client.clone();
+            let sid = session_id.to_string();
             Some(tokio::spawn(async move {
                 let start = tokio::time::Instant::now();
                 let max_poll_duration = Duration::from_secs(120);
@@ -43,7 +44,7 @@ impl AgentLoop {
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(500)).await;
-                    match client_clone.poll_subagent_progress().await {
+                    match client_clone.poll_subagent_progress(&sid).await {
                         Ok(map) => {
                             if map.is_empty() {
                                 continue;
@@ -97,10 +98,7 @@ impl AgentLoop {
             if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
                 let risk = classify_risk(cmd);
                 if risk >= crate::guardian::RiskLevel::Critical {
-                    let msg = format!(
-                        "GUARDIAN BLOCK: critical-risk command rejected. {}",
-                        cmd
-                    );
+                    let msg = format!("GUARDIAN BLOCK: critical-risk command rejected. {}", cmd);
                     tracing::warn!("{}", msg);
                     return format!(r#"{{"success":false,"error":"{}"}}"#, msg);
                 }
@@ -141,7 +139,8 @@ impl AgentLoop {
                 Ok(Ok(crate::tui::app::PermissionResponse::AllowOnce)) => {
                     // Approve → execute → unapprove (one-shot)
                     if self.client.approve_tool(&perm.session_rule).await.is_err() {
-                        return r#"{"success":false,"error":"Failed to approve permission"}"#.to_string();
+                        return r#"{"success":false,"error":"Failed to approve permission"}"#
+                            .to_string();
                     }
 
                     let result = self
@@ -170,7 +169,8 @@ impl AgentLoop {
                 Ok(Ok(crate::tui::app::PermissionResponse::AlwaysAllow)) => {
                     // Approve the rule, then re-execute the tool
                     if self.client.approve_tool(&perm.session_rule).await.is_err() {
-                        return r#"{{"success":false,"error":"Failed to approve permission"}}"#.to_string();
+                        return r#"{{"success":false,"error":"Failed to approve permission"}}"#
+                            .to_string();
                     }
 
                     match self

@@ -25,14 +25,14 @@ use tokio::sync::RwLock;
 pub struct RlmDelegateTool {
     settings: Settings,
     tool_registry: std::sync::Weak<ToolRegistry>,
-    progress_store: Arc<RwLock<HashMap<String, SubagentProgress>>>,
+    progress_store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
 }
 
 impl RlmDelegateTool {
     pub fn new(
         settings: Settings,
         tool_registry: std::sync::Weak<ToolRegistry>,
-        progress_store: Arc<RwLock<HashMap<String, SubagentProgress>>>,
+        progress_store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
     ) -> Self {
         Self {
             settings,
@@ -43,7 +43,8 @@ impl RlmDelegateTool {
 
     /// Create a ProgressCallback that writes to the shared progress store.
     fn make_progress_callback(
-        store: Arc<RwLock<HashMap<String, SubagentProgress>>>,
+        store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
+        session_id: String,
         node_id: String,
         parent_id: Option<String>,
         label: String,
@@ -54,9 +55,10 @@ impl RlmDelegateTool {
             progress.label = label.clone();
             let store = store.clone();
             let node_id = node_id.clone();
+            let sid = session_id.clone();
             tokio::spawn(async move {
                 let mut store = store.write().await;
-                store.insert(node_id, progress);
+                store.entry(sid).or_default().insert(node_id, progress);
             });
         })
     }
@@ -96,6 +98,10 @@ impl Tool for RlmDelegateTool {
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let task = input["task"].as_str().unwrap_or("");
         let context = input["context"].as_str().unwrap_or("");
+        let session_id = input["_session_id"]
+            .as_str()
+            .unwrap_or("default")
+            .to_string();
 
         let tool_registry = self.tool_registry.upgrade().ok_or_else(|| ToolError {
             message: "Tool registry is no longer available".to_string(),
@@ -106,21 +112,28 @@ impl Tool for RlmDelegateTool {
         let root_node_id = uuid::Uuid::new_v4().to_string();
         {
             let mut store = self.progress_store.write().await;
-            store.insert(root_node_id.clone(), SubagentProgress {
-                node_id: root_node_id.clone(),
-                parent_id: None,
-                label: format!("delegate: {}", task),
-                status: SubagentStatus::Running,
-                round: None,
-                max_rounds: None,
-                current_tool: None,
-                started_at: chrono::Utc::now().timestamp_millis(),
-                elapsed_ms: 0,
-                metadata: None,
-            });
+            store.entry(session_id.clone()).or_default().insert(
+                root_node_id.clone(),
+                SubagentProgress {
+                    node_id: root_node_id.clone(),
+                    parent_id: None,
+                    label: format!("delegate: {}", task),
+                    status: SubagentStatus::Running,
+                    round: None,
+                    max_rounds: None,
+                    current_tool: None,
+                    current_params: None,
+                    action_log: Vec::new(),
+                    text_snapshot: None,
+                    started_at: chrono::Utc::now().timestamp_millis(),
+                    elapsed_ms: 0,
+                    metadata: None,
+                },
+            );
         }
         let cb = Self::make_progress_callback(
             self.progress_store.clone(),
+            session_id,
             root_node_id.clone(),
             None,
             format!("delegate: {}", task),
@@ -142,14 +155,8 @@ impl Tool for RlmDelegateTool {
                     "sub_task_count".to_string(),
                     serde_json::json!(result.sub_task_count),
                 );
-                m.insert(
-                    "completed".to_string(),
-                    serde_json::json!(result.completed),
-                );
-                m.insert(
-                    "failed".to_string(),
-                    serde_json::json!(result.failed),
-                );
+                m.insert("completed".to_string(), serde_json::json!(result.completed));
+                m.insert("failed".to_string(), serde_json::json!(result.failed));
                 m
             },
         })

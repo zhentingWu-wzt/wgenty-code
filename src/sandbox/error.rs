@@ -6,42 +6,25 @@ use std::fmt;
 #[derive(Debug)]
 pub enum SandboxError {
     /// The selected backend is not available on this platform.
-    BackendUnavailable {
-        platform: String,
-        reason: String,
-    },
+    BackendUnavailable { platform: String, reason: String },
 
     /// Failed to build a sandbox profile (e.g. invalid path).
-    ProfileBuild {
-        reason: String,
-    },
+    ProfileBuild { reason: String },
 
     /// Failed to spawn the child process.
-    Spawn {
-        io_error: String,
-    },
+    Spawn { io_error: String },
 
     /// The command exceeded its wall-clock time limit.
-    Timeout {
-        elapsed_secs: u64,
-        limit_secs: u64,
-    },
+    Timeout { elapsed_secs: u64, limit_secs: u64 },
 
     /// The command exceeded its memory limit.
-    MemoryExceeded {
-        limit_bytes: u64,
-        used_bytes: u64,
-    },
+    MemoryExceeded { limit_bytes: u64, used_bytes: u64 },
 
     /// A sandbox policy violation was detected (e.g. blocked syscall).
-    SandboxViolation {
-        detail: String,
-    },
+    SandboxViolation { detail: String },
 
     /// Cleanup of sandbox resources failed.
-    Cleanup {
-        reason: String,
-    },
+    Cleanup { reason: String },
 }
 
 impl fmt::Display for SandboxError {
@@ -56,11 +39,23 @@ impl fmt::Display for SandboxError {
             Self::Spawn { io_error } => {
                 write!(f, "failed to spawn sandboxed process: {io_error}")
             }
-            Self::Timeout { elapsed_secs, limit_secs } => {
-                write!(f, "command timed out after {elapsed_secs}s (limit: {limit_secs}s)")
+            Self::Timeout {
+                elapsed_secs,
+                limit_secs,
+            } => {
+                write!(
+                    f,
+                    "command timed out after {elapsed_secs}s (limit: {limit_secs}s)"
+                )
             }
-            Self::MemoryExceeded { limit_bytes, used_bytes } => {
-                write!(f, "memory limit exceeded: used {used_bytes} bytes, limit {limit_bytes} bytes")
+            Self::MemoryExceeded {
+                limit_bytes,
+                used_bytes,
+            } => {
+                write!(
+                    f,
+                    "memory limit exceeded: used {used_bytes} bytes, limit {limit_bytes} bytes"
+                )
             }
             Self::SandboxViolation { detail } => {
                 write!(f, "sandbox violation: {detail}")

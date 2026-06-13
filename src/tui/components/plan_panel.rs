@@ -60,7 +60,10 @@ impl Default for PlanPanelState {
 
 impl PlanPanelState {
     pub fn new() -> Self {
-        Self { items: Vec::new(), visible: false }
+        Self {
+            items: Vec::new(),
+            visible: false,
+        }
     }
 
     pub fn update(&mut self, items: Vec<PlanItem>) {
@@ -77,7 +80,9 @@ impl PlanPanelState {
 const HEADER_COLOR: Color = Color::Rgb(147, 112, 219);
 
 pub fn render(f: &mut Frame, state: &PlanPanelState, area: Rect) {
-    if !state.visible || state.items.is_empty() { return; }
+    if !state.visible || state.items.is_empty() {
+        return;
+    }
 
     let mut lines: Vec<Line<'static>> = Vec::new();
 
@@ -85,13 +90,17 @@ pub fn render(f: &mut Frame, state: &PlanPanelState, area: Rect) {
         let symbol = item.status.symbol();
         let color = item.status.color();
         let step_text = format!("  {}  {}. {}", symbol, i + 1, item.step);
-        lines.push(Line::from(Span::styled(step_text, Style::default().fg(color))));
+        lines.push(Line::from(Span::styled(
+            step_text,
+            Style::default().fg(color),
+        )));
     }
 
-    let para = Paragraph::new(Text::from(lines))
-        .block(Block::default()
+    let para = Paragraph::new(Text::from(lines)).block(
+        Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(HEADER_COLOR))
-            .title(" Plan "));
+            .title(" Plan "),
+    );
     f.render_widget(para, area);
 }

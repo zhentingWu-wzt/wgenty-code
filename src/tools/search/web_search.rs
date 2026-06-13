@@ -61,10 +61,7 @@ impl WebSearchTool {
         query: &str,
         max_results: usize,
     ) -> Result<Vec<SearchResult>, String> {
-        let url = format!(
-            "https://html.duckduckgo.com/html/?q={}",
-            urlencoding(query)
-        );
+        let url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding(query));
 
         let resp = self
             .client
@@ -74,10 +71,7 @@ impl WebSearchTool {
             .map_err(|e| format!("DuckDuckGo request failed: {}", e))?;
 
         if !resp.status().is_success() {
-            return Err(format!(
-                "DuckDuckGo returned status {}",
-                resp.status()
-            ));
+            return Err(format!("DuckDuckGo returned status {}", resp.status()));
         }
 
         let html = resp
@@ -131,9 +125,7 @@ impl WebSearchTool {
 
             if let (Some(url), true) = (href, !title.is_empty()) {
                 // Skip ad/tracking links — only real results
-                if !url.contains("duckduckgo.com/y.js")
-                    && !url.contains("duckduckgo.com/l/?")
-                {
+                if !url.contains("duckduckgo.com/y.js") && !url.contains("duckduckgo.com/l/?") {
                     results.push(SearchResult { title, url });
                 }
             }

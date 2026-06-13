@@ -62,11 +62,12 @@ impl SandboxedChild {
     pub async fn wait_with_output(self) -> Result<SandboxOutput, SandboxError> {
         // Destructure to avoid partial-move issues
         let SandboxedChild { child, cleanup, .. } = self;
-        let output = child.wait_with_output().await.map_err(|e| {
-            SandboxError::Spawn {
+        let output = child
+            .wait_with_output()
+            .await
+            .map_err(|e| SandboxError::Spawn {
                 io_error: format!("wait failed: {}", e),
-            }
-        })?;
+            })?;
 
         // Run cleanup if needed
         Self::perform_cleanup(&cleanup);
@@ -167,7 +168,8 @@ impl SandboxManager {
         SandboxStatus {
             backend_name: self.backend.name().to_string(),
             is_hardware_enforced: self.backend.is_hardware_enforced(),
-            capabilities: self.backend
+            capabilities: self
+                .backend
                 .capabilities()
                 .into_iter()
                 .map(String::from)

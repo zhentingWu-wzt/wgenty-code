@@ -6,11 +6,10 @@
 
 use std::path::Path;
 
-use crate::sandbox::{
-    CleanupType, SandboxBackend, SandboxCleanup, SandboxError,
-    SandboxProfile, SandboxedChild,
-};
 use super::super::profile::NetworkPolicy;
+use crate::sandbox::{
+    CleanupType, SandboxBackend, SandboxCleanup, SandboxError, SandboxProfile, SandboxedChild,
+};
 
 pub struct MacOSBackend;
 
@@ -125,10 +124,8 @@ impl MacOSBackend {
         sb.push_str("    (global-name \"com.apple.FontObjectsServer\")\n");
         sb.push_str(")\n");
 
-
         sb
     }
-
 }
 
 impl SandboxBackend for MacOSBackend {
@@ -157,8 +154,7 @@ impl SandboxBackend for MacOSBackend {
         let sb_profile = Self::generate_profile(profile);
 
         let tmp_dir = std::env::temp_dir();
-        let profile_path =
-            tmp_dir.join(format!("claude-sandbox-{}.sb", std::process::id()));
+        let profile_path = tmp_dir.join(format!("claude-sandbox-{}.sb", std::process::id()));
         std::fs::write(&profile_path, sb_profile.as_bytes()).map_err(|e| {
             SandboxError::ProfileBuild {
                 reason: format!("failed to write seatbelt profile: {}", e),

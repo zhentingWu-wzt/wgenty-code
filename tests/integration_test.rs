@@ -1,13 +1,13 @@
 //! Integration Tests for Wgenty Code Rust
 
 use clap::Parser;
+use std::sync::Arc;
 use wgenty_code::{
     cli::Cli,
     config::Settings,
     knowledge::{BuiltinSkills, SkillCategory, SkillContext, SkillExecutor, SkillRegistry},
     tools::ToolRegistry,
 };
-use std::sync::Arc;
 
 #[test]
 fn test_cli_initialization() {

@@ -162,8 +162,12 @@ impl DaemonClient {
     /// GET /api/v1/subagent/progress — poll subagent execution progress.
     pub async fn poll_subagent_progress(
         &self,
+        session_id: &str,
     ) -> anyhow::Result<HashMap<String, crate::agent::progress::SubagentProgress>> {
-        let url = format!("{}/api/v1/subagent/progress", self.base_url);
+        let url = format!(
+            "{}/api/v1/subagent/progress?session_id={}",
+            self.base_url, session_id
+        );
         let resp = self.http_tools.get(&url).send().await?;
         if !resp.status().is_success() {
             return Ok(HashMap::new());

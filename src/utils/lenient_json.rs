@@ -41,7 +41,8 @@ pub fn parse_tool_args_lenient(raw: &str, _tool_name: &str) -> (serde_json::Valu
         serde_json::Map::new()
     };
     // Collect field names before mutating obj
-    let field_names: Vec<String> = obj.keys()
+    let field_names: Vec<String> = obj
+        .keys()
         .filter(|k| !k.starts_with('_'))
         .cloned()
         .collect();
@@ -130,16 +131,37 @@ fn extract_partial_fields(raw: &str) -> serde_json::Value {
     let mut map = serde_json::Map::new();
 
     // Extract string fields: "key": "value" (with proper escape handling)
-    for field in &["path", "content", "description", "prompt", "subagent_type", "command",
-                    "pattern", "query", "url", "operation", "question", "subject",
-                    "title", "note_id", "old_string", "new_string", "file_path"] {
+    for field in &[
+        "path",
+        "content",
+        "description",
+        "prompt",
+        "subagent_type",
+        "command",
+        "pattern",
+        "query",
+        "url",
+        "operation",
+        "question",
+        "subject",
+        "title",
+        "note_id",
+        "old_string",
+        "new_string",
+        "file_path",
+    ] {
         if let Some(val) = extract_string_field(raw, field) {
             map.insert(field.to_string(), serde_json::Value::String(val));
         }
     }
 
     // Extract bool fields
-    for field in &["background", "use_small_model", "replace_all", "multi_select"] {
+    for field in &[
+        "background",
+        "use_small_model",
+        "replace_all",
+        "multi_select",
+    ] {
         if let Some(val) = extract_bool_field(raw, field) {
             map.insert(field.to_string(), serde_json::Value::Bool(val));
         }
@@ -150,7 +172,10 @@ fn extract_partial_fields(raw: &str) -> serde_json::Value {
 
 /// Extract a string field value from JSON-like text using regex.
 fn extract_string_field(raw: &str, field_name: &str) -> Option<String> {
-    let pattern = format!(r#""{}"\s*:\s*"((?:[^"\\]|\\.)*)""#, regex::escape(field_name));
+    let pattern = format!(
+        r#""{}"\s*:\s*"((?:[^"\\]|\\.)*)""#,
+        regex::escape(field_name)
+    );
     let re = Regex::new(&pattern).ok()?;
     re.captures(raw)
         .and_then(|caps| caps.get(1))
@@ -178,9 +203,7 @@ fn looks_truncated(raw: &str) -> bool {
     let open_brackets = trimmed.chars().filter(|&c| c == '[').count();
     let close_brackets = trimmed.chars().filter(|&c| c == ']').count();
     // Also check if the string ends mid-value
-    let ends_abruptly = trimmed.ends_with(',')
-        || trimmed.ends_with(':')
-        || trimmed.ends_with('"');
+    let ends_abruptly = trimmed.ends_with(',') || trimmed.ends_with(':') || trimmed.ends_with('"');
     open_braces != close_braces || open_brackets != close_brackets || ends_abruptly
 }
 
@@ -191,11 +214,7 @@ fn truncate_for_display(s: &str, max_len: usize) -> String {
     }
     let head_len = max_len * 2 / 3;
     let tail_len = max_len - head_len - 3; // 3 for "..."
-    format!(
-        "{}...{}",
-        &s[..head_len],
-        &s[s.len() - tail_len..]
-    )
+    format!("{}...{}", &s[..head_len], &s[s.len() - tail_len..])
 }
 
 /// Basic JSON string unescaping: \" → ", \\ → \, \n → newline, etc.
@@ -230,7 +249,8 @@ mod tests {
 
     #[test]
     fn test_parse_valid_json() {
-        let (val, err) = parse_tool_args_lenient(r#"{"path": "test.md", "content": "hello"}"#, "file_write");
+        let (val, err) =
+            parse_tool_args_lenient(r#"{"path": "test.md", "content": "hello"}"#, "file_write");
         assert!(err.is_none());
         assert_eq!(val["path"].as_str(), Some("test.md"));
         assert_eq!(val["content"].as_str(), Some("hello"));

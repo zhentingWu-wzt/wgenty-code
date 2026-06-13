@@ -46,7 +46,9 @@ impl App {
         self.phase = AgentPhase::Thinking;
         let turn_id = TurnId::new();
         self.current_turn_id = Some(turn_id.clone());
-        let _ = self.event_tx.send(AppEvent::TurnStarted { turn_id: turn_id.clone() });
+        let _ = self.event_tx.send(AppEvent::TurnStarted {
+            turn_id: turn_id.clone(),
+        });
         let history = self.conversation_history.clone();
         let client = self.daemon_client.clone();
         let event_tx = self.event_tx.clone();
@@ -73,12 +75,25 @@ impl App {
         };
         let token_counter = self.token_counter.clone();
         self.current_turn_handle = Some(tokio::spawn(async move {
-            let mut agent = AgentLoop::new(client, event_tx.clone(), session_id, history, sys_msgs, plan_mode, planner_client, max_rounds, token_counter);
+            let mut agent = AgentLoop::new(
+                client,
+                event_tx.clone(),
+                session_id,
+                history,
+                sys_msgs,
+                plan_mode,
+                planner_client,
+                max_rounds,
+                token_counter,
+            );
             let result = agent.process_input(input_text).await;
             if let Err(ref e) = result {
                 let reason = if e.contains("timed out") {
                     TurnAbortReason::TimedOut
-                } else if e.contains("max rounds") || e.contains("LLM rounds") || e.contains("Token budget exhausted") {
+                } else if e.contains("max rounds")
+                    || e.contains("LLM rounds")
+                    || e.contains("Token budget exhausted")
+                {
                     TurnAbortReason::MaxRoundsExceeded
                 } else {
                     TurnAbortReason::StreamError

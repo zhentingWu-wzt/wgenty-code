@@ -384,7 +384,8 @@ impl eframe::App for WgentyCodeApp {
             if i.key_pressed(egui::Key::E) && i.modifiers.ctrl && !i.modifiers.shift {
                 // Ctrl+E: toggle collapse all messages
                 let any_expanded = self.chat_panel.messages.iter().any(|m| {
-                    !m.content_collapsed || !m.thinking_expanded
+                    !m.content_collapsed
+                        || !m.thinking_expanded
                         || m.tool_calls.iter().any(|tc| tc.expanded)
                 });
                 let new_state = any_expanded;

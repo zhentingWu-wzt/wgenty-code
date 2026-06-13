@@ -183,7 +183,8 @@ fn walk_tree(dir: &std::path::Path, ctx: WalkCtx) {
         }
 
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            ctx.lines.push(format!("{}{}{}/", ctx.prefix, connector, name));
+            ctx.lines
+                .push(format!("{}{}{}/", ctx.prefix, connector, name));
             *ctx.count += 1;
             walk_tree(
                 &entry.path(),
@@ -198,7 +199,8 @@ fn walk_tree(dir: &std::path::Path, ctx: WalkCtx) {
                 },
             );
         } else {
-            ctx.lines.push(format!("{}{}{}", ctx.prefix, connector, name));
+            ctx.lines
+                .push(format!("{}{}{}", ctx.prefix, connector, name));
             *ctx.count += 1;
         }
     }

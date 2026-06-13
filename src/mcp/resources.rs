@@ -124,10 +124,8 @@ impl ResourceManager {
             let ws = self.workspace_root.read().await;
             if let Some(ref root) = *ws {
                 // Canonicalize both paths to resolve symlinks and `..`
-                let canon_path = std::fs::canonicalize(path)
-                    .unwrap_or_else(|_| path.to_path_buf());
-                let canon_root = std::fs::canonicalize(root)
-                    .unwrap_or_else(|_| root.clone());
+                let canon_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                let canon_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
 
                 if !canon_path.starts_with(&canon_root) {
                     return Err(anyhow::anyhow!(

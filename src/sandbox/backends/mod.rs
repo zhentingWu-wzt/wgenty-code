@@ -1,9 +1,9 @@
 //! Backend selection and platform-specific sandbox implementations.
 
-pub mod macos;
 pub mod linux;
-pub mod windows;
+pub mod macos;
 pub mod none;
+pub mod windows;
 
 use crate::sandbox::SandboxBackend;
 

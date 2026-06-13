@@ -1,6 +1,6 @@
 //! Event types emitted by StreamProcessor during SSE streaming.
 
-use crate::api::ToolCall;
+use crate::api::{ToolCall, Usage};
 
 /// Events produced by StreamProcessor as it parses SSE chunks.
 /// The frontend handles each event according to its rendering model.
@@ -27,4 +27,7 @@ pub struct StreamResult {
     pub tool_calls: Vec<ToolCall>,
     pub has_tool_calls: bool,
     pub finish_reason: String,
+    /// Token usage reported by the API, if available (streaming with
+    /// `stream_options.include_usage` or Anthropic MessageDelta).
+    pub usage: Option<Usage>,
 }

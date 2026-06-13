@@ -276,9 +276,7 @@ pub async fn run_subagent_loop(
                         let mut log = action_log.lock().unwrap();
                         let elapsed = start.elapsed().as_millis() as u64;
                         log.push(SubagentEvent {
-                            event_type: SubagentEventType::Thought {
-                                text: snapshot,
-                            },
+                            event_type: SubagentEventType::Thought { text: snapshot },
                             elapsed_ms: elapsed,
                         });
                         if log.len() > 50 {

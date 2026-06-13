@@ -12,9 +12,7 @@ mod input;
 mod message;
 
 use super::chat_types::ChatMessage;
-use egui::{
-    CornerRadius, Frame, Margin, RichText, ScrollArea, Stroke, Ui, Vec2,
-};
+use egui::{CornerRadius, Frame, Margin, RichText, ScrollArea, Stroke, Ui, Vec2};
 
 /// Chat panel - full recreation of Wgenty Code interface
 pub struct ChatPanel {

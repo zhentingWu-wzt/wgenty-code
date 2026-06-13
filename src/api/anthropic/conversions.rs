@@ -28,9 +28,7 @@ pub fn convert_messages_to_anthropic(
                 // Add text content if present
                 if let Some(ref text) = msg.content {
                     if !text.is_empty() {
-                        blocks.push(AnthropicContentBlock::Text {
-                            text: text.clone(),
-                        });
+                        blocks.push(AnthropicContentBlock::Text { text: text.clone() });
                     }
                 }
 
@@ -64,12 +62,10 @@ pub fn convert_messages_to_anthropic(
 
             anthropic_msgs.push(AnthropicMessage {
                 role: "user".to_string(),
-                content: AnthropicContentValue::Blocks(vec![
-                    AnthropicContentBlock::ToolResult {
-                        tool_use_id: tool_call_id,
-                        content,
-                    },
-                ]),
+                content: AnthropicContentValue::Blocks(vec![AnthropicContentBlock::ToolResult {
+                    tool_use_id: tool_call_id,
+                    content,
+                }]),
             });
         } else {
             // User message
