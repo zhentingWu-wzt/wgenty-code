@@ -1,5 +1,5 @@
 use crate::tools::codegraph::types::{
-    Confidence, RefKind, RelKind, Reference, Relationship, Symbol, SymbolKind,
+    RefKind, Reference, Relationship, Symbol, SymbolKind,
 };
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
