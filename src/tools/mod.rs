@@ -9,6 +9,7 @@
 pub mod execution;
 pub mod executor;
 pub mod filesystem;
+pub mod codegraph;
 pub mod meta;
 pub mod search;
 
