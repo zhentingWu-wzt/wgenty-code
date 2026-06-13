@@ -2,6 +2,8 @@
 comet_change: code-graph-tool
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-13-code-graph-tool
+status: final
 ---
 
 # CodeGraph 代码图谱工具 — 技术设计
