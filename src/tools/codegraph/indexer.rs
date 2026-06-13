@@ -71,20 +71,31 @@ impl Indexer {
             }
             for reference in &data.references {
                 let mut r = reference.clone();
-                if let Some(&(_idx, real_id)) = symbol_id_map.get(reference.symbol_id as usize) {
-                    r.symbol_id = real_id;
+                let mapped = symbol_id_map.get(reference.symbol_id as usize).copied();
+                match mapped {
+                    Some((_idx, real_id)) => {
+                        r.symbol_id = real_id;
+                        self.store.insert_reference(&r, file_id)?;
+                    }
+                    None => {
+                        // Reference points to a symbol we didn't index (e.g. external), skip
+                    }
                 }
-                self.store.insert_reference(&r, file_id)?;
             }
             for rel in &data.relationships {
+                // Skip unresolved placeholders
+                if rel.source_id < 0 || rel.target_id < 0 {
+                    continue;
+                }
                 let mut r = rel.clone();
-                if let Some(&(_idx, real_id)) = symbol_id_map.get(rel.source_id as usize) {
-                    r.source_id = real_id;
+                let src_mapped = symbol_id_map.get(rel.source_id as usize).copied();
+                let tgt_mapped = symbol_id_map.get(rel.target_id as usize).copied();
+                if let (Some((_, src_real)), Some((_, tgt_real))) = (src_mapped, tgt_mapped) {
+                    r.source_id = src_real;
+                    r.target_id = tgt_real;
+                    self.store.insert_relationship(&r)?;
                 }
-                if let Some(&(_idx, real_id)) = symbol_id_map.get(rel.target_id as usize) {
-                    r.target_id = real_id;
-                }
-                self.store.insert_relationship(&r)?;
+                // else: cross-file reference, skip for now
             }
         }
         self.store.commit()?;
@@ -223,18 +234,21 @@ impl Indexer {
             let mut r = reference.clone();
             if let Some(&(_idx, real_id)) = symbol_id_map.get(reference.symbol_id as usize) {
                 r.symbol_id = real_id;
+                self.store.insert_reference(&r, file_id)?;
             }
-            self.store.insert_reference(&r, file_id)?;
         }
         for rel in &relationships {
+            if rel.source_id < 0 || rel.target_id < 0 {
+                continue;
+            }
             let mut r = rel.clone();
-            if let Some(&(_idx, real_id)) = symbol_id_map.get(rel.source_id as usize) {
-                r.source_id = real_id;
+            let src = symbol_id_map.get(rel.source_id as usize).copied();
+            let tgt = symbol_id_map.get(rel.target_id as usize).copied();
+            if let (Some((_, s)), Some((_, t))) = (src, tgt) {
+                r.source_id = s;
+                r.target_id = t;
+                self.store.insert_relationship(&r)?;
             }
-            if let Some(&(_idx, real_id)) = symbol_id_map.get(rel.target_id as usize) {
-                r.target_id = real_id;
-            }
-            self.store.insert_relationship(&r)?;
         }
         Ok(count)
     }
