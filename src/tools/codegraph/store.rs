@@ -191,7 +191,7 @@ impl IndexStore {
         let rows = stmt.query_map(params![symbol_id], |row| Ok(Reference {
             id: Some(row.get(0)?), symbol_id: row.get(1)?, file_path: row.get(2)?,
             line: row.get::<_,i64>(3)? as usize, col: row.get::<_,i64>(4)? as usize,
-            ref_kind: RefKind::from_str(&row.get::<_,String>(5)?), context: row.get(6)?,
+            ref_kind: RefKind::parse(&row.get::<_,String>(5)?), context: row.get(6)?,
         }))?;
         let mut refs = Vec::new(); for r in rows { refs.push(r?); } Ok(refs)
     }
