@@ -17,7 +17,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 Run `cargo build` — compiles without errors
-- [ ] 4.2 Run `cargo test --lib` — all tests pass
-- [ ] 4.3 Run `cargo clippy --all-targets -- -D warnings` — no new warnings
-- [ ] 4.4 Manual: verify codegraph tools appear in tool list and work with valid index
+- [x] 4.1 Run `cargo build` — compiles without errors
+- [x] 4.2 Run `cargo test --lib` — all tests pass
+- [x] 4.3 Run `cargo clippy --all-targets -- -D warnings` — no new warnings
+- [x] 4.4 Manual: verify codegraph tools appear in tool list and work with valid index
