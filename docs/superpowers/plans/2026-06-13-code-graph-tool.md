@@ -25,7 +25,7 @@ base-ref: 573e04b075bb7c9e8b80c533aff3646733bbb913
 - Create: `src/tools/codegraph/mod.rs`
 - Modify: `src/tools/mod.rs`
 
-- [ ] **Step 1.1: 往 Cargo.toml 添加 tree-sitter 和 rusqlite 依赖**
+- [x] **Step 1.1: 往 Cargo.toml 添加 tree-sitter 和 rusqlite 依赖**
 
 在 `[dependencies]` 段（bytes 后面）插入：
 
@@ -42,7 +42,7 @@ cargo check 2>&1 | head -20
 ```
 预期：新依赖解析成功。
 
-- [ ] **Step 1.2: 创建 codegraph 模块目录和入口 mod.rs**
+- [x] **Step 1.2: 创建 codegraph 模块目录和入口 mod.rs**
 
 文件：`src/tools/codegraph/mod.rs`
 
@@ -114,7 +114,7 @@ impl CodegraphEngine {
 }
 ```
 
-- [ ] **Step 1.3: 在 `src/tools/mod.rs` 注册 codegraph 模块**
+- [x] **Step 1.3: 在 `src/tools/mod.rs` 注册 codegraph 模块**
 
 添加模块声明（在 `pub mod meta;` 后面）：
 ```rust
@@ -135,7 +135,7 @@ cargo check 2>&1 | head -30
 ```
 预期：模块解析成功（子模块尚为空，有 warning 属于正常）。
 
-- [ ] **Step 1.4: 提交**
+- [x] **Step 1.4: 提交**
 
 ```bash
 git add Cargo.toml src/tools/codegraph/mod.rs src/tools/mod.rs
