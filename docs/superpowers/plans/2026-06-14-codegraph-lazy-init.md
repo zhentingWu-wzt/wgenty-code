@@ -2,6 +2,7 @@
 change: codegraph-tool-auto-registration
 design-doc: docs/superpowers/specs/2026-06-14-codegraph-lazy-init-design.md
 base-ref: 9254e27e653f358b69b811cda65c148c43aa8715
+archived-with: 2026-06-13-codegraph-tool-auto-registration
 ---
 
 # Implementation Plan: CodeGraph Lazy Init
