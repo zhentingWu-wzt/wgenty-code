@@ -82,6 +82,14 @@ impl App {
         self.render_input(f, layout[input_idx]);
         // Session is still a popup overlay
         components::session::render(f, &self.session_state, centered_rect);
+        // Subagent monitor panel (overlay, below session to render on top)
+        if self.subagent_panel_visible {
+            let panel_area = crate::tui::util::centered_rect(60, 70, f.area());
+            components::subagent_panel::render(
+                f, panel_area, &self.subagent_tree,
+                self.subagent_tree.count_by_status(SubagentStatus::Running) > 0,
+            );
+        }
     }
 
     fn render_chat(&self, f: &mut Frame, area: Rect) {

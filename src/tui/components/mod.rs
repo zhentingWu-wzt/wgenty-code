@@ -9,3 +9,4 @@ pub mod task_panel;
 pub mod welcome;
 pub mod plan_panel;
 pub mod subagent_tree;
+pub mod subagent_panel;
