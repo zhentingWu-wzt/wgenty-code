@@ -2,6 +2,8 @@
 comet_change: codegraph-tool-auto-registration
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-13-codegraph-tool-auto-registration
+status: final
 ---
 
 # Technical Design: CodeGraph Lazy Initialization
