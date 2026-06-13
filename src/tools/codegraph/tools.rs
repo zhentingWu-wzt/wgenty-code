@@ -1,31 +1,56 @@
 use crate::tools::codegraph::query::QueryEngine;
+use crate::tools::codegraph::store::IndexStore;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-/// Tool exposing `codegraph_node` — single symbol lookup.
-pub struct CodegraphNodeTool {
-    pub query_engine: Arc<QueryEngine>,
+/// Lazy-initialized engine — created on first use from cwd.
+static ENGINE: OnceLock<Arc<QueryEngine>> = OnceLock::new();
+
+fn get_engine() -> Result<Arc<QueryEngine>, ToolError> {
+    if let Some(engine) = ENGINE.get() {
+        return Ok(engine.clone());
+    }
+    let cwd = std::env::current_dir().map_err(|e| ToolError {
+        message: format!("Failed to get current directory: {}", e),
+        code: Some("cwd_error".to_string()),
+    })?;
+    let db_path = cwd.join(".codegraph").join("index.db");
+    if !db_path.exists() {
+        return Err(ToolError {
+            message: "No codegraph index found. Run `wgenty-code codegraph index` first.".to_string(),
+            code: Some("no_index".to_string()),
+        });
+    }
+    let store = Arc::new(IndexStore::open(&cwd).map_err(|e| ToolError {
+        message: format!("Failed to open index: {}", e),
+        code: Some("store_error".to_string()),
+    })?);
+    let engine = Arc::new(QueryEngine::new(store));
+    // Ok to ignore error — another thread may have raced us
+    let _ = ENGINE.set(engine.clone());
+    Ok(engine)
 }
 
+/// Tool exposing `codegraph_node` — single symbol lookup.
+pub struct CodegraphNodeTool;
+
 impl CodegraphNodeTool {
-    pub fn new(query_engine: Arc<QueryEngine>) -> Self {
-        Self { query_engine }
-    }
+    pub fn new() -> Self { Self }
+}
+
+impl Default for CodegraphNodeTool {
+    fn default() -> Self { Self::new() }
 }
 
 #[async_trait]
 impl Tool for CodegraphNodeTool {
-    fn name(&self) -> &str {
-        "codegraph_node"
-    }
+    fn name(&self) -> &str { "codegraph_node" }
 
-    fn is_read_only(&self) -> bool {
-        true
-    }
+    fn is_read_only(&self) -> bool { true }
 
     fn description(&self) -> &str {
-        "Look up a Rust symbol by name. Returns definition location, signature, references, and callers/callees."
+        "Look up a Rust symbol by name. Returns definition location, signature, references, and callers/callees. Requires a codegraph index (run `wgenty-code codegraph index` first)."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -47,7 +72,8 @@ impl Tool for CodegraphNodeTool {
             code: Some("missing_parameter".to_string()),
         })?;
 
-        let result = self.query_engine.codegraph_node(symbol).map_err(|e| ToolError {
+        let engine = get_engine()?;
+        let result = engine.codegraph_node(symbol).map_err(|e| ToolError {
             message: format!("codegraph_node query failed: {}", e),
             code: Some("query_error".to_string()),
         })?;
@@ -107,28 +133,24 @@ impl Tool for CodegraphNodeTool {
 }
 
 /// Tool exposing `codegraph_explore` — symbol exploration with call graph.
-pub struct CodegraphExploreTool {
-    pub query_engine: Arc<QueryEngine>,
-}
+pub struct CodegraphExploreTool;
 
 impl CodegraphExploreTool {
-    pub fn new(query_engine: Arc<QueryEngine>) -> Self {
-        Self { query_engine }
-    }
+    pub fn new() -> Self { Self }
+}
+
+impl Default for CodegraphExploreTool {
+    fn default() -> Self { Self::new() }
 }
 
 #[async_trait]
 impl Tool for CodegraphExploreTool {
-    fn name(&self) -> &str {
-        "codegraph_explore"
-    }
+    fn name(&self) -> &str { "codegraph_explore" }
 
-    fn is_read_only(&self) -> bool {
-        true
-    }
+    fn is_read_only(&self) -> bool { true }
 
     fn description(&self) -> &str {
-        "Explore code symbols and their relationships. Returns relevant symbols and call paths."
+        "Explore code symbols and their relationships. Returns relevant symbols and call paths. Requires a codegraph index (run `wgenty-code codegraph index` first)."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -150,13 +172,11 @@ impl Tool for CodegraphExploreTool {
             code: Some("missing_parameter".to_string()),
         })?;
 
-        let result = self
-            .query_engine
-            .codegraph_explore(query)
-            .map_err(|e| ToolError {
-                message: format!("codegraph_explore query failed: {}", e),
-                code: Some("query_error".to_string()),
-            })?;
+        let engine = get_engine()?;
+        let result = engine.codegraph_explore(query).map_err(|e| ToolError {
+            message: format!("codegraph_explore query failed: {}", e),
+            code: Some("query_error".to_string()),
+        })?;
 
         let mut lines = Vec::new();
         lines.push(format!(
@@ -167,10 +187,7 @@ impl Tool for CodegraphExploreTool {
         for sym in &result.symbols {
             lines.push(format!(
                 "  - {} ({}) at {}:{}",
-                sym.name,
-                sym.kind.as_str(),
-                sym.file_path,
-                sym.line
+                sym.name, sym.kind.as_str(), sym.file_path, sym.line
             ));
         }
         if !result.call_graph.is_empty() {
@@ -188,10 +205,7 @@ impl Tool for CodegraphExploreTool {
             content: lines.join("\n"),
             metadata: {
                 let mut m = std::collections::HashMap::new();
-                m.insert(
-                    "symbol_count".to_string(),
-                    serde_json::json!(result.symbols.len()),
-                );
+                m.insert("symbol_count".to_string(), serde_json::json!(result.symbols.len()));
                 m
             },
         })
