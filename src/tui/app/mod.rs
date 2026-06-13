@@ -17,6 +17,7 @@ use crate::tui::components::permission::PermissionState;
 use crate::tui::components::question::QuestionState;
 use crate::tui::components::session::SessionState;
 use crate::tui::components::plan_panel::PlanPanelState;
+use crate::tui::components::subagent_tree::SubagentTree;
 use crate::tui::components::task_panel::TaskPanelState;
 use crossterm::event::EnableBracketedPaste;
 use ratatui::Terminal;
@@ -67,6 +68,10 @@ pub struct App {
     pub task_panel: TaskPanelState,
     /// Structured plan panel state (Codex-style update_plan tool)
     pub plan_panel_state: PlanPanelState,
+    /// Subagent execution tree for the current turn.
+    subagent_tree: SubagentTree,
+    /// Whether the subagent monitor panel is visible.
+    subagent_panel_visible: bool,
     /// Shared settings handle — updated by the config watcher on file change.
     pub settings_lock: crate::config::watcher::SettingsHandle,
 
@@ -183,6 +188,8 @@ impl App {
             session_state: SessionState::new(),
             task_panel: TaskPanelState::new(),
             plan_panel_state: PlanPanelState::new(),
+            subagent_tree: SubagentTree::default(),
+            subagent_panel_visible: false,
 
             last_ctrl_c: None,
             has_running_tool: false,
