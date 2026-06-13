@@ -1,5 +1,6 @@
 //! Type definitions for the TUI application layer.
 
+use crate::agent::progress::SubagentProgress;
 use crate::api::ChatMessage;
 use crate::state::agent_phase::{TurnAbortReason, TurnId};
 use crate::tui::client::{SessionInfo, TodoItem};
@@ -138,6 +139,10 @@ pub enum AppEvent {
     TodosUpdated(Vec<TodoItem>),
     /// Settings were hot-reloaded from disk
     ConfigChanged(crate::config::Settings),
+    /// A subagent progress update from daemon polling.
+    SubagentUpdate(SubagentProgress),
+    /// Toggle the subagent monitor panel.
+    ToggleSubagentPanel,
 }
 
 /// UI state for a single message in the chat view.
