@@ -4,6 +4,7 @@
 //! with the parent), runs a complete multi-round tool-use loop, and returns the
 //! final assistant response back to the caller.
 
+use crate::agent::progress::{ProgressCallback, SubagentMetadata, SubagentProgress, SubagentStatus};
 use crate::api::{ApiClient, ChatMessage, ToolDefinition, ToolCall};
 use crate::tools::ToolRegistry;
 use crate::utils::stuck_detector::{StuckDetector, StuckStatus};
@@ -33,6 +34,7 @@ const PER_ROUND_API_TIMEOUT: Duration = Duration::from_secs(120);
 /// * `allowed_tools`   — Names of tools the subagent is permitted to call.
 /// * `max_rounds`      — Maximum tool-use iterations (cap at 30 to prevent runaway).
 /// * `timeout_secs`    — Wall-clock timeout in seconds for the entire loop.
+/// * `on_progress`     — Optional callback for real-time execution progress updates.
 ///
 /// # Returns
 /// * `Ok(String)` — The final assistant content (text response).
@@ -45,6 +47,7 @@ pub async fn run_subagent_loop(
     allowed_tools: &[String],
     max_rounds: usize,
     timeout_secs: u64,
+    on_progress: Option<ProgressCallback>,
 ) -> Result<String, String> {
     let timeout_duration = Duration::from_secs(timeout_secs);
     tracing::info!(
@@ -57,6 +60,9 @@ pub async fn run_subagent_loop(
     static SUBAGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
     let trace_id = SUBAGENT_COUNTER.fetch_add(1, Ordering::Relaxed);
     tracing::info!( trace_id = trace_id, "Subagent: trace context");
+
+    let start = Instant::now();
+    let on_progress_inner = on_progress.clone();
 
     let loop_future = async {
         let mut messages: Vec<ChatMessage> = vec![
@@ -75,7 +81,30 @@ pub async fn run_subagent_loop(
         let has_tools = !tool_defs.is_empty();
         let mut stuck_detector = StuckDetector::new();
         let mut consecutive_parse_errors: usize = 0;
-        let start = Instant::now();
+
+        let emit = |status: SubagentStatus, round: Option<usize>, current_tool: Option<String>, error_msg: Option<String>| {
+            if let Some(ref cb) = on_progress_inner {
+                let elapsed = start.elapsed();
+                cb(SubagentProgress {
+                    node_id: trace_id.to_string(),
+                    parent_id: None,
+                    label: String::new(),
+                    status,
+                    round,
+                    max_rounds: Some(max_rounds),
+                    current_tool,
+                    started_at: chrono::Utc::now().timestamp_millis(),
+                    elapsed_ms: elapsed.as_millis() as u64,
+                    metadata: error_msg.map(|e| SubagentMetadata {
+                        token_count: None,
+                        error: Some(e),
+                        depends_on: vec![],
+                    }),
+                });
+            }
+        };
+
+        emit(SubagentStatus::Running, Some(0), None, None);
 
         for round in 0..max_rounds {
             let elapsed = start.elapsed().as_secs();
@@ -89,6 +118,8 @@ pub async fn run_subagent_loop(
                 round + 1,
                 max_rounds
             );
+
+            emit(SubagentStatus::Running, Some(round + 1), None, None);
 
             let response = tokio::time::timeout(
                 PER_ROUND_API_TIMEOUT,
@@ -152,11 +183,12 @@ pub async fn run_subagent_loop(
             if !is_tool_call {
                 let elapsed = start.elapsed();
                 tracing::info!(
-                                        trace_id = trace_id,
+                    trace_id = trace_id,
                     round = round,
                     elapsed_secs = elapsed.as_secs(),
                     "Subagent: completed successfully"
                 );
+                emit(SubagentStatus::Completed, Some(round + 1), None, None);
                 return Ok(choice.message.content.unwrap_or_default());
             }
 
@@ -165,7 +197,7 @@ pub async fn run_subagent_loop(
             match stuck_detector.record_round(&active_tool_calls) {
                 StuckStatus::Warn(msg) => {
                     tracing::warn!(
-                                                trace_id = trace_id,
+                        trace_id = trace_id,
                         round = round,
                         "Subagent: stuck warning"
                     );
@@ -179,11 +211,12 @@ pub async fn run_subagent_loop(
                 }
                 StuckStatus::Abort(msg) => {
                     tracing::error!(
-                                                trace_id = trace_id,
+                        trace_id = trace_id,
                         round = round,
                         error = %msg,
                         "Subagent: stuck abort"
                     );
+                    emit(SubagentStatus::Failed, Some(round + 1), None, Some(msg.clone()));
                     return Err(msg);
                 }
                 StuckStatus::Ok => {}
@@ -250,8 +283,10 @@ pub async fn run_subagent_loop(
                     return Err(msg);
                 }
 
+                emit(SubagentStatus::Running, Some(round + 1), Some(tool_name.clone()), None);
+
                 tracing::debug!(
-                                        tool = %tool_name,
+                    tool = %tool_name,
                     round = round,
                     "Subagent: executing tool"
                 );
@@ -326,19 +361,38 @@ pub async fn run_subagent_loop(
         }
 
         tracing::info!(
-                        trace_id = trace_id,
+            trace_id = trace_id,
             max_rounds = max_rounds,
             elapsed_secs = start.elapsed().as_secs(),
             "Subagent: exceeded max rounds"
         );
+        emit(SubagentStatus::Failed, Some(max_rounds), None, Some("Subagent exceeded maximum number of rounds".to_string()));
         Err("Subagent exceeded maximum number of rounds".to_string())
     };
 
     match tokio::time::timeout(timeout_duration, loop_future).await {
         Ok(result) => result,
         Err(_elapsed) => {
+            if let Some(ref cb) = on_progress {
+                cb(SubagentProgress {
+                    node_id: trace_id.to_string(),
+                    parent_id: None,
+                    label: String::new(),
+                    status: SubagentStatus::Failed,
+                    round: None,
+                    max_rounds: Some(max_rounds),
+                    current_tool: None,
+                    started_at: chrono::Utc::now().timestamp_millis(),
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                    metadata: Some(SubagentMetadata {
+                        token_count: None,
+                        error: Some(format!("Timed out after {} seconds", timeout_duration.as_secs())),
+                        depends_on: vec![],
+                    }),
+                });
+            }
             tracing::error!(
-                                trace_id = trace_id,
+                trace_id = trace_id,
                 timeout_secs = timeout_duration.as_secs(),
                 "Subagent: timed out"
             );

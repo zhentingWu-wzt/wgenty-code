@@ -2,6 +2,7 @@
 //!
 //! The core pipeline used by both the `delegate` tool and auto-routing in `task` tool.
 
+use crate::agent::progress::ProgressCallback;
 use crate::api::{ApiClient, ChatMessage};
 use crate::config::Settings;
 use crate::teams::subagent_loop::run_subagent_loop;
@@ -23,6 +24,7 @@ pub async fn run_rlm_pipeline(
     tool_registry: Arc<ToolRegistry>,
     task: &str,
     context: &str,
+    on_progress: Option<ProgressCallback>,
 ) -> Result<RlmResult, String> {
     tracing::info!(
         target: "rlm",
@@ -202,6 +204,7 @@ Context: {context}
         let timeout_secs = settings.subagent_timeout_secs;
 
         for (idx, registry, api_client, prompt, allowed) in level_data {
+            let on_progress = on_progress.clone();
             let handle = tokio::spawn(async move {
                 let result = run_subagent_loop(
                     &api_client,
@@ -211,6 +214,7 @@ Context: {context}
                     &allowed,
                     20,
                     timeout_secs,
+                    on_progress,
                 )
                 .await;
                 (result, idx)
