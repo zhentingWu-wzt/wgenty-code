@@ -171,6 +171,26 @@ pub enum Commands {
         #[arg(long, default_value = "8371")]
         port: u16,
     },
+
+    /// Code graph indexing and querying
+    Codegraph {
+        #[command(subcommand)]
+        action: CodegraphCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CodegraphCommands {
+    /// Build or update the codegraph index
+    Index {},
+    /// Query a symbol from the index
+    Query {
+        /// Symbol name to look up
+        #[arg(short, long)]
+        symbol: String,
+    },
+    /// Remove the codegraph index
+    Clean {},
 }
 
 #[derive(Subcommand, Debug)]
