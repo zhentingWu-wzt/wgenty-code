@@ -18,6 +18,7 @@ pub struct SubagentProgress {
     pub round: Option<usize>,
     pub max_rounds: Option<usize>,
     pub current_tool: Option<String>,
+    /// Unix epoch timestamp in milliseconds when this subagent started.
     pub started_at: i64,
     pub elapsed_ms: u64,
     pub metadata: Option<SubagentMetadata>,
