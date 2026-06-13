@@ -488,7 +488,8 @@ impl Tool for TaskTool {
                     tool_registry.clone(),
                     description,
                     prompt,
-                    Some(cb),
+                    Some((self.progress_store.clone(), session_id.clone())),
+                    Some(subagent_node_id.clone()),
                 )
                 .await
                 .map(|r| r.aggregated);
