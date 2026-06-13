@@ -915,7 +915,7 @@ git commit -m "feat(codegraph): implement IndexStore with SQLite schema and CRUD
 **Files:**
 - Create: `src/tools/codegraph/parser.rs`
 
-- [ ] **Step 4.1: 实现 `CodeParser` 结构体**
+- [x] **Step 4.1: 实现 `CodeParser` 结构体**
 
 文件 `src/tools/codegraph/parser.rs`：
 
@@ -952,7 +952,7 @@ impl Default for CodeParser {
 }
 ```
 
-- [ ] **Step 4.2: 编写解析器单元测试**
+- [x] **Step 4.2: 编写解析器单元测试**
 
 ```rust
 #[cfg(test)]
@@ -1000,7 +1000,7 @@ cargo test -- tools::codegraph::parser::tests 2>&1
 ```
 预期：4 个测试通过。
 
-- [ ] **Step 4.3: 提交**
+- [x] **Step 4.3: 提交**
 
 ```bash
 git add src/tools/codegraph/parser.rs
@@ -1014,7 +1014,7 @@ git commit -m "feat(codegraph): implement tree-sitter parser wrapper for Rust"
 **Files:**
 - Create: `src/tools/codegraph/indexer.rs`
 
-- [ ] **Step 5.1: 实现 `Indexer` 结构和全量索引流程**
+- [x] **Step 5.1: 实现 `Indexer` 结构和全量索引流程**
 
 ```rust
 use crate::tools::codegraph::parser::CodeParser;
@@ -1154,7 +1154,7 @@ impl Indexer {
 }
 ```
 
-- [ ] **Step 5.2: 实现符号/引用/关系提取方法**
+- [x] **Step 5.2: 实现符号/引用/关系提取方法**
 
 ```rust
 impl Indexer {
@@ -1319,7 +1319,7 @@ impl Indexer {
 }
 ```
 
-- [ ] **Step 5.3: 编写索引器单元测试**
+- [x] **Step 5.3: 编写索引器单元测试**
 
 ```rust
 #[cfg(test)]
@@ -1376,7 +1376,7 @@ cargo test -- tools::codegraph::indexer::tests 2>&1
 ```
 预期：3 个测试通过。
 
-- [ ] **Step 5.4: 提交**
+- [x] **Step 5.4: 提交**
 
 ```bash
 git add src/tools/codegraph/indexer.rs
@@ -1390,7 +1390,7 @@ git commit -m "feat(codegraph): implement full and incremental indexing with tre
 **Files:**
 - Create: `src/tools/codegraph/query.rs`
 
-- [ ] **Step 6.1: 实现 `QueryEngine` 和 `codegraph_node` / `codegraph_explore`**
+- [x] **Step 6.1: 实现 `QueryEngine` 和 `codegraph_node` / `codegraph_explore`**
 
 ```rust
 use crate::tools::codegraph::store::{IndexStore, SymbolCallEntry};
@@ -1477,7 +1477,7 @@ impl QueryEngine {
 }
 ```
 
-- [ ] **Step 6.2: 添加结果类型**
+- [x] **Step 6.2: 添加结果类型**
 
 ```rust
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1514,7 +1514,7 @@ pub struct SymbolSuggestion {
 }
 ```
 
-- [ ] **Step 6.3: 编写查询引擎单元测试**
+- [x] **Step 6.3: 编写查询引擎单元测试**
 
 ```rust
 #[cfg(test)]
@@ -1590,7 +1590,7 @@ cargo test -- tools::codegraph::query::tests 2>&1
 ```
 预期：4 个测试通过。
 
-- [ ] **Step 6.4: 提交**
+- [x] **Step 6.4: 提交**
 
 ```bash
 git add src/tools/codegraph/query.rs
@@ -1606,7 +1606,7 @@ git commit -m "feat(codegraph): implement QueryEngine with node/explore/callers/
 - Modify: `src/tools/mod.rs`（ToolRegistry 集成）
 - Modify: `src/state/mod.rs`（AppState 添加 engine）
 
-- [ ] **Step 7.1: 实现 `CodegraphNodeTool` 和 `CodegraphExploreTool`**
+- [x] **Step 7.1: 实现 `CodegraphNodeTool` 和 `CodegraphExploreTool`**
 
 文件 `src/tools/codegraph/tools.rs`：
 
@@ -1775,7 +1775,7 @@ impl Tool for CodegraphExploreTool {
 }
 ```
 
-- [ ] **Step 7.2: 更新 `ToolRegistry` 支持 codegraph**
+- [x] **Step 7.2: 更新 `ToolRegistry` 支持 codegraph**
 
 在 `src/tools/mod.rs` 的 `impl ToolRegistry` 中添加：
 
@@ -1794,7 +1794,7 @@ impl Tool for CodegraphExploreTool {
     }
 ```
 
-- [ ] **Step 7.3: 更新 `AppState` 添加 `codegraph_engine` 字段**
+- [x] **Step 7.3: 更新 `AppState` 添加 `codegraph_engine` 字段**
 
 在 `src/state/mod.rs`：
 
@@ -1820,14 +1820,14 @@ impl Tool for CodegraphExploreTool {
             .with_codegraph(Arc::new(RwLock::new(None)));
 ```
 
-- [ ] **Step 7.4: 验证编译**
+- [x] **Step 7.4: 验证编译**
 
 ```bash
 cargo check 2>&1
 ```
 预期：编译通过（engine 为 None 时工具会输出 fallback 提示）。
 
-- [ ] **Step 7.5: 提交**
+- [x] **Step 7.5: 提交**
 
 ```bash
 git add src/tools/codegraph/tools.rs src/tools/mod.rs src/state/mod.rs
@@ -1842,7 +1842,7 @@ git commit -m "feat(codegraph): implement CodegraphNodeTool and CodegraphExplore
 - Modify: `src/cli/mod.rs`（添加 `CodegraphCommands` 枚举）
 - Modify: `src/cli/args.rs`（添加 `run_codegraph` 处理）
 
-- [ ] **Step 8.1: 在 `Commands` 枚举中添加 `Codegraph` 变体**
+- [x] **Step 8.1: 在 `Commands` 枚举中添加 `Codegraph` 变体**
 
 在 `src/cli/mod.rs` 中添加（在 Sandbox 变体后面）：
 
@@ -1874,7 +1874,7 @@ pub enum CodegraphCommands {
 }
 ```
 
-- [ ] **Step 8.2: 在 `args.rs` 中添加 `run_codegraph` 处理**
+- [x] **Step 8.2: 在 `args.rs` 中添加 `run_codegraph` 处理**
 
 在 `run_async` 中添加 match arm（Sandbox 后面）：
 ```rust
@@ -1970,14 +1970,14 @@ pub enum CodegraphCommands {
     }
 ```
 
-- [ ] **Step 8.3: 验证编译**
+- [x] **Step 8.3: 验证编译**
 
 ```bash
 cargo check 2>&1
 ```
 预期：编译通过。
 
-- [ ] **Step 8.4: 提交**
+- [x] **Step 8.4: 提交**
 
 ```bash
 git add src/cli/mod.rs src/cli/args.rs
@@ -1991,7 +1991,7 @@ git commit -m "feat(codegraph): add CLI subcommands index/query/clean"
 **Files:**
 - Modify: `src/mcp/tools.rs`（添加测试验证）
 
-- [ ] **Step 9.1: 验证 MCP 自动注册**
+- [x] **Step 9.1: 验证 MCP 自动注册**
 
 不修改代码 -- `register_builtin_tools()` 已经遍历 `self.local_registry.list()`，新注册的 codegraph 工具会自动出现。
 
@@ -2019,7 +2019,7 @@ cargo test -- mcp::tools::tests 2>&1
 ```
 预期：通过。
 
-- [ ] **Step 9.2: 提交**
+- [x] **Step 9.2: 提交**
 
 ```bash
 git add src/mcp/tools.rs
@@ -2033,7 +2033,7 @@ git commit -m "feat(codegraph): verify MCP auto-registration of codegraph tools"
 **Files:**
 - Modify: `src/tools/meta/lsp.rs`
 
-- [ ] **Step 10.1: 标记 regex fallback 输出**
+- [x] **Step 10.1: 标记 regex fallback 输出**
 
 修改 `format_results` 函数，在输出前添加 `[regex fallback]` 前缀：
 
@@ -2062,14 +2062,14 @@ git commit -m "feat(codegraph): verify MCP auto-registration of codegraph tools"
     metadata.insert("source".to_string(), serde_json::json!("regex_fallback"));
 ```
 
-- [ ] **Step 10.2: 验证编译**
+- [x] **Step 10.2: 验证编译**
 
 ```bash
 cargo check 2>&1
 ```
 预期：编译通过。
 
-- [ ] **Step 10.3: 提交**
+- [x] **Step 10.3: 提交**
 
 ```bash
 git add src/tools/meta/lsp.rs
@@ -2083,7 +2083,7 @@ git commit -m "feat(codegraph): mark lsp tool output as regex fallback source"
 **Files:**
 - Create: `tests/codegraph_integration.rs`
 
-- [ ] **Step 11.1: 全量索引 + 查询集成测试**
+- [x] **Step 11.1: 全量索引 + 查询集成测试**
 
 ```rust
 #[cfg(test)]
@@ -2115,7 +2115,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 11.2: 增量索引测试**
+- [x] **Step 11.2: 增量索引测试**
 
 ```rust
     #[test]
@@ -2137,7 +2137,7 @@ mod tests {
     }
 ```
 
-- [ ] **Step 11.3: 调用图深度测试**
+- [x] **Step 11.3: 调用图深度测试**
 
 ```rust
     #[test]
@@ -2164,7 +2164,7 @@ mod tests {
     }
 ```
 
-- [ ] **Step 11.4: 运行完整测试套件**
+- [x] **Step 11.4: 运行完整测试套件**
 
 ```bash
 cargo test --all 2>&1
@@ -2177,7 +2177,7 @@ cargo fmt -- --check 2>&1
 ```
 预期：均无错误。
 
-- [ ] **Step 11.5: 提交**
+- [x] **Step 11.5: 提交**
 
 ```bash
 git add tests/codegraph_integration.rs
@@ -2192,7 +2192,7 @@ git commit -m "test(codegraph): add integration tests for index, query, and call
 - Modify: `.gitignore`
 - Modify: `CLAUDE.md`
 
-- [ ] **Step 12.1: 将 `.codegraph/` 添加到 `.gitignore`**
+- [x] **Step 12.1: 将 `.codegraph/` 添加到 `.gitignore`**
 
 在 `.gitignore` 末尾追加：
 ```
@@ -2200,7 +2200,7 @@ git commit -m "test(codegraph): add integration tests for index, query, and call
 .codegraph/
 ```
 
-- [ ] **Step 12.2: 更新 `CLAUDE.md`**
+- [x] **Step 12.2: 更新 `CLAUDE.md`**
 
 在 `Architecture` 部分添加 CodeGraph 模块说明：
 
@@ -2227,14 +2227,14 @@ reach for it BEFORE grep/find or reading files when you need to understand or lo
   Run `wgenty-code codegraph clean` to remove the index.
 ````
 
-- [ ] **Step 12.3: 最终端到端验证**
+- [x] **Step 12.3: 最终端到端验证**
 
 ```bash
 cargo build 2>&1 && cargo test --all 2>&1 && cargo clippy --all-targets -- -D warnings 2>&1 && cargo fmt -- --check 2>&1
 ```
 全部通过。
 
-- [ ] **Step 12.4: 最终提交**
+- [x] **Step 12.4: 最终提交**
 
 ```bash
 git add .gitignore CLAUDE.md
