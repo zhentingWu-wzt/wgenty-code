@@ -36,20 +36,26 @@ pub fn render_subagent_card(
     is_executing: bool,
     spinner_frame: u8,
 ) {
-    if tree.nodes.is_empty() { return; }
+    if tree.nodes.is_empty() {
+        return;
+    }
     let done = tree.count_by_status(SubagentStatus::Completed);
     let total = tree.nodes.len();
     let indent = 4u16;
 
     let spinner = if is_executing {
         SPINNER_CHARS[(spinner_frame as usize) % SPINNER_CHARS.len()]
-    } else { ' ' };
+    } else {
+        ' '
+    };
 
     // Header
     lines.push(Line::from(vec![
         Span::styled(
             "  🌳 Subagent Tree",
-            Style::default().fg(Color::Rgb(203, 166, 247)).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Rgb(203, 166, 247))
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("  {} {}/{} done", spinner, done, total),
@@ -62,12 +68,10 @@ pub fn render_subagent_card(
     } else {
         let failed = tree.count_by_status(SubagentStatus::Failed);
         let icon = if failed > 0 { "⚠️" } else { "✅" };
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("    {} task · {}/{} done", icon, done, total),
-                Style::default().fg(DIM_COLOR),
-            ),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            format!("    {} task · {}/{} done", icon, done, total),
+            Style::default().fg(DIM_COLOR),
+        )]));
     }
 }
 
@@ -80,7 +84,9 @@ fn render_tree_nodes(
     base_indent: u16,
 ) {
     let Some(nid) = node_id else { return };
-    let Some(node) = tree.nodes.get(nid) else { return };
+    let Some(node) = tree.nodes.get(nid) else {
+        return;
+    };
     let indent = base_indent + depth * 2;
     let prefix = if depth == 0 { "┌─" } else { "├─" };
     let indent_str = " ".repeat(indent as usize);
@@ -93,39 +99,124 @@ fn render_tree_nodes(
         SubagentStatus::Pending => Color::Rgb(108, 112, 134),
     };
 
-    let detail = format!(
-        " {} {}",
-        node.progress.label,
-        match node.progress.status {
-            SubagentStatus::Running => {
-                match (node.progress.round, node.progress.max_rounds) {
-                    (Some(r), Some(mr)) => format!("round {}/{}", r, mr),
-                    _ => String::new(),
+    // ── Build status line with timing ────────────────────────────────────
+    let elapsed_secs = node.progress.elapsed_ms as f64 / 1000.0;
+    let status_detail = match node.progress.status {
+        SubagentStatus::Running => match (node.progress.round, node.progress.max_rounds) {
+            (Some(r), Some(mr)) => format!("round {}/{} · {:.1}s", r, mr, elapsed_secs),
+            _ => format!("{:.1}s", elapsed_secs),
+        },
+        SubagentStatus::Completed => {
+            let mut s = node
+                .progress
+                .round
+                .map(|r| format!("{} rounds", r))
+                .unwrap_or_default();
+            if !s.is_empty() {
+                s.push_str(" · ");
+            }
+            s.push_str(&format!("{:.1}s", elapsed_secs));
+            // Token count
+            if let Some(ref meta) = node.progress.metadata {
+                if let Some(tc) = meta.token_count {
+                    if tc >= 1000 {
+                        s.push_str(&format!(" · {:.1}k tokens", tc as f64 / 1000.0));
+                    } else {
+                        s.push_str(&format!(" · {} tokens", tc));
+                    }
                 }
             }
-            SubagentStatus::Completed => {
-                node.progress.round.map(|r| format!("{} rounds", r)).unwrap_or_default()
-            }
-            _ => String::new(),
+            s
         }
-    );
+        _ => String::new(),
+    };
+
+    let detail = if status_detail.is_empty() {
+        format!(" {}", node.progress.label)
+    } else {
+        format!(" {} — {}", node.progress.label, status_detail)
+    };
 
     lines.push(Line::from(vec![
-        Span::styled(format!("{}{} ", indent_str, prefix), Style::default().fg(DIM_COLOR)),
+        Span::styled(
+            format!("{}{} ", indent_str, prefix),
+            Style::default().fg(DIM_COLOR),
+        ),
         Span::styled(icon, Style::default().fg(color)),
         Span::styled(format!(" {}", detail), Style::default().fg(color)),
     ]));
 
-    // Show current tool for running nodes
+    // ── Running node: show current tool with params ──────────────────────
     if node.progress.status == SubagentStatus::Running {
+        let tool_indent = " ".repeat((indent + 4) as usize);
         if let Some(ref tool) = node.progress.current_tool {
-            let tool_indent = " ".repeat((indent + 4) as usize);
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{}└─ 🛠 executing: {}", tool_indent, tool),
-                    Style::default().fg(Color::Rgb(137, 180, 250)),
-                ),
-            ]));
+            let tool_label = if let Some(ref params) = node.progress.current_params {
+                if params.is_empty() {
+                    format!("executing: {}", tool)
+                } else {
+                    format!("executing: {}(\"{}\")", tool, params)
+                }
+            } else {
+                format!("executing: {}", tool)
+            };
+            lines.push(Line::from(vec![Span::styled(
+                format!("{}└─ 🛠 {}", tool_indent, tool_label),
+                Style::default().fg(Color::Rgb(137, 180, 250)),
+            )]));
+        }
+
+        // ── Text snapshot: model's "thinking" ────────────────────────────
+        let snapshot_indent = " ".repeat((indent + 4) as usize);
+        if let Some(ref snapshot) = node.progress.text_snapshot {
+            let preview: String = snapshot.chars().take(100).collect();
+            let display = if snapshot.len() > 100 {
+                format!("{}…", preview)
+            } else {
+                preview
+            };
+            lines.push(Line::from(vec![Span::styled(
+                format!("{}   💬 {}", snapshot_indent, display),
+                Style::default().fg(DIM_COLOR),
+            )]));
+        } else {
+            lines.push(Line::from(vec![Span::styled(
+                format!("{}   💭 thinking…", snapshot_indent),
+                Style::default().fg(DIM_COLOR),
+            )]));
+        }
+
+        // ── Recent action log (collapsed: last 3 Action events) ────────────
+        let recent: Vec<_> = node
+            .progress
+            .action_log
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.event_type,
+                    crate::agent::progress::SubagentEventType::Action { .. }
+                )
+            })
+            .rev()
+            .take(3)
+            .collect();
+        if !recent.is_empty() {
+            for event in recent.iter().rev() {
+                if let crate::agent::progress::SubagentEventType::Action {
+                    tool_name,
+                    params_summary,
+                } = &event.event_type
+                {
+                    let action_str = if params_summary.is_empty() {
+                        format!("{}", tool_name)
+                    } else {
+                        format!("{}(\"{}\")", tool_name, params_summary)
+                    };
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("{}   ▸ {}", snapshot_indent, action_str),
+                        Style::default().fg(Color::Rgb(108, 112, 134)),
+                    )]));
+                }
+            }
         }
     }
 
@@ -166,7 +257,8 @@ pub fn render(
     for msg in committed_messages.iter() {
         if msg.role == MessageRole::User {
             add_turn_separator(&mut lines, area.width);
-        } else if matches!(prev_role, Some(MessageRole::Tool)) && msg.role == MessageRole::Assistant {
+        } else if matches!(prev_role, Some(MessageRole::Tool)) && msg.role == MessageRole::Assistant
+        {
             add_inline_separator(&mut lines, area.width);
         }
         lines.extend(message_to_lines(msg, area.width, spinner_frame));
@@ -175,7 +267,13 @@ pub fn render(
             if tool_name == "task" || tool_name == "delegate" {
                 if let Some(tree) = subagent_tree {
                     if !tree.nodes.is_empty() {
-                        render_subagent_card(&mut lines, tree, area.width, subagent_is_executing, spinner_frame);
+                        render_subagent_card(
+                            &mut lines,
+                            tree,
+                            area.width,
+                            subagent_is_executing,
+                            spinner_frame,
+                        );
                     }
                 }
             }
@@ -247,9 +345,19 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
     match msg.role {
         MessageRole::User => {
             let mut lines = Vec::new();
-            lines.push(Line::from(Span::styled("\u{203a} You", Style::default().fg(USER_COLOR).add_modifier(Modifier::BOLD))));
+            lines.push(Line::from(Span::styled(
+                "\u{203a} You",
+                Style::default().fg(USER_COLOR).add_modifier(Modifier::BOLD),
+            )));
             for line in msg.content.lines() {
-                push_wrapped(&mut lines, line, "  ", Color::White, Color::White, max_w + 2);
+                push_wrapped(
+                    &mut lines,
+                    line,
+                    "  ",
+                    Color::White,
+                    Color::White,
+                    max_w + 2,
+                );
             }
             lines.push(Line::raw(""));
             lines
@@ -257,7 +365,10 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
         MessageRole::Assistant => {
             let mut lines = Vec::new();
             if msg.content.is_empty() {
-                lines.push(Line::from(Span::styled("   ", Style::default().fg(ASSISTANT_COLOR))));
+                lines.push(Line::from(Span::styled(
+                    "   ",
+                    Style::default().fg(ASSISTANT_COLOR),
+                )));
             } else if msg.content_collapsed {
                 render_collapsed(&mut lines, &msg.content, "  ", ASSISTANT_COLOR, max_w + 2);
             } else {
@@ -302,18 +413,23 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
 
                 let (prefix, verb_style) = if is_running {
                     let spinner = SPINNER_CHARS[spinner_frame as usize % SPINNER_CHARS.len()];
-                    (format!("{} ", spinner), Style::default().fg(Color::Rgb(200, 200, 100)).add_modifier(Modifier::BOLD))
+                    (
+                        format!("{} ", spinner),
+                        Style::default()
+                            .fg(Color::Rgb(200, 200, 100))
+                            .add_modifier(Modifier::BOLD),
+                    )
                 } else {
-                    ("\u{2022} ".to_string(), Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD))
+                    (
+                        "\u{2022} ".to_string(),
+                        Style::default().fg(TEXT_COLOR).add_modifier(Modifier::BOLD),
+                    )
                 };
                 let verb_with_mode = format!("{}{}", verb, mode_tag);
                 lines.push(Line::from(vec![
                     Span::styled(prefix, Style::default().fg(DIM_COLOR)),
                     Span::styled(verb_with_mode.clone(), verb_style),
-                    Span::styled(
-                        format!(" {}", detail),
-                        Style::default().fg(DIM_COLOR),
-                    ),
+                    Span::styled(format!(" {}", detail), Style::default().fg(DIM_COLOR)),
                     if is_running {
                         Span::styled(
                             format!(" {}", running_suffix(spinner_frame)),
@@ -324,14 +440,25 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
                     },
                 ]));
 
+                // Routing reason for task/delegate tools
+                if !is_running {
+                    if let Some(reason) = msg
+                        .tool_metadata
+                        .as_ref()
+                        .and_then(|m| m.get("routing_reason"))
+                        .and_then(|v| v.as_str())
+                    {
+                        lines.push(Line::from(vec![Span::styled(
+                            format!("   ⓘ {}", reason),
+                            Style::default().fg(Color::Rgb(80, 80, 100)),
+                        )]));
+                    }
+                }
+
                 // If diff data is available, render it inline after the header
                 if let Some(ref diff) = msg.diff_data {
-                    let diff_lines = diff_to_lines(
-                        &diff.file_path,
-                        &diff.old_content,
-                        &diff.new_content,
-                        width,
-                    );
+                    let diff_lines =
+                        diff_to_lines(&diff.file_path, &diff.old_content, &diff.new_content, width);
                     lines.extend(diff_lines);
                     return lines;
                 }
@@ -342,12 +469,19 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
                 let show = if msg.tool_collapsed {
                     content_lines.iter().take(3).copied().collect::<Vec<_>>()
                 } else {
-                    content_lines.iter().take(MAX_TOOL_DISPLAY_LINES).copied().collect::<Vec<_>>()
+                    content_lines
+                        .iter()
+                        .take(MAX_TOOL_DISPLAY_LINES)
+                        .copied()
+                        .collect::<Vec<_>>()
                 };
                 let wrap_width = width.saturating_sub(4) as usize;
                 for line in &show {
                     if line.is_empty() {
-                        lines.push(Line::from(Span::styled("  ", Style::default().fg(DIM_COLOR))));
+                        lines.push(Line::from(Span::styled(
+                            "  ",
+                            Style::default().fg(DIM_COLOR),
+                        )));
                     } else {
                         push_wrapped(&mut lines, line, "  ", DIM_COLOR, DIM_COLOR, wrap_width + 2);
                     }
@@ -377,17 +511,16 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
                     .collect()
             }
         }
-        MessageRole::System => {
-            msg.content
-                .lines()
-                .map(|line| {
-                    Line::from(Span::styled(
-                        line.to_string(),
-                        Style::default().fg(DIM_COLOR),
-                    ))
-                })
-                .collect()
-        }
+        MessageRole::System => msg
+            .content
+            .lines()
+            .map(|line| {
+                Line::from(Span::styled(
+                    line.to_string(),
+                    Style::default().fg(DIM_COLOR),
+                ))
+            })
+            .collect(),
     }
 }
 
@@ -418,18 +551,16 @@ fn tool_verb(name: &str) -> &str {
 /// Extract a human-readable label from tool args (e.g., command string, file path).
 fn tool_label(name: &str, args: &serde_json::Value) -> String {
     match name {
-        "exec_command" | "execute_command" => {
-            args.get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
-        "file_read" | "read_file" | "file_write" | "file_edit" | "apply_patch" | "view" => {
-            args.get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }
+        "exec_command" | "execute_command" => args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "file_read" | "read_file" | "file_write" | "file_edit" | "apply_patch" | "view" => args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         "grep" | "search" => args
             .get("pattern")
             .and_then(|v| v.as_str())
@@ -471,12 +602,7 @@ fn tool_label(name: &str, args: &serde_json::Value) -> String {
 }
 
 /// Convert diff data into ratatui Lines for inline rendering in chat.
-fn diff_to_lines(
-    file_path: &str,
-    old: &str,
-    new: &str,
-    _width: u16,
-) -> Vec<Line<'static>> {
+fn diff_to_lines(file_path: &str, old: &str, new: &str, _width: u16) -> Vec<Line<'static>> {
     use similar::{ChangeTag, TextDiff};
 
     let diff = TextDiff::from_lines(old, new);
@@ -497,18 +623,28 @@ fn diff_to_lines(
             ChangeTag::Equal => continue,
             ChangeTag::Delete => {
                 for line in change.value().lines() {
-                    if shown >= max_show { break; }
+                    if shown >= max_show {
+                        break;
+                    }
                     let text = format!("  - {}", line);
-                    lines.push(Line::from(Span::styled(text, Style::default().fg(DEL_COLOR))));
+                    lines.push(Line::from(Span::styled(
+                        text,
+                        Style::default().fg(DEL_COLOR),
+                    )));
                     shown += 1;
                 }
                 change_count += 1;
             }
             ChangeTag::Insert => {
                 for line in change.value().lines() {
-                    if shown >= max_show { break; }
+                    if shown >= max_show {
+                        break;
+                    }
                     let text = format!("  + {}", line);
-                    lines.push(Line::from(Span::styled(text, Style::default().fg(ADD_COLOR))));
+                    lines.push(Line::from(Span::styled(
+                        text,
+                        Style::default().fg(ADD_COLOR),
+                    )));
                     shown += 1;
                 }
                 change_count += 1;
@@ -524,7 +660,10 @@ fn diff_to_lines(
     }
 
     if change_count == 0 {
-        lines.push(Line::from(Span::styled("  (no changes)", Style::default().fg(DIM_COLOR))));
+        lines.push(Line::from(Span::styled(
+            "  (no changes)",
+            Style::default().fg(DIM_COLOR),
+        )));
     }
 
     lines.push(Line::raw(""));
