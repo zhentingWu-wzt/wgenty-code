@@ -1,5 +1,5 @@
 workflow: full
-phase: build
+phase: verify
 design_doc: null
 plan: null
 base_ref: "98c9f2d67187ed179fa2147e1305608ed20a18b1"
@@ -9,7 +9,7 @@ subagent_dispatch: null
 tdd_mode: direct
 direct_override: true
 isolation: branch
-verify_mode: null
+verify_mode: full
 auto_transition: true
 verify_result: pending
 verification_report: null
