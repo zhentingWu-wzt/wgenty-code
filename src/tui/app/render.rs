@@ -1,6 +1,7 @@
 //! Rendering methods for the TUI application.
 
 use super::App;
+use crate::agent::progress::SubagentStatus;
 use crate::tui::components;
 use crate::tui::theme;
 use crate::tui::util::centered_rect;
@@ -93,6 +94,8 @@ impl App {
             self.scroll_offset,
             self.user_scrolled,
             self.spinner_frame,
+            Some(&self.subagent_tree),
+            self.subagent_tree.count_by_status(SubagentStatus::Running) > 0,
         );
     }
 
