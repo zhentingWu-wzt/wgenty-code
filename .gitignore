@@ -30,3 +30,5 @@ settings.json
 # Logs
 *.log
 .superpowers/
+# CodeGraph index
+.codegraph/

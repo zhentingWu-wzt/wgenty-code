@@ -162,7 +162,7 @@ impl QueryEngine {
     fn fuzzy_find(&self, name: &str) -> Vec<SymbolSuggestion> {
         // Simple approach: get all symbols and compute Levenshtein distance
         // For a production system, this would use a more efficient index
-        let mut suggestions = Vec::new();
+        let suggestions = Vec::new();
         // We don't have a "get all symbols" method, so just return empty for now
         // The fuzzy find will be improved in a future iteration
         let _ = name;

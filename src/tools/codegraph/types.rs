@@ -119,7 +119,7 @@ impl RefKind {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "call" => Self::Call,
             "type_ref" => Self::TypeRef,
@@ -159,7 +159,7 @@ impl RelKind {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "calls" => Self::Calls,
             "implements" => Self::Implements,
@@ -188,7 +188,7 @@ impl Confidence {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "high" => Self::High,
             "medium" => Self::Medium,

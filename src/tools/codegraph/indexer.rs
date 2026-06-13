@@ -331,8 +331,7 @@ impl<'a> ExtractCtx<'a> {
     fn collect_references(&mut self, node: tree_sitter::Node<'_>, parent_idx: i64) {
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
-                match child.kind() {
-                    "call_expression" => {
+                if child.kind() == "call_expression" {
                         if let Some(func_node) = child.child(0) {
                             let called_name = self.utf8_text(func_node).to_string();
                             if !called_name.is_empty()
@@ -368,8 +367,6 @@ impl<'a> ExtractCtx<'a> {
                             }
                         }
                     }
-                    _ => {}
-                }
                 self.collect_references(child, parent_idx);
             }
         }
