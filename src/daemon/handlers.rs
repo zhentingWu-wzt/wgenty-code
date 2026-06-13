@@ -1,5 +1,6 @@
 //! HTTP request handlers for the daemon API.
 
+use crate::agent::progress::SubagentProgress;
 use crate::api::{ApiClient, ToolDefinition};
 use crate::daemon::models::*;
 use crate::daemon::state::DaemonState;
@@ -14,6 +15,7 @@ use axum::{
     },
 };
 use futures::StreamExt;
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::io::Write;
 use std::sync::Arc;
@@ -348,6 +350,16 @@ pub async fn get_background_results(
 ) -> Json<serde_json::Value> {
     let results = state.background_manager.drain_results().await;
     Json(serde_json::json!({ "results": results }))
+}
+
+// ── Subagent Progress ────────────────────────────────────────────────────────
+
+/// GET /api/v1/subagent/progress
+pub async fn get_subagent_progress(
+    State(state): State<Arc<DaemonState>>,
+) -> Json<HashMap<String, SubagentProgress>> {
+    let store = state.subagent_progress.read().await;
+    Json(store.clone())
 }
 
 // ── MCP ──────────────────────────────────────────────────────────────────────
