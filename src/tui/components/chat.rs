@@ -32,7 +32,7 @@ fn status_icon(status: &SubagentStatus) -> &'static str {
 pub fn render_subagent_card(
     lines: &mut Vec<Line>,
     tree: &SubagentTree,
-    width: u16,
+    _width: u16,
     is_executing: bool,
     spinner_frame: u8,
 ) {
