@@ -2,12 +2,14 @@
 //!
 //! The core pipeline used by both the `delegate` tool and auto-routing in `task` tool.
 
-use crate::agent::progress::ProgressCallback;
+use crate::agent::progress::{ProgressCallback, SubagentProgress, SubagentStatus};
 use crate::api::{ApiClient, ChatMessage};
 use crate::config::Settings;
 use crate::teams::subagent_loop::run_subagent_loop;
 use crate::tools::ToolRegistry;
+use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// Result of the RLM pipeline including stats.
 pub struct RlmResult {
@@ -22,12 +24,20 @@ type SubTaskExecItem = (usize, Arc<ToolRegistry>, ApiClient, String, Vec<String>
 
 /// Run the full RLM pipeline: Planner → Executor → Aggregator.
 /// Used by both the `delegate` tool and auto-routing in `task` tool.
+///
+/// `progress_store` and `session_id` are used to create per-sub-task progress
+/// nodes so each sub-agent appears as a distinct entry in the subagent tree.
+/// `root_node_id` is the parent for all sub-task nodes.
 pub async fn run_rlm_pipeline(
     settings: &Settings,
     tool_registry: Arc<ToolRegistry>,
     task: &str,
     context: &str,
-    on_progress: Option<ProgressCallback>,
+    progress_store: Option<(
+        Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
+        String,
+    )>, // (store, session_id)
+    root_node_id: Option<String>,
 ) -> Result<RlmResult, String> {
     tracing::info!(
         target: "rlm",
@@ -224,7 +234,61 @@ Context: {context}
         let timeout_secs = settings.subagent_timeout_secs;
 
         for (idx, registry, api_client, prompt, allowed) in level_data {
-            let on_progress = on_progress.clone();
+            // ── Create a per-sub-task progress callback with unique node_id ──
+            let sub_node_id = uuid::Uuid::new_v4().to_string();
+            let sub_label = {
+                // Truncate prompt to ~50 chars for a readable label.
+                let p = prompt.trim();
+                if p.len() > 50 {
+                    format!("sub: {}…", &p[..47])
+                } else {
+                    format!("sub: {}", p)
+                }
+            };
+            let sub_progress: Option<ProgressCallback> =
+                if let Some((ref store, ref session_id)) = progress_store {
+                    let store = store.clone();
+                    let sid = session_id.clone();
+                    let nid = sub_node_id.clone();
+                    let pid = root_node_id.clone();
+                    let lbl = sub_label.clone();
+                    // Register Pending node before spawn
+                    {
+                        let mut s = store.write().await;
+                        s.entry(sid.clone()).or_default().insert(
+                            nid.clone(),
+                            SubagentProgress {
+                                node_id: nid.clone(),
+                                parent_id: pid.clone(),
+                                label: lbl.clone(),
+                                status: SubagentStatus::Pending,
+                                round: None,
+                                max_rounds: Some(20),
+                                current_tool: None,
+                                current_params: None,
+                                action_log: Vec::new(),
+                                text_snapshot: None,
+                                started_at: chrono::Utc::now().timestamp_millis(),
+                                elapsed_ms: 0,
+                                metadata: None,
+                            },
+                        );
+                    }
+                    Some(Arc::new(move |mut progress: SubagentProgress| {
+                        progress.node_id = nid.clone();
+                        progress.parent_id = pid.clone();
+                        progress.label = lbl.clone();
+                        let store = store.clone();
+                        let sid = sid.clone();
+                        let nid = nid.clone();
+                        tokio::spawn(async move {
+                            let mut s = store.write().await;
+                            s.entry(sid).or_default().insert(nid, progress);
+                        });
+                    }))
+                } else {
+                    None
+                };
             let handle = tokio::spawn(async move {
                 let result = run_subagent_loop(
                     &api_client,
@@ -234,7 +298,7 @@ Context: {context}
                     &allowed,
                     20,
                     timeout_secs,
-                    on_progress,
+                    sub_progress,
                 )
                 .await;
                 (result, idx)

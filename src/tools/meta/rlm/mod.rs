@@ -14,7 +14,7 @@ mod pipeline;
 
 pub use pipeline::{extract_json, run_rlm_pipeline, RlmResult};
 
-use crate::agent::progress::{ProgressCallback, SubagentProgress, SubagentStatus};
+use crate::agent::progress::{SubagentProgress, SubagentStatus};
 use crate::config::Settings;
 use crate::tools::{Tool, ToolError, ToolOutput, ToolRegistry};
 use async_trait::async_trait;
@@ -39,28 +39,6 @@ impl RlmDelegateTool {
             tool_registry,
             progress_store,
         }
-    }
-
-    /// Create a ProgressCallback that writes to the shared progress store.
-    fn make_progress_callback(
-        store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
-        session_id: String,
-        node_id: String,
-        parent_id: Option<String>,
-        label: String,
-    ) -> ProgressCallback {
-        Arc::new(move |mut progress: SubagentProgress| {
-            progress.node_id = node_id.clone();
-            progress.parent_id = parent_id.clone();
-            progress.label = label.clone();
-            let store = store.clone();
-            let node_id = node_id.clone();
-            let sid = session_id.clone();
-            tokio::spawn(async move {
-                let mut store = store.write().await;
-                store.entry(sid).or_default().insert(node_id, progress);
-            });
-        })
     }
 }
 
@@ -131,20 +109,19 @@ impl Tool for RlmDelegateTool {
                 },
             );
         }
-        let cb = Self::make_progress_callback(
-            self.progress_store.clone(),
-            session_id,
-            root_node_id.clone(),
-            None,
-            format!("delegate: {}", task),
-        );
-
-        let result = run_rlm_pipeline(&self.settings, tool_registry, task, context, Some(cb))
-            .await
-            .map_err(|e| ToolError {
-                message: e.clone(),
-                code: Some("rlm_pipeline_error".to_string()),
-            })?;
+        let result = run_rlm_pipeline(
+            &self.settings,
+            tool_registry,
+            task,
+            context,
+            Some((self.progress_store.clone(), session_id)),
+            Some(root_node_id),
+        )
+        .await
+        .map_err(|e| ToolError {
+            message: e.clone(),
+            code: Some("rlm_pipeline_error".to_string()),
+        })?;
 
         Ok(ToolOutput {
             output_type: "text".to_string(),
