@@ -253,6 +253,34 @@ impl AgentLoop {
                             args: args.clone(),
                         });
 
+                        // Spawn progress poller for task/delegate tools in sequential path
+                        let poll_handle = if (tc.function.name == "task" || tc.function.name == "delegate")
+                            && self.event_tx.is_closed() == false
+                        {
+                            let tx = self.event_tx.clone();
+                            let client = self.client.clone();
+                            Some(tokio::spawn(async move {
+                                let start = tokio::time::Instant::now();
+                                let max_duration = Duration::from_secs(120);
+                                loop {
+                                    if start.elapsed() > max_duration {
+                                        break;
+                                    }
+                                    tokio::time::sleep(Duration::from_millis(500)).await;
+                                    match client.poll_subagent_progress().await {
+                                        Ok(map) => {
+                                            for (_id, progress) in map {
+                                                let _ = tx.send(AppEvent::SubagentUpdate(progress));
+                                            }
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                            }))
+                        } else {
+                            None
+                        };
+
                         let tool_timeout = if tc.function.name == "task" {
                             Duration::from_secs(300)
                         } else {
@@ -278,9 +306,15 @@ impl AgentLoop {
                                     let mut history = self.conversation_history.lock().await;
                                     history.push(ChatMessage::tool(&tc.id, msg));
                                 }
+                                if let Some(h) = poll_handle {
+                                    h.abort();
+                                }
                                 continue;
                             }
                         };
+
+                        // Drop poll handle (poller self-terminates after 120s max)
+                        drop(poll_handle);
 
                         let _ = self.event_tx.send(AppEvent::ToolResult {
                             name: tc.function.name.clone(),
