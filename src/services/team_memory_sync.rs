@@ -260,6 +260,7 @@ impl TeamMemorySyncService {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn resolve_conflict(
         &self,
         local: &TeamMemory,
