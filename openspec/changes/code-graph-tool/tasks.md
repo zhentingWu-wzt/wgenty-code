@@ -6,7 +6,7 @@
 
 ## 2. 数据模型与存储层
 
-- [ ] 2.1 定义核心类型：`Symbol`, `SymbolKind`, `Reference`, `Relationship`, `Visibility` 在 `types.rs`
+- [x] 2.1 定义核心类型：`Symbol`, `SymbolKind`, `Reference`, `Relationship`, `Visibility` 在 `types.rs`
 - [ ] 2.2 实现 `IndexStore`：SQLite schema 创建（symbols, references, relationships, files 表）在 `store.rs`
 - [ ] 2.3 实现 `IndexStore::upsert_symbol` / `delete_symbol` / `get_symbol` CRUD 方法
 - [ ] 2.4 实现 `IndexStore::insert_reference` / `get_references` 引用管理
