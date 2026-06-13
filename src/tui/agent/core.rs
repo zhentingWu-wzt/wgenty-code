@@ -165,7 +165,7 @@ impl AgentLoop {
                         tokio::spawn(async move {
                             let result = tokio::time::timeout(
                                 Duration::from_secs(300),
-                                Self::execute_tool_static(&client, &name, args.clone(), &session_id),
+                                Self::execute_tool_static(&client, &name, args.clone(), &session_id, Some(event_tx.clone())),
                             ).await;
                             let content = match result {
                                 Ok(r) => r,
