@@ -1,10 +1,10 @@
 //! Application main loop — event handling, layout, and daemon lifecycle.
 
-pub mod types;
 mod event;
-mod render;
 mod input;
+mod render;
 mod turn;
+pub mod types;
 
 pub use types::*;
 
@@ -14,9 +14,10 @@ use crate::state::agent_phase::{AgentPhase, TurnAbortReason, TurnId};
 use crate::tui::client::DaemonClient;
 use crate::tui::components::input::InputBox;
 use crate::tui::components::permission::PermissionState;
+use crate::tui::components::plan_panel::PlanPanelState;
 use crate::tui::components::question::QuestionState;
 use crate::tui::components::session::SessionState;
-use crate::tui::components::plan_panel::PlanPanelState;
+use crate::tui::components::subagent_panel_state::SubagentPanelState;
 use crate::tui::components::subagent_tree::SubagentTree;
 use crate::tui::components::task_panel::TaskPanelState;
 use crossterm::event::EnableBracketedPaste;
@@ -74,6 +75,8 @@ pub struct App {
     subagent_history: HashMap<String, SubagentTree>,
     /// Whether the subagent monitor panel is visible.
     subagent_panel_visible: bool,
+    /// Interactive state for the subagent monitor panel.
+    pub subagent_panel_state: SubagentPanelState,
     /// Shared settings handle — updated by the config watcher on file change.
     pub settings_lock: crate::config::watcher::SettingsHandle,
 
@@ -104,41 +107,47 @@ impl App {
                     .display()
                     .to_string(),
             )
-            .with_shell(
-                std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string()),
-            )
+            .with_shell(std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string()))
             .with_sandbox("workspace-write")
             .with_approval("never");
         let settings = {
             let guard = settings_lock.read().unwrap();
             guard.clone()
         };
-        let prompt_ctx = prompt_ctx
-            .with_collaboration(settings.collaboration_mode.clone().unwrap_or_default());
+        let prompt_ctx =
+            prompt_ctx.with_collaboration(settings.collaboration_mode.clone().unwrap_or_default());
 
         // Load skills inventory for system prompt injection
         let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        let skills_dirs = vec![
-            home.join(".wgenty-code").join("skills"),
-        ];
+        let skills_dirs = vec![home.join(".wgenty-code").join("skills")];
         let skill_loader = crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);
         let mut skill_inventory: Vec<prompts::SkillEntry> = Vec::new();
         for name in skill_loader.skill_names() {
             if let Some(skill) = skill_loader.load_skill(&name) {
                 let desc = skill.description.clone();
-                skill_inventory.push(prompts::SkillEntry { name, description: desc });
+                skill_inventory.push(prompts::SkillEntry {
+                    name,
+                    description: desc,
+                });
             }
         }
         let prompt_ctx = prompt_ctx.with_skills(skill_inventory);
 
         // Load WGENTY.md and AGENTS.md sections from project root
-        let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let project_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let wgenty_sections = crate::utils::project::read_wgenty_md_sections(&project_root);
         let agents_sections = crate::utils::project::read_agents_md_sections(&project_root);
 
         // Warn if WGENTY.md + AGENTS.md exceed token budget (fires once per session)
-        let wgenty_tokens: usize = wgenty_sections.iter().map(|s| crate::utils::estimate_tokens(s)).sum();
-        let agents_tokens: usize = agents_sections.iter().map(|s| crate::utils::estimate_tokens(s)).sum();
+        let wgenty_tokens: usize = wgenty_sections
+            .iter()
+            .map(|s| crate::utils::estimate_tokens(s))
+            .sum();
+        let agents_tokens: usize = agents_sections
+            .iter()
+            .map(|s| crate::utils::estimate_tokens(s))
+            .sum();
         let total_md_tokens = wgenty_tokens + agents_tokens;
         if total_md_tokens > 2000 {
             tracing::warn!(
@@ -147,7 +156,9 @@ impl App {
                 total = total_md_tokens,
                 "WGENTY.md + AGENTS.md sections estimate ~{} tokens ({} + {}). \
                  Consider trimming to keep session startup lean.",
-                total_md_tokens, wgenty_tokens, agents_tokens,
+                total_md_tokens,
+                wgenty_tokens,
+                agents_tokens,
             );
         }
 
@@ -181,7 +192,11 @@ impl App {
             current_turn_handle: None,
             current_turn_id: None,
             turn_count: 0,
-            mode: if settings.plan_mode { AgentMode::PlanMode } else { AgentMode::Normal },
+            mode: if settings.plan_mode {
+                AgentMode::PlanMode
+            } else {
+                AgentMode::Normal
+            },
             event_tx,
             event_rx,
             should_quit: false,
@@ -193,6 +208,7 @@ impl App {
             subagent_tree: SubagentTree::default(),
             subagent_history: HashMap::new(),
             subagent_panel_visible: false,
+            subagent_panel_state: SubagentPanelState::default(),
 
             last_ctrl_c: None,
             has_running_tool: false,
@@ -250,14 +266,14 @@ impl App {
     }
 }
 
-/// Truncate a user message to a short session name (max ~50 chars, no newlines).
-pub use super::util::truncate_session_name;
-pub use super::util::start_daemon;
-pub use super::util::compute_collapse_state;
-pub use super::util::extract_diff_data;
-pub use super::util::split_unified_diff;
-pub use super::util::extract_tool_metadata;
-pub use super::util::format_tool_result;
-pub use super::util::tool_label;
 pub use super::util::agent_phase_from_event;
 pub use super::util::centered_rect;
+pub use super::util::compute_collapse_state;
+pub use super::util::extract_diff_data;
+pub use super::util::extract_tool_metadata;
+pub use super::util::format_tool_result;
+pub use super::util::split_unified_diff;
+pub use super::util::start_daemon;
+pub use super::util::tool_label;
+/// Truncate a user message to a short session name (max ~50 chars, no newlines).
+pub use super::util::truncate_session_name;
