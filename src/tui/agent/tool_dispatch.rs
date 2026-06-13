@@ -3,6 +3,7 @@ use crate::guardian::classify_risk;
 use crate::tui::app::AppEvent;
 use crate::tui::client::DaemonClient;
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 impl AgentLoop {
     /// Static version of tool execution for use in parallel spawned tasks.
@@ -13,6 +14,7 @@ impl AgentLoop {
         name: &str,
         args: serde_json::Value,
         session_id: &str,
+        event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
     ) -> String {
         // Guardian: inline safety check (no UI interaction in parallel path)
         if name == "execute_command" || name == "exec_command" {
@@ -27,7 +29,33 @@ impl AgentLoop {
             }
         }
 
-        match client.execute_tool(name, args, session_id).await {
+        // Poll subagent progress while task/delegate tools are running
+        let is_long_running = name == "task" || name == "delegate";
+
+        let poll_handle = if is_long_running && event_tx.is_some() {
+            let tx = event_tx.as_ref().unwrap().clone();
+            let client_clone = client.clone();
+            Some(tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    match client_clone.poll_subagent_progress().await {
+                        Ok(map) => {
+                            if map.is_empty() {
+                                continue; // no progress yet, keep polling
+                            }
+                            for (_id, progress) in map {
+                                let _ = tx.send(AppEvent::SubagentUpdate(progress));
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+
+        let result = match client.execute_tool(name, args, session_id).await {
             Ok(resp) => {
                 if let Some(perm) = resp.permission_required {
                     format!(
@@ -45,7 +73,14 @@ impl AgentLoop {
                 }
             }
             Err(e) => format!(r#"{{"success":false,"error":"{}"}}"#, e),
+        };
+
+        // Stop poller
+        if let Some(handle) = poll_handle {
+            handle.abort();
         }
+
+        result
     }
 
     pub(super) async fn execute_tool_with_permission(
