@@ -20,6 +20,15 @@ pub struct AssembledInstructions {
     pub system_messages: Vec<ChatMessage>,
 }
 
+/// A single skill entry for system prompt injection (Layer 1).
+/// Contains name and one-line description only; full body is loaded
+/// on demand by the agent via the `load_skill` tool (Layer 2).
+#[derive(Debug, Clone)]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+}
+
 /// Context needed for dynamic layers (permissions + environment).
 #[derive(Debug, Clone)]
 pub struct PromptContext {
@@ -29,6 +38,16 @@ pub struct PromptContext {
     pub approval_policy: Option<String>,
     pub collaboration_mode: Option<String>,
     pub agents_md_sections: Vec<String>,
+    /// Skills discoverable by the agent. Layer 1: name + description only.
+    pub skills_inventory: Vec<SkillEntry>,
+    /// Sections from the project's WGENTY.md (split by `---`). Layer 8.
+    pub wgenty_md_sections: Vec<String>,
+}
+
+impl Default for PromptContext {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PromptContext {
@@ -40,6 +59,8 @@ impl PromptContext {
             approval_policy: None,
             collaboration_mode: None,
             agents_md_sections: Vec::new(),
+            skills_inventory: Vec::new(),
+            wgenty_md_sections: Vec::new(),
         }
     }
 
@@ -65,6 +86,21 @@ impl PromptContext {
 
     pub fn with_collaboration(mut self, mode: impl Into<String>) -> Self {
         self.collaboration_mode = Some(mode.into());
+        self
+    }
+
+    pub fn with_skills(mut self, skills: Vec<SkillEntry>) -> Self {
+        self.skills_inventory = skills;
+        self
+    }
+
+    pub fn with_wgenty_md(mut self, sections: Vec<String>) -> Self {
+        self.wgenty_md_sections = sections;
+        self
+    }
+
+    pub fn with_agents_md(mut self, sections: Vec<String>) -> Self {
+        self.agents_md_sections = sections;
         self
     }
 }
@@ -106,12 +142,38 @@ pub fn assemble_instructions(
     let env_text = build_environment_layer(context);
     system_messages.push(ChatMessage::system(env_text));
 
-    // ── Layer 6: AGENTS.md Convention ───────────────────────────────────
+    // ── Layer 6: Skills (discoverable + on-demand via load_skill tool) ──
+    if settings.include_skill_instructions && !context.skills_inventory.is_empty() {
+        let mut skills_lines = Vec::new();
+        for skill in &context.skills_inventory {
+            skills_lines.push(format!("- `{}`: {}", skill.name, skill.description));
+        }
+        system_messages.push(ChatMessage::system(format!(
+            "## Available skills
+
+The following skills are available. Use the `load_skill` tool to read a skill's full instructions when needed.
+
+{}",
+            skills_lines.join("
+")
+        )));
+    }
+
+    // ── Layer 7: AGENTS.md Convention ───────────────────────────────────
     if !context.agents_md_sections.is_empty() {
         let agents_text = context.agents_md_sections.join("\n\n");
         system_messages.push(ChatMessage::system(format!(
             "# AGENTS.md\n\n{}",
             agents_text
+        )));
+    }
+
+    // ── Layer 8: WGENTY.md 项目事实 ──────────────────────────────────
+    if !context.wgenty_md_sections.is_empty() {
+        let wgenty_text = context.wgenty_md_sections.join("\n\n");
+        system_messages.push(ChatMessage::system(format!(
+            "# WGENTY.md — 项目规则与约定\n\n{}",
+            wgenty_text
         )));
     }
 
@@ -124,9 +186,7 @@ fn build_permissions_layer(ctx: &PromptContext) -> Option<String> {
 
     if let Some(ref mode) = ctx.sandbox_mode {
         let sandbox_text = match mode.as_str() {
-            "workspace-write" => {
-                include_str!("permissions/sandbox_workspace_write.md").to_string()
-            }
+            "workspace-write" => include_str!("permissions/sandbox_workspace_write.md").to_string(),
             "read-only" => include_str!("permissions/sandbox_read_only.md").to_string(),
             other => format!("Sandbox mode: {other}"),
         };
@@ -182,6 +242,11 @@ fn build_environment_layer(ctx: &PromptContext) -> String {
     )
 }
 
+/// Return the /init command prompt text for LLM-based codebase analysis.
+pub fn get_init_prompt() -> &'static str {
+    include_str!("init_instructions.md")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,14 +254,12 @@ mod tests {
     #[test]
     fn test_assemble_base_only() {
         let settings = Settings::default();
-        let ctx = PromptContext::new()
-            .with_cwd("/tmp")
-            .with_shell("zsh");
+        let ctx = PromptContext::new().with_cwd("/tmp").with_shell("zsh");
 
         let instructions = assemble_instructions(&settings, &ctx);
         // Should have: base + environment = at least 2 messages
         assert!(instructions.system_messages.len() >= 2); // base + env
-        // First message is the base instructions
+                                                          // First message is the base instructions
         assert_eq!(instructions.system_messages[0].role, "system");
     }
 
@@ -216,21 +279,16 @@ mod tests {
     #[test]
     fn test_graceful_degradation_no_permissions() {
         let settings = Settings::default();
-        let ctx = PromptContext::new()
-            .with_cwd("/tmp")
-            .with_shell("zsh");
+        let ctx = PromptContext::new().with_cwd("/tmp").with_shell("zsh");
         // No sandbox/approval set
 
         let instructions = assemble_instructions(&settings, &ctx);
         // No permissions layer injected
-        let has_permissions = instructions
-            .system_messages
-            .iter()
-            .any(|m| {
-                m.content
-                    .as_deref()
-                    .map_or(false, |c| c.contains("<permissions_instructions>"))
-            });
+        let has_permissions = instructions.system_messages.iter().any(|m| {
+            m.content
+                .as_deref()
+                .is_some_and(|c| c.contains("<permissions_instructions>"))
+        });
         assert!(!has_permissions);
     }
 }

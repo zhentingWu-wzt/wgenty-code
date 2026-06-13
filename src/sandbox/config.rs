@@ -132,7 +132,9 @@ impl SandboxConfig {
                 max_cpu_seconds: self.cpu_timeout_secs.unwrap_or(defaults.cpu_secs),
                 max_wall_seconds: self.wall_timeout_secs.unwrap_or(defaults.wall_secs),
                 max_processes: self.max_processes.unwrap_or(defaults.processes),
-                max_file_size_bytes: self.max_file_size_mb.unwrap_or(defaults.file_size_mb) * 1024 * 1024,
+                max_file_size_bytes: self.max_file_size_mb.unwrap_or(defaults.file_size_mb)
+                    * 1024
+                    * 1024,
             },
             env_allowlist: self.env_allowlist.unwrap_or(defaults.env_vars),
             allow_subprocess: self.allow_subprocess.unwrap_or(defaults.subprocess),
@@ -161,8 +163,13 @@ impl SandboxConfig {
                 file_size_mb: 100,
                 subprocess: true,
                 env_vars: vec![
-                    "PATH".into(), "HOME".into(), "USER".into(),
-                    "LANG".into(), "TMPDIR".into(), "TEMP".into(), "TMP".into(),
+                    "PATH".into(),
+                    "HOME".into(),
+                    "USER".into(),
+                    "LANG".into(),
+                    "TMPDIR".into(),
+                    "TEMP".into(),
+                    "TMP".into(),
                 ],
             },
             SecurityLevel::High => LevelDefaults {
@@ -173,9 +180,7 @@ impl SandboxConfig {
                 processes: 8,
                 file_size_mb: 50,
                 subprocess: true,
-                env_vars: vec![
-                    "PATH".into(), "HOME".into(), "LANG".into(), "TMPDIR".into(),
-                ],
+                env_vars: vec!["PATH".into(), "HOME".into(), "LANG".into(), "TMPDIR".into()],
             },
             SecurityLevel::Paranoid => LevelDefaults {
                 network: NetworkPolicy::None,

@@ -4,18 +4,20 @@
 //! and introduces explicit TurnStarted / TurnComplete / TurnAborted events
 //! so the agent loop can propagate cancellation and timeout signals.
 
-
 // ── Agent Phase ──────────────────────────────────────────────────────────
 
 /// Formal agent lifecycle phase, replacing the raw `status: String`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum AgentPhase {
     /// Nothing in progress; waiting for user input.
+    #[default]
     Idle,
     /// Streaming LLM response chunks back to the UI.
     StreamingResponse,
     /// Agent is thinking / between tool executions.
     Thinking,
+    /// LLM is generating tool calls; tools will execute shortly.
+    PreparingTools,
     /// A tool is currently executing on the daemon.
     ExecutingTool { name: String },
     /// Awaiting user response to a permission prompt.
@@ -28,6 +30,8 @@ pub enum AgentPhase {
     Completed,
     /// Turn ended with an error.
     Errored(String),
+    /// Plan mode: agent has generated a plan, awaiting user review.
+    Planning,
 }
 
 impl AgentPhase {
@@ -37,24 +41,26 @@ impl AgentPhase {
             AgentPhase::Idle => "idle",
             AgentPhase::StreamingResponse => "streaming",
             AgentPhase::Thinking => "thinking",
-            AgentPhase::ExecutingTool { name } => return name.as_str(),
+            AgentPhase::PreparingTools => "preparing tools...",
+            AgentPhase::ExecutingTool { name } => name.as_str(),
             AgentPhase::AwaitingPermission { .. } => "permission required",
             AgentPhase::AwaitingUserInput { .. } => "question",
             AgentPhase::Compacting => "compacting",
             AgentPhase::Completed => "idle",
             AgentPhase::Errored(_) => "error",
+            AgentPhase::Planning => "plan review",
         }
     }
 
     /// Whether the phase is a "busy" state (non-idle, non-error).
     pub fn is_busy(&self) -> bool {
-        !matches!(self, AgentPhase::Idle | AgentPhase::Completed | AgentPhase::Errored(_))
-    }
-}
-
-impl Default for AgentPhase {
-    fn default() -> Self {
-        AgentPhase::Idle
+        !matches!(
+            self,
+            AgentPhase::Idle
+                | AgentPhase::Completed
+                | AgentPhase::Errored(_)
+                | AgentPhase::Planning
+        )
     }
 }
 
@@ -96,6 +102,12 @@ pub enum ReviewDecision {
 /// Unique identifier for a single user-input → agent-response cycle.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TurnId(pub String);
+
+impl Default for TurnId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TurnId {
     pub fn new() -> Self {

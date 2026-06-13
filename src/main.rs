@@ -1,11 +1,11 @@
 //! Wgenty Code Rust - Main Entry Point
 
 use clap::Parser;
+use tracing::error;
 use wgenty_code::cli::Cli;
 use wgenty_code::config::Settings;
 use wgenty_code::state::AppState;
 use wgenty_code::utils::logging;
-use tracing::error;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

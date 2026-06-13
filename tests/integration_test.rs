@@ -1,13 +1,13 @@
 //! Integration Tests for Wgenty Code Rust
 
 use clap::Parser;
+use std::sync::Arc;
 use wgenty_code::{
     cli::Cli,
     config::Settings,
     knowledge::{BuiltinSkills, SkillCategory, SkillContext, SkillExecutor, SkillRegistry},
     tools::ToolRegistry,
 };
-use std::sync::Arc;
 
 #[test]
 fn test_cli_initialization() {
@@ -38,7 +38,7 @@ async fn test_tool_system_integration() {
     assert!(tool_names.contains(&"search"));
     assert!(tool_names.contains(&"list_files"));
     assert!(tool_names.contains(&"git_operations"));
-    assert!(tool_names.contains(&"task_management"));
+    assert!(tool_names.contains(&"checkpoint"));
     assert!(tool_names.contains(&"note_edit"));
     // New tool: ask_user_question
     assert!(
@@ -115,21 +115,6 @@ async fn test_new_tools_functionality() {
 
     // May fail if not in git repo, but should not panic
     let _ = git_result;
-
-    // Test task creation
-    let task_result = registry
-        .execute(
-            "task_management",
-            json!({
-                "operation": "create",
-                "subject": "Integration Test Task",
-                "description": "Testing task management tool",
-                "priority": "high"
-            }),
-        )
-        .await;
-
-    assert!(task_result.is_ok(), "Task creation should succeed");
 
     // Test note creation
     let note_result = registry

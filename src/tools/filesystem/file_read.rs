@@ -67,16 +67,21 @@ impl Tool for FileReadTool {
 
         let path = Path::new(file_path);
 
-        if !path.exists() {
-            return Err(ToolError {
-                message: format!("File does not exist: {}", file_path),
-                code: Some("file_not_found".to_string()),
-            });
-        }
-
-        let bytes = std::fs::read(path).map_err(|e| ToolError {
-            message: format!("Failed to read file: {}", e),
-            code: Some("read_error".to_string()),
+        // Use tokio::fs to avoid blocking the async runtime.
+        // Skip the exists() TOCTOU check — read already returns a clear
+        // error if the file doesn't exist.
+        let bytes = tokio::fs::read(path).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                ToolError {
+                    message: format!("File does not exist: {}", file_path),
+                    code: Some("file_not_found".to_string()),
+                }
+            } else {
+                ToolError {
+                    message: format!("Failed to read file: {}", e),
+                    code: Some("read_error".to_string()),
+                }
+            }
         })?;
 
         if bytes.contains(&0) {
@@ -103,13 +108,30 @@ impl Tool for FileReadTool {
 
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
-        let start_idx = start_line.saturating_sub(1).min(total_lines);
-        let end_idx = end_line.unwrap_or(total_lines).min(total_lines);
+
+        if total_lines == 0 {
+            return Ok(ToolOutput {
+                output_type: "text".to_string(),
+                content: String::new(),
+                metadata: {
+                    let mut m = HashMap::new();
+                    m.insert("path".to_string(), serde_json::json!(file_path));
+                    m.insert("total_lines".to_string(), serde_json::json!(0));
+                    m
+                },
+            });
+        }
+
+        let start_idx = (start_line.saturating_sub(1)).min(total_lines.saturating_sub(1));
+        let end_idx = end_line
+            .unwrap_or(total_lines)
+            .min(total_lines)
+            .max(start_idx + 1); // ensure end > start, at least 1 line
 
         let mut rendered = lines[start_idx..end_idx]
             .iter()
             .enumerate()
-            .map(|(idx, line)| format!("{:>6}\t{}", start_idx + idx + 1, line))
+            .map(|(idx, line)| format!("{:>4}\t{}", start_idx + idx + 1, line))
             .collect::<Vec<_>>()
             .join("\n");
 

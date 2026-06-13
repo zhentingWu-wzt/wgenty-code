@@ -192,7 +192,8 @@ impl Default for Conversation {
 
 impl Default for ToolRegistryState {
     fn default() -> Self {
-        let registry = crate::tools::ToolRegistry::new().with_settings(&crate::config::Settings::default());
+        let registry =
+            crate::tools::ToolRegistry::new().with_settings(&crate::config::Settings::default());
         let tools = registry
             .list()
             .into_iter()

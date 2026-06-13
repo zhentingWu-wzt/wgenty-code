@@ -60,7 +60,13 @@ impl ContextEntry {
     }
 
     fn estimate_tokens(text: &str) -> usize {
-        text.split_whitespace().count() / 3 * 4
+        let word_count = text.split_whitespace().count();
+        if word_count == 0 {
+            return 0;
+        }
+        // Ensure at least 1 token for non-empty text; integer division
+        // would otherwise return 0 for 1–2 words.
+        (word_count / 3 * 4).max(1)
     }
 }
 

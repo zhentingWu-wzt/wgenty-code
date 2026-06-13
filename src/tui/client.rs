@@ -1,12 +1,18 @@
 //! HTTP client for communicating with the daemon API.
 //! Mirrors the TypeScript ApiClient in packages/core/src/client.ts.
 
+use std::collections::HashMap;
+
 use crate::api::ChatMessage;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct DaemonClient {
+    /// Client for SSE streaming requests (no timeout — streams can run for minutes).
     http: reqwest::Client,
+    /// Separate client for short-lived tool/API requests, avoiding connection-pool
+    /// conflicts with the long-lived SSE streaming connection.
+    http_tools: reqwest::Client,
     base_url: String,
 }
 
@@ -15,8 +21,14 @@ impl DaemonClient {
         let http = reqwest::Client::builder()
             .build()
             .expect("reqwest client build");
+        let http_tools = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .pool_max_idle_per_host(0) // don't keep idle connections — always fresh
+            .build()
+            .expect("reqwest tools client build");
         Self {
             http,
+            http_tools,
             base_url: base_url.trim_end_matches('/').to_string(),
         }
     }
@@ -45,11 +57,22 @@ impl DaemonClient {
         messages: Vec<ChatMessage>,
         max_tokens: Option<usize>,
     ) -> anyhow::Result<reqwest::Response> {
+        self.chat_stream_with_plan(messages, max_tokens, None).await
+    }
+
+    /// Chat stream with optional plan_mode flag.
+    pub async fn chat_stream_with_plan(
+        &self,
+        messages: Vec<ChatMessage>,
+        max_tokens: Option<usize>,
+        plan_mode: Option<bool>,
+    ) -> anyhow::Result<reqwest::Response> {
         let url = format!("{}/api/v1/chat/stream", self.base_url);
         let body = ChatStreamRequest {
             messages,
             model: None,
             max_tokens,
+            plan_mode,
         };
         let resp = self
             .http
@@ -81,7 +104,7 @@ impl DaemonClient {
             session_id: Some(session_id.to_string()),
         };
         let resp = self
-            .http
+            .http_tools
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&body)
@@ -97,7 +120,7 @@ impl DaemonClient {
     /// POST /api/v1/tools/approve
     pub async fn approve_tool(&self, session_rule: &str) -> anyhow::Result<()> {
         let url = format!("{}/api/v1/tools/approve", self.base_url);
-        self.http
+        self.http_tools
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({"session_rule": session_rule}))
@@ -109,7 +132,7 @@ impl DaemonClient {
     /// POST /api/v1/tools/unapprove
     pub async fn unapprove_tool(&self, session_rule: &str) -> anyhow::Result<()> {
         let url = format!("{}/api/v1/tools/unapprove", self.base_url);
-        self.http
+        self.http_tools
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({"session_rule": session_rule}))
@@ -118,10 +141,17 @@ impl DaemonClient {
         Ok(())
     }
 
+    /// GET /api/v1/undo — undo most recent checkpoint
+    pub async fn undo(&self) -> anyhow::Result<String> {
+        let url = format!("{}/api/v1/tools/undo", self.base_url);
+        let resp = self.http.get(&url).send().await?;
+        Ok(resp.text().await?)
+    }
+
     /// GET /api/v1/background/results
     pub async fn get_background_results(&self) -> anyhow::Result<Vec<serde_json::Value>> {
         let url = format!("{}/api/v1/background/results", self.base_url);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.http_tools.get(&url).send().await?;
         if !resp.status().is_success() {
             return Ok(Vec::new());
         }
@@ -129,10 +159,26 @@ impl DaemonClient {
         Ok(data["results"].as_array().cloned().unwrap_or_default())
     }
 
+    /// GET /api/v1/subagent/progress — poll subagent execution progress.
+    pub async fn poll_subagent_progress(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<HashMap<String, crate::agent::progress::SubagentProgress>> {
+        let url = format!(
+            "{}/api/v1/subagent/progress?session_id={}",
+            self.base_url, session_id
+        );
+        let resp = self.http_tools.get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Ok(HashMap::new());
+        }
+        Ok(resp.json().await?)
+    }
+
     /// GET /api/v1/sessions
     pub async fn list_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
         let url = format!("{}/api/v1/sessions", self.base_url);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.http_tools.get(&url).send().await?;
         if !resp.status().is_success() {
             anyhow::bail!("Failed to list sessions ({})", resp.status());
         }
@@ -143,7 +189,7 @@ impl DaemonClient {
     pub async fn create_session(&self, name: Option<&str>) -> anyhow::Result<SessionResponse> {
         let url = format!("{}/api/v1/sessions", self.base_url);
         let resp = self
-            .http
+            .http_tools
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({"name": name}))
@@ -159,7 +205,7 @@ impl DaemonClient {
     pub async fn load_session(&self, id: &str) -> anyhow::Result<SessionResponse> {
         let encoded = urlencode(id);
         let url = format!("{}/api/v1/sessions/{}", self.base_url, encoded);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.http_tools.get(&url).send().await?;
         if !resp.status().is_success() {
             anyhow::bail!("Failed to load session ({})", resp.status());
         }
@@ -176,7 +222,7 @@ impl DaemonClient {
         let encoded = urlencode(id);
         let url = format!("{}/api/v1/sessions/{}", self.base_url, encoded);
         let resp = self
-            .http
+            .http_tools
             .put(&url)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({"name": name, "messages": messages}))
@@ -192,7 +238,7 @@ impl DaemonClient {
     pub async fn delete_session(&self, id: &str) -> anyhow::Result<()> {
         let encoded = urlencode(id);
         let url = format!("{}/api/v1/sessions/{}", self.base_url, encoded);
-        let resp = self.http.delete(&url).send().await?;
+        let resp = self.http_tools.delete(&url).send().await?;
         if !resp.status().is_success() {
             anyhow::bail!("Failed to delete session ({})", resp.status());
         }
@@ -203,7 +249,7 @@ impl DaemonClient {
     pub async fn search_sessions(&self, query: &str) -> anyhow::Result<Vec<SessionInfo>> {
         let encoded = urlencode(query);
         let url = format!("{}/api/v1/sessions/search?q={}", self.base_url, encoded);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.http_tools.get(&url).send().await?;
         if !resp.status().is_success() {
             return Ok(Vec::new());
         }
@@ -213,7 +259,7 @@ impl DaemonClient {
     /// GET /api/v1/todos
     pub async fn get_todos(&self) -> anyhow::Result<TodoResponse> {
         let url = format!("{}/api/v1/todos", self.base_url);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.http_tools.get(&url).send().await?;
         Ok(resp.json().await?)
     }
 }
@@ -243,6 +289,8 @@ struct ChatStreamRequest {
     model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plan_mode: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]

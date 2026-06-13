@@ -10,7 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{Mutex, RwLock};
 
-use crate::sandbox::{SandboxManager, SandboxProfile, SandboxConfig, SecurityLevel};
+use crate::sandbox::{SandboxConfig, SandboxManager, SandboxProfile, SecurityLevel};
 
 pub struct CommandSessionManager {
     sandbox: Option<Arc<SandboxManager>>,
@@ -66,8 +66,8 @@ impl CommandSessionManager {
     }
 
     /// Build a Default sandbox profile for the given workspace.
-    fn default_profile(&self, cwd: &PathBuf) -> SandboxProfile {
-        SandboxConfig::builder(cwd.clone())
+    fn default_profile(&self, cwd: &std::path::Path) -> SandboxProfile {
+        SandboxConfig::builder(cwd.to_path_buf())
             .security_level(SecurityLevel::Minimal)
             .build()
     }
@@ -102,7 +102,11 @@ impl CommandSessionManager {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Sandbox spawn failed ({}), falling back to direct: {:?}", sb.status().backend_name, e);
+                    tracing::warn!(
+                        "Sandbox spawn failed ({}), falling back to direct: {:?}",
+                        sb.status().backend_name,
+                        e
+                    );
                     self.spawn_direct(command, &cwd)?
                 }
             }
@@ -143,7 +147,11 @@ impl CommandSessionManager {
     }
 
     /// Direct spawn without sandbox (fallback / no-sandbox mode).
-    fn spawn_direct(&self, command: &str, cwd: &PathBuf) -> Result<tokio::process::Child, ToolError> {
+    fn spawn_direct(
+        &self,
+        command: &str,
+        cwd: &PathBuf,
+    ) -> Result<tokio::process::Child, ToolError> {
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c")
             .arg(command)
@@ -330,8 +338,33 @@ impl CommandSessionManager {
             })
     }
 
-    fn truncate_chars(input: String, _max_output_chars: usize) -> String {
-        input
+    fn truncate_chars(input: String, max_output_chars: usize) -> String {
+        if max_output_chars == 0 || input.len() <= max_output_chars {
+            return input;
+        }
+        // Find the nearest char boundary at or before max_output_chars
+        // to avoid panicking on multi-byte UTF-8 characters.
+        let safe_end = input
+            .char_indices()
+            .take_while(|(i, _)| *i < max_output_chars)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+
+        if safe_end >= input.len() {
+            return input;
+        }
+
+        let truncated = &input[..safe_end];
+        let total_chars = input.chars().count();
+        let shown_chars = truncated.chars().count();
+        format!(
+            "{}\n\n... (truncated: {} of {} chars shown, {} chars omitted)",
+            truncated,
+            shown_chars,
+            total_chars,
+            total_chars - shown_chars
+        )
     }
 }
 

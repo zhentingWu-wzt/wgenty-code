@@ -264,7 +264,7 @@ Be thorough and systematic. Focus on finding and reporting issues."#.to_string()
 
         println!("🤖 Running agent: {} ({})", agent.name, session_id);
 
-        let result = self.execute_agent(&agent, prompt).await?;
+        let result = self.execute_agent(agent, prompt).await?;
 
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(&session_id) {
@@ -368,7 +368,7 @@ Be thorough and systematic. Focus on finding and reporting issues."#.to_string()
         let entries = std::fs::read_dir(dir)?;
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "json") {
+            if path.extension().is_some_and(|ext| ext == "json") {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     if let Ok(agent) = serde_json::from_str::<AgentDefinition>(&content) {
                         agents.insert(agent.agent_type.clone(), agent);

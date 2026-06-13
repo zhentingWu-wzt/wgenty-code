@@ -9,27 +9,145 @@
 //! - `explore`                   — codebase search and analysis
 //! - `plan`                      — architecture planning and breakdown
 
+use crate::agent::progress::{ProgressCallback, SubagentProgress, SubagentStatus};
 use crate::api::ApiClient;
 use crate::config::Settings;
 use crate::teams::subagent_loop::run_subagent_loop;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+/// Detect whether a prompt is complex enough to warrant RLM delegation.
+///
+/// Uses structural analysis instead of naive keyword matching:
+/// 1. Multi-step structure (numbered steps, explicit sequencing)
+/// 2. File references (paths in backticks/quotes)
+/// 3. Dependency declarations ("depends on", "after X completes")
+/// 4. Length as a secondary signal (>1000 chars, not 500)
+///
+/// This avoids routing simple tasks like "create a file" through the
+/// expensive RLM pipeline.
+fn is_complex_task(prompt: &str, use_small_model: bool) -> bool {
+    if use_small_model {
+        return false; // User explicitly asked for cheap model
+    }
+
+    let prompt = prompt.trim();
+    let len = prompt.len();
+
+    // ── Structural signals (primary) ────────────────────────────────────
+
+    // Numbered steps: "1. Refactor auth\n2. Update callers\n3. Add tests"
+    let numbered_steps = {
+        let mut count = 0u32;
+        for line in prompt.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with(|c: char| c.is_ascii_digit())
+                && trimmed.chars().find(|c| !c.is_ascii_digit()) == Some('.')
+            {
+                count += 1;
+            }
+        }
+        count
+    };
+    if numbered_steps >= 3 {
+        return true;
+    }
+
+    // File path references: `src/auth.rs`, "path/to/file", etc.
+    let file_refs = prompt.matches('`').count() / 2  // paired backticks
+        + prompt.matches("src/").count()
+        + prompt.matches("tests/").count()
+        + prompt.matches(".rs").count()
+        + prompt.matches(".ts").count()
+        + prompt.matches(".js").count()
+        + prompt.matches(".py").count();
+    if file_refs >= 3 {
+        return true;
+    }
+
+    // Explicit dependency/sequencing markers — phrase-based to avoid
+    // matching common words like "first" or "after" in isolation.
+    let lower = prompt.to_lowercase();
+    let dependency_signals = [
+        "depends on",
+        "must complete before",
+        "after that",
+        "then you should",
+        "before you",
+        "first you",
+        "first, ",
+        "second, ",
+        "finally, ",
+        "step by step",
+        "one by one",
+    ];
+    let dep_hits = dependency_signals
+        .iter()
+        .filter(|kw| lower.contains(*kw))
+        .count();
+    if dep_hits >= 3 {
+        return true;
+    }
+
+    // ── Length (secondary signal, raised from 500 to 1000) ──────────────
+    if len > 1000 {
+        // Only trigger if there are also structural indicators.
+        return numbered_steps > 0 || file_refs > 0 || dep_hits > 0;
+    }
+
+    false
+}
 
 pub struct TaskTool {
     settings: Settings,
     tool_registry: std::sync::Weak<crate::tools::ToolRegistry>,
+    background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
+    /// Tracks currently running subagents to enforce max_concurrent limit.
+    active_count: Arc<AtomicUsize>,
+    /// Shared store for subagent progress updates (session_id → node_id → progress).
+    progress_store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
 }
 
 impl TaskTool {
     pub fn new(
         settings: Settings,
         tool_registry: std::sync::Weak<crate::tools::ToolRegistry>,
+        background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
+        progress_store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
     ) -> Self {
         Self {
             settings,
             tool_registry,
+            background_manager,
+            active_count: Arc::new(AtomicUsize::new(0)),
+            progress_store,
         }
+    }
+
+    /// Create a ProgressCallback that writes to the shared progress store.
+    fn make_progress_callback(
+        store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
+        session_id: String,
+        node_id: String,
+        parent_id: Option<String>,
+        label: String,
+    ) -> ProgressCallback {
+        Arc::new(move |mut progress: SubagentProgress| {
+            progress.node_id = node_id.clone();
+            progress.parent_id = parent_id.clone();
+            progress.label = label.clone();
+            let store = store.clone();
+            let node_id = node_id.clone();
+            let sid = session_id.clone();
+            tokio::spawn(async move {
+                let mut store = store.write().await;
+                store.entry(sid).or_default().insert(node_id, progress);
+            });
+        })
     }
 }
 
@@ -64,6 +182,14 @@ impl Tool for TaskTool {
                     "type": "string",
                     "description": "Short (3-5 word) description of the task"
                 },
+                "background": {
+                    "type": "boolean",
+                    "description": "Run subagent in background. Returns task_id immediately; result delivered later. Default: false"
+                },
+                "use_small_model": {
+                    "type": "boolean",
+                    "description": "When true and a small model is configured, run the subagent with a smaller/cheaper model. Use for simple, self-contained tasks (e.g., reading files, searching, running a single command). Default: false"
+                },
                 "prompt": {
                     "type": "string",
                     "description": "The detailed task for the subagent to perform"
@@ -74,9 +200,48 @@ impl Tool for TaskTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let subagent_type = input["subagent_type"].as_str().unwrap_or("general-purpose");
+        let _subagent_type = input["subagent_type"].as_str().unwrap_or("general-purpose");
         let description = input["description"].as_str().unwrap_or("Subagent task");
         let prompt = input["prompt"].as_str().unwrap_or("");
+        let background = input["background"].as_bool().unwrap_or(false);
+
+        let session_id = input["_session_id"]
+            .as_str()
+            .unwrap_or("default")
+            .to_string();
+
+        tracing::info!(
+            subagent_type = _subagent_type,
+            description = description,
+            prompt_len = prompt.len(),
+            session_id = %session_id,
+            background = background,
+            "TaskTool: executing subagent"
+        );
+
+        // Register root node in progress store.
+        let root_node_id = uuid::Uuid::new_v4().to_string();
+        {
+            let mut store = self.progress_store.write().await;
+            store.entry(session_id.clone()).or_default().insert(
+                root_node_id.clone(),
+                SubagentProgress {
+                    node_id: root_node_id.clone(),
+                    parent_id: None,
+                    label: format!("task: {}", description),
+                    status: SubagentStatus::Running,
+                    round: None,
+                    max_rounds: None,
+                    current_tool: None,
+                    current_params: None,
+                    action_log: Vec::new(),
+                    text_snapshot: None,
+                    started_at: chrono::Utc::now().timestamp_millis(),
+                    elapsed_ms: 0,
+                    metadata: None,
+                },
+            );
+        }
 
         // Upgrade the Weak reference to the tool registry.
         let tool_registry = self.tool_registry.upgrade().ok_or_else(|| ToolError {
@@ -84,16 +249,23 @@ impl Tool for TaskTool {
             code: Some("registry_dropped".to_string()),
         })?;
 
-        // Filter tools: exclude "task" to prevent recursive subagent spawning.
+        // Filter tools: exclude "task" when depth exceeds limit.
+        let depth = input["_subagent_depth"].as_u64().unwrap_or(0) as usize;
         let allowed_tools: Vec<String> = tool_registry
             .list()
             .iter()
             .map(|t| t.name().to_string())
-            .filter(|name| name != "task")
+            .filter(|name| {
+                if name == "task" {
+                    depth < self.settings.max_subagent_depth
+                } else {
+                    true
+                }
+            })
             .collect();
 
         // Build system prompt based on subagent type.
-        let system_prompt = match subagent_type {
+        let system_prompt = match _subagent_type {
             "explore" => {
                 "You are a subagent spawned by a coordinator. The coordinator is waiting for your result. Do not attempt to coordinate other agents yourself — focus solely on your assigned task. Return a complete, self-contained result so the coordinator can proceed without follow-up questions.\n\nYou are a code exploration subagent. Your role is to search and \
                  analyze codebases thoroughly.\n\nKey responsibilities:\n\
@@ -133,38 +305,299 @@ impl Tool for TaskTool {
             description, prompt
         );
 
-        // Create a fresh API client from the stored settings.
-        let api_client = ApiClient::new(self.settings.clone());
+        // ── Guard: depth limit ──────────────────────────────────────────
+        let depth = input["_subagent_depth"].as_u64().unwrap_or(0) as usize;
+        if depth >= self.settings.max_subagent_depth {
+            return Ok(ToolOutput {
+                output_type: "text".to_string(),
+                content: format!(
+                    "Maximum subagent depth ({}) reached. Refusing to spawn deeper subagent.",
+                    self.settings.max_subagent_depth
+                ),
+                metadata: HashMap::new(),
+            });
+        }
+
+        // ── Guard: concurrency limit ────────────────────────────────────
+        let current = self.active_count.load(Ordering::SeqCst);
+        if current >= self.settings.max_concurrent_subagents {
+            return Ok(ToolOutput {
+                output_type: "text".to_string(),
+                content: format!(
+                    "Maximum concurrent subagents ({}) reached ({} running). Try again later.",
+                    self.settings.max_concurrent_subagents, current
+                ),
+                metadata: HashMap::new(),
+            });
+        }
+        self.active_count.fetch_add(1, Ordering::SeqCst);
+
+        // Use small model when requested and configured.
+        // Falls back to main model's base_url/api_key when small_model fields are absent.
+        let use_small = input["use_small_model"].as_bool().unwrap_or(false);
+        let api_client = if use_small {
+            if let Some(ref small_model) = self.settings.small_model {
+                let mut small_settings = self.settings.clone();
+                small_settings.model = small_model.clone();
+                small_settings.api.max_tokens = 2048;
+                if let Some(ref url) = self.settings.small_model_base_url {
+                    small_settings.api.base_url = url.clone();
+                }
+                if let Some(ref key) = self.settings.small_model_api_key {
+                    small_settings.api.api_key = Some(key.clone());
+                }
+                if let Some(ref appkey) = self.settings.small_model_appkey {
+                    small_settings.api.api_key = Some(appkey.clone());
+                }
+                ApiClient::new(small_settings)
+            } else {
+                ApiClient::new(self.settings.clone())
+            }
+        } else {
+            ApiClient::new(self.settings.clone())
+        };
 
         // Run the subagent loop (capped at 30 rounds).
-        match run_subagent_loop(
-            &api_client,
-            &tool_registry,
-            system_prompt,
-            &full_prompt,
-            &allowed_tools,
-            30,
-        )
-        .await
-        {
-            Ok(result) => {
-                let mut metadata = HashMap::new();
-                metadata.insert(
-                    "subagent_type".to_string(),
-                    serde_json::json!(subagent_type),
-                );
-                metadata.insert("description".to_string(), serde_json::json!(description));
+        if background {
+            // ── Background mode: spawn and return immediately ──────────────
+            let desc = description.to_string();
+            let prompt_owned = full_prompt;
+            let sys_prompt = system_prompt.to_string();
+            let bg = self.background_manager.clone();
+            let active = self.active_count.clone();
+            let reg = tool_registry.clone();
+            let tools = allowed_tools.clone();
+            let api_client_bg = ApiClient::new(self.settings.clone());
+            let timeout_secs = self.settings.subagent_timeout_secs;
 
-                Ok(ToolOutput {
-                    output_type: "text".to_string(),
-                    content: result,
-                    metadata,
-                })
+            let subagent_node_id = uuid::Uuid::new_v4().to_string();
+            {
+                let mut store = self.progress_store.write().await;
+                store.entry(session_id.clone()).or_default().insert(
+                    subagent_node_id.clone(),
+                    SubagentProgress {
+                        node_id: subagent_node_id.clone(),
+                        parent_id: Some(root_node_id.clone()),
+                        label: format!("subagent: {}", desc),
+                        status: SubagentStatus::Pending,
+                        round: None,
+                        max_rounds: Some(30),
+                        current_tool: None,
+                        current_params: None,
+                        action_log: Vec::new(),
+                        text_snapshot: None,
+                        started_at: chrono::Utc::now().timestamp_millis(),
+                        elapsed_ms: 0,
+                        metadata: None,
+                    },
+                );
             }
-            Err(e) => Err(ToolError {
-                message: e,
-                code: Some("subagent_error".to_string()),
-            }),
+            let cb = Self::make_progress_callback(
+                self.progress_store.clone(),
+                session_id.clone(),
+                subagent_node_id.clone(),
+                Some(root_node_id.clone()),
+                format!("subagent: {}", desc),
+            );
+
+            tokio::spawn(async move {
+                let result = run_subagent_loop(
+                    &api_client_bg,
+                    &reg,
+                    &sys_prompt,
+                    &prompt_owned,
+                    &tools,
+                    30,
+                    timeout_secs,
+                    Some(cb),
+                )
+                .await;
+
+                active.fetch_sub(1, Ordering::SeqCst);
+
+                let (success, content) = match result {
+                    Ok(r) => (true, r),
+                    Err(e) => (false, format!("Subagent error: {}", e)),
+                };
+
+                bg.push_subagent_result(&desc, &content, success).await;
+            });
+
+            Ok(ToolOutput {
+                output_type: "text".to_string(),
+                content: format!(
+                    "[Subagent launched in background]\ntype: {}\ndescription: {}\nstatus: running\n\nThe subagent result will be delivered when it completes.",
+                    _subagent_type, description
+                ),
+                metadata: {
+                    let mut m = HashMap::new();
+                    m.insert("subagent_type".to_string(), serde_json::json!(_subagent_type));
+                    m.insert("description".to_string(), serde_json::json!(description));
+                    m.insert("background".to_string(), serde_json::json!(true));
+                    m.insert("execution_mode".to_string(), serde_json::json!("background"));
+                    m.insert("routing_reason".to_string(), serde_json::json!("direct subagent (background)"));
+                    m
+                },
+            })
+        } else {
+            // ── Synchronous mode: block until complete ─────────────────────
+            let subagent_node_id = uuid::Uuid::new_v4().to_string();
+            {
+                let mut store = self.progress_store.write().await;
+                store.entry(session_id.clone()).or_default().insert(
+                    subagent_node_id.clone(),
+                    SubagentProgress {
+                        node_id: subagent_node_id.clone(),
+                        parent_id: Some(root_node_id.clone()),
+                        label: format!("subagent: {}", description),
+                        status: SubagentStatus::Pending,
+                        round: None,
+                        max_rounds: Some(30),
+                        current_tool: None,
+                        current_params: None,
+                        action_log: Vec::new(),
+                        text_snapshot: None,
+                        started_at: chrono::Utc::now().timestamp_millis(),
+                        elapsed_ms: 0,
+                        metadata: None,
+                    },
+                );
+            }
+            let cb = Self::make_progress_callback(
+                self.progress_store.clone(),
+                session_id.clone(),
+                subagent_node_id.clone(),
+                Some(root_node_id.clone()),
+                format!("subagent: {}", description),
+            );
+
+            let (result, routing_reason) = if is_complex_task(&full_prompt, use_small) {
+                let reason = format!(
+                    "RLM pipeline: prompt_len={}, use_small={}",
+                    full_prompt.len(),
+                    use_small
+                );
+                tracing::info!(
+                    target: "rlm",
+                    phase = "auto_route",
+                    reason = %reason,
+                    "Complex task detected, routing to RLM pipeline"
+                );
+                let result = crate::tools::meta::rlm::run_rlm_pipeline(
+                    &self.settings,
+                    tool_registry.clone(),
+                    description,
+                    prompt,
+                    Some((self.progress_store.clone(), session_id.clone())),
+                    Some(subagent_node_id.clone()),
+                )
+                .await
+                .map(|r| r.aggregated);
+                (result, reason)
+            } else {
+                let reason = "direct subagent: simple task".to_string();
+                let result = run_subagent_loop(
+                    &api_client,
+                    &tool_registry,
+                    system_prompt,
+                    &full_prompt,
+                    &allowed_tools,
+                    30,
+                    self.settings.subagent_timeout_secs,
+                    Some(cb),
+                )
+                .await;
+                (result, reason)
+            };
+            self.active_count.fetch_sub(1, Ordering::SeqCst);
+
+            match result {
+                Ok(result) => {
+                    let mut metadata = HashMap::new();
+                    metadata.insert(
+                        "subagent_type".to_string(),
+                        serde_json::json!(_subagent_type),
+                    );
+                    metadata.insert("description".to_string(), serde_json::json!(description));
+                    metadata.insert(
+                        "routing_reason".to_string(),
+                        serde_json::json!(routing_reason),
+                    );
+
+                    Ok(ToolOutput {
+                        output_type: "text".to_string(),
+                        content: result,
+                        metadata,
+                    })
+                }
+                Err(e) => Err(ToolError {
+                    message: e,
+                    code: Some("subagent_error".to_string()),
+                }),
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_simple_prompt_not_complex() {
+        assert!(!is_complex_task(
+            "create a file called config.json with default settings",
+            false
+        ));
+        assert!(!is_complex_task(
+            "read the file src/main.rs and tell me what it does",
+            false
+        ));
+        assert!(!is_complex_task(
+            "search for the authenticate function",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_numbered_steps_is_complex() {
+        let prompt = "1. Refactor the auth module\n2. Update all callers\n3. Add unit tests";
+        assert!(is_complex_task(prompt, false));
+    }
+
+    #[test]
+    fn test_dependency_chain_is_complex() {
+        let prompt = "step by step: first, analyze the codebase, then you should identify \
+                      the issues, finally, write a fix that depends on the analysis results";
+        assert!(is_complex_task(prompt, false));
+    }
+
+    #[test]
+    fn test_long_but_simple_not_automatically_complex() {
+        let long_simple = "Please write a comprehensive explanation of how memory management \
+            works in modern operating systems. Cover the basic concepts including virtual \
+            memory, paging, segmentation, and how the kernel allocates and frees memory \
+            for user processes. Explain the tradeoffs between different allocation \
+            strategies such as best fit and first fit. Discuss how garbage collection \
+            works in managed languages compared to manual memory management. Include \
+            information about how modern CPUs support memory management through hardware \
+            features like TLBs and page tables. Describe the role of the MMU in protecting \
+            process memory spaces from each other. Provide examples of how these concepts \
+            apply in practice when developing applications. Make sure to explain everything \
+            clearly for someone who is new to the topic but has basic programming knowledge. \
+            The explanation should be thorough but accessible and should help the reader \
+            build a solid mental model of how memory management functions at both the \
+            hardware and operating system levels.";
+        assert!(
+            long_simple.len() > 1000,
+            "test precondition: text must be >1000 chars"
+        );
+        assert!(!is_complex_task(long_simple, false));
+    }
+
+    #[test]
+    fn test_small_model_never_complex() {
+        let prompt = "1. Refactor auth\n2. Update callers\n3. Add tests\n4. Update docs\n5. Deploy";
+        assert!(!is_complex_task(prompt, true));
     }
 }

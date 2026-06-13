@@ -60,6 +60,9 @@ pub struct ResourceContent {
 pub struct ResourceManager {
     resources: Arc<RwLock<HashMap<String, Resource>>>,
     templates: Arc<RwLock<Vec<ResourceTemplate>>>,
+    /// Allowed root directory for file:// access. Paths outside this
+    /// root are rejected to prevent arbitrary filesystem reads.
+    workspace_root: Arc<RwLock<Option<std::path::PathBuf>>>,
 }
 
 impl ResourceManager {
@@ -67,7 +70,14 @@ impl ResourceManager {
         Self {
             resources: Arc::new(RwLock::new(HashMap::new())),
             templates: Arc::new(RwLock::new(Vec::new())),
+            workspace_root: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Set the workspace root for file:// path validation.
+    pub async fn set_workspace_root(&self, root: std::path::PathBuf) {
+        let mut ws = self.workspace_root.write().await;
+        *ws = Some(root);
     }
 
     pub async fn register(&self, resource: Resource) {
@@ -107,7 +117,30 @@ impl ResourceManager {
             .ok_or_else(|| anyhow::anyhow!("Resource not found: {}", uri))?;
 
         if uri.starts_with("file://") {
-            let path = uri.trim_start_matches("file://");
+            let path_str = uri.trim_start_matches("file://");
+            let path = std::path::Path::new(path_str);
+
+            // Security: validate the path is within the workspace root
+            let ws = self.workspace_root.read().await;
+            if let Some(ref root) = *ws {
+                // Canonicalize both paths to resolve symlinks and `..`
+                let canon_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                let canon_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+
+                if !canon_path.starts_with(&canon_root) {
+                    return Err(anyhow::anyhow!(
+                        "Access denied: path {} is outside workspace root {}",
+                        path_str,
+                        canon_root.display()
+                    ));
+                }
+            } else {
+                // No workspace root set — reject all file:// reads for safety
+                return Err(anyhow::anyhow!(
+                    "file:// access denied: workspace root not configured"
+                ));
+            }
+
             let content = tokio::fs::read_to_string(path)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
@@ -131,6 +164,9 @@ impl ResourceManager {
     }
 
     pub async fn register_builtin_resources(&self, project_path: &std::path::Path) {
+        // Set workspace root for file:// access validation
+        self.set_workspace_root(project_path.to_path_buf()).await;
+
         self.register(
             Resource::new(
                 &format!("file://{}/", project_path.display()),

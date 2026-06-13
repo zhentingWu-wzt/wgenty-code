@@ -59,23 +59,55 @@ impl Tool for FileWriteTool {
 
         let path = Path::new(file_path);
 
+        // Read old content before writing (for diff) — use tokio::fs to
+        // avoid blocking the async runtime.
+        let old_content = match tokio::fs::read_to_string(path).await {
+            Ok(c) => Some(c),
+            Err(_) => None,
+        };
+
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| ToolError {
-                message: format!("Failed to create directory: {}", e),
-                code: Some("directory_error".to_string()),
-            })?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| ToolError {
+                    message: format!("Failed to create directory: {}", e),
+                    code: Some("directory_error".to_string()),
+                })?;
         }
 
-        std::fs::write(path, content).map_err(|e| ToolError {
-            message: format!("Failed to write file: {}", e),
-            code: Some("write_error".to_string()),
-        })?;
+        // Atomic write: write to a temp file in the same directory, then
+        // rename. This prevents data loss if the process crashes mid-write
+        // (the original file is untouched until rename succeeds).
+        let tmp_path = path.with_extension(format!(
+            "{}.tmp",
+            path.extension()
+                .map(|e| e.to_string_lossy().to_string())
+                .unwrap_or_default()
+        ));
+        tokio::fs::write(&tmp_path, content)
+            .await
+            .map_err(|e| ToolError {
+                message: format!("Failed to write temp file: {}", e),
+                code: Some("write_error".to_string()),
+            })?;
+        tokio::fs::rename(&tmp_path, path)
+            .await
+            .map_err(|e| ToolError {
+                message: format!("Failed to rename temp file: {}", e),
+                code: Some("write_error".to_string()),
+            })?;
+
+        let mut metadata = std::collections::HashMap::new();
+        if let Some(old) = old_content {
+            metadata.insert("old_content".to_string(), serde_json::json!(old));
+            metadata.insert("new_content".to_string(), serde_json::json!(content));
+        }
 
         Ok(ToolOutput {
             output_type: "text".to_string(),
             content: format!("Successfully wrote {}", file_path),
-            metadata: std::collections::HashMap::new(),
+            metadata,
         })
     }
 }

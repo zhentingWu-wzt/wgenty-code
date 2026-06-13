@@ -1,8 +1,8 @@
 //! Web Server Main Entry Point - Plugin Marketplace Web Interface
 
-use wgenty_code::web::{server::start_server, WebServer};
 use tracing::{info, Level};
 use tracing_subscriber;
+use wgenty_code::web::{server::start_server, WebServer};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

@@ -75,29 +75,41 @@ impl Tool for FileEditTool {
             });
         }
 
-        let content = std::fs::read_to_string(path).map_err(|e| ToolError {
+        let old_file_content = std::fs::read_to_string(path).map_err(|e| ToolError {
             message: format!("Failed to read file: {}", e),
             code: Some("read_error".to_string()),
         })?;
 
-        if !content.contains(old_content) {
+        if !old_file_content.contains(old_content) {
             return Err(ToolError {
                 message: "old_content not found in file".to_string(),
                 code: Some("content_not_found".to_string()),
             });
         }
 
-        let new_file_content = content.replace(old_content, new_content);
+        let new_file_content = old_file_content.replace(old_content, new_content);
 
-        std::fs::write(path, new_file_content).map_err(|e| ToolError {
+        let write_result = std::fs::write(path, &new_file_content).map_err(|e| ToolError {
             message: format!("Failed to write file: {}", e),
             code: Some("write_error".to_string()),
-        })?;
+        });
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "old_content".to_string(),
+            serde_json::json!(old_file_content),
+        );
+        metadata.insert(
+            "new_content".to_string(),
+            serde_json::json!(new_file_content),
+        );
+
+        write_result?;
 
         Ok(ToolOutput {
             output_type: "text".to_string(),
             content: format!("Successfully edited {}", file_path),
-            metadata: std::collections::HashMap::new(),
+            metadata,
         })
     }
 }

@@ -45,10 +45,7 @@ impl RunTestTool {
 
         // If package.json exists but no specific config, npm test is the fallback
         if cwd.join("package.json").exists() {
-            return (
-                "node-npm",
-                vec!["npm".to_string(), "test".to_string()],
-            );
+            return ("node-npm", vec!["npm".to_string(), "test".to_string()]);
         }
 
         ("unknown", vec!["cargo".to_string(), "test".to_string()])
@@ -129,7 +126,11 @@ impl Tool for RunTestTool {
                 "node-vitest" => vec!["npx".to_string(), "vitest".to_string(), "run".to_string()],
                 "node-npm" => vec!["npm".to_string(), "test".to_string()],
                 "python-pytest" => vec!["pytest".to_string()],
-                "python-unittest" => vec!["python".to_string(), "-m".to_string(), "unittest".to_string()],
+                "python-unittest" => vec![
+                    "python".to_string(),
+                    "-m".to_string(),
+                    "unittest".to_string(),
+                ],
                 "go" => vec!["go".to_string(), "test".to_string(), "./...".to_string()],
                 _ => vec!["cargo".to_string(), "test".to_string()],
             };

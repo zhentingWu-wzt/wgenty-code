@@ -101,15 +101,21 @@ impl HistoryManager {
     }
 
     pub async fn add(&self, entry: HistoryEntry) -> anyhow::Result<()> {
-        let mut entries = self.entries.write().await;
+        // Snapshot the serialized data while holding the write lock,
+        // then release the lock before doing the expensive disk I/O.
+        // This prevents readers from being blocked during the file write.
+        let serialized = {
+            let mut entries = self.entries.write().await;
 
-        if entries.len() >= self.max_entries {
-            entries.pop_front();
-        }
+            if entries.len() >= self.max_entries {
+                entries.pop_front();
+            }
 
-        entries.push_back(entry);
-        self.save(&entries).await?;
+            entries.push_back(entry);
+            serde_json::to_string_pretty(&*entries)?
+        }; // write lock released
 
+        self.save_raw(&serialized).await?;
         Ok(())
     }
 
@@ -229,13 +235,16 @@ impl HistoryManager {
     }
 
     async fn save(&self, entries: &VecDeque<HistoryEntry>) -> anyhow::Result<()> {
+        let content = serde_json::to_string_pretty(entries)?;
+        self.save_raw(&content).await
+    }
+
+    /// Write pre-serialized content to disk without holding any lock.
+    async fn save_raw(&self, content: &str) -> anyhow::Result<()> {
         if let Some(parent) = self.history_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-
-        let content = serde_json::to_string_pretty(&entries)?;
         tokio::fs::write(&self.history_path, content).await?;
-
         Ok(())
     }
 

@@ -19,8 +19,10 @@ futures = "0.3"
 # HTTP & API
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "blocking"] }
 http = "1"
+bytes = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+rhai = "1"
 
 # Code indexing & graph queries
 tree-sitter = "0.25"
@@ -35,6 +37,7 @@ notify = "6.1"
 # Terminal UI — ratatui-based frontend (replaces TypeScript/React frontend)
 crossterm = "0.28"
 ratatui = "0.29"
+textwrap = "0.16"
 tui-textarea = "0.7"
 
 # Process & Shell
