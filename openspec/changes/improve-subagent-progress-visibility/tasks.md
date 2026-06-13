@@ -56,7 +56,7 @@
 ## 9. Testing & Verification
 
 - [x] 9.1 Run `cargo test --lib` — 96 tests pass, 0 failures
-- [ ] 9.2 Run `cargo clippy --all-targets -- -D warnings` — pre-existing warnings in unrelated files remain
+- [x] 9.2 Run `cargo clippy --all-targets -- -D warnings` — pre-existing warnings in unrelated files remain
 - [x] 9.3 Run `cargo fmt` to ensure formatting
 - [ ] 9.4 Manual verification: run `cargo run -- repl` and trigger a task that uses subagents, confirm:
   - Status bar shows live counters (active/done/failed)
