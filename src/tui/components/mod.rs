@@ -8,3 +8,4 @@ pub mod status;
 pub mod task_panel;
 pub mod welcome;
 pub mod plan_panel;
+pub mod subagent_tree;
