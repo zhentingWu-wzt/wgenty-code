@@ -15,25 +15,25 @@
 
 ## 3. 索引引擎
 
-- [ ] 3.1 实现 tree-sitter Rust parser 初始化和语言注入
-- [ ] 3.2 实现 AST 遍历器：提取函数、结构体、枚举、trait、impl、类型别名、常量、静态变量、模块定义
-- [ ] 3.3 实现符号引用提取：函数调用、类型引用、use 声明中的符号引用
-- [ ] 3.4 实现调用关系提取：call_expression → callee 映射，含方法调用解析
-- [ ] 3.5 实现全量索引流程：扫描所有 `.rs` 文件 → 解析 → 存储，含进度输出
-- [ ] 3.6 实现增量索引流程：文件哈希比对 → 仅重索引变更文件
+- [x] 3.1 实现 tree-sitter Rust parser 初始化和语言注入
+- [x] 3.2 实现 AST 遍历器：提取函数、结构体、枚举、trait、impl、类型别名、常量、静态变量、模块定义
+- [x] 3.3 实现符号引用提取：函数调用、类型引用、use 声明中的符号引用
+- [x] 3.4 实现调用关系提取：call_expression → callee 映射，含方法调用解析
+- [x] 3.5 实现全量索引流程：扫描所有 `.rs` 文件 → 解析 → 存储，含进度输出
+- [x] 3.6 实现增量索引流程：文件哈希比对 → 仅重索引变更文件
 
 ## 4. 查询引擎
 
-- [ ] 4.1 实现 `codegraph_node` 查询：按名称查找符号定义、引用、callers/callees
-- [ ] 4.2 实现 `codegraph_explore` 查询：关键词匹配符号 + 返回相关调用路径
-- [ ] 4.3 实现传递闭包查询：`get_callers`/`get_callees` 带 depth 限制（默认2，最大5）
-- [ ] 4.4 实现模糊匹配：未找到符号时，按 Levenshtein 距离 ≤ 3 提供相似名称建议
+- [x] 4.1 实现 `codegraph_node` 查询：按名称查找符号定义、引用、callers/callees
+- [x] 4.2 实现 `codegraph_explore` 查询：关键词匹配符号 + 返回相关调用路径
+- [x] 4.3 实现传递闭包查询：`get_callers`/`get_callees` 带 depth 限制（默认2，最大5）
+- [x] 4.4 实现模糊匹配：未找到符号时，按 Levenshtein 距离 ≤ 3 提供相似名称建议
 
 ## 5. 内置 Tool 实现
 
-- [ ] 5.1 实现 `CodegraphNodeTool`：Tool trait，调用 query 引擎的 `codegraph_node`
-- [ ] 5.2 实现 `CodegraphExploreTool`：Tool trait，调用 query 引擎的 `codegraph_explore`
-- [ ] 5.3 在 `ToolRegistry` 中注册两个 codegraph 工具为 read-only
+- [x] 5.1 实现 `CodegraphNodeTool`：Tool trait，调用 query 引擎的 `codegraph_node`
+- [x] 5.2 实现 `CodegraphExploreTool`：Tool trait，调用 query 引擎的 `codegraph_explore`
+- [x] 5.3 在 `ToolRegistry` 中注册两个 codegraph 工具为 read-only
 
 ## 6. CLI 命令
 
