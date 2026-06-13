@@ -104,7 +104,7 @@ impl Tool for FileReadTool {
         let max_chars = input["max_chars"]
             .as_u64()
             .map(|v| v as usize)
-            .unwrap_or(12000);
+            .unwrap_or(6000);
 
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
@@ -128,10 +128,18 @@ impl Tool for FileReadTool {
             .min(total_lines)
             .max(start_idx + 1); // ensure end > start, at least 1 line
 
+        let max_line_len: usize = 300;
         let mut rendered = lines[start_idx..end_idx]
             .iter()
             .enumerate()
-            .map(|(idx, line)| format!("{:>4}\t{}", start_idx + idx + 1, line))
+            .map(|(idx, line)| {
+                let display_line = if line.chars().count() > max_line_len {
+                    format!("{}…[truncated]", line.chars().take(max_line_len).collect::<String>())
+                } else {
+                    (*line).to_string()
+                };
+                format!("{:>4}\t{}", start_idx + idx + 1, display_line)
+            })
             .collect::<Vec<_>>()
             .join("\n");
 
