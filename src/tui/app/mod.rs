@@ -21,7 +21,7 @@ use crate::tui::components::subagent_tree::SubagentTree;
 use crate::tui::components::task_panel::TaskPanelState;
 use crossterm::event::EnableBracketedPaste;
 use ratatui::Terminal;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -70,6 +70,8 @@ pub struct App {
     pub plan_panel_state: PlanPanelState,
     /// Subagent execution tree for the current turn.
     subagent_tree: SubagentTree,
+    /// Subagent tree snapshots for completed turns, keyed by turn_id string.
+    subagent_history: HashMap<String, SubagentTree>,
     /// Whether the subagent monitor panel is visible.
     subagent_panel_visible: bool,
     /// Shared settings handle — updated by the config watcher on file change.
@@ -189,6 +191,7 @@ impl App {
             task_panel: TaskPanelState::new(),
             plan_panel_state: PlanPanelState::new(),
             subagent_tree: SubagentTree::default(),
+            subagent_history: HashMap::new(),
             subagent_panel_visible: false,
 
             last_ctrl_c: None,

@@ -346,6 +346,9 @@ impl App {
                 self.turn_started_at = Some(std::time::Instant::now());
             }
             AppEvent::TurnComplete => {
+                let snapshot = self.subagent_tree.clone();
+                let key = format!("turn_{}", chrono::Utc::now().timestamp_millis());
+                self.subagent_history.insert(key, snapshot);
                 self.turn_count += 1;
                 self.current_turn_handle = None;
                 self.last_abort_reason = None; // normal completion clears
