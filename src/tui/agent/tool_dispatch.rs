@@ -36,12 +36,17 @@ impl AgentLoop {
             let tx = event_tx.as_ref().unwrap().clone();
             let client_clone = client.clone();
             Some(tokio::spawn(async move {
+                let start = tokio::time::Instant::now();
+                let max_poll_duration = Duration::from_secs(120);
                 loop {
+                    if start.elapsed() > max_poll_duration {
+                        break;
+                    }
                     tokio::time::sleep(Duration::from_millis(500)).await;
                     match client_clone.poll_subagent_progress().await {
                         Ok(map) => {
                             if map.is_empty() {
-                                continue; // no progress yet, keep polling
+                                continue;
                             }
                             for (_id, progress) in map {
                                 let _ = tx.send(AppEvent::SubagentUpdate(progress));
@@ -75,10 +80,9 @@ impl AgentLoop {
             Err(e) => format!(r#"{{"success":false,"error":"{}"}}"#, e),
         };
 
-        // Stop poller
-        if let Some(handle) = poll_handle {
-            handle.abort();
-        }
+        // Poller continues in background for async subagents (task tool with background=true).
+        // It self-terminates after 120s max. Drop the handle — tokio::spawn keeps it alive.
+        drop(poll_handle);
 
         result
     }
