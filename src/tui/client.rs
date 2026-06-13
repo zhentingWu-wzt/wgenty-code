@@ -1,6 +1,8 @@
 //! HTTP client for communicating with the daemon API.
 //! Mirrors the TypeScript ApiClient in packages/core/src/client.ts.
 
+use std::collections::HashMap;
+
 use crate::api::ChatMessage;
 use serde::{Deserialize, Serialize};
 
@@ -155,6 +157,18 @@ impl DaemonClient {
         }
         let data: serde_json::Value = resp.json().await?;
         Ok(data["results"].as_array().cloned().unwrap_or_default())
+    }
+
+    /// GET /api/v1/subagent/progress — poll subagent execution progress.
+    pub async fn poll_subagent_progress(
+        &self,
+    ) -> anyhow::Result<HashMap<String, crate::agent::progress::SubagentProgress>> {
+        let url = format!("{}/api/v1/subagent/progress", self.base_url);
+        let resp = self.http_tools.get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Ok(HashMap::new());
+        }
+        Ok(resp.json().await?)
     }
 
     /// GET /api/v1/sessions
