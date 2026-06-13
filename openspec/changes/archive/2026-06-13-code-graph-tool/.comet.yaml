@@ -1,5 +1,5 @@
 workflow: full
-phase: verify
+phase: archive
 context_compression: off
 build_mode: executing-plans
 build_pause: null
@@ -11,11 +11,11 @@ auto_transition: true
 base_ref: 573e04b075bb7c9e8b80c533aff3646733bbb913
 design_doc: docs/superpowers/specs/2026-06-13-code-graph-tool-design.md
 plan: docs/superpowers/plans/2026-06-13-code-graph-tool.md
-verify_result: pending
-verification_report: null
-branch_status: pending
+verify_result: pass
+verification_report: docs/superpowers/reports/2026-06-13-code-graph-tool-verify.md
+branch_status: handled
 created_at: 2026-06-13
-verified_at: null
-archived: false
+verified_at: 2026-06-13
+archived: true
 handoff_context: openspec/changes/code-graph-tool/.comet/handoff/design-context.json
 handoff_hash: d84064d051c7feb3864efe1f59a4b55c63ec77d0f24939826208106901eb5ae4
