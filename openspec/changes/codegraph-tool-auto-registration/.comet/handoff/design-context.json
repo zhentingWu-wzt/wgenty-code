@@ -1,0 +1,14 @@
+{
+  "change": "codegraph-tool-auto-registration",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "1d11efc6efe32ad0d0dad7dd0a769d23feae56c2591b93be529b46ef2215f275",
+  "files": [
+    { "path": "openspec/changes/codegraph-tool-auto-registration/proposal.md", "sha256": "b248c92978cb5e149d46def6c9c30e1c3e7d18ff43cac10177ed91dd635eee2a" },
+    { "path": "openspec/changes/codegraph-tool-auto-registration/design.md", "sha256": "7b85825c0d47b179e90de28085a9a6a3f5ae9d2a6c03a4928bf624a18db3d961" },
+    { "path": "openspec/changes/codegraph-tool-auto-registration/tasks.md", "sha256": "b28a0d57d84cd39b4a52a4583cc902b0d96f106665c3aa4ec7540dcbba8b930b" },
+    { "path": "openspec/changes/codegraph-tool-auto-registration/specs/codegraph-lazy-init/spec.md", "sha256": "be2abe72536d7b98ff95dcad21583e5b663b12d8fd73962759ca50b09ff10c1d" }
+  ]
+}
