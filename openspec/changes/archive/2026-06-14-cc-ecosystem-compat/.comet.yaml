@@ -1,5 +1,5 @@
 workflow: full
-phase: build
+phase: archive
 context_compression: off
 build_mode: executing-plans
 build_pause: null
@@ -11,11 +11,11 @@ auto_transition: true
 base_ref: b81a241f6db88c4280879917eb4ebd8123153288
 design_doc: docs/superpowers/specs/2026-06-14-cc-ecosystem-compat-design.md
 plan: docs/superpowers/plans/2026-06-14-cc-ecosystem-compat.md
-verify_result: pending
-verification_report: null
-branch_status: pending
+verify_result: pass
+verification_report: docs/superpowers/reports/2026-06-14-cc-ecosystem-compat-verify.md
+branch_status: handled
 created_at: 2026-06-14
-verified_at: null
-archived: false
+verified_at: 2026-06-14
+archived: true
 handoff_context: openspec/changes/cc-ecosystem-compat/.comet/handoff/design-context.json
 handoff_hash: 51abacfd9ce5ed162204fc929afe3ec66823e90376ef0affd65745cc1582c6d0
