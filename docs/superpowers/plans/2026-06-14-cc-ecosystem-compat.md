@@ -48,7 +48,7 @@ base-ref: b81a241f6db88c4280879917eb4ebd8123153288
 **文件:**
 - Modify: `src/plugins/mod.rs:28-42`
 
-- [ ] **Step 1: 在 PluginManifest 新增字段**
+- [x] **Step 1: 在 PluginManifest 新增字段**
 
 在 `PluginManifest` 结构体中新增 4 个可选字段，全部使用 `#[serde(default)]` 保证向后兼容。
 
@@ -87,7 +87,7 @@ pub struct PluginManifest {
 
 确保 `use std::path::PathBuf;` 已经在文件顶部（已存在，line 17）。
 
-- [ ] **Step 2: 更新 PluginManifest::new()**
+- [x] **Step 2: 更新 PluginManifest::new()**
 
 `new()` 方法需要在初始化时给新字段设置默认值。直接追加到返回结构体中：
 
@@ -118,12 +118,12 @@ impl PluginManifest {
 }
 ```
 
-- [ ] **Step 3: 编译检查**
+- [x] **Step 3: 编译检查**
 
 Run: `cargo check -q 2>&1 | head -20`
 Expected: 成功编译，无错误。可接受因后面步骤未完成导致 `dead_code` warnings。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/plugins/mod.rs
@@ -140,7 +140,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - Test: `tests/plugins/package_json_test.rs`
 - Test: `tests/plugins/mod.rs` — 需要创建或确认测试模块注册
 
-- [ ] **Step 1: 检查测试目录结构**
+- [x] **Step 1: 检查测试目录结构**
 
 Run: `ls tests/` 确认是否已有 `tests/plugins/` 目录。
 如果不存在，创建 `tests/plugins/mod.rs` 和 `tests/plugins/package_json_test.rs`。
@@ -149,14 +149,14 @@ Run: `ls tests/` 确认是否已有 `tests/plugins/` 目录。
 mkdir -p tests/plugins
 ```
 
-- [ ] **Step 2: 创建 tests/plugins/mod.rs（如果不存在）**
+- [x] **Step 2: 创建 tests/plugins/mod.rs（如果不存在）**
 
 ```rust
 // tests/plugins/mod.rs
 pub mod package_json_test;
 ```
 
-- [ ] **Step 3: 写第一个测试 — 验证 package.json 正常字段解析**
+- [x] **Step 3: 写第一个测试 — 验证 package.json 正常字段解析**
 
 ```rust
 // tests/plugins/package_json_test.rs
@@ -182,12 +182,12 @@ fn test_parse_basic_package_json() {
 }
 ```
 
-- [ ] **Step 4: 运行测试，确认失败**
+- [x] **Step 4: 运行测试，确认失败**
 
 Run: `cargo test test_parse_basic_package_json -- --nocapture 2>&1 | head -10`
 Expected: 编译错误，`PackageJsonManifest` 未定义。
 
-- [ ] **Step 5: 创建 PackageJsonManifest 结构体**
+- [x] **Step 5: 创建 PackageJsonManifest 结构体**
 
 ```rust
 // src/plugins/package_json.rs
@@ -275,7 +275,7 @@ impl PackageJsonManifest {
 }
 ```
 
-- [ ] **Step 6: 在 mod.rs 注册 package_json 模块**
+- [x] **Step 6: 在 mod.rs 注册 package_json 模块**
 
 ```rust
 // src/plugins/mod.rs — add line after pub mod isolation;
@@ -287,12 +287,12 @@ pub mod package_json;
 pub use package_json::PackageJsonManifest;  // 加在 pub use isolation::... 之后
 ```
 
-- [ ] **Step 7: 运行测试，确认通过**
+- [x] **Step 7: 运行测试，确认通过**
 
 Run: `cargo test test_parse_basic_package_json -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 8: 添加更多测试 — @scope 前缀、author 两种格式、缺字段**
+- [x] **Step 8: 添加更多测试 — @scope 前缀、author 两种格式、缺字段**
 
 追加到 `tests/plugins/package_json_test.rs`：
 
@@ -373,12 +373,12 @@ fn test_split_scope_with_at_scope() {
 }
 ```
 
-- [ ] **Step 9: 运行全部新测试**
+- [x] **Step 9: 运行全部新测试**
 
 Run: `cargo test test_parse_scoped_package test_parse_author_object test_parse_author_string test_parse_missing_optional_fields test_split_scope_no_scope test_split_scope_with_at_scope -- --nocapture`
 Expected: 全部 PASS
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add src/plugins/package_json.rs src/plugins/mod.rs tests/plugins/package_json_test.rs tests/plugins/mod.rs
@@ -398,7 +398,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - Modify: `src/plugins/loader.rs`
 - Modify: `tests/` — 添加 loader 单元测试（可追加到 `tests/plugins/` 或新建文件）
 
-- [ ] **Step 1: 写 failing test — 验证 package.json 优先于 plugin.json**
+- [x] **Step 1: 写 failing test — 验证 package.json 优先于 plugin.json**
 
 ```rust
 // tests/plugins/loader_test.rs
@@ -456,7 +456,7 @@ async fn test_load_manifest_falls_back_to_plugin_json() {
 }
 ```
 
-- [ ] **Step 2: 确保 tests/plugins/mod.rs 注册 loader_test**
+- [x] **Step 2: 确保 tests/plugins/mod.rs 注册 loader_test**
 
 ```rust
 // tests/plugins/mod.rs
@@ -464,12 +464,12 @@ pub mod loader_test;
 pub mod package_json_test;
 ```
 
-- [ ] **Step 3: 运行测试，确认失败**
+- [x] **Step 3: 运行测试，确认失败**
 
 Run: `cargo test test_load_manifest_prefers_package_json -- --nocapture 2>&1 | head -20`
 Expected: 编译失败或运行时 panic（因为 `PluginLoader` 未导入，或方法尚不支持 package.json）。
 
-- [ ] **Step 4: 写入 try_load_package_json() 并修改 load_manifest()**
+- [x] **Step 4: 写入 try_load_package_json() 并修改 load_manifest()**
 
 ```rust
 // src/plugins/loader.rs — 在 impl PluginLoader 块中添加
@@ -515,7 +515,7 @@ impl PluginLoader {
 
 **注意：** `try_load_plugin_json` 是拆出来的原逻辑。原有的 `load_manifest` 直接删除或替换。
 
-- [ ] **Step 5: 安装 tempfile crate（测试依赖）**
+- [x] **Step 5: 安装 tempfile crate（测试依赖）**
 
 检查 `Cargo.toml` 中 dev-dependencies 是否已有 `tempfile`：
 
@@ -530,12 +530,12 @@ grep -A 5 '\[dev-dependencies\]' Cargo.toml
 tempfile = "3"
 ```
 
-- [ ] **Step 6: 运行测试，确认通过**
+- [x] **Step 6: 运行测试，确认通过**
 
 Run: `cargo test test_load_manifest_prefers_package_json test_load_manifest_falls_back_to_plugin_json -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/plugins/loader.rs tests/plugins/loader_test.rs tests/plugins/mod.rs Cargo.toml
@@ -551,7 +551,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 1.4: 完善 package.json → PluginManifest 字段映射
 
-- [ ] **Step 1: 确认映射已完整**
+- [x] **Step 1: 确认映射已完整**
 
 上面的 `into_plugin_manifest()` 已经处理了：
 - name @scope/ 前缀 → publisher + bare_name
@@ -581,12 +581,12 @@ fn test_extra_fields_preserved() {
 }
 ```
 
-- [ ] **Step 2: 运行测试**
+- [x] **Step 2: 运行测试**
 
 Run: `cargo test test_extra_fields_preserved -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/plugins/package_json.rs tests/plugins/package_json_test.rs
@@ -604,7 +604,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 **文件:**
 - Modify: `src/plugins/registry.rs`
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```rust
 // tests/plugins/registry_test.rs
@@ -653,7 +653,7 @@ fn test_installed_plugins_registry_creation() {
 }
 ```
 
-- [ ] **Step 2: 注册 registry_test**
+- [x] **Step 2: 注册 registry_test**
 
 ```rust
 // tests/plugins/mod.rs
@@ -662,12 +662,12 @@ pub mod package_json_test;
 pub mod registry_test;
 ```
 
-- [ ] **Step 3: 运行测试，确认失败**
+- [x] **Step 3: 运行测试，确认失败**
 
 Run: `cargo test test_installed_plugin_entry_defaults -- --nocapture 2>&1 | head -10`
 Expected: 编译错误，`InstalledPluginEntry` 未定义。
 
-- [ ] **Step 4: 添加 InstalledPluginEntry 和 InstalledPluginsRegistry 到 registry.rs**
+- [x] **Step 4: 添加 InstalledPluginEntry 和 InstalledPluginsRegistry 到 registry.rs**
 
 在 `src/plugins/registry.rs` 中添加：
 
@@ -722,12 +722,12 @@ use super::{LoadedPlugin, PluginInfo, PluginManifest, PluginStatus};
 use serde::{Deserialize, Serialize};
 ```
 
-- [ ] **Step 5: 运行测试，确认通过**
+- [x] **Step 5: 运行测试，确认通过**
 
 Run: `cargo test test_installed_plugin_entry_defaults test_installed_plugins_registry_creation -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/plugins/registry.rs tests/plugins/registry_test.rs tests/plugins/mod.rs
@@ -741,7 +741,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 **文件:**
 - Modify: `src/plugins/registry.rs`
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```rust
 // tests/plugins/registry_test.rs — in-memory test for load/save round-trip
@@ -781,12 +781,12 @@ async fn test_save_and_load_registry() {
 }
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [x] **Step 2: 运行测试，确认失败**
 
 Run: `cargo test test_save_and_load_registry -- --nocapture 2>&1 | head -10`
 Expected: 编译错误，函数不存在。
 
-- [ ] **Step 3: 实现加载和保存函数**
+- [x] **Step 3: 实现加载和保存函数**
 
 在 `src/plugins/registry.rs` 文件底部添加：
 
@@ -851,12 +851,12 @@ grep 'dirs' Cargo.toml
 dirs = "5"
 ```
 
-- [ ] **Step 4: 运行测试，确认通过**
+- [x] **Step 4: 运行测试，确认通过**
 
 Run: `cargo test test_save_and_load_registry -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/plugins/registry.rs Cargo.toml tests/plugins/registry_test.rs
@@ -869,7 +869,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 上一步已实现 `save_installed_registry()`（public wrapper）和 `save_installed_registry_to_path()`（internal testing helper）。
 
-- [ ] **Step 1: 确认 save_installed_registry() 已正确公开**
+- [x] **Step 1: 确认 save_installed_registry() 已正确公开**
 
 ```bash
 grep 'pub async fn save_installed_registry' src/plugins/registry.rs
@@ -882,12 +882,12 @@ Expected: 找到函数定义。
 pub use registry::{InstalledPluginEntry, InstalledPluginsRegistry, load_installed_registry, save_installed_registry};
 ```
 
-- [ ] **Step 2: Compile check**
+- [x] **Step 2: Compile check**
 
 Run: `cargo check -q 2>&1 | head -10`
 Expected: 编译通过。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/plugins/registry.rs src/plugins/mod.rs
@@ -901,7 +901,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 **文件:**
 - Modify: `src/plugins/mod.rs`
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```rust
 // tests/plugins/manager_test.rs or add to existing
@@ -945,9 +945,9 @@ async fn test_load_all_cc_format_priority() {
 }
 ```
 
-- [ ] **Step 2: 注意** — 测试使用了 `with_cache_dir()`，但当前 `PluginManager` 没有这个 setter。我们需要先给 `PluginManager` 添加 `cache_dir` 字段。
+- [x] **Step 2: 注意** — 测试使用了 `with_cache_dir()`，但当前 `PluginManager` 没有这个 setter。我们需要先给 `PluginManager` 添加 `cache_dir` 字段。
 
-- [ ] **Step 3: 实现多阶段 load_all()**
+- [x] **Step 3: 实现多阶段 load_all()**
 
 ```rust
 // src/plugins/mod.rs — 修改 PluginManager 结构体和 load_all()
@@ -1116,12 +1116,12 @@ impl PluginManager {
 }
 ```
 
-- [ ] **Step 4: 运行测试**
+- [x] **Step 4: 运行测试**
 
 Run: `cargo test test_load_all_cc_format_priority -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/plugins/mod.rs
@@ -1144,7 +1144,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 **文件:**
 - Modify: `src/config/mod.rs`
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```rust
 // tests/config_test.rs
@@ -1183,18 +1183,18 @@ fn test_settings_serialize_enabled_plugins() {
 }
 ```
 
-- [ ] **Step 2: 创建测试模块文件**
+- [x] **Step 2: 创建测试模块文件**
 
 ```rust
 // tests/config_test.rs — 顶层测试文件，不需要 mod.rs，cargo 自动发现
 ```
 
-- [ ] **Step 3: 运行测试，确认失败**
+- [x] **Step 3: 运行测试，确认失败**
 
 Run: `cargo test test_settings_enabled_plugins_default -- --nocapture 2>&1 | head -10`
 Expected: 编译错误，`enabled_plugins` 字段不存在。
 
-- [ ] **Step 4: 在 Settings 中添加新字段**
+- [x] **Step 4: 在 Settings 中添加新字段**
 
 ```rust
 // src/config/mod.rs — 在 Settings 结构体中, plugins 字段后添加
@@ -1215,12 +1215,12 @@ Expected: 编译错误，`enabled_plugins` 字段不存在。
 
 需要确保 `HashMap` 在文件顶部 use 中（已在 `use std::collections::HashMap` — 检查是否已有）。
 
-- [ ] **Step 5: 编译检查**
+- [x] **Step 5: 编译检查**
 
 Run: `cargo check -q 2>&1 | head -20`
 Expected: 编译成功（可能有未使用字段 warning）。
 
-- [ ] **Step 6: 更新 Settings::default() 和 Settings::set()**
+- [x] **Step 6: 更新 Settings::default() 和 Settings::set()**
 
 在 `Settings::default()` 中添加新字段：
 
@@ -1232,12 +1232,12 @@ plugin_marketplaces: None,  // NEW
 developer_instructions: None,
 ```
 
-- [ ] **Step 7: 运行测试**
+- [x] **Step 7: 运行测试**
 
 Run: `cargo test test_settings_enabled_plugins_default test_settings_serialize_enabled_plugins -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/config/mod.rs tests/config_test.rs
@@ -1252,7 +1252,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - Create: `src/config/cc_mapping.rs`
 - Modify: `src/config/mod.rs` — 注册模块
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```rust
 // tests/cc_mapping_test.rs
@@ -1289,7 +1289,7 @@ fn test_apply_mappings_no_enabled_plugins() {
 }
 ```
 
-- [ ] **Step 2: 实现 CcConfigMapper**
+- [x] **Step 2: 实现 CcConfigMapper**
 
 ```rust
 // src/config/cc_mapping.rs
@@ -1324,7 +1324,7 @@ impl CcConfigMapper {
 }
 ```
 
-- [ ] **Step 3: 修改 PluginSettings 结构体**
+- [x] **Step 3: 修改 PluginSettings 结构体**
 
 在 `src/config/mod.rs` 中给 `PluginSettings` 增加 `enabled_map` 字段：
 
@@ -1340,7 +1340,7 @@ pub struct PluginSettings {
 }
 ```
 
-- [ ] **Step 4: 更新 PluginSettings 的 Default 或直接修改默认值**
+- [x] **Step 4: 更新 PluginSettings 的 Default 或直接修改默认值**
 
 由于 `PluginSettings` 没有手动 impl Default（它通过 Settings::default() 构造），只需要新增字段并用 `#[serde(default)]` 即可。但在 Settings::default() 中也要设置：
 
@@ -1353,14 +1353,14 @@ plugins: PluginSettings {
 },
 ```
 
-- [ ] **Step 5: 在 config/mod.rs 注册 cc_mapping 模块**
+- [x] **Step 5: 在 config/mod.rs 注册 cc_mapping 模块**
 
 ```rust
 // src/config/mod.rs — 添加在 pub mod watcher; 之后
 pub mod cc_mapping;
 ```
 
-- [ ] **Step 6: 在 Settings::load() 中调用 CcConfigMapper**
+- [x] **Step 6: 在 Settings::load() 中调用 CcConfigMapper**
 
 ```rust
 // src/config/mod.rs — 修改 Settings::load()
@@ -1382,12 +1382,12 @@ pub fn load() -> anyhow::Result<Self> {
 }
 ```
 
-- [ ] **Step 7: 运行测试**
+- [x] **Step 7: 运行测试**
 
 Run: `cargo test test_apply_mappings_enabled_plugins test_apply_mappings_no_enabled_plugins -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/config/cc_mapping.rs src/config/mod.rs
@@ -1406,7 +1406,7 @@ CcConfigMapper 的实现中：
 - `enabledPlugins` 存在时通过 `.insert()` 写入 `enabled_map`（覆盖同名键） 
 - `pluginMarketplaces` 合并（通过 `register_known_marketplace` 注册）
 
-- [ ] **Step 1: 添加优先级测试**
+- [x] **Step 1: 添加优先级测试**
 
 ```rust
 // tests/cc_mapping_test.rs
@@ -1430,12 +1430,12 @@ fn test_cc_key_overrides_wgenty_key() {
 }
 ```
 
-- [ ] **Step 2: 运行测试**
+- [x] **Step 2: 运行测试**
 
 Run: `cargo test test_cc_key_overrides_wgenty_key -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/cc_mapping_test.rs src/config/cc_mapping.rs
@@ -1446,7 +1446,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 3.4: set() 方法对新键名的支持
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```rust
 // tests/config_test.rs
@@ -1468,7 +1468,7 @@ fn test_set_enabled_plugin() {
 }
 ```
 
-- [ ] **Step 2: 扩展 Settings::set() 方法**
+- [x] **Step 2: 扩展 Settings::set() 方法**
 
 ```rust
 // src/config/mod.rs — 在 Settings::set() 的 match 中添加分支
@@ -1508,12 +1508,12 @@ pub fn set(key: &str, value: &str) -> anyhow::Result<()> {
 
 注意：上面的简单 match 需要合并到现有 `set()` 方法中，而不是替换它。将新分支插入到 match 块中。
 
-- [ ] **Step 3: 编译检查**
+- [x] **Step 3: 编译检查**
 
 Run: `cargo check -q 2>&1 | head -20`
 Expected: 编译通过。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/config/mod.rs
@@ -1531,7 +1531,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 **文件:**
 - Modify: `src/hooks/mod.rs`
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```rust
 // tests/hooks_test.rs
@@ -1564,7 +1564,7 @@ fn test_hook_event_display() {
 }
 ```
 
-- [ ] **Step 2: 为 HookEvent 添加新变体**
+- [x] **Step 2: 为 HookEvent 添加新变体**
 
 ```rust
 // src/hooks/mod.rs — 在 HookEvent 枚举中添加
@@ -1605,12 +1605,12 @@ impl std::fmt::Display for HookEvent {
 }
 ```
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
 Run: `cargo test test_hook_event_new_variants test_hook_event_display -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/hooks/mod.rs tests/hooks_test.rs
@@ -1621,7 +1621,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 4.2: HookDefinition 新增 matcher/hook_type 字段
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```rust
 // tests/hooks_test.rs
@@ -1669,7 +1669,7 @@ fn test_hook_definition_backward_compat() {
 }
 ```
 
-- [ ] **Step 2: 扩展 HookDefinition**
+- [x] **Step 2: 扩展 HookDefinition**
 
 ```rust
 // src/hooks/mod.rs — 修改 HookDefinition
@@ -1706,12 +1706,12 @@ pub struct HookDefinition {
 
 需要添加 `use std::collections::HashMap;` — 检查文件顶部是否已导入。从当前代码看，`HashMap` 已 import。
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
 Run: `cargo test test_hook_definition_with_matcher test_hook_definition_with_type test_hook_definition_backward_compat -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/hooks/mod.rs tests/hooks_test.rs
@@ -1722,7 +1722,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 4.3: 实现 matcher 匹配逻辑
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```rust
 // tests/hooks_test.rs
@@ -1808,7 +1808,7 @@ fn test_matches_matcher_notification_no_match() {
 }
 ```
 
-- [ ] **Step 2: 实现 matches_matcher() 函数**
+- [x] **Step 2: 实现 matches_matcher() 函数**
 
 在 `src/hooks/mod.rs` 中添加：
 
@@ -1849,16 +1849,16 @@ fn matches_single(pattern: &str, event: &HookEvent, tool_name: Option<&str>) -> 
 
 需要在文件顶部将 `matches_matcher` 声明为 `pub`，并在 `pub use` 或在 `lib.rs` 重导出。
 
-- [ ] **Step 3: 导出 matches_matcher**
+- [x] **Step 3: 导出 matches_matcher**
 
 检查 `src/hooks/mod.rs` 或 `src/lib.rs` 如何导出 hooks 模块。在 `src/hooks/mod.rs` 中，`matches_matcher` 应该已经是 `pub fn`。如果 hooks 模块通过 `lib.rs` 重导出，确保包含它。
 
-- [ ] **Step 4: 运行测试**
+- [x] **Step 4: 运行测试**
 
 Run: `cargo test test_matches_matcher_none test_matches_matcher_empty_string test_matches_matcher_single test_matches_matcher_pipe_separated test_matches_matcher_notification -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/hooks/mod.rs tests/hooks_test.rs
@@ -1869,7 +1869,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 4.4: 实现变量展开 expand_variables()
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```rust
 // tests/hooks_test.rs
@@ -1942,7 +1942,7 @@ fn test_expand_variables_no_vars() {
 }
 ```
 
-- [ ] **Step 2: 实现 expand_variables() 和 shell_escape()**
+- [x] **Step 2: 实现 expand_variables() 和 shell_escape()**
 
 ```rust
 // src/hooks/mod.rs — 添加在文件底部
@@ -1967,12 +1967,12 @@ pub fn shell_escape(s: &str) -> String {
 }
 ```
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
 Run: `cargo test test_expand_variables_tool test_expand_variables_input test_expand_variables_special_chars test_expand_variables_no_vars -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/hooks/mod.rs tests/hooks_test.rs
@@ -1988,7 +1988,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - Modify: `src/hooks/mod.rs`
 - Modify: `src/hooks/mod.rs` — 注册模块（如果没有，这里 hooks 是一个单文件 mod，需要转换成目录）
 
-- [ ] **Step 1: 先转换 hooks 为目录模块**
+- [x] **Step 1: 先转换 hooks 为目录模块**
 
 当前 `src/hooks/mod.rs` 是单文件。需要改为目录模块以容纳 `cc_adapter.rs`：
 
@@ -2016,7 +2016,7 @@ EOF
 
 让这个转换尽可能无痛：
 
-- [ ] **Step 2: 执行目录转换**
+- [x] **Step 2: 执行目录转换**
 
 ```bash
 # Create hooks directory
@@ -2025,7 +2025,7 @@ mkdir -p src/hooks
 mv src/hooks/mod.rs src/hooks/hooks_core.rs
 ```
 
-- [ ] **Step 3: 创建新的 src/hooks/mod.rs**
+- [x] **Step 3: 创建新的 src/hooks/mod.rs**
 
 ```rust
 // src/hooks/mod.rs
@@ -2043,7 +2043,7 @@ pub use hooks_core::*;
 
 注意：`hooks_core` 声明为 `mod` 而不是 `pub mod`，这样不会暴露内部模块路径。所有 public 类型通过 `pub use hooks_core::*` 重新导出。
 
-- [ ] **Step 4: 创建 cc_adapter.rs（先写测试）**
+- [x] **Step 4: 创建 cc_adapter.rs（先写测试）**
 
 ```rust
 // tests/cc_adapter_test.rs
@@ -2104,7 +2104,7 @@ fn test_cc_hook_item_unknown_event_skipped() {
 }
 ```
 
-- [ ] **Step 5: 实现 cc_adapter.rs**
+- [x] **Step 5: 实现 cc_adapter.rs**
 
 ```rust
 // src/hooks/cc_adapter.rs
@@ -2195,7 +2195,7 @@ pub fn adapt_cc_hooks(config: &CcHookConfig) -> HashMap<HookEvent, Vec<HookDefin
 }
 ```
 
-- [ ] **Step 6: 修改 HookManager::from_settings() 支持两种格式**
+- [x] **Step 6: 修改 HookManager::from_settings() 支持两种格式**
 
 ```rust
 // src/hooks/hooks_core.rs — 修改 from_settings()
@@ -2255,24 +2255,24 @@ pub fn adapt_cc_hooks(config: &CcHookConfig) -> HashMap<HookEvent, Vec<HookDefin
 
 注意：上面的 `HashMap` 需要 import —— `use std::collections::HashMap;` 已在文件顶部。
 
-- [ ] **Step 7: 更新引用该模块的地方**
+- [x] **Step 7: 更新引用该模块的地方**
 
 搜索所有 `mod hooks;` 和 `use crate::hooks::` 引用，确保它们仍然有效。由于我们使用了 `pub use hooks_core::*` 重新导出，所有现有的 import 路径应该保持不变。
 
 Run: `grep -r 'crate::hooks' src/ --include='*.rs'`
 Expected: 所有引用路径都使用 `crate::hooks::HookEvent`、`crate::hooks::HookManager` 等，这些仍然有效。
 
-- [ ] **Step 8: 编译检查**
+- [x] **Step 8: 编译检查**
 
 Run: `cargo check -q 2>&1 | head -30`
 Expected: 编译通过。
 
-- [ ] **Step 9: 运行测试**
+- [x] **Step 9: 运行测试**
 
 Run: `cargo test test_adapt_cc_hooks_basic test_adapt_cc_hooks_empty test_cc_hook_item_unknown_event_skipped -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add src/hooks/ tests/
@@ -2296,7 +2296,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 **文件:**
 - Create: `src/services/marketplace_resolver.rs`
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```rust
 // tests/marketplace_resolver_test.rs
@@ -2393,7 +2393,7 @@ fn test_marketplace_entry_serde() {
 }
 ```
 
-- [ ] **Step 2: 实现 marketplace_resolver.rs**
+- [x] **Step 2: 实现 marketplace_resolver.rs**
 
 ```rust
 // src/services/marketplace_resolver.rs
@@ -2484,7 +2484,7 @@ pub fn register_known_marketplace(name: String, entry: MarketplaceEntry) -> anyh
 }
 ```
 
-- [ ] **Step 3: 在 services/mod.rs 注册模块**
+- [x] **Step 3: 在 services/mod.rs 注册模块**
 
 ```rust
 // src/services/mod.rs — 添加
@@ -2496,12 +2496,12 @@ pub mod marketplace_resolver;
 pub use marketplace_resolver::{MarketplaceEntry, MarketplaceSource, PluginSource};
 ```
 
-- [ ] **Step 4: 运行测试**
+- [x] **Step 4: 运行测试**
 
 Run: `cargo test test_marketplace_source_github test_plugin_source_local_path test_plugin_source_git_subdir test_plugin_source_remote_url test_marketplace_entry_serde -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/services/marketplace_resolver.rs src/services/mod.rs tests/marketplace_resolver_test.rs
@@ -2516,7 +2516,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 5.2: load_known_marketplaces() — 持久化
 
-- [ ] **Step 1: 实现 load/save known_marketplaces.json**
+- [x] **Step 1: 实现 load/save known_marketplaces.json**
 
 追加到 `src/services/marketplace_resolver.rs`：
 
@@ -2555,7 +2555,7 @@ pub async fn save_known_marketplaces() -> anyhow::Result<()> {
 }
 ```
 
-- [ ] **Step 2: 写测试**
+- [x] **Step 2: 写测试**
 
 ```rust
 // tests/marketplace_resolver_test.rs
@@ -2582,7 +2582,7 @@ async fn test_save_and_load_known_marketplaces() {
 }
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/services/marketplace_resolver.rs
@@ -2593,7 +2593,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 5.3: 实现 clone_marketplace()
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```rust
 // tests/marketplace_resolver_test.rs
@@ -2621,7 +2621,7 @@ fn test_marketplace_cache_dir() {
 }
 ```
 
-- [ ] **Step 2: 实现 clone 函数**
+- [x] **Step 2: 实现 clone 函数**
 
 ```rust
 // src/services/marketplace_resolver.rs
@@ -2697,12 +2697,12 @@ async fn git_pull(repo_dir: &PathBuf) -> anyhow::Result<()> {
 }
 ```
 
-- [ ] **Step 3: 编译检查**
+- [x] **Step 3: 编译检查**
 
 Run: `cargo check -q 2>&1 | head -10`
 Expected: 编译通过。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/services/marketplace_resolver.rs
@@ -2713,7 +2713,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 5.4: 实现 parse_marketplace_index()
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```rust
 // tests/marketplace_resolver_test.rs
@@ -2747,7 +2747,7 @@ async fn test_parse_marketplace_index() {
 }
 ```
 
-- [ ] **Step 2: 实现 parse_marketplace_index()**
+- [x] **Step 2: 实现 parse_marketplace_index()**
 
 ```rust
 // src/services/marketplace_resolver.rs
@@ -2770,12 +2770,12 @@ pub async fn parse_marketplace_index(repo_path: &PathBuf) -> anyhow::Result<Mark
 }
 ```
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
 Run: `cargo test test_parse_marketplace_index -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/services/marketplace_resolver.rs tests/marketplace_resolver_test.rs
@@ -2786,7 +2786,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 5.5: 重写 search() — 使用真实 marketplace 数据
 
-- [ ] **Step 1: 修改 PluginMarketplaceService::search()**
+- [x] **Step 1: 修改 PluginMarketplaceService::search()**
 
 ```rust
 // src/services/plugin_marketplace.rs — 替换 search() 和 fetch_marketplace() 实现
@@ -2819,12 +2819,12 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 这个步骤是过渡性的，真正的 marketplace 搜索逻辑会随 Task 5.6 和 5.7 一起完善。当前先确保接口编译通过。
 
-- [ ] **Step 2: 编译检查**
+- [x] **Step 2: 编译检查**
 
 Run: `cargo check -q 2>&1 | head -20`
 Expected: 编译通过。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/services/plugin_marketplace.rs
@@ -2835,7 +2835,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 5.6: 重写 install() — 从 marketplace 条目安装插件
 
-- [ ] **Step 1: 实现 resolve_source() 和 install_to_cache()**
+- [x] **Step 1: 实现 resolve_source() 和 install_to_cache()**
 
 追加到 `src/services/marketplace_resolver.rs`：
 
@@ -2962,7 +2962,7 @@ async fn copy_dir_recursive(src: &PathBuf, dest: &PathBuf) -> anyhow::Result<()>
 }
 ```
 
-- [ ] **Step 2: 修改 PluginMarketplaceService::install()**
+- [x] **Step 2: 修改 PluginMarketplaceService::install()**
 
 ```rust
 // src/services/plugin_marketplace.rs — 替换 install() 实现
@@ -3024,12 +3024,12 @@ use std::collections::HashMap;
 use crate::plugins::registry::InstalledPluginEntry;
 ```
 
-- [ ] **Step 3: 编译检查**
+- [x] **Step 3: 编译检查**
 
 Run: `cargo check -q 2>&1 | head -30`
 Expected: 编译通过。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/services/marketplace_resolver.rs src/services/plugin_marketplace.rs
@@ -3044,7 +3044,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 5.7: marketplace 自动更新
 
-- [ ] **Step 1: 在 ensure_cloned() 中已有 auto_update 逻辑（git pull）**
+- [x] **Step 1: 在 ensure_cloned() 中已有 auto_update 逻辑（git pull）**
 
 确认 Task 5.3 的 `ensure_cloned()` 中已经包含：
 ```rust
@@ -3056,7 +3056,7 @@ if entry.auto_update {
 }
 ```
 
-- [ ] **Step 2: 添加定时更新触发点（可选）**
+- [x] **Step 2: 添加定时更新触发点（可选）**
 
 在 `PluginMarketplaceService` 中添加一个定期检查方法，未来可在后台任务中调用：
 
@@ -3072,7 +3072,7 @@ if entry.auto_update {
     }
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/services/plugin_marketplace.rs
@@ -3087,19 +3087,19 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 6.1: 端到端流程 — 静默集成检查
 
-- [ ] **Step 1: 集成编译检查**
+- [x] **Step 1: 集成编译检查**
 
 Run: `cargo check -q 2>&1`
 Expected: 无错误。如果有错误，逐条修复。
 
-- [ ] **Step 2: 运行所有 lint 检查**
+- [x] **Step 2: 运行所有 lint 检查**
 
 ```bash
 cargo clippy -- -D warnings 2>&1
 ```
 修复所有 clippy 错误。
 
-- [ ] **Step 3: 运行格式化检查**
+- [x] **Step 3: 运行格式化检查**
 
 ```bash
 cargo fmt -- --check 2>&1
@@ -3109,14 +3109,14 @@ cargo fmt -- --check 2>&1
 cargo fmt
 ```
 
-- [ ] **Step 4: 运行全部测试**
+- [x] **Step 4: 运行全部测试**
 
 ```bash
 cargo test --all --no-fail-fast 2>&1
 ```
 确认所有测试通过。记录失败测试并逐条修复。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -3127,7 +3127,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 6.2: 单元测试完善
 
-- [ ] **Step 1: 确认已覆盖的测试清单**
+- [x] **Step 1: 确认已覆盖的测试清单**
 
 确认以下测试全部存在且通过：
 
@@ -3143,11 +3143,11 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 | `cc_adapter_test.rs` | CC 格式适配、空配置、未知事件跳过 | Task 4.5 |
 | `marketplace_resolver_test.rs` | 数据类序列化、marketplace index 解析 | Task 5.1-5.4 |
 
-- [ ] **Step 2: 修复缺失覆盖**
+- [x] **Step 2: 修复缺失覆盖**
 
 运行 `cargo test --no-fail-fast` 找到失败测试，逐条修复。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add -A
@@ -3158,7 +3158,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 6.3: 集成测试 — CC 格式完整加载流程
 
-- [ ] **Step 1: 写集成测试**
+- [x] **Step 1: 写集成测试**
 
 ```rust
 // tests/integration_test.rs
@@ -3210,12 +3210,12 @@ async fn test_cc_format_plugin_full_load() {
 }
 ```
 
-- [ ] **Step 2: 运行测试**
+- [x] **Step 2: 运行测试**
 
 Run: `cargo test test_cc_format_plugin_full_load -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/integration_test.rs
@@ -3226,14 +3226,14 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 6.4: 向后兼容验证
 
-- [ ] **Step 1: 确认已有测试覆盖向后兼容**
+- [x] **Step 1: 确认已有测试覆盖向后兼容**
 
 从之前的测试看：
 - `test_load_manifest_falls_back_to_plugin_json` — 验证 plugin.json 只有时仍工作
 - `test_hook_definition_backward_compat` — 验证旧 hooks 格式可解析
 - `test_parse_missing_optional_fields` — 验证 PackageJsonManifest 缺字段不 panic
 
-- [ ] **Step 2: 添加 hooks 向后兼容测试**
+- [x] **Step 2: 添加 hooks 向后兼容测试**
 
 ```rust
 // tests/hooks_test.rs 或 tests/cc_adapter_test.rs
@@ -3253,12 +3253,12 @@ fn test_from_settings_flat_format_still_works() {
 }
 ```
 
-- [ ] **Step 3: 运行向后兼容测试**
+- [x] **Step 3: 运行向后兼容测试**
 
 Run: `cargo test test_from_settings_flat_format_still_works test_load_manifest_falls_back_to_plugin_json test_hook_definition_backward_compat -- --nocapture`
 Expected: 全部 PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/
@@ -3269,7 +3269,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ### Task 6.5: 最终编译检查
 
-- [ ] **Step 1: 运行最终质量门禁**
+- [x] **Step 1: 运行最终质量门禁**
 
 ```bash
 cargo clippy -- -D warnings 2>&1
@@ -3279,7 +3279,7 @@ cargo test --all 2>&1
 
 所有检查必须通过。如果测试失败，修复问题后重新运行。
 
-- [ ] **Step 2: Final commit（如果有修复）**
+- [x] **Step 2: Final commit（如果有修复）**
 
 ```bash
 git add -A
