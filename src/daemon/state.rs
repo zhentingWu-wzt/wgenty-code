@@ -110,12 +110,14 @@ impl DaemonState {
             );
             registry.register(Box::new(task_tool));
 
-            let rlm_tool = crate::tools::meta::rlm::RlmDelegateTool::new(
-                app_state.settings.clone(),
-                weak_reg.clone(),
-                progress_store.clone(),
-            );
-            registry.register(Box::new(rlm_tool));
+            if app_state.settings.rlm.enabled && app_state.settings.rlm.delegate_tool {
+                let rlm_tool = crate::tools::meta::rlm::RlmDelegateTool::new(
+                    app_state.settings.clone(),
+                    weak_reg.clone(),
+                    progress_store.clone(),
+                );
+                registry.register(Box::new(rlm_tool));
+            }
 
             let run_script_tool = crate::tools::meta::run_script::RunScriptTool::new(
                 app_state.settings.clone(),
