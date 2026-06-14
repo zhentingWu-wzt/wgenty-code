@@ -6,11 +6,11 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use super::marketplace_resolver::{self, KnownMarketplaces};
+use super::marketplace_resolver::KnownMarketplaces;
 
 use crate::state::AppState;
 
