@@ -173,7 +173,12 @@ mod tests {
     async fn test_load_manifest_package_json_priority() {
         let dir = TempDir::new().unwrap();
         // Create package.json (CC format) and plugin.json (legacy) with different names
-        write_file(dir.path(), "package.json", r#"{"name": "cc-plugin", "version": "2.0.0", "main": "index.js"}"#).await;
+        write_file(
+            dir.path(),
+            "package.json",
+            r#"{"name": "cc-plugin", "version": "2.0.0", "main": "index.js"}"#,
+        )
+        .await;
         write_file(dir.path(), "plugin.json", r#"{"name": "legacy-plugin", "version": "1.0.0", "main": "legacy.js", "commands": [], "hooks": [], "dependencies": {}, "permissions": [], "enabled": true}"#).await;
 
         let loader = PluginLoader::new();
@@ -201,6 +206,9 @@ mod tests {
         let loader = PluginLoader::new();
         let result = loader.load_manifest(dir.path()).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No manifest found"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No manifest found"));
     }
 }

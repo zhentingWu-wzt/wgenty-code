@@ -72,14 +72,12 @@ impl PackageJsonManifest {
     pub fn author_string(&self) -> Option<String> {
         self.author.as_ref().map(|a| match a {
             AuthorField::String(s) => s.clone(),
-            AuthorField::Object { name, email } => {
-                match (name.as_deref(), email.as_deref()) {
-                    (Some(n), Some(e)) => format!("{} <{}>", n, e),
-                    (Some(n), None) => n.to_string(),
-                    (None, Some(e)) => e.to_string(),
-                    (None, None) => String::new(),
-                }
-            }
+            AuthorField::Object { name, email } => match (name.as_deref(), email.as_deref()) {
+                (Some(n), Some(e)) => format!("{} <{}>", n, e),
+                (Some(n), None) => n.to_string(),
+                (None, Some(e)) => e.to_string(),
+                (None, None) => String::new(),
+            },
         })
     }
 }
