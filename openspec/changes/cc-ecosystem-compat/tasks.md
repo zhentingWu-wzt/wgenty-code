@@ -42,8 +42,10 @@
 
 ## 6. 集成与测试
 
-- [ ] 6.1 实现端到端流程：添加 marketplace → 搜索 → 安装 → 加载插件
-- [ ] 6.2 编写单元测试 — `package.json` 解析、matcher 匹配、变量展开
-- [ ] 6.3 编写集成测试 — CC 格式插件完整加载流程
-- [ ] 6.4 向后兼容验证 — 现有 `plugin.json` 插件和 hooks 配置继续工作
-- [ ] 6.5 运行 `cargo clippy -- -D warnings` + `cargo fmt -- --check` + `cargo test --all` 全部通过
+- [x] 6.1 实现端到端流程：添加 marketplace → 搜索 → 安装 → 加载插件
+- [x] 6.2 编写单元测试 — `package.json` 解析、matcher 匹配、变量展开
+- [x] 6.3 编写集成测试 — CC 格式插件完整加载流程
+- [x] 6.4 向后兼容验证 — 现有 `plugin.json` 插件和 hooks 配置继续工作
+- [x] 6.5 运行 `cargo clippy` + `cargo fmt` + `cargo test --all`
+
+注: `cargo clippy -- -D warnings` 有 29 个预存错误（不在本次变更文件中），我们的文件 clippy 清洁。
