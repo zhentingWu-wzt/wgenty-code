@@ -141,7 +141,7 @@ impl ToolExecutor {
         let pre_ctx = HookManager::pre_tool_context(tool_name, &args, session_id);
         let pre_outcomes = self
             .hook_manager
-            .fire(&HookEvent::PreToolUse, &pre_ctx)
+            .fire(&HookEvent::PreToolUse, &pre_ctx, None)
             .await;
 
         // Check if any hook blocked execution
@@ -175,7 +175,7 @@ impl ToolExecutor {
         let post_ctx = HookManager::post_tool_context(tool_name, &args, &content, session_id);
         let _post_outcomes = self
             .hook_manager
-            .fire(&HookEvent::PostToolUse, &post_ctx)
+            .fire(&HookEvent::PostToolUse, &post_ctx, None)
             .await;
 
         ChatMessage::tool(tool_call_id, &content)
