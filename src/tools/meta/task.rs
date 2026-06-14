@@ -471,7 +471,10 @@ impl Tool for TaskTool {
                 format!("subagent: {}", description),
             );
 
-            let (result, routing_reason) = if is_complex_task(&full_prompt, use_small) {
+            let (result, routing_reason) = if self.settings.rlm.enabled
+                && self.settings.rlm.auto_routing
+                && is_complex_task(&full_prompt, use_small)
+            {
                 let reason = format!(
                     "RLM pipeline: prompt_len={}, use_small={}",
                     full_prompt.len(),
