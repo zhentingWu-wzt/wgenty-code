@@ -2,6 +2,7 @@
 change: rich-diff-display
 design-doc: docs/superpowers/specs/2026-06-14-rich-diff-display-design.md
 base-ref: 6b14e50eea76a2f47d3cf09dc96b5cf904a7ba4a
+archived-with: 2026-06-14-rich-diff-display
 ---
 
 # Rich Diff Display Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 6b14e50eea76a2f47d3cf09dc96b5cf904a7ba4a
 
 **Tech Stack:** Rust, ratatui, similar (2.5, diff 引擎，已在 Cargo.toml 中存在), syntect (5.2, 可用但未集成语法高亮)
 
+archived-with: 2026-06-14-rich-diff-display
 ---
 
 ## 文件结构
@@ -33,6 +35,7 @@ base-ref: 6b14e50eea76a2f47d3cf09dc96b5cf904a7ba4a
 | `docs/superpowers/specs/2026-06-14-rich-diff-display-design.md` | 技术设计文档 |
 | `openspec/changes/rich-diff-display/tasks.md` | OpenSpec 任务清单 |
 
+archived-with: 2026-06-14-rich-diff-display
 ---
 
 ### Task 1: 核心 Diff 数据结构与生成引擎
@@ -105,6 +108,7 @@ fn multi_hunk() { /* 两处改动相距 > 2*CONTEXT，应生成 2 个 hunk */ }
 
 验证结果: `cargo test -- diff` — 8 个测试全部通过。
 
+archived-with: 2026-06-14-rich-diff-display
 ---
 
 ### Task 2: 渲染输出 — 独立视图与内联视图
@@ -164,6 +168,7 @@ fn hunk_fmt() {
 
 验证结果: `cargo test -- diff::tests::render_output diff::tests::hunk_fmt` — 通过。
 
+archived-with: 2026-06-14-rich-diff-display
 ---
 
 ### Task 3: 模块集成 — 注册与替换旧代码
@@ -219,6 +224,7 @@ pub fn diff_to_lines(file_path: &str, old: &str, new: &str, width: u16) -> Vec<L
 
 两者内部共享 `generate_diff()` → `render_unified()` 流程，仅 `max_lines`（50 vs 25）和 `compact`（false vs true）参数不同。
 
+archived-with: 2026-06-14-rich-diff-display
 ---
 
 ### Task 4: 全项目测试验证
@@ -241,6 +247,7 @@ pub fn diff_to_lines(file_path: &str, old: &str, new: &str, width: u16) -> Vec<L
 - `render_output` — 渲染输出行数验证
 - `hunk_fmt` — hunk 头格式（`@@ -N,M +N,M @@`）
 
+archived-with: 2026-06-14-rich-diff-display
 ---
 
 ## 自检清单
