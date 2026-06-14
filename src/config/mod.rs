@@ -47,14 +47,9 @@ pub struct Settings {
     /// Subagent loops that exceed this duration are aborted. Default: 240.
     #[serde(default = "default_subagent_timeout")]
     pub subagent_timeout_secs: u64,
-    /// Whether RLM pipeline retries failed sub-tasks once with a different
-    /// prompt angle. Default: true.
-    #[serde(default = "default_rlm_retry")]
-    pub rlm_retry_enabled: bool,
-    /// Maximum re-plan cycles when RLM executor failure rate exceeds 50%.
-    /// 0 = disabled (no feedback loop). Default: 2.
-    #[serde(default = "default_rlm_max_replan")]
-    pub rlm_max_replan_cycles: usize,
+    /// RLM (Recursive Language Model) pipeline settings.
+    #[serde(default)]
+    pub rlm: RlmSettings,
     /// Token budget in thousands (k). When cumulative token usage across
     /// all models exceeds this limit, the agent stops and signals budget
     /// exhaustion. 0 = unlimited. Default: 0.
@@ -142,9 +137,6 @@ fn default_max_concurrent_subagents() -> usize {
 fn default_subagent_timeout() -> u64 {
     240
 }
-fn default_rlm_retry() -> bool {
-    true
-}
 fn default_rlm_max_replan() -> usize {
     2
 }
@@ -214,6 +206,41 @@ impl Default for GuardianSettings {
     }
 }
 
+/// RLM (Recursive Language Model) pipeline settings.
+/// Controls the delegate tool, auto-routing in task, and pipeline behavior.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RlmSettings {
+    /// Master kill switch: when false, RLM is completely unavailable
+    /// regardless of other flags.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Whether the `delegate` tool is registered and visible to the model.
+    #[serde(default = "default_true")]
+    pub delegate_tool: bool,
+    /// Whether `task` tool auto-routes complex tasks to the RLM pipeline.
+    #[serde(default = "default_true")]
+    pub auto_routing: bool,
+    /// Whether RLM pipeline retries failed sub-tasks.
+    #[serde(default = "default_true")]
+    pub retry_enabled: bool,
+    /// Max re-plan cycles when RLM executor failure rate exceeds 50%.
+    /// 0 = disabled (no feedback loop). Default: 2.
+    #[serde(default = "default_rlm_max_replan")]
+    pub max_replan_cycles: usize,
+}
+
+impl Default for RlmSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            delegate_tool: true,
+            auto_routing: true,
+            retry_enabled: true,
+            max_replan_cycles: 2,
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -230,8 +257,7 @@ impl Default for Settings {
             max_subagent_depth: 3,
             max_concurrent_subagents: 5,
             subagent_timeout_secs: 240,
-            rlm_retry_enabled: true,
-            rlm_max_replan_cycles: 2,
+            rlm: RlmSettings::default(),
             token_budget_k: 0,
             max_rounds: None,
             planner_model: None,
@@ -348,8 +374,8 @@ impl Settings {
             "subagent_timeout_secs" => {
                 settings.subagent_timeout_secs = value.parse().unwrap_or(240)
             }
-            "rlm_retry_enabled" => settings.rlm_retry_enabled = value.parse().unwrap_or(true),
-            "rlm_max_replan_cycles" => settings.rlm_max_replan_cycles = value.parse().unwrap_or(2),
+            "rlm_retry_enabled" => settings.rlm.retry_enabled = value.parse().unwrap_or(true),
+            "rlm_max_replan_cycles" => settings.rlm.max_replan_cycles = value.parse().unwrap_or(2),
             "token_budget_k" => settings.token_budget_k = value.parse().unwrap_or(0),
             "planner_model" => settings.planner_model = Some(value.to_string()),
             "planner_model_base_url" => settings.planner_model_base_url = Some(value.to_string()),
