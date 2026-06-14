@@ -2,8 +2,8 @@ use crate::tools::codegraph::types::{RefKind, Reference, Relationship, Symbol, S
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 pub struct IndexStore {
     conn: std::sync::Mutex<Connection>,
@@ -16,7 +16,9 @@ impl IndexStore {
         fs::create_dir_all(&codegraph_dir)?;
         let db_path = codegraph_dir.join("index.db");
         let conn = std::sync::Mutex::new(Connection::open(&db_path)?);
-        conn.lock().unwrap().execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        conn.lock()
+            .unwrap()
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         let store = Self { conn, db_path };
         store.create_schema()?;
         Ok(store)
@@ -64,13 +66,15 @@ impl IndexStore {
             CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
             CREATE INDEX IF NOT EXISTS idx_refs_symbol ON refs(symbol_id);
             CREATE INDEX IF NOT EXISTS idx_rels_source ON relationships(source_id);
-            CREATE INDEX IF NOT EXISTS idx_rels_target ON relationships(target_id);"
+            CREATE INDEX IF NOT EXISTS idx_rels_target ON relationships(target_id);",
         )?;
         Ok(())
     }
 
     pub fn has_index(&self) -> anyhow::Result<bool> {
-        if !self.db_path.exists() { return Ok(false); }
+        if !self.db_path.exists() {
+            return Ok(false);
+        }
         let conn = self.conn.lock().unwrap();
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))?;
         Ok(count > 0)
@@ -89,20 +93,32 @@ impl IndexStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT sha256 FROM files WHERE path = ?1")?;
         let mut rows = stmt.query_map(params![path], |row| row.get(0))?;
-        match rows.next() { Some(Ok(h)) => Ok(Some(h)), _ => Ok(None) }
+        match rows.next() {
+            Some(Ok(h)) => Ok(Some(h)),
+            _ => Ok(None),
+        }
     }
 
     pub fn get_all_files(&self) -> anyhow::Result<Vec<(String, String)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT path, sha256 FROM files")?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?)))?;
-        let mut r = Vec::new(); for row in rows { r.push(row?); } Ok(r)
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut r = Vec::new();
+        for row in rows {
+            r.push(row?);
+        }
+        Ok(r)
     }
 
     pub fn upsert_file(&self, path: &str, sha256: &str) -> anyhow::Result<i64> {
         let conn = self.conn.lock().unwrap();
         conn.execute("INSERT INTO files (path, sha256) VALUES (?1,?2) ON CONFLICT(path) DO UPDATE SET sha256=excluded.sha256, indexed_at=datetime('now')", params![path, sha256])?;
-        let id: i64 = conn.query_row("SELECT id FROM files WHERE path=?1", params![path], |row| row.get(0))?;
+        let id: i64 =
+            conn.query_row("SELECT id FROM files WHERE path=?1", params![path], |row| {
+                row.get(0)
+            })?;
         Ok(id)
     }
 
@@ -133,7 +149,10 @@ impl IndexStore {
     pub fn delete_symbols_for_file(&self, file_id: i64) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM refs WHERE file_id=?1", params![file_id])?;
-        conn.execute("DELETE FROM relationships WHERE file_id=?1", params![file_id])?;
+        conn.execute(
+            "DELETE FROM relationships WHERE file_id=?1",
+            params![file_id],
+        )?;
         conn.execute("DELETE FROM symbols WHERE file_id=?1", params![file_id])?;
         Ok(())
     }
@@ -142,7 +161,11 @@ impl IndexStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT s.id,s.name,s.kind,f.path,s.line,s.col,s.signature,s.visibility,s.parent_module FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.name=?1 ORDER BY f.path,s.line")?;
         let rows = stmt.query_map(params![name], Self::map_symbol)?;
-        let mut syms = Vec::new(); for r in rows { syms.push(r?); } Ok(syms)
+        let mut syms = Vec::new();
+        for r in rows {
+            syms.push(r?);
+        }
+        Ok(syms)
     }
 
     pub fn get_symbol_by_id(&self, id: i64) -> anyhow::Result<Option<Symbol>> {
@@ -156,16 +179,24 @@ impl IndexStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT s.id,s.name,s.kind,f.path,s.line,s.col,s.signature,s.visibility,s.parent_module FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.file_id=?1 ORDER BY s.line")?;
         let rows = stmt.query_map(params![file_id], Self::map_symbol)?;
-        let mut syms = Vec::new(); for r in rows { syms.push(r?); } Ok(syms)
+        let mut syms = Vec::new();
+        for r in rows {
+            syms.push(r?);
+        }
+        Ok(syms)
     }
 
     fn map_symbol(row: &rusqlite::Row) -> rusqlite::Result<Symbol> {
         let v: String = row.get(7)?;
         Ok(Symbol {
-            id: Some(row.get(0)?), name: row.get(1)?,
-            kind: SymbolKind::from_node_type(&row.get::<_,String>(2)?).unwrap_or(SymbolKind::Function),
-            file_path: row.get(3)?, line: row.get::<_,i64>(4)? as usize,
-            col: row.get::<_,i64>(5)? as usize, signature: row.get(6)?,
+            id: Some(row.get(0)?),
+            name: row.get(1)?,
+            kind: SymbolKind::from_node_type(&row.get::<_, String>(2)?)
+                .unwrap_or(SymbolKind::Function),
+            file_path: row.get(3)?,
+            line: row.get::<_, i64>(4)? as usize,
+            col: row.get::<_, i64>(5)? as usize,
+            signature: row.get(6)?,
             visibility: match v.as_str() {
                 "pub" => crate::tools::codegraph::types::Visibility::Pub,
                 "pub(crate)" => crate::tools::codegraph::types::Visibility::PubCrate,
@@ -188,12 +219,22 @@ impl IndexStore {
     pub fn get_references(&self, symbol_id: i64) -> anyhow::Result<Vec<Reference>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT r.id,r.symbol_id,f.path,r.line,r.col,r.ref_kind,r.context FROM refs r JOIN files f ON r.file_id=f.id WHERE r.symbol_id=?1 ORDER BY f.path,r.line")?;
-        let rows = stmt.query_map(params![symbol_id], |row| Ok(Reference {
-            id: Some(row.get(0)?), symbol_id: row.get(1)?, file_path: row.get(2)?,
-            line: row.get::<_,i64>(3)? as usize, col: row.get::<_,i64>(4)? as usize,
-            ref_kind: RefKind::parse(&row.get::<_,String>(5)?), context: row.get(6)?,
-        }))?;
-        let mut refs = Vec::new(); for r in rows { refs.push(r?); } Ok(refs)
+        let rows = stmt.query_map(params![symbol_id], |row| {
+            Ok(Reference {
+                id: Some(row.get(0)?),
+                symbol_id: row.get(1)?,
+                file_path: row.get(2)?,
+                line: row.get::<_, i64>(3)? as usize,
+                col: row.get::<_, i64>(4)? as usize,
+                ref_kind: RefKind::parse(&row.get::<_, String>(5)?),
+                context: row.get(6)?,
+            })
+        })?;
+        let mut refs = Vec::new();
+        for r in rows {
+            refs.push(r?);
+        }
+        Ok(refs)
     }
 
     // ── Relationship ──
@@ -216,11 +257,19 @@ impl IndexStore {
         if depth <= 1 {
             let mut stmt = conn.prepare("SELECT s.id,s.name,s.kind,f.path,s.line,1 AS depth FROM relationships r JOIN symbols s ON s.id=r.source_id JOIN files f ON s.file_id=f.id WHERE r.target_id=?1 AND r.rel_kind='calls' ORDER BY s.name")?;
             let rows = stmt.query_map(params![target_id], Self::map_call_entry)?;
-            let mut e = Vec::new(); for r in rows { e.push(r?); } Ok(e)
+            let mut e = Vec::new();
+            for r in rows {
+                e.push(r?);
+            }
+            Ok(e)
         } else {
             let mut stmt = conn.prepare("WITH RECURSIVE tc AS (SELECT r.source_id,r.target_id,1 AS depth FROM relationships r WHERE r.target_id=?1 AND r.rel_kind='calls' UNION ALL SELECT r.source_id,r.target_id,tc.depth+1 FROM relationships r JOIN tc ON r.target_id=tc.source_id WHERE tc.depth<?2 AND r.rel_kind='calls') SELECT DISTINCT s.id,s.name,s.kind,f.path,s.line,tc.depth FROM tc JOIN symbols s ON s.id=tc.source_id JOIN files f ON s.file_id=f.id ORDER BY tc.depth,s.name")?;
             let rows = stmt.query_map(params![target_id, depth], Self::map_call_entry)?;
-            let mut e = Vec::new(); for r in rows { e.push(r?); } Ok(e)
+            let mut e = Vec::new();
+            for r in rows {
+                e.push(r?);
+            }
+            Ok(e)
         }
     }
 
@@ -229,33 +278,54 @@ impl IndexStore {
         if depth <= 1 {
             let mut stmt = conn.prepare("SELECT s.id,s.name,s.kind,f.path,s.line,1 AS depth FROM relationships r JOIN symbols s ON s.id=r.target_id JOIN files f ON s.file_id=f.id WHERE r.source_id=?1 AND r.rel_kind='calls' ORDER BY s.name")?;
             let rows = stmt.query_map(params![source_id], Self::map_call_entry)?;
-            let mut e = Vec::new(); for r in rows { e.push(r?); } Ok(e)
+            let mut e = Vec::new();
+            for r in rows {
+                e.push(r?);
+            }
+            Ok(e)
         } else {
             let mut stmt = conn.prepare("WITH RECURSIVE tc AS (SELECT r.source_id,r.target_id,1 AS depth FROM relationships r WHERE r.source_id=?1 AND r.rel_kind='calls' UNION ALL SELECT r.source_id,r.target_id,tc.depth+1 FROM relationships r JOIN tc ON r.source_id=tc.target_id WHERE tc.depth<?2 AND r.rel_kind='calls') SELECT DISTINCT s.id,s.name,s.kind,f.path,s.line,tc.depth FROM tc JOIN symbols s ON s.id=tc.target_id JOIN files f ON s.file_id=f.id ORDER BY tc.depth,s.name")?;
             let rows = stmt.query_map(params![source_id, depth], Self::map_call_entry)?;
-            let mut e = Vec::new(); for r in rows { e.push(r?); } Ok(e)
+            let mut e = Vec::new();
+            for r in rows {
+                e.push(r?);
+            }
+            Ok(e)
         }
     }
 
     fn map_call_entry(row: &rusqlite::Row) -> rusqlite::Result<SymbolCallEntry> {
         Ok(SymbolCallEntry {
-            id: row.get(0)?, name: row.get(1)?,
-            kind: SymbolKind::from_node_type(&row.get::<_,String>(2)?).unwrap_or(SymbolKind::Function),
-            file_path: row.get(3)?, line: row.get::<_,i64>(4)? as usize,
-            depth: row.get::<_,i64>(5)? as u32,
+            id: row.get(0)?,
+            name: row.get(1)?,
+            kind: SymbolKind::from_node_type(&row.get::<_, String>(2)?)
+                .unwrap_or(SymbolKind::Function),
+            file_path: row.get(3)?,
+            line: row.get::<_, i64>(4)? as usize,
+            depth: row.get::<_, i64>(5)? as u32,
         })
     }
 
     // ── Transactions ──
 
-    pub fn begin_transaction(&self) -> anyhow::Result<()> { self.conn.lock().unwrap().execute_batch("BEGIN")?; Ok(()) }
-    pub fn commit(&self) -> anyhow::Result<()> { self.conn.lock().unwrap().execute_batch("COMMIT")?; Ok(()) }
+    pub fn begin_transaction(&self) -> anyhow::Result<()> {
+        self.conn.lock().unwrap().execute_batch("BEGIN")?;
+        Ok(())
+    }
+    pub fn commit(&self) -> anyhow::Result<()> {
+        self.conn.lock().unwrap().execute_batch("COMMIT")?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolCallEntry {
-    pub id: i64, pub name: String, pub kind: SymbolKind,
-    pub file_path: String, pub line: usize, pub depth: u32,
+    pub id: i64,
+    pub name: String,
+    pub kind: SymbolKind,
+    pub file_path: String,
+    pub line: usize,
+    pub depth: u32,
 }
 
 // Tests use the main repo's test module pattern
@@ -271,9 +341,69 @@ mod tests {
         (store, dir)
     }
 
-    #[test] fn test_schema_creation() { let (s,_) = create_test_store(); assert!(!s.has_index().unwrap()); }
-    #[test] fn test_upsert_file() { let (s,_) = create_test_store(); let fid = s.upsert_file("src/lib.rs","abc123").unwrap(); assert!(fid>0); assert_eq!(s.get_file_hash("src/lib.rs").unwrap(), Some("abc123".into())); }
-    #[test] fn test_symbol_crud() { let (s,_) = create_test_store(); let fid = s.upsert_file("src/main.rs","abc").unwrap(); let sym = Symbol{id:None,name:"main".into(),kind:SymbolKind::Function,file_path:"src/main.rs".into(),line:1,col:1,signature:Some("fn main()".into()),visibility:Visibility::Private,parent_module:None}; let sid = s.insert_symbol(&sym,fid).unwrap(); assert!(sid>0); assert_eq!(s.get_symbol_by_id(sid).unwrap().unwrap().name,"main"); }
-    #[test] fn test_file_deletion() { let (s,_) = create_test_store(); let fid = s.upsert_file("src/tmp.rs","def").unwrap(); s.insert_symbol(&Symbol{id:None,name:"tmp".into(),kind:SymbolKind::Function,file_path:"src/tmp.rs".into(),line:1,col:1,signature:None,visibility:Visibility::Private,parent_module:None},fid).unwrap(); s.delete_file("src/tmp.rs").unwrap(); assert!(s.get_symbols_for_file(fid).unwrap().is_empty()); }
-    #[test] fn test_file_hash() { let dir = TempDir::new().unwrap(); let p = dir.path().join("t.txt"); fs::write(&p,b"hello").unwrap(); let h = IndexStore::file_hash(&p).unwrap(); assert_eq!(h.len(),64); assert_eq!(h, IndexStore::file_hash(&p).unwrap()); }
+    #[test]
+    fn test_schema_creation() {
+        let (s, _) = create_test_store();
+        assert!(!s.has_index().unwrap());
+    }
+    #[test]
+    fn test_upsert_file() {
+        let (s, _) = create_test_store();
+        let fid = s.upsert_file("src/lib.rs", "abc123").unwrap();
+        assert!(fid > 0);
+        assert_eq!(
+            s.get_file_hash("src/lib.rs").unwrap(),
+            Some("abc123".into())
+        );
+    }
+    #[test]
+    fn test_symbol_crud() {
+        let (s, _) = create_test_store();
+        let fid = s.upsert_file("src/main.rs", "abc").unwrap();
+        let sym = Symbol {
+            id: None,
+            name: "main".into(),
+            kind: SymbolKind::Function,
+            file_path: "src/main.rs".into(),
+            line: 1,
+            col: 1,
+            signature: Some("fn main()".into()),
+            visibility: Visibility::Private,
+            parent_module: None,
+        };
+        let sid = s.insert_symbol(&sym, fid).unwrap();
+        assert!(sid > 0);
+        assert_eq!(s.get_symbol_by_id(sid).unwrap().unwrap().name, "main");
+    }
+    #[test]
+    fn test_file_deletion() {
+        let (s, _) = create_test_store();
+        let fid = s.upsert_file("src/tmp.rs", "def").unwrap();
+        s.insert_symbol(
+            &Symbol {
+                id: None,
+                name: "tmp".into(),
+                kind: SymbolKind::Function,
+                file_path: "src/tmp.rs".into(),
+                line: 1,
+                col: 1,
+                signature: None,
+                visibility: Visibility::Private,
+                parent_module: None,
+            },
+            fid,
+        )
+        .unwrap();
+        s.delete_file("src/tmp.rs").unwrap();
+        assert!(s.get_symbols_for_file(fid).unwrap().is_empty());
+    }
+    #[test]
+    fn test_file_hash() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("t.txt");
+        fs::write(&p, b"hello").unwrap();
+        let h = IndexStore::file_hash(&p).unwrap();
+        assert_eq!(h.len(), 64);
+        assert_eq!(h, IndexStore::file_hash(&p).unwrap());
+    }
 }
