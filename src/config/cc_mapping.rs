@@ -65,10 +65,7 @@ mod tests {
         CcConfigMapper::apply_mappings(&mut settings);
 
         // CC value should win
-        assert_eq!(
-            settings.plugins.enabled_map.get("plugin@pub"),
-            Some(&true)
-        );
+        assert_eq!(settings.plugins.enabled_map.get("plugin@pub"), Some(&true));
     }
 
     #[test]
@@ -82,9 +79,6 @@ mod tests {
         // No CC keys set
         CcConfigMapper::apply_mappings(&mut settings);
 
-        assert_eq!(
-            settings.plugins.enabled_map.get("legacy"),
-            Some(&true)
-        );
+        assert_eq!(settings.plugins.enabled_map.get("legacy"), Some(&true));
     }
 }

@@ -173,7 +173,9 @@ impl PluginMarketplaceService {
             let repo_dir = entry.install_location.clone();
             // Try to clone if not yet cached
             if !repo_dir.join(".git").exists() {
-                if let Err(e) = marketplace_resolver::ensure_marketplace_cloned(entry, &base_cache).await {
+                if let Err(e) =
+                    marketplace_resolver::ensure_marketplace_cloned(entry, &base_cache).await
+                {
                     tracing::warn!(marketplace = %_name, error = %e, "failed to clone marketplace");
                     continue;
                 }
@@ -186,7 +188,9 @@ impl PluginMarketplaceService {
                         name: p.name.clone(),
                         version: p.version.clone(),
                         description: p.description.clone(),
-                        author: p.author.as_ref()
+                        author: p
+                            .author
+                            .as_ref()
                             .and_then(|a| a.as_str().map(|s| s.to_string()))
                             .unwrap_or_else(|| index.owner.clone()),
                         downloads: 0,
@@ -211,10 +215,11 @@ impl PluginMarketplaceService {
         let plugins_dir = home.join(".wgenty-code").join("plugins");
         let known_path = plugins_dir.join("known_marketplaces.json");
 
-        let known = marketplace_resolver::load_known_marketplaces(&known_path)
-            .unwrap_or(KnownMarketplaces {
+        let known = marketplace_resolver::load_known_marketplaces(&known_path).unwrap_or(
+            KnownMarketplaces {
                 marketplaces: HashMap::new(),
-            });
+            },
+        );
 
         let base_cache = plugins_dir.join("marketplaces");
         let mut found_source: Option<marketplace_resolver::PluginSource> = None;
@@ -250,7 +255,10 @@ impl PluginMarketplaceService {
         if let Some(source) = &found_source {
             match source {
                 marketplace_resolver::PluginSource::LocalPath(rel_path) => {
-                    let src = known.marketplaces.values().next()
+                    let src = known
+                        .marketplaces
+                        .values()
+                        .next()
                         .map(|e| e.install_location.join(rel_path.trim_start_matches("./")))
                         .unwrap_or_default();
                     if src.exists() {

@@ -384,16 +384,12 @@ impl PluginManager {
                                 }
                                 let pkg_json = ver_entry.path().join("package.json");
                                 if pkg_json.exists() {
-                                    match self.loader.load_manifest(&ver_entry.path()).await
-                                    {
+                                    match self.loader.load_manifest(&ver_entry.path()).await {
                                         Ok(manifest) => {
                                             let key = format!(
                                                 "{}@{}",
                                                 manifest.name,
-                                                manifest
-                                                    .publisher
-                                                    .as_deref()
-                                                    .unwrap_or("unknown")
+                                                manifest.publisher.as_deref().unwrap_or("unknown")
                                             );
                                             loaded_names.insert(key.clone());
                                             loaded_names.insert(manifest.name.clone());
@@ -411,8 +407,7 @@ impl PluginManager {
                                     // Also try plugin.json in version dir
                                     let plugin_json = ver_entry.path().join("plugin.json");
                                     if plugin_json.exists() {
-                                        match self.loader.load_manifest(&ver_entry.path()).await
-                                        {
+                                        match self.loader.load_manifest(&ver_entry.path()).await {
                                             Ok(manifest) => {
                                                 let key = format!(
                                                     "{}@{}",
@@ -424,8 +419,7 @@ impl PluginManager {
                                                 );
                                                 loaded_names.insert(key);
                                                 loaded_names.insert(manifest.name.clone());
-                                                let _ =
-                                                    self.registry.register(manifest).await;
+                                                let _ = self.registry.register(manifest).await;
                                             }
                                             Err(e) => {
                                                 tracing::warn!(
