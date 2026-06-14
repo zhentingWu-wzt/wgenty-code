@@ -1,5 +1,6 @@
 use crate::agent::progress::SubagentStatus;
 use crate::tui::app::{MessageRole, UIMessage};
+use crate::tui::components::diff;
 use crate::tui::components::subagent_tree::SubagentTree;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -457,8 +458,12 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
 
                 // If diff data is available, render it inline after the header
                 if let Some(ref diff) = msg.diff_data {
-                    let diff_lines =
-                        diff_to_lines(&diff.file_path, &diff.old_content, &diff.new_content, width);
+                    let diff_lines = diff::diff_to_lines(
+                        &diff.file_path,
+                        &diff.old_content,
+                        &diff.new_content,
+                        width,
+                    );
                     lines.extend(diff_lines);
                     return lines;
                 }
@@ -601,78 +606,9 @@ fn tool_label(name: &str, args: &serde_json::Value) -> String {
     }
 }
 
-/// Convert diff data into ratatui Lines for inline rendering in chat.
-fn diff_to_lines(file_path: &str, old: &str, new: &str, _width: u16) -> Vec<Line<'static>> {
-    use similar::{ChangeTag, TextDiff};
-
-    let diff = TextDiff::from_lines(old, new);
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    // Header
-    lines.push(Line::from(Span::styled(
-        format!("  {} {}", '\u{25B8}', file_path),
-        Style::default().fg(Color::Rgb(180, 180, 200)),
-    )));
-
-    let max_show = 25usize;
-    let mut shown = 0usize;
-    let mut change_count = 0usize;
-
-    for change in diff.iter_all_changes() {
-        match change.tag() {
-            ChangeTag::Equal => continue,
-            ChangeTag::Delete => {
-                for line in change.value().lines() {
-                    if shown >= max_show {
-                        break;
-                    }
-                    let text = format!("  - {}", line);
-                    lines.push(Line::from(Span::styled(
-                        text,
-                        Style::default().fg(DEL_COLOR),
-                    )));
-                    shown += 1;
-                }
-                change_count += 1;
-            }
-            ChangeTag::Insert => {
-                for line in change.value().lines() {
-                    if shown >= max_show {
-                        break;
-                    }
-                    let text = format!("  + {}", line);
-                    lines.push(Line::from(Span::styled(
-                        text,
-                        Style::default().fg(ADD_COLOR),
-                    )));
-                    shown += 1;
-                }
-                change_count += 1;
-            }
-        }
-        if shown >= max_show {
-            lines.push(Line::from(Span::styled(
-                "  ... (truncated)",
-                Style::default().fg(DIM_COLOR),
-            )));
-            break;
-        }
-    }
-
-    if change_count == 0 {
-        lines.push(Line::from(Span::styled(
-            "  (no changes)",
-            Style::default().fg(DIM_COLOR),
-        )));
-    }
-
-    lines.push(Line::raw(""));
-    lines
-}
-
-/// Diff line colors
-const ADD_COLOR: Color = Color::Rgb(80, 200, 120);
-const DEL_COLOR: Color = Color::Rgb(240, 100, 100);
+// Diff rendering is handled by `crate::tui::components::diff`.
+// Use `diff::diff_to_lines()` for inline chat diff, or
+// `diff::render()` for standalone diff views.
 
 /// Render a collapsed paragraph: first 3 lines + "... (N lines total, collapsed)" indicator.
 fn render_collapsed(

@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod diff;
 pub mod input;
 pub mod permission;
 
