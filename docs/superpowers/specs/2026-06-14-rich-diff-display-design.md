@@ -2,6 +2,8 @@
 comet_change: rich-diff-display
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-14-rich-diff-display
+status: final
 ---
 
 # Rich Diff Display — 技术设计

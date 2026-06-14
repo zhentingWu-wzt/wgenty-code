@@ -1,5 +1,5 @@
 workflow: full
-phase: verify
+phase: archive
 context_compression: off
 build_mode: executing-plans
 build_pause: null
@@ -11,11 +11,11 @@ auto_transition: true
 base_ref: 6b14e50eea76a2f47d3cf09dc96b5cf904a7ba4a
 design_doc: docs/superpowers/specs/2026-06-14-rich-diff-display-design.md
 plan: docs/superpowers/plans/2026-06-14-rich-diff-display.md
-verify_result: pending
+verify_result: pass
 verification_report: docs/superpowers/reports/2026-06-14-rich-diff-display-verify.md
-branch_status: pending
+branch_status: handled
 created_at: 2026-06-14
-verified_at: null
-archived: false
+verified_at: 2026-06-14
+archived: true
 handoff_context: openspec/changes/rich-diff-display/.comet/handoff/design-context.json
 handoff_hash: 5bb9a1fe7c45a656923d01cd6257d31f372fa99a9ee7c96d88216cb5e5b886ae
