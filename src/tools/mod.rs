@@ -7,10 +7,10 @@
 //!   - meta/        — think, lsp, ask_user_question, note_edit
 
 pub mod checkpoint;
+pub mod codegraph;
 pub mod execution;
 pub mod executor;
 pub mod filesystem;
-pub mod codegraph;
 pub mod meta;
 pub mod search;
 

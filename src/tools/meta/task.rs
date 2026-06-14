@@ -13,6 +13,7 @@ use crate::agent::progress::{ProgressCallback, SubagentProgress, SubagentStatus}
 use crate::api::ApiClient;
 use crate::config::Settings;
 use crate::teams::subagent_loop::run_subagent_loop;
+use crate::teams::subagent_mailbox::SubagentResultMailbox;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -108,6 +109,8 @@ pub struct TaskTool {
     background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
     /// Tracks currently running subagents to enforce max_concurrent limit.
     active_count: Arc<AtomicUsize>,
+    /// Mailbox for offloading large subagent results to disk.
+    mailbox: SubagentResultMailbox,
     /// Shared store for subagent progress updates (session_id → node_id → progress).
     progress_store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
 }
@@ -125,6 +128,7 @@ impl TaskTool {
             background_manager,
             active_count: Arc::new(AtomicUsize::new(0)),
             progress_store,
+            mailbox: SubagentResultMailbox::default_location(),
         }
     }
 
@@ -318,17 +322,28 @@ impl Tool for TaskTool {
             });
         }
 
-        // ── Guard: concurrency limit ────────────────────────────────────
-        let current = self.active_count.load(Ordering::SeqCst);
-        if current >= self.settings.max_concurrent_subagents {
-            return Ok(ToolOutput {
-                output_type: "text".to_string(),
-                content: format!(
-                    "Maximum concurrent subagents ({}) reached ({} running). Try again later.",
-                    self.settings.max_concurrent_subagents, current
-                ),
-                metadata: HashMap::new(),
-            });
+        // ── Guard: concurrency limit — queue until slot opens ───────────
+        let max = self.settings.max_concurrent_subagents;
+        let wait_start = tokio::time::Instant::now();
+        const POLL_INTERVAL_MS: u64 = 250;
+        const MAX_WAIT_SECS: u64 = 120;
+
+        loop {
+            let current = self.active_count.load(Ordering::SeqCst);
+            if current < max {
+                break;
+            }
+            if wait_start.elapsed().as_secs() >= MAX_WAIT_SECS {
+                return Ok(ToolOutput {
+                    output_type: "text".to_string(),
+                    content: format!(
+                        "Maximum concurrent subagents ({}) reached and queue wait expired ({} running). Try again later.",
+                        max, current
+                    ),
+                    metadata: HashMap::new(),
+                });
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
         }
         self.active_count.fetch_add(1, Ordering::SeqCst);
 
@@ -400,6 +415,11 @@ impl Tool for TaskTool {
                 format!("subagent: {}", desc),
             );
 
+            let mailbox_bg = self.mailbox.clone();
+            let st_bg = _subagent_type.to_string();
+            let desc_full_bg = description.to_string();
+            let sid_bg = session_id.clone();
+
             tokio::spawn(async move {
                 let result = run_subagent_loop(
                     &api_client_bg,
@@ -419,6 +439,10 @@ impl Tool for TaskTool {
                     Ok(r) => (true, r),
                     Err(e) => (false, format!("Subagent error: {}", e)),
                 };
+
+                // Offload large results to mailbox before storing.
+                let content = mailbox_bg.offload_if_large(&st_bg, &desc_full_bg, &sid_bg, &content)
+                    .to_content();
 
                 bg.push_subagent_result(&desc, &content, success).await;
             });
@@ -516,6 +540,14 @@ impl Tool for TaskTool {
 
             match result {
                 Ok(result) => {
+                    // Offload to mailbox if result exceeds inline threshold.
+                    let response = self.mailbox.offload_if_large(
+                        _subagent_type,
+                        description,
+                        &session_id,
+                        &result,
+                    );
+
                     let mut metadata = HashMap::new();
                     metadata.insert(
                         "subagent_type".to_string(),
@@ -529,7 +561,7 @@ impl Tool for TaskTool {
 
                     Ok(ToolOutput {
                         output_type: "text".to_string(),
-                        content: result,
+                        content: response.to_content(),
                         metadata,
                     })
                 }

@@ -32,12 +32,7 @@ impl Indexer {
             .follow_links(false)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|x| x == "rs")
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.path().extension().map(|x| x == "rs").unwrap_or(false))
             .filter(|e| !e.path().to_string_lossy().contains("/target/"))
             .map(|e| e.path().to_path_buf())
             .collect();
@@ -118,12 +113,7 @@ impl Indexer {
             .follow_links(false)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|x| x == "rs")
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.path().extension().map(|x| x == "rs").unwrap_or(false))
             .filter(|e| !e.path().to_string_lossy().contains("/target/"))
             .map(|e| {
                 let full = e.path().to_path_buf();
@@ -186,11 +176,7 @@ impl Indexer {
         })
     }
 
-    fn index_file(
-        &self,
-        file_path: &Path,
-        project_root: &Path,
-    ) -> anyhow::Result<FileIndexResult> {
+    fn index_file(&self, file_path: &Path, project_root: &Path) -> anyhow::Result<FileIndexResult> {
         let relative = file_path
             .strip_prefix(project_root)
             .unwrap_or(file_path)
@@ -220,8 +206,7 @@ impl Indexer {
             .to_string_lossy()
             .to_string();
         let source = std::fs::read_to_string(file_path)?;
-        let (symbols, references, relationships) =
-            self.extract_from_source(&source, &relative)?;
+        let (symbols, references, relationships) = self.extract_from_source(&source, &relative)?;
         let count = symbols.len();
 
         let file_id = self.store.upsert_file(&relative, hash)?;
@@ -346,47 +331,49 @@ impl<'a> ExtractCtx<'a> {
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
                 if child.kind() == "call_expression" {
-                        if let Some(func_node) = child.child(0) {
-                            let called_name = self.utf8_text(func_node).to_string();
-                            if !called_name.is_empty()
-                                && called_name != "self"
-                                && called_name != "Self"
-                            {
-                                let pos = func_node.start_position();
-                                let ref_kind = if func_node.kind() == "field_expression" {
-                                    RefKind::MethodCall
-                                } else {
-                                    RefKind::Call
-                                };
+                    if let Some(func_node) = child.child(0) {
+                        let called_name = self.utf8_text(func_node).to_string();
+                        if !called_name.is_empty() && called_name != "self" && called_name != "Self"
+                        {
+                            let pos = func_node.start_position();
+                            let ref_kind = if func_node.kind() == "field_expression" {
+                                RefKind::MethodCall
+                            } else {
+                                RefKind::Call
+                            };
 
-                                self.references.push(Reference {
-                                    id: None,
-                                    symbol_id: parent_idx,
-                                    file_path: String::new(),
-                                    line: pos.row + 1,
-                                    col: pos.column + 1,
-                                    ref_kind,
-                                    context: Some(called_name.clone()),
-                                });
+                            self.references.push(Reference {
+                                id: None,
+                                symbol_id: parent_idx,
+                                file_path: String::new(),
+                                line: pos.row + 1,
+                                col: pos.column + 1,
+                                ref_kind,
+                                context: Some(called_name.clone()),
+                            });
 
-                                self.relationships.push(Relationship {
-                                    id: None,
-                                    source_id: parent_idx,
-                                    target_id: -1,
-                                    rel_kind: RelKind::Calls,
-                                    file_path: String::new(),
-                                    line: pos.row + 1,
-                                    confidence: Confidence::Low,
-                                });
-                            }
+                            self.relationships.push(Relationship {
+                                id: None,
+                                source_id: parent_idx,
+                                target_id: -1,
+                                rel_kind: RelKind::Calls,
+                                file_path: String::new(),
+                                line: pos.row + 1,
+                                confidence: Confidence::Low,
+                            });
                         }
                     }
+                }
                 self.collect_references(child, parent_idx);
             }
         }
     }
 
-    fn get_name_node<'n>(&self, node: tree_sitter::Node<'n>, kind: &str) -> Option<tree_sitter::Node<'n>> {
+    fn get_name_node<'n>(
+        &self,
+        node: tree_sitter::Node<'n>,
+        kind: &str,
+    ) -> Option<tree_sitter::Node<'n>> {
         match kind {
             "function_item" | "struct_item" | "enum_item" | "trait_item" | "type_item"
             | "const_item" | "static_item" | "macro_definition" | "mod_item" => {
@@ -445,7 +432,11 @@ impl<'a> ExtractCtx<'a> {
         }
     }
 
-    fn get_body_node<'n>(&self, node: tree_sitter::Node<'n>, kind: &str) -> Option<tree_sitter::Node<'n>> {
+    fn get_body_node<'n>(
+        &self,
+        node: tree_sitter::Node<'n>,
+        kind: &str,
+    ) -> Option<tree_sitter::Node<'n>> {
         match kind {
             "function_item" | "impl_item" | "trait_item" | "mod_item" => {
                 for i in (0..node.child_count()).rev() {
@@ -508,7 +499,9 @@ mod tests {
         assert!(symbols.iter().any(|s| s.name == "foo"));
         assert!(symbols.iter().any(|s| s.name == "bar"));
         assert!(
-            references.iter().any(|r| r.context.as_deref() == Some("foo")),
+            references
+                .iter()
+                .any(|r| r.context.as_deref() == Some("foo")),
             "Expected reference to foo"
         );
     }
