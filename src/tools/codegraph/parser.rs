@@ -44,10 +44,7 @@ mod tests {
         let source = "pub fn hello(x: i32) -> bool { true }";
         let tree = parser.parse(source).unwrap();
         assert_eq!(tree.root_node().kind(), "source_file");
-        assert_eq!(
-            tree.root_node().child(0).unwrap().kind(),
-            "function_item"
-        );
+        assert_eq!(tree.root_node().child(0).unwrap().kind(), "function_item");
     }
 
     #[test]

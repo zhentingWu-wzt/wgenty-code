@@ -134,7 +134,10 @@ impl Tool for FileReadTool {
             .enumerate()
             .map(|(idx, line)| {
                 let display_line = if line.chars().count() > max_line_len {
-                    format!("{}…[truncated]", line.chars().take(max_line_len).collect::<String>())
+                    format!(
+                        "{}…[truncated]",
+                        line.chars().take(max_line_len).collect::<String>()
+                    )
                 } else {
                     (*line).to_string()
                 };

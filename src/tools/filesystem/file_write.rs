@@ -99,10 +99,9 @@ impl Tool for FileWriteTool {
             })?;
 
         let mut metadata = std::collections::HashMap::new();
-        if let Some(old) = old_content {
-            metadata.insert("old_content".to_string(), serde_json::json!(old));
-            metadata.insert("new_content".to_string(), serde_json::json!(content));
-        }
+        let old = old_content.unwrap_or_default();
+        metadata.insert("old_content".to_string(), serde_json::json!(old));
+        metadata.insert("new_content".to_string(), serde_json::json!(content));
 
         Ok(ToolOutput {
             output_type: "text".to_string(),

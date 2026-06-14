@@ -785,7 +785,9 @@ impl Cli {
         match action {
             super::CodegraphCommands::Index {} => {
                 println!("[codegraph] Building index for {:?}...", project_root);
-                let store = Arc::new(crate::tools::codegraph::store::IndexStore::open(&project_root)?);
+                let store = Arc::new(crate::tools::codegraph::store::IndexStore::open(
+                    &project_root,
+                )?);
                 let parser = Arc::new(std::sync::Mutex::new(
                     crate::tools::codegraph::parser::CodeParser::new(),
                 ));
@@ -793,17 +795,27 @@ impl Cli {
                 let summary = indexer.index_full(&project_root)?;
                 println!(
                     "[codegraph] Done: {} files, {} symbols in {:.1}s ({}) warnings",
-                    summary.files_indexed, summary.symbols_extracted,
-                    summary.elapsed_secs, summary.warnings
+                    summary.files_indexed,
+                    summary.symbols_extracted,
+                    summary.elapsed_secs,
+                    summary.warnings
                 );
             }
             super::CodegraphCommands::Query { symbol } => {
-                let store = Arc::new(crate::tools::codegraph::store::IndexStore::open(&project_root)?);
+                let store = Arc::new(crate::tools::codegraph::store::IndexStore::open(
+                    &project_root,
+                )?);
                 let engine = crate::tools::codegraph::query::QueryEngine::new(store);
                 let result = engine.codegraph_node(symbol)?;
                 if result.found {
                     for sym in &result.symbols {
-                        println!("{} ({}) at {}:{}", sym.name, sym.kind.as_str(), sym.file_path, sym.line);
+                        println!(
+                            "{} ({}) at {}:{}",
+                            sym.name,
+                            sym.kind.as_str(),
+                            sym.file_path,
+                            sym.line
+                        );
                     }
                 } else {
                     println!("Symbol `{}` not found.", symbol);
@@ -821,5 +833,4 @@ impl Cli {
         }
         Ok(())
     }
-
 }

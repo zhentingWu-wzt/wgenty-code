@@ -216,9 +216,18 @@ fn segments_for_side<'a>(wd: &TextDiff<'a, 'a, 'a, str>, side: LineTag) -> Vec<S
         let t = change.tag();
         let v = change.value();
         match (t, side) {
-            (ChangeTag::Delete, LineTag::Delete) => out.push(Segment { changed: true, text: v.to_string() }),
-            (ChangeTag::Insert, LineTag::Insert) => out.push(Segment { changed: true, text: v.to_string() }),
-            (ChangeTag::Equal, _) => out.push(Segment { changed: false, text: v.to_string() }),
+            (ChangeTag::Delete, LineTag::Delete) => out.push(Segment {
+                changed: true,
+                text: v.to_string(),
+            }),
+            (ChangeTag::Insert, LineTag::Insert) => out.push(Segment {
+                changed: true,
+                text: v.to_string(),
+            }),
+            (ChangeTag::Equal, _) => out.push(Segment {
+                changed: false,
+                text: v.to_string(),
+            }),
             (_, _) => {}
         }
     }
@@ -229,27 +238,50 @@ fn segments_for_side<'a>(wd: &TextDiff<'a, 'a, 'a, str>, side: LineTag) -> Vec<S
 
 fn render_line(line: &DiffLine, gutter_w: usize, width: u16, skip_gutter: bool) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
-    let max_w = if skip_gutter { width as usize } else { width.saturating_sub(gutter_w as u16) as usize };
+    let max_w = if skip_gutter {
+        width as usize
+    } else {
+        width.saturating_sub(gutter_w as u16) as usize
+    };
 
     if !skip_gutter {
         let marker = match line.tag {
-            LineTag::Context => " ", LineTag::Delete => "-", LineTag::Insert => "+",
+            LineTag::Context => " ",
+            LineTag::Delete => "-",
+            LineTag::Insert => "+",
         };
         // gutter_w = 2*d + 3; each number column gets d chars
         let nw = (gutter_w.saturating_sub(3)) / 2;
         let o = match line.old_no {
-            Some(n) => format!("{:>w$}", n, w = nw), None => " ".repeat(nw),
+            Some(n) => format!("{:>w$}", n, w = nw),
+            None => " ".repeat(nw),
         };
         let n = match line.new_no {
-            Some(n) => format!("{:>w$}", n, w = nw), None => " ".repeat(nw),
+            Some(n) => format!("{:>w$}", n, w = nw),
+            None => " ".repeat(nw),
         };
-        spans.push(Span::styled(format!("{o} {marker} {n}"), Style::default().fg(CTX_COLOR)));
+        spans.push(Span::styled(
+            format!("{o} {marker} {n}"),
+            Style::default().fg(CTX_COLOR),
+        ));
     }
 
     let (prefix, base, changed) = match line.tag {
-        LineTag::Context => ("  ", Style::default().fg(CTX_COLOR), Style::default().fg(CTX_COLOR)),
-        LineTag::Delete => ("- ", Style::default().fg(DEL_COLOR), Style::default().fg(DEL_WORD_COLOR)),
-        LineTag::Insert => ("+ ", Style::default().fg(ADD_COLOR), Style::default().fg(ADD_WORD_COLOR)),
+        LineTag::Context => (
+            "  ",
+            Style::default().fg(CTX_COLOR),
+            Style::default().fg(CTX_COLOR),
+        ),
+        LineTag::Delete => (
+            "- ",
+            Style::default().fg(DEL_COLOR),
+            Style::default().fg(DEL_WORD_COLOR),
+        ),
+        LineTag::Insert => (
+            "+ ",
+            Style::default().fg(ADD_COLOR),
+            Style::default().fg(ADD_WORD_COLOR),
+        ),
     };
 
     if line.segments.is_empty() {
@@ -271,38 +303,67 @@ fn render_line(line: &DiffLine, gutter_w: usize, width: u16, skip_gutter: bool) 
 }
 
 fn gutter_width(hunks: &[Hunk]) -> usize {
-    let m = hunks.iter().flat_map(|h| h.lines.iter())
-        .flat_map(|l| [l.old_no, l.new_no]).flatten().max().unwrap_or(1);
+    let m = hunks
+        .iter()
+        .flat_map(|h| h.lines.iter())
+        .flat_map(|l| [l.old_no, l.new_no])
+        .flatten()
+        .max()
+        .unwrap_or(1);
     let d = m.to_string().len();
     d + 1 + d + 2
 }
 
 fn hunk_header(hunk: &Hunk) -> Line<'static> {
     Line::from(Span::styled(
-        format!("@@ -{},{} +{},{} @@", hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count),
+        format!(
+            "@@ -{},{} +{},{} @@",
+            hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
+        ),
         Style::default().fg(HUNK_COLOR),
     ))
 }
 
 fn stats_line(path: &str, add: usize, del: usize) -> Line<'static> {
-    let mut s = vec![Span::styled(format!("  \u{25B8} {path}"), Style::default().fg(HEADER_COLOR))];
+    let mut s = vec![Span::styled(
+        format!("  \u{25B8} {path}"),
+        Style::default().fg(HEADER_COLOR),
+    )];
     if add > 0 || del > 0 {
-        s.push(Span::styled(format!("  +{add}"), Style::default().fg(ADD_COLOR)));
-        s.push(Span::styled(format!(" -{del}"), Style::default().fg(DEL_COLOR)));
+        s.push(Span::styled(
+            format!("  +{add}"),
+            Style::default().fg(ADD_COLOR),
+        ));
+        s.push(Span::styled(
+            format!(" -{del}"),
+            Style::default().fg(DEL_COLOR),
+        ));
     }
     Line::from(s)
 }
 
-fn render_unified(diff: &UnifiedDiff, width: u16, max_lines: usize, compact: bool) -> Vec<Line<'static>> {
+fn render_unified(
+    diff: &UnifiedDiff,
+    width: u16,
+    max_lines: usize,
+    compact: bool,
+) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
-    let gw = if compact { 0 } else { gutter_width(&diff.hunks) };
+    let gw = if compact {
+        0
+    } else {
+        gutter_width(&diff.hunks)
+    };
 
     out.push(stats_line(&diff.file_path, diff.additions, diff.deletions));
     let mut shown = 1usize;
 
     for hunk in &diff.hunks {
         if shown >= max_lines {
-            out.push(Line::from(Span::styled("  ... (truncated)", Style::default().fg(CTX_COLOR))));
+            out.push(Line::from(Span::styled(
+                "  ... (truncated)",
+                Style::default().fg(CTX_COLOR),
+            )));
             break;
         }
         out.push(hunk_header(hunk));
@@ -311,7 +372,10 @@ fn render_unified(diff: &UnifiedDiff, width: u16, max_lines: usize, compact: boo
         for line in &hunk.lines {
             if shown >= max_lines {
                 let rem = hunk.lines.len().saturating_sub(shown.saturating_sub(1));
-                out.push(Line::from(Span::styled(format!("  ... ({rem} more lines)"), Style::default().fg(CTX_COLOR))));
+                out.push(Line::from(Span::styled(
+                    format!("  ... ({rem} more lines)"),
+                    Style::default().fg(CTX_COLOR),
+                )));
                 break;
             }
             out.push(render_line(line, gw, width, compact));
@@ -320,7 +384,10 @@ fn render_unified(diff: &UnifiedDiff, width: u16, max_lines: usize, compact: boo
     }
 
     if diff.hunks.is_empty() {
-        out.push(Line::from(Span::styled("  (no changes detected)", Style::default().fg(CTX_COLOR))));
+        out.push(Line::from(Span::styled(
+            "  (no changes detected)",
+            Style::default().fg(CTX_COLOR),
+        )));
     }
 
     out
@@ -400,7 +467,11 @@ mod tests {
 
     #[test]
     fn render_output() {
-        let d = generate_diff("fn f() {\n  let x = 1;\n}\n", "fn f() {\n  let x = 2;\n}\n", "s.rs");
+        let d = generate_diff(
+            "fn f() {\n  let x = 1;\n}\n",
+            "fn f() {\n  let x = 2;\n}\n",
+            "s.rs",
+        );
         let ls = render_unified(&d, 80, 50, true);
         assert!(ls.len() >= 5);
     }

@@ -18,7 +18,8 @@ fn get_engine() -> Result<Arc<QueryEngine>, ToolError> {
     let db_path = cwd.join(".codegraph").join("index.db");
     if !db_path.exists() {
         return Err(ToolError {
-            message: "No codegraph index found. Run `wgenty-code codegraph index` first.".to_string(),
+            message: "No codegraph index found. Run `wgenty-code codegraph index` first."
+                .to_string(),
             code: Some("no_index".to_string()),
         });
     }
@@ -36,18 +37,26 @@ fn get_engine() -> Result<Arc<QueryEngine>, ToolError> {
 pub struct CodegraphNodeTool;
 
 impl CodegraphNodeTool {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 impl Default for CodegraphNodeTool {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[async_trait]
 impl Tool for CodegraphNodeTool {
-    fn name(&self) -> &str { "codegraph_node" }
+    fn name(&self) -> &str {
+        "codegraph_node"
+    }
 
-    fn is_read_only(&self) -> bool { true }
+    fn is_read_only(&self) -> bool {
+        true
+    }
 
     fn description(&self) -> &str {
         "Look up a Rust symbol by name. Returns definition location, signature, references, and callers/callees. Requires a codegraph index (run `wgenty-code codegraph index` first)."
@@ -84,7 +93,13 @@ impl Tool for CodegraphNodeTool {
             if !result.suggestions.is_empty() {
                 lines.push("\nSuggestions:".to_string());
                 for s in &result.suggestions {
-                    lines.push(format!("  - {} ({}) at {}:{}", s.name, s.kind.as_str(), s.file_path, s.line));
+                    lines.push(format!(
+                        "  - {} ({}) at {}:{}",
+                        s.name,
+                        s.kind.as_str(),
+                        s.file_path,
+                        s.line
+                    ));
                 }
             }
         } else {
@@ -136,18 +151,26 @@ impl Tool for CodegraphNodeTool {
 pub struct CodegraphExploreTool;
 
 impl CodegraphExploreTool {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 impl Default for CodegraphExploreTool {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[async_trait]
 impl Tool for CodegraphExploreTool {
-    fn name(&self) -> &str { "codegraph_explore" }
+    fn name(&self) -> &str {
+        "codegraph_explore"
+    }
 
-    fn is_read_only(&self) -> bool { true }
+    fn is_read_only(&self) -> bool {
+        true
+    }
 
     fn description(&self) -> &str {
         "Explore code symbols and their relationships. Returns relevant symbols and call paths. Requires a codegraph index (run `wgenty-code codegraph index` first)."
@@ -187,7 +210,10 @@ impl Tool for CodegraphExploreTool {
         for sym in &result.symbols {
             lines.push(format!(
                 "  - {} ({}) at {}:{}",
-                sym.name, sym.kind.as_str(), sym.file_path, sym.line
+                sym.name,
+                sym.kind.as_str(),
+                sym.file_path,
+                sym.line
             ));
         }
         if !result.call_graph.is_empty() {
@@ -205,7 +231,10 @@ impl Tool for CodegraphExploreTool {
             content: lines.join("\n"),
             metadata: {
                 let mut m = std::collections::HashMap::new();
-                m.insert("symbol_count".to_string(), serde_json::json!(result.symbols.len()));
+                m.insert(
+                    "symbol_count".to_string(),
+                    serde_json::json!(result.symbols.len()),
+                );
                 m
             },
         })
