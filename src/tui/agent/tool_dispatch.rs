@@ -70,11 +70,12 @@ impl AgentLoop {
                     )
                 } else {
                     format!(
-                        r#"{{"success":{},"output_type":{},"content":{},"error":{}}}"#,
+                        r#"{{"success":{},"output_type":{},"content":{},"error":{},"metadata":{}}}"#,
                         resp.success,
                         serde_json::to_string(&resp.output_type).unwrap_or_default(),
                         serde_json::to_string(&resp.content).unwrap_or_default(),
                         serde_json::to_string(&resp.error).unwrap_or_default(),
+                        serde_json::to_string(&resp.metadata).unwrap_or_default(),
                     )
                 }
             }
@@ -154,11 +155,12 @@ impl AgentLoop {
                     match result {
                         Ok(resp) => {
                             return format!(
-                                r#"{{"success":{},"output_type":{},"content":{},"error":{}}}"#,
+                                r#"{{"success":{},"output_type":{},"content":{},"error":{},"metadata":{}}}"#,
                                 resp.success,
                                 serde_json::to_string(&resp.output_type).unwrap_or_default(),
                                 serde_json::to_string(&resp.content).unwrap_or_default(),
                                 serde_json::to_string(&resp.error).unwrap_or_default(),
+                                serde_json::to_string(&resp.metadata).unwrap_or_default(),
                             );
                         }
                         Err(e) => {
@@ -180,11 +182,12 @@ impl AgentLoop {
                     {
                         Ok(resp) => {
                             return format!(
-                                r#"{{"success":{},"output_type":{},"content":{},"error":{}}}"#,
+                                r#"{{"success":{},"output_type":{},"content":{},"error":{},"metadata":{}}}"#,
                                 resp.success,
                                 serde_json::to_string(&resp.output_type).unwrap_or_default(),
                                 serde_json::to_string(&resp.content).unwrap_or_default(),
                                 serde_json::to_string(&resp.error).unwrap_or_default(),
+                                serde_json::to_string(&resp.metadata).unwrap_or_default(),
                             );
                         }
                         Err(e) => {
@@ -210,11 +213,12 @@ impl AgentLoop {
 
         // No permission required — return result directly
         format!(
-            r#"{{"success":{},"output_type":{},"content":{},"error":{}}}"#,
+            r#"{{"success":{},"output_type":{},"content":{},"error":{},"metadata":{}}}"#,
             result.success,
             serde_json::to_string(&result.output_type).unwrap_or_default(),
             serde_json::to_string(&result.content).unwrap_or_default(),
             serde_json::to_string(&result.error).unwrap_or_default(),
+            serde_json::to_string(&result.metadata).unwrap_or_default(),
         )
     }
 
