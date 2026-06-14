@@ -84,6 +84,32 @@ impl PackageJsonManifest {
     }
 }
 
+impl From<PackageJsonManifest> for super::PluginManifest {
+    fn from(pkg: PackageJsonManifest) -> Self {
+        let (publisher, bare_name) = PackageJsonManifest::split_name(&pkg.name);
+        // Extract author before description to avoid partial move issue
+        let author = pkg.author_string();
+        Self {
+            name: bare_name,
+            version: pkg.version,
+            description: pkg.description,
+            author,
+            license: None,
+            repository: None,
+            main: pkg.main.unwrap_or_else(|| "index.js".to_string()),
+            commands: Vec::new(),
+            hooks: Vec::new(),
+            dependencies: HashMap::new(),
+            permissions: Vec::new(),
+            enabled: true,
+            publisher,
+            install_path: None,
+            git_commit_sha: None,
+            source_format: Some("cc".to_string()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +167,26 @@ mod tests {
             extra: HashMap::new(),
         };
         assert_eq!(m.author_string().as_deref(), Some("Bob <bob@example.com>"));
+    }
+
+    #[test]
+    fn test_into_plugin_manifest() {
+        let pkg = PackageJsonManifest {
+            name: "@anthropic/superpowers".into(),
+            version: "5.1.0".into(),
+            description: Some("Superpowers plugin".into()),
+            author: Some(AuthorField::String("Anthropic".into())),
+            main: Some("index.js".into()),
+            opencode: None,
+            claude: None,
+            extra: HashMap::new(),
+        };
+        let manifest: crate::plugins::PluginManifest = pkg.into();
+        assert_eq!(manifest.name, "superpowers");
+        assert_eq!(manifest.publisher.as_deref(), Some("anthropic"));
+        assert_eq!(manifest.source_format.as_deref(), Some("cc"));
+        assert_eq!(manifest.version, "5.1.0");
+        assert_eq!(manifest.description.as_deref(), Some("Superpowers plugin"));
+        assert_eq!(manifest.author.as_deref(), Some("Anthropic"));
     }
 }
