@@ -309,12 +309,44 @@ impl Settings {
         if config_path.exists() {
             let content = std::fs::read_to_string(&config_path)?;
             let mut settings: Settings = serde_json::from_str(&content)?;
+            // Migrate legacy flat RLM keys into the rlm group.
+            Self::migrate_rlm_settings(&content, &mut settings);
             cc_mapping::CcConfigMapper::apply_mappings(&mut settings);
             Ok(settings)
         } else {
             let settings = Settings::default();
             settings.save()?;
             Ok(settings)
+        }
+    }
+
+    /// Migrate legacy flat `rlm_retry_enabled` / `rlm_max_replan_cycles` keys
+    /// from the raw JSON into `Settings.rlm`. Only touch rlm fields when the
+    /// raw JSON contains the legacy key AND the rlm group was not provided.
+    fn migrate_rlm_settings(raw_json: &str, settings: &mut Settings) {
+        let Ok(raw) = serde_json::from_str::<serde_json::Value>(raw_json) else {
+            return;
+        };
+        // If the new "rlm" group is present, legacy keys are ignored.
+        if raw.get("rlm").is_some() {
+            return;
+        }
+        let mut migrated = false;
+        if let Some(val) = raw.get("rlm_retry_enabled").and_then(|v| v.as_bool()) {
+            settings.rlm.retry_enabled = val;
+            migrated = true;
+        }
+        if let Some(val) = raw.get("rlm_max_replan_cycles").and_then(|v| v.as_u64()) {
+            settings.rlm.max_replan_cycles = val as usize;
+            migrated = true;
+        }
+        if migrated {
+            tracing::info!(
+                target: "config",
+                rlm_retry = settings.rlm.retry_enabled,
+                rlm_replan = settings.rlm.max_replan_cycles,
+                "Migrated legacy RLM config keys into rlm group"
+            );
         }
     }
 
