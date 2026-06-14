@@ -39,6 +39,18 @@ pub struct PluginManifest {
     pub dependencies: HashMap<String, String>,
     pub permissions: Vec<String>,
     pub enabled: bool,
+    /// Publisher name extracted from @scope prefix (e.g., "anthropic" from "@anthropic/test")
+    #[serde(default)]
+    pub publisher: Option<String>,
+    /// Install path for CC-format plugins (cache/<publisher>/<name>/<version>)
+    #[serde(default)]
+    pub install_path: Option<PathBuf>,
+    /// Git commit SHA for plugins installed from git repositories
+    #[serde(default)]
+    pub git_commit_sha: Option<String>,
+    /// Source format marker: "cc" for Claude Code format, "wgenty" for legacy
+    #[serde(default)]
+    pub source_format: Option<String>,
 }
 
 impl PluginManifest {
@@ -56,6 +68,10 @@ impl PluginManifest {
             dependencies: HashMap::new(),
             permissions: Vec::new(),
             enabled: true,
+            publisher: None,
+            install_path: None,
+            git_commit_sha: None,
+            source_format: None,
         }
     }
 
@@ -341,5 +357,55 @@ impl PluginManager {
 impl Default for PluginManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cc_compat_fields_serde() {
+        let json = r#"{
+            "name": "test-plugin",
+            "version": "1.0.0",
+            "main": "index.js",
+            "commands": [],
+            "hooks": [],
+            "dependencies": {},
+            "permissions": [],
+            "enabled": true,
+            "publisher": "anthropic",
+            "install_path": "/home/user/.wgenty-code/plugins/cache/anthropic/test-plugin/1.0.0",
+            "git_commit_sha": "abc123def456",
+            "source_format": "cc"
+        }"#;
+
+        let manifest: PluginManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(manifest.publisher.as_deref(), Some("anthropic"));
+        assert!(manifest.install_path.is_some());
+        assert_eq!(manifest.git_commit_sha.as_deref(), Some("abc123def456"));
+        assert_eq!(manifest.source_format.as_deref(), Some("cc"));
+    }
+
+    #[test]
+    fn test_cc_compat_fields_default_none() {
+        // Old JSON without CC fields should deserialize with None defaults
+        let json = r#"{
+            "name": "legacy-plugin",
+            "version": "1.0.0",
+            "main": "index.js",
+            "commands": [],
+            "hooks": [],
+            "dependencies": {},
+            "permissions": [],
+            "enabled": true
+        }"#;
+
+        let manifest: PluginManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(manifest.publisher, None);
+        assert_eq!(manifest.install_path, None);
+        assert_eq!(manifest.git_commit_sha, None);
+        assert_eq!(manifest.source_format, None);
     }
 }
