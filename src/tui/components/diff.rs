@@ -235,7 +235,8 @@ fn render_line(line: &DiffLine, gutter_w: usize, width: u16, skip_gutter: bool) 
         let marker = match line.tag {
             LineTag::Context => " ", LineTag::Delete => "-", LineTag::Insert => "+",
         };
-        let nw = gutter_w.saturating_sub(3);
+        // gutter_w = 2*d + 3; each number column gets d chars
+        let nw = (gutter_w.saturating_sub(3)) / 2;
         let o = match line.old_no {
             Some(n) => format!("{:>w$}", n, w = nw), None => " ".repeat(nw),
         };
