@@ -10,6 +10,7 @@ pub mod commands;
 pub mod hooks;
 pub mod isolation;
 pub mod loader;
+pub mod package_json;
 pub mod registry;
 
 use serde::{Deserialize, Serialize};
