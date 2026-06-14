@@ -406,8 +406,19 @@ impl Settings {
             "subagent_timeout_secs" => {
                 settings.subagent_timeout_secs = value.parse().unwrap_or(240)
             }
+            // rlm group — new canonical keys
+            "rlm.enabled" => settings.rlm.enabled = value.parse().unwrap_or(true),
+            "rlm.delegate_tool" => settings.rlm.delegate_tool = value.parse().unwrap_or(true),
+            "rlm.auto_routing" => settings.rlm.auto_routing = value.parse().unwrap_or(true),
+            "rlm.retry_enabled" => settings.rlm.retry_enabled = value.parse().unwrap_or(true),
+            "rlm.max_replan_cycles" => {
+                settings.rlm.max_replan_cycles = value.parse().unwrap_or(2)
+            }
+            // legacy aliases (backward compatible)
             "rlm_retry_enabled" => settings.rlm.retry_enabled = value.parse().unwrap_or(true),
-            "rlm_max_replan_cycles" => settings.rlm.max_replan_cycles = value.parse().unwrap_or(2),
+            "rlm_max_replan_cycles" => {
+                settings.rlm.max_replan_cycles = value.parse().unwrap_or(2)
+            }
             "token_budget_k" => settings.token_budget_k = value.parse().unwrap_or(0),
             "planner_model" => settings.planner_model = Some(value.to_string()),
             "planner_model_base_url" => settings.planner_model_base_url = Some(value.to_string()),
