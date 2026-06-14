@@ -471,3 +471,112 @@ impl Settings {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rlm_settings_default_all_enabled() {
+        let rlm = RlmSettings::default();
+        assert!(rlm.enabled);
+        assert!(rlm.delegate_tool);
+        assert!(rlm.auto_routing);
+        assert!(rlm.retry_enabled);
+        assert_eq!(rlm.max_replan_cycles, 2);
+    }
+
+    #[test]
+    fn test_rlm_settings_deserialize_partial() {
+        let json = r#"{"enabled": false}"#;
+        let rlm: RlmSettings = serde_json::from_str(json).unwrap();
+        assert!(!rlm.enabled);
+        // Other fields should use defaults
+        assert!(rlm.delegate_tool);
+        assert!(rlm.auto_routing);
+        assert!(rlm.retry_enabled);
+        assert_eq!(rlm.max_replan_cycles, 2);
+    }
+
+    #[test]
+    fn test_rlm_settings_deserialize_full() {
+        let json = r#"{
+            "enabled": false,
+            "delegate_tool": false,
+            "auto_routing": false,
+            "retry_enabled": false,
+            "max_replan_cycles": 0
+        }"#;
+        let rlm: RlmSettings = serde_json::from_str(json).unwrap();
+        assert!(!rlm.enabled);
+        assert!(!rlm.delegate_tool);
+        assert!(!rlm.auto_routing);
+        assert!(!rlm.retry_enabled);
+        assert_eq!(rlm.max_replan_cycles, 0);
+    }
+
+    #[test]
+    fn test_migrate_rlm_legacy_keys() {
+        // Simulate old config format with flat keys
+        let old_json = r#"{
+            "model": "sonnet",
+            "rlm_retry_enabled": false,
+            "rlm_max_replan_cycles": 5
+        }"#;
+        let mut settings = Settings::default();
+        Settings::migrate_rlm_settings(old_json, &mut settings);
+        // Legacy values should be copied into rlm group
+        assert!(!settings.rlm.retry_enabled);
+        assert_eq!(settings.rlm.max_replan_cycles, 5);
+        // Fields not in old JSON stay at defaults
+        assert!(settings.rlm.enabled);
+        assert!(settings.rlm.delegate_tool);
+    }
+
+    #[test]
+    fn test_migrate_rlm_no_override_when_group_present() {
+        // When the new "rlm" group is present, legacy flat keys are ignored.
+        // migrate_rlm_settings returns early without touching anything.
+        let json = r#"{
+            "rlm": {"enabled": false, "retry_enabled": true},
+            "rlm_retry_enabled": false
+        }"#;
+        let mut settings = Settings::default();
+        Settings::migrate_rlm_settings(json, &mut settings);
+        // rlm group present -> migration returns early, legacy key is ignored
+        // settings.rlm fields remain at their default values
+        assert!(settings.rlm.enabled);
+        assert!(settings.rlm.delegate_tool);
+        assert!(settings.rlm.retry_enabled); // legacy rlm_retry_enabled:false is ignored
+    }
+
+    #[test]
+    fn test_settings_default_includes_rlm() {
+        let settings = Settings::default();
+        assert!(settings.rlm.enabled);
+        assert!(settings.rlm.delegate_tool);
+        assert!(settings.rlm.auto_routing);
+    }
+
+    #[test]
+    fn test_rlm_deserialize_in_settings() {
+        let json = r#"{
+            "api": {"base_url": "http://localhost", "max_tokens": 4096, "timeout": 120, "streaming": true, "beta_headers": []},
+            "mcp_servers": [],
+            "model": "test",
+            "verbose": false,
+            "working_dir": ".",
+            "memory": {"enabled": false, "path": ".", "consolidation_interval": 24, "max_memories": 100},
+            "voice": {"enabled": false, "push_to_talk": false, "silence_threshold": 0.0, "sample_rate": 16000},
+            "plugins": {"enabled": false, "plugin_dir": ".", "auto_update": false},
+            "rlm": {"enabled": false, "delegate_tool": false}
+        }"#;
+        let settings: Settings = serde_json::from_str(json).unwrap();
+        assert!(!settings.rlm.enabled);
+        assert!(!settings.rlm.delegate_tool);
+        // Unspecified rlm fields use defaults
+        assert!(settings.rlm.auto_routing);
+        assert!(settings.rlm.retry_enabled);
+        assert_eq!(settings.rlm.max_replan_cycles, 2);
+    }
+}
