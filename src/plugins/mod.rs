@@ -10,6 +10,7 @@ pub mod commands;
 pub mod hooks;
 pub mod isolation;
 pub mod loader;
+pub mod package_json;
 pub mod registry;
 
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,18 @@ pub struct PluginManifest {
     pub dependencies: HashMap<String, String>,
     pub permissions: Vec<String>,
     pub enabled: bool,
+    /// Publisher name extracted from @scope prefix (e.g., "anthropic" from "@anthropic/test")
+    #[serde(default)]
+    pub publisher: Option<String>,
+    /// Install path for CC-format plugins (cache/<publisher>/<name>/<version>)
+    #[serde(default)]
+    pub install_path: Option<PathBuf>,
+    /// Git commit SHA for plugins installed from git repositories
+    #[serde(default)]
+    pub git_commit_sha: Option<String>,
+    /// Source format marker: "cc" for Claude Code format, "wgenty" for legacy
+    #[serde(default)]
+    pub source_format: Option<String>,
 }
 
 impl PluginManifest {
@@ -56,6 +69,10 @@ impl PluginManifest {
             dependencies: HashMap::new(),
             permissions: Vec::new(),
             enabled: true,
+            publisher: None,
+            install_path: None,
+            git_commit_sha: None,
+            source_format: None,
         }
     }
 
@@ -308,17 +325,147 @@ impl PluginManager {
             return Ok(());
         }
 
-        for entry in std::fs::read_dir(&self.plugins_dir)? {
-            let entry = entry?;
-            if entry.path().is_dir() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if let Err(e) = self.load(&name).await {
-                    tracing::warn!(name, error = %e, "failed to load plugin");
+        // Phase 1: Scan cache/<publisher>/<plugin>/<version>/ (CC format)
+        let cache_dir = self.plugins_dir.join("cache");
+        let mut loaded_names = std::collections::HashSet::new();
+
+        if cache_dir.exists() {
+            // Walk up to 3 levels: cache/<publisher>/<plugin>/<version>/package.json
+            self.scan_cache_dir(&cache_dir, &mut loaded_names).await;
+        }
+
+        // Phase 2: Scan flat directories (legacy format)
+        self.scan_flat_dirs(&loaded_names).await;
+
+        // Phase 3: Merge installed_plugins.json metadata
+        let installed_path = self.plugins_dir.join("installed_plugins.json");
+        if installed_path.exists() {
+            if let Ok(registry) = crate::plugins::registry::load_installed_registry(&installed_path)
+            {
+                for (key, entries) in &registry.plugins {
+                    if let Some(entry) = entries.first() {
+                        if let Some(manifest) = self.registry.get(key).await.unwrap_or(None) {
+                            let mut enriched = manifest;
+                            enriched.install_path = Some(entry.install_path.clone());
+                            enriched.git_commit_sha = entry.git_commit_sha.clone();
+                            let _ = self.registry.register(enriched).await;
+                        }
+                    }
                 }
             }
         }
 
         Ok(())
+    }
+
+    /// Scan cache/<publisher>/<plugin>/<version>/ for CC-format plugins.
+    async fn scan_cache_dir(
+        &self,
+        cache_dir: &std::path::Path,
+        loaded_names: &mut std::collections::HashSet<String>,
+    ) {
+        // Walk publisher dirs
+        if let Ok(publisher_entries) = std::fs::read_dir(cache_dir) {
+            for pub_entry in publisher_entries.flatten() {
+                if !pub_entry.path().is_dir() {
+                    continue;
+                }
+                // Walk plugin dirs
+                if let Ok(plugin_entries) = std::fs::read_dir(pub_entry.path()) {
+                    for plug_entry in plugin_entries.flatten() {
+                        if !plug_entry.path().is_dir() {
+                            continue;
+                        }
+                        // Walk version dirs
+                        if let Ok(version_entries) = std::fs::read_dir(plug_entry.path()) {
+                            for ver_entry in version_entries.flatten() {
+                                if !ver_entry.path().is_dir() {
+                                    continue;
+                                }
+                                let pkg_json = ver_entry.path().join("package.json");
+                                if pkg_json.exists() {
+                                    match self.loader.load_manifest(&ver_entry.path()).await {
+                                        Ok(manifest) => {
+                                            let key = format!(
+                                                "{}@{}",
+                                                manifest.name,
+                                                manifest.publisher.as_deref().unwrap_or("unknown")
+                                            );
+                                            loaded_names.insert(key.clone());
+                                            loaded_names.insert(manifest.name.clone());
+                                            let _ = self.registry.register(manifest).await;
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                path = %ver_entry.path().display(),
+                                                error = %e,
+                                                "failed to load CC plugin manifest"
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    // Also try plugin.json in version dir
+                                    let plugin_json = ver_entry.path().join("plugin.json");
+                                    if plugin_json.exists() {
+                                        match self.loader.load_manifest(&ver_entry.path()).await {
+                                            Ok(manifest) => {
+                                                let key = format!(
+                                                    "{}@{}",
+                                                    manifest.name,
+                                                    manifest
+                                                        .publisher
+                                                        .as_deref()
+                                                        .unwrap_or("unknown")
+                                                );
+                                                loaded_names.insert(key);
+                                                loaded_names.insert(manifest.name.clone());
+                                                let _ = self.registry.register(manifest).await;
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    path = %ver_entry.path().display(),
+                                                    error = %e,
+                                                    "failed to load CC plugin manifest"
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Scan flat plugin dirs (legacy format), skipping names already loaded from cache.
+    async fn scan_flat_dirs(&self, loaded_names: &std::collections::HashSet<String>) {
+        if let Ok(entries) = std::fs::read_dir(&self.plugins_dir) {
+            for entry in entries.flatten() {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                // Skip the cache directory itself
+                if entry.file_name() == "cache" {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                // Skip if already loaded from cache (CC format priority)
+                if loaded_names.contains(&name) {
+                    tracing::info!(name, "skipping legacy plugin, CC format already loaded");
+                    continue;
+                }
+                match self.loader.load_manifest(&entry.path()).await {
+                    Ok(manifest) => {
+                        let _ = self.registry.register(manifest).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(name, error = %e, "failed to load legacy plugin");
+                    }
+                }
+            }
+        }
     }
 
     pub fn registry(&self) -> Arc<PluginRegistry> {
@@ -341,5 +488,55 @@ impl PluginManager {
 impl Default for PluginManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cc_compat_fields_serde() {
+        let json = r#"{
+            "name": "test-plugin",
+            "version": "1.0.0",
+            "main": "index.js",
+            "commands": [],
+            "hooks": [],
+            "dependencies": {},
+            "permissions": [],
+            "enabled": true,
+            "publisher": "anthropic",
+            "install_path": "/home/user/.wgenty-code/plugins/cache/anthropic/test-plugin/1.0.0",
+            "git_commit_sha": "abc123def456",
+            "source_format": "cc"
+        }"#;
+
+        let manifest: PluginManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(manifest.publisher.as_deref(), Some("anthropic"));
+        assert!(manifest.install_path.is_some());
+        assert_eq!(manifest.git_commit_sha.as_deref(), Some("abc123def456"));
+        assert_eq!(manifest.source_format.as_deref(), Some("cc"));
+    }
+
+    #[test]
+    fn test_cc_compat_fields_default_none() {
+        // Old JSON without CC fields should deserialize with None defaults
+        let json = r#"{
+            "name": "legacy-plugin",
+            "version": "1.0.0",
+            "main": "index.js",
+            "commands": [],
+            "hooks": [],
+            "dependencies": {},
+            "permissions": [],
+            "enabled": true
+        }"#;
+
+        let manifest: PluginManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(manifest.publisher, None);
+        assert_eq!(manifest.install_path, None);
+        assert_eq!(manifest.git_commit_sha, None);
+        assert_eq!(manifest.source_format, None);
     }
 }

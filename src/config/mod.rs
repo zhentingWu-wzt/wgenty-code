@@ -1,6 +1,7 @@
 //! Configuration Module
 
 pub mod api_config;
+pub mod cc_mapping;
 pub mod mcp_config;
 pub mod watcher;
 
@@ -91,6 +92,14 @@ pub struct Settings {
     /// Format: { "PreToolUse": [{ "command": "...", "timeout_secs": 30 }] }
     #[serde(default)]
     pub hooks: Option<serde_json::Value>,
+    /// CC compatible: enabledPlugins — maps "name@publisher" to bool.
+    /// Takes priority over plugins.enabled_map when both are set.
+    #[serde(default, alias = "enabledPlugins")]
+    pub enabled_plugins: Option<std::collections::HashMap<String, bool>>,
+    /// CC compatible: pluginMarketplaces — marketplace source configuration.
+    /// Merged with existing marketplace registry.
+    #[serde(default, alias = "pluginMarketplaces")]
+    pub plugin_marketplaces: Option<serde_json::Value>,
     /// User-defined developer instructions injected into the system prompt.
     /// When set and non-empty, wraps in <developer_instructions> tags.
     #[serde(default)]
@@ -176,6 +185,9 @@ pub struct PluginSettings {
     pub plugin_dir: PathBuf,
     /// Auto-update plugins
     pub auto_update: bool,
+    /// CC-compatible: enabled plugins map (keyed by "name@publisher")
+    #[serde(default)]
+    pub enabled_map: std::collections::HashMap<String, bool>,
 }
 
 /// Guardian (security review) settings.
@@ -244,8 +256,11 @@ impl Default for Settings {
                 enabled: true,
                 plugin_dir: config_dir.join("plugins"),
                 auto_update: true,
+                enabled_map: std::collections::HashMap::new(),
             },
             hooks: None,
+            enabled_plugins: None,
+            plugin_marketplaces: None,
             developer_instructions: None,
             collaboration_mode: None,
             include_permissions_instructions: true,
@@ -267,7 +282,8 @@ impl Settings {
 
         if config_path.exists() {
             let content = std::fs::read_to_string(&config_path)?;
-            let settings: Settings = serde_json::from_str(&content)?;
+            let mut settings: Settings = serde_json::from_str(&content)?;
+            cc_mapping::CcConfigMapper::apply_mappings(&mut settings);
             Ok(settings)
         } else {
             let settings = Settings::default();
@@ -344,6 +360,34 @@ impl Settings {
             "streaming" => settings.api.streaming = value.parse().unwrap_or(true),
             "memory.enabled" => settings.memory.enabled = value.parse().unwrap_or(true),
             "voice.enabled" => settings.voice.enabled = value.parse().unwrap_or(false),
+            // CC-compatible: enabledPlugins.<plugin@publisher>
+            _ if key.starts_with("enabledPlugins.") => {
+                let plugin_key = key.strip_prefix("enabledPlugins.").unwrap();
+                let enabled = value.parse().unwrap_or(true);
+                if let Some(ref mut map) = settings.enabled_plugins {
+                    map.insert(plugin_key.to_string(), enabled);
+                } else {
+                    let mut map = std::collections::HashMap::new();
+                    map.insert(plugin_key.to_string(), enabled);
+                    settings.enabled_plugins = Some(map);
+                }
+            }
+            // CC-compatible: pluginMarketplaces.<name>
+            _ if key.starts_with("pluginMarketplaces.") => {
+                // Store as a nested JSON value
+                let mkt_name = key.strip_prefix("pluginMarketplaces.").unwrap();
+                let parsed: serde_json::Value = serde_json::from_str(value)
+                    .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
+                if let Some(ref mut map) = settings.plugin_marketplaces {
+                    if let Some(obj) = map.as_object_mut() {
+                        obj.insert(mkt_name.to_string(), parsed);
+                    }
+                } else {
+                    let mut map = serde_json::Map::new();
+                    map.insert(mkt_name.to_string(), parsed);
+                    settings.plugin_marketplaces = Some(serde_json::Value::Object(map));
+                }
+            }
             _ => return Err(anyhow::anyhow!("Unknown setting: {}", key)),
         }
 

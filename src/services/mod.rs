@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 pub mod auto_dream;
+pub mod marketplace_resolver;
 pub mod plugin_marketplace;
 pub mod team_memory_sync;
 
