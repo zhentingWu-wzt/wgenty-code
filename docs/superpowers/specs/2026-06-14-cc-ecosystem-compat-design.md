@@ -2,6 +2,8 @@
 comet_change: cc-ecosystem-compat
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-14-cc-ecosystem-compat
+status: final
 ---
 
 # Technical Design: Claude Code 生态兼容

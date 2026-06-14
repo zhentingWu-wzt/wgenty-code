@@ -99,7 +99,7 @@ pub fn parse_marketplace_index(repo_path: &Path) -> anyhow::Result<MarketplaceIn
 /// Clone (or update) a marketplace repo.
 pub async fn ensure_marketplace_cloned(
     entry: &MarketplaceEntry,
-    base_cache_dir: &Path,
+    _base_cache_dir: &Path,
 ) -> anyhow::Result<PathBuf> {
     let repo_url = format!("https://github.com/{}", entry.source.repo);
     let target_dir = entry.install_location.clone();

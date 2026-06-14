@@ -2,6 +2,7 @@
 change: cc-ecosystem-compat
 design-doc: docs/superpowers/specs/2026-06-14-cc-ecosystem-compat-design.md
 base-ref: b81a241f6db88c4280879917eb4ebd8123153288
+archived-with: 2026-06-14-cc-ecosystem-compat
 ---
 
 # Claude Code 生态兼容 Implementation Plan
@@ -14,6 +15,7 @@ base-ref: b81a241f6db88c4280879917eb4ebd8123153288
 
 **Tech Stack:** Rust, serde, tokio (async fs/process), git CLI (via tokio::process)
 
+archived-with: 2026-06-14-cc-ecosystem-compat
 ---
 
 ## 文件结构
@@ -39,6 +41,7 @@ base-ref: b81a241f6db88c4280879917eb4ebd8123153288
 | `src/services/mod.rs` | 注册 `marketplace_resolver` 模块 |
 | `src/services/plugin_marketplace.rs` | 用真实 marketplace 解析逻辑替换硬编码示例 |
 
+archived-with: 2026-06-14-cc-ecosystem-compat
 ---
 
 ## Task 1: 插件格式兼容 — Manifest 识别
@@ -595,6 +598,7 @@ git commit -m "feat(plugins): complete package.json field mapping with extra fie
 Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
+archived-with: 2026-06-14-cc-ecosystem-compat
 ---
 
 ## Task 2: 插件格式兼容 — 注册表与目录结构
@@ -1135,6 +1139,7 @@ git commit -m "feat(plugins): rewrite PluginManager::load_all() with 3-phase sca
 Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
+archived-with: 2026-06-14-cc-ecosystem-compat
 ---
 
 ## Task 3: 配置键名兼容
@@ -1522,6 +1527,7 @@ git commit -m "feat(config): extend Settings::set() for enabledPlugins and plugi
 Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
+archived-with: 2026-06-14-cc-ecosystem-compat
 ---
 
 ## Task 4: Hook 事件类型对齐
@@ -2287,6 +2293,7 @@ git commit -m "feat(hooks): support CC nested-array hook format via cc_adapter
 Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
+archived-with: 2026-06-14-cc-ecosystem-compat
 ---
 
 ## Task 5: Marketplace 实时获取
@@ -3081,6 +3088,7 @@ git commit -m "feat(marketplace): add auto-update support via git pull on known 
 Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
+archived-with: 2026-06-14-cc-ecosystem-compat
 ---
 
 ## Task 6: 集成与测试
@@ -3288,6 +3296,7 @@ git commit -m "chore: final clippy + fmt + all tests pass"
 Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
+archived-with: 2026-06-14-cc-ecosystem-compat
 ---
 
 ## Self-Review
@@ -3321,6 +3330,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - `HookDefinition.matcher: Option<String>` 和 `hook_type: Option<String>` 在 4.2 定义，4.5 (cc_adapter) 使用一致
 - `MarketplaceEntry`, `MarketplaceSource`, `PluginSource` 在 5.1 定义，5.3-5.6 使用一致
 
+archived-with: 2026-06-14-cc-ecosystem-compat
 ---
 
 ## Execution Handoff
