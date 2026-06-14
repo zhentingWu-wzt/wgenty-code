@@ -3,12 +3,17 @@ use tempfile::TempDir;
 use wgenty_code::plugins::PluginManager;
 
 fn create_cc_plugin_structure(root: &std::path::Path) {
-    let ver_dir = root.join("cache").join("anthropic").join("superpowers").join("5.1.0");
+    let ver_dir = root
+        .join("cache")
+        .join("anthropic")
+        .join("superpowers")
+        .join("5.1.0");
     fs::create_dir_all(&ver_dir).unwrap();
     fs::write(
         ver_dir.join("package.json"),
         r#"{"name": "@anthropic/superpowers", "version": "5.1.0", "main": "index.js"}"#,
-    ).unwrap();
+    )
+    .unwrap();
 }
 
 fn create_legacy_plugin_structure(root: &std::path::Path) {
@@ -51,12 +56,18 @@ async fn test_load_all_cc_priority_over_legacy() {
     let dir = TempDir::new().unwrap();
 
     // Create CC-format plugin
-    let ver_dir = dir.path().join("cache").join("testpub").join("myplugin").join("2.0.0");
+    let ver_dir = dir
+        .path()
+        .join("cache")
+        .join("testpub")
+        .join("myplugin")
+        .join("2.0.0");
     fs::create_dir_all(&ver_dir).unwrap();
     fs::write(
         ver_dir.join("package.json"),
         r#"{"name": "@testpub/myplugin", "version": "2.0.0", "main": "index.js"}"#,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Create legacy plugin with same name in flat dir
     let legacy_dir = dir.path().join("myplugin");
@@ -72,7 +83,11 @@ async fn test_load_all_cc_priority_over_legacy() {
     let plugins = manager.list().await.unwrap();
     // Both should be loaded (different keys: "myplugin@testpub" vs "myplugin")
     // The registry key for CC format is "myplugin@testpub" vs legacy "myplugin"
-    assert!(plugins.len() >= 1, "Expected at least 1 plugin, got {}", plugins.len());
+    assert!(
+        plugins.len() >= 1,
+        "Expected at least 1 plugin, got {}",
+        plugins.len()
+    );
     // Verify CC format is present
     let cc_plugin = plugins.iter().find(|p| p.version == "2.0.0");
     assert!(cc_plugin.is_some(), "CC-format plugin should be loaded");

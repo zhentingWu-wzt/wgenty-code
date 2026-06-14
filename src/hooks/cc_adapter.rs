@@ -32,9 +32,7 @@ pub struct CcHookItem {
 ///   "Stop": [[{ "type": "prompt", ... }]]
 /// }
 /// ```
-pub fn adapt_cc_hooks(
-    hooks_config: &serde_json::Value,
-) -> HashMap<HookEvent, Vec<HookDefinition>> {
+pub fn adapt_cc_hooks(hooks_config: &serde_json::Value) -> HashMap<HookEvent, Vec<HookDefinition>> {
     let mut hooks: HashMap<HookEvent, Vec<HookDefinition>> = HashMap::new();
 
     let obj = match hooks_config.as_object() {

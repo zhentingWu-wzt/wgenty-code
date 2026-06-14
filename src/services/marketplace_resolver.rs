@@ -93,10 +93,7 @@ pub fn parse_marketplace_index(repo_path: &Path) -> anyhow::Result<MarketplaceIn
         let content = std::fs::read_to_string(&index_path)?;
         return Ok(serde_json::from_str(&content)?);
     }
-    anyhow::bail!(
-        "No marketplace index found in {}",
-        repo_path.display()
-    )
+    anyhow::bail!("No marketplace index found in {}", repo_path.display())
 }
 
 /// Clone (or update) a marketplace repo.
@@ -154,7 +151,9 @@ mod tests {
         let json = r#"{"source": "git-subdir", "url": "https://github.com/user/repo", "path": "plugins/x", "ref": "main"}"#;
         let source: PluginSource = serde_json::from_str(json).unwrap();
         match source {
-            PluginSource::GitSource { url, path, ref_, .. } => {
+            PluginSource::GitSource {
+                url, path, ref_, ..
+            } => {
                 assert_eq!(url, "https://github.com/user/repo");
                 assert_eq!(path.as_deref(), Some("plugins/x"));
                 assert_eq!(ref_.as_deref(), Some("main"));

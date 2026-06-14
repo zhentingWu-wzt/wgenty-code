@@ -376,9 +376,8 @@ impl Settings {
             _ if key.starts_with("pluginMarketplaces.") => {
                 // Store as a nested JSON value
                 let mkt_name = key.strip_prefix("pluginMarketplaces.").unwrap();
-                let parsed: serde_json::Value = serde_json::from_str(value).unwrap_or_else(|_| {
-                    serde_json::Value::String(value.to_string())
-                });
+                let parsed: serde_json::Value = serde_json::from_str(value)
+                    .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
                 if let Some(ref mut map) = settings.plugin_marketplaces {
                     if let Some(obj) = map.as_object_mut() {
                         obj.insert(mkt_name.to_string(), parsed);

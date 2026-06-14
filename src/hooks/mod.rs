@@ -101,7 +101,11 @@ pub fn matches_matcher(
 }
 
 /// Expand %tool% and %input% variables in a hook command string.
-pub fn expand_hook_variables(command: &str, tool_name: Option<&str>, tool_input: Option<&str>) -> String {
+pub fn expand_hook_variables(
+    command: &str,
+    tool_name: Option<&str>,
+    tool_input: Option<&str>,
+) -> String {
     let mut result = command.to_string();
     if let Some(name) = tool_name {
         result = result.replace("%tool%", &shell_escape(name));
@@ -123,30 +127,75 @@ mod tests {
 
     #[test]
     fn test_matches_matcher_empty() {
-        assert!(matches_matcher(&None, &HookEvent::PreToolUse, Some("TaskCreate"), None));
-        assert!(matches_matcher(&Some("".into()), &HookEvent::PreToolUse, Some("TaskCreate"), None));
+        assert!(matches_matcher(
+            &None,
+            &HookEvent::PreToolUse,
+            Some("TaskCreate"),
+            None
+        ));
+        assert!(matches_matcher(
+            &Some("".into()),
+            &HookEvent::PreToolUse,
+            Some("TaskCreate"),
+            None
+        ));
     }
 
     #[test]
     fn test_matches_matcher_single_tool() {
         let matcher = Some("TaskCreate".to_string());
-        assert!(matches_matcher(&matcher, &HookEvent::PreToolUse, Some("TaskCreate"), None));
-        assert!(!matches_matcher(&matcher, &HookEvent::PreToolUse, Some("TaskUpdate"), None));
+        assert!(matches_matcher(
+            &matcher,
+            &HookEvent::PreToolUse,
+            Some("TaskCreate"),
+            None
+        ));
+        assert!(!matches_matcher(
+            &matcher,
+            &HookEvent::PreToolUse,
+            Some("TaskUpdate"),
+            None
+        ));
     }
 
     #[test]
     fn test_matches_matcher_pipe_separated() {
         let matcher = Some("TaskCreate|TaskUpdate".to_string());
-        assert!(matches_matcher(&matcher, &HookEvent::PreToolUse, Some("TaskCreate"), None));
-        assert!(matches_matcher(&matcher, &HookEvent::PreToolUse, Some("TaskUpdate"), None));
-        assert!(!matches_matcher(&matcher, &HookEvent::PreToolUse, Some("Read"), None));
+        assert!(matches_matcher(
+            &matcher,
+            &HookEvent::PreToolUse,
+            Some("TaskCreate"),
+            None
+        ));
+        assert!(matches_matcher(
+            &matcher,
+            &HookEvent::PreToolUse,
+            Some("TaskUpdate"),
+            None
+        ));
+        assert!(!matches_matcher(
+            &matcher,
+            &HookEvent::PreToolUse,
+            Some("Read"),
+            None
+        ));
     }
 
     #[test]
     fn test_matches_matcher_notification() {
         let matcher = Some("permission_prompt".to_string());
-        assert!(matches_matcher(&matcher, &HookEvent::Notification, None, Some("permission_prompt")));
-        assert!(!matches_matcher(&matcher, &HookEvent::Notification, None, Some("other")));
+        assert!(matches_matcher(
+            &matcher,
+            &HookEvent::Notification,
+            None,
+            Some("permission_prompt")
+        ));
+        assert!(!matches_matcher(
+            &matcher,
+            &HookEvent::Notification,
+            None,
+            Some("other")
+        ));
     }
 
     #[test]
@@ -295,10 +344,7 @@ impl HookManager {
         let expanded_command = expand_hook_variables(
             &def.command,
             ctx.tool_name.as_deref(),
-            ctx.tool_input
-                .as_ref()
-                .map(|v| v.to_string())
-                .as_deref(),
+            ctx.tool_input.as_ref().map(|v| v.to_string()).as_deref(),
         );
 
         let ctx_json = serde_json::to_string(ctx).unwrap_or_default();
