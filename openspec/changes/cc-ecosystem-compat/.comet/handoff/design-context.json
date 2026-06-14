@@ -1,0 +1,17 @@
+{
+  "change": "cc-ecosystem-compat",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "51abacfd9ce5ed162204fc929afe3ec66823e90376ef0affd65745cc1582c6d0",
+  "files": [
+    { "path": "openspec/changes/cc-ecosystem-compat/proposal.md", "sha256": "a120f4bfad7027c0b0ccda73c657179c37b1d664de9c01a97db3293dbeddfd63" },
+    { "path": "openspec/changes/cc-ecosystem-compat/design.md", "sha256": "ebf5d808cc452094b7c85f6d328660d62d9c9b2d334832ce6b5dea9ac1714151" },
+    { "path": "openspec/changes/cc-ecosystem-compat/tasks.md", "sha256": "267dc09743e046e0a8bb2dde7b83ba0cc9b43f13b51cd59e973100d486bae71a" },
+    { "path": "openspec/changes/cc-ecosystem-compat/specs/config-key-compat/spec.md", "sha256": "f69379e03afc2b4e40351f511dbbebdb6a351c33e964bd80f37495b96a582d7c" },
+    { "path": "openspec/changes/cc-ecosystem-compat/specs/hook-event-alignment/spec.md", "sha256": "bf858a1845b12d0358d7f34798180e62ccb2a77384cf01f150430e44eb519530" },
+    { "path": "openspec/changes/cc-ecosystem-compat/specs/plugin-format-compat/spec.md", "sha256": "007e3009fcd0fd2b18d2065e428cfc120ed805c773be86f2b2032b2282d355ea" },
+    { "path": "openspec/changes/cc-ecosystem-compat/specs/plugin-marketplace/spec.md", "sha256": "10901d6f77f1ee2e988f563d7128a8dbe9c194fd3d63277490b3b2f98ff5811a" }
+  ]
+}
