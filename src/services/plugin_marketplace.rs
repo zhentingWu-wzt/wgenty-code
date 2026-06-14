@@ -6,9 +6,11 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+use super::marketplace_resolver::{self, KnownMarketplaces};
 
 use crate::state::AppState;
 
@@ -148,106 +150,156 @@ impl PluginMarketplaceService {
     }
 
     async fn fetch_marketplace(&self) {
-        println!("📡 Fetching marketplace data...");
+        use super::marketplace_resolver;
 
         let mut cache = self.marketplace_cache.write().await;
+        if !cache.is_empty() {
+            return; // Already fetched
+        }
+
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let plugins_dir = home.join(".wgenty-code").join("plugins");
+        let known_path = plugins_dir.join("known_marketplaces.json");
+
+        let known = match marketplace_resolver::load_known_marketplaces(&known_path) {
+            Ok(k) => k,
+            Err(_) => return,
+        };
+
+        let mut results = Vec::new();
+        let base_cache = plugins_dir.join("marketplaces");
+
+        for (_name, entry) in &known.marketplaces {
+            let repo_dir = entry.install_location.clone();
+            // Try to clone if not yet cached
+            if !repo_dir.join(".git").exists() {
+                if let Err(e) =
+                    marketplace_resolver::ensure_marketplace_cloned(entry, &base_cache).await
+                {
+                    tracing::warn!(marketplace = %_name, error = %e, "failed to clone marketplace");
+                    continue;
+                }
+            }
+
+            // Parse index
+            if let Ok(index) = marketplace_resolver::parse_marketplace_index(&repo_dir) {
+                for p in &index.plugins {
+                    results.push(MarketplacePlugin {
+                        name: p.name.clone(),
+                        version: p.version.clone(),
+                        description: p.description.clone(),
+                        author: p
+                            .author
+                            .as_ref()
+                            .and_then(|a| a.as_str().map(|s| s.to_string()))
+                            .unwrap_or_else(|| index.owner.clone()),
+                        downloads: 0,
+                        rating: 0.0,
+                        tags: p.tags.clone(),
+                        homepage: None,
+                        repository: None,
+                    });
+                }
+            }
+        }
 
         cache.clear();
-        cache.extend(vec![
-            MarketplacePlugin {
-                name: "code-formatter".to_string(),
-                version: "1.0.0".to_string(),
-                description: "Auto-format code in multiple languages".to_string(),
-                author: "community".to_string(),
-                downloads: 1500,
-                rating: 4.5,
-                tags: vec!["formatting".to_string(), "code".to_string()],
-                homepage: None,
-                repository: None,
-            },
-            MarketplacePlugin {
-                name: "git-helper".to_string(),
-                version: "2.1.0".to_string(),
-                description: "Enhanced git operations and visualizations".to_string(),
-                author: "official".to_string(),
-                downloads: 3200,
-                rating: 4.8,
-                tags: vec!["git".to_string(), "vcs".to_string()],
-                homepage: None,
-                repository: None,
-            },
-            MarketplacePlugin {
-                name: "test-runner".to_string(),
-                version: "1.5.0".to_string(),
-                description: "Run tests with coverage reports".to_string(),
-                author: "community".to_string(),
-                downloads: 890,
-                rating: 4.2,
-                tags: vec!["testing".to_string(), "coverage".to_string()],
-                homepage: None,
-                repository: None,
-            },
-        ]);
+        cache.extend(results);
     }
 
     pub async fn install(&self, plugin_name: &str) -> anyhow::Result<Plugin> {
-        println!("📦 Installing plugin: {}", plugin_name);
+        use super::marketplace_resolver;
 
-        self.fetch_marketplace().await;
-
-        let cache = self.marketplace_cache.read().await;
-        let marketplace_plugin = cache
-            .iter()
-            .find(|p| p.name == plugin_name)
-            .ok_or_else(|| anyhow::anyhow!("Plugin not found in marketplace: {}", plugin_name))?;
-
+        // First, try to find the plugin in marketplace indexes
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let plugin_dir = home
-            .join(".wgenty-code")
-            .join("plugins")
-            .join(&marketplace_plugin.name);
-        tokio::fs::create_dir_all(&plugin_dir).await?;
+        let plugins_dir = home.join(".wgenty-code").join("plugins");
+        let known_path = plugins_dir.join("known_marketplaces.json");
+
+        let known = marketplace_resolver::load_known_marketplaces(&known_path).unwrap_or(
+            KnownMarketplaces {
+                marketplaces: HashMap::new(),
+            },
+        );
+
+        let base_cache = plugins_dir.join("marketplaces");
+        let mut found_source: Option<marketplace_resolver::PluginSource> = None;
+        let mut found_version = String::new();
+        let mut found_publisher = String::new();
+        let mut found_desc = String::new();
+
+        for (_mkt_name, entry) in &known.marketplaces {
+            let repo_dir = entry.install_location.clone();
+            if !repo_dir.join(".git").exists() {
+                let _ = marketplace_resolver::ensure_marketplace_cloned(entry, &base_cache).await;
+            }
+            if let Ok(index) = marketplace_resolver::parse_marketplace_index(&repo_dir) {
+                if let Some(p) = index.plugins.iter().find(|p| p.name == plugin_name) {
+                    found_source = Some(p.source.clone());
+                    found_version = p.version.clone();
+                    found_publisher = index.owner.clone();
+                    found_desc = p.description.clone();
+                    break;
+                }
+            }
+        }
+
+        // Compute cache path
+        let cache_dir = plugins_dir
+            .join("cache")
+            .join(&found_publisher)
+            .join(plugin_name)
+            .join(&found_version);
+        tokio::fs::create_dir_all(&cache_dir).await?;
+
+        // Install based on source type
+        if let Some(source) = &found_source {
+            match source {
+                marketplace_resolver::PluginSource::LocalPath(rel_path) => {
+                    let src = known
+                        .marketplaces
+                        .values()
+                        .next()
+                        .map(|e| e.install_location.join(rel_path.trim_start_matches("./")))
+                        .unwrap_or_default();
+                    if src.exists() {
+                        let mut copy_opts = fs_extra::dir::CopyOptions::new();
+                        copy_opts.overwrite = true;
+                        fs_extra::dir::copy(&src, &cache_dir, &copy_opts)?;
+                    }
+                }
+                marketplace_resolver::PluginSource::GitSource { url, ref_, .. } => {
+                    let ref_val = ref_.as_deref().unwrap_or("main");
+                    let output = tokio::process::Command::new("git")
+                        .args(["clone", "--depth", "1", "--branch", ref_val, url.as_str()])
+                        .arg(&cache_dir)
+                        .output()
+                        .await?;
+                    if !output.status.success() {
+                        return Err(anyhow::anyhow!(
+                            "Failed to clone plugin: {}",
+                            String::from_utf8_lossy(&output.stderr)
+                        ));
+                    }
+                }
+            }
+        }
 
         let plugin = Plugin {
-            name: marketplace_plugin.name.clone(),
-            version: marketplace_plugin.version.clone(),
-            description: Some(marketplace_plugin.description.clone()),
-            author: Some(marketplace_plugin.author.clone()),
+            name: plugin_name.to_string(),
+            version: found_version,
+            description: Some(found_desc),
+            author: Some(found_publisher),
             source: "marketplace".to_string(),
             installed_at: Some(Utc::now()),
             updated_at: Some(Utc::now()),
             enabled: true,
             dependencies: vec![],
-            homepage: marketplace_plugin.homepage.clone(),
-            repository: marketplace_plugin.repository.clone(),
+            homepage: None,
+            repository: None,
         };
-
-        let manifest_path = plugin_dir.join("plugin.json");
-        let manifest_content = serde_json::to_string_pretty(&plugin)?;
-        tokio::fs::write(&manifest_path, manifest_content).await?;
-
-        let main_content = r#"// Plugin entry point
-module.exports = {
-    name: "${plugin.name}",
-    version: "${plugin.version}",
-    activate: async (context) => {
-        console.log('Plugin activated: ${plugin.name}');
-    },
-    deactivate: async () => {
-        console.log('Plugin deactivated: ${plugin.name}');
-    }
-};
-"#
-        .replace("${plugin.name}", &plugin.name)
-        .replace("${plugin.version}", &plugin.version);
-
-        let main_path = plugin_dir.join("index.js");
-        tokio::fs::write(&main_path, main_content).await?;
 
         let mut installed = self.installed_plugins.write().await;
         installed.insert(plugin.name.clone(), plugin.clone());
-
-        println!("✅ Plugin installed: {} v{}", plugin.name, plugin.version);
 
         Ok(plugin)
     }

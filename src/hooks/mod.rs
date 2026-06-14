@@ -2,19 +2,28 @@
 //!
 //! Hooks wrap around the agent loop without modifying it.
 //! Configured in ~/.wgenty-code/settings.json under "hooks".
+//! Supports both CC nested-array format and legacy flat format.
+
+pub mod cc_adapter;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Types of hook events
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "PascalCase")]
 pub enum HookEvent {
     PreToolUse,
     PostToolUse,
     SessionStart,
     SessionEnd,
     Notification,
+    /// CC-compatible: Triggered when the agent stops/completes
+    Stop,
+    /// CC-compatible: Triggered before user prompt is submitted
+    UserPromptSubmit,
+    /// CC-compatible: Triggered for permission requests
+    PermissionRequest,
 }
 
 impl std::fmt::Display for HookEvent {
@@ -25,6 +34,9 @@ impl std::fmt::Display for HookEvent {
             HookEvent::SessionStart => write!(f, "SessionStart"),
             HookEvent::SessionEnd => write!(f, "SessionEnd"),
             HookEvent::Notification => write!(f, "Notification"),
+            HookEvent::Stop => write!(f, "Stop"),
+            HookEvent::UserPromptSubmit => write!(f, "UserPromptSubmit"),
+            HookEvent::PermissionRequest => write!(f, "PermissionRequest"),
         }
     }
 }
@@ -37,10 +49,174 @@ pub struct HookDefinition {
     /// Optional timeout in seconds (default 30)
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// CC-compatible: matcher for filtering hook execution.
+    /// None/"" = match all, "ToolA|ToolB" = pipe-separated tool names.
+    #[serde(default)]
+    pub matcher: Option<String>,
+    /// CC-compatible: hook type ("command" or "prompt").
+    #[serde(default)]
+    pub hook_type: Option<String>,
 }
 
 fn default_timeout() -> u64 {
     30
+}
+
+/// Check if a hook's matcher matches the given tool name or event.
+///
+/// - `None` / `""` → matches all
+/// - `"ToolA|ToolB"` → matches if tool_name equals any pipe-separated part
+/// - For Notification events, the matcher is compared against a notification subtype
+pub fn matches_matcher(
+    matcher: &Option<String>,
+    event: &HookEvent,
+    tool_name: Option<&str>,
+    notification_subtype: Option<&str>,
+) -> bool {
+    let pattern_str = match matcher {
+        None => return true,
+        Some(s) if s.is_empty() => return true,
+        Some(s) => s.as_str(),
+    };
+
+    // Pipe-separated: try each part
+    for part in pattern_str.split('|') {
+        let part = part.trim();
+        if part.is_empty() {
+            return true;
+        }
+        if *event == HookEvent::Notification {
+            if let Some(sub) = notification_subtype {
+                if part == sub {
+                    return true;
+                }
+            }
+        } else if let Some(name) = tool_name {
+            if part == name {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Expand %tool% and %input% variables in a hook command string.
+pub fn expand_hook_variables(
+    command: &str,
+    tool_name: Option<&str>,
+    tool_input: Option<&str>,
+) -> String {
+    let mut result = command.to_string();
+    if let Some(name) = tool_name {
+        result = result.replace("%tool%", &shell_escape(name));
+    }
+    if let Some(input) = tool_input {
+        result = result.replace("%input%", &shell_escape(input));
+    }
+    result
+}
+
+/// Shell-escape a string by wrapping in single quotes and escaping internal quotes.
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_matches_matcher_empty() {
+        assert!(matches_matcher(
+            &None,
+            &HookEvent::PreToolUse,
+            Some("TaskCreate"),
+            None
+        ));
+        assert!(matches_matcher(
+            &Some("".into()),
+            &HookEvent::PreToolUse,
+            Some("TaskCreate"),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_matches_matcher_single_tool() {
+        let matcher = Some("TaskCreate".to_string());
+        assert!(matches_matcher(
+            &matcher,
+            &HookEvent::PreToolUse,
+            Some("TaskCreate"),
+            None
+        ));
+        assert!(!matches_matcher(
+            &matcher,
+            &HookEvent::PreToolUse,
+            Some("TaskUpdate"),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_matches_matcher_pipe_separated() {
+        let matcher = Some("TaskCreate|TaskUpdate".to_string());
+        assert!(matches_matcher(
+            &matcher,
+            &HookEvent::PreToolUse,
+            Some("TaskCreate"),
+            None
+        ));
+        assert!(matches_matcher(
+            &matcher,
+            &HookEvent::PreToolUse,
+            Some("TaskUpdate"),
+            None
+        ));
+        assert!(!matches_matcher(
+            &matcher,
+            &HookEvent::PreToolUse,
+            Some("Read"),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_matches_matcher_notification() {
+        let matcher = Some("permission_prompt".to_string());
+        assert!(matches_matcher(
+            &matcher,
+            &HookEvent::Notification,
+            None,
+            Some("permission_prompt")
+        ));
+        assert!(!matches_matcher(
+            &matcher,
+            &HookEvent::Notification,
+            None,
+            Some("other")
+        ));
+    }
+
+    #[test]
+    fn test_expand_hook_variables_tool() {
+        let result = expand_hook_variables("echo %tool%", Some("TaskCreate"), None);
+        assert!(result.contains("TaskCreate"));
+        assert!(!result.contains("%tool%"));
+    }
+
+    #[test]
+    fn test_expand_hook_variables_input() {
+        let result = expand_hook_variables("echo %input%", None, Some(r#"{"key":"value"}"#));
+        assert!(result.contains(r#"{"key":"value"}"#));
+        assert!(!result.contains("%input%"));
+    }
+
+    #[test]
+    fn test_shell_escape_single_quotes() {
+        let escaped = shell_escape("it's working");
+        assert_eq!(escaped, "'it'\\''s working'");
+    }
 }
 
 /// Context passed to hooks via stdin (JSON)
@@ -81,8 +257,17 @@ pub struct HookManager {
 
 impl HookManager {
     /// Create a new HookManager from settings hooks configuration.
-    /// Settings format: { "hooks": { "PreToolUse": [{"command": "...", "timeout_secs": 30}] } }
+    /// Supports both CC nested-array format and legacy flat format.
+    /// Settings format: { "PostToolUse": [{"command": "...", "timeout_secs": 30}] }
+    /// CC format: { "PostToolUse": [[{"type": "command", "command": "..."}]] }
     pub fn from_settings(hooks_config: &serde_json::Value) -> Self {
+        // First, try CC format (nested arrays with type/matcher fields)
+        let cc_hooks = cc_adapter::adapt_cc_hooks(hooks_config);
+        if !cc_hooks.is_empty() {
+            return Self { hooks: cc_hooks };
+        }
+
+        // Fallback: legacy flat format
         let mut hooks: HashMap<HookEvent, Vec<HookDefinition>> = HashMap::new();
 
         if let Some(obj) = hooks_config.as_object() {
@@ -93,6 +278,9 @@ impl HookManager {
                     "SessionStart" => HookEvent::SessionStart,
                     "SessionEnd" => HookEvent::SessionEnd,
                     "Notification" => HookEvent::Notification,
+                    "Stop" => HookEvent::Stop,
+                    "UserPromptSubmit" => HookEvent::UserPromptSubmit,
+                    "PermissionRequest" => HookEvent::PermissionRequest,
                     _ => continue,
                 };
 
@@ -120,7 +308,13 @@ impl HookManager {
     }
 
     /// Fire all hooks for an event. Returns outcomes for each hook.
-    pub async fn fire(&self, event: &HookEvent, ctx: &HookContext) -> Vec<HookOutcome> {
+    /// Hooks are filtered by matcher before execution.
+    pub async fn fire(
+        &self,
+        event: &HookEvent,
+        ctx: &HookContext,
+        notification_subtype: Option<&str>,
+    ) -> Vec<HookOutcome> {
         let defs = match self.hooks.get(event) {
             Some(d) => d.clone(),
             None => return vec![],
@@ -129,6 +323,15 @@ impl HookManager {
         let mut outcomes = Vec::new();
 
         for def in &defs {
+            // Filter: skip hooks whose matcher doesn't match
+            if !matches_matcher(
+                &def.matcher,
+                event,
+                ctx.tool_name.as_deref(),
+                notification_subtype,
+            ) {
+                continue;
+            }
             let outcome = self.execute_hook(def, ctx).await;
             outcomes.push(outcome);
         }
@@ -137,11 +340,18 @@ impl HookManager {
     }
 
     async fn execute_hook(&self, def: &HookDefinition, ctx: &HookContext) -> HookOutcome {
+        // Expand %tool% and %input% variables
+        let expanded_command = expand_hook_variables(
+            &def.command,
+            ctx.tool_name.as_deref(),
+            ctx.tool_input.as_ref().map(|v| v.to_string()).as_deref(),
+        );
+
         let ctx_json = serde_json::to_string(ctx).unwrap_or_default();
 
         let child = tokio::process::Command::new("sh")
             .arg("-c")
-            .arg(&def.command)
+            .arg(&expanded_command)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
