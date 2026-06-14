@@ -1,9 +1,9 @@
 workflow: full
 phase: build
 context_compression: off
-build_mode: subagent-driven-development
+build_mode: executing-plans
 build_pause: null
-subagent_dispatch: confirmed
+subagent_dispatch: null
 tdd_mode: tdd
 isolation: worktree
 verify_mode: null
