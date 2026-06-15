@@ -85,7 +85,7 @@ impl Tool for RunScriptTool {
                     run_subagent_loop(
                         &client, &reg,
                         "You are a sub-agent in a Rhai script. Execute the task precisely and return a concise result.",
-                        &prompt, &tools, 10, 120, None,
+                        &prompt, &tools, 10, 120, None, None,
                     ).await.unwrap_or_else(|e| format!("[ERROR] {}", e))
                 })
             });

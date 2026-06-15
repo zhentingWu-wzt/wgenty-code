@@ -117,6 +117,7 @@ pub async fn run_subagent_loop(
     max_rounds: usize,
     timeout_secs: u64,
     on_progress: Option<ProgressCallback>,
+    token_budget_k: Option<u64>,
 ) -> Result<String, String> {
     let timeout_duration = Duration::from_secs(timeout_secs);
     tracing::info!(
@@ -157,6 +158,9 @@ pub async fn run_subagent_loop(
         let text_snapshot: Mutex<Option<String>> = Mutex::new(None);
         let current_params_val: Mutex<Option<String>> = Mutex::new(None);
         let cumulative_tokens: Mutex<usize> = Mutex::new(0);
+        // Progress tracker for stuck detection
+        let mut tool_types_used: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut stale_rounds: u32 = 0;
 
         let emit = |status: SubagentStatus,
                     round: Option<usize>,
@@ -192,6 +196,11 @@ pub async fn run_subagent_loop(
                     started_at: started_at_ms,
                     elapsed_ms: elapsed.as_millis() as u64,
                     metadata,
+                    progress_delta: None,
+                    token_budget_k,
+                    cumulative_tokens: *cumulative_tokens.lock().unwrap() as u64,
+                    error_details: None,
+                    events: Vec::new(),
                 });
             }
         };
@@ -248,12 +257,26 @@ pub async fn run_subagent_loop(
                 .map(|c| !c.is_empty())
                 .unwrap_or(false);
 
-            // ── Accumulate token usage ──────────────────────────────────────
+            // ── Accumulate token usage & budget enforcement ───────────────
             if let Some(ref usage) = response.usage {
                 *cumulative_tokens.lock().unwrap() += usage.total_tokens;
             }
+            // ── Token budget enforcement ─────────────────────────────────────
+            if let Some(budget_k) = token_budget_k {
+                let used = *cumulative_tokens.lock().unwrap();
+                if used > (budget_k as usize) * 1000 {
+                    let msg = format!(
+                        "Token budget exceeded: limit {}k, used {}k tokens after {} rounds",
+                        budget_k,
+                        used / 1000,
+                        round + 1
+                    );
+                    emit(SubagentStatus::Failed, Some(round + 1), None, Some(msg.clone()));
+                    return Err(msg);
+                }
+            }
 
-            // ── Capture text snapshot (last ~200 chars of model response) ────
+            // ── Capture text snapshot (full text, no truncation) ────────────
             if let Some(content) = response
                 .choices
                 .first()
@@ -261,27 +284,15 @@ pub async fn run_subagent_loop(
             {
                 let trimmed = content.trim();
                 if !trimmed.is_empty() {
-                    // Take the last 200 characters for the most recent context.
-                    let snapshot: String = trimmed
-                        .chars()
-                        .rev()
-                        .take(200)
-                        .collect::<Vec<_>>()
-                        .into_iter()
-                        .rev()
-                        .collect();
-                    *text_snapshot.lock().unwrap() = Some(snapshot.clone());
-                    // Append Thought event to action_log
+                    *text_snapshot.lock().unwrap() = Some(trimmed.to_string());
+                    // Append Thought event to action_log (full text)
                     {
                         let mut log = action_log.lock().unwrap();
                         let elapsed = start.elapsed().as_millis() as u64;
                         log.push(SubagentEvent {
-                            event_type: SubagentEventType::Thought { text: snapshot },
+                            event_type: SubagentEventType::Thought { text: trimmed.to_string() },
                             elapsed_ms: elapsed,
                         });
-                        if log.len() > 50 {
-                            log.remove(0); // drop oldest
-                        }
                     }
                 }
             }
@@ -364,6 +375,10 @@ pub async fn run_subagent_loop(
             // Execute each tool call and push results back as tool-result messages.
             let tool_results: Vec<ToolCall> = tool_calls.unwrap();
             let mut had_parse_error_this_round = false;
+            // Collect tool names for progress delta computation (before for loop consumes tool_results).
+            let round_tool_names: Vec<String> = tool_results.iter()
+                .map(|tc| tc.function.name.clone())
+                .collect();
 
             for tool_call in tool_results {
                 let tool_name = &tool_call.function.name;
@@ -433,10 +448,6 @@ pub async fn run_subagent_loop(
                         },
                         elapsed_ms: elapsed,
                     });
-                    // Cap at 50 entries, drop oldest.
-                    if log.len() > 50 {
-                        log.remove(0);
-                    }
                 }
 
                 emit(
@@ -480,6 +491,21 @@ pub async fn run_subagent_loop(
                     }
                 };
 
+                // ── Append ToolResult event to action log ─────────────────────
+                {
+                    let mut log = action_log.lock().unwrap();
+                    let success = !content.starts_with("Error:") && !content.starts_with("Tool '");
+                    let summary: String = content.chars().take(200).collect();
+                    log.push(SubagentEvent {
+                        event_type: SubagentEventType::ToolResult {
+                            tool_name: tool_name.clone(),
+                            success,
+                            summary,
+                        },
+                        elapsed_ms: start.elapsed().as_millis() as u64,
+                    });
+                }
+
                 // ── Inject parse error into tool result so the LLM can self-correct ──
                 if let Some(ref err_msg) = parse_err {
                     content.push_str(&format!(
@@ -518,6 +544,29 @@ pub async fn run_subagent_loop(
                      but please ensure your tool arguments are valid JSON.\n\
                      </system-reminder>"
                 ));
+            }
+
+            // ── Progress delta computation ──────────────────────────────────
+            let round_tool_types: std::collections::HashSet<String> = round_tool_names.into_iter().collect();
+            let new_types: Vec<&String> = round_tool_types.difference(&tool_types_used).collect();
+            let delta = if tool_types_used.is_empty() {
+                1.0f32
+            } else {
+                new_types.len() as f32 / tool_types_used.len() as f32
+            };
+            tool_types_used.extend(round_tool_types);
+            if delta < 0.05 {
+                stale_rounds += 1;
+            } else {
+                stale_rounds = 0;
+            }
+            if stale_rounds >= 3 {
+                let msg = format!(
+                    "Subagent stalled: no progress for {} consecutive rounds (delta={:.2})",
+                    stale_rounds, delta
+                );
+                emit(SubagentStatus::Failed, Some(round + 1), None, Some(msg.clone()));
+                return Err(msg);
             }
         }
 
@@ -561,6 +610,11 @@ pub async fn run_subagent_loop(
                         )),
                         depends_on: vec![],
                     }),
+                    progress_delta: None,
+                    token_budget_k: None,
+                    cumulative_tokens: 0,
+                    error_details: None,
+                    events: Vec::new(),
                 });
             }
             tracing::error!(
