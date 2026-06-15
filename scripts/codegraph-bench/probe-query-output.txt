@@ -1,0 +1,103 @@
+========================================
+Task 0.1: CLI 输出探针报告
+probe-query-output.txt
+========================================
+
+日期: 2026-06-15
+分支: feature/20260615/codegraph-baseline-spike
+
+---
+1. query 输出是否直接暴露工具调用序列？
+   否。
+
+   wgenty-code query --prompt 命令是简化版 API 调用（见 src/cli/args.rs:227-285），
+   直接向 API 发送单条用户消息（无系统提示、无工具定义、无 agent 上下文），
+   然后 "println!("{}", content)" 打印纯文本响应。
+
+   输出中不包含任何工具调用信息。两条 probe query 的回复都是纯文本对话：
+   - Query 1 "Tool trait 定义在哪个文件..." → LLM 回复无法访问代码库，
+     给出通用建议和常见框架的 Tool trait 片段
+   - Query 2 "谁调用了 register 函数..." → LLM 回复无法直接查看代码，
+     建议使用 grep 等工具搜索
+
+2. 如否，能否从 session JSON 获取完整工具序列？
+   否。query 命令不保存 session JSON。
+
+   session 目录 ~/.wgenty-code/sessions/ 中没有对应此次 query 的新文件。
+   最新 session 均为之前的完整 agent 会话（repl 模式）。
+
+   session JSON 的结构（从已有 session 观察）：
+   {
+     "id": "...",
+     "name": "...",
+     "created_at": "...",
+     "updated_at": "...",
+     "messages": [
+       { "role": "system", "content": "..." },
+       { "role": "user", "content": "..." },
+       {
+         "role": "assistant",
+         "tool_calls": [          ← 工具调用序列在此
+           {
+             "id": "toolu_...",
+             "type": "function",
+             "function": {
+               "name": "view",
+               "arguments": "{\"path\":\"...\",\"depth\":2}"
+             }
+           }
+         ]
+       },
+       { "role": "tool", "content": "...", "tool_call_id": "toolu_..." }
+     ]
+   }
+
+   每个 tool_call 有完整的 id、name、arguments（JSON 字符串），
+   对应的 tool response 通过 tool_call_id 关联。
+
+   因此，通过 repl 模式（完整 agent 会话）产生的 session JSON 中，
+   工具调用序列是完整可解析的。
+
+3. 单条任务输出结构描述
+   纯文本格式。API 返回 content 内容直接打印到 stdout。
+   无结构元数据（无 JSON 封装、无 token 计数、无工具调用标记）。
+
+4. 对 B 路径方案（CLI 回放）的最终判断
+
+   需调整。
+   - query 命令不是备选方案：它只是裸 API 调用，不产生工具调用序列，
+     不适合作为 agent 使用率测量的源数据
+   - B 路径应改为使用 repl 模式（或完整 agent loop）的 session JSON：
+     session JSON 包含完整的 messages 数组，其中 tool_calls 字段
+     记录了每次 assistant 回复中的所有工具调用
+     可通过解析 tool_calls 序列计算：
+       * 每次回复的工具调用数量
+       * 使用的工具名称分布（view, grep, exec 等）
+       * 工具调用的参数内容
+   - 替代方案：也可以直接在 agent loop 中埋点，输出工具调用事件流
+     （如 JSON Lines），但这需要修改 src/ 代码（当前 change 禁止）
+
+结论：B 路径可行，但需要调整为从 repl 模式 session JSON 中提取
+工具调用序列，而非使用 query 命令。
+
+========================================
+附加记录
+========================================
+
+测试命令：
+  1. cargo build --release
+     完成时间：~2分钟
+     二进制：target/release/wgenty-code
+
+  2. ./target/release/wgenty-code query --prompt "Tool trait..." 2>&1
+     输出：LLM 通用回复，无工具调用
+
+  3. ./target/release/wgenty-code query --prompt "谁调用了 register..." 2>&1
+     输出：LLM 通用回复，无法查看代码
+
+  4. ls -lt ~/.wgenty-code/sessions/*.json | head -1
+     最新 session 14:24，早于本次 probe run
+
+  5. session JSON 结构验证
+     工具调用序列在 messages[].tool_calls[] 字段中
+     格式含 id, type, function(name, arguments)
