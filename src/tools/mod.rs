@@ -123,6 +123,9 @@ impl ToolRegistry {
         // CodeGraph tools (lazy-init from .codegraph/index.db)
         registry.register(Box::new(codegraph::tools::CodegraphNodeTool::new()));
         registry.register(Box::new(codegraph::tools::CodegraphExploreTool::new()));
+        registry.register(Box::new(codegraph::tools::CallPathTool::new()));
+        registry.register(Box::new(codegraph::tools::SymbolBatchTool::new()));
+        registry.register(Box::new(codegraph::tools::ModuleSummaryTool::new()));
 
         registry
     }

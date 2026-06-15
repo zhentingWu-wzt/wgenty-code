@@ -1,11 +1,11 @@
 use crate::tools::codegraph::store::IndexStore;
 use crate::tools::codegraph::types::{RelKind, Relationship, Symbol};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::sync::Arc;
 
 /// A directed edge in the call graph.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {
     pub from_id: i64,
     pub to_id: i64,
@@ -16,7 +16,7 @@ pub struct Edge {
 }
 
 /// One hop in a call path.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hop {
     pub from: String,
     pub to: String,
@@ -25,7 +25,7 @@ pub struct Hop {
 }
 
 /// A call path from root to a target symbol.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallPath {
     pub depth: usize,
     pub hops: Vec<Hop>,
@@ -34,11 +34,12 @@ pub struct CallPath {
 }
 
 /// In-memory call graph for traversals.
+#[derive(Default)]
 pub struct CallGraph {
     /// source_id → Vec of outgoing edges
-    edges: HashMap<i64, Vec<Edge>>,
+    pub edges: HashMap<i64, Vec<Edge>>,
     /// symbol_id → Symbol metadata for lookup
-    symbols: HashMap<i64, Symbol>,
+    pub symbols: HashMap<i64, Symbol>,
 }
 
 impl CallGraph {
@@ -228,7 +229,7 @@ impl CallGraph {
 }
 
 /// Result type for call_path tool.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CallPathResult {
     pub path_found: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
