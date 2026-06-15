@@ -151,7 +151,7 @@ Ref: R4, Design Doc §7 probe 2"
 **Files:**
 - Create: `scripts/codegraph-bench/probe-ripgrep-index.txt`（探针观察笔记）
 
-- [ ] **Step 1: Clone ripgrep**
+- [x] **Step 1: Clone ripgrep**
 
 ```bash
 mkdir -p /tmp/external-repos
@@ -160,7 +160,7 @@ echo "Rust files count:"
 find /tmp/external-repos/ripgrep -name '*.rs' | wc -l
 ```
 
-- [ ] **Step 2: 在 ripgrep 上跑 codegraph index**
+- [x] **Step 2: 在 ripgrep 上跑 codegraph index**
 
 ```bash
 cd /tmp/external-repos/ripgrep
@@ -172,7 +172,7 @@ cd /tmp/external-repos/ripgrep
 time /Users/wuzhenting/workspace/project/wgenty-code/target/release/wgenty-code codegraph index --force 2>&1
 ```
 
-- [ ] **Step 3: 检查索引产物**
+- [x] **Step 3: 检查索引产物**
 
 ```bash
 ls -lh /tmp/external-repos/ripgrep/.codegraph/index.db
@@ -181,7 +181,7 @@ sqlite3 /tmp/external-repos/ripgrep/.codegraph/index.db "SELECT COUNT(*) FROM sy
 sqlite3 /tmp/external-repos/ripgrep/.codegraph/index.db "SELECT COUNT(*) FROM relationships;" 2>/dev/null
 ```
 
-- [ ] **Step 4: 记录探针结论**
+- [x] **Step 4: 记录探针结论**
 
 写入 `scripts/codegraph-bench/probe-ripgrep-index.txt`：
 - ripgrep .rs 文件数
@@ -190,7 +190,7 @@ sqlite3 /tmp/external-repos/ripgrep/.codegraph/index.db "SELECT COUNT(*) FROM re
 - 符号/关系数
 - 结论：（已/未）确认 ripgrep 适合作为外部验证目标；tokio 是否暂缓？
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/codegraph-bench/probe-ripgrep-index.txt
