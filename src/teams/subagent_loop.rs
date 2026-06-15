@@ -165,7 +165,8 @@ pub async fn run_subagent_loop(
         let emit = |status: SubagentStatus,
                     round: Option<usize>,
                     current_tool: Option<String>,
-                    error_msg: Option<String>| {
+                    error_msg: Option<String>,
+                    progress_delta: Option<f32>| {
             if let Some(ref cb) = on_progress_inner {
                 let elapsed = start.elapsed();
                 let is_terminal = matches!(
@@ -196,7 +197,7 @@ pub async fn run_subagent_loop(
                     started_at: started_at_ms,
                     elapsed_ms: elapsed.as_millis() as u64,
                     metadata,
-                    progress_delta: None,
+                    progress_delta,
                     token_budget_k,
                     cumulative_tokens: *cumulative_tokens.lock().unwrap() as u64,
                     error_details: None,
@@ -205,7 +206,7 @@ pub async fn run_subagent_loop(
             }
         };
 
-        emit(SubagentStatus::Running, Some(0), None, None);
+        emit(SubagentStatus::Running, Some(0), None, None, None);
 
         for round in 0..max_rounds {
             let elapsed = start.elapsed().as_secs();
@@ -220,7 +221,7 @@ pub async fn run_subagent_loop(
                 max_rounds
             );
 
-            emit(SubagentStatus::Running, Some(round + 1), None, None);
+            emit(SubagentStatus::Running, Some(round + 1), None, None, None);
 
             let response = tokio::time::timeout(
                 PER_ROUND_API_TIMEOUT,
@@ -265,13 +266,16 @@ pub async fn run_subagent_loop(
             if let Some(budget_k) = token_budget_k {
                 let used = *cumulative_tokens.lock().unwrap();
                 if used > (budget_k as usize) * 1000 {
+                    let last_tool = current_params_val.lock().unwrap().clone()
+                        .unwrap_or_else(|| "none".to_string());
                     let msg = format!(
-                        "Token budget exceeded: limit {}k, used {}k tokens after {} rounds",
+                        "Token budget exceeded: limit {}k, used {}k tokens after {} rounds (last tool: {})",
                         budget_k,
                         used / 1000,
-                        round + 1
+                        round + 1,
+                        last_tool,
                     );
-                    emit(SubagentStatus::Failed, Some(round + 1), None, Some(msg.clone()));
+                    emit(SubagentStatus::Failed, Some(round + 1), None, Some(msg.clone()), None);
                     return Err(msg);
                 }
             }
@@ -333,7 +337,7 @@ pub async fn run_subagent_loop(
                     elapsed_secs = elapsed.as_secs(),
                     "Subagent: completed successfully"
                 );
-                emit(SubagentStatus::Completed, Some(round + 1), None, None);
+                emit(SubagentStatus::Completed, Some(round + 1), None, None, None);
                 return Ok(choice.message.content.unwrap_or_default());
             }
 
@@ -366,6 +370,7 @@ pub async fn run_subagent_loop(
                         Some(round + 1),
                         None,
                         Some(msg.clone()),
+                        None,
                     );
                     return Err(msg);
                 }
@@ -454,6 +459,7 @@ pub async fn run_subagent_loop(
                     SubagentStatus::Running,
                     Some(round + 1),
                     Some(tool_name.clone()),
+                    None,
                     None,
                 );
 
@@ -565,7 +571,13 @@ pub async fn run_subagent_loop(
                     "Subagent stalled: no progress for {} consecutive rounds (delta={:.2})",
                     stale_rounds, delta
                 );
-                emit(SubagentStatus::Failed, Some(round + 1), None, Some(msg.clone()));
+                emit(
+                    SubagentStatus::Failed,
+                    Some(round + 1),
+                    None,
+                    Some(msg.clone()),
+                    Some(delta),
+                );
                 return Err(msg);
             }
         }
@@ -581,6 +593,7 @@ pub async fn run_subagent_loop(
             Some(max_rounds),
             None,
             Some("Subagent exceeded maximum number of rounds".to_string()),
+            None,
         );
         Err("Subagent exceeded maximum number of rounds".to_string())
     };

@@ -216,6 +216,7 @@ impl Tool for TaskTool {
         // Token budget: explicit input takes priority, then settings default.
         let token_budget: Option<u64> = input.get("token_budget")
             .and_then(|v| v.as_u64())
+            .and_then(|v| if v == 0 { None } else { Some(v) })  // 0 = unlimited
             .or_else(|| {
                 let default_k = self.settings.default_subagent_token_budget_k;
                 if default_k > 0 { Some(default_k as u64) } else { None }
@@ -664,5 +665,66 @@ mod tests {
     fn test_small_model_never_complex() {
         let prompt = "1. Refactor auth\n2. Update callers\n3. Add tests\n4. Update docs\n5. Deploy";
         assert!(!is_complex_task(prompt, true));
+    }
+
+    // ── token_budget extraction tests ───────────────────────────────────
+
+    #[test]
+    fn test_token_budget_zero_is_unlimited() {
+        // token_budget=0 must produce None (unlimited), not Some(0) which
+        // immediately triggers budget exceeded in the subagent loop.
+        let default_k = 0u64;
+        let input = serde_json::json!({"token_budget": 0});
+        let result: Option<u64> = input.get("token_budget")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| if v == 0 { None } else { Some(v) })
+            .or_else(|| if default_k > 0 { Some(default_k) } else { None });
+        assert_eq!(result, None, "token_budget=0 should produce None (unlimited)");
+    }
+
+    #[test]
+    fn test_token_budget_positive_is_preserved() {
+        let default_k = 0u64;
+        let input = serde_json::json!({"token_budget": 10});
+        let result: Option<u64> = input.get("token_budget")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| if v == 0 { None } else { Some(v) })
+            .or_else(|| if default_k > 0 { Some(default_k) } else { None });
+        assert_eq!(result, Some(10), "token_budget=10 should produce Some(10)");
+    }
+
+    #[test]
+    fn test_token_budget_missing_defaults_to_none() {
+        let default_k = 0u64;
+        let input = serde_json::json!({"prompt": "hello"});
+        let result: Option<u64> = input.get("token_budget")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| if v == 0 { None } else { Some(v) })
+            .or_else(|| if default_k > 0 { Some(default_k) } else { None });
+        assert_eq!(result, None, "missing token_budget with no default should produce None");
+    }
+
+    #[test]
+    fn test_token_budget_uses_settings_default_when_missing() {
+        let default_k = 20u64;
+        let input = serde_json::json!({"prompt": "hello"});
+        let result: Option<u64> = input.get("token_budget")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| if v == 0 { None } else { Some(v) })
+            .or_else(|| if default_k > 0 { Some(default_k) } else { None });
+        assert_eq!(result, Some(20), "missing token_budget with default=20 should produce Some(20)");
+    }
+
+    #[test]
+    fn test_token_budget_zero_with_nonzero_default_falls_back_to_default() {
+        // When token_budget=0 is explicit but settings has a non-zero default,
+        // the 0→None mapping makes or_else pick up the default.
+        let default_k = 20u64;
+        let input = serde_json::json!({"token_budget": 0});
+        let result: Option<u64> = input.get("token_budget")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| if v == 0 { None } else { Some(v) })
+            .or_else(|| if default_k > 0 { Some(default_k) } else { None });
+        assert_eq!(result, Some(20), "explicit token_budget=0 with non-zero default should use the default");
     }
 }
