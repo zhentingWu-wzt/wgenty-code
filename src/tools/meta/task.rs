@@ -196,7 +196,7 @@ impl Tool for TaskTool {
                 },
                 "token_budget": {
                     "type": "integer",
-                    "description": "Optional token budget in thousands (e.g., 10 = 10k tokens). 0 = unlimited. Default: 0"
+                    "description": "Optional token budget in thousands (e.g., 10 = 10k tokens). 0 = use the configured default (from settings.default_subagent_token_budget_k). Omit the parameter for unlimited. Default: 0"
                 },
                 "prompt": {
                     "type": "string",
@@ -668,6 +668,31 @@ mod tests {
     }
 
     // ── token_budget extraction tests ───────────────────────────────────
+
+    #[test]
+    fn test_token_budget_schema_description_is_accurate() {
+        let schema = TaskTool::new(
+            Settings::default(),
+            std::sync::Weak::new(),
+            std::sync::Arc::new(crate::tools::execution::background::BackgroundManager::new()),
+            std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        ).input_schema();
+        let desc = schema["properties"]["token_budget"]["description"]
+            .as_str()
+            .unwrap();
+        // Must NOT claim "0 = unlimited" since 0 → fallback to settings default.
+        assert!(
+            desc.contains("configured default"),
+            "Description should say '0 = use the configured default', got: '{}'",
+            desc
+        );
+        // Must mention how to get true unlimited.
+        assert!(
+            desc.contains("omit") || desc.contains("Omit"),
+            "Description should mention 'Omit the parameter for unlimited', got: '{}'",
+            desc
+        );
+    }
 
     #[test]
     fn test_token_budget_zero_is_unlimited() {
