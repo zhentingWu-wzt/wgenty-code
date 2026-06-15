@@ -73,6 +73,6 @@
 ## 10. 验证与归档
 
 - [x] 10.1 通过 `openspec validate codegraph-baseline-spike` 校验 change 完整性
-- [ ] 10.2 在干净环境（新 shell、清空 `.codegraph/`）重跑 `run-all.sh` + `gen-report.sh`，验证整套套件可复现
-- [ ] 10.3 进入 `/comet-verify`，按 spec 8 个 requirement 的 scenarios 逐项核对
-- [ ] 10.4 verify 通过后进入 `/comet-archive`，归档到 `openspec/changes/archive/`
+- [x] 10.2 在干净环境（新 shell、清空 `.codegraph/`）重跑 `run-all.sh` + `gen-report.sh`，验证整套套件可复现
+- [x] 10.3 进入 `/comet-verify`，按 spec 8 个 requirement 的 scenarios 逐项核对
+- [x] 10.4 verify 通过后进入 `/comet-archive`，归档到 `openspec/changes/archive/`
