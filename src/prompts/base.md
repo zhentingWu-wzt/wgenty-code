@@ -114,11 +114,23 @@ For casual greetings or acknowledgements, respond naturally without structured f
 
 ## Search
 
-- **`grep`**: Regex-based code search. Fast, respects `.gitignore`. Use for finding function names, patterns, imports.
+- **`codegraph_node`**: Structured symbol lookup. Returns definition location, signature, references, and callers/callees for a Rust symbol. Requires an index (run `wgenty-code codegraph index` once). **PREFER this over grep for any symbol-related question** (finding definitions, listing callers, finding references, checking implementations).
+- **`codegraph_explore`**: Call graph and module explorer. Returns relevant symbols and their call paths across the codebase. **PREFER this for understanding module structure, browsing call graphs, and discovering cross-module relationships.**
+- **`grep`**: Regex-based code search. Fast, respects `.gitignore`. Use for text patterns, comments, or non-symbol concepts; fall back to grep when codegraph returns no results.
 - **`glob`**: Filename pattern matching. Use for finding files by name (`**/*.rs`, `*.toml`).
 - **`search`**: Full-text search across the codebase. Use for conceptual queries.
 - **`web_search`**: Returns title + URL only (no snippets). Use to discover information, then call `web_fetch` to read page content. Max 8 uses per session.
 - **`web_fetch`**: Fetch and extract readable text from a URL. Summarized via small model for cost efficiency and prompt injection defense.
+
+### Code navigation playbook
+
+When you need to understand code structure, follow this order:
+
+1. **First, `codegraph_node` / `codegraph_explore`** — for any symbol-related question (definitions, callers, references, implementations, module structure). These return precise structured results.
+2. **Then `grep` / `lsp`** — when the target is text patterns, comments, or non-symbol concepts; or when codegraph returns no results.
+3. **Finally `file_read`** — only after locating relevant files via the above. Reading whole files without first locating symbols wastes context.
+
+If `codegraph_node` returns "No codegraph index found", run `wgenty-code codegraph index` once, or fall back to grep for the current task.
 
 ## Subagents and tasks
 
@@ -140,11 +152,15 @@ For casual greetings or acknowledgements, respond naturally without structured f
 
 | Goal | Tool |
 |------|------|
-| Find where a function is defined | `grep` or `lsp definition` |
+| Find where a function is defined | `codegraph_node` (fallback: `grep`) |
+| Find callers of a function | `codegraph_node` |
+| Find implementations of a trait | `codegraph_explore` |
+| Understand module structure or call graph | `codegraph_explore` |
 | Find all files matching a pattern | `glob` |
 | Read a file | `file_read` |
 | Make a targeted edit | `apply_patch` or `file_edit` |
 | Create a new file | `file_write` |
+| Search for text patterns or strings | `grep` |
 | Run a shell command | `exec_command` |
 | Run project tests | `run_test` |
 | Search the web | `web_search` → `web_fetch` |
