@@ -90,6 +90,11 @@ pub struct App {
     turn_started_at: Option<std::time::Instant>,
     /// Cancellation flag for blocking input reader task
     shutdown_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+
+    /// Completion engine for @ and / auto-completion.
+    pub completion_engine: Option<crate::tui::completion::CompletionEngine>,
+    /// Current completion state (None = no active completion).
+    pub completion_state: Option<CompletionState>,
 }
 
 impl App {
@@ -217,6 +222,29 @@ impl App {
             shutdown_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
 
             settings_lock,
+
+            completion_engine: {
+                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                let skills_dir = home.join(".claude").join("skills");
+                let mut builtin_commands = Vec::new();
+                builtin_commands.push(crate::tui::completion::CommandEntry {
+                    name: "code-review".to_string(),
+                    description: "Review code changes".to_string(),
+                    args_hint: None,
+                });
+                builtin_commands.push(crate::tui::completion::CommandEntry {
+                    name: "clear".to_string(),
+                    description: "Clear screen".to_string(),
+                    args_hint: None,
+                });
+                builtin_commands.push(crate::tui::completion::CommandEntry {
+                    name: "help".to_string(),
+                    description: "Show help".to_string(),
+                    args_hint: None,
+                });
+                Some(crate::tui::completion::CompletionEngine::load(&skills_dir, &builtin_commands))
+            },
+            completion_state: None,
         }
     }
 
