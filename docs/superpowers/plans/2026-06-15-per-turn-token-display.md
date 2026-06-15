@@ -2,6 +2,7 @@
 change: per-turn-token-display
 design-doc: docs/superpowers/specs/2026-06-15-per-turn-token-display-design.md
 base-ref: 3ff1acb68de0bdc5659c7d65f2c22f8bfc2c71d8
+archived-with: 2026-06-15-per-turn-token-display
 ---
 
 # Per-Turn Token Display 实施计划
@@ -14,6 +15,7 @@ base-ref: 3ff1acb68de0bdc5659c7d65f2c22f8bfc2c71d8
 
 **Tech Stack:** Rust (stable), std::sync::atomic, ratatui (TUI)
 
+archived-with: 2026-06-15-per-turn-token-display
 ---
 
 ## 文件结构
@@ -26,6 +28,7 @@ base-ref: 3ff1acb68de0bdc5659c7d65f2c22f8bfc2c71d8
 | `src/tui/components/status.rs` | render 签名改为 input_tokens/output_tokens；format_tokens 改双向格式 | 修改 |
 | `src/tui/app/render.rs` | render_status 读取 turn_input_tokens / turn_output_tokens | 修改 |
 
+archived-with: 2026-06-15-per-turn-token-display
 ---
 
 ### Task 1: TokenCounter 扩展 — 新增 turn 级字段与方法
@@ -188,6 +191,7 @@ path and use relaxed ordering.
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-15-per-turn-token-display
 ---
 
 ### Task 2: AgentLoop 集成 — reset_turn / add_input / add_output
@@ -293,6 +297,7 @@ API usage completion_tokens (with fallback estimation).
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-15-per-turn-token-display
 ---
 
 ### Task 3: 状态栏渲染 — 双向 token 展示
@@ -387,6 +392,7 @@ Hide tokens section entirely when both are zero.
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-15-per-turn-token-display
 ---
 
 ### Task 4: App 渲染适配 — render_status 改用 turn 级计数器
@@ -459,6 +465,7 @@ bidirectional token display per turn.
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-15-per-turn-token-display
 ---
 
 ## 自检清单
