@@ -15,15 +15,15 @@ base-ref: d69210652f377344d876f7bcd7b5db787d750e09
 ## Phase 0: 依赖 + 基础设施
 
 ### Task 0.1: Cargo.toml 依赖
-- [ ] 新增 tree-sitter-java, tree-sitter-python
-- [ ] cargo build 验证
-- [ ] Commit
+- [x] 新增 tree-sitter-java, tree-sitter-python
+- [x] cargo build 验证
+- [x] Commit
 
 ### Task 0.2: RelKind 扩展 + language 字段
-- [ ] types.rs: RelKind 加 Inherits/TypeOf/Returns/Parameter
-- [ ] types.rs: Symbol 加 language 字段 (default "rust")
-- [ ] 单元测试: as_str/parse
-- [ ] Commit
+- [x] types.rs: RelKind 加 Inherits/TypeOf/Returns/Parameter
+- [x] types.rs: Symbol 加 language 字段 (default "rust")
+- [x] 单元测试: as_str/parse
+- [x] Commit
 
 ---
 

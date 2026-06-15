@@ -2,7 +2,7 @@
 
 ## 1. 依赖 + LanguageAdapter trait
 
-- [ ] 1.1 Cargo.toml: 新增 tree-sitter-java, tree-sitter-python
+- [x] 1.1 Cargo.toml: 新增 tree-sitter-java, tree-sitter-python
 - [ ] 1.2 创建 src/tools/codegraph/adapters/mod.rs: LanguageAdapter trait 定义
 - [ ] 1.3 实现 RustAdapter (src/tools/codegraph/adapters/rust.rs)
 - [ ] 1.4 实现 JavaAdapter (src/tools/codegraph/adapters/java.rs)
@@ -11,9 +11,9 @@
 
 ## 2. Types + RelKind 扩展
 
-- [ ] 2.1 types.rs: Symbol 增加 language 字段
-- [ ] 2.2 types.rs: RelKind 新增 Inherits/TypeOf/Returns/Parameter
-- [ ] 2.3 单元测试：新 RelKind 的 as_str/parse
+- [x] 2.1 types.rs: Symbol 增加 language 字段
+- [x] 2.2 types.rs: RelKind 新增 Inherits/TypeOf/Returns/Parameter
+- [x] 2.3 单元测试：新 RelKind 的 as_str/parse
 
 ## 3. Parser Pool + 路由
 
