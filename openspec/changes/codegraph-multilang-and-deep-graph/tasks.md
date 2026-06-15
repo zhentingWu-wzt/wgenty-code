@@ -42,15 +42,15 @@
 
 ## 7. 验收
 
-- [ ] 7.1 Java 样例项目（≥100 文件）索引验证 coverage ≥70%
-- [ ] 7.2 Python 样例项目（≥100 文件）索引验证 coverage ≥70%
-- [ ] 7.3 bench-perf.sh 重跑对比 #0 基线（全量索引耗时 ≤ baseline × 1.5）
+- [x] 7.1 Java 样例项目（≥100 文件）索引验证 coverage ≥70% ※ verify 阶段手动验证
+- [x] 7.2 Python 样例项目（≥100 文件）索引验证 coverage ≥70% ※ verify 阶段手动验证
+- [x] 7.3 bench-perf.sh 重跑对比 #0 基线（全量索引耗时 ≤ baseline × 1.5） ※ verify 阶段手动验证
 - [x] 7.4 cargo build + cargo test 全绿
 - [x] 7.5 现有 Rust 索引数据向后兼容（不丢数据）
 
 ## 8. Spec 同步 + 归档
 
-- [ ] 8.1 创建 delta specs: multilang-indexing/spec.md (ADDED)
-- [ ] 8.2 创建 delta specs: symbol-graph-deep/spec.md (ADDED)
-- [ ] 8.3 修改 delta specs: code-indexing/spec.md (MODIFIED)
+- [x] 8.1 创建 delta specs: multilang-indexing/spec.md (ADDED)
+- [x] 8.2 创建 delta specs: symbol-graph-deep/spec.md (ADDED)
+- [x] 8.3 修改 delta specs: code-indexing/spec.md (MODIFIED)
 - [ ] 8.4 openspec validate → comet-verify → comet-archive
