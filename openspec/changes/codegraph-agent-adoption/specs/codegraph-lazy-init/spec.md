@@ -15,9 +15,9 @@ CodeGraph tools SHALL be registered in the default `ToolRegistry` and SHALL lazi
 - **THEN** the tool SHALL return a `ToolError` whose message includes:
   - The expected index path (`.codegraph/index.db`)
   - The exact command to fix the issue (`wgenty-code codegraph index`)
-  - The directory in which to run the command ("in this directory" or equivalent)
-  - A fallback hint indicating that grep / file_read are acceptable temporary alternatives
-- **THEN** the message SHALL avoid generic phrasing such as "first" without explanation, in favor of actionable, parseable instructions
+  - An estimate of the fix cost to reduce hesitation (e.g., "typically takes <5s on a Rust project")
+  - A fallback hint limiting grep / file_read to a temporary alternative for this single task only (to prevent permanent fallback)
+- **THEN** the message SHALL use actionable, parseable instructions and SHALL avoid unbounded fallback language such as "acceptable" or "fall back to grep" without a time or scope qualifier
 
 #### Scenario: Engine initialized once
 

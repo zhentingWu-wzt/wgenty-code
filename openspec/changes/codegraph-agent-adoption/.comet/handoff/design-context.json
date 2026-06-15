@@ -1,0 +1,16 @@
+{
+  "change": "codegraph-agent-adoption",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "1094ed7d8a9fb986a9eb232694bb9db2bf87aad019d4a3e6eaec12a1ed717b0b",
+  "files": [
+    { "path": "openspec/changes/codegraph-agent-adoption/proposal.md", "sha256": "39300a82f1d0e3f8b0973b39f8ec548c8bdf3b56ef8090aba4a4d0d9eb6677ee" },
+    { "path": "openspec/changes/codegraph-agent-adoption/design.md", "sha256": "2b12f6c4cc9153ddbf14a761481ed709052aa7db714eb0357618643b4eb044b7" },
+    { "path": "openspec/changes/codegraph-agent-adoption/tasks.md", "sha256": "d5f1a102f0371250b6729f09f2b83634a81b70c640beb3b836a390f7561c0de3" },
+    { "path": "openspec/changes/codegraph-agent-adoption/specs/call-graph/spec.md", "sha256": "79436e5322698f46f4f2c7824f6dd3609a4a88423a89720fab41682eb1ccdebf" },
+    { "path": "openspec/changes/codegraph-agent-adoption/specs/codegraph-lazy-init/spec.md", "sha256": "3e13c511d71fca5940dc010173749cf8e2631b657c8627368b4dfe12555f2944" },
+    { "path": "openspec/changes/codegraph-agent-adoption/specs/symbol-query/spec.md", "sha256": "cf91304ae31cf41f15550428ea2f8808dbedbf229e1a576446d913a7ca0acd22" }
+  ]
+}
