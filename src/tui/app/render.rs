@@ -104,6 +104,13 @@ impl App {
                 is_executing,
             );
         }
+        // Detail view (full-screen, highest z-order)
+        if self.subagent_panel_state.detail_view.is_some() {
+            let detail = self.subagent_panel_state.detail_view.as_ref().unwrap();
+            if !detail.loading {
+                components::detail_view::DetailView::render(f, f.area(), detail);
+            }
+        }
     }
 
     fn render_chat(&self, f: &mut Frame, area: Rect) {

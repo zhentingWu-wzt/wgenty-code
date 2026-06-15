@@ -101,6 +101,10 @@ pub fn render(
                 "g/G top/bottom  ",
                 Style::default().fg(Color::Rgb(108, 112, 134)),
             ),
+            Span::styled(
+                "d details  ",
+                Style::default().fg(Color::Rgb(108, 112, 134)),
+            ),
             Span::styled("Esc close", Style::default().fg(Color::Rgb(108, 112, 134))),
         ])),
         chunks[2],
@@ -198,6 +202,48 @@ fn render_tree_with_expand(
         Span::styled(icon, select_style),
         Span::styled(label, select_style),
     ]));
+
+    // ── Selected + Failed/Cancelled: show inline error detail ─────────
+    if is_selected && matches!(node.progress.status, SubagentStatus::Failed | SubagentStatus::Cancelled) {
+        let err_indent = " ".repeat((indent + 4) as usize);
+        // Error header
+        if let Some(ref error) = node.progress.metadata.as_ref().and_then(|m| m.error.as_ref()) {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{}┌─ Error: {}", err_indent, error),
+                    Style::default().fg(Color::Rgb(243, 139, 168)),
+                ),
+            ]));
+        }
+
+        // Token info
+        let tokens = node.progress.cumulative_tokens;
+        let budget = node.progress.token_budget_k.map(|b| format!("{}k", b)).unwrap_or_else(|| "unlimited".to_string());
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{}├─ Tokens: {}/{}", err_indent, tokens, budget),
+                Style::default().fg(Color::Rgb(108, 112, 134)),
+            ),
+        ]));
+
+        // Round info
+        if let (Some(r), Some(mr)) = (node.progress.round, node.progress.max_rounds) {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{}├─ Round: {}/{}", err_indent, r, mr),
+                    Style::default().fg(Color::Rgb(108, 112, 134)),
+                ),
+            ]));
+        }
+
+        // Action buttons
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{}└─ [r]etry  [d]etails  [Esc] close", err_indent),
+                Style::default().fg(Color::Rgb(255, 200, 80)),
+            ),
+        ]));
+    }
 
     // ── Expanded: show full event timeline ──────────────────────────
     if is_expanded {

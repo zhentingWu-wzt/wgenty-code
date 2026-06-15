@@ -275,6 +275,7 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::ConfigChanged(_)
         | AppEvent::SubagentUpdate(_)
         | AppEvent::ToggleSubagentPanel
+        | AppEvent::RetrySubagent(_)
         => None,
     }
 }
