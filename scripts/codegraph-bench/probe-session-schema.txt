@@ -1,0 +1,127 @@
+========================================
+Task 0.2: Session Schema 探针报告
+probe-session-schema.txt
+========================================
+
+日期: 2026-06-15
+分支: feature/20260615/codegraph-baseline-spike
+
+---
+1. Session 统计摘要
+
+   总 session 数: 71
+   使用 codegraph 的 session 数: 1 (1%)
+   未使用 codegraph 的 session 数: 70 (99%)
+   总工具调用数（所有 session）: 1,959
+   Codegraph 工具调用数: 1
+   Codegraph 工具调用占比: 0%
+
+2. Codegraph 工具分布
+
+   codegraph_node:    1 次 (100%)
+   codegraph_explore: 0 次 (0%)
+   其他 codegraph 工具: 0 次 (0%)
+
+3. 使用 codegraph 的 session 详情
+
+   Session ID: 37ab7bbd-4c8c-4040-be81-3106d3a12d0b
+   名称: "你有code graph吗"
+   创建时间: 2026-06-14T01:58:25
+   该 session 中使用的工具: codegraph_node, glob
+   总工具调用数: 4
+   总消息数: 13
+
+   分析: 这是用户询问 "你有code graph吗"（codegraph 是否存在）
+   的探询性会话。唯一一次 codegraph_node 调用后可能没有得到
+   预期结果，用户未继续使用 codegraph 工具。
+
+4. 从 Session JSON 批量统计 codegraph 使用率的可行性
+
+   可行。
+
+   所有 71 个 session JSON 均包含 "messages" 字段（schema 一致率 100%），
+   因此可以直接用 jq 批量解析。关键 jq 查询模式：
+
+   - 检查是否有 codegraph 调用:
+     jq '[.messages[]?.tool_calls[]? | select(.function.name | test("codegraph"))] | length'
+
+   - 统计所有工具调用:
+     jq '[.messages[]?.tool_calls[]?] | length'
+
+   注意事项:
+   - jq 的 "?." 操作符（optional chaining）对缺少 messages 或
+     tool_calls 字段的 session 安全，返回 null/空数组而非报错
+   - 所有 session 均有 messages 字段（本次统计未发现异常）
+   - 统计结果可以通过 SESSIONS_DIR 环境变量覆盖，便于测试
+
+5. 需要注意的陷阱
+
+   a) Schema 一致性: 本次扫描的 71 个 session 全部包含 messages 字段，
+      未发现 schema 不一致。但未来可能出现旧格式 session，建议在脚本中
+      使用 jq 'has("messages")' 做防御性检查。
+
+   b) tool_calls 可选性: 即使有 messages 字段，也可能不存在 tool_calls
+      （如纯对话 session）。jq 的 "[]?" 操作符能安全处理此情况。
+
+   c) 工具命名规范: codegraph 工具目前仅有 codegraph_node 被实际使用。
+      搜索时使用 test("codegraph") 正则匹配可覆盖 codegraph_node、
+      codegraph_explore 及未来 codegraph_* 工具。
+
+   d) Bash 兼容性: macOS 默认 bash 3.2 不支持关联数组 (declare -A)，
+      管道 + sort | uniq -c 是更安全的统计模式。
+
+   e) Token 用量: Session JSON 不存储 API 返回的 usage(token 用量)信息，
+      无法从 session JSON 获取 codegraph 调用的 token 成本。
+
+6. 全量工具调用排名（Top 15，跨所有 session）
+
+     748 file_read
+     184 grep
+     178 file_edit
+     173 glob
+     101 task
+      88 TodoWrite
+      81 execute_command
+      75 ask_user_question
+      65 list_files
+      62 exec_command
+      39 file_write
+      36 view
+      34 apply_patch
+      31 read
+      15 run_test
+      11 web_search
+      10 update_plan
+       7 web_fetch
+       6 read_file
+       4 git_operations
+       3 background
+       2 write_stdin
+       1 todo_write
+       1 search
+       1 readme_file
+       1 edit_file
+       1 codegraph_node
+       1 checkpoint
+
+   Codegraph_node 排名第 27 位，与 checkpoint 并列最后，
+   使用率远低于 file_read(748)、grep(184) 等常用工具。
+
+7. TDD 验证状态
+
+   RED: test-probe-session-stats.sh 在 probe-session-stats.sh 不存在时
+        正确报告失败（测试领先于实现）。
+
+   GREEN: 使用 5 个 fixture session 验证了 6 项指标：
+          - 总 session 数: 5/5 PASS
+          - 使用 codegraph 的 session: 2/2 PASS
+          - 总工具调用: 16/16 PASS
+          - Codegraph 调用: 7/7 PASS
+          - Codegraph 采纳率: 40%/40% PASS
+          - Codegraph 调用占比: 43%/43% PASS
+
+8. 结论
+
+   Codegraph 工具在历史 session 中的实际使用率极低（1 of 71 sessions,
+   1 tool call out of 1,959）。这一数据为 codegraph 工具的
+   可发现性和易用性改进提供了量化基准。
