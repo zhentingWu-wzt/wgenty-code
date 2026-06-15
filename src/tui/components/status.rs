@@ -71,6 +71,16 @@ pub fn render(
         meta_parts.push(mode_label.to_string());
     }
 
+    // Subagent token budget info in status bar meta line
+    if let Some(tree) = subagent_tree {
+        if !tree.is_empty() {
+            let total_tokens = tree.total_tokens();
+            if total_tokens > 0 {
+                meta_parts.push(format!("{:.1}k tokens", total_tokens as f64 / 1000.0));
+            }
+        }
+    }
+
     let right_meta = if meta_parts.is_empty() {
         String::new()
     } else {
