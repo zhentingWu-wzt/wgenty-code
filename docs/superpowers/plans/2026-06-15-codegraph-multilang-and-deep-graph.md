@@ -56,36 +56,37 @@ base-ref: d69210652f377344d876f7bcd7b5db787d750e09
 ## Phase 2: Parser Pool + Indexer 重构
 
 ### Task 2.1: parser.rs → ParserPool
-- [ ] 重构为 HashMap<lang, Arc<Mutex<CodeParser>>>
-- [ ] 文件扩展名→lang 路由
-- [ ] Commit
+- [x] 重构为 HashMap<lang, Arc<Mutex<CodeParser>>>
+- [x] 文件扩展名→lang 路由
+- [x] Commit
 
 ### Task 2.2: indexer.rs adapter 集成
-- [ ] 注册 3 适配器
-- [ ] 按文件扩展名选择适配器
-- [ ] language 字段写入 symbol
-- [ ] Commit
+- [x] 注册 3 适配器
+- [x] 按文件扩展名选择适配器
+- [x] language 字段写入 symbol
+- [x] Commit
 
 ---
 
 ## Phase 3: Schema 迁移 + Store
 
 ### Task 3.1: migration.rs
-- [ ] 检测 schema version
-- [ ] ALTER TABLE symbols ADD COLUMN language
-- [ ] 新关系类型表
-- [ ] 单元测试
-- [ ] Commit
+- [x] 检测 schema version
+- [x] ALTER TABLE symbols ADD COLUMN language
+- [x] 新关系类型表
+- [x] 单元测试
+- [x] Commit
 
 ### Task 3.2: store.rs 新关系存储
-- [ ] 新 RelKind 的 insert/query
-- [ ] Commit
+- [x] 新 RelKind 的 insert/query
+- [x] Commit
 
 ---
 
 ## Phase 4: 验收 + 归档
 
 ### Task 4.1: cargo build + test 全绿
+- [x] 305 passed, 0 failures (1 pre-existing unrelated failure)
 ### Task 4.2: Java 样例项目 coverage ≥70%
 ### Task 4.3: Python 样例项目 coverage ≥70%
 ### Task 4.4: bench-perf.sh 对比 #0 baseline (≤1.5×)
