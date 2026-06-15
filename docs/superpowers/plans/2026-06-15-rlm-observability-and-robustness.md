@@ -2874,7 +2874,7 @@
 
     Then append `tokens_str` and `progress_warn` to the `status_detail` string where appropriate.
 
-- [ ] **Step 8.3: Update status bar to show token budget usage**
+- [x] **Step 8.3: Update status bar to show token budget usage**
 
     In `src/tui/components/status.rs`, in the `render` function's meta parts section, after the existing token display, add:
 
@@ -2890,7 +2890,7 @@
     }
     ```
 
-- [ ] **Step 8.4: Commit**
+- [x] **Step 8.4: Commit**
 
     ```bash
     git add src/tui/components/subagent_tree.rs src/tui/components/subagent_panel.rs src/tui/components/status.rs
@@ -2905,7 +2905,7 @@
 - Modify: `packages/cli/src/components/input-box.tsx:30-39` — detect @ and / prefixes
 - Modify: `packages/cli/src/hooks/use-agent.ts:23-30` — extend AgentStatus type
 
-- [ ] **Step 9.1: Extend AgentStatus type in use-agent.ts**
+- [x] **Step 9.1: Extend AgentStatus type in use-agent.ts**
 
     In `packages/cli/src/hooks/use-agent.ts`, extend the `AgentStatus` union type:
 
@@ -2939,7 +2939,7 @@
     }
     ```
 
-- [ ] **Step 9.2: Add completion detection in Ink input-box**
+- [x] **Step 9.2: Add completion detection in Ink input-box**
 
     In `packages/cli/src/components/input-box.tsx`, add completion state tracking:
 
@@ -3014,11 +3014,11 @@
     )}
     ```
 
-- [ ] **Step 9.3: Export new types from the CLI package**
+- [x] **Step 9.3: Export new types from the CLI package**
 
     Update exports in the CLI package's index file if needed.
 
-- [ ] **Step 9.4: Commit**
+- [x] **Step 9.4: Commit**
 
     ```bash
     git add packages/cli/src/hooks/use-agent.ts packages/cli/src/components/input-box.tsx
@@ -3035,7 +3035,7 @@
 - Modify: `src/tools/meta/rlm/pipeline.rs:236-306` — save per-sub-task transcripts
 - Modify: `src/tui/app/mod.rs:90-93` — initialize transcript_store in App
 
-- [ ] **Step 10.1: Wire TranscriptStore into the daemon/subagent flow**
+- [x] **Step 10.1: Wire TranscriptStore into the daemon/subagent flow**
 
     In `src/tui/app/mod.rs`, after settings are loaded:
     ```rust
@@ -3057,7 +3057,7 @@
     pub transcript_store: Option<crate::transcript::store::SubagentTranscriptStore>,
     ```
 
-- [ ] **Step 10.2: Save transcript on subagent completion/failure**
+- [x] **Step 10.2: Save transcript on subagent completion/failure**
 
     In `src/tools/meta/task.rs`, in the subagent execution flow, after the subagent completes or fails:
 
@@ -3093,7 +3093,7 @@
     }
     ```
 
-- [ ] **Step 10.3: Add cleanup call on transcript save**
+- [x] **Step 10.3: Add cleanup call on transcript save**
 
     In `src/transcript/store.rs`, in the `save` method, after the transaction commits, add:
 
