@@ -49,7 +49,7 @@
 - [x] 6.1 汇总 4.x 输出的工具调用数据，识别"agent 没用 codegraph"的高频模式
 - [x] 6.2 对每个候选根因抽取 ≥1 条可追溯证据（transcript 引用 + 行号、prompt 段落 + 文件:行）
 - [x] 6.3 输出根因 top 3 候选清单，标注影响面（哪类任务）和建议归属 change（C/B/A）
-- [ ] 6.4 与用户审视根因清单，确认 top 3（决策点：用户确认后才能写入最终报告）
+- [x] 6.4 与用户审视根因清单，确认 top 3（决策点：用户确认后才能写入最终报告）
 
 ## 7. 基线报告产出
 
@@ -72,7 +72,7 @@
 
 ## 10. 验证与归档
 
-- [ ] 10.1 通过 `openspec validate codegraph-baseline-spike` 校验 change 完整性
+- [x] 10.1 通过 `openspec validate codegraph-baseline-spike` 校验 change 完整性
 - [ ] 10.2 在干净环境（新 shell、清空 `.codegraph/`）重跑 `run-all.sh` + `gen-report.sh`，验证整套套件可复现
 - [ ] 10.3 进入 `/comet-verify`，按 spec 8 个 requirement 的 scenarios 逐项核对
 - [ ] 10.4 verify 通过后进入 `/comet-archive`，归档到 `openspec/changes/archive/`
