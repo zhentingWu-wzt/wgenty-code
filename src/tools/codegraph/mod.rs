@@ -5,6 +5,7 @@ pub mod audit;
 pub mod call_path;
 pub mod fuzzy;
 pub mod indexer;
+pub mod migration;
 pub mod parser;
 pub mod query;
 pub mod store;
