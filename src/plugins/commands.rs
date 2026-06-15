@@ -94,13 +94,8 @@ impl CommandRegistry {
         commands.get(name).cloned()
     }
 
+    /// Return an iterator of registered commands (read-only alias for ergonomics).
     pub async fn list(&self) -> Vec<PluginCommand> {
-        let commands = self.commands.read().await;
-        commands.values().cloned().collect()
-    }
-
-    /// Return a reference to the underlying commands map (read-only).
-    pub async fn list_commands(&self) -> Vec<PluginCommand> {
         let commands = self.commands.read().await;
         commands.values().cloned().collect()
     }

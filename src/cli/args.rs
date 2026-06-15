@@ -159,7 +159,7 @@ impl Cli {
         {
             let plugin_manager = crate::plugins::PluginManager::new();
             if plugin_manager.load_all().await.is_ok() {
-                let commands = plugin_manager.command_registry().list_commands().await;
+                let commands = plugin_manager.command_registry().list().await;
                 let entries: Vec<crate::tui::completion::CommandEntry> = commands
                     .into_iter()
                     .map(|c| crate::tui::completion::CommandEntry {

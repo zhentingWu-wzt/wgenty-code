@@ -115,8 +115,8 @@ impl App {
                             return;
                         }
                         KeyCode::Enter => {
-                            // Confirm selection: replace the @xxx or /xxx with full name
-                            if let Some(ref state) = self.completion_state.clone() {
+                            // Confirm selection: take ownership (one move, no deep clone)
+                            if let Some(state) = self.completion_state.take() {
                                 if let Some(m) = state.matches.get(state.selected_index) {
                                     let text = self.input_box.textarea.lines().join("\n");
                                     if let Some(pos) = text.rfind(state.prefix) {
@@ -133,7 +133,7 @@ impl App {
                                     }
                                 }
                             }
-                            self.completion_state = None;
+                            // state was already taken (set to None by take())
                             return;
                         }
                         _ => {}
@@ -275,28 +275,25 @@ impl App {
                     return;
                 }
                 // Detect @ and / completion triggers BEFORE feeding to textarea
-                let is_completion_char = if let KeyCode::Char(c) = key.code {
-                    (c == '@' && !key.modifiers.contains(KeyModifiers::CONTROL))
-                        || (c == '/' && key.modifiers.is_empty())
-                } else {
-                    false
-                };
-                if is_completion_char {
-                    let prefix = if let KeyCode::Char(c) = key.code { c } else { unreachable!() };
-                    let text = self.input_box.textarea.lines().join("\n");
-                    let should_trigger = text.is_empty() || text.ends_with(' ') || text.ends_with('\n');
-                    if should_trigger {
-                        let partial = String::new();
-                        let matches = self.completion_engine.as_ref()
-                            .map(|e| e.filter(prefix, &partial))
-                            .unwrap_or_default();
-                        self.completion_state = Some(CompletionState {
-                            prefix,
-                            partial,
-                            matches,
-                            selected_index: 0,
-                            visible: true,
-                        });
+                if let KeyCode::Char(c) = key.code {
+                    let is_completion_char = (c == '@' && !key.modifiers.contains(KeyModifiers::CONTROL))
+                        || (c == '/' && key.modifiers.is_empty());
+                    if is_completion_char {
+                        let text = self.input_box.textarea.lines().join("\n");
+                        let should_trigger = text.is_empty() || text.ends_with(' ') || text.ends_with('\n');
+                        if should_trigger {
+                            let partial = String::new();
+                            let matches = self.completion_engine.as_ref()
+                                .map(|e| e.filter(c, &partial))
+                                .unwrap_or_default();
+                            self.completion_state = Some(CompletionState {
+                                prefix: c,
+                                partial,
+                                matches,
+                                selected_index: 0,
+                                visible: true,
+                            });
+                        }
                     }
                 }
                 // Feed to tui-textarea for CJK/IME input.
@@ -320,6 +317,9 @@ impl App {
                             if let Some(ref engine) = self.completion_engine {
                                 state.matches = engine.filter(state.prefix, after);
                             }
+                        } else {
+                            // Prefix no longer in text (e.g. user deleted @ with backspace) → dismiss
+                            self.completion_state = None;
                         }
                     }
                 }
