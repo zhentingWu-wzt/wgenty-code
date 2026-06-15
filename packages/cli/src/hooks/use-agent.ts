@@ -22,9 +22,41 @@ export interface UIMessage {
 
 export type AgentStatus =
   | { type: "idle" }
+  | { type: "connecting"; message: string }
   | { type: "thinking" }
   | { type: "streaming" }
+  | { type: "retrying"; attempt: number; maxRetries: number; reason: string }
   | { type: "executing"; toolName: string };
+
+// ── Completion types for @ skills and / commands ──────────────────────────────
+
+export interface CompletionMatch {
+  text: string;
+  description: string;
+  argsHint?: string;
+}
+
+export interface CompletionState {
+  visible: boolean;
+  prefix: "@" | "/";
+  partial: string;
+  matches: CompletionMatch[];
+  selectedIndex: number;
+}
+
+// ── Detail view types for subagent transcript inspection ──────────────────────
+
+export interface DetailViewState {
+  transcriptId: string;
+  events: SubagentEvent[];
+  scrollOffset: number;
+}
+
+/** Placeholder — will be filled with real event type from Rust side. */
+export interface SubagentEvent {
+  eventType: string;
+  elapsedMs: number;
+}
 
 export interface UseAgentOptions {
   client: ApiClient;
@@ -167,7 +199,12 @@ export function useAgent({ client }: UseAgentOptions) {
       });
     },
 
-    onStreamRetry() {
+    onStreamConnecting(attempt: number, maxRetries: number) {
+      const total = maxRetries > 1 ? ` (attempt ${attempt}/${maxRetries})` : "";
+      setStatus({ type: "connecting", message: `Connecting to API${total}...` });
+    },
+
+    onStreamRetry(reason: string) {
       // Clear pending timer and partial streaming content before retry
       if (streamTimerRef.current !== null) {
         clearTimeout(streamTimerRef.current);
