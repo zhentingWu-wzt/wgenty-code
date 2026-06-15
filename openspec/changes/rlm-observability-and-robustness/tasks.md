@@ -33,11 +33,11 @@
 
 ## 5. RLM 结构化归约
 
-- [ ] 5.1 在 `src/tools/meta/rlm/` 下创建 `formats.rs`：定义 `StructuredClaims` 和 `UnifiedDiff` 的 Rust struct（含 serde 序列化）
-- [ ] 5.2 修改 RLM planner prompt：根据任务类型（analysis/modification/mixed）在 sub-task 描述中注入输出格式指令
-- [ ] 5.3 修改 `run_subagent_loop()` 的 system prompt：当父任务要求结构化输出时，追加格式规范指令
-- [ ] 5.4 实现 Aggregator 结构化合并逻辑：Jaccard 相似度去重（阈值 0.8）、conflicts_with 冲突检测、同文件 diff 冲突标记
-- [ ] 5.5 Aggregator 在结构化合并后，仅对无法 resolve 的冲突项 fallback 到 LLM merge
+- [x] 5.1 在 `src/tools/meta/rlm/` 下创建 `formats.rs`：定义 `StructuredClaims` 和 `UnifiedDiff` 的 Rust struct（含 serde 序列化）
+- [x] 5.2 修改 RLM planner prompt：根据任务类型（analysis/modification/mixed）在 sub-task 描述中注入输出格式指令
+- [x] 5.3 修改 `run_subagent_loop()` 的 system prompt：当父任务要求结构化输出时，追加格式规范指令
+- [x] 5.4 实现 Aggregator 结构化合并逻辑：Jaccard 相似度去重（阈值 0.8）、conflicts_with 冲突检测、同文件 diff 冲突标记
+- [x] 5.5 Aggregator 在结构化合并后，仅对无法 resolve 的冲突项 fallback 到 LLM merge
 
 ## 6. RLM 预算控制与进展跟踪
 

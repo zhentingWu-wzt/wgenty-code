@@ -2113,7 +2113,7 @@
 - Modify: `src/tools/meta/rlm/mod.rs:13` — add `pub mod formats;`
 - Modify: `src/tools/meta/rlm/pipeline.rs:52-377` — inject format instructions + use structured aggregator
 
-- [ ] **Step 6.1: Create RLM formats module with structured output types**
+- [x] **Step 6.1: Create RLM formats module with structured output types**
 
     Create `src/tools/meta/rlm/formats.rs`:
 
@@ -2553,12 +2553,12 @@
     }
     ```
 
-- [ ] **Step 6.2: Run RLM formats tests**
+- [x] **Step 6.2: Run RLM formats tests**
 
     Run: `cargo test -p wgenty-code --lib tools::meta::rlm::formats::tests -- --nocapture`
     Expected: 11 tests pass.
 
-- [ ] **Step 6.3: Register formats module and wire into pipeline**
+- [x] **Step 6.3: Register formats module and wire into pipeline**
 
     In `src/tools/meta/rlm/mod.rs`, change:
     ```rust
