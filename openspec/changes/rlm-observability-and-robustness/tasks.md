@@ -25,11 +25,11 @@
 
 ## 4. Subagent 错误可视化与恢复
 
-- [ ] 4.1 在 `subagent_panel.rs` 增加 Failed 节点的错误详情展示（红色高亮 + 错误消息 + `[r] retry  [d] details` 提示）
-- [ ] 4.2 在 `subagent_panel_state.rs` 增加 detail view 切换状态和快捷键处理（Enter → 全屏 detail，d → detail，r → retry）
-- [ ] 4.3 创建 `SubagentDetailView` 组件：从 SQLite 读取 transcript 并以分页方式渲染完整事件时间线
-- [ ] 4.4 在 `tool_dispatch.rs` 或 `task.rs` 实现重试逻辑：读取失败 subagent 的 prompt → 注入 `previous_attempt_error` → 重新 spawn
-- [ ] 4.5 实现回滚机制：subagent 修改文件前创建 git stash，重试时 revert 到父节点状态
+- [x] 4.1 在 `subagent_panel.rs` 增加 Failed 节点的错误详情展示（红色高亮 + 错误消息 + `[r] retry  [d] details` 提示）
+- [x] 4.2 在 `subagent_panel_state.rs` 增加 detail view 切换状态和快捷键处理（Enter → 全屏 detail，d → detail，r → retry）
+- [x] 4.3 创建 `SubagentDetailView` 组件：从 SQLite 读取 transcript 并以分页方式渲染完整事件时间线
+- [x] 4.4 在 `tool_dispatch.rs` 或 `task.rs` 实现重试逻辑：读取失败 subagent 的 prompt → 注入 `previous_attempt_error` → 重新 spawn
+- [x] 4.5 实现回滚机制：subagent 修改文件前创建 git stash，重试时 revert 到父节点状态
 
 ## 5. RLM 结构化归约
 

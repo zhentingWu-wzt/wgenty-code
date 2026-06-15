@@ -1514,7 +1514,7 @@
 - Modify: `src/tui/app/event.rs:68-95` — detail view key routing
 - Modify: `src/tui/app/render.rs:83-96` — render detail view full-screen when active
 
-- [ ] **Step 4.1: Extend SubagentPanelState with detail view**
+- [x] **Step 4.1: Extend SubagentPanelState with detail view**
 
     In `src/tui/components/subagent_panel_state.rs`, add after `pub scroll_offset: u16`:
     ```rust
@@ -1545,7 +1545,7 @@
     self.detail_view = None;
     ```
 
-- [ ] **Step 4.2: Update subagent panel rendering for failure expansion**
+- [x] **Step 4.2: Update subagent panel rendering for failure expansion**
 
     In `src/tui/components/subagent_panel.rs`, after rendering the node's header and before rendering children, add failure detail expansion for selected+failed nodes:
 
@@ -1595,7 +1595,7 @@
     }
     ```
 
-- [ ] **Step 4.3: Create DetailView component**
+- [x] **Step 4.3: Create DetailView component**
 
     Create `src/tui/components/detail_view.rs`:
 
@@ -1729,14 +1729,14 @@
     }
     ```
 
-- [ ] **Step 4.4: Register detail_view module**
+- [x] **Step 4.4: Register detail_view module**
 
     In `src/tui/components/mod.rs`:
     ```rust
     pub mod detail_view;
     ```
 
-- [ ] **Step 4.5: Wire detail view key routing in event.rs**
+- [x] **Step 4.5: Wire detail view key routing in event.rs**
 
     In `src/tui/app/event.rs`, modify the subagent panel key handling section to support detail view navigation:
 
@@ -1808,7 +1808,7 @@
 
     Note: `SubagentEventType::Error` is from `crate::agent::progress`, import it at the top.
 
-- [ ] **Step 4.6: Render detail view in render.rs**
+- [x] **Step 4.6: Render detail view in render.rs**
 
     In `src/tui/app/render.rs`, after the subagent panel rendering block and before closing, add:
 
@@ -1823,7 +1823,7 @@
     }
     ```
 
-- [ ] **Step 4.7: Commit**
+- [x] **Step 4.7: Commit**
 
     ```bash
     git add src/tui/components/detail_view.rs src/tui/components/subagent_panel.rs src/tui/components/subagent_panel_state.rs src/tui/components/mod.rs src/tui/app/event.rs src/tui/app/render.rs
