@@ -1,0 +1,32 @@
+{
+  "file_coverage": {
+    "total_rs_files": 100,
+    "indexed_files": 100,
+    "coverage_pct": 100.0,
+    "unindexed_top10": []
+  },
+  "symbols": {
+    "total": 3759,
+    "by_kind": {
+  "function": 2744,
+  "impl": 361,
+  "struct": 296,
+  "mod": 118,
+  "enum": 71,
+  "const": 65,
+  "type_alias": 45,
+  "macro": 36,
+  "static": 16,
+  "trait": 7
+}
+  },
+  "relationships": {
+    "total": 0,
+    "by_kind": {}
+  },
+  "parse_failures": {
+    "total": 0,
+    "pct": 0,
+    "top_reasons": []
+  }
+}
