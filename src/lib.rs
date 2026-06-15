@@ -35,6 +35,7 @@ pub mod state;
 pub mod tasks;
 pub mod teams;
 pub mod tools;
+pub mod transcript;
 pub mod tui;
 pub mod utils;
 pub mod voice;
