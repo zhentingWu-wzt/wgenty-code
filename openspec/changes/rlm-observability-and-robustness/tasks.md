@@ -62,7 +62,7 @@
 
 ## 9. 验证与测试
 
-- [ ] 9.1 运行现有测试套件（`cargo test`），确保无回归
+- [x] 9.1 运行现有测试套件（`cargo test`），确保无回归
 - [ ] 9.2 手动验证：TUI 输入框 `@` 触发 skills 补全 → 选择 skill → 提交
 - [ ] 9.3 手动验证：spawn subagent → 查看 subagent panel 完整时间线 → 查看 transcript detail view
 - [ ] 9.4 手动验证：强制 subagent 失败（timeout/budget exceeded）→ 查看错误详情 → 重试
