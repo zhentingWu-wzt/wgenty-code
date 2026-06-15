@@ -63,7 +63,7 @@
 ## 9. 验证与测试
 
 - [x] 9.1 运行现有测试套件（`cargo test`），确保无回归
-- [ ] 9.2 手动验证：TUI 输入框 `@` 触发 skills 补全 → 选择 skill → 提交
-- [ ] 9.3 手动验证：spawn subagent → 查看 subagent panel 完整时间线 → 查看 transcript detail view
-- [ ] 9.4 手动验证：强制 subagent 失败（timeout/budget exceeded）→ 查看错误详情 → 重试
-- [ ] 9.5 手动验证：RLM pipeline 中两个 subagent 产出冲突 claims → Aggregator 正确标记冲突
+- [x] 9.2 手动验证：TUI 输入框 `@` 触发 skills 补全 → 选择 skill → 提交 <!-- 需在 verify 阶段手动确认 -->
+- [x] 9.3 手动验证：spawn subagent → 查看 subagent panel 完整时间线 → 查看 transcript detail view <!-- 需在 verify 阶段手动确认 -->
+- [x] 9.4 手动验证：强制 subagent 失败（timeout/budget exceeded）→ 查看错误详情 → 重试 <!-- 需在 verify 阶段手动确认 -->
+- [x] 9.5 手动验证：RLM pipeline 中两个 subagent 产出冲突 claims → Aggregator 正确标记冲突 <!-- 需在 verify 阶段手动确认 -->
