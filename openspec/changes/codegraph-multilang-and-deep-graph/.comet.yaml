@@ -1,5 +1,5 @@
 workflow: full
-phase: design
+phase: build
 context_compression: off
 build_mode: null
 build_pause: null
@@ -9,7 +9,7 @@ isolation: null
 verify_mode: null
 auto_transition: true
 base_ref: 55ac1ec1aa1dd2a12e13061c111f74d986c637e1
-design_doc: null
+design_doc: docs/superpowers/specs/2026-06-15-codegraph-multilang-and-deep-graph-design.md
 plan: null
 verify_result: pending
 verification_report: null
@@ -17,3 +17,5 @@ branch_status: pending
 created_at: 2026-06-15
 verified_at: null
 archived: false
+handoff_context: openspec/changes/codegraph-multilang-and-deep-graph/.comet/handoff/design-context.json
+handoff_hash: bee87cddc48991d45a9a316c650ed8f11f1c12897be2332dad914e97408dc75f
