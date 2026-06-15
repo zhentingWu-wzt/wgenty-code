@@ -219,7 +219,7 @@ Ref: R9, Design Doc §7 probe 3"
 - Create: `scripts/codegraph-bench/query-fixtures/.gitkeep`
 - Modify: `scripts/codegraph-bench/.gitignore`（如不存在则创建）
 
-- [ ] **Step 1: 创建目录骨架**
+- [x] **Step 1: 创建目录骨架**
 
 ```bash
 mkdir -p scripts/codegraph-bench/{lib,results,agent-tasks,query-fixtures}
@@ -228,7 +228,7 @@ touch scripts/codegraph-bench/agent-tasks/.gitkeep
 touch scripts/codegraph-bench/query-fixtures/.gitkeep
 ```
 
-- [ ] **Step 2: 写 .gitignore**
+- [x] **Step 2: 写 .gitignore**
 
 文件 `scripts/codegraph-bench/.gitignore`：
 
@@ -244,7 +244,7 @@ results/*/
 !results/README.md
 ```
 
-- [ ] **Step 3: 写 README.md**
+- [x] **Step 3: 写 README.md**
 
 文件 `scripts/codegraph-bench/README.md`：
 
@@ -299,7 +299,7 @@ scripts/codegraph-bench/
 - 测量套件仅依赖系统工具（bash, jq, sqlite3, awk）+ wgenty-code CLI
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add scripts/codegraph-bench/
@@ -318,7 +318,7 @@ Ref: R1 §Scenario: 一键运行全部基线测量, tasks.md §1.1"
 **Files:**
 - Create: `scripts/codegraph-bench/lib/env-fingerprint.sh`
 
-- [ ] **Step 1: 写 env-fingerprint.sh**
+- [x] **Step 1: 写 env-fingerprint.sh**
 
 ```bash
 #!/usr/bin/env bash
@@ -378,14 +378,14 @@ EOF
 }
 ```
 
-- [ ] **Step 2: 验证脚本可执行**
+- [x] **Step 2: 验证脚本可执行**
 
 ```bash
 chmod +x scripts/codegraph-bench/lib/env-fingerprint.sh
 bash -n scripts/codegraph-bench/lib/env-fingerprint.sh
 ```
 
-- [ ] **Step 3: 验证能正确采集 wgenty-code 自身仓库的指纹**
+- [x] **Step 3: 验证能正确采集 wgenty-code 自身仓库的指纹**
 
 ```bash
 source scripts/codegraph-bench/lib/env-fingerprint.sh
@@ -395,7 +395,7 @@ cat /tmp/probe-env-fingerprint/env.json
 
 验证输出包含：`os`、`cpu_count`、`wgenty_version`、`target_commit` 字段。如有异常修正脚本。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add scripts/codegraph-bench/lib/env-fingerprint.sh
@@ -467,7 +467,7 @@ time_cmd() {
 }
 ```
 
-- [ ] **验证**：两个脚本通过 `bash -n` 语法检查
+- [x] **验证**：两个脚本通过 `bash -n` 语法检查
 - [ ] **Commit**
 
 ### Task 1.4: 实现 `run-all.sh` 入口脚本
@@ -542,7 +542,7 @@ bash "$SCRIPT_DIR/gen-report.sh" --output "$OUTPUT_DIR"
 echo "[run-all] done. Results in $OUTPUT_DIR"
 ```
 
-- [ ] **验证**：`bash -n` 语法检查；`./run-all.sh --help` 打印用法
+- [x] **验证**：`bash -n` 语法检查；`./run-all.sh --help` 打印用法
 - [ ] **Commit**
 
 ### Task 1.5: 验证脚手架完整（端到端空跑）
