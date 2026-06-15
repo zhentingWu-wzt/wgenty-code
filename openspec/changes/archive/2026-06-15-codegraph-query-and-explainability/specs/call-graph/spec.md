@@ -33,6 +33,8 @@ The system SHALL return the list of all functions called by a given function.
 - **WHEN** a function makes no calls to other user-defined functions
 - **THEN** the system returns an empty callee list with `is_leaf: true` indication
 
+## ADDED Requirements
+
 ### Requirement: Multi-hop call path tree
 
 The system SHALL support querying call relationships as a multi-hop path tree from a given symbol, up to depth 5, with per-hop evidence.
