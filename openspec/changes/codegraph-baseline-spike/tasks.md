@@ -31,15 +31,15 @@
 ## 4. Agent 使用率基线测量
 
 - [x] 4.1 brainstorming 选择 Agent 驱动路径（transcripts 静态分析 / CLI 回放 / 临时打点），写入 design.md 的 Open Questions 解答；本步骤是 build 阶段的关键决策点，不得自动跳过
-- [ ] 4.2 实现 `agent-tasks/` 目录与 README，定义任务文件格式（YAML 或 JSON 均可）
-- [ ] 4.3 编写 ≥10 条种子代码导航任务（覆盖：定义查找、引用查找、调用链探索、impl 列举等）
-- [ ] 4.4 实现 `bench-agent.sh`：按 4.1 选定的路径，对每条任务记录工具调用序列
-- [ ] 4.5 输出统一 JSON：agent 数据写入 `results/<timestamp>/agent.json`，含每条任务的工具序列、是否使用 codegraph、失败/兜底标记
-- [ ] 4.6 在 wgenty-code 自身仓库跑通 agent 测量
+- [x] 4.2 实现 `agent-tasks/` 目录与 README，定义任务文件格式（YAML 或 JSON 均可）
+- [x] 4.3 编写 ≥10 条种子代码导航任务（覆盖：定义查找、引用查找、调用链探索、impl 列举等）
+- [x] 4.4 实现 `bench-agent.sh`：按 4.1 选定的路径，对每条任务记录工具调用序列
+- [x] 4.5 输出统一 JSON：agent 数据写入 `results/<timestamp>/agent.json`，含每条任务的工具序列、是否使用 codegraph、失败/兜底标记
+- [x] 4.6 在 wgenty-code 自身仓库跑通 agent 测量
 
 ## 5. 外部仓库验证
 
-- [ ] 5.1 选定外部测试仓库（候选：ripgrep）；克隆到本地或文档说明克隆步骤
+- [x] 5.1 选定外部测试仓库（候选：ripgrep）；克隆到本地或文档说明克隆步骤
 - [ ] 5.2 在外部仓库执行 `bash <wgenty-path>/scripts/codegraph-bench/run-all.sh --target <repo>`，确认 perf + coverage 跑通
 - [ ] 5.3 把外部仓库结果归档到 `results/<timestamp>-external/`，并记录环境差异（OS/工具版本）
 - [ ] 5.4 解决脚本中任何"绑死本仓库"的硬编码（路径、配置、假设）
