@@ -159,11 +159,39 @@ fn render_tree_with_expand(
 
     // ── Node header line ─────────────────────────────────────────────
     let elapsed_secs = node.progress.elapsed_ms as f64 / 1000.0;
+
+    // Token info for header
+    let tokens_str = if node.progress.cumulative_tokens > 0 {
+        if let Some(budget_k) = node.progress.token_budget_k {
+            if budget_k > 0 {
+                format!(" · {:.1}k/{}k tokens",
+                    node.progress.cumulative_tokens as f64 / 1000.0,
+                    budget_k)
+            } else {
+                format!(" · {:.1}k tokens", node.progress.cumulative_tokens as f64 / 1000.0)
+            }
+        } else {
+            format!(" · {:.1}k tokens", node.progress.cumulative_tokens as f64 / 1000.0)
+        }
+    } else {
+        String::new()
+    };
+
+    // Progress delta warning
+    let progress_warn = node.progress.progress_delta
+        .filter(|d| *d < 0.05 && node.progress.status == SubagentStatus::Running)
+        .map(|_| " ⚠ low progress".to_string())
+        .unwrap_or_default();
+
     let status_detail = match node.progress.status {
-        SubagentStatus::Running => match (node.progress.round, node.progress.max_rounds) {
-            (Some(r), Some(mr)) => format!("round {}/{} · {:.1}s", r, mr, elapsed_secs),
-            _ => format!("{:.1}s", elapsed_secs),
-        },
+        SubagentStatus::Running => {
+            let mut s = match (node.progress.round, node.progress.max_rounds) {
+                (Some(r), Some(mr)) => format!("round {}/{} · {:.1}s", r, mr, elapsed_secs),
+                _ => format!("{:.1}s", elapsed_secs),
+            };
+            s.push_str(&tokens_str);
+            s
+        }
         SubagentStatus::Completed => {
             let mut s = node
                 .progress
@@ -174,24 +202,16 @@ fn render_tree_with_expand(
                 s.push_str(" · ");
             }
             s.push_str(&format!("{:.1}s", elapsed_secs));
-            if let Some(ref meta) = node.progress.metadata {
-                if let Some(tc) = meta.token_count {
-                    if tc >= 1000 {
-                        s.push_str(&format!(" · {:.1}k tokens", tc as f64 / 1000.0));
-                    } else {
-                        s.push_str(&format!(" · {} tokens", tc));
-                    }
-                }
-            }
+            s.push_str(&tokens_str);
             s
         }
         _ => String::new(),
     };
 
     let label = if status_detail.is_empty() {
-        format!(" {}", node.progress.label)
+        format!(" {}{}", node.progress.label, progress_warn)
     } else {
-        format!(" {} — {}", node.progress.label, status_detail)
+        format!(" {} — {}{}", node.progress.label, status_detail, progress_warn)
     };
 
     lines.push(Line::from(vec![

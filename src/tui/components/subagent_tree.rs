@@ -72,6 +72,19 @@ impl SubagentTree {
             + self.count_by_status(SubagentStatus::Cancelled)
     }
 
+    /// Total cumulative tokens across all nodes.
+    pub fn total_tokens(&self) -> u64 {
+        self.nodes.values().map(|n| n.progress.cumulative_tokens).sum()
+    }
+
+    /// Current token budget (highest among running nodes).
+    pub fn active_budget_k(&self) -> Option<u64> {
+        self.nodes.values()
+            .filter(|n| n.progress.status == SubagentStatus::Running)
+            .filter_map(|n| n.progress.token_budget_k)
+            .max()
+    }
+
     /// Total number of nodes in the tree.
     pub fn total_count(&self) -> usize {
         self.nodes.len()
