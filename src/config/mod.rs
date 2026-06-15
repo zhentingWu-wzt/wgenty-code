@@ -58,6 +58,11 @@ pub struct Settings {
     /// Default token budget for subagents in thousands (0 = unlimited).
     #[serde(default)]
     pub default_subagent_token_budget_k: usize,
+    /// Jaccard similarity threshold for RLM claim deduplication (0.0–1.0).
+    /// Claims with Jaccard index above this threshold are considered duplicates.
+    /// Default: 0.8.
+    #[serde(default = "default_rlm_jaccard_threshold")]
+    pub rlm_jaccard_threshold: f64,
     /// Maximum LLM rounds per turn. None = use internal default (100).
     #[serde(default)]
     pub max_rounds: Option<usize>,
@@ -147,6 +152,8 @@ fn default_subagent_timeout() -> u64 {
 fn default_rlm_max_replan() -> usize {
     2
 }
+
+fn default_rlm_jaccard_threshold() -> f64 { 0.8 }
 
 fn default_true() -> bool {
     true
@@ -269,6 +276,7 @@ impl Default for Settings {
             rlm: RlmSettings::default(),
             token_budget_k: 0,
             default_subagent_token_budget_k: 0,
+            rlm_jaccard_threshold: 0.8,
             max_rounds: None,
             planner_model: None,
             planner_model_base_url: None,
@@ -432,6 +440,7 @@ impl Settings {
             }
             "token_budget_k" => settings.token_budget_k = value.parse().unwrap_or(0),
             "default_subagent_token_budget_k" => settings.default_subagent_token_budget_k = value.parse().unwrap_or(0),
+            "rlm_jaccard_threshold" => settings.rlm_jaccard_threshold = value.parse().unwrap_or(0.8),
             "planner_model" => settings.planner_model = Some(value.to_string()),
             "planner_model_base_url" => settings.planner_model_base_url = Some(value.to_string()),
             "planner_model_api_key" => settings.planner_model_api_key = Some(value.to_string()),

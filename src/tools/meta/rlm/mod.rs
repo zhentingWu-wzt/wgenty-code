@@ -10,6 +10,7 @@
 //! This coexists with the existing `task` tool: simple tasks use `task` directly,
 //! complex tasks use `delegate` to trigger the full RLM pipeline.
 
+pub mod budget;
 mod pipeline;
 pub mod formats;
 
