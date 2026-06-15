@@ -1,0 +1,6 @@
+task_id: nav-011
+category: cross_module_path
+prompt: "事件从 agent loop 怎么流到 TUI 显示的？"
+expected_answer_anchor:
+  file: src/agent/events.rs
+  contains: "Event"

@@ -1,0 +1,6 @@
+task_id: nav-009
+category: module_structure
+prompt: "src/tools/codegraph 目录下有什么文件和模块？"
+expected_answer_anchor:
+  file: src/tools/codegraph
+  contains: "mod"

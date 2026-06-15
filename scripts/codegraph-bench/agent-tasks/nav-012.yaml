@@ -1,0 +1,6 @@
+task_id: nav-012
+category: cross_module_path
+prompt: "MCP tool 从定义到执行，经过了哪些模块？"
+expected_answer_anchor:
+  file: src/tools
+  contains: "mcp"

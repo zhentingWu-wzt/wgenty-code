@@ -1,0 +1,6 @@
+task_id: nav-001
+category: definition_lookup
+prompt: "Tool trait 定义在哪个文件，长什么样？"
+expected_answer_anchor:
+  file: src/tools/mod.rs
+  contains: "trait Tool"

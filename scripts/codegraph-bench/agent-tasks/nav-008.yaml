@@ -1,0 +1,6 @@
+task_id: nav-008
+category: impl_enumeration
+prompt: "Display trait 在哪些类型上实现了？"
+expected_answer_anchor:
+  file: src
+  contains: "impl Display"

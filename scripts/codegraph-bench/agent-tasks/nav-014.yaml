@@ -1,0 +1,6 @@
+task_id: nav-014
+category: call_chain
+prompt: "列出 codegraph index 的完整执行流程，从 CLI 入口到写入 index.db"
+expected_answer_anchor:
+  file: src/tools/codegraph
+  contains: "index"
