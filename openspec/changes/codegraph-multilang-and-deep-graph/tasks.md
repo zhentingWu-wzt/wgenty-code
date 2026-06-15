@@ -3,11 +3,11 @@
 ## 1. 依赖 + LanguageAdapter trait
 
 - [x] 1.1 Cargo.toml: 新增 tree-sitter-java, tree-sitter-python
-- [ ] 1.2 创建 src/tools/codegraph/adapters/mod.rs: LanguageAdapter trait 定义
-- [ ] 1.3 实现 RustAdapter (src/tools/codegraph/adapters/rust.rs)
-- [ ] 1.4 实现 JavaAdapter (src/tools/codegraph/adapters/java.rs)
-- [ ] 1.5 实现 PythonAdapter (src/tools/codegraph/adapters/python.rs)
-- [ ] 1.6 单元测试：每种 adapter 解析简单代码片段
+- [x] 1.2 创建 src/tools/codegraph/adapters/mod.rs: LanguageAdapter trait 定义
+- [x] 1.3 实现 RustAdapter (src/tools/codegraph/adapters/rust.rs)
+- [x] 1.4 实现 JavaAdapter (src/tools/codegraph/adapters/java.rs)
+- [x] 1.5 实现 PythonAdapter (src/tools/codegraph/adapters/python.rs)
+- [x] 1.6 单元测试：每种 adapter 解析简单代码片段
 
 ## 2. Types + RelKind 扩展
 
