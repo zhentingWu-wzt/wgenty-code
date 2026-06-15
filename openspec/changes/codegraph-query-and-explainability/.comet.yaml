@@ -1,5 +1,5 @@
 workflow: full
-phase: design
+phase: build
 context_compression: off
 build_mode: null
 build_pause: null
@@ -9,7 +9,7 @@ isolation: null
 verify_mode: null
 auto_transition: true
 base_ref: 225652ebc0e8edac7f474e14a93c96058eeb2d89
-design_doc: null
+design_doc: docs/superpowers/specs/2026-06-15-codegraph-query-and-explainability-design.md
 plan: null
 verify_result: pending
 verification_report: null
@@ -17,3 +17,5 @@ branch_status: pending
 created_at: 2026-06-15
 verified_at: null
 archived: false
+handoff_context: openspec/changes/codegraph-query-and-explainability/.comet/handoff/design-context.json
+handoff_hash: 534ca57884c765318e077225daf13bbb9ba53eb2c2ba88bf684c911cafc169a2
