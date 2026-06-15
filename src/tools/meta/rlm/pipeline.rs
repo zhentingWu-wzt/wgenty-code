@@ -296,10 +296,12 @@ Context: {context}
                     None
                 };
             let handle = tokio::spawn(async move {
+                let mut sub_system_prompt = "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.".to_string();
+                inject_format_instruction("analysis", &mut sub_system_prompt);
                 let result = run_subagent_loop(
                     &api_client,
                     &registry,
-                    "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.",
+                    &sub_system_prompt,
                     &prompt,
                     &allowed,
                     20,
@@ -424,4 +426,21 @@ pub fn extract_json(input: &str) -> String {
     }
 
     input.to_string()
+}
+
+/// Inject a format instruction string into a prompt based on task type.
+fn inject_format_instruction(task_type: &str, prompt: &mut String) {
+    match task_type {
+        "analysis" => {
+            prompt.push_str("\n\nOUTPUT FORMAT: structured-claims/1 JSON.\n");
+            prompt.push_str("Your output MUST be valid JSON matching the structured-claims schema.\n");
+            prompt.push_str("{\n  \"format\": \"structured-claims/1\",\n  \"claims\": [\n    {\n      \"id\": \"c1\",\n      \"claim\": \"...\",\n      \"evidence\": \"...\",\n      \"confidence\": 0.9,\n      \"conflicts_with\": [],\n      \"actionable\": false\n    }\n  ]\n}\n");
+        }
+        "modification" => {
+            prompt.push_str("\n\nOUTPUT FORMAT: unified-diff/1 JSON.\n");
+            prompt.push_str("Your output MUST be valid JSON matching the unified-diff schema.\n");
+            prompt.push_str("{\n  \"format\": \"unified-diff/1\",\n  \"changes\": [\n    {\n      \"file\": \"path/to/file.rs\",\n      \"intent\": \"description of change\",\n      \"diff\": \"@@ -1,3 +1,4 @@\\n...\",\n      \"confidence\": 0.9,\n      \"depends_on\": []\n    }\n  ]\n}\n");
+        }
+        _ => {} // mixed or unknown — no format injection, LLM decides
+    }
 }
