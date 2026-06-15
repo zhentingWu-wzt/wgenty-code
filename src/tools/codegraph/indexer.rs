@@ -376,4 +376,60 @@ mod tests {
         assert!(indexer.adapter_for_path(Path::new("test.java")).is_none()); // only Rust adapter registered
         assert!(indexer.adapter_for_path(Path::new("test.js")).is_none());
     }
+
+    // ── Multi-language fixture tests ──
+
+    use crate::tools::codegraph::adapters::java::JavaAdapter;
+    use crate::tools::codegraph::adapters::python::PythonAdapter;
+
+    fn multi_lang_indexer(store: Arc<IndexStore>) -> Indexer {
+        let adapters: Vec<Box<dyn LanguageAdapter>> = vec![
+            Box::new(RustAdapter::new()),
+            Box::new(JavaAdapter::new()),
+            Box::new(PythonAdapter::new()),
+        ];
+        Indexer::new(store, adapters)
+    }
+
+    #[test]
+    fn test_index_java_source() {
+        let (store, _dir) = setup();
+        let indexer = multi_lang_indexer(store);
+        let source = "class Hello { public void greet() {} }";
+        let (symbols, refs, _rels) = indexer
+            .extract_from_source(source, "Hello.java")
+            .unwrap();
+        assert!(symbols.iter().any(|s| s.name == "Hello" && s.language == "java"));
+        assert!(symbols.iter().any(|s| s.name == "greet" && s.kind == SymbolKind::Function));
+    }
+
+    #[test]
+    fn test_index_python_source() {
+        let (store, _dir) = setup();
+        let indexer = multi_lang_indexer(store);
+        let source = "class Dog:\n    def bark(self):\n        pass\n";
+        let (symbols, _refs, _rels) = indexer
+            .extract_from_source(source, "animals.py")
+            .unwrap();
+        assert!(symbols.iter().any(|s| s.name == "Dog" && s.language == "python"));
+        assert!(symbols.iter().any(|s| s.name == "bark" && s.kind == SymbolKind::Function));
+    }
+
+    #[test]
+    fn test_index_all_three_languages() {
+        let (store, _dir) = setup();
+        let indexer = multi_lang_indexer(store);
+
+        let rust_src = "pub fn main() {}";
+        let java_src = "class Main {}";
+        let python_src = "def main():\n    pass\n";
+
+        let (r_syms, _, _) = indexer.extract_from_source(rust_src, "main.rs").unwrap();
+        let (j_syms, _, _) = indexer.extract_from_source(java_src, "Main.java").unwrap();
+        let (p_syms, _, _) = indexer.extract_from_source(python_src, "main.py").unwrap();
+
+        assert_eq!(r_syms[0].language, "rust");
+        assert_eq!(j_syms[0].language, "java");
+        assert_eq!(p_syms[0].language, "python");
+    }
 }
