@@ -1,6 +1,6 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
-### Requirement: Tree-sitter based code indexing
+### Requirement: Multi-language parser pool
 
 系统 SHALL 使用 tree-sitter 解析器进行代码索引，支持多语言 parser pool 和 LanguageAdapter trait 模式。索引 schema SHALL 包含 language 字段。
 
