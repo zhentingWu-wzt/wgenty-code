@@ -262,6 +262,7 @@ impl IndexStore {
                 _ => crate::tools::codegraph::types::Visibility::Private,
             },
             parent_module: row.get(8)?,
+            language: "rust".to_string(),
         })
     }
 
@@ -428,6 +429,7 @@ mod tests {
             signature: Some("fn main()".into()),
             visibility: Visibility::Private,
             parent_module: None,
+            language: "rust".to_string(),
         };
         let sid = s.insert_symbol(&sym, fid).unwrap();
         assert!(sid > 0);
@@ -448,6 +450,7 @@ mod tests {
                 signature: None,
                 visibility: Visibility::Private,
                 parent_module: None,
+                language: "rust".to_string(),
             },
             fid,
         )
