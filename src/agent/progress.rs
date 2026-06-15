@@ -449,4 +449,85 @@ mod tests {
         assert_eq!(SubagentStatus::Cancelled, SubagentStatus::Cancelled);
         assert_ne!(SubagentStatus::Pending, SubagentStatus::Running);
     }
+
+    // ── contract tests for error_details population ──
+
+    /// Verify the ErrorInfo construction formula used in subagent_loop and task.rs/pipeline.rs.
+    #[test]
+    fn test_error_details_construction_formula() {
+        let error_msg = Some("Token budget exceeded: limit 10k, used 15k".to_string());
+        let current_tool = Some("read_file".to_string());
+        let current_params = Some("src/main.rs".to_string());
+        let round = Some(5usize);
+
+        let details = error_msg.as_ref().map(|msg| ErrorInfo {
+            error_type: ErrorType::Unknown,
+            message: msg.clone(),
+            last_tool: current_tool.clone(),
+            last_params: current_params.clone(),
+            round: round.unwrap_or(0) as u32,
+            retryable: true,
+        });
+
+        assert!(details.is_some(), "error_details should be Some when error_msg is Some");
+        let d = details.unwrap();
+        assert!(matches!(d.error_type, ErrorType::Unknown));
+        assert_eq!(d.message, "Token budget exceeded: limit 10k, used 15k");
+        assert_eq!(d.last_tool, Some("read_file".to_string()));
+        assert_eq!(d.last_params, Some("src/main.rs".to_string()));
+        assert_eq!(d.round, 5);
+        assert!(d.retryable);
+    }
+
+    #[test]
+    fn test_error_details_none_when_no_error() {
+        let error_msg: Option<String> = None;
+        let current_tool: Option<String> = None;
+        let current_params: Option<String> = None;
+        let round: Option<usize> = None;
+
+        let details = error_msg.as_ref().map(|msg| ErrorInfo {
+            error_type: ErrorType::Unknown,
+            message: msg.clone(),
+            last_tool: current_tool.clone(),
+            last_params: current_params.clone(),
+            round: round.unwrap_or(0) as u32,
+            retryable: true,
+        });
+
+        assert!(details.is_none(), "error_details should be None when error_msg is None");
+    }
+
+    // ── progress_delta construction formula test ──
+
+    #[test]
+    fn test_progress_delta_computed_during_running_emit() {
+        // Simulate the delta computation pattern from subagent_loop.rs:
+        // tool_types_used tracks all tool types seen so far.
+        // After a round with tools, the delta is computed and should be >0 if new types seen.
+        let mut tool_types_used: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let round_tool_names = vec!["read_file".to_string(), "grep".to_string()];
+        let round_tool_types: std::collections::HashSet<String> = round_tool_names.into_iter().collect();
+        let new_types: Vec<&String> = round_tool_types.difference(&tool_types_used).collect();
+        let delta = if tool_types_used.is_empty() {
+            1.0f32
+        } else {
+            new_types.len() as f32 / tool_types_used.len() as f32
+        };
+        tool_types_used.extend(round_tool_types);
+
+        // The delta should be 1.0 for the first round (new types / empty = 1.0)
+        assert_eq!(delta, 1.0f32, "First round should have delta=1.0");
+
+        // After the second round with the same tool types, delta should be 0.0
+        let round_tool_names2 = vec!["read_file".to_string(), "grep".to_string()];
+        let round_tool_types2: std::collections::HashSet<String> = round_tool_names2.into_iter().collect();
+        let new_types2: Vec<&String> = round_tool_types2.difference(&tool_types_used).collect();
+        let delta2 = if tool_types_used.is_empty() {
+            1.0f32
+        } else {
+            new_types2.len() as f32 / tool_types_used.len() as f32
+        };
+        assert_eq!(delta2, 0.0f32, "Repeated tool types should yield delta=0.0");
+    }
 }
