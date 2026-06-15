@@ -22,6 +22,73 @@ function timeoutSignal(ms: number): { signal: AbortSignal; clear: () => void } {
 }
 
 /**
+ * Detect network-related errors from fetch() and wrap them with user-friendly
+ * messages so the UI can show meaningful status instead of raw TypeErrors.
+ */
+export function wrapFetchError(err: unknown, context?: string): Error {
+  const ctx = context ? ` while ${context}` : "";
+  const msg = String(err);
+
+  // Already wrapped / has a message from the daemon
+  if (msg.includes("⚠️")) return err as Error;
+
+  // AbortError from timeout signal
+  if (msg.includes("abort") || msg.includes("AbortError") || msg.includes("timed out")) {
+    return new Error(
+      `⚠️  Request timed out${ctx}. The LLM API may be slow or unreachable. ` +
+      `Check your network connection or try again.`
+    );
+  }
+
+  // DNS / hostname resolution failures
+  if (msg.includes("ENOTFOUND") || msg.includes("getaddrinfo") || msg.includes("dns")) {
+    return new Error(
+      `⚠️  Cannot resolve API hostname${ctx}. DNS lookup failed — ` +
+      `check your internet connection and DNS settings.`
+    );
+  }
+
+  // Connection refused
+  if (msg.includes("ECONNREFUSED") || msg.includes("refused")) {
+    return new Error(
+      `⚠️  Connection refused${ctx}. The LLM API server may be down ` +
+      `or unreachable from your network (check VPN/firewall/proxy).`
+    );
+  }
+
+  // Connection reset or pipe broken
+  if (msg.includes("ECONNRESET") || msg.includes("reset") || msg.includes("broken pipe")) {
+    return new Error(
+      `⚠️  Connection was reset${ctx}. The network may be unstable — ` +
+      `please try again.`
+    );
+  }
+
+  // TLS / certificate errors
+  if (msg.includes("TLS") || msg.includes("SSL") || msg.includes("certificate") || msg.includes("CERT")) {
+    return new Error(
+      `⚠️  TLS/SSL error${ctx}. Check your system certificates, proxy, or VPN configuration.`
+    );
+  }
+
+  // Generic network / fetch failure (network offline, unreachable, etc.)
+  if (
+    msg.includes("fetch failed") ||
+    msg.includes("NetworkError") ||
+    msg.includes("network") ||
+    msg.includes("Failed to fetch")
+  ) {
+    return new Error(
+      `⚠️  Network is unreachable${ctx}. Please check your internet connection ` +
+      `and ensure the API server is accessible.`
+    );
+  }
+
+  // Already an Error with a meaningful message — pass through
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+/**
  * HTTP client for the Rust daemon API.
  */
 export class ApiClient {
@@ -34,15 +101,23 @@ export class ApiClient {
   // ── Health ───────────────────────────────────────────────────────────────
 
   async health(): Promise<HealthResponse> {
-    const res = await fetch(`${this.baseUrl}/api/v1/health`);
-    return res.json();
+    try {
+      const res = await fetch(`${this.baseUrl}/api/v1/health`);
+      return res.json();
+    } catch (err) {
+      throw wrapFetchError(err, "checking daemon health");
+    }
   }
 
   // ── Config ───────────────────────────────────────────────────────────────
 
   async getConfig(): Promise<ConfigResponse> {
-    const res = await fetch(`${this.baseUrl}/api/v1/config`);
-    return res.json();
+    try {
+      const res = await fetch(`${this.baseUrl}/api/v1/config`);
+      return res.json();
+    } catch (err) {
+      throw wrapFetchError(err, "fetching configuration");
+    }
   }
 
   // ── Chat / Stream ────────────────────────────────────────────────────────
@@ -68,6 +143,8 @@ export class ApiClient {
       }
 
       return res;
+    } catch (err) {
+      throw wrapFetchError(err, "starting chat stream");
     } finally {
       clear();
     }
@@ -96,6 +173,8 @@ export class ApiClient {
       }
 
       return res.json();
+    } catch (err) {
+      throw wrapFetchError(err, "executing tool");
     } finally {
       clear();
     }

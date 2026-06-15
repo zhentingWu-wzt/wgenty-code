@@ -1,4 +1,4 @@
-export { ApiClient } from "./client.ts";
+export { ApiClient, wrapFetchError } from "./client.ts";
 export type {
   ClientOptions,
   TaskInfo,

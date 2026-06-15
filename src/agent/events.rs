@@ -18,6 +18,9 @@ pub enum StreamEvent {
     },
     /// Streaming completed with the given finish_reason.
     StreamDone { finish_reason: String },
+    /// An error event from the daemon (e.g., network failure, API error).
+    /// The frontend should display this to the user.
+    StreamError(String),
 }
 
 /// The final result after streaming completes.
