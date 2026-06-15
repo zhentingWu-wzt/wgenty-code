@@ -5,8 +5,8 @@
 //! final assistant response back to the caller.
 
 use crate::agent::progress::{
-    ProgressCallback, SubagentEvent, SubagentEventType, SubagentMetadata, SubagentProgress,
-    SubagentStatus,
+    ErrorInfo, ErrorType, ProgressCallback, SubagentEvent, SubagentEventType, SubagentMetadata,
+    SubagentProgress, SubagentStatus,
 };
 use crate::api::{ApiClient, ChatMessage, ToolCall, ToolDefinition};
 use crate::tools::ToolRegistry;
@@ -177,12 +177,20 @@ pub async fn run_subagent_loop(
                 let metadata = if is_terminal || error_msg.is_some() {
                     Some(SubagentMetadata {
                         token_count: Some(*cumulative_tokens.lock().unwrap()),
-                        error: error_msg,
+                        error: error_msg.clone(),
                         depends_on: vec![],
                     })
                 } else {
                     None
                 };
+                let error_details = error_msg.as_ref().map(|msg| ErrorInfo {
+                    error_type: ErrorType::Unknown,
+                    message: msg.clone(),
+                    last_tool: current_tool.clone(),
+                    last_params: current_params_val.lock().unwrap().clone(),
+                    round: round.unwrap_or(0) as u32,
+                    retryable: true,
+                });
                 cb(SubagentProgress {
                     node_id: trace_id.to_string(),
                     parent_id: None,
@@ -200,13 +208,16 @@ pub async fn run_subagent_loop(
                     progress_delta,
                     token_budget_k,
                     cumulative_tokens: *cumulative_tokens.lock().unwrap() as u64,
-                    error_details: None,
+                    error_details,
                     events: Vec::new(),
                 });
             }
         };
 
         emit(SubagentStatus::Running, Some(0), None, None, None);
+
+        // Track the previous round's progress delta for the next Running emit.
+        let mut last_delta: Option<f32> = None;
 
         for round in 0..max_rounds {
             let elapsed = start.elapsed().as_secs();
@@ -221,7 +232,7 @@ pub async fn run_subagent_loop(
                 max_rounds
             );
 
-            emit(SubagentStatus::Running, Some(round + 1), None, None, None);
+            emit(SubagentStatus::Running, Some(round + 1), None, None, last_delta);
 
             let response = tokio::time::timeout(
                 PER_ROUND_API_TIMEOUT,
@@ -561,6 +572,7 @@ pub async fn run_subagent_loop(
                 new_types.len() as f32 / tool_types_used.len() as f32
             };
             tool_types_used.extend(round_tool_types);
+            last_delta = Some(delta);
             if delta < 0.05 {
                 stale_rounds += 1;
             } else {
@@ -626,7 +638,17 @@ pub async fn run_subagent_loop(
                     progress_delta: None,
                     token_budget_k: None,
                     cumulative_tokens: 0,
-                    error_details: None,
+                    error_details: Some(ErrorInfo {
+                        error_type: ErrorType::Timeout,
+                        message: format!(
+                            "Timed out after {} seconds",
+                            timeout_duration.as_secs()
+                        ),
+                        last_tool: None,
+                        last_params: None,
+                        round: 0,
+                        retryable: true,
+                    }),
                     events: Vec::new(),
                 });
             }
