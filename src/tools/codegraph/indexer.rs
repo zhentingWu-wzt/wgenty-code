@@ -1,9 +1,9 @@
-use crate::tools::codegraph::parser::CodeParser;
+use crate::tools::codegraph::adapters::LanguageAdapter;
 use crate::tools::codegraph::store::IndexStore;
 use crate::tools::codegraph::types::*;
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 use walkdir::WalkDir;
 
@@ -14,14 +14,32 @@ pub struct IndexSummary {
     pub elapsed_secs: f64,
 }
 
+/// Supported file extensions across all languages.
+const SUPPORTED_EXTENSIONS: &[&str] = &["rs", "java", "py"];
+
 pub struct Indexer {
     store: Arc<IndexStore>,
-    parser: Arc<Mutex<CodeParser>>,
+    adapters: Vec<Box<dyn LanguageAdapter>>,
 }
 
 impl Indexer {
-    pub fn new(store: Arc<IndexStore>, parser: Arc<Mutex<CodeParser>>) -> Self {
-        Self { store, parser }
+    pub fn new(store: Arc<IndexStore>, adapters: Vec<Box<dyn LanguageAdapter>>) -> Self {
+        Self { store, adapters }
+    }
+
+    /// Find the adapter for a given file path (by extension).
+    fn adapter_for_path(&self, path: &Path) -> Option<&Box<dyn LanguageAdapter>> {
+        let ext = path.extension()?.to_str()?;
+        self.adapters
+            .iter()
+            .find(|a| a.file_extensions().contains(&ext))
+    }
+
+    /// Check if a file extension is supported.
+    fn is_supported_extension(ext: Option<&std::ffi::OsStr>) -> bool {
+        ext.and_then(|e| e.to_str())
+            .map(|e| SUPPORTED_EXTENSIONS.contains(&e))
+            .unwrap_or(false)
     }
 
     // ── Full indexing ──
@@ -32,7 +50,7 @@ impl Indexer {
             .follow_links(false)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|x| x == "rs").unwrap_or(false))
+            .filter(|e| Self::is_supported_extension(e.path().extension()))
             .filter(|e| !e.path().to_string_lossy().contains("/target/"))
             .map(|e| e.path().to_path_buf())
             .collect();
@@ -56,7 +74,9 @@ impl Indexer {
 
         self.store.begin_transaction()?;
         for data in &file_data {
-            let file_id = self.store.upsert_file(&data.relative_path, &data.hash)?;
+            let file_id = self
+                .store
+                .upsert_file(&data.relative_path, &data.hash)?;
             self.store.delete_symbols_for_file(file_id)?;
 
             let mut symbol_id_map: Vec<(usize, i64)> = Vec::new();
@@ -73,12 +93,11 @@ impl Indexer {
                         self.store.insert_reference(&r, file_id)?;
                     }
                     None => {
-                        // Reference points to a symbol we didn't index (e.g. external), skip
+                        // Reference points to an external symbol, skip
                     }
                 }
             }
             for rel in &data.relationships {
-                // Skip unresolved placeholders
                 if rel.source_id < 0 || rel.target_id < 0 {
                     continue;
                 }
@@ -90,7 +109,6 @@ impl Indexer {
                     r.target_id = tgt_real;
                     self.store.insert_relationship(&r)?;
                 }
-                // else: cross-file reference, skip for now
             }
         }
         self.store.commit()?;
@@ -107,13 +125,14 @@ impl Indexer {
     pub fn index_incremental(&self, project_root: &Path) -> anyhow::Result<IndexSummary> {
         let start = Instant::now();
         let tracked = self.store.get_all_files()?;
-        let tracked_map: std::collections::HashMap<String, String> = tracked.into_iter().collect();
+        let tracked_map: std::collections::HashMap<String, String> =
+            tracked.into_iter().collect();
 
         let current: Vec<_> = WalkDir::new(project_root)
             .follow_links(false)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|x| x == "rs").unwrap_or(false))
+            .filter(|e| Self::is_supported_extension(e.path().extension()))
             .filter(|e| !e.path().to_string_lossy().contains("/target/"))
             .map(|e| {
                 let full = e.path().to_path_buf();
@@ -176,7 +195,11 @@ impl Indexer {
         })
     }
 
-    fn index_file(&self, file_path: &Path, project_root: &Path) -> anyhow::Result<FileIndexResult> {
+    fn index_file(
+        &self,
+        file_path: &Path,
+        project_root: &Path,
+    ) -> anyhow::Result<FileIndexResult> {
         let relative = file_path
             .strip_prefix(project_root)
             .unwrap_or(file_path)
@@ -184,7 +207,8 @@ impl Indexer {
             .to_string();
         let hash = IndexStore::file_hash(file_path)?;
         let source = std::fs::read_to_string(file_path)?;
-        let (symbols, references, relationships) = self.extract_from_source(&source, &relative)?;
+        let (symbols, references, relationships) =
+            self.extract_from_source(&source, &relative)?;
         Ok(FileIndexResult {
             relative_path: relative,
             hash,
@@ -206,7 +230,8 @@ impl Indexer {
             .to_string_lossy()
             .to_string();
         let source = std::fs::read_to_string(file_path)?;
-        let (symbols, references, relationships) = self.extract_from_source(&source, &relative)?;
+        let (symbols, references, relationships) =
+            self.extract_from_source(&source, &relative)?;
         let count = symbols.len();
 
         let file_id = self.store.upsert_file(&relative, hash)?;
@@ -238,27 +263,25 @@ impl Indexer {
         Ok(count)
     }
 
-    // ── AST Extraction (with source text) ──
+    // ── Multi-language AST Extraction ──
 
     fn extract_from_source(
         &self,
         source: &str,
-        _relative_path: &str,
+        relative_path: &str,
     ) -> anyhow::Result<(Vec<Symbol>, Vec<Reference>, Vec<Relationship>)> {
-        let mut parser = self.parser.lock().unwrap();
-        let tree = parser.parse(source)?;
-        let root = tree.root_node();
+        let adapter = self
+            .adapter_for_path(Path::new(relative_path))
+            .ok_or_else(|| {
+                anyhow::anyhow!("No language adapter found for: {}", relative_path)
+            })?;
 
-        let mut ctx = ExtractCtx {
-            symbols: Vec::new(),
-            references: Vec::new(),
-            relationships: Vec::new(),
-            source,
-        };
+        let tree = adapter.parse(source)?;
+        let symbols = adapter.extract_symbols(&tree, source, relative_path);
+        let references = adapter.extract_references(&tree, source, &symbols);
+        let relationships = adapter.extract_relationships(&tree, source, &symbols);
 
-        ctx.collect_symbols(root);
-
-        Ok((ctx.symbols, ctx.references, ctx.relationships))
+        Ok((symbols, references, relationships))
     }
 }
 
@@ -270,219 +293,41 @@ struct FileIndexResult {
     relationships: Vec<Relationship>,
 }
 
-// ── Extraction context (carries source text) ──
-
-struct ExtractCtx<'a> {
-    symbols: Vec<Symbol>,
-    references: Vec<Reference>,
-    relationships: Vec<Relationship>,
-    source: &'a str,
-}
-
-impl<'a> ExtractCtx<'a> {
-    fn source_bytes(&self) -> &[u8] {
-        self.source.as_bytes()
-    }
-
-    fn utf8_text(&self, node: tree_sitter::Node<'_>) -> &str {
-        node.utf8_text(self.source_bytes()).unwrap_or("")
-    }
-
-    fn collect_symbols(&mut self, node: tree_sitter::Node<'_>) {
-        let kind_str = node.kind();
-        if let Some(sym_kind) = SymbolKind::from_node_type(kind_str) {
-            if let Some(name_node) = self.get_name_node(node, kind_str) {
-                let name = self.utf8_text(name_node).to_string();
-                if !name.is_empty() && name != "_" {
-                    let pos = node.start_position();
-                    let visibility = self.extract_visibility(node);
-
-                    let sym = Symbol {
-                        id: Some(self.symbols.len() as i64),
-                        name,
-                        kind: sym_kind,
-                        file_path: String::new(),
-                        line: pos.row + 1,
-                        col: pos.column + 1,
-                        signature: self.extract_signature(node, kind_str),
-                        visibility,
-                        parent_module: None,
-                        language: "rust".to_string(),
-                    };
-                    let idx = self.symbols.len() as i64;
-                    self.symbols.push(sym);
-
-                    // Extract body references
-                    if let Some(body) = self.get_body_node(node, kind_str) {
-                        self.collect_references(body, idx);
-                    }
-                }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.collect_symbols(child);
-            }
-        }
-    }
-
-    fn collect_references(&mut self, node: tree_sitter::Node<'_>, parent_idx: i64) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "call_expression" {
-                    if let Some(func_node) = child.child(0) {
-                        let called_name = self.utf8_text(func_node).to_string();
-                        if !called_name.is_empty() && called_name != "self" && called_name != "Self"
-                        {
-                            let pos = func_node.start_position();
-                            let ref_kind = if func_node.kind() == "field_expression" {
-                                RefKind::MethodCall
-                            } else {
-                                RefKind::Call
-                            };
-
-                            self.references.push(Reference {
-                                id: None,
-                                symbol_id: parent_idx,
-                                file_path: String::new(),
-                                line: pos.row + 1,
-                                col: pos.column + 1,
-                                ref_kind,
-                                context: Some(called_name.clone()),
-                            });
-
-                            self.relationships.push(Relationship {
-                                id: None,
-                                source_id: parent_idx,
-                                target_id: -1,
-                                rel_kind: RelKind::Calls,
-                                file_path: String::new(),
-                                line: pos.row + 1,
-                                confidence: Confidence::Low,
-                            });
-                        }
-                    }
-                }
-                self.collect_references(child, parent_idx);
-            }
-        }
-    }
-
-    fn get_name_node<'n>(
-        &self,
-        node: tree_sitter::Node<'n>,
-        kind: &str,
-    ) -> Option<tree_sitter::Node<'n>> {
-        match kind {
-            "function_item" | "struct_item" | "enum_item" | "trait_item" | "type_item"
-            | "const_item" | "static_item" | "macro_definition" | "mod_item" => {
-                // Find the first identifier child (name)
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        let ck = child.kind();
-                        if ck == "identifier" || ck == "type_identifier" {
-                            return Some(child);
-                        }
-                    }
-                }
-                None
-            }
-            "impl_item" => {
-                // For impl blocks, name is the type being implemented
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "type_identifier" {
-                            return Some(child);
-                        }
-                    }
-                }
-                None
-            }
-            _ => None,
-        }
-    }
-
-    fn extract_visibility(&self, node: tree_sitter::Node<'_>) -> Visibility {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                if child.kind() == "visibility_modifier" {
-                    let vis_text = self.utf8_text(child);
-                    return Visibility::from_visibility_modifier(vis_text);
-                }
-            }
-        }
-        Visibility::Private
-    }
-
-    fn extract_signature(&self, node: tree_sitter::Node<'_>, kind: &str) -> Option<String> {
-        if kind == "function_item" {
-            let start = node.start_position();
-            let end = node.end_position();
-            Some(format!(
-                "fn at {}:{}-{}:{}",
-                start.row + 1,
-                start.column + 1,
-                end.row + 1,
-                end.column + 1
-            ))
-        } else {
-            let text = self.utf8_text(node);
-            Some(text.lines().next()?.trim().to_string())
-        }
-    }
-
-    fn get_body_node<'n>(
-        &self,
-        node: tree_sitter::Node<'n>,
-        kind: &str,
-    ) -> Option<tree_sitter::Node<'n>> {
-        match kind {
-            "function_item" | "impl_item" | "trait_item" | "mod_item" => {
-                for i in (0..node.child_count()).rev() {
-                    if let Some(child) = node.child(i) {
-                        if child.kind() == "block" || child.kind() == "declaration_list" {
-                            return Some(child);
-                        }
-                    }
-                }
-                None
-            }
-            _ => None,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::codegraph::parser::CodeParser;
+    use crate::tools::codegraph::adapters::rust::RustAdapter;
     use crate::tools::codegraph::store::IndexStore;
     use tempfile::TempDir;
 
-    fn setup() -> (Arc<IndexStore>, Arc<Mutex<CodeParser>>, TempDir) {
+    fn setup() -> (Arc<IndexStore>, TempDir) {
         let dir = TempDir::new().unwrap();
         let store = Arc::new(IndexStore::open(dir.path()).unwrap());
-        let parser = Arc::new(Mutex::new(CodeParser::new()));
-        (store, parser, dir)
+        (store, dir)
+    }
+
+    fn rust_indexer(store: Arc<IndexStore>) -> Indexer {
+        let adapters: Vec<Box<dyn LanguageAdapter>> =
+            vec![Box::new(RustAdapter::new())];
+        Indexer::new(store, adapters)
     }
 
     #[test]
     fn test_extract_function_symbol() {
-        let (store, parser, _dir) = setup();
-        let indexer = Indexer::new(store, parser);
+        let (store, _dir) = setup();
+        let indexer = rust_indexer(store);
         let source = "pub fn hello(x: i32) -> bool { true }";
         let (symbols, _, _) = indexer.extract_from_source(source, "test.rs").unwrap();
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "hello");
         assert_eq!(symbols[0].kind, SymbolKind::Function);
+        assert_eq!(symbols[0].language, "rust");
     }
 
     #[test]
     fn test_extract_struct_and_enum() {
-        let (store, parser, _dir) = setup();
-        let indexer = Indexer::new(store, parser);
+        let (store, _dir) = setup();
+        let indexer = rust_indexer(store);
         let source = "pub struct Point { x: i32, y: i32 }\n\npub enum Color { Red, Green }";
         let (symbols, _, _) = indexer.extract_from_source(source, "test.rs").unwrap();
         assert_eq!(symbols.len(), 2);
@@ -492,8 +337,8 @@ mod tests {
 
     #[test]
     fn test_extract_call_references() {
-        let (store, parser, _dir) = setup();
-        let indexer = Indexer::new(store, parser);
+        let (store, _dir) = setup();
+        let indexer = rust_indexer(store);
         let source = "fn foo() {}\n\nfn bar() {\n    foo();\n}";
         let (symbols, references, _relationships) =
             indexer.extract_from_source(source, "test.rs").unwrap();
@@ -505,5 +350,30 @@ mod tests {
                 .any(|r| r.context.as_deref() == Some("foo")),
             "Expected reference to foo"
         );
+    }
+
+    #[test]
+    fn test_unknown_extension_errors() {
+        let (store, _dir) = setup();
+        let indexer = rust_indexer(store);
+        let result = indexer.extract_from_source("let x = 1;", "test.js");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_supported_extensions() {
+        assert!(Indexer::is_supported_extension(Some(std::ffi::OsStr::new("rs"))));
+        assert!(Indexer::is_supported_extension(Some(std::ffi::OsStr::new("java"))));
+        assert!(Indexer::is_supported_extension(Some(std::ffi::OsStr::new("py"))));
+        assert!(!Indexer::is_supported_extension(Some(std::ffi::OsStr::new("js"))));
+    }
+
+    #[test]
+    fn test_adapter_for_path() {
+        let (store, _dir) = setup();
+        let indexer = rust_indexer(store);
+        assert!(indexer.adapter_for_path(Path::new("test.rs")).is_some());
+        assert!(indexer.adapter_for_path(Path::new("test.java")).is_none()); // only Rust adapter registered
+        assert!(indexer.adapter_for_path(Path::new("test.js")).is_none());
     }
 }
