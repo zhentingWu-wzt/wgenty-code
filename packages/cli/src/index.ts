@@ -227,10 +227,15 @@ async function main(): Promise<void> {
       return askQuestion(question, options, multiSelect);
     },
 
-    onStreamRetry() {
+    onStreamConnecting(_attempt: number, _maxRetries: number) {
+      // Readline REPL — show connection status
+      // (no-op for now; connection status is handled by the REPL flow)
+    },
+
+    onStreamRetry(reason: string) {
       // Readline REPL — reset output state for retry
       isStreaming = false;
-      process.stdout.write("\n[stream interrupted, retrying...]\n");
+      process.stdout.write(`\n[${reason}, retrying...]\n`);
     },
   };
 

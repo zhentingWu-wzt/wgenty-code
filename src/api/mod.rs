@@ -12,6 +12,42 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Wrap a reqwest error with a user-friendly message for network failures.
+fn wrap_network_error(err: reqwest::Error, api_name: &str) -> anyhow::Error {
+    let msg = err.to_string().to_lowercase();
+    if err.is_timeout() {
+        anyhow::anyhow!(
+            "⚠️  Connection timed out while contacting {api_name} API. \
+             Please check your network connection and try again.",
+        )
+    } else if err.is_connect() {
+        anyhow::anyhow!(
+            "⚠️  Cannot connect to {api_name} API — the server may be unreachable. \
+             Check your network, VPN, or proxy settings.",
+        )
+    } else if msg.contains("dns") || msg.contains("resolve") || msg.contains("name") {
+        anyhow::anyhow!(
+            "⚠️  DNS resolution failed for {api_name} API endpoint. \
+             Verify your DNS settings and internet connection.",
+        )
+    } else if msg.contains("tls") || msg.contains("ssl") || msg.contains("certificate") {
+        anyhow::anyhow!(
+            "⚠️  TLS/SSL error connecting to {api_name} API. \
+             Check your system certificates or proxy configuration. (details: {err})",
+        )
+    } else if msg.contains("refused") {
+        anyhow::anyhow!(
+            "⚠️  Connection refused by {api_name} API server. \
+             The API server may be down or blocked by a firewall.",
+        )
+    } else {
+        anyhow::anyhow!(
+            "⚠️  Network error contacting {api_name} API: {err}. \
+             Please check your internet connection.",
+        )
+    }
+}
+
 use anthropic::{
     convert_anthropic_response, convert_messages_to_anthropic, convert_tools_to_anthropic,
 };
@@ -102,7 +138,8 @@ impl ApiClient {
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
-            .await?;
+            .await
+            .map_err(|e| wrap_network_error(e, &self.provider.name()))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -145,7 +182,8 @@ impl ApiClient {
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
-            .await?;
+            .await
+            .map_err(|e| wrap_network_error(e, &self.provider.name()))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -205,7 +243,8 @@ impl ApiClient {
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
-            .await?;
+            .await
+            .map_err(|e| wrap_network_error(e, &self.provider.name()))?;
 
         Ok(response)
     }
@@ -244,7 +283,8 @@ impl ApiClient {
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
-            .await?;
+            .await
+            .map_err(|e| wrap_network_error(e, &self.provider.name()))?;
 
         if !response.status().is_success() {
             let status = response.status();

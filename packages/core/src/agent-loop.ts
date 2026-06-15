@@ -53,8 +53,16 @@ export interface AgentCallbacks {
     options: { label: string; description: string }[],
     multiSelect: boolean
   ): Promise<string[]>;
-  /** Called before retrying a broken stream — UI should clear partial content */
-  onStreamRetry(): void;
+  /**
+   * Called when a stream attempt starts (initial or retry).
+   * `attempt` is 1-based (1 = first attempt, 2 = first retry, etc.)
+   */
+  onStreamConnecting(attempt: number, maxRetries: number): void;
+  /**
+   * Called before retrying a broken stream — UI should clear partial content.
+   * `reason` indicates why the retry is happening.
+   */
+  onStreamRetry(reason: string): void;
 }
 
 // ── Stream processor (TypeScript port of Rust StreamProcessor) ──────────────
@@ -87,10 +95,19 @@ class StreamProcessor {
   }
 
   private processLine(line: string): StreamEvent | null {
-    // Detect daemon error events (not standard SSE chat chunks)
-    if (line.startsWith("{")) {
+    // Detect daemon error events — both raw JSON and SSE-wrapped.
+    // Raw: {"error":"message"}
+    // SSE: data: {"error":"message"}
+    const trimmed = line.trim();
+    let errorPayload: string | null = null;
+    if (trimmed.startsWith("data: ")) {
+      errorPayload = trimmed.slice(6);
+    } else if (trimmed.startsWith("{")) {
+      errorPayload = trimmed;
+    }
+    if (errorPayload) {
       try {
-        const parsed = JSON.parse(line);
+        const parsed = JSON.parse(errorPayload);
         if (parsed.error) {
           return { type: "stream_error", error: parsed.error as string };
         }
@@ -101,6 +118,13 @@ class StreamProcessor {
 
     const chunk = parseSseLine(line);
     if (!chunk) return null;
+
+    // Check for error in parsed chunk (defensive — some daemon responses may
+    // include error fields inside a stream-chunk-shaped object)
+    const chunkAny = chunk as unknown as Record<string, unknown>;
+    if (chunkAny.error) {
+      return { type: "stream_error", error: String(chunkAny.error) };
+    }
 
     const choice = chunk.choices[0];
     if (!choice) return null;
@@ -394,6 +418,9 @@ export class AgentLoop {
     let lastError = "";
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // Notify UI that we're connecting (1-based for display)
+      this.callbacks.onStreamConnecting(attempt + 1, maxRetries + 1);
+
       try {
         const response = await this.client.chatStream({
           messages,
@@ -414,8 +441,13 @@ export class AgentLoop {
           throw err;
         }
 
-        // Signal UI to clear partial content before retry
-        this.callbacks.onStreamRetry();
+        // Build a short reason for the retry notification
+        const reason = lastError.includes("timeout")
+          ? "connection timed out"
+          : lastError.includes("⚠️")
+          ? lastError // already wrapped, keep the user-friendly text
+          : "network error";
+        this.callbacks.onStreamRetry(reason);
         // Exponential backoff: 2s, 4s
         await new Promise((r) => setTimeout(r, (attempt + 1) * 2000));
       }

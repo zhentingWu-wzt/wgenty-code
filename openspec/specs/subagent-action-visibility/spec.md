@@ -23,19 +23,19 @@ The TUI SHALL display the tool calls made by each subagent, including the tool n
 - **THEN** the TUI SHALL display "thinking…" as the current action
 
 ### Requirement: Subagent action history shows recent tool calls
-Each subagent node SHALL maintain a short history of recent tool calls (name + params), visible in the overlay panel, so users can trace what actions the subagent has taken.
+Each subagent node SHALL maintain a complete, unbounded history of tool calls (name + params), visible in the overlay panel and detail view. The action log SHALL NOT be truncated in the transcript; the TUI panel MAY truncate the display for readability.
 
 #### Scenario: Subagent has made multiple tool calls
 - **WHEN** a subagent has called `grep`, `file_read`, and `file_read` in sequence
-- **THEN** the overlay panel SHALL display up to the 3 most recent tool calls beneath that node, newest first
+- **THEN** the overlay panel SHALL display all tool calls beneath that node, with the ability to scroll when the list exceeds the visible area
 
-#### Scenario: Action history is bounded
-- **WHEN** a subagent has made more than 10 tool calls
-- **THEN** the action log SHALL retain only the 10 most recent entries, dropping the oldest
+#### Scenario: Action history is persisted, not truncated
+- **WHEN** a subagent has made more than 50 tool calls
+- **THEN** all tool calls SHALL be preserved in the SQLite transcript; the TUI panel SHALL support scrolling/paging to view beyond the visible window
 
 #### Scenario: Completed subagent action history
 - **WHEN** a subagent reaches Completed status
-- **THEN** the action log SHALL remain visible in the panel (not cleared) so users can review what the subagent did
+- **THEN** the complete action log SHALL be written to SQLite and remain viewable via the detail view
 
 ### Requirement: Model text is displayed alongside tool calls
 The TUI SHALL display the model's text responses alongside tool calls so users can see the think→call→think→call loop. The text snapshot shows what the model is analyzing or concluding; the action log shows what tools it called.
@@ -47,6 +47,10 @@ The TUI SHALL display the model's text responses alongside tool calls so users c
 #### Scenario: Tool call followed by model analysis
 - **WHEN** a subagent completes a `file_read` call and the model responds with "Found the auth module, it needs refactoring in 3 places"
 - **THEN** the TUI SHALL update the text snapshot to show the model's analysis, with the completed tool call now in the action history
+
+#### Scenario: Full text preserved in transcript
+- **WHEN** a subagent produces a text response of any length
+- **THEN** the full text SHALL be recorded in the SQLite transcript; the TUI text snapshot MAY truncate for inline display but the detail view SHALL show the complete text
 
 ### Requirement: Inline subagent card shows current action with context
 The inline subagent card rendered in the chat area SHALL show the current tool call with parameters and the most recent model text, so users can see what the subagent is doing without opening the overlay panel.

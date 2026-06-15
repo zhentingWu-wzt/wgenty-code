@@ -16,6 +16,6 @@ verification_report: docs/superpowers/reports/2026-06-15-rlm-observability-and-r
 branch_status: handled
 created_at: 2026-06-15
 verified_at: 2026-06-15
-archived: false
+archived: true
 handoff_context: openspec/changes/rlm-observability-and-robustness/.comet/handoff/design-context.json
 handoff_hash: 1120a7c5dd3b789a9fca2df662fb3f886a5b684c09b9a891c976b8a34ac48282

@@ -69,6 +69,17 @@ impl StreamProcessor {
 
     /// Process a single SSE text line, returning an event if one was produced.
     fn process_line(&mut self, line: &str) -> Option<StreamEvent> {
+        // Detect daemon error events before SSE chunk parsing.
+        // Daemon errors come as: data: {"error":"message"}
+        let payload = line.strip_prefix("data: ").unwrap_or(line);
+        if payload != "[DONE]" {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(payload) {
+                if let Some(error_msg) = parsed.get("error").and_then(|v| v.as_str()) {
+                    return Some(StreamEvent::StreamError(error_msg.to_string()));
+                }
+            }
+        }
+
         let chunk: StreamChunk = crate::api::parse_sse_line(line)?;
 
         // Capture usage from any chunk that reports it (typically the final one).
