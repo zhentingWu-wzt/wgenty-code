@@ -58,6 +58,8 @@ impl AgentLoop {
             // Token accounting: prefer API-reported usage, fall back to character estimation.
             if let Some(ref usage) = result.usage {
                 self.token_counter.add(usage.total_tokens);
+                // Per-turn output tracking (display only, not budget)
+                self.token_counter.add_output(usage.completion_tokens);
             } else {
                 // Fallback: estimate from character count (~4 chars per token for English,
                 // conservative so we don't undercount).
@@ -74,6 +76,8 @@ impl AgentLoop {
                         .sum::<usize>())
                     / 4;
                 self.token_counter.add(input_est + output_est);
+                // Per-turn output tracking (display only)
+                self.token_counter.add_output(output_est);
             }
 
             // Check budget after accounting
