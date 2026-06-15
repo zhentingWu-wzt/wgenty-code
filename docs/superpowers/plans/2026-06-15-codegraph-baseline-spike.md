@@ -96,7 +96,7 @@ Ref: R4, Design Doc §7 probe 1"
 **Files:**
 - Create: `scripts/codegraph-bench/probe-session-schema.txt`（探针观察笔记）
 
-- [ ] **Step 1: 抽一个 session 文件分析顶层结构**
+- [x] **Step 1: 抽一个 session 文件分析顶层结构**
 
 ```bash
 ls ~/.wgenty-code/sessions/*.json | head -1 | xargs jq 'keys' > /tmp/session-keys.txt
@@ -105,7 +105,7 @@ cat /tmp/session-keys.txt
 
 确认关键字段：`messages`、`tool_calls`、`tools`、`prompt` 等是否存在。
 
-- [ ] **Step 2: 检查 tool 调用相关字段**
+- [x] **Step 2: 检查 tool 调用相关字段**
 
 ```bash
 SESSION=$(ls ~/.wgenty-code/sessions/*.json | head -1)
@@ -116,7 +116,7 @@ jq '.messages[0] | keys' "$SESSION" 2>/dev/null
 jq '.. | objects | select(has("tool_calls") or has("tool_use") or has("name")) | keys' "$SESSION" 2>/dev/null | head -20
 ```
 
-- [ ] **Step 3: 统计该 session 中 codegraph 工具使用**
+- [x] **Step 3: 统计该 session 中 codegraph 工具使用**
 
 ```bash
 SESSION=$(ls ~/.wgenty-code/sessions/*.json | head -1)
@@ -124,7 +124,7 @@ SESSION=$(ls ~/.wgenty-code/sessions/*.json | head -1)
 jq '.. | strings | select(test("codegraph_node|codegraph_explore"))' "$SESSION" 2>/dev/null | head -20
 ```
 
-- [ ] **Step 4: 记录探针结论**
+- [x] **Step 4: 记录探针结论**
 
 写入 `scripts/codegraph-bench/probe-session-schema.txt`：
 - session JSON 顶层结构（列出所有 key）
@@ -132,7 +132,7 @@ jq '.. | strings | select(test("codegraph_node|codegraph_explore"))' "$SESSION" 
 - 从 session JSON 批量统计 codegraph 使用率是否可行
 - 需要注意的 schema 陷阱（如嵌套深度、字段名变化）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/codegraph-bench/probe-session-schema.txt
