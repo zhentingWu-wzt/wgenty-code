@@ -9,12 +9,12 @@
 
 ## 2. Subagent Transcript 持久化
 
-- [ ] 2.1 在 `src/` 下创建 `transcript/` 模块（`mod.rs` + `store.rs`），实现 `SubagentTranscriptStore`（SQLite CRUD）
-- [ ] 2.2 定义数据库 schema（`subagent_transcripts` + `subagent_events` 表），实现 auto-migration
-- [ ] 2.3 在 `SubagentTranscriptStore` 实现 `list_by_session`、`get_by_id`、`search` 查询方法
-- [ ] 2.4 在 `src/config/settings.rs` 增加 `max_transcript_age_days: u32` 配置字段（默认 30）
-- [ ] 2.5 在 `run_subagent_loop()` 完成/失败时调用 `TranscriptStore::save()` 批量写入所有 events
-- [ ] 2.6 在 `TranscriptStore::save()` 中实现保留策略：删除超过 `max_transcript_age_days` 的旧记录
+- [x] 2.1 在 `src/` 下创建 `transcript/` 模块（`mod.rs` + `store.rs`），实现 `SubagentTranscriptStore`（SQLite CRUD）
+- [x] 2.2 定义数据库 schema（`subagent_transcripts` + `subagent_events` 表），实现 auto-migration
+- [x] 2.3 在 `SubagentTranscriptStore` 实现 `list_by_session`、`get_by_id`、`search` 查询方法
+- [x] 2.4 在 `src/config/settings.rs` 增加 `max_transcript_age_days: u32` 配置字段（默认 30）
+- [x] 2.5 在 `run_subagent_loop()` 完成/失败时调用 `TranscriptStore::save()` 批量写入所有 events
+- [x] 2.6 在 `TranscriptStore::save()` 中实现保留策略：删除超过 `max_transcript_age_days` 的旧记录
 
 ## 3. Subagent 执行时间线完整记录
 
