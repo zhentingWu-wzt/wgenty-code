@@ -40,9 +40,9 @@
 ## 5. 外部仓库验证
 
 - [x] 5.1 选定外部测试仓库（候选：ripgrep）；克隆到本地或文档说明克隆步骤
-- [ ] 5.2 在外部仓库执行 `bash <wgenty-path>/scripts/codegraph-bench/run-all.sh --target <repo>`，确认 perf + coverage 跑通
-- [ ] 5.3 把外部仓库结果归档到 `results/<timestamp>-external/`，并记录环境差异（OS/工具版本）
-- [ ] 5.4 解决脚本中任何"绑死本仓库"的硬编码（路径、配置、假设）
+- [x] 5.2 在外部仓库执行 `bash <wgenty-path>/scripts/codegraph-bench/run-all.sh --target <repo>`，确认 perf + coverage 跑通
+- [x] 5.3 把外部仓库结果归档到 `results/<timestamp>-external/`，并记录环境差异（OS/工具版本）
+- [x] 5.4 解决脚本中任何"绑死本仓库"的硬编码（路径、配置、假设）
 
 ## 6. 根因分析
 
@@ -61,14 +61,14 @@
 
 ## 8. 可重复性验证
 
-- [ ] 8.1 在 wgenty-code 自身仓库跑两次完整 `run-all.sh`（间隔 ≥5 分钟），对比性能基线中位数差异
-- [ ] 8.2 若差异超出脚本声明的稳定性窗口（默认 ±20%），输出告警；否则记录稳定性结论到报告
-- [ ] 8.3 把两次结果保留在 `results/` 下，作为可复现性证据
+- [x] 8.1 在 wgenty-code 自身仓库跑两次完整 `run-all.sh`（间隔 ≥5 分钟），对比性能基线中位数差异
+- [x] 8.2 若差异超出脚本声明的稳定性窗口（默认 ±20%），输出告警；否则记录稳定性结论到报告
+- [x] 8.3 把两次结果保留在 `results/` 下，作为可复现性证据
 
 ## 9. 范围合规验证
 
-- [ ] 9.1 执行 `git diff --name-only main...` 确认改动仅出现在 `scripts/codegraph-bench/`、`docs/superpowers/specs/`、`openspec/changes/codegraph-baseline-spike/` 路径下
-- [ ] 9.2 若发现违规改动，回滚或转移到独立 change
+- [x] 9.1 执行 `git diff --name-only main...` 确认改动仅出现在 `scripts/codegraph-bench/`、`docs/superpowers/specs/`、`openspec/changes/codegraph-baseline-spike/` 路径下
+- [x] 9.2 若发现违规改动，回滚或转移到独立 change
 
 ## 10. 验证与归档
 
