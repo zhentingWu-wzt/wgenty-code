@@ -527,7 +527,7 @@
 - Modify: `src/lib.rs:38-39` — add `pub mod transcript;`
 - Modify: `src/config/settings.rs:127-128` — add `max_transcript_age_days: u32` field
 
-- [ ] **Step 2.1: Create transcript module with error types**
+- [x] **Step 2.1: Create transcript module with error types**
 
     Create `src/transcript/mod.rs`:
 
@@ -636,7 +636,7 @@
     }
     ```
 
-- [ ] **Step 2.2: Create SQLite store implementation**
+- [x] **Step 2.2: Create SQLite store implementation**
 
     Create `src/transcript/store.rs`:
 
@@ -1074,19 +1074,19 @@
     }
     ```
 
-- [ ] **Step 2.3: Run transcript store tests**
+- [x] **Step 2.3: Run transcript store tests**
 
     Run: `cargo test -p wgenty-code --lib transcript::store::tests -- --nocapture`
     Expected: All 6 tests pass (test_save_and_get_by_id, test_list_by_session, test_search, test_checkpoint_and_append, test_cleanup).
 
-- [ ] **Step 2.4: Register transcript module in lib.rs**
+- [x] **Step 2.4: Register transcript module in lib.rs**
 
     In `src/lib.rs`, add after `pub mod tools;`:
     ```rust
     pub mod transcript;
     ```
 
-- [ ] **Step 2.5: Add max_transcript_age_days to Settings**
+- [x] **Step 2.5: Add max_transcript_age_days to Settings**
 
     In `src/config/settings.rs`, add after the `pub guardian: GuardianSettings` field:
     ```rust
@@ -1111,7 +1111,7 @@
     "max_transcript_age_days" => settings.max_transcript_age_days = value.parse().unwrap_or(30),
     ```
 
-- [ ] **Step 2.6: Commit**
+- [x] **Step 2.6: Commit**
 
     ```bash
     git add src/transcript/ src/lib.rs src/config/settings.rs
