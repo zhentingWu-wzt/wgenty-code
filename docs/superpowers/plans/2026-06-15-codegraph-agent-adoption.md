@@ -20,7 +20,7 @@ base-ref: c71014547af3d4997f421ac62fc0f22a58e7ddb8
 
 ### Task 0.1: Daemon agent loop API 探针
 
-- [ ] **Step 1: 检查 daemon API 端点**
+- [x] **Step 1: 检查 daemon API 端点**
 
 ```bash
 cd /Users/wuzhenting/workspace/project/wgenty-code
@@ -34,13 +34,13 @@ grep -rn 'api/v1' src/ | head -10
 
 观察 daemon 是否暴露 `/api/v1/agent/query` 或类似端点。
 
-- [ ] **Step 2: 确定 bench-agent-replay.sh 技术路径**
+- [x] **Step 2: 确定 bench-agent-replay.sh 技术路径**
 
 根据探针结果决定：
 - 如果 daemon 有 agent loop API → 方案 A（daemon）
 - 如果 daemon 无 agent loop API → 方案 B（repl + expect），或降级方案 C（人工）
 
-- [ ] **Step 3: Commit 探针结论**
+- [x] **Step 3: Commit 探针结论**
 
 ```bash
 git commit -m "probe: daemon agent loop API availability
@@ -55,11 +55,11 @@ A: daemon API / B: repl+expect / C: manual (Co-Authored-By: Claude <noreply@anth
 
 ### Task 1.1: 修改「Search」段落 + 「When to use each tool」表
 
-- [ ] **Step 1: 在 Search 段落插入 codegraph 工具**
+- [x] **Step 1: 在 Search 段落插入 codegraph 工具**
 
 修改 `src/prompts/base.md` line ~117：在 `grep` 之前插入 codegraph_node 和 codegraph_explore 描述。
 
-- [ ] **Step 2: 更新「When to use each tool」表**
+- [x] **Step 2: 更新「When to use each tool」表**
 
 逐条更新 line 143 附近的对比表：
 - "Find where a function is defined" → `codegraph_node`（保留 grep 作为 fallback 说明）
@@ -67,17 +67,17 @@ A: daemon API / B: repl+expect / C: manual (Co-Authored-By: Claude <noreply@anth
 - 新增 "Find implementations of a trait" → `codegraph_explore`
 - 新增 "Understand module structure" → `codegraph_explore`
 
-- [ ] **Step 3: 新增「Code navigation playbook」段落**
+- [x] **Step 3: 新增「Code navigation playbook」段落**
 
 在 Search 段落之后插入 OQ2 确认的决策树式 playbook（codegraph → grep → file_read）。
 
-- [ ] **Step 4: 验证 cargo build 成功**
+- [x] **Step 4: 验证 cargo build 成功**
 
 ```bash
 cargo build 2>&1 | tail -5
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/prompts/base.md
