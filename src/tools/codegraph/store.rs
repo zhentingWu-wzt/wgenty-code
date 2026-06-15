@@ -1,4 +1,4 @@
-use crate::tools::codegraph::types::{RefKind, Reference, Relationship, Symbol, SymbolKind};
+use crate::tools::codegraph::types::{Confidence, RefKind, Reference, RelKind, Relationship, Symbol, SymbolKind};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -110,6 +110,64 @@ impl IndexStore {
             r.push(row?);
         }
         Ok(r)
+    }
+
+    /// List all symbols in the index.
+    pub fn list_symbols(&self) -> anyhow::Result<Vec<Symbol>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT s.id,s.name,s.kind,f.path,s.line,s.col,s.signature,s.visibility,s.parent_module \
+             FROM symbols s JOIN files f ON s.file_id=f.id ORDER BY s.name"
+        )?;
+        let rows = stmt.query_map([], Self::map_symbol)?;
+        let mut syms = Vec::new();
+        for r in rows {
+            syms.push(r?);
+        }
+        Ok(syms)
+    }
+
+    /// List all relationships in the index.
+    pub fn list_relationships(&self) -> anyhow::Result<Vec<Relationship>> {
+        let conn = self.conn.lock().unwrap();
+        // relationship joins file via file_id stored in the relationships row
+        let mut stmt = conn.prepare(
+            "SELECT r.id, r.source_id, r.target_id, r.rel_kind, r.confidence, \
+             COALESCE(f.path,'') as file_path, \
+             COALESCE(r.line,0) as line \
+             FROM relationships r LEFT JOIN files f ON r.file_id = f.id"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let rel_kind_str: String = row.get(3)?;
+            let confidence_str: String = row.get(4)?;
+            let rel_kind = match rel_kind_str.as_str() {
+                "calls" => RelKind::Calls,
+                "implements" => RelKind::Implements,
+                "contains" => RelKind::Contains,
+                "imports" => RelKind::Imports,
+                _ => RelKind::Calls,
+            };
+            let confidence = match confidence_str.as_str() {
+                "high" => Confidence::High,
+                "medium" => Confidence::Medium,
+                "low" => Confidence::Low,
+                _ => Confidence::Unresolved,
+            };
+            Ok(Relationship {
+                id: row.get(0)?,
+                source_id: row.get(1)?,
+                target_id: row.get(2)?,
+                rel_kind,
+                file_path: row.get(5)?,
+                line: row.get::<_, i64>(6)? as usize,
+                confidence,
+            })
+        })?;
+        let mut rels = Vec::new();
+        for r in rows {
+            rels.push(r?);
+        }
+        Ok(rels)
     }
 
     pub fn upsert_file(&self, path: &str, sha256: &str) -> anyhow::Result<i64> {
