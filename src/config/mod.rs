@@ -55,6 +55,9 @@ pub struct Settings {
     /// exhaustion. 0 = unlimited. Default: 0.
     #[serde(default)]
     pub token_budget_k: usize,
+    /// Default token budget for subagents in thousands (0 = unlimited).
+    #[serde(default)]
+    pub default_subagent_token_budget_k: usize,
     /// Maximum LLM rounds per turn. None = use internal default (100).
     #[serde(default)]
     pub max_rounds: Option<usize>,
@@ -265,6 +268,7 @@ impl Default for Settings {
             subagent_timeout_secs: 240,
             rlm: RlmSettings::default(),
             token_budget_k: 0,
+            default_subagent_token_budget_k: 0,
             max_rounds: None,
             planner_model: None,
             planner_model_base_url: None,
@@ -427,6 +431,7 @@ impl Settings {
                 settings.rlm.max_replan_cycles = value.parse().unwrap_or(2)
             }
             "token_budget_k" => settings.token_budget_k = value.parse().unwrap_or(0),
+            "default_subagent_token_budget_k" => settings.default_subagent_token_budget_k = value.parse().unwrap_or(0),
             "planner_model" => settings.planner_model = Some(value.to_string()),
             "planner_model_base_url" => settings.planner_model_base_url = Some(value.to_string()),
             "planner_model_api_key" => settings.planner_model_api_key = Some(value.to_string()),

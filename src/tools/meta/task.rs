@@ -194,6 +194,10 @@ impl Tool for TaskTool {
                     "type": "boolean",
                     "description": "When true and a small model is configured, run the subagent with a smaller/cheaper model. Use for simple, self-contained tasks (e.g., reading files, searching, running a single command). Default: false"
                 },
+                "token_budget": {
+                    "type": "integer",
+                    "description": "Optional token budget in thousands (e.g., 10 = 10k tokens). 0 = unlimited. Default: 0"
+                },
                 "prompt": {
                     "type": "string",
                     "description": "The detailed task for the subagent to perform"
@@ -208,6 +212,14 @@ impl Tool for TaskTool {
         let description = input["description"].as_str().unwrap_or("Subagent task");
         let prompt = input["prompt"].as_str().unwrap_or("");
         let background = input["background"].as_bool().unwrap_or(false);
+
+        // Token budget: explicit input takes priority, then settings default.
+        let token_budget: Option<u64> = input.get("token_budget")
+            .and_then(|v| v.as_u64())
+            .or_else(|| {
+                let default_k = self.settings.default_subagent_token_budget_k;
+                if default_k > 0 { Some(default_k as u64) } else { None }
+            });
 
         let session_id = input["_session_id"]
             .as_str()
@@ -243,6 +255,11 @@ impl Tool for TaskTool {
                     started_at: chrono::Utc::now().timestamp_millis(),
                     elapsed_ms: 0,
                     metadata: None,
+                    progress_delta: None,
+                    token_budget_k: None,
+                    cumulative_tokens: 0,
+                    error_details: None,
+                    events: Vec::new(),
                 },
             );
         }
@@ -404,6 +421,11 @@ impl Tool for TaskTool {
                         started_at: chrono::Utc::now().timestamp_millis(),
                         elapsed_ms: 0,
                         metadata: None,
+                        progress_delta: None,
+                        token_budget_k: None,
+                        cumulative_tokens: 0,
+                        error_details: None,
+                        events: Vec::new(),
                     },
                 );
             }
@@ -430,6 +452,7 @@ impl Tool for TaskTool {
                     30,
                     timeout_secs,
                     Some(cb),
+                    token_budget,
                 )
                 .await;
 
@@ -484,6 +507,11 @@ impl Tool for TaskTool {
                         started_at: chrono::Utc::now().timestamp_millis(),
                         elapsed_ms: 0,
                         metadata: None,
+                        progress_delta: None,
+                        token_budget_k: None,
+                        cumulative_tokens: 0,
+                        error_details: None,
+                        events: Vec::new(),
                     },
                 );
             }
@@ -517,6 +545,7 @@ impl Tool for TaskTool {
                     prompt,
                     Some((self.progress_store.clone(), session_id.clone())),
                     Some(subagent_node_id.clone()),
+                    token_budget,
                 )
                 .await
                 .map(|r| r.aggregated);
@@ -532,6 +561,7 @@ impl Tool for TaskTool {
                     30,
                     self.settings.subagent_timeout_secs,
                     Some(cb),
+                    token_budget,
                 )
                 .await;
                 (result, reason)

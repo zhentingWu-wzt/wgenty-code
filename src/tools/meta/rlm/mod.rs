@@ -106,6 +106,11 @@ impl Tool for RlmDelegateTool {
                     started_at: chrono::Utc::now().timestamp_millis(),
                     elapsed_ms: 0,
                     metadata: None,
+                    progress_delta: None,
+                    token_budget_k: None,
+                    cumulative_tokens: 0,
+                    error_details: None,
+                    events: Vec::new(),
                 },
             );
         }
@@ -116,6 +121,7 @@ impl Tool for RlmDelegateTool {
             context,
             Some((self.progress_store.clone(), session_id)),
             Some(root_node_id),
+            None,
         )
         .await
         .map_err(|e| ToolError {
