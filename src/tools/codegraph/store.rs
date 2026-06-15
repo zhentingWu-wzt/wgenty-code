@@ -1,3 +1,4 @@
+use crate::tools::codegraph::migration::SchemaMigration;
 use crate::tools::codegraph::types::{Confidence, RefKind, Reference, RelKind, Relationship, Symbol, SymbolKind};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -21,7 +22,21 @@ impl IndexStore {
             .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         let store = Self { conn, db_path };
         store.create_schema()?;
+        store.run_migrations()?;
         Ok(store)
+    }
+
+    fn run_migrations(&self) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        // We need to take the connection out of the mutex temporarily,
+        // so we clone the path and use a new connection for migration.
+        // Actually, SchemaMigration owns its connection — let's use
+        // a separate connection for migration.
+        drop(conn);
+        let migration_conn = Connection::open(&self.db_path)?;
+        let mut migration = SchemaMigration::new(migration_conn);
+        migration.run()?;
+        Ok(())
     }
 
     fn create_schema(&self) -> anyhow::Result<()> {
@@ -42,7 +57,8 @@ impl IndexStore {
                 col             INTEGER NOT NULL,
                 signature       TEXT,
                 visibility      TEXT,
-                parent_module   TEXT
+                parent_module   TEXT,
+                language        TEXT NOT NULL DEFAULT 'rust'
             );
             CREATE TABLE IF NOT EXISTS refs (
                 id          INTEGER PRIMARY KEY,
@@ -116,7 +132,7 @@ impl IndexStore {
     pub fn list_symbols(&self) -> anyhow::Result<Vec<Symbol>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT s.id,s.name,s.kind,f.path,s.line,s.col,s.signature,s.visibility,s.parent_module \
+            "SELECT s.id,s.name,s.kind,f.path,s.line,s.col,s.signature,s.visibility,s.parent_module,s.language \
              FROM symbols s JOIN files f ON s.file_id=f.id ORDER BY s.name"
         )?;
         let rows = stmt.query_map([], Self::map_symbol)?;
@@ -199,8 +215,8 @@ impl IndexStore {
 
     pub fn insert_symbol(&self, sym: &Symbol, file_id: i64) -> anyhow::Result<i64> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("INSERT INTO symbols (name,kind,file_id,line,col,signature,visibility,parent_module) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![sym.name, sym.kind.as_str(), file_id, sym.line as i64, sym.col as i64, sym.signature, sym.visibility.as_str(), sym.parent_module])?;
+        conn.execute("INSERT INTO symbols (name,kind,file_id,line,col,signature,visibility,parent_module,language) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![sym.name, sym.kind.as_str(), file_id, sym.line as i64, sym.col as i64, sym.signature, sym.visibility.as_str(), sym.parent_module, sym.language])?;
         Ok(conn.last_insert_rowid())
     }
 
@@ -217,7 +233,7 @@ impl IndexStore {
 
     pub fn get_symbol_by_name(&self, name: &str) -> anyhow::Result<Vec<Symbol>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT s.id,s.name,s.kind,f.path,s.line,s.col,s.signature,s.visibility,s.parent_module FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.name=?1 ORDER BY f.path,s.line")?;
+        let mut stmt = conn.prepare("SELECT s.id,s.name,s.kind,f.path,s.line,s.col,s.signature,s.visibility,s.parent_module,s.language FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.name=?1 ORDER BY f.path,s.line")?;
         let rows = stmt.query_map(params![name], Self::map_symbol)?;
         let mut syms = Vec::new();
         for r in rows {
@@ -228,14 +244,14 @@ impl IndexStore {
 
     pub fn get_symbol_by_id(&self, id: i64) -> anyhow::Result<Option<Symbol>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT s.id,s.name,s.kind,f.path,s.line,s.col,s.signature,s.visibility,s.parent_module FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.id=?1")?;
+        let mut stmt = conn.prepare("SELECT s.id,s.name,s.kind,f.path,s.line,s.col,s.signature,s.visibility,s.parent_module,s.language FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.id=?1")?;
         let mut rows = stmt.query_map(params![id], Self::map_symbol)?;
         Ok(rows.next().transpose()?)
     }
 
     pub fn get_symbols_for_file(&self, file_id: i64) -> anyhow::Result<Vec<Symbol>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT s.id,s.name,s.kind,f.path,s.line,s.col,s.signature,s.visibility,s.parent_module FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.file_id=?1 ORDER BY s.line")?;
+        let mut stmt = conn.prepare("SELECT s.id,s.name,s.kind,f.path,s.line,s.col,s.signature,s.visibility,s.parent_module,s.language FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.file_id=?1 ORDER BY s.line")?;
         let rows = stmt.query_map(params![file_id], Self::map_symbol)?;
         let mut syms = Vec::new();
         for r in rows {
@@ -246,6 +262,8 @@ impl IndexStore {
 
     fn map_symbol(row: &rusqlite::Row) -> rusqlite::Result<Symbol> {
         let v: String = row.get(7)?;
+        // Read language from column 9 (may be NULL for pre-migration rows)
+        let language: Option<String> = row.get(9).ok();
         Ok(Symbol {
             id: Some(row.get(0)?),
             name: row.get(1)?,
@@ -262,7 +280,7 @@ impl IndexStore {
                 _ => crate::tools::codegraph::types::Visibility::Private,
             },
             parent_module: row.get(8)?,
-            language: "rust".to_string(),
+            language: language.unwrap_or_else(|| "rust".to_string()),
         })
     }
 
