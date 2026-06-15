@@ -5,6 +5,7 @@
 //! through a uniform interface.
 
 pub mod java;
+pub mod python;
 pub mod rust;
 
 use crate::tools::codegraph::types::{Reference, Relationship, Symbol};
