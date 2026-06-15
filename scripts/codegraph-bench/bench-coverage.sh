@@ -105,7 +105,7 @@ if [ -d "$CODEGRAPH_DIR" ]; then
 fi
 
 echo "[setup] running fresh index (stderr captured for parse failure analysis)..."
-index_stderr=$("$WGENTY_BIN" codegraph index --target "$TARGET" 2>&1 >/dev/null) || true
+index_stderr=$(cd "$TARGET" && "$WGENTY_BIN" codegraph index 2>&1 >/dev/null) || true
 
 INDEX_DB="$CODEGRAPH_DIR/index.db"
 if [ ! -f "$INDEX_DB" ]; then

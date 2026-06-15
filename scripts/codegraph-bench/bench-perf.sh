@@ -149,7 +149,7 @@ for i in $(seq 1 "$REPEATS"); do
   clean_codegraph "$TARGET"
   echo "[full run $i] indexing..."
 
-  output=$(time_cmd "full_$i" "$WGENTY_BIN" codegraph index --target "$TARGET" 2>&1)
+  output=$(cd "$TARGET" && time_cmd "full_$i" "$WGENTY_BIN" codegraph index 2>&1)
   ms=$(echo "$output" | extract_ms | tail -1)
 
   if [ -z "$ms" ]; then
@@ -185,7 +185,7 @@ echo "--- Incremental Index Timing ---"
 # Build a fresh full index as baseline for all incremental tests
 clean_codegraph "$TARGET"
 echo "[setup] building baseline full index..."
-if ! "$WGENTY_BIN" codegraph index --target "$TARGET" > /dev/null 2>&1; then
+if ! (cd "$TARGET" && "$WGENTY_BIN" codegraph index) > /dev/null 2>&1; then
   echo "ERROR: baseline full index failed" >&2
   exit 1
 fi
@@ -228,7 +228,7 @@ run_incremental_bench() {
     done
 
     # Run incremental index and capture timing
-    output=$(time_cmd "incr_${label}_${i}" "$WGENTY_BIN" codegraph index --target "$TARGET" 2>&1)
+    output=$(cd "$TARGET" && time_cmd "incr_${label}_${i}" "$WGENTY_BIN" codegraph index 2>&1)
     ms=$(echo "$output" | extract_ms | tail -1)
 
     if [ -z "$ms" ]; then
