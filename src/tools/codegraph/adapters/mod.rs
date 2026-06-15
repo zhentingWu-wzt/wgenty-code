@@ -4,6 +4,8 @@
 //! allowing the indexer to handle Rust, Java, Python (and future languages)
 //! through a uniform interface.
 
+pub mod rust;
+
 use crate::tools::codegraph::types::{Reference, Relationship, Symbol};
 use tree_sitter::{Language, Parser, Tree};
 
