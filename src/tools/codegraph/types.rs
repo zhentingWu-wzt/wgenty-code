@@ -196,6 +196,44 @@ impl Confidence {
             _ => Self::Unresolved,
         }
     }
+
+    /// Map a parse source to a confidence level.
+    pub fn from_parse_source(source: &ParseSource) -> Self {
+        match source {
+            ParseSource::TreeSitter => Confidence::High,
+            ParseSource::TextMatch => Confidence::Medium,
+            ParseSource::Inferred => Confidence::Low,
+            ParseSource::None => Confidence::Unresolved,
+        }
+    }
+}
+
+/// How a symbol or relationship was resolved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ParseSource {
+    /// Directly extracted from tree-sitter AST.
+    #[serde(rename = "treesitter-ast")]
+    TreeSitter,
+    /// Matched via text/regex search.
+    #[serde(rename = "regex-match")]
+    TextMatch,
+    /// Inferred from context (e.g., multi-hop relationship chain).
+    #[serde(rename = "inferred")]
+    Inferred,
+    /// No parse source (not found).
+    #[serde(rename = "none")]
+    None,
+}
+
+impl ParseSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::TreeSitter => "treesitter-ast",
+            Self::TextMatch => "regex-match",
+            Self::Inferred => "inferred",
+            Self::None => "none",
+        }
+    }
 }
 
 #[cfg(test)]
