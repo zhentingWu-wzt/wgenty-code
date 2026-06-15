@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod completion_panel;
 pub mod diff;
 pub mod input;
 pub mod permission;

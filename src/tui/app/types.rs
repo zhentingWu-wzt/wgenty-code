@@ -112,6 +112,11 @@ pub enum AppEvent {
     },
     /// A stream error occurred
     StreamError(String),
+    /// Connecting to the LLM API (attempt N of M)
+    Connecting {
+        attempt: usize,
+        max_retries: usize,
+    },
     /// A turn (user-input → final response) completed; start next queued input if any
     TurnComplete,
     /// A turn began processing
@@ -156,6 +161,12 @@ pub enum AppEvent {
     SubagentUpdate(SubagentProgress),
     /// Toggle the subagent monitor panel.
     ToggleSubagentPanel,
+    /// User typed @ or / to trigger command completion
+    CompletionTrigger { prefix: char, partial: String },
+    /// User selected a completion item
+    CompletionSelect { index: usize },
+    /// User dismissed the completion panel
+    CompletionDismiss,
 }
 
 /// UI state for a single message in the chat view.
@@ -185,4 +196,14 @@ pub struct DiffData {
     pub file_path: String,
     pub old_content: String,
     pub new_content: String,
+}
+
+/// Completion state for @ and / auto-completion.
+#[derive(Debug, Clone)]
+pub struct CompletionState {
+    pub prefix: char,
+    pub partial: String,
+    pub matches: Vec<crate::tui::completion::CompletionMatch>,
+    pub selected_index: usize,
+    pub visible: bool,
 }

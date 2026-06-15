@@ -99,6 +99,12 @@ impl CommandRegistry {
         commands.values().cloned().collect()
     }
 
+    /// Return a reference to the underlying commands map (read-only).
+    pub async fn list_commands(&self) -> Vec<PluginCommand> {
+        let commands = self.commands.read().await;
+        commands.values().cloned().collect()
+    }
+
     pub async fn execute(
         &self,
         name: &str,

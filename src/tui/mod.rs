@@ -10,6 +10,7 @@
 pub mod agent;
 pub mod app;
 pub mod client;
+pub mod completion;
 pub mod components;
 pub mod input_reader;
 pub mod theme;

@@ -223,6 +223,13 @@ pub fn tool_label(name: &str, args: &serde_json::Value) -> String {
 pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
     match event {
         AppEvent::Submit(_) => Some(AgentPhase::Thinking),
+        AppEvent::Connecting {
+            attempt,
+            max_retries,
+        } => Some(AgentPhase::Connecting {
+            attempt: *attempt,
+            max_retries: *max_retries,
+        }),
         AppEvent::PreparingTools => Some(AgentPhase::PreparingTools),
         AppEvent::ContentDelta(_) | AppEvent::ReasoningDelta(_) => {
             Some(AgentPhase::StreamingResponse)
@@ -267,7 +274,10 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::TurnStarted { .. }
         | AppEvent::ConfigChanged(_)
         | AppEvent::SubagentUpdate(_)
-        | AppEvent::ToggleSubagentPanel => None,
+        | AppEvent::ToggleSubagentPanel
+        | AppEvent::CompletionTrigger { .. }
+        | AppEvent::CompletionSelect { .. }
+        | AppEvent::CompletionDismiss => None,
     }
 }
 

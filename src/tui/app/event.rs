@@ -64,6 +64,60 @@ impl App {
                     let _ = self.event_tx.send(AppEvent::ToggleSubagentPanel);
                     return;
                 }
+                // If completion panel is visible, route keys to it
+                if self.completion_state.as_ref().map(|s| s.visible).unwrap_or(false) {
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.completion_state = None;
+                            return;
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            if let Some(ref mut s) = self.completion_state {
+                                if !s.matches.is_empty() {
+                                    s.selected_index = s.selected_index.saturating_sub(1);
+                                }
+                            }
+                            return;
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if let Some(ref mut s) = self.completion_state {
+                                let next = s.selected_index + 1;
+                                if next < s.matches.len() {
+                                    s.selected_index = next;
+                                } else {
+                                    s.selected_index = 0;
+                                }
+                            }
+                            return;
+                        }
+                        KeyCode::Tab => {
+                            // Cycle to next item
+                            if let Some(ref mut s) = self.completion_state {
+                                if !s.matches.is_empty() {
+                                    s.selected_index = (s.selected_index + 1) % s.matches.len();
+                                }
+                            }
+                            return;
+                        }
+                        KeyCode::Enter => {
+                            // Confirm selection: replace the @xxx or /xxx with full name
+                            if let Some(ref state) = self.completion_state.clone() {
+                                if let Some(m) = state.matches.get(state.selected_index) {
+                                    let text = self.input_box.textarea.lines().join("\n");
+                                    if let Some(pos) = text.rfind(state.prefix) {
+                                        let before = &text[..pos];
+                                        self.input_box.textarea = tui_textarea::TextArea::default();
+                                        self.input_box.textarea.insert_str(before);
+                                        self.input_box.textarea.insert_str(&format!("{} ", m.text));
+                                    }
+                                }
+                            }
+                            self.completion_state = None;
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
                 // If subagent panel is visible, route keys to it
                 if self.subagent_panel_visible {
                     match key.code {
@@ -199,6 +253,31 @@ impl App {
                     }
                     return;
                 }
+                // Detect @ and / completion triggers BEFORE feeding to textarea
+                let is_completion_char = if let KeyCode::Char(c) = key.code {
+                    (c == '@' && !key.modifiers.contains(KeyModifiers::CONTROL))
+                        || (c == '/' && key.modifiers.is_empty())
+                } else {
+                    false
+                };
+                if is_completion_char {
+                    let prefix = if let KeyCode::Char(c) = key.code { c } else { unreachable!() };
+                    let text = self.input_box.textarea.lines().join("\n");
+                    let should_trigger = text.is_empty() || text.ends_with(' ') || text.ends_with('\n');
+                    if should_trigger {
+                        let partial = String::new();
+                        let matches = self.completion_engine.as_ref()
+                            .map(|e| e.filter(prefix, &partial))
+                            .unwrap_or_default();
+                        self.completion_state = Some(CompletionState {
+                            prefix,
+                            partial,
+                            matches,
+                            selected_index: 0,
+                            visible: true,
+                        });
+                    }
+                }
                 // Feed to tui-textarea for CJK/IME input.
                 // Returns true if tui-textarea consumed the key.
                 let handled = self.input_box.textarea.input(*key);
@@ -208,6 +287,19 @@ impl App {
                             self.should_quit = true;
                         }
                         _ => {}
+                    }
+                }
+                // Update filter as user types more characters after @ or /
+                if self.completion_state.as_ref().map(|s| s.visible).unwrap_or(false) {
+                    let text = self.input_box.textarea.lines().join("\n");
+                    if let Some(ref mut state) = self.completion_state {
+                        if let Some(pos) = text.rfind(state.prefix) {
+                            let after = &text[pos + 1..];
+                            state.partial = after.to_string();
+                            if let Some(ref engine) = self.completion_engine {
+                                state.matches = engine.filter(state.prefix, after);
+                            }
+                        }
                     }
                 }
             }
@@ -333,6 +425,10 @@ impl App {
                         });
                     }
                 }
+            }
+            AppEvent::Connecting { .. } => {
+                // Phase transition handled by agent_phase_from_event;
+                // status bar renders the phase label ("connecting...").
             }
             AppEvent::StreamError(msg) => {
                 self.committed_messages.push(UIMessage {
