@@ -102,11 +102,23 @@ impl DaemonState {
 
             // TaskTool gets a Weak<ToolRegistry> that is valid for the lifetime
             // of this Arc (created by Arc::new_cyclic).
+            // Initialize optional transcript store for subagent persistence.
+            let transcript_store = {
+                let db_path = std::path::PathBuf::from(&app_state.settings.transcript_db_path);
+                match crate::transcript::SubagentTranscriptStore::open(&db_path) {
+                    Ok(store) => Some(std::sync::Arc::new(store)),
+                    Err(e) => {
+                        tracing::warn!("Failed to open transcript store at {}: {}. Running without persistence.", db_path.display(), e);
+                        None
+                    }
+                }
+            };
             let task_tool = crate::tools::meta::task::TaskTool::new(
                 app_state.settings.clone(),
                 weak_reg.clone(),
                 bg_manager.clone(),
                 progress_store.clone(),
+                transcript_store,
             );
             registry.register(Box::new(task_tool));
 

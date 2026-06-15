@@ -95,6 +95,8 @@ pub struct App {
     pub completion_engine: Option<crate::tui::completion::CompletionEngine>,
     /// Current completion state (None = no active completion).
     pub completion_state: Option<CompletionState>,
+    /// Shared, optional transcript store for browsing completed subagent records.
+    pub transcript_store: Option<std::sync::Arc<crate::transcript::SubagentTranscriptStore>>,
 }
 
 impl App {
@@ -245,6 +247,19 @@ impl App {
                 Some(crate::tui::completion::CompletionEngine::load(&skills_dir, &builtin_commands))
             },
             completion_state: None,
+            transcript_store: {
+                let db_path_str = &settings.transcript_db_path;
+                let db_path = std::path::PathBuf::from(db_path_str);
+                match crate::transcript::SubagentTranscriptStore::open(&db_path) {
+                    Ok(store) => {
+                        Some(std::sync::Arc::new(store))
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to open transcript store at {}: {}. Running without persistence.", db_path.display(), e);
+                        None
+                    }
+                }
+            },
         }
     }
 

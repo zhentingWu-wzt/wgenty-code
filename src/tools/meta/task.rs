@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use crate::transcript::{SubagentTranscript, TranscriptStatus, SubagentEventRecord};
 
 /// Detect whether a prompt is complex enough to warrant RLM delegation.
 ///
@@ -113,6 +114,8 @@ pub struct TaskTool {
     mailbox: SubagentResultMailbox,
     /// Shared store for subagent progress updates (session_id → node_id → progress).
     progress_store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
+    /// Optional transcript store for persisting subagent execution transcripts to SQLite.
+    transcript_store: Option<Arc<crate::transcript::SubagentTranscriptStore>>,
 }
 
 impl TaskTool {
@@ -121,6 +124,7 @@ impl TaskTool {
         tool_registry: std::sync::Weak<crate::tools::ToolRegistry>,
         background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
         progress_store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
+        transcript_store: Option<Arc<crate::transcript::SubagentTranscriptStore>>,
     ) -> Self {
         Self {
             settings,
@@ -129,6 +133,7 @@ impl TaskTool {
             active_count: Arc::new(AtomicUsize::new(0)),
             progress_store,
             mailbox: SubagentResultMailbox::default_location(),
+            transcript_store,
         }
     }
 
@@ -152,6 +157,42 @@ impl TaskTool {
                 store.entry(sid).or_default().insert(node_id, progress);
             });
         })
+    }
+}
+
+/// Helper to build a SubagentTranscript from subagent execution metadata.
+fn build_transcript(
+    id: String,
+    session_id: &str,
+    description: &str,
+    status: TranscriptStatus,
+    system_prompt: Option<String>,
+    user_prompt: String,
+    started_at: i64,
+    total_tokens: u64,
+    actual_rounds: u32,
+    token_budget_k: Option<u64>,
+    error_message: Option<String>,
+    summary: Option<String>,
+    events: Vec<SubagentEventRecord>,
+) -> SubagentTranscript {
+    SubagentTranscript {
+        id,
+        session_id: session_id.to_string(),
+        parent_id: None,
+        label: format!("task: {}", description),
+        status,
+        system_prompt,
+        user_prompt,
+        started_at,
+        finished_at: Some(chrono::Utc::now().timestamp_millis()),
+        total_tokens,
+        max_rounds: Some(30),
+        actual_rounds,
+        token_budget_k,
+        error_message,
+        summary,
+        events,
     }
 }
 
@@ -394,7 +435,6 @@ impl Tool for TaskTool {
         if background {
             // ── Background mode: spawn and return immediately ──────────────
             let desc = description.to_string();
-            let prompt_owned = full_prompt;
             let sys_prompt = system_prompt.to_string();
             let bg = self.background_manager.clone();
             let active = self.active_count.clone();
@@ -442,6 +482,16 @@ impl Tool for TaskTool {
             let st_bg = _subagent_type.to_string();
             let desc_full_bg = description.to_string();
             let sid_bg = session_id.clone();
+            let desc_bg = desc.clone();
+            let sys_prompt_bg = sys_prompt.clone();
+            let prompt_bg = full_prompt.clone();
+            let transcript_store_bg = self.transcript_store.clone();
+            let retention_days = self.settings.max_transcript_age_days;
+            let started_at_bg = chrono::Utc::now().timestamp_millis();
+            let bg_node_id = subagent_node_id.clone();
+
+            // Clone full_prompt before moving it into the run_subagent_loop call
+            let prompt_owned = full_prompt.clone();
 
             tokio::spawn(async move {
                 let result = run_subagent_loop(
@@ -469,6 +519,27 @@ impl Tool for TaskTool {
                     .to_content();
 
                 bg.push_subagent_result(&desc, &content, success).await;
+
+                // ── Save transcript ────────────────────────────────────────
+                if let Some(ref store) = transcript_store_bg {
+                    let retention = if retention_days > 0 { Some(retention_days) } else { None };
+                    let transcript = build_transcript(
+                        bg_node_id,
+                        &sid_bg,
+                        &desc_bg,
+                        if success { TranscriptStatus::Completed } else { TranscriptStatus::Failed },
+                        Some(sys_prompt_bg),
+                        prompt_bg,
+                        started_at_bg,
+                        0,     // total_tokens — not yet tracked from subagent loop
+                        0,     // actual_rounds
+                        token_budget,
+                        None,  // error_message captured in content, not individual
+                        None,  // summary
+                        vec![], // events — not yet tracked from subagent loop
+                    );
+                    let _ = store.save(&transcript, retention);
+                }
             });
 
             Ok(ToolOutput {
@@ -490,6 +561,7 @@ impl Tool for TaskTool {
         } else {
             // ── Synchronous mode: block until complete ─────────────────────
             let subagent_node_id = uuid::Uuid::new_v4().to_string();
+            let started_at_sync = chrono::Utc::now().timestamp_millis();
             {
                 let mut store = self.progress_store.write().await;
                 store.entry(session_id.clone()).or_default().insert(
@@ -569,6 +641,15 @@ impl Tool for TaskTool {
             };
             self.active_count.fetch_sub(1, Ordering::SeqCst);
 
+            // ── Save transcript on completion/failure (sync path) ──────────
+            let transcript_store_sync = self.transcript_store.clone();
+            let sid_sync = session_id.clone();
+            let desc_sync = description.to_string();
+            let sys_prompt_sync = system_prompt.to_string();
+            let prompt_sync = full_prompt.clone();
+            let sync_node_id = subagent_node_id.clone();
+            let retention_days_sync = self.settings.max_transcript_age_days;
+
             match result {
                 Ok(result) => {
                     // Offload to mailbox if result exceeds inline threshold.
@@ -578,6 +659,27 @@ impl Tool for TaskTool {
                         &session_id,
                         &result,
                     );
+
+                    // Save completed transcript
+                    if let Some(ref store) = transcript_store_sync {
+                        let retention = if retention_days_sync > 0 { Some(retention_days_sync) } else { None };
+                        let transcript = build_transcript(
+                            sync_node_id,
+                            &sid_sync,
+                            &desc_sync,
+                            TranscriptStatus::Completed,
+                            Some(sys_prompt_sync),
+                            prompt_sync,
+                            started_at_sync,
+                            0,    // total_tokens
+                            0,    // actual_rounds
+                            token_budget,
+                            None,
+                            Some(result.chars().take(500).collect()),
+                            vec![],
+                        );
+                        let _ = store.save(&transcript, retention);
+                    }
 
                     let mut metadata = HashMap::new();
                     metadata.insert(
@@ -596,10 +698,33 @@ impl Tool for TaskTool {
                         metadata,
                     })
                 }
-                Err(e) => Err(ToolError {
-                    message: e,
-                    code: Some("subagent_error".to_string()),
-                }),
+                Err(e) => {
+                    // Save failed transcript
+                    if let Some(ref store) = transcript_store_sync {
+                        let retention = if retention_days_sync > 0 { Some(retention_days_sync) } else { None };
+                        let transcript = build_transcript(
+                            sync_node_id,
+                            &sid_sync,
+                            &desc_sync,
+                            TranscriptStatus::Failed,
+                            Some(sys_prompt_sync),
+                            prompt_sync,
+                            started_at_sync,
+                            0,
+                            0,
+                            token_budget,
+                            Some(e.clone()),
+                            None,
+                            vec![],
+                        );
+                        let _ = store.save(&transcript, retention);
+                    }
+
+                    Err(ToolError {
+                        message: e,
+                        code: Some("subagent_error".to_string()),
+                    })
+                },
             }
         }
     }
@@ -676,6 +801,7 @@ mod tests {
             std::sync::Weak::new(),
             std::sync::Arc::new(crate::tools::execution::background::BackgroundManager::new()),
             std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            None, // transcript_store
         ).input_schema();
         let desc = schema["properties"]["token_budget"]["description"]
             .as_str()
