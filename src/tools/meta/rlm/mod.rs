@@ -11,6 +11,7 @@
 //! complex tasks use `delegate` to trigger the full RLM pipeline.
 
 mod pipeline;
+pub mod formats;
 
 pub use pipeline::{extract_json, run_rlm_pipeline, RlmResult};
 
