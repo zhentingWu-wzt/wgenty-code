@@ -88,7 +88,11 @@ pub struct Symbol {
     pub signature: Option<String>,
     pub visibility: Visibility,
     pub parent_module: Option<String>,
+    #[serde(default = "default_language")]
+    pub language: String,
 }
+
+fn default_language() -> String { "rust".to_string() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reference {
@@ -147,6 +151,10 @@ pub enum RelKind {
     Implements,
     Contains,
     Imports,
+    Inherits,
+    TypeOf,
+    Returns,
+    Parameter,
 }
 
 impl RelKind {
@@ -156,6 +164,10 @@ impl RelKind {
             Self::Implements => "implements",
             Self::Contains => "contains",
             Self::Imports => "imports",
+            Self::Inherits => "inherits",
+            Self::TypeOf => "typeof",
+            Self::Returns => "returns",
+            Self::Parameter => "parameter",
         }
     }
 
@@ -165,6 +177,10 @@ impl RelKind {
             "implements" => Self::Implements,
             "contains" => Self::Contains,
             "imports" => Self::Imports,
+            "inherits" => Self::Inherits,
+            "typeof" => Self::TypeOf,
+            "returns" => Self::Returns,
+            "parameter" => Self::Parameter,
             _ => Self::Calls,
         }
     }
@@ -288,6 +304,7 @@ mod tests {
             signature: Some("fn foo(x: i32) -> bool".into()),
             visibility: Visibility::Pub,
             parent_module: Some("my_module".into()),
+            language: "rust".to_string(),
         };
         let json = serde_json::to_string_pretty(&sym).unwrap();
         let deserialized: Symbol = serde_json::from_str(&json).unwrap();

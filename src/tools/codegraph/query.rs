@@ -360,6 +360,7 @@ mod tests {
             signature: Some("fn test_fn()".into()),
             visibility: Visibility::Pub,
             parent_module: None,
+            language: "rust".to_string(),
         };
         store.insert_symbol(&sym, file_id).unwrap();
         (store, dir)

@@ -2,6 +2,7 @@
 change: codegraph-agent-adoption
 design-doc: docs/superpowers/specs/2026-06-15-codegraph-agent-adoption-design.md
 base-ref: c71014547af3d4997f421ac62fc0f22a58e7ddb8
+archived-with: 2026-06-15-codegraph-agent-adoption
 ---
 
 # Codegraph Agent Adoption 实施计划
@@ -14,6 +15,7 @@ base-ref: c71014547af3d4997f421ac62fc0f22a58e7ddb8
 
 **Tech Stack:** Rust (cargo test) + Bash (bench-agent-replay.sh)
 
+archived-with: 2026-06-15-codegraph-agent-adoption
 ---
 
 ## Phase 0: 探针 — 确认 Daemon API
@@ -49,6 +51,7 @@ Determines bench-agent-replay.sh implementation path:
 A: daemon API / B: repl+expect / C: manual (Co-Authored-By: Claude <noreply@anthropic.com>)"
 ```
 
+archived-with: 2026-06-15-codegraph-agent-adoption
 ---
 
 ## Phase 1: 层 A — Prompt 修改（base.md）
@@ -89,6 +92,7 @@ update When-to-use table, add Code navigation playbook.
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-15-codegraph-agent-adoption
 ---
 
 ## Phase 2: 层 B — Tool Description 修改（tools.rs）
@@ -121,6 +125,7 @@ to guide Agent toward correct tool selection.
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-15-codegraph-agent-adoption
 ---
 
 ## Phase 3: 层 C — Error Message 修改（tools.rs）
@@ -145,6 +150,7 @@ single-task fallback scope to prevent permanent fallback.
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-15-codegraph-agent-adoption
 ---
 
 ## Phase 4: bench-agent-replay.sh 评测脚本
@@ -187,6 +193,7 @@ with layered threshold (strong ≥60%, other ≥25%).
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-06-15-codegraph-agent-adoption
 ---
 
 ## Phase 5: 验收 + 依赖 benchmark
@@ -211,6 +218,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 cargo build && cargo test -- --skip test_skill_parameter_parsing 2>&1 | tail -10
 ```
 
+archived-with: 2026-06-15-codegraph-agent-adoption
 ---
 
 ## 执行约定

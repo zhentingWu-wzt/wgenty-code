@@ -2,6 +2,8 @@
 comet_change: codegraph-query-and-explainability
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-15-codegraph-query-and-explainability
+status: final
 ---
 
 # Codegraph Query & Explainability — 技术设计

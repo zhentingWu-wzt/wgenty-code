@@ -307,6 +307,7 @@ impl<'a> ExtractCtx<'a> {
                         signature: self.extract_signature(node, kind_str),
                         visibility,
                         parent_module: None,
+                        language: "rust".to_string(),
                     };
                     let idx = self.symbols.len() as i64;
                     self.symbols.push(sym);

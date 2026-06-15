@@ -2,6 +2,7 @@
 change: codegraph-query-and-explainability
 design-doc: docs/superpowers/specs/2026-06-15-codegraph-query-and-explainability-design.md
 base-ref: c386c1ba6413a8e7f1c85785b9fbeddfc2f6d83a
+archived-with: 2026-06-15-codegraph-query-and-explainability
 ---
 
 # Codegraph Query & Explainability 实施计划
@@ -10,6 +11,7 @@ base-ref: c386c1ba6413a8e7f1c85785b9fbeddfc2f6d83a
 
 **Architecture:** 新增 audit.rs / call_path.rs / fuzzy.rs + 修改 types.rs / store.rs / query.rs / tools.rs
 
+archived-with: 2026-06-15-codegraph-query-and-explainability
 ---
 
 ## Phase 0: 基础设施
@@ -41,6 +43,7 @@ base-ref: c386c1ba6413a8e7f1c85785b9fbeddfc2f6d83a
 - [x] 单元测试：已知路径 + no_path + depth limit
 - [x] Commit
 
+archived-with: 2026-06-15-codegraph-query-and-explainability
 ---
 
 ## Phase 1: 集成
@@ -84,6 +87,7 @@ base-ref: c386c1ba6413a8e7f1c85785b9fbeddfc2f6d83a
 - [x] 导出 audit / call_path / fuzzy 模块
 - [x] Commit
 
+archived-with: 2026-06-15-codegraph-query-and-explainability
 ---
 
 ## Phase 2: 验证
@@ -103,6 +107,7 @@ cargo build && cargo test -p wgenty_code
 ### Task 2.3: 回归
 - bench-agent-replay.sh 跑一次验证 codegraph 调用率不降
 
+archived-with: 2026-06-15-codegraph-query-and-explainability
 ---
 
 ## Phase 3: 勾选

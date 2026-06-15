@@ -275,10 +275,10 @@ mod tests {
 
         let mut symbols = HashMap::new();
         use crate::tools::codegraph::types::Visibility;
-        symbols.insert(1, Symbol { id: Some(1), name: "main".into(), kind: crate::tools::codegraph::types::SymbolKind::Function, file_path: String::new(), line: 0, col: 0, signature: None, visibility: Visibility::Private, parent_module: None });
-        symbols.insert(2, Symbol { id: Some(2), name: "init".into(), kind: crate::tools::codegraph::types::SymbolKind::Function, file_path: String::new(), line: 0, col: 0, signature: None, visibility: Visibility::Private, parent_module: None });
-        symbols.insert(3, Symbol { id: Some(3), name: "run_async".into(), kind: crate::tools::codegraph::types::SymbolKind::Function, file_path: String::new(), line: 0, col: 0, signature: None, visibility: Visibility::Private, parent_module: None });
-        symbols.insert(4, Symbol { id: Some(4), name: "orphan".into(), kind: crate::tools::codegraph::types::SymbolKind::Function, file_path: String::new(), line: 0, col: 0, signature: None, visibility: Visibility::Private, parent_module: None });
+        symbols.insert(1, Symbol { id: Some(1), name: "main".into(), kind: crate::tools::codegraph::types::SymbolKind::Function, file_path: String::new(), line: 0, col: 0, signature: None, visibility: Visibility::Private, parent_module: None, language: "rust".to_string() });
+        symbols.insert(2, Symbol { id: Some(2), name: "init".into(), kind: crate::tools::codegraph::types::SymbolKind::Function, file_path: String::new(), line: 0, col: 0, signature: None, visibility: Visibility::Private, parent_module: None, language: "rust".to_string() });
+        symbols.insert(3, Symbol { id: Some(3), name: "run_async".into(), kind: crate::tools::codegraph::types::SymbolKind::Function, file_path: String::new(), line: 0, col: 0, signature: None, visibility: Visibility::Private, parent_module: None, language: "rust".to_string() });
+        symbols.insert(4, Symbol { id: Some(4), name: "orphan".into(), kind: crate::tools::codegraph::types::SymbolKind::Function, file_path: String::new(), line: 0, col: 0, signature: None, visibility: Visibility::Private, parent_module: None, language: "rust".to_string() });
 
         CallGraph { edges, symbols }
     }

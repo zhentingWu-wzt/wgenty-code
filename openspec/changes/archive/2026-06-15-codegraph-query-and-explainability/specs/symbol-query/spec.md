@@ -34,6 +34,17 @@ The system SHALL return the exact file path, line number, column, signature, and
 - **WHEN** querying `codegraph_node` with `sort_by: "confidence"` and/or `filter: {"name_prefix": "run_"}`
 - **THEN** results are sorted by confidence descending and filtered to matching names only
 
+### MODIFIED Requirement: Filter and sort support
+
+The system SHALL support codegraph_node / codegraph_explore output filtering and sorting.
+
+#### Scenario: Filter and sort support
+
+- **WHEN** querying `codegraph_node` with `sort_by: "confidence"` and/or `filter: {"name_prefix": "run_"}`
+- **THEN** results are sorted by confidence descending and filtered to matching names only
+
+## ADDED Requirements
+
 ### Requirement: Explainability fields in output
 
 The system SHALL include `audit_id`, `confidence`, and `source` fields in every codegraph query response.

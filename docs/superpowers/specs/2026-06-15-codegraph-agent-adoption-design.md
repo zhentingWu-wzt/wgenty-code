@@ -2,6 +2,8 @@
 comet_change: codegraph-agent-adoption
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-15-codegraph-agent-adoption
+status: final
 ---
 
 # Codegraph Agent Adoption — 技术设计

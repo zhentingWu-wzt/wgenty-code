@@ -1,0 +1,92 @@
+---
+change: codegraph-multilang-and-deep-graph
+design-doc: docs/superpowers/specs/2026-06-15-codegraph-multilang-and-deep-graph-design.md
+base-ref: d69210652f377344d876f7bcd7b5db787d750e09
+---
+
+# Codegraph Multilang & Deep Graph 实施计划
+
+**Goal:** 多语言 parser + 深层 Symbol Graph 关系。新增 tree-sitter-java/python，4 种新 RelKind，LanguageAdapter trait，schema 迁移。
+
+**Architecture:** adapters/ (3 语言适配器) + 重构 parser.rs → ParserPool + migration.rs (schema v1→v2)
+
+---
+
+## Phase 0: 依赖 + 基础设施
+
+### Task 0.1: Cargo.toml 依赖
+- [ ] 新增 tree-sitter-java, tree-sitter-python
+- [ ] cargo build 验证
+- [ ] Commit
+
+### Task 0.2: RelKind 扩展 + language 字段
+- [ ] types.rs: RelKind 加 Inherits/TypeOf/Returns/Parameter
+- [ ] types.rs: Symbol 加 language 字段 (default "rust")
+- [ ] 单元测试: as_str/parse
+- [ ] Commit
+
+---
+
+## Phase 1: LanguageAdapter + 适配器
+
+### Task 1.1: adapters/mod.rs — trait 定义
+- [ ] 创建 `src/tools/codegraph/adapters/mod.rs`
+- [ ] LanguageAdapter trait
+- [ ] Commit
+
+### Task 1.2: RustAdapter
+- [ ] 创建 adapters/rust.rs
+- [ ] 复用现有 parser.rs Rust 逻辑 → impl LanguageAdapter
+- [ ] Commit
+
+### Task 1.3: JavaAdapter
+- [ ] 创建 adapters/java.rs
+- [ ] tree-sitter-java: class/method/field → Symbol; extends/implements → Inherits
+- [ ] 单元测试
+- [ ] Commit
+
+### Task 1.4: PythonAdapter
+- [ ] 创建 adapters/python.rs
+- [ ] tree-sitter-python: function/class → Symbol; typed params/returns → TypeOf/Returns
+- [ ] 单元测试
+- [ ] Commit
+
+---
+
+## Phase 2: Parser Pool + Indexer 重构
+
+### Task 2.1: parser.rs → ParserPool
+- [ ] 重构为 HashMap<lang, Arc<Mutex<CodeParser>>>
+- [ ] 文件扩展名→lang 路由
+- [ ] Commit
+
+### Task 2.2: indexer.rs adapter 集成
+- [ ] 注册 3 适配器
+- [ ] 按文件扩展名选择适配器
+- [ ] language 字段写入 symbol
+- [ ] Commit
+
+---
+
+## Phase 3: Schema 迁移 + Store
+
+### Task 3.1: migration.rs
+- [ ] 检测 schema version
+- [ ] ALTER TABLE symbols ADD COLUMN language
+- [ ] 新关系类型表
+- [ ] 单元测试
+- [ ] Commit
+
+### Task 3.2: store.rs 新关系存储
+- [ ] 新 RelKind 的 insert/query
+- [ ] Commit
+
+---
+
+## Phase 4: 验收 + 归档
+
+### Task 4.1: cargo build + test 全绿
+### Task 4.2: Java 样例项目 coverage ≥70%
+### Task 4.3: Python 样例项目 coverage ≥70%
+### Task 4.4: bench-perf.sh 对比 #0 baseline (≤1.5×)
+### Task 4.5: 勾选 tasks.md + guard → verify → archive
