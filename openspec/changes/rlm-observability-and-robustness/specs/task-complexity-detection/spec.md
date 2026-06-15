@@ -21,6 +21,21 @@ The `is_complex_task()` function SHALL use structural analysis of the prompt to 
 - **WHEN** the prompt is >1000 characters but describes a single straightforward operation
 - **THEN** `is_complex_task()` SHALL NOT automatically classify it as complex based on length alone
 
+### Requirement: Routing decisions are logged and visible
+When the `task` tool routes a prompt to RLM pipeline or direct subagent execution, the routing rationale and task type SHALL be included in the tool result metadata.
+
+#### Scenario: Task routed to RLM with type classification
+- **WHEN** a task is routed to the RLM pipeline
+- **THEN** the tool result metadata SHALL include `routing_reason`, `task_type`, and `output_format` fields
+
+#### Scenario: Task executed directly
+- **WHEN** a task is executed as a direct subagent
+- **THEN** the tool result SHALL indicate "direct execution" with task type in metadata
+
+#### Scenario: TUI displays routing reason with format
+- **WHEN** the tool result contains routing metadata
+- **THEN** the TUI SHALL render the routing reason, task type, and output format as dimmed text near the subagent card
+
 ## ADDED Requirements
 
 ### Requirement: Task type classification for structured output
@@ -37,18 +52,3 @@ The complexity detection SHALL classify tasks as `analysis`, `modification`, or 
 #### Scenario: Mixed task
 - **WHEN** the prompt requests both investigation and code changes
 - **THEN** the task type SHALL be classified as `mixed` and the subagent SHALL produce both claims and diffs
-
-### Requirement: Routing decisions are logged and visible
-When the `task` tool routes a prompt to RLM pipeline or direct subagent execution, the routing rationale and task type SHALL be included in the tool result metadata.
-
-#### Scenario: Task routed to RLM with type classification
-- **WHEN** a task is routed to the RLM pipeline
-- **THEN** the tool result metadata SHALL include `routing_reason`, `task_type`, and `output_format` fields
-
-#### Scenario: Task executed directly
-- **WHEN** a task is executed as a direct subagent
-- **THEN** the tool result SHALL indicate "direct execution" with task type in metadata
-
-#### Scenario: TUI displays routing reason with format
-- **WHEN** the tool result contains routing metadata
-- **THEN** the TUI SHALL render the routing reason, task type, and output format as dimmed text near the subagent card
