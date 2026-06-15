@@ -68,7 +68,10 @@ impl SubagentTranscriptStore {
     }
 
     /// Save a full transcript (header + all events) in a single transaction.
-    pub fn save(&self, transcript: &SubagentTranscript) -> Result<(), TranscriptError> {
+    ///
+    /// If `retention_days` is `Some(d)` and `d > 0`, also deletes transcripts
+    /// older than `d` days within the same transaction.
+    pub fn save(&self, transcript: &SubagentTranscript, retention_days: Option<u32>) -> Result<(), TranscriptError> {
         let tx = self.db.unchecked_transaction()?;
 
         let status_str = match transcript.status {
@@ -120,6 +123,16 @@ impl SubagentTranscriptStore {
                     event.token_count,
                 ],
             )?;
+        }
+
+        // Clean up old transcripts in the same transaction if retention_days is set
+        if let Some(days) = retention_days {
+            if days > 0 {
+                tx.execute(
+                    "DELETE FROM subagent_transcripts WHERE started_at < (unixepoch('now') - ?1 * 86400) * 1000",
+                    params![days],
+                )?;
+            }
         }
 
         tx.commit()?;
@@ -260,7 +273,7 @@ impl SubagentTranscriptStore {
              FROM subagent_transcripts
              WHERE label LIKE ?1
              ORDER BY started_at DESC
-             LIMIT 50"
+             LIMIT 100"
         )?;
         let rows = stmt.query_map(params![pattern], |row| {
             Ok(SubagentTranscriptHeader {
@@ -286,6 +299,9 @@ impl SubagentTranscriptStore {
 
     /// Delete transcripts older than retention_days.
     pub fn cleanup(&self, retention_days: u32) -> Result<usize, TranscriptError> {
+        if retention_days == 0 {
+            return Ok(0);
+        }
         let deleted = self.db.execute(
             "DELETE FROM subagent_transcripts WHERE started_at < (unixepoch('now') - ?1 * 86400) * 1000",
             params![retention_days],
@@ -350,7 +366,7 @@ mod tests {
     fn test_save_and_get_by_id() {
         let (store, _dir) = setup_store();
         let t = sample_transcript("test-1", "session-1");
-        store.save(&t).unwrap();
+        store.save(&t, None).unwrap();
 
         let loaded = store.get_by_id("test-1").unwrap().unwrap();
         assert_eq!(loaded.id, "test-1");
@@ -362,9 +378,9 @@ mod tests {
     #[test]
     fn test_list_by_session() {
         let (store, _dir) = setup_store();
-        store.save(&sample_transcript("a", "sess-1")).unwrap();
-        store.save(&sample_transcript("b", "sess-1")).unwrap();
-        store.save(&sample_transcript("c", "sess-2")).unwrap();
+        store.save(&sample_transcript("a", "sess-1"), None).unwrap();
+        store.save(&sample_transcript("b", "sess-1"), None).unwrap();
+        store.save(&sample_transcript("c", "sess-2"), None).unwrap();
 
         let list = store.list_by_session("sess-1").unwrap();
         assert_eq!(list.len(), 2);
@@ -376,10 +392,10 @@ mod tests {
     #[test]
     fn test_search() {
         let (store, _dir) = setup_store();
-        store.save(&sample_transcript("a", "s1")).unwrap();
+        store.save(&sample_transcript("a", "s1"), None).unwrap();
         let mut t2 = sample_transcript("b", "s1");
         t2.label = "special-fix".to_string();
-        store.save(&t2).unwrap();
+        store.save(&t2, None).unwrap();
 
         let results = store.search("special").unwrap();
         assert_eq!(results.len(), 1);
@@ -390,7 +406,7 @@ mod tests {
     fn test_checkpoint_and_append() {
         let (store, _dir) = setup_store();
         let t = sample_transcript("cp-1", "session-1");
-        store.save(&t).unwrap();
+        store.save(&t, None).unwrap();
 
         store.checkpoint_status("cp-1", "running", 5, 1000).unwrap();
 
@@ -419,7 +435,7 @@ mod tests {
         let (store, _dir) = setup_store();
         let mut t = sample_transcript("old", "s1");
         t.started_at = 100; // very old timestamp (unix ms)
-        store.save(&t).unwrap();
+        store.save(&t, None).unwrap();
 
         let mut t2 = sample_transcript("new", "s1");
         // Set a recent timestamp (current unix ms) so it won't be deleted
@@ -428,12 +444,36 @@ mod tests {
             .unwrap()
             .as_millis() as i64;
         t2.started_at = now_ms;
-        store.save(&t2).unwrap();
+        store.save(&t2, None).unwrap();
 
         let deleted = store.cleanup(1).unwrap(); // 1 day retention
         assert_eq!(deleted, 1);
 
         assert!(store.get_by_id("old").unwrap().is_none());
         assert!(store.get_by_id("new").unwrap().is_some());
+    }
+
+    #[test]
+    fn test_search_returns_up_to_100() {
+        let (store, _dir) = setup_store();
+        for i in 0..60 {
+            let mut t = sample_transcript(&format!("batch-{}", i), "session-search-100");
+            t.label = "batch-item".to_string();
+            store.save(&t, None).unwrap();
+        }
+        let results = store.search("batch").unwrap();
+        assert_eq!(results.len(), 60, "search should return all 60 results, not limited to 50");
+    }
+
+    #[test]
+    fn test_cleanup_zero_guard() {
+        let (store, _dir) = setup_store();
+        let mut t = sample_transcript("zero-guard-old", "s1");
+        t.started_at = 100;
+        store.save(&t, None).unwrap();
+
+        let deleted = store.cleanup(0).unwrap();
+        assert_eq!(deleted, 0, "cleanup(0) should not delete anything");
+        assert!(store.get_by_id("zero-guard-old").unwrap().is_some(), "old transcript should still exist");
     }
 }
