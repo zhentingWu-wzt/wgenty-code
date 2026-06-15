@@ -468,7 +468,7 @@ time_cmd() {
 ```
 
 - [x] **验证**：两个脚本通过 `bash -n` 语法检查
-- [ ] **Commit**
+- [x] **Commit**
 
 ### Task 1.4: 实现 `run-all.sh` 入口脚本
 
@@ -543,7 +543,7 @@ echo "[run-all] done. Results in $OUTPUT_DIR"
 ```
 
 - [x] **验证**：`bash -n` 语法检查；`./run-all.sh --help` 打印用法
-- [ ] **Commit**
+- [x] **Commit**
 
 ### Task 1.5: 验证脚手架完整（端到端空跑）
 
