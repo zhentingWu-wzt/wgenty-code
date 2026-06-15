@@ -1,0 +1,6 @@
+task_id: nav-013
+category: cross_module_path
+prompt: "tool call 从 LLM 返回后，经过哪些步骤最终执行？涉及哪些文件和函数？"
+expected_answer_anchor:
+  file: src/agent
+  contains: "tool_call"

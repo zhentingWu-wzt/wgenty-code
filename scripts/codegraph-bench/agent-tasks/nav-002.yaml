@@ -1,0 +1,6 @@
+task_id: nav-002
+category: definition_lookup
+prompt: "Session 结构体定义在哪里？有哪些字段？"
+expected_answer_anchor:
+  file: src/context/session.rs
+  contains: "struct Session"

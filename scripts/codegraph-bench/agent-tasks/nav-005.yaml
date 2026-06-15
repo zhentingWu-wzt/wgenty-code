@@ -1,0 +1,6 @@
+task_id: nav-005
+category: call_chain
+prompt: "run_async 函数的完整调用链是什么？"
+expected_answer_anchor:
+  file: src/agent
+  contains: "run_async"

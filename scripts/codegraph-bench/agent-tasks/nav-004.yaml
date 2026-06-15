@@ -1,0 +1,6 @@
+task_id: nav-004
+category: reference_lookup
+prompt: "哪些地方引用了 AgentLoop 类型？"
+expected_answer_anchor:
+  file: src/agent
+  contains: "AgentLoop"

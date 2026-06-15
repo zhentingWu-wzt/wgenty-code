@@ -1,0 +1,6 @@
+task_id: nav-006
+category: call_chain
+prompt: "从 handle_message 到 execute_tool 的调用路径是怎样的？"
+expected_answer_anchor:
+  file: src/agent
+  contains: "handle_message"

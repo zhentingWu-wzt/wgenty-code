@@ -1,0 +1,6 @@
+task_id: nav-007
+category: impl_enumeration
+prompt: "Tool trait 有哪些实现者？列出所有 impl"
+expected_answer_anchor:
+  file: src/tools
+  contains: "impl Tool"

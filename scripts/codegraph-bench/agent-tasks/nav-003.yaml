@@ -1,0 +1,6 @@
+task_id: nav-003
+category: reference_lookup
+prompt: "谁调用了 register 函数？列出所有调用者"
+expected_answer_anchor:
+  file: src/tools/mod.rs
+  contains: "register"

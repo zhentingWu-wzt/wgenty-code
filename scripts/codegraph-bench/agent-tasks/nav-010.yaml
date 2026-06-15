@@ -1,0 +1,6 @@
+task_id: nav-010
+category: module_structure
+prompt: "src/agent 模块的整体结构是怎样的？"
+expected_answer_anchor:
+  file: src/agent/mod.rs
+  contains: "mod"
