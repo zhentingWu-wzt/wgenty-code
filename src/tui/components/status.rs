@@ -24,7 +24,8 @@ pub fn render(
     phase: &AgentPhase,
     spinner_frame: u8,
     elapsed_secs: Option<u64>,
-    tokens_used: usize,
+    input_tokens: usize,
+    output_tokens: usize,
     mode_label: &str,
     subagent_tree: Option<&SubagentTree>,
 ) {
@@ -61,8 +62,9 @@ pub fn render(
         meta_parts.push(format_duration(s));
     }
 
-    if tokens_used > 0 {
-        meta_parts.push(format_tokens(tokens_used));
+    let turn_token_str = format_turn_tokens(input_tokens, output_tokens);
+    if !turn_token_str.is_empty() {
+        meta_parts.push(turn_token_str);
     }
 
     if is_active && !mode_label.is_empty() {
@@ -97,6 +99,16 @@ fn phase_label(phase: &AgentPhase, subagent_tree: Option<&SubagentTree>) -> Stri
     match phase {
         AgentPhase::Idle | AgentPhase::Completed => "Ready".to_string(),
         AgentPhase::Thinking => "Thinking…".to_string(),
+        AgentPhase::Connecting {
+            attempt,
+            max_retries,
+        } => {
+            if *max_retries > 1 {
+                format!("Connecting (attempt {}/{})…", attempt, max_retries)
+            } else {
+                "Connecting…".to_string()
+            }
+        }
         AgentPhase::PreparingTools => "Preparing tools…".to_string(),
         AgentPhase::StreamingResponse => "Streaming…".to_string(),
         AgentPhase::ExecutingTool { name } => match name.as_str() {
@@ -155,10 +167,24 @@ fn format_duration(secs: u64) -> String {
     }
 }
 
-fn format_tokens(tokens: usize) -> String {
-    if tokens >= 1000 {
-        format!("↓ {:.1}k tokens", tokens as f64 / 1000.0)
+/// Format a single token count with k-suffix (e.g. "1.6k").
+fn fmt_single(n: usize) -> String {
+    if n >= 1000 {
+        format!("{:.1}k", n as f64 / 1000.0)
     } else {
-        format!("↓ {} tokens", tokens)
+        format!("{} tokens", n)
     }
+}
+
+/// Format per-turn token display: "↑ N · ↓ Mk"
+/// Omits input part if zero, omits output part if zero.
+fn format_turn_tokens(input: usize, output: usize) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if input > 0 {
+        parts.push(format!("↑ {}", fmt_single(input)));
+    }
+    if output > 0 {
+        parts.push(format!("↓ {}", fmt_single(output)));
+    }
+    parts.join(" · ")
 }

@@ -113,7 +113,8 @@ impl App {
 
     fn render_status(&self, f: &mut Frame, area: Rect) {
         let elapsed = self.turn_started_at.map(|t| t.elapsed().as_secs());
-        let tokens = self.token_counter.used_tokens();
+        let input_tokens = self.token_counter.turn_input_tokens();
+        let output_tokens = self.token_counter.turn_output_tokens();
         let mode = self.mode.label();
         components::status::render(
             f,
@@ -121,7 +122,8 @@ impl App {
             &self.phase,
             self.spinner_frame,
             elapsed,
-            tokens,
+            input_tokens,
+            output_tokens,
             mode,
             Some(&self.subagent_tree),
         );
