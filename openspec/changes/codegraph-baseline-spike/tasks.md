@@ -22,15 +22,15 @@
 
 ## 3. 覆盖率基线测量
 
-- [ ] 3.1 实现 `bench-coverage.sh`：通过 `find` 统计目标项目 `.rs` 总文件数，与 `.codegraph/index.db` 中已索引文件数对比
-- [ ] 3.2 扩展 `bench-coverage.sh`：用 `sqlite3` 查询符号按 `SymbolKind` 分组、关系按 `RelKind` 分组的总数
-- [ ] 3.3 扩展 `bench-coverage.sh`：捕获 `wgenty-code codegraph index` 输出中的 parse 失败计数与文件，归类失败原因 top 3
-- [ ] 3.4 输出统一 JSON：覆盖率数据写入 `results/<timestamp>/coverage.json`
-- [ ] 3.5 在 wgenty-code 自身仓库跑通 coverage 测量，确认输出字段齐全
+- [x] 3.1 实现 `bench-coverage.sh`：通过 `find` 统计目标项目 `.rs` 总文件数，与 `.codegraph/index.db` 中已索引文件数对比
+- [x] 3.2 扩展 `bench-coverage.sh`：用 `sqlite3` 查询符号按 `SymbolKind` 分组、关系按 `RelKind` 分组的总数
+- [x] 3.3 扩展 `bench-coverage.sh`：捕获 `wgenty-code codegraph index` 输出中的 parse 失败计数与文件，归类失败原因 top 3
+- [x] 3.4 输出统一 JSON：覆盖率数据写入 `results/<timestamp>/coverage.json`
+- [x] 3.5 在 wgenty-code 自身仓库跑通 coverage 测量，确认输出字段齐全
 
 ## 4. Agent 使用率基线测量
 
-- [ ] 4.1 brainstorming 选择 Agent 驱动路径（transcripts 静态分析 / CLI 回放 / 临时打点），写入 design.md 的 Open Questions 解答；本步骤是 build 阶段的关键决策点，不得自动跳过
+- [x] 4.1 brainstorming 选择 Agent 驱动路径（transcripts 静态分析 / CLI 回放 / 临时打点），写入 design.md 的 Open Questions 解答；本步骤是 build 阶段的关键决策点，不得自动跳过
 - [ ] 4.2 实现 `agent-tasks/` 目录与 README，定义任务文件格式（YAML 或 JSON 均可）
 - [ ] 4.3 编写 ≥10 条种子代码导航任务（覆盖：定义查找、引用查找、调用链探索、impl 列举等）
 - [ ] 4.4 实现 `bench-agent.sh`：按 4.1 选定的路径，对每条任务记录工具调用序列
