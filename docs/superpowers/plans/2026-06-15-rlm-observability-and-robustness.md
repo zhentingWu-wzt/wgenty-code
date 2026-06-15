@@ -1126,7 +1126,7 @@
 - Modify: `src/agent/progress.rs:12-29,32-53,64-69` — extend SubagentEvent, SubagentProgress
 - Modify: `src/teams/subagent_loop.rs:7-11,155-159,274-286,428-440` — remove truncation, add budget check, progress_tracker
 
-- [ ] **Step 3.1: Extend SubagentEvent and SubagentProgress**
+- [x] **Step 3.1: Extend SubagentEvent and SubagentProgress**
 
     Replace the existing `SubagentEvent`, `SubagentEventType`, and `SubagentProgress` structs in `src/agent/progress.rs`:
 
@@ -1262,7 +1262,7 @@
     pub type ProgressCallback = Arc<dyn Fn(SubagentProgress) + Send + Sync>;
     ```
 
-- [ ] **Step 3.2: Add token_budget_k parameter and default_subagent_token_budget_k config**
+- [x] **Step 3.2: Add token_budget_k parameter and default_subagent_token_budget_k config**
 
     In `src/tools/meta/task.rs`, add `token_budget` to the task tool's `input_schema`:
 
@@ -1292,7 +1292,7 @@
     "default_subagent_token_budget_k" => settings.default_subagent_token_budget_k = value.parse().unwrap_or(0),
     ```
 
-- [ ] **Step 3.3: Update run_subagent_loop for extended event types + budget**
+- [x] **Step 3.3: Update run_subagent_loop for extended event types + budget**
 
     In `src/teams/subagent_loop.rs`:
 
@@ -1445,7 +1445,7 @@
     }
     ```
 
-- [ ] **Step 3.4: Update all callers of run_subagent_loop with the new parameter**
+- [x] **Step 3.4: Update all callers of run_subagent_loop with the new parameter**
 
     In `src/tools/meta/task.rs` — all `run_subagent_loop` calls need an extra `None` for token budget:
 
@@ -1489,13 +1489,13 @@
 
     In `src/tools/meta/rlm/mod.rs` line ~120, update the `run_rlm_pipeline` call with `None` for token budget.
 
-- [ ] **Step 3.5: Run tests to confirm no breakage**
+- [x] **Step 3.5: Run tests to confirm no breakage**
 
     Run: `cargo test -p wgenty-code --lib teams::subagent_loop -- --nocapture`
     Run: `cargo test -p wgenty-code --lib tools::meta::task::tests -- --nocapture`
     Expected: All tests pass (if any exist) or compiler passes.
 
-- [ ] **Step 3.6: Commit**
+- [x] **Step 3.6: Commit**
 
     ```bash
     git add src/agent/progress.rs src/teams/subagent_loop.rs src/tools/meta/task.rs src/tools/meta/rlm/pipeline.rs src/tools/meta/rlm/mod.rs src/config/settings.rs
