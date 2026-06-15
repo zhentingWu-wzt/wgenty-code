@@ -53,11 +53,11 @@
 
 ## 7. 基线报告产出
 
-- [ ] 7.1 设计报告骨架（章节顺序：环境指纹 → 性能 → 覆盖率 → Agent 使用率 → 根因 → 后续 change 对照表）
-- [ ] 7.2 实现 `gen-report.sh`：从 `results/<timestamp>/` 各 JSON 拼装出 Markdown 报告
-- [ ] 7.3 报告日期填充为生成日期，写入 `docs/superpowers/specs/<YYYY-MM-DD>-codegraph-baseline-report.md`
-- [ ] 7.4 填写「后续 change 基线 vs 目标对照表」：为 codegraph-agent-adoption / codegraph-query-and-explainability / codegraph-multilang-and-deep-graph 各列出 ≥1 条「指标 / 基线 / 目标 / 验证方法」
-- [ ] 7.5 报告中明确"建议目标值"的制定规则（决策点：与用户确认规则后再填表）
+- [x] 7.1 设计报告骨架（章节顺序：环境指纹 → 性能 → 覆盖率 → Agent 使用率 → 根因 → 后续 change 对照表）
+- [x] 7.2 实现 `gen-report.sh`：从 `results/<timestamp>/` 各 JSON 拼装出 Markdown 报告
+- [x] 7.3 报告日期填充为生成日期，写入 `docs/superpowers/specs/<YYYY-MM-DD>-codegraph-baseline-report.md`
+- [x] 7.4 填写「后续 change 基线 vs 目标对照表」：为 codegraph-agent-adoption / codegraph-query-and-explainability / codegraph-multilang-and-deep-graph 各列出 ≥1 条「指标 / 基线 / 目标 / 验证方法」
+- [x] 7.5 报告中明确"建议目标值"的制定规则（决策点：与用户确认规则后再填表）
 
 ## 8. 可重复性验证
 
