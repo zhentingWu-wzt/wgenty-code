@@ -30,26 +30,26 @@ base-ref: d69210652f377344d876f7bcd7b5db787d750e09
 ## Phase 1: LanguageAdapter + 适配器
 
 ### Task 1.1: adapters/mod.rs — trait 定义
-- [ ] 创建 `src/tools/codegraph/adapters/mod.rs`
-- [ ] LanguageAdapter trait
-- [ ] Commit
+- [x] 创建 `src/tools/codegraph/adapters/mod.rs`
+- [x] LanguageAdapter trait
+- [x] Commit
 
 ### Task 1.2: RustAdapter
-- [ ] 创建 adapters/rust.rs
-- [ ] 复用现有 parser.rs Rust 逻辑 → impl LanguageAdapter
-- [ ] Commit
+- [x] 创建 adapters/rust.rs
+- [x] 复用现有 parser.rs Rust 逻辑 → impl LanguageAdapter
+- [x] Commit
 
 ### Task 1.3: JavaAdapter
-- [ ] 创建 adapters/java.rs
-- [ ] tree-sitter-java: class/method/field → Symbol; extends/implements → Inherits
-- [ ] 单元测试
-- [ ] Commit
+- [x] 创建 adapters/java.rs
+- [x] tree-sitter-java: class/method/field → Symbol; extends/implements → Inherits
+- [x] 单元测试
+- [x] Commit
 
 ### Task 1.4: PythonAdapter
-- [ ] 创建 adapters/python.rs
-- [ ] tree-sitter-python: function/class → Symbol; typed params/returns → TypeOf/Returns
-- [ ] 单元测试
-- [ ] Commit
+- [x] 创建 adapters/python.rs
+- [x] tree-sitter-python: function/class → Symbol; typed params/returns → TypeOf/Returns
+- [x] 单元测试
+- [x] Commit
 
 ---
 
