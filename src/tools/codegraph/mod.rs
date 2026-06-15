@@ -12,7 +12,7 @@ pub mod tools;
 pub mod types;
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Central engine holding indexer + query engine + store.
 /// Shared across builtin tools and CLI via `Arc<CodegraphEngine>`.
@@ -27,8 +27,13 @@ impl CodegraphEngine {
     /// Create a new engine, optionally running an initial index.
     pub fn new(project_root: PathBuf, auto_index: bool) -> anyhow::Result<Self> {
         let store = Arc::new(store::IndexStore::open(&project_root)?);
-        let code_parser = Arc::new(Mutex::new(parser::CodeParser::new()));
-        let indexer = Arc::new(indexer::Indexer::new(store.clone(), code_parser));
+
+        let adapters: Vec<Box<dyn adapters::LanguageAdapter>> = vec![
+            Box::new(adapters::rust::RustAdapter::new()),
+            Box::new(adapters::java::JavaAdapter::new()),
+            Box::new(adapters::python::PythonAdapter::new()),
+        ];
+        let indexer = Arc::new(indexer::Indexer::new(store.clone(), adapters));
         let query_engine = Arc::new(query::QueryEngine::new(store.clone()));
 
         if auto_index && !store.has_index()? {

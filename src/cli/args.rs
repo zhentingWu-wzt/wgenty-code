@@ -817,10 +817,12 @@ impl Cli {
                 let store = Arc::new(crate::tools::codegraph::store::IndexStore::open(
                     &project_root,
                 )?);
-                let parser = Arc::new(std::sync::Mutex::new(
-                    crate::tools::codegraph::parser::CodeParser::new(),
-                ));
-                let indexer = crate::tools::codegraph::indexer::Indexer::new(store, parser);
+                let adapters: Vec<Box<dyn crate::tools::codegraph::adapters::LanguageAdapter>> = vec![
+                    Box::new(crate::tools::codegraph::adapters::rust::RustAdapter::new()),
+                    Box::new(crate::tools::codegraph::adapters::java::JavaAdapter::new()),
+                    Box::new(crate::tools::codegraph::adapters::python::PythonAdapter::new()),
+                ];
+                let indexer = crate::tools::codegraph::indexer::Indexer::new(store, adapters);
                 let summary = indexer.index_full(&project_root)?;
                 println!(
                     "[codegraph] Done: {} files, {} symbols in {:.1}s ({}) warnings",
