@@ -18,10 +18,10 @@
 
 ## 3. Subagent 执行时间线完整记录
 
-- [ ] 3.1 扩展 `SubagentEvent` 枚举，增加 `ToolResult` 和 `Error` 事件类型
-- [ ] 3.2 修改 `run_subagent_loop()`：移除 action_log 的 50 条截断限制，保留完整事件列表直到 subagent 完成
-- [ ] 3.3 修改 `run_subagent_loop()`：移除 text_snapshot 的 200 字符截断（改为完整文本存储，TUI 层截断显示）
-- [ ] 3.4 修改 `SubagentProgress` 结构：增加 `progress_delta: Option<f32>` 字段
+- [x] 3.1 扩展 `SubagentEvent` 枚举，增加 `ToolResult` 和 `Error` 事件类型
+- [x] 3.2 修改 `run_subagent_loop()`：移除 action_log 的 50 条截断限制，保留完整事件列表直到 subagent 完成
+- [x] 3.3 修改 `run_subagent_loop()`：移除 text_snapshot 的 200 字符截断（改为完整文本存储，TUI 层截断显示）
+- [x] 3.4 修改 `SubagentProgress` 结构：增加 `progress_delta: Option<f32>` 字段
 
 ## 4. Subagent 错误可视化与恢复
 
