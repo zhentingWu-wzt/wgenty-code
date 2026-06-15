@@ -1,0 +1,21 @@
+{
+  "change": "rlm-observability-and-robustness",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "1120a7c5dd3b789a9fca2df662fb3f886a5b684c09b9a891c976b8a34ac48282",
+  "files": [
+    { "path": "openspec/changes/rlm-observability-and-robustness/proposal.md", "sha256": "0c5d9b5a8347d0676c37cc0abb76f38c1edfdd1efb328b5b44d9e9b610be9cd3" },
+    { "path": "openspec/changes/rlm-observability-and-robustness/design.md", "sha256": "d47370af3979ba63dee09b94276767c19dc4425b683c81be9e4e581634046df3" },
+    { "path": "openspec/changes/rlm-observability-and-robustness/tasks.md", "sha256": "caa903b6a506fc37529cb6cd2043e89fefba57e2606289825c34bf22cb9e1848" },
+    { "path": "openspec/changes/rlm-observability-and-robustness/specs/rlm-budget-control/spec.md", "sha256": "629002720970c44269937f1e9a958f6298dafb9e67216e969bacedf0617b633c" },
+    { "path": "openspec/changes/rlm-observability-and-robustness/specs/rlm-structured-reduction/spec.md", "sha256": "b7b52f621a484c4acb636030b31187eb512842976e669f365e4cfa0957f6094b" },
+    { "path": "openspec/changes/rlm-observability-and-robustness/specs/subagent-action-visibility/spec.md", "sha256": "3210f0ec56a72a769817db2aa6d81e59a30dcaf0560ac0669590e05b044becbb" },
+    { "path": "openspec/changes/rlm-observability-and-robustness/specs/subagent-content-preview/spec.md", "sha256": "65854be0f8b18167362f1643ba237fa65e2c66bebb93e7ef7ea4a216509a6ddc" },
+    { "path": "openspec/changes/rlm-observability-and-robustness/specs/subagent-status-display/spec.md", "sha256": "dd1fe446f4ae27b05ea5d59e971295b13619a1bd60ce639f5e9b9de887e49665" },
+    { "path": "openspec/changes/rlm-observability-and-robustness/specs/subagent-transcript-storage/spec.md", "sha256": "b7191d2221d69512c5cb9e7be898469d767d1c5427efd5c0e84882335143a90b" },
+    { "path": "openspec/changes/rlm-observability-and-robustness/specs/task-complexity-detection/spec.md", "sha256": "9c4d85ae45fa6b373b516dcb400294d487507f0bcb1abc23e5ed4c89934b7a39" },
+    { "path": "openspec/changes/rlm-observability-and-robustness/specs/tui-command-completion/spec.md", "sha256": "536ae9d621464358141f2e647c31b4c9b71d499e3c76ff951165d06be34b0369" }
+  ]
+}
