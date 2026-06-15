@@ -6,7 +6,7 @@
 
 use super::subagent_panel_state::SubagentPanelState;
 use super::subagent_tree::SubagentTree;
-use crate::agent::progress::{SubagentEventType, SubagentStatus};
+use crate::agent::progress::{ErrorType, SubagentEventType, SubagentStatus};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -264,6 +264,77 @@ fn render_tree_with_expand(
                                 event.elapsed_ms as f64 / 1000.0
                             ),
                             Style::default().fg(Color::Rgb(137, 180, 250)),
+                        )]));
+                    }
+                    SubagentEventType::ToolResult {
+                        tool_name,
+                        success,
+                        summary,
+                    } => {
+                        let icon = if *success { "✓" } else { "✗" };
+                        lines.push(Line::from(vec![Span::styled(
+                            format!("{}{}", event_indent, connector),
+                            Style::default().fg(Color::Rgb(80, 80, 100)),
+                        )]));
+                        let color = if *success {
+                            Color::Rgb(120, 200, 120)
+                        } else {
+                            Color::Rgb(220, 100, 100)
+                        };
+                        lines.push(Line::from(vec![Span::styled(
+                            format!(
+                                "{}{} {} {}  ({:.1}s)",
+                                event_indent,
+                                icon,
+                                tool_name,
+                                summary,
+                                event.elapsed_ms as f64 / 1000.0
+                            ),
+                            Style::default().fg(color),
+                        )]));
+                    }
+                    SubagentEventType::Error {
+                        message,
+                        error_type,
+                    } => {
+                        let err_type = match error_type {
+                            ErrorType::Timeout => "TIMEOUT",
+                            ErrorType::BudgetExceeded { .. } => "BUDGET",
+                            ErrorType::Stuck { .. } => "STUCK",
+                            ErrorType::ToolError { .. } => "TOOL_ERR",
+                            ErrorType::ParseError { .. } => "PARSE_ERR",
+                            ErrorType::Unknown => "ERROR",
+                        };
+                        lines.push(Line::from(vec![Span::styled(
+                            format!("{}{}", event_indent, connector),
+                            Style::default().fg(Color::Rgb(80, 80, 100)),
+                        )]));
+                        lines.push(Line::from(vec![Span::styled(
+                            format!(
+                                "{}⚠ [{}] {}  ({:.1}s)",
+                                event_indent,
+                                err_type,
+                                message,
+                                event.elapsed_ms as f64 / 1000.0
+                            ),
+                            Style::default().fg(Color::Rgb(255, 150, 50)),
+                        )]));
+                    }
+                    SubagentEventType::Completion { status, summary } => {
+                        let summary_str = summary.as_deref().unwrap_or("");
+                        lines.push(Line::from(vec![Span::styled(
+                            format!("{}{}", event_indent, connector),
+                            Style::default().fg(Color::Rgb(80, 80, 100)),
+                        )]));
+                        lines.push(Line::from(vec![Span::styled(
+                            format!(
+                                "{}🏁 {} {}  ({:.1}s)",
+                                event_indent,
+                                status,
+                                summary_str,
+                                event.elapsed_ms as f64 / 1000.0
+                            ),
+                            Style::default().fg(Color::Rgb(140, 200, 255)),
                         )]));
                     }
                 }

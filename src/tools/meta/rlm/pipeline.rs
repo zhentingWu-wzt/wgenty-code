@@ -38,6 +38,7 @@ pub async fn run_rlm_pipeline(
         String,
     )>, // (store, session_id)
     root_node_id: Option<String>,
+    token_budget_k: Option<u64>,
 ) -> Result<RlmResult, String> {
     tracing::info!(
         target: "rlm",
@@ -271,6 +272,11 @@ Context: {context}
                                 started_at: chrono::Utc::now().timestamp_millis(),
                                 elapsed_ms: 0,
                                 metadata: None,
+                                progress_delta: None,
+                                token_budget_k: None,
+                                cumulative_tokens: 0,
+                                error_details: None,
+                                events: Vec::new(),
                             },
                         );
                     }
@@ -299,6 +305,7 @@ Context: {context}
                     20,
                     timeout_secs,
                     sub_progress,
+                    token_budget_k,
                 )
                 .await;
                 (result, idx)

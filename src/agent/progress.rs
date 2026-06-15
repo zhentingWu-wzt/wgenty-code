@@ -19,13 +19,51 @@ pub struct SubagentEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SubagentEventType {
     /// The model output text (analysis, planning, conclusion).
-    /// Text is truncated to 200 chars before storage.
+    /// Full text stored here — TUI layer truncates for display.
     Thought { text: String },
     /// The model called a tool.
     Action {
         tool_name: String,
         params_summary: String,
     },
+    /// A tool execution result.
+    ToolResult {
+        tool_name: String,
+        success: bool,
+        summary: String,
+    },
+    /// An error occurred.
+    Error {
+        message: String,
+        error_type: ErrorType,
+    },
+    /// Subagent completed.
+    Completion {
+        status: String,
+        summary: Option<String>,
+    },
+}
+
+/// Categorized error types for subagent execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ErrorType {
+    Timeout,
+    BudgetExceeded { limit_k: u64, used: u64 },
+    Stuck { reason: String },
+    ToolError { tool: String, message: String },
+    ParseError { message: String },
+    Unknown,
+}
+
+/// Detailed error information for a failed subagent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorInfo {
+    pub error_type: ErrorType,
+    pub message: String,
+    pub last_tool: Option<String>,
+    pub last_params: Option<String>,
+    pub round: u32,
+    pub retryable: bool,
 }
 
 /// A progress update emitted by a subagent at key lifecycle points.
@@ -41,15 +79,26 @@ pub struct SubagentProgress {
     /// Human-readable summary of the current tool's key parameters.
     /// e.g., `"src/auth.rs"` when `current_tool` is `"file_read"`.
     pub current_params: Option<String>,
-    /// Execution event timeline (earliest → latest), max 50 entries.
+    /// Execution event timeline (earliest → latest), no truncation.
     pub action_log: Vec<SubagentEvent>,
-    /// Last assistant text response (truncated to last ~200 chars).
-    /// Captures what the model "said/thought" between tool calls.
+    /// Last assistant text response (full text, TUI truncates for display).
     pub text_snapshot: Option<String>,
     /// Unix epoch timestamp in milliseconds when this subagent started.
     pub started_at: i64,
     pub elapsed_ms: u64,
     pub metadata: Option<SubagentMetadata>,
+
+    // === New fields ===
+    /// Incremental progress delta for the last round (0.0-1.0).
+    pub progress_delta: Option<f32>,
+    /// Token budget in thousands (0 = unlimited).
+    pub token_budget_k: Option<u64>,
+    /// Cumulative tokens used so far.
+    pub cumulative_tokens: u64,
+    /// Error details when status is Failed or Cancelled.
+    pub error_details: Option<ErrorInfo>,
+    /// Full event stream (replaces old action_log for new code, kept for compat).
+    pub events: Vec<SubagentEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,3 +118,335 @@ pub struct SubagentMetadata {
 }
 
 pub type ProgressCallback = Arc<dyn Fn(SubagentProgress) + Send + Sync>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_subagent_event_type_thought_serialize() {
+        let event = SubagentEvent {
+            event_type: SubagentEventType::Thought { text: "hello".to_string() },
+            elapsed_ms: 100,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Thought"));
+        assert!(json.contains("hello"));
+        let deserialized: SubagentEvent = serde_json::from_str(&json).unwrap();
+        match deserialized.event_type {
+            SubagentEventType::Thought { text } => assert_eq!(text, "hello"),
+            _ => panic!("expected Thought"),
+        }
+        assert_eq!(deserialized.elapsed_ms, 100);
+    }
+
+    #[test]
+    fn test_subagent_event_type_action_serialize() {
+        let event = SubagentEvent {
+            event_type: SubagentEventType::Action {
+                tool_name: "read_file".to_string(),
+                params_summary: "src/main.rs".to_string(),
+            },
+            elapsed_ms: 200,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Action"));
+        assert!(json.contains("read_file"));
+        let deserialized: SubagentEvent = serde_json::from_str(&json).unwrap();
+        match deserialized.event_type {
+            SubagentEventType::Action { tool_name, params_summary } => {
+                assert_eq!(tool_name, "read_file");
+                assert_eq!(params_summary, "src/main.rs");
+            }
+            _ => panic!("expected Action"),
+        }
+    }
+
+    #[test]
+    fn test_subagent_event_type_tool_result_serialize() {
+        let event = SubagentEvent {
+            event_type: SubagentEventType::ToolResult {
+                tool_name: "read_file".to_string(),
+                success: true,
+                summary: "file read successfully".to_string(),
+            },
+            elapsed_ms: 300,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("ToolResult"));
+        assert!(json.contains("read_file"));
+        assert!(json.contains("true"));
+        let deserialized: SubagentEvent = serde_json::from_str(&json).unwrap();
+        match deserialized.event_type {
+            SubagentEventType::ToolResult { tool_name, success, summary } => {
+                assert_eq!(tool_name, "read_file");
+                assert!(success);
+                assert_eq!(summary, "file read successfully");
+            }
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn test_subagent_event_type_error_serialize() {
+        let event = SubagentEvent {
+            event_type: SubagentEventType::Error {
+                message: "timeout occurred".to_string(),
+                error_type: ErrorType::Timeout,
+            },
+            elapsed_ms: 400,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Error"));
+        assert!(json.contains("Timeout"));
+        let deserialized: SubagentEvent = serde_json::from_str(&json).unwrap();
+        match deserialized.event_type {
+            SubagentEventType::Error { message, error_type } => {
+                assert_eq!(message, "timeout occurred");
+                assert!(matches!(error_type, ErrorType::Timeout));
+            }
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[test]
+    fn test_subagent_event_type_error_budget_exceeded() {
+        let event = SubagentEvent {
+            event_type: SubagentEventType::Error {
+                message: "budget exceeded".to_string(),
+                error_type: ErrorType::BudgetExceeded { limit_k: 10, used: 15 },
+            },
+            elapsed_ms: 500,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("BudgetExceeded"));
+        assert!(json.contains("10"));
+        assert!(json.contains("15"));
+        let deserialized: SubagentEvent = serde_json::from_str(&json).unwrap();
+        match deserialized.event_type {
+            SubagentEventType::Error { error_type: ErrorType::BudgetExceeded { limit_k, used }, .. } => {
+                assert_eq!(limit_k, 10);
+                assert_eq!(used, 15);
+            }
+            _ => panic!("expected BudgetExceeded"),
+        }
+    }
+
+    #[test]
+    fn test_subagent_event_type_completion_serialize() {
+        let event = SubagentEvent {
+            event_type: SubagentEventType::Completion {
+                status: "completed".to_string(),
+                summary: Some("all done".to_string()),
+            },
+            elapsed_ms: 600,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Completion"));
+        assert!(json.contains("completed"));
+        assert!(json.contains("all done"));
+        let deserialized: SubagentEvent = serde_json::from_str(&json).unwrap();
+        match deserialized.event_type {
+            SubagentEventType::Completion { status, summary } => {
+                assert_eq!(status, "completed");
+                assert_eq!(summary, Some("all done".to_string()));
+            }
+            _ => panic!("expected Completion"),
+        }
+    }
+
+    #[test]
+    fn test_subagent_event_type_completion_no_summary() {
+        let event = SubagentEvent {
+            event_type: SubagentEventType::Completion {
+                status: "failed".to_string(),
+                summary: None,
+            },
+            elapsed_ms: 700,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("failed"));
+        // summary should be null
+        assert!(json.contains("\"summary\":null") || !json.contains("all done"));
+        let deserialized: SubagentEvent = serde_json::from_str(&json).unwrap();
+        match deserialized.event_type {
+            SubagentEventType::Completion { status, summary } => {
+                assert_eq!(status, "failed");
+                assert_eq!(summary, None);
+            }
+            _ => panic!("expected Completion"),
+        }
+    }
+
+    #[test]
+    fn test_error_type_variants() {
+        assert!(matches!(ErrorType::Timeout, ErrorType::Timeout));
+        assert!(matches!(ErrorType::Unknown, ErrorType::Unknown));
+        assert!(matches!(
+            ErrorType::BudgetExceeded { limit_k: 5, used: 10 },
+            ErrorType::BudgetExceeded { .. }
+        ));
+        assert!(matches!(
+            ErrorType::Stuck { reason: String::new() },
+            ErrorType::Stuck { .. }
+        ));
+        assert!(matches!(
+            ErrorType::ToolError { tool: String::new(), message: String::new() },
+            ErrorType::ToolError { .. }
+        ));
+        assert!(matches!(
+            ErrorType::ParseError { message: String::new() },
+            ErrorType::ParseError { .. }
+        ));
+    }
+
+    #[test]
+    fn test_error_type_serialization() {
+        // Test Timeout
+        let json = serde_json::to_string(&ErrorType::Timeout).unwrap();
+        assert_eq!(json, "\"Timeout\"");
+
+        // Test Unknown
+        let json = serde_json::to_string(&ErrorType::Unknown).unwrap();
+        assert_eq!(json, "\"Unknown\"");
+
+        // Test BudgetExceeded
+        let be = ErrorType::BudgetExceeded { limit_k: 10, used: 15 };
+        let json = serde_json::to_string(&be).unwrap();
+        assert!(json.contains("BudgetExceeded"));
+        let deserialized: ErrorType = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            ErrorType::BudgetExceeded { limit_k, used } => {
+                assert_eq!(limit_k, 10);
+                assert_eq!(used, 15);
+            }
+            _ => panic!("expected BudgetExceeded"),
+        }
+    }
+
+    #[test]
+    fn test_error_info_struct() {
+        let info = ErrorInfo {
+            error_type: ErrorType::Timeout,
+            message: "timed out after 30s".to_string(),
+            last_tool: Some("read_file".to_string()),
+            last_params: Some("src/main.rs".to_string()),
+            round: 5,
+            retryable: true,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("Timeout"));
+        assert!(json.contains("timed out after 30s"));
+        assert!(json.contains("read_file"));
+        assert!(json.contains("5"));
+        assert!(json.contains("true"));
+
+        let deserialized: ErrorInfo = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized.error_type, ErrorType::Timeout));
+        assert_eq!(deserialized.message, "timed out after 30s");
+        assert_eq!(deserialized.last_tool, Some("read_file".to_string()));
+        assert_eq!(deserialized.last_params, Some("src/main.rs".to_string()));
+        assert_eq!(deserialized.round, 5);
+        assert!(deserialized.retryable);
+    }
+
+    #[test]
+    fn test_error_info_minimal() {
+        let info = ErrorInfo {
+            error_type: ErrorType::Unknown,
+            message: "something went wrong".to_string(),
+            last_tool: None,
+            last_params: None,
+            round: 0,
+            retryable: false,
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let deserialized: ErrorInfo = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized.error_type, ErrorType::Unknown));
+        assert_eq!(deserialized.round, 0);
+        assert!(!deserialized.retryable);
+        assert!(deserialized.last_tool.is_none());
+        assert!(deserialized.last_params.is_none());
+    }
+
+    #[test]
+    fn test_subagent_progress_new_fields() {
+        let progress = SubagentProgress {
+            node_id: "node1".to_string(),
+            parent_id: None,
+            label: "test".to_string(),
+            status: SubagentStatus::Running,
+            round: Some(1),
+            max_rounds: Some(10),
+            current_tool: Some("read_file".to_string()),
+            current_params: Some("src/main.rs".to_string()),
+            action_log: vec![],
+            text_snapshot: Some("working".to_string()),
+            started_at: 1000,
+            elapsed_ms: 500,
+            metadata: None,
+            progress_delta: Some(0.5),
+            token_budget_k: Some(10),
+            cumulative_tokens: 5000,
+            error_details: None,
+            events: vec![],
+        };
+        let json = serde_json::to_string(&progress).unwrap();
+        assert!(json.contains("progress_delta"));
+        assert!(json.contains("token_budget_k"));
+        assert!(json.contains("cumulative_tokens"));
+        assert!(json.contains("error_details"));
+        assert!(json.contains("events"));
+        assert!(json.contains("0.5"));
+        assert!(json.contains("10"));
+        assert!(json.contains("5000"));
+
+        let deserialized: SubagentProgress = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.progress_delta, Some(0.5));
+        assert_eq!(deserialized.token_budget_k, Some(10));
+        assert_eq!(deserialized.cumulative_tokens, 5000);
+        assert!(deserialized.error_details.is_none());
+        assert!(deserialized.events.is_empty());
+    }
+
+    #[test]
+    fn test_subagent_progress_new_fields_defaults() {
+        let progress = SubagentProgress {
+            node_id: "node1".to_string(),
+            parent_id: None,
+            label: "test".to_string(),
+            status: SubagentStatus::Running,
+            round: Some(1),
+            max_rounds: Some(10),
+            current_tool: None,
+            current_params: None,
+            action_log: vec![],
+            text_snapshot: None,
+            started_at: 1000,
+            elapsed_ms: 500,
+            metadata: None,
+            progress_delta: None,
+            token_budget_k: None,
+            cumulative_tokens: 0,
+            error_details: None,
+            events: vec![],
+        };
+        let json = serde_json::to_string(&progress).unwrap();
+        let deserialized: SubagentProgress = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.progress_delta.is_none());
+        assert!(deserialized.token_budget_k.is_none());
+        assert_eq!(deserialized.cumulative_tokens, 0);
+        assert!(deserialized.error_details.is_none());
+        assert!(deserialized.events.is_empty());
+    }
+
+    #[test]
+    fn test_subagent_status_variants() {
+        assert_eq!(SubagentStatus::Pending, SubagentStatus::Pending);
+        assert_eq!(SubagentStatus::Running, SubagentStatus::Running);
+        assert_eq!(SubagentStatus::Completed, SubagentStatus::Completed);
+        assert_eq!(SubagentStatus::Failed, SubagentStatus::Failed);
+        assert_eq!(SubagentStatus::Cancelled, SubagentStatus::Cancelled);
+        assert_ne!(SubagentStatus::Pending, SubagentStatus::Running);
+    }
+}
