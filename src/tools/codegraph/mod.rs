@@ -1,6 +1,7 @@
 //! CodeGraph — persistent code index and query engine.
 
 pub mod audit;
+pub mod fuzzy;
 pub mod indexer;
 pub mod parser;
 pub mod query;
