@@ -155,6 +155,35 @@ impl Cli {
         let session_id = uuid::Uuid::new_v4().to_string();
         let mut app = App::new(client, session_id, settings_handle);
 
+        // Load plugin commands into completion engine
+        {
+            let plugin_manager = crate::plugins::PluginManager::new();
+            if plugin_manager.load_all().await.is_ok() {
+                let commands = plugin_manager.command_registry().list_commands().await;
+                let entries: Vec<crate::tui::completion::CommandEntry> = commands
+                    .into_iter()
+                    .map(|c| crate::tui::completion::CommandEntry {
+                        name: c.definition.name,
+                        description: c.definition.description,
+                        args_hint: c.definition.usage,
+                    })
+                    .collect();
+                if !entries.is_empty() {
+                    if let Some(ref mut engine) = app.completion_engine {
+                        // Merge plugin commands with existing builtins
+                        let mut all = engine.commands.clone();
+                        // Add plugin commands, skipping duplicates
+                        for entry in entries {
+                            if !all.iter().any(|e| e.name == entry.name) {
+                                all.push(entry);
+                            }
+                        }
+                        engine.update_commands(all);
+                    }
+                }
+            }
+        }
+
         // Send initial prompt if given
         if let Some(p) = prompt {
             let tx = app.event_sender();

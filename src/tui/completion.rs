@@ -57,6 +57,11 @@ impl CompletionEngine {
         }
     }
 
+    /// Replace all commands with a new list (e.g. after PluginRegistry loads).
+    pub fn update_commands(&mut self, commands: Vec<CommandEntry>) {
+        self.commands = commands;
+    }
+
     pub fn filter(&self, prefix: char, partial: &str) -> Vec<CompletionMatch> {
         let partial_lower = partial.to_lowercase();
         match prefix {
@@ -166,5 +171,34 @@ mod tests {
         let e = test_engine();
         let matches = e.filter('!', "anything");
         assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_commands_filter_includes_args_hint() {
+        let mut e = test_engine();
+        // Override commands with one that has an args_hint
+        e.commands = vec![
+            CommandEntry { name: "code-review".into(), description: "Review code".into(), args_hint: Some("<change-name>".into()) },
+        ];
+        let matches = e.filter('/', "code");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].args_hint, Some("<change-name>".to_string()));
+    }
+
+    #[test]
+    fn test_update_commands() {
+        let mut e = test_engine();
+        let new_commands = vec![
+            CommandEntry { name: "new-cmd".into(), description: "New command".into(), args_hint: Some("<arg>".into()) },
+        ];
+        e.update_commands(new_commands);
+        // Old commands should be replaced
+        let matches_old = e.filter('/', "code");
+        assert_eq!(matches_old.len(), 0);
+        // New command should be found
+        let matches_new = e.filter('/', "new");
+        assert_eq!(matches_new.len(), 1);
+        assert_eq!(matches_new[0].text, "new-cmd");
+        assert_eq!(matches_new[0].args_hint, Some("<arg>".to_string()));
     }
 }

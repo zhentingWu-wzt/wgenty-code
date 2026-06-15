@@ -50,7 +50,7 @@ impl CompletionPanel {
                 Style::default().fg(Color::Rgb(205, 205, 220))
             };
 
-            let parts = vec![
+            let mut parts = vec![
                 Span::styled(
                     format!(" {}", m.text),
                     style,
@@ -60,6 +60,12 @@ impl CompletionPanel {
                     style.add_modifier(Modifier::DIM),
                 ),
             ];
+            if let Some(ref hint) = m.args_hint {
+                parts.push(Span::styled(
+                    format!(" {}", hint),
+                    style.add_modifier(Modifier::DIM),
+                ));
+            }
             lines.push(Line::from(parts));
         }
 

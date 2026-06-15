@@ -26,8 +26,10 @@ impl App {
         match event {
             AppEvent::KeyEvent(key) => {
                 // Permission panel handling (inline, not popup)
-                // Shift+Tab: cycle agent mode
-                if key.code == KeyCode::BackTab {
+                // Shift+Tab: cycle agent mode (but not when completion panel is active)
+                if key.code == KeyCode::BackTab
+                    && !self.completion_state.as_ref().map(|s| s.visible).unwrap_or(false)
+                {
                     self.mode = self.mode.next();
                     return;
                 }
@@ -99,6 +101,19 @@ impl App {
                             }
                             return;
                         }
+                        KeyCode::BackTab => {
+                            // Cycle to previous item
+                            if let Some(ref mut s) = self.completion_state {
+                                if !s.matches.is_empty() {
+                                    s.selected_index = if s.selected_index == 0 {
+                                        s.matches.len() - 1
+                                    } else {
+                                        s.selected_index - 1
+                                    };
+                                }
+                            }
+                            return;
+                        }
                         KeyCode::Enter => {
                             // Confirm selection: replace the @xxx or /xxx with full name
                             if let Some(ref state) = self.completion_state.clone() {
@@ -108,7 +123,13 @@ impl App {
                                         let before = &text[..pos];
                                         self.input_box.textarea = tui_textarea::TextArea::default();
                                         self.input_box.textarea.insert_str(before);
-                                        self.input_box.textarea.insert_str(&format!("{} ", m.text));
+                                        // @-triggered completion outputs /skill-name, /-triggered keeps /name
+                                        let insert = if state.prefix == '@' {
+                                            format!("/{} ", m.text)
+                                        } else {
+                                            format!("{} ", m.text)
+                                        };
+                                        self.input_box.textarea.insert_str(&insert);
                                     }
                                 }
                             }
