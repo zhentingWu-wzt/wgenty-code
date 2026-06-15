@@ -124,6 +124,10 @@ pub struct Settings {
     /// Guardian (security review) configuration.
     #[serde(default)]
     pub guardian: GuardianSettings,
+    /// Maximum age in days for stored transcripts. Older records are cleaned up.
+    /// 0 = unlimited retention.
+    #[serde(default = "default_max_transcript_age_days")]
+    pub max_transcript_age_days: u32,
 }
 
 /// Default helper for serde: returns true.
@@ -144,6 +148,8 @@ fn default_rlm_max_replan() -> usize {
 fn default_true() -> bool {
     true
 }
+
+fn default_max_transcript_age_days() -> u32 { 30 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemorySettings {
@@ -296,6 +302,7 @@ impl Default for Settings {
             include_skill_instructions: true,
             model_instructions_file: None,
             guardian: GuardianSettings::default(),
+            max_transcript_age_days: 30,
         }
     }
 }
@@ -457,6 +464,7 @@ impl Settings {
                     settings.plugin_marketplaces = Some(serde_json::Value::Object(map));
                 }
             }
+            "max_transcript_age_days" => settings.max_transcript_age_days = value.parse().unwrap_or(30),
             _ => return Err(anyhow::anyhow!("Unknown setting: {}", key)),
         }
 
