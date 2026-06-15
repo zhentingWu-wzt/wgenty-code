@@ -136,6 +136,10 @@ pub struct Settings {
     /// 0 = unlimited retention.
     #[serde(default = "default_max_transcript_age_days")]
     pub max_transcript_age_days: u32,
+    /// Path to the SQLite database for subagent transcript persistence.
+    /// Defaults to `~/.wgenty-code/subagent_transcripts.db`.
+    #[serde(default = "default_transcript_db_path")]
+    pub transcript_db_path: String,
 }
 
 /// Default helper for serde: returns true.
@@ -160,6 +164,11 @@ fn default_true() -> bool {
 }
 
 fn default_max_transcript_age_days() -> u32 { 30 }
+
+fn default_transcript_db_path() -> String {
+    let home = dirs::home_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    format!("{}/.wgenty-code/subagent_transcripts.db", home)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemorySettings {
@@ -315,6 +324,7 @@ impl Default for Settings {
             model_instructions_file: None,
             guardian: GuardianSettings::default(),
             max_transcript_age_days: 30,
+            transcript_db_path: default_transcript_db_path(),
         }
     }
 }
@@ -479,6 +489,7 @@ impl Settings {
                 }
             }
             "max_transcript_age_days" => settings.max_transcript_age_days = value.parse().unwrap_or(30),
+            "transcript_db_path" => settings.transcript_db_path = value.to_string(),
             _ => return Err(anyhow::anyhow!("Unknown setting: {}", key)),
         }
 

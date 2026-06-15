@@ -3,9 +3,15 @@
 use super::{SubagentEventRecord, SubagentTranscript, SubagentTranscriptHeader, TranscriptError, TranscriptStatus};
 use rusqlite::{params, Connection};
 use std::path::Path;
+use std::sync::Mutex;
 
+/// Thread-safe SQLite-backed subagent transcript store.
+///
+/// The inner `Mutex` guards the `rusqlite::Connection` (which is `Send` but not `Sync`)
+/// so the store can be shared across `&self` method calls from multiple concurrent tasks
+/// via e.g. `Arc<SubagentTranscriptStore>`.
 pub struct SubagentTranscriptStore {
-    db: Connection,
+    db: Mutex<Connection>,
 }
 
 impl SubagentTranscriptStore {
@@ -15,13 +21,14 @@ impl SubagentTranscriptStore {
             std::fs::create_dir_all(parent).map_err(|e| TranscriptError::Io(e.to_string()))?;
         }
         let db = Connection::open(path)?;
-        let store = Self { db };
+        let store = Self { db: Mutex::new(db) };
         store.run_migrations()?;
         Ok(store)
     }
 
     fn run_migrations(&self) -> Result<(), TranscriptError> {
-        self.db.execute_batch("
+        let db = self.db.lock().unwrap();
+        db.execute_batch("
             PRAGMA journal_mode=WAL;
             PRAGMA foreign_keys=ON;
 
@@ -71,7 +78,8 @@ impl SubagentTranscriptStore {
     /// If `retention_days` is `Some(d)` and `d > 0`, also deletes transcripts
     /// older than `d` days within the same transaction.
     pub fn save(&self, transcript: &SubagentTranscript, retention_days: Option<u32>) -> Result<(), TranscriptError> {
-        let tx = self.db.unchecked_transaction()?;
+        let db = self.db.lock().unwrap();
+        let tx = db.unchecked_transaction()?;
 
         let status_str = match transcript.status {
             TranscriptStatus::Pending => "pending",
@@ -140,8 +148,9 @@ impl SubagentTranscriptStore {
 
     /// Update transcript header status (for checkpoint).
     pub fn checkpoint_status(&self, id: &str, status: TranscriptStatus, round: u32, tokens: u64) -> Result<(), TranscriptError> {
+        let db = self.db.lock().unwrap();
         let status_str = status.to_string();
-        let rows_affected = self.db.execute(
+        let rows_affected = db.execute(
             "UPDATE subagent_transcripts SET status = ?1, actual_rounds = ?2, total_tokens = ?3 WHERE id = ?4",
             params![status_str, round, tokens, id],
         )?;
@@ -153,7 +162,8 @@ impl SubagentTranscriptStore {
 
     /// Append events to an existing transcript.
     pub fn append_events(&self, transcript_id: &str, events: &[SubagentEventRecord]) -> Result<(), TranscriptError> {
-        let tx = self.db.unchecked_transaction()?;
+        let db = self.db.lock().unwrap();
+        let tx = db.unchecked_transaction()?;
         for event in events {
             tx.execute(
                 "INSERT INTO subagent_events (transcript_id, round, event_type, tool_name, tool_params, data, elapsed_ms, token_count)
@@ -176,7 +186,8 @@ impl SubagentTranscriptStore {
 
     /// List transcripts by session (headers only, no events).
     pub fn list_by_session(&self, session_id: &str) -> Result<Vec<SubagentTranscriptHeader>, TranscriptError> {
-        let mut stmt = self.db.prepare(
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
             "SELECT id, session_id, parent_id, label, status, started_at, finished_at,
                     total_tokens, actual_rounds, error_message, summary
              FROM subagent_transcripts
@@ -207,7 +218,8 @@ impl SubagentTranscriptStore {
 
     /// Get full transcript by ID (with all events).
     pub fn get_by_id(&self, id: &str) -> Result<Option<SubagentTranscript>, TranscriptError> {
-        let mut stmt = self.db.prepare(
+        let db = self.db.lock().unwrap();
+        let mut stmt = db.prepare(
             "SELECT id, session_id, parent_id, label, status, system_prompt, user_prompt,
                     started_at, finished_at, total_tokens, max_rounds, actual_rounds,
                     token_budget_k, error_message, summary
@@ -243,7 +255,7 @@ impl SubagentTranscriptStore {
         if let Some(transcript_result) = rows.next() {
             let mut transcript = transcript_result?;
             // Load events
-            let mut evt_stmt = self.db.prepare(
+            let mut evt_stmt = db.prepare(
                 "SELECT round, event_type, tool_name, tool_params, data, elapsed_ms, token_count
                  FROM subagent_events WHERE transcript_id = ?1 ORDER BY round, id"
             )?;
@@ -280,8 +292,9 @@ impl SubagentTranscriptStore {
         if query.trim().is_empty() {
             return Ok(Vec::new());
         }
+        let db = self.db.lock().unwrap();
         let pattern = format!("%{}%", query);
-        let mut stmt = self.db.prepare(
+        let mut stmt = db.prepare(
             "SELECT id, session_id, parent_id, label, status, started_at, finished_at,
                     total_tokens, actual_rounds, error_message, summary
              FROM subagent_transcripts
@@ -316,7 +329,8 @@ impl SubagentTranscriptStore {
         if retention_days == 0 {
             return Ok(0);
         }
-        let deleted = self.db.execute(
+        let db = self.db.lock().unwrap();
+        let deleted = db.execute(
             "DELETE FROM subagent_transcripts WHERE started_at < (unixepoch('now') - ?1 * 86400) * 1000",
             params![retention_days],
         )?;
