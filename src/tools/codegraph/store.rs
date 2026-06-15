@@ -327,6 +327,33 @@ impl IndexStore {
         Ok(conn.last_insert_rowid())
     }
 
+    /// Get relationships filtered by kind (e.g., "inherits", "typeof", "returns", "parameter").
+    pub fn get_relationships_by_kind(&self, kind: &RelKind) -> anyhow::Result<Vec<Relationship>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id,source_id,target_id,rel_kind,f.path,line,confidence \
+             FROM relationships r JOIN files f ON r.file_id=f.id \
+             WHERE r.rel_kind=?1 ORDER BY r.id",
+        )?;
+        let rows = stmt.query_map(params![kind.as_str()], |row| {
+            let v: String = row.get(6)?;
+            Ok(Relationship {
+                id: Some(row.get(0)?),
+                source_id: row.get(1)?,
+                target_id: row.get(2)?,
+                rel_kind: RelKind::parse(&row.get::<_, String>(3)?),
+                file_path: row.get(4)?,
+                line: row.get::<_, i64>(5)? as usize,
+                confidence: Confidence::parse(&v),
+            })
+        })?;
+        let mut r = Vec::new();
+        for row in rows {
+            r.push(row?);
+        }
+        Ok(r)
+    }
+
     // ── Call graph ──
 
     pub fn get_callers(&self, target_id: i64, depth: u32) -> anyhow::Result<Vec<SymbolCallEntry>> {

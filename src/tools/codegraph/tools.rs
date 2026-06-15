@@ -18,7 +18,7 @@ fn get_engine() -> Result<Arc<QueryEngine>, ToolError> {
     let db_path = cwd.join(".codegraph").join("index.db");
     if !db_path.exists() {
         return Err(ToolError {
-            message: "No codegraph index found at .codegraph/index.db. Run `wgenty-code codegraph index` in this directory to build the index (typically takes <5s on a Rust project), then retry codegraph_node. If the index command fails or unavailable, you may use grep as a temporary alternative for this single task."
+            message: "No codegraph index found at .codegraph/index.db. Run `wgenty-code codegraph index` in this directory to build the index (supports Rust, Java, and Python projects), then retry codegraph_node. If the index command fails or unavailable, you may use grep as a temporary alternative for this single task."
                 .to_string(),
             code: Some("no_index".to_string()),
         });
@@ -59,7 +59,7 @@ impl Tool for CodegraphNodeTool {
     }
 
     fn description(&self) -> &str {
-        "Look up a Rust symbol by name. Returns definition location, signature, references, and callers/callees. Requires a codegraph index (run `wgenty-code codegraph index` first). PREFER FOR: finding symbol definitions, listing callers/callees, finding references. AVOID WHEN: searching for text patterns or non-symbol concepts (use grep instead)."
+        "Look up a symbol by name. Returns definition location, signature, references, and callers/callees. Supports Rust, Java, and Python symbols. Requires a codegraph index (run `wgenty-code codegraph index` first). PREFER FOR: finding symbol definitions, listing callers/callees, finding references. AVOID WHEN: searching for text patterns or non-symbol concepts (use grep instead)."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -321,7 +321,7 @@ impl Tool for SymbolBatchTool {
     }
 
     fn description(&self) -> &str {
-        "Look up multiple Rust symbols at once (max 10). Returns definition, references, and callers/callees for each. PREFER FOR: checking several symbols simultaneously instead of calling codegraph_node repeatedly. AVOID WHEN: you only need one symbol (use codegraph_node instead)."
+        "Look up multiple symbols at once (max 10). Supports Rust, Java, and Python. Returns definition, references, and callers/callees for each. PREFER FOR: checking several symbols simultaneously instead of calling codegraph_node repeatedly. AVOID WHEN: you only need one symbol (use codegraph_node instead)."
     }
 
     fn input_schema(&self) -> serde_json::Value {

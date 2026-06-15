@@ -17,28 +17,28 @@
 
 ## 3. Parser Pool + 路由
 
-- [ ] 3.1 parser.rs: 重构为多语言 parser pool (HashMap<&str, Arc<Mutex<CodeParser>>>)
-- [ ] 3.2 parser.rs: 文件扩展名→language 路由
-- [ ] 3.3 单元测试：pool 缓存、语言路由正确性
+- [x] 3.1 parser.rs: 重构为多语言 parser pool (HashMap<&str, Arc<Mutex<CodeParser>>>)
+- [x] 3.2 parser.rs: 文件扩展名→language 路由
+- [x] 3.3 单元测试：pool 缓存、语言路由正确性
 
 ## 4. Schema 迁移
 
-- [ ] 4.1 创建 src/tools/codegraph/migration.rs: version 检测 + 自动迁移
-- [ ] 4.2 store.rs: IndexStore::open() 时调用 migration
-- [ ] 4.3 store.rs: 新增新 RelKind 的 insert/query 方法
-- [ ] 4.4 单元测试：迁移前后数据完整性
+- [x] 4.1 创建 src/tools/codegraph/migration.rs: version 检测 + 自动迁移
+- [x] 4.2 store.rs: IndexStore::open() 时调用 migration
+- [x] 4.3 store.rs: 新增新 RelKind 的 insert/query 方法
+- [x] 4.4 单元测试：迁移前后数据完整性
 
 ## 5. Indexer 适配
 
-- [ ] 5.1 indexer.rs: 注入 adapter map
-- [ ] 5.2 indexer.rs: 按文件扩展名选择 adapter → extract_symbols/extract_relationships
-- [ ] 5.3 indexer.rs: language 字段写入
+- [x] 5.1 indexer.rs: 注入 adapter map
+- [x] 5.2 indexer.rs: 按文件扩展名选择 adapter → extract_symbols/extract_relationships
+- [x] 5.3 indexer.rs: language 字段写入
 - [ ] 5.4 单元测试：三语言各索引一个 fixture 文件
 
 ## 6. Query 适配
 
-- [ ] 6.1 query.rs: 新 RelKind 查询（按 Inherits/TypeOf 过滤）
-- [ ] 6.2 tools.rs: 现有 tool description 更新（mention Java/Python support）
+- [x] 6.1 query.rs: 新 RelKind 查询（按 Inherits/TypeOf 过滤）
+- [x] 6.2 tools.rs: 现有 tool description 更新（mention Java/Python support）
 
 ## 7. 验收
 
