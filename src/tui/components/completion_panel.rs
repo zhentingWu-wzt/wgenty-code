@@ -1,11 +1,15 @@
 //! CompletionPanel — inline completion suggestion list above the input box.
 
 use crate::tui::app::types::CompletionState;
+use crate::tui::theme::ACCENT;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
+
+const MAX_VISIBLE_ITEMS: usize = 8;
+const MAX_PANEL_WIDTH: u16 = 60;
 
 pub struct CompletionPanel;
 
@@ -15,18 +19,17 @@ impl CompletionPanel {
             return;
         }
 
-        // Max 8 visible items
-        let max_visible = 8.min(state.matches.len());
+        let max_visible = MAX_VISIBLE_ITEMS.min(state.matches.len());
         let panel_height = max_visible as u16 + 2; // border top/bottom
 
         let panel_area = Rect {
             x: area.x,
             y: area.y.saturating_sub(panel_height),
-            width: area.width.min(60),
+            width: area.width.min(MAX_PANEL_WIDTH),
             height: panel_height,
         };
 
-        let border_color = Color::Rgb(255, 140, 66); // orange to match @ prefix
+        let border_color = ACCENT;
 
         let block = Block::default()
             .title(format!(" {} ", if state.prefix == '@' { "Skills" } else { "Commands" }))
