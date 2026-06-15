@@ -55,14 +55,32 @@ probe-query-output.txt
    每个 tool_call 有完整的 id、name、arguments（JSON 字符串），
    对应的 tool response 通过 tool_call_id 关联。
 
+   Session 结构定义（src/context/session.rs:171-177）：
+     Session { id, name, created_at, updated_at, messages: Vec<ChatMessage> }
+
+   ChatMessage 结构定义（src/api/mod.rs:404-415）：
+     ChatMessage { role, content?, reasoning_content?, tool_calls?, tool_call_id? }
+
+   注意：session JSON/struct 不存储 API 返回的 usage（token 用量）信息。
+   Token 用量的追踪仅存在于 subagent transcript SQLite 存储中
+   （src/transcript/store.rs），不在 session JSON 层。
+
    因此，通过 repl 模式（完整 agent 会话）产生的 session JSON 中，
-   工具调用序列是完整可解析的。
+   工具调用序列是完整可解析的，但 token 计数不可从 session JSON 获取。
 
 3. 单条任务输出结构描述
    纯文本格式。API 返回 content 内容直接打印到 stdout。
    无结构元数据（无 JSON 封装、无 token 计数、无工具调用标记）。
 
-4. 对 B 路径方案（CLI 回放）的最终判断
+4. --no-interactive 标志说明
+   CLI 定义中有 no_interactive 字段（src/cli/mod.rs:39），但：
+   - run_query() 函数（src/cli/args.rs:227-285）完全不读取 self.no_interactive
+   - 该标志在 CLI 的 Query 子命令的 Clap derive 解析中存在
+     但 query 子命令天生就是非交互的（单次请求-响应，stdout 输出后退出）
+   - 因此 --no-interactive 对 query 无实质影响，它等价于 query 默认行为
+   - plan 文档中的命令示例包含 --no-interactive，但实际运行时不需要
+
+5. 对 B 路径方案（CLI 回放）的最终判断
 
    需调整。
    - query 命令不是备选方案：它只是裸 API 调用，不产生工具调用序列，
@@ -74,11 +92,16 @@ probe-query-output.txt
        * 每次回复的工具调用数量
        * 使用的工具名称分布（view, grep, exec 等）
        * 工具调用的参数内容
+   - Token 计数限制：session JSON 不包含 usage 字段；如需测量 token
+     消耗，需要通过以下方式之一：
+     （a）修改 agent loop 在 message 中嵌入 token 计数（需改 src/ 代码）
+     （b）在 subagent transcript SQLite 层面统计
+     （c）从 API 代理层捕获完整响应（含 usage）
    - 替代方案：也可以直接在 agent loop 中埋点，输出工具调用事件流
      （如 JSON Lines），但这需要修改 src/ 代码（当前 change 禁止）
 
 结论：B 路径可行，但需要调整为从 repl 模式 session JSON 中提取
-工具调用序列，而非使用 query 命令。
+工具调用序列，而非使用 query 命令。Token 量级需通过其他渠道获取。
 
 ========================================
 附加记录
@@ -101,3 +124,9 @@ probe-query-output.txt
   5. session JSON 结构验证
      工具调用序列在 messages[].tool_calls[] 字段中
      格式含 id, type, function(name, arguments)
+
+  6. Token 用量不在 session JSON 或 ChatMessage 结构中
+     需通过 subagent transcript SQLite 或 API 原始响应获取
+
+  7. --no-interactive 在 CLI 接口中声明但 run_query() 未使用
+     query 天生非交互，该标志对 query 无实际影响
