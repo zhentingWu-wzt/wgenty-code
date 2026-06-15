@@ -49,10 +49,10 @@
 
 ## 7. TUI 集成与渲染
 
-- [ ] 7.1 更新 `status.rs`（status bar 组件）：显示 subagent 失败计数（红色）、token 预算使用情况
-- [ ] 7.2 更新 `subagent_tree.rs`：存储并暴露 progress_delta、budget、error_details 字段
-- [ ] 7.3 更新 `subagent_panel.rs`：渲染 token 预算信息（"1.5k/10k tokens"）、progress_delta 低警告、完整 action timeline
-- [ ] 7.4 更新 `render.rs`：集成补全面板渲染、detail view 全屏模式
+- [x] 7.1 更新 `status.rs`（status bar 组件）：显示 subagent 失败计数（红色）、token 预算使用情况
+- [x] 7.2 更新 `subagent_tree.rs`：存储并暴露 progress_delta、budget、error_details 字段
+- [x] 7.3 更新 `subagent_panel.rs`：渲染 token 预算信息（"1.5k/10k tokens"）、progress_delta 低警告、完整 action timeline
+- [x] 7.4 更新 `render.rs`：集成补全面板渲染、detail view 全屏模式
 
 ## 8. 配置与 CLI 入口
 
