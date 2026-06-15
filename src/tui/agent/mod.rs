@@ -78,6 +78,7 @@ impl AgentLoop {
     /// Process a single user input. Handles the full agent loop (SSE + tools).
     /// Returns Ok(()) on normal completion, Err if cancelled or timed out.
     pub async fn process_input(&mut self, input: String) -> Result<(), String> {
+        self.token_counter.reset_turn();
         const AGENT_LOOP_TIMEOUT: Duration = Duration::from_secs(3600);
 
         match tokio::time::timeout(AGENT_LOOP_TIMEOUT, self.process_input_inner(input)).await {
@@ -116,6 +117,9 @@ impl AgentLoop {
 
         {
             let mut history = self.conversation_history.lock().await;
+            // Estimate per-turn input tokens before pushing user message
+            let input_tokens = input.len() / 4;
+            self.token_counter.add_input(input_tokens);
             history.push(ChatMessage::user(&input));
         }
 
