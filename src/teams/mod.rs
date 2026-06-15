@@ -5,6 +5,7 @@
 //! team protocols, autonomous agents, worktree isolation).
 
 pub mod mailbox;
+pub mod rollback;
 pub mod subagent;
 pub mod subagent_loop;
 pub mod subagent_mailbox;
