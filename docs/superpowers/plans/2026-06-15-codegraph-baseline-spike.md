@@ -2,6 +2,7 @@
 change: codegraph-baseline-spike
 design-doc: docs/superpowers/specs/2026-06-15-codegraph-baseline-spike-design.md
 base-ref: 988bcdef7ec3dbba115794809a0431f1e7b44f93
+archived-with: 2026-06-15-codegraph-baseline-spike
 ---
 
 # Codegraph Baseline Spike 实施计划
@@ -14,6 +15,7 @@ base-ref: 988bcdef7ec3dbba115794809a0431f1e7b44f93
 
 **Tech Stack:** Bash 4+, jq, sqlite3, awk, `wgenty-code` CLI（由 `cargo build` 产出）
 
+archived-with: 2026-06-15-codegraph-baseline-spike
 ---
 
 ## Phase 0: Build 探针（消除技术风险，首批执行）
@@ -202,6 +204,7 @@ Z symbols) to validate external repo choice.
 Ref: R9, Design Doc §7 probe 3"
 ```
 
+archived-with: 2026-06-15-codegraph-baseline-spike
 ---
 
 ## Phase 1: 测量脚手架（对应 tasks.md §1）
@@ -552,6 +555,7 @@ echo "[run-all] done. Results in $OUTPUT_DIR"
 - 子脚本缺失时给出清晰错误而非静默成功
 - 确认 `.gitignore` 生效（results/ 内容不被追踪）
 
+archived-with: 2026-06-15-codegraph-baseline-spike
 ---
 
 （后续 Phase 2-9 遵循相同结构，每个 task 对应 tasks.md 具体编号。限于篇幅在此省略，由实际执行时逐个 task 展开。完整 task 清单基于 tasks.md 的 10 组 39 task 映射。）
@@ -566,6 +570,7 @@ echo "[run-all] done. Results in $OUTPUT_DIR"
 ## Phase 9: 范围合规验证（tasks.md §9，R7）
 ## Phase 10: 验证与归档（tasks.md §10）
 
+archived-with: 2026-06-15-codegraph-baseline-spike
 ---
 
 ## 执行约定
@@ -576,6 +581,7 @@ echo "[run-all] done. Results in $OUTPUT_DIR"
 4. **遇测试/构建/运行失败** → 加载 `systematic-debugging` 技能，根因未定前不写修复
 5. **每个 Phase 开始前检查**当前允许改动路径合规（`git diff --name-only main...`）
 
+archived-with: 2026-06-15-codegraph-baseline-spike
 ---
 
 ## 计划自检（Self-Review）

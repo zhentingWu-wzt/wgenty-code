@@ -16,6 +16,8 @@ pub enum AgentPhase {
     StreamingResponse,
     /// Agent is thinking / between tool executions.
     Thinking,
+    /// Connecting to the LLM API (attempt N of M).
+    Connecting { attempt: usize, max_retries: usize },
     /// LLM is generating tool calls; tools will execute shortly.
     PreparingTools,
     /// A tool is currently executing on the daemon.
@@ -41,6 +43,7 @@ impl AgentPhase {
             AgentPhase::Idle => "idle",
             AgentPhase::StreamingResponse => "streaming",
             AgentPhase::Thinking => "thinking",
+            AgentPhase::Connecting { .. } => "connecting...",
             AgentPhase::PreparingTools => "preparing tools...",
             AgentPhase::ExecutingTool { name } => name.as_str(),
             AgentPhase::AwaitingPermission { .. } => "permission required",

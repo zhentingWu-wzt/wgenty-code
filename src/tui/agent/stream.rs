@@ -13,6 +13,12 @@ impl AgentLoop {
         let mut last_error = String::new();
 
         for attempt in 0..=MAX_RETRIES {
+            // Notify UI about connection attempt
+            let _ = self.event_tx.send(AppEvent::Connecting {
+                attempt: (attempt + 1) as usize,
+                max_retries: (MAX_RETRIES + 1) as usize,
+            });
+
             match self.client.chat_stream(messages.to_vec(), None).await {
                 Ok(response) => match self.stream_response(response).await {
                     Ok(result) => {
@@ -50,6 +56,12 @@ impl AgentLoop {
                 Err(e) => {
                     last_error = e.to_string();
                     if attempt < MAX_RETRIES {
+                        let _ = self.event_tx.send(AppEvent::StreamError(format!(
+                            "⚠️  Connection failed (attempt {}/{}), retrying... ({})",
+                            attempt + 1,
+                            MAX_RETRIES + 1,
+                            e
+                        )));
                         tokio::time::sleep(tokio::time::Duration::from_secs(
                             (attempt + 1) as u64 * 2,
                         ))
@@ -118,6 +130,9 @@ impl AgentLoop {
             }
             StreamEvent::StreamDone { finish_reason } => {
                 let _ = self.event_tx.send(AppEvent::StreamDone { finish_reason });
+            }
+            StreamEvent::StreamError(msg) => {
+                let _ = self.event_tx.send(AppEvent::StreamError(msg));
             }
         }
     }

@@ -16,6 +16,13 @@ export const StatusBar: React.FC<Props> = React.memo(
           </Box>
         );
 
+      case "connecting":
+        return (
+          <Box height={1}>
+            <Text color="rgb(255,200,100)">{status.message}</Text>
+          </Box>
+        );
+
       case "thinking":
         return (
           <Box height={1}>
@@ -27,6 +34,15 @@ export const StatusBar: React.FC<Props> = React.memo(
         return (
           <Box height={1}>
             <Text color="rgb(147,112,219)">Generating...</Text>
+          </Box>
+        );
+
+      case "retrying":
+        return (
+          <Box height={1}>
+            <Text color="rgb(255,165,0)">
+              Reconnecting (attempt {status.attempt}/{status.maxRetries})...
+            </Text>
           </Box>
         );
 
