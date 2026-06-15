@@ -1839,7 +1839,7 @@
 - Create: `src/teams/rollback.rs` — RollbackContext for git-stash-based recovery
 - Modify: `src/tui/app/event.rs:80-83` — `r` key in subagent panel triggers retry
 
-- [ ] **Step 5.1: Create RollbackContext**
+- [x] **Step 5.1: Create RollbackContext**
 
     Create `src/teams/rollback.rs`:
 
@@ -2044,12 +2044,12 @@
     pub mod rollback;
     ```
 
-- [ ] **Step 5.2: Run rollback tests**
+- [x] **Step 5.2: Run rollback tests**
 
     Run: `cargo test -p wgenty-code --lib teams::rollback::tests -- --nocapture`
     Expected: At minimum the `test_affected_files_tracking` test passes.
 
-- [ ] **Step 5.3: Wire `r` key for retry in event.rs**
+- [x] **Step 5.3: Wire `r` key for retry in event.rs**
 
     In `src/tui/app/event.rs`, in the subagent panel key handling section, add after `KeyCode::Char('d') => { ... }`:
 
@@ -2076,7 +2076,7 @@
     }
     ```
 
-- [ ] **Step 5.4: Extend status bar to display failure count**
+- [x] **Step 5.4: Extend status bar to display failure count**
 
     In `src/tui/components/status.rs`, modify the phase label for `ExecutingTool` when subagent tree has failures:
 
@@ -2097,7 +2097,7 @@
 
     (This already exists in the current code — confirm it's still there after the changes.)
 
-- [ ] **Step 5.5: Commit**
+- [x] **Step 5.5: Commit**
 
     ```bash
     git add src/teams/rollback.rs src/tui/app/event.rs src/tui/components/status.rs
