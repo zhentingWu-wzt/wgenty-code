@@ -161,12 +161,6 @@ pub enum AppEvent {
     SubagentUpdate(SubagentProgress),
     /// Toggle the subagent monitor panel.
     ToggleSubagentPanel,
-    /// User typed @ or / to trigger command completion
-    CompletionTrigger { prefix: char, partial: String },
-    /// User selected a completion item
-    CompletionSelect { index: usize },
-    /// User dismissed the completion panel
-    CompletionDismiss,
 }
 
 /// UI state for a single message in the chat view.
