@@ -33,7 +33,7 @@
 - [x] 5.1 indexer.rs: 注入 adapter map
 - [x] 5.2 indexer.rs: 按文件扩展名选择 adapter → extract_symbols/extract_relationships
 - [x] 5.3 indexer.rs: language 字段写入
-- [ ] 5.4 单元测试：三语言各索引一个 fixture 文件
+- [x] 5.4 单元测试：三语言各索引一个 fixture 文件
 
 ## 6. Query 适配
 
@@ -45,8 +45,8 @@
 - [ ] 7.1 Java 样例项目（≥100 文件）索引验证 coverage ≥70%
 - [ ] 7.2 Python 样例项目（≥100 文件）索引验证 coverage ≥70%
 - [ ] 7.3 bench-perf.sh 重跑对比 #0 基线（全量索引耗时 ≤ baseline × 1.5）
-- [ ] 7.4 cargo build + cargo test 全绿
-- [ ] 7.5 现有 Rust 索引数据向后兼容（不丢数据）
+- [x] 7.4 cargo build + cargo test 全绿
+- [x] 7.5 现有 Rust 索引数据向后兼容（不丢数据）
 
 ## 8. Spec 同步 + 归档
 
