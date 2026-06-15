@@ -13,12 +13,12 @@
 
 ## 2. 性能基线测量
 
-- [ ] 2.1 实现 `bench-perf.sh`：全量索引计时（≥5 次，每次前清空 `.codegraph/`），输出每次的 wall-clock 秒数
-- [ ] 2.2 扩展 `bench-perf.sh`：增量索引计时（修改 1/10/100 个 `.rs` 文件，各 ≥3 次）
-- [ ] 2.3 扩展 `bench-perf.sh`：记录 `.codegraph/index.db` 字节数与目标项目 `.rs` 总字节数
-- [ ] 2.4 实现 `bench-query.sh`：从 fixture 文件读取 ≥20 条查询，分别测 `codegraph_node` 与 `codegraph_explore` 端到端耗时
-- [ ] 2.5 输出统一 JSON：性能数据写入 `results/<timestamp>/perf.json`，含 raw samples + 中位数 + p95
-- [ ] 2.6 在 wgenty-code 自身仓库跑通 perf 测量，把首份原始数据存档备查
+- [x] 2.1 实现 `bench-perf.sh`：全量索引计时（≥5 次，每次前清空 `.codegraph/`），输出每次的 wall-clock 秒数
+- [x] 2.2 扩展 `bench-perf.sh`：增量索引计时（修改 1/10/100 个 `.rs` 文件，各 ≥3 次）
+- [x] 2.3 扩展 `bench-perf.sh`：记录 `.codegraph/index.db` 字节数与目标项目 `.rs` 总字节数
+- [x] 2.4 实现 `bench-query.sh`：从 fixture 文件读取 ≥20 条查询，分别测 `codegraph_node` 与 `codegraph_explore` 端到端耗时
+- [x] 2.5 输出统一 JSON：性能数据写入 `results/<timestamp>/perf.json`，含 raw samples + 中位数 + p95
+- [x] 2.6 在 wgenty-code 自身仓库跑通 perf 测量，把首份原始数据存档备查
 
 ## 3. 覆盖率基线测量
 
