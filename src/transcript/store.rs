@@ -36,13 +36,12 @@ impl SubagentTranscriptStore {
                 started_at INTEGER NOT NULL,
                 finished_at INTEGER,
                 total_tokens INTEGER DEFAULT 0,
-                input_tokens INTEGER DEFAULT 0,
-                output_tokens INTEGER DEFAULT 0,
                 max_rounds INTEGER,
                 actual_rounds INTEGER DEFAULT 0,
-                token_budget INTEGER,
+                token_budget_k INTEGER,
                 error_message TEXT,
                 summary TEXT,
+                -- created_at uses unixepoch seconds; started_at/finished_at use unix ms
                 created_at INTEGER DEFAULT (unixepoch('now'))
             );
 
@@ -86,7 +85,7 @@ impl SubagentTranscriptStore {
             "INSERT OR REPLACE INTO subagent_transcripts
              (id, session_id, parent_id, label, status, system_prompt, user_prompt,
               started_at, finished_at, total_tokens, max_rounds, actual_rounds,
-              token_budget, error_message, summary)
+              token_budget_k, error_message, summary)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 transcript.id,
@@ -140,11 +139,15 @@ impl SubagentTranscriptStore {
     }
 
     /// Update transcript header status (for checkpoint).
-    pub fn checkpoint_status(&self, id: &str, status: &str, round: u32, tokens: u64) -> Result<(), TranscriptError> {
-        self.db.execute(
+    pub fn checkpoint_status(&self, id: &str, status: TranscriptStatus, round: u32, tokens: u64) -> Result<(), TranscriptError> {
+        let status_str = status.to_string();
+        let rows_affected = self.db.execute(
             "UPDATE subagent_transcripts SET status = ?1, actual_rounds = ?2, total_tokens = ?3 WHERE id = ?4",
-            params![status, round, tokens, id],
+            params![status_str, round, tokens, id],
         )?;
+        if rows_affected == 0 {
+            return Err(TranscriptError::NotFound(id.to_string()));
+        }
         Ok(())
     }
 
@@ -207,7 +210,7 @@ impl SubagentTranscriptStore {
         let mut stmt = self.db.prepare(
             "SELECT id, session_id, parent_id, label, status, system_prompt, user_prompt,
                     started_at, finished_at, total_tokens, max_rounds, actual_rounds,
-                    token_budget, error_message, summary
+                    token_budget_k, error_message, summary
              FROM subagent_transcripts WHERE id = ?1"
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
@@ -249,7 +252,15 @@ impl SubagentTranscriptStore {
                     round: row.get::<_, i32>(0)? as u32,
                     event_type: row.get(1)?,
                     tool_name: row.get(2)?,
-                    tool_params: row.get::<_, Option<String>>(3)?.and_then(|s| serde_json::from_str(&s).ok()),
+                    tool_params: row.get::<_, Option<String>>(3)?.and_then(|s| {
+                        match serde_json::from_str(&s) {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                tracing::warn!(tool_params = %s, error = %e, "failed to deserialize tool_params");
+                                None
+                            }
+                        }
+                    }),
                     data: row.get(4)?,
                     elapsed_ms: row.get::<_, i64>(5)? as u64,
                     token_count: row.get::<_, Option<i64>>(6)?.map(|v| v as u64),
@@ -266,6 +277,9 @@ impl SubagentTranscriptStore {
 
     /// Search transcripts by label (fuzzy match).
     pub fn search(&self, query: &str) -> Result<Vec<SubagentTranscriptHeader>, TranscriptError> {
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
         let pattern = format!("%{}%", query);
         let mut stmt = self.db.prepare(
             "SELECT id, session_id, parent_id, label, status, started_at, finished_at,
@@ -408,7 +422,7 @@ mod tests {
         let t = sample_transcript("cp-1", "session-1");
         store.save(&t, None).unwrap();
 
-        store.checkpoint_status("cp-1", "running", 5, 1000).unwrap();
+        store.checkpoint_status("cp-1", TranscriptStatus::Running, 5, 1000).unwrap();
 
         let loaded = store.get_by_id("cp-1").unwrap().unwrap();
         assert_eq!(loaded.actual_rounds, 5);
@@ -463,6 +477,34 @@ mod tests {
         }
         let results = store.search("batch").unwrap();
         assert_eq!(results.len(), 60, "search should return all 60 results, not limited to 50");
+    }
+
+    #[test]
+    fn test_search_empty_query_returns_empty() {
+        let (store, _dir) = setup_store();
+        store.save(&sample_transcript("a", "s1"), None).unwrap();
+        store.save(&sample_transcript("b", "s1"), None).unwrap();
+
+        let results = store.search("").unwrap();
+        assert_eq!(results.len(), 0, "empty query should return no results");
+    }
+
+    #[test]
+    fn test_token_budget_k_round_trip() {
+        let (store, _dir) = setup_store();
+        let mut t = sample_transcript("budget-test", "s1");
+        t.token_budget_k = Some(42);
+        store.save(&t, None).unwrap();
+
+        let loaded = store.get_by_id("budget-test").unwrap().unwrap();
+        assert_eq!(loaded.token_budget_k, Some(42));
+    }
+
+    #[test]
+    fn test_checkpoint_status_not_found() {
+        let (store, _dir) = setup_store();
+        let result = store.checkpoint_status("non-existent", TranscriptStatus::Running, 1, 100);
+        assert!(matches!(result, Err(TranscriptError::NotFound(_))));
     }
 
     #[test]
