@@ -3106,7 +3106,7 @@
 
     The `retention_days` should be passed in from settings.
 
-- [ ] **Step 10.4: Commit**
+- [x] **Step 10.4: Commit**
 
     ```bash
     git add src/tui/app/mod.rs src/tools/meta/task.rs src/transcript/store.rs
@@ -3120,7 +3120,7 @@
 **Files:**
 - Run tests only (no new files)
 
-- [ ] **Step 11.1: Run full test suite**
+- [x] **Step 11.1: Run full test suite**
 
     Run: `cargo test -p wgenty-code --lib -- --nocapture`
 
@@ -3133,19 +3133,19 @@
     - `tools::meta::task::tests` (4 tests)
     - `tui::util::tests` (5 tests)
 
-- [ ] **Step 11.2: TUI compilation check**
+- [x] **Step 11.2: TUI compilation check**
 
     Run: `cargo check -p wgenty-code --features tui`
 
     Expected: Clean compilation with no warnings.
 
-- [ ] **Step 11.3: CLI TypeScript compilation check**
+- [x] **Step 11.3: CLI TypeScript compilation check**
 
     Run: `cd packages/cli && npx tsc --noEmit`
 
     Expected: No type errors.
 
-- [ ] **Step 11.4: Manual verification — skills/commands completion**
+- [x] **Step 11.4: Manual verification — skills/commands completion**
 
     Start app: `cargo run`
 
@@ -3156,7 +3156,7 @@
     4. Press `Esc` — verify completion panel closes
     5. Type `/` at empty input — verify commands list
 
-- [ ] **Step 11.5: Manual verification — subagent timeline + detail view**
+- [x] **Step 11.5: Manual verification — subagent timeline + detail view**
 
     1. Start a task that spawns subagents (e.g., complex refactor)
     2. Open subagent panel (Ctrl+Shift+T)
@@ -3167,14 +3167,14 @@
     7. Press `d` — verify full-screen detail view opens with complete timeline
     8. Verify scroll, `g`/`G`, `f` (jump to error), `Esc` back
 
-- [ ] **Step 11.6: Manual verification — RLM pipeline with structured output**
+- [x] **Step 11.6: Manual verification — RLM pipeline with structured output**
 
     1. Trigger a `delegate` tool call with analysis-type task
     2. Verify sub-tasks appear in the subagent tree
     3. Verify each sub-task status is tracked
     4. On completion, verify aggregator merged results correctly
 
-- [ ] **Step 11.7: Commit any test/fix changes**
+- [x] **Step 11.7: Commit any test/fix changes**
 
     ```bash
     git add -A

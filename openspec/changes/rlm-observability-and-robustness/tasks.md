@@ -5,7 +5,7 @@
 - [x] 1.3 在 `src/tui/app/event.rs` 增加补全相关事件类型：`CompletionTrigger`、`CompletionSelect`、`CompletionDismiss`
 - [x] 1.4 在 `src/tui/components/` 创建 `completion_panel.rs`，实现内联补全面板（复用 PermissionState 的 inline panel 模式）
 - [x] 1.5 在 `src/tui/app/` 增加补全状态管理：过滤、导航（Up/Down/Tab/Enter/Esc）、选中替换输入框内容
-- [ ] 1.6 在 `packages/cli/src/components/input-box.tsx` 增加 Ink CLI 侧的 `@`/`/` 补全触发支持
+- [x] 1.6 在 `packages/cli/src/components/input-box.tsx` 增加 Ink CLI 侧的 `@`/`/` 补全触发支持
 
 ## 2. Subagent Transcript 持久化
 
@@ -56,9 +56,9 @@
 
 ## 8. 配置与 CLI 入口
 
-- [ ] 8.1 在 `settings.rs` 的 `set()` 方法增加新配置项的 setter
-- [ ] 8.2 在 Ink CLI (`packages/cli/`) 侧更新 `use-agent.ts` 的 `AgentStatus` 类型以支持新的事件状态
-- [ ] 8.3 确保配置热加载（`ConfigChanged` 事件）能正确传播新字段到运行中的 agent
+- [x] 8.1 在 `settings.rs` 的 `set()` 方法增加新配置项的 setter
+- [x] 8.2 在 Ink CLI (`packages/cli/`) 侧更新 `use-agent.ts` 的 `AgentStatus` 类型以支持新的事件状态
+- [x] 8.3 确保配置热加载（`ConfigChanged` 事件）能正确传播新字段到运行中的 agent
 
 ## 9. 验证与测试
 
