@@ -4,6 +4,7 @@ use super::types::*;
 use super::App;
 use crate::prompts::{self, PromptContext};
 use crate::tui::traits::Component;
+use crate::agent::progress::SubagentEventType;
 use crate::tui::util::{
     agent_phase_from_event, compute_collapse_state, extract_diff_data, extract_tool_metadata,
     format_tool_result, tool_label,
@@ -139,6 +140,49 @@ impl App {
                         _ => {}
                     }
                 }
+                // If detail view is active, route keys to it (highest priority)
+                if self.subagent_panel_visible {
+                    if let Some(ref mut detail) = self.subagent_panel_state.detail_view {
+                        match key.code {
+                            KeyCode::Esc => {
+                                self.subagent_panel_state.reset_detail();
+                                return;
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                detail.scroll_offset = detail.scroll_offset.saturating_sub(1);
+                                return;
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                detail.scroll_offset = detail.scroll_offset.saturating_add(1);
+                                return;
+                            }
+                            KeyCode::PageUp => {
+                                detail.scroll_offset = detail.scroll_offset.saturating_sub(10);
+                                return;
+                            }
+                            KeyCode::PageDown => {
+                                detail.scroll_offset = detail.scroll_offset.saturating_add(10);
+                                return;
+                            }
+                            KeyCode::Char('g') => {
+                                detail.scroll_offset = 0;
+                                return;
+                            }
+                            KeyCode::Char('G') => {
+                                detail.scroll_offset = detail.events.len().saturating_sub(1);
+                                return;
+                            }
+                            KeyCode::Char('f') => {
+                                // Jump to first Error event
+                                if let Some(pos) = detail.events.iter().position(|e| matches!(e.event_type, SubagentEventType::Error { .. })) {
+                                    detail.scroll_offset = pos;
+                                }
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 // If subagent panel is visible, route keys to it
                 if self.subagent_panel_visible {
                     match key.code {
@@ -155,7 +199,20 @@ impl App {
                             return;
                         }
                         KeyCode::Enter => {
-                            self.subagent_panel_state.toggle_expand(&self.subagent_tree);
+                            // Completed/Failed/Cancelled: open detail view
+                            // Running/Pending: toggle expand
+                            let is_terminal = self.subagent_panel_state.selected_node_id(&self.subagent_tree).and_then(|node_id| {
+                                self.subagent_tree.nodes.get(&node_id).map(|node| {
+                                    matches!(node.progress.status, crate::agent::progress::SubagentStatus::Completed | crate::agent::progress::SubagentStatus::Failed | crate::agent::progress::SubagentStatus::Cancelled)
+                                })
+                            }).unwrap_or(false);
+                            if is_terminal {
+                                if let Some(detail) = self.subagent_panel_state.build_detail_view(&self.subagent_tree) {
+                                    self.subagent_panel_state.detail_view = Some(detail);
+                                }
+                            } else {
+                                self.subagent_panel_state.toggle_expand(&self.subagent_tree);
+                            }
                             return;
                         }
                         KeyCode::Char('g') => {
@@ -164,6 +221,24 @@ impl App {
                         }
                         KeyCode::Char('G') => {
                             self.subagent_panel_state.move_last(&self.subagent_tree);
+                            return;
+                        }
+                        KeyCode::Char('d') => {
+                            if let Some(detail) = self.subagent_panel_state.build_detail_view(&self.subagent_tree) {
+                                self.subagent_panel_state.detail_view = Some(detail);
+                            }
+                            return;
+                        }
+                        KeyCode::Char('r') => {
+                            // Retry selected failed/cancelled node (defensive guard)
+                            if let Some(node_id) = self.subagent_panel_state.selected_node_id(&self.subagent_tree) {
+                                let is_retryable = self.subagent_tree.nodes.get(&node_id).map(|node| {
+                                    matches!(node.progress.status, crate::agent::progress::SubagentStatus::Failed | crate::agent::progress::SubagentStatus::Cancelled)
+                                }).unwrap_or(false);
+                                if is_retryable {
+                                    let _ = self.event_tx.send(AppEvent::RetrySubagent(node_id));
+                                }
+                            }
                             return;
                         }
                         _ => {} // pass through
@@ -677,6 +752,21 @@ impl App {
             }
             AppEvent::TodosUpdated(items) => {
                 self.task_panel.update(items);
+            }
+            AppEvent::RetrySubagent(node_id) => {
+                // Close the panel and submit a retry request
+                self.subagent_panel_visible = false;
+                self.subagent_panel_state.reset();
+                self.committed_messages.push(UIMessage {
+                    role: MessageRole::System,
+                    content: format!("🔄 Retrying subagent `{}`...", node_id),
+                    tool_name: None,
+                    content_collapsed: false,
+                    tool_collapsed: true,
+                    tool_args: None,
+                    diff_data: None,
+                    tool_metadata: None,
+                });
             }
             _ => {}
         }
