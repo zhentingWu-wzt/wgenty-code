@@ -53,4 +53,4 @@
 - [x] 8.1 创建 delta specs: multilang-indexing/spec.md (ADDED)
 - [x] 8.2 创建 delta specs: symbol-graph-deep/spec.md (ADDED)
 - [x] 8.3 修改 delta specs: code-indexing/spec.md (MODIFIED)
-- [ ] 8.4 openspec validate → comet-verify → comet-archive
+- [x] 8.4 openspec validate → comet-verify → comet-archive
