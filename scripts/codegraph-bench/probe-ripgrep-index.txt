@@ -1,0 +1,16 @@
+# ripgrep 索引探针结果
+
+- 日期: 2026-06-15
+- 关联: R9（外部仓库验证）、Design Doc §7 探针 3
+- ripgrep 克隆: depth=1 from GitHub, 100 个 .rs 文件
+- 全量索引耗时: 0.236 秒 (wall-clock)
+- index.db 体积: 1.8 MB
+- 符号总数: 3759
+- 关系总数: 0（codegraph 当前版本在外部仓库上不产出关系数据）
+- 结论: ripgrep 适合作为外部验证目标（索引极快、体积小巧、符号数适中），但需注意关系数据缺失是个体现象还是系统性问题
+
+## 补充观察
+
+- `wgenty-code codegraph index` 在 ripgrep 上无报错、无 parse 失败
+- 关系数为 0 需要后续确认：是 codegraph 自身的限制，还是 ripgrep 代码特征
+- tokio 建议跳过（100K+ 行、async/macro 重度使用），本探针已确认 ripgrep 足够
