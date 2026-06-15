@@ -2602,7 +2602,7 @@
 
     We can refine this later with per-task-type routing. For now, the pipeline always injects the analysis format to guide structured output.
 
-- [ ] **Step 6.4: Add ConfigChanged propagation for RLM settings**
+- [x] **Step 6.4: Add ConfigChanged propagation for RLM settings**
 
     In `src/tui/app/event.rs`, in the `ConfigChanged` handler (around line 359-393), add propagation of new RLM settings:
 
@@ -2616,7 +2616,7 @@
     }
     ```
 
-- [ ] **Step 6.5: Commit**
+- [x] **Step 6.5: Commit**
 
     ```bash
     git add src/tools/meta/rlm/formats.rs src/tools/meta/rlm/mod.rs src/tools/meta/rlm/pipeline.rs
@@ -2634,7 +2634,7 @@
 - Modify: `src/tools/meta/task.rs:176-204` — add token_budget to input_schema
 - Modify: `src/teams/subagent_loop.rs:251-255` — cumulative_tokens tracking already done in Task 3
 
-- [ ] **Step 7.1: Create BudgetAllocation module**
+- [x] **Step 7.1: Create BudgetAllocation module**
 
     Create `src/tools/meta/rlm/budget.rs`:
 
@@ -2731,12 +2731,12 @@
     }
     ```
 
-- [ ] **Step 7.2: Run budget tests**
+- [x] **Step 7.2: Run budget tests**
 
     Run: `cargo test -p wgenty-code --lib tools::meta::rlm::budget::tests -- --nocapture`
     Expected: 6 tests pass.
 
-- [ ] **Step 7.3: Register budget module and integrate into pipeline**
+- [x] **Step 7.3: Register budget module and integrate into pipeline**
 
     In `src/tools/meta/rlm/mod.rs`:
     ```rust
@@ -2783,7 +2783,7 @@
     }
     ```
 
-- [ ] **Step 7.4: Update Settings with rlm_jaccard_threshold default**
+- [x] **Step 7.4: Update Settings with rlm_jaccard_threshold default**
 
     In `src/config/settings.rs`, add field after `default_subagent_token_budget_k`:
     ```rust
@@ -2807,7 +2807,7 @@
     "rlm_jaccard_threshold" => settings.rlm_jaccard_threshold = value.parse().unwrap_or(0.8),
     ```
 
-- [ ] **Step 7.5: Commit**
+- [x] **Step 7.5: Commit**
 
     ```bash
     git add src/tools/meta/rlm/budget.rs src/tools/meta/rlm/mod.rs src/tools/meta/rlm/pipeline.rs src/config/settings.rs
@@ -2824,7 +2824,7 @@
 - Modify: `src/tui/components/status.rs:116-137` — show failure count + token budget
 - Modify: `src/tui/app/render.rs:55-96` — integration pass (mostly already done)
 
-- [ ] **Step 8.1: Update SubagentTree to expose new progress fields**
+- [x] **Step 8.1: Update SubagentTree to expose new progress fields**
 
     In `src/tui/components/subagent_tree.rs`, `SubagentNode` already stores `progress: SubagentProgress` which now contains the new fields. The tree methods just need to expose them.
 
@@ -2844,7 +2844,7 @@
     }
     ```
 
-- [ ] **Step 8.2: Update SubagentPanel to show token budget + progress_delta**
+- [x] **Step 8.2: Update SubagentPanel to show token budget + progress_delta**
 
     In `src/tui/components/subagent_panel.rs`, in the node header rendering (around line 157-200), add token budget display:
 

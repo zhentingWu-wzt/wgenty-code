@@ -41,11 +41,11 @@
 
 ## 6. RLM 预算控制与进展跟踪
 
-- [ ] 6.1 在 `task` 工具的 `input_schema` 增加 `token_budget: Option<u64>` 字段
-- [ ] 6.2 在 `src/config/settings.rs` 增加 `default_subagent_token_budget_k: usize` 配置（默认 0 = 不限）
-- [ ] 6.3 在 `run_subagent_loop()` 每轮 API 调用后累加 `cumulative_tokens`，超限立即返回 `Err("Token budget exceeded")`
-- [ ] 6.4 实现 RLM pipeline 预算分配逻辑：planner 10% + sub-tasks 80% + aggregator 10%，未用完预算滚动到下阶段
-- [ ] 6.5 在 `run_subagent_loop()` 实现 progress_delta 计算：每轮比较新发现数 vs 总发现数，连续 3 轮 delta < 0.05 → `StuckStatus::NoProgress` abort
+- [x] 6.1 在 `task` 工具的 `input_schema` 增加 `token_budget: Option<u64>` 字段
+- [x] 6.2 在 `src/config/settings.rs` 增加 `default_subagent_token_budget_k: usize` 配置（默认 0 = 不限）
+- [x] 6.3 在 `run_subagent_loop()` 每轮 API 调用后累加 `cumulative_tokens`，超限立即返回 `Err("Token budget exceeded")`
+- [x] 6.4 实现 RLM pipeline 预算分配逻辑：planner 10% + sub-tasks 80% + aggregator 10%，未用完预算滚动到下阶段
+- [x] 6.5 在 `run_subagent_loop()` 实现 progress_delta 计算：每轮比较新发现数 vs 总发现数，连续 3 轮 delta < 0.05 → `StuckStatus::NoProgress` abort
 
 ## 7. TUI 集成与渲染
 
