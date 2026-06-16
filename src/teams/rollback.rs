@@ -82,7 +82,11 @@ impl RollbackContext {
             .map_err(|e| RollbackError::GitError(e.to_string()))?;
         let stash_output = String::from_utf8_lossy(&stash_list.stdout);
         let first_stash = stash_output.lines().next().unwrap_or("");
-        let stash_ref = first_stash.split(':').next().unwrap_or("stash@{0}").to_string();
+        let stash_ref = first_stash
+            .split(':')
+            .next()
+            .unwrap_or("stash@{0}")
+            .to_string();
 
         Ok(Self {
             stashed_ref: stash_ref,
@@ -133,7 +137,11 @@ impl RollbackContext {
 
             if !checkout_result.status.success() {
                 let stderr = String::from_utf8_lossy(&checkout_result.stderr);
-                tracing::warn!("Failed to checkout {} during rollback: {}", file.display(), stderr);
+                tracing::warn!(
+                    "Failed to checkout {} during rollback: {}",
+                    file.display(),
+                    stderr
+                );
             }
         }
 

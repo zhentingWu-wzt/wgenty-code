@@ -120,8 +120,19 @@ impl SubagentPanelState {
         let node_id = self.selected_node_id(tree)?;
         let node = tree.nodes.get(&node_id)?;
         let events: Vec<SubagentEvent> = node.progress.events.clone();
-        let scroll_offset = if matches!(node.progress.status, SubagentStatus::Failed | SubagentStatus::Cancelled) {
-            events.iter().position(|e| matches!(e.event_type, crate::agent::progress::SubagentEventType::Error { .. })).unwrap_or(0)
+        let scroll_offset = if matches!(
+            node.progress.status,
+            SubagentStatus::Failed | SubagentStatus::Cancelled
+        ) {
+            events
+                .iter()
+                .position(|e| {
+                    matches!(
+                        e.event_type,
+                        crate::agent::progress::SubagentEventType::Error { .. }
+                    )
+                })
+                .unwrap_or(0)
         } else {
             0
         };
@@ -134,7 +145,11 @@ impl SubagentPanelState {
             total_elapsed_ms: node.progress.elapsed_ms,
             cumulative_tokens: node.progress.cumulative_tokens,
             token_budget_k: node.progress.token_budget_k,
-            error_message: node.progress.metadata.as_ref().and_then(|m| m.error.clone()),
+            error_message: node
+                .progress
+                .metadata
+                .as_ref()
+                .and_then(|m| m.error.clone()),
             round: node.progress.round,
             max_rounds: node.progress.max_rounds,
         })
@@ -224,34 +239,39 @@ mod tests {
         use crate::agent::progress::{SubagentProgress, SubagentStatus as Ss};
 
         let mut tree = SubagentTree::default();
-        tree.nodes.insert("n1".to_string(), super::super::subagent_tree::SubagentNode {
-            progress: SubagentProgress {
-                node_id: "n1".to_string(),
-                parent_id: None,
-                label: "test".to_string(),
-                status: Ss::Completed,
-                round: Some(3),
-                max_rounds: Some(5),
-                current_tool: None,
-                current_params: None,
-                action_log: vec![],
-                text_snapshot: None,
-                started_at: 0,
-                elapsed_ms: 1000,
-                metadata: None,
-                progress_delta: None,
-                token_budget_k: Some(10),
-                cumulative_tokens: 500,
-                error_details: None,
-                events: vec![],
+        tree.nodes.insert(
+            "n1".to_string(),
+            super::super::subagent_tree::SubagentNode {
+                progress: SubagentProgress {
+                    node_id: "n1".to_string(),
+                    parent_id: None,
+                    label: "test".to_string(),
+                    status: Ss::Completed,
+                    round: Some(3),
+                    max_rounds: Some(5),
+                    current_tool: None,
+                    current_params: None,
+                    action_log: vec![],
+                    text_snapshot: None,
+                    started_at: 0,
+                    elapsed_ms: 1000,
+                    metadata: None,
+                    progress_delta: None,
+                    token_budget_k: Some(10),
+                    cumulative_tokens: 500,
+                    error_details: None,
+                    events: vec![],
+                },
+                children: vec![],
             },
-            children: vec![],
-        });
+        );
         tree.root_id = Some("n1".to_string());
 
         // Default state has selected_index=0, should find "n1"
         let state = SubagentPanelState::default();
-        let detail = state.build_detail_view(&tree).expect("should build detail for selected node");
+        let detail = state
+            .build_detail_view(&tree)
+            .expect("should build detail for selected node");
         assert_eq!(detail.transcript_id, "n1");
         assert!(detail.events.is_empty());
         assert_eq!(detail.status, Some(Ss::Completed));

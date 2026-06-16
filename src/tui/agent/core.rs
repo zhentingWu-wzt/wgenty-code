@@ -463,6 +463,17 @@ impl AgentLoop {
                 return Ok(());
             }
 
+            // Detect completely empty response — likely a silent API error
+            if result.content.is_empty()
+                && !result.has_tool_calls
+                && result.finish_reason.is_empty()
+            {
+                let _ = self.event_tx.send(AppEvent::StreamError(
+                    "Received empty response from API. Please check your API key, model name, and network connectivity.".to_string()
+                ));
+                return Err("Empty response from API".to_string());
+            }
+
             if !result.content.is_empty() {
                 let reasoning = if result.reasoning_content.is_empty() {
                     None

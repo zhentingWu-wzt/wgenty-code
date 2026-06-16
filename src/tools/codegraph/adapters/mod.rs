@@ -45,12 +45,7 @@ pub trait LanguageAdapter: Send + Sync {
 
     /// Extract references from the parsed AST.
     /// `symbols` must already be extracted (used for ID mapping).
-    fn extract_references(
-        &self,
-        tree: &Tree,
-        source: &str,
-        symbols: &[Symbol],
-    ) -> Vec<Reference>;
+    fn extract_references(&self, tree: &Tree, source: &str, symbols: &[Symbol]) -> Vec<Reference>;
 
     /// Extract relationships from the parsed AST.
     /// `symbols` must already be extracted (used for source/target ID mapping).
@@ -65,7 +60,7 @@ pub trait LanguageAdapter: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::codegraph::types::{RelKind, RefKind, Symbol, SymbolKind, Visibility};
+    use crate::tools::codegraph::types::{RefKind, RelKind, Symbol, SymbolKind, Visibility};
     use tree_sitter::{Language, Tree};
 
     /// A minimal mock adapter to verify the trait is usable.
@@ -84,12 +79,7 @@ mod tests {
             tree_sitter_rust::LANGUAGE.into()
         }
 
-        fn extract_symbols(
-            &self,
-            _tree: &Tree,
-            _source: &str,
-            file_path: &str,
-        ) -> Vec<Symbol> {
+        fn extract_symbols(&self, _tree: &Tree, _source: &str, file_path: &str) -> Vec<Symbol> {
             vec![Symbol {
                 id: Some(0),
                 name: "mock_fn".into(),
@@ -159,7 +149,10 @@ mod tests {
         let adapter = MockAdapter;
         let source = "fn hello() {}";
         let tree = adapter.parse(source).unwrap();
-        assert!(tree.root_node().child_count() > 0, "parsed tree should have children");
+        assert!(
+            tree.root_node().child_count() > 0,
+            "parsed tree should have children"
+        );
     }
 
     #[test]
@@ -167,7 +160,10 @@ mod tests {
         let adapter = MockAdapter;
         let source = "fn broken( {";
         let tree = adapter.parse(source).unwrap();
-        assert!(tree.root_node().has_error(), "invalid syntax should produce error nodes");
+        assert!(
+            tree.root_node().has_error(),
+            "invalid syntax should produce error nodes"
+        );
     }
 
     #[test]

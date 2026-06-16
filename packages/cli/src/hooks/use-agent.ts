@@ -295,9 +295,10 @@ export function useAgent({ client }: UseAgentOptions) {
         setSessionName(session.name);
         setDirty(false);
       } catch (err) {
+        addMsg("system", `Failed to load session: ${err}`);
       }
     },
-    [client, rebuildUIMessages],
+    [client, rebuildUIMessages, addMsg],
   );
 
   /** Refresh the session list from daemon. */
@@ -349,11 +350,11 @@ export function useAgent({ client }: UseAgentOptions) {
           }
         }
         await refreshSessions();
-      } catch {
-        // silently fail
+      } catch (err) {
+        addMsg("system", `Failed to delete session: ${err}`);
       }
     },
-    [client, sessionId, sessions, loadSession, refreshSessions, reset],
+    [client, sessionId, sessions, loadSession, refreshSessions, reset, addMsg],
   );
 
   /** Rename current session. */

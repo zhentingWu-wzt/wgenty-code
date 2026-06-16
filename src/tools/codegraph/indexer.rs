@@ -74,9 +74,7 @@ impl Indexer {
 
         self.store.begin_transaction()?;
         for data in &file_data {
-            let file_id = self
-                .store
-                .upsert_file(&data.relative_path, &data.hash)?;
+            let file_id = self.store.upsert_file(&data.relative_path, &data.hash)?;
             self.store.delete_symbols_for_file(file_id)?;
 
             let mut symbol_id_map: Vec<(usize, i64)> = Vec::new();
@@ -125,8 +123,7 @@ impl Indexer {
     pub fn index_incremental(&self, project_root: &Path) -> anyhow::Result<IndexSummary> {
         let start = Instant::now();
         let tracked = self.store.get_all_files()?;
-        let tracked_map: std::collections::HashMap<String, String> =
-            tracked.into_iter().collect();
+        let tracked_map: std::collections::HashMap<String, String> = tracked.into_iter().collect();
 
         let current: Vec<_> = WalkDir::new(project_root)
             .follow_links(false)
@@ -195,11 +192,7 @@ impl Indexer {
         })
     }
 
-    fn index_file(
-        &self,
-        file_path: &Path,
-        project_root: &Path,
-    ) -> anyhow::Result<FileIndexResult> {
+    fn index_file(&self, file_path: &Path, project_root: &Path) -> anyhow::Result<FileIndexResult> {
         let relative = file_path
             .strip_prefix(project_root)
             .unwrap_or(file_path)
@@ -207,8 +200,7 @@ impl Indexer {
             .to_string();
         let hash = IndexStore::file_hash(file_path)?;
         let source = std::fs::read_to_string(file_path)?;
-        let (symbols, references, relationships) =
-            self.extract_from_source(&source, &relative)?;
+        let (symbols, references, relationships) = self.extract_from_source(&source, &relative)?;
         Ok(FileIndexResult {
             relative_path: relative,
             hash,
@@ -230,8 +222,7 @@ impl Indexer {
             .to_string_lossy()
             .to_string();
         let source = std::fs::read_to_string(file_path)?;
-        let (symbols, references, relationships) =
-            self.extract_from_source(&source, &relative)?;
+        let (symbols, references, relationships) = self.extract_from_source(&source, &relative)?;
         let count = symbols.len();
 
         let file_id = self.store.upsert_file(&relative, hash)?;
@@ -272,9 +263,7 @@ impl Indexer {
     ) -> anyhow::Result<(Vec<Symbol>, Vec<Reference>, Vec<Relationship>)> {
         let adapter = self
             .adapter_for_path(Path::new(relative_path))
-            .ok_or_else(|| {
-                anyhow::anyhow!("No language adapter found for: {}", relative_path)
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("No language adapter found for: {}", relative_path))?;
 
         let tree = adapter.parse(source)?;
         let symbols = adapter.extract_symbols(&tree, source, relative_path);
@@ -307,8 +296,7 @@ mod tests {
     }
 
     fn rust_indexer(store: Arc<IndexStore>) -> Indexer {
-        let adapters: Vec<Box<dyn LanguageAdapter>> =
-            vec![Box::new(RustAdapter::new())];
+        let adapters: Vec<Box<dyn LanguageAdapter>> = vec![Box::new(RustAdapter::new())];
         Indexer::new(store, adapters)
     }
 
@@ -362,10 +350,18 @@ mod tests {
 
     #[test]
     fn test_supported_extensions() {
-        assert!(Indexer::is_supported_extension(Some(std::ffi::OsStr::new("rs"))));
-        assert!(Indexer::is_supported_extension(Some(std::ffi::OsStr::new("java"))));
-        assert!(Indexer::is_supported_extension(Some(std::ffi::OsStr::new("py"))));
-        assert!(!Indexer::is_supported_extension(Some(std::ffi::OsStr::new("js"))));
+        assert!(Indexer::is_supported_extension(Some(std::ffi::OsStr::new(
+            "rs"
+        ))));
+        assert!(Indexer::is_supported_extension(Some(std::ffi::OsStr::new(
+            "java"
+        ))));
+        assert!(Indexer::is_supported_extension(Some(std::ffi::OsStr::new(
+            "py"
+        ))));
+        assert!(!Indexer::is_supported_extension(Some(
+            std::ffi::OsStr::new("js")
+        )));
     }
 
     #[test]
@@ -396,11 +392,13 @@ mod tests {
         let (store, _dir) = setup();
         let indexer = multi_lang_indexer(store);
         let source = "class Hello { public void greet() {} }";
-        let (symbols, refs, _rels) = indexer
-            .extract_from_source(source, "Hello.java")
-            .unwrap();
-        assert!(symbols.iter().any(|s| s.name == "Hello" && s.language == "java"));
-        assert!(symbols.iter().any(|s| s.name == "greet" && s.kind == SymbolKind::Function));
+        let (symbols, refs, _rels) = indexer.extract_from_source(source, "Hello.java").unwrap();
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "Hello" && s.language == "java"));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "greet" && s.kind == SymbolKind::Function));
     }
 
     #[test]
@@ -408,11 +406,13 @@ mod tests {
         let (store, _dir) = setup();
         let indexer = multi_lang_indexer(store);
         let source = "class Dog:\n    def bark(self):\n        pass\n";
-        let (symbols, _refs, _rels) = indexer
-            .extract_from_source(source, "animals.py")
-            .unwrap();
-        assert!(symbols.iter().any(|s| s.name == "Dog" && s.language == "python"));
-        assert!(symbols.iter().any(|s| s.name == "bark" && s.kind == SymbolKind::Function));
+        let (symbols, _refs, _rels) = indexer.extract_from_source(source, "animals.py").unwrap();
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "Dog" && s.language == "python"));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "bark" && s.kind == SymbolKind::Function));
     }
 
     #[test]

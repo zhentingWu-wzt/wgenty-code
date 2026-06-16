@@ -15,12 +15,12 @@ use crate::config::Settings;
 use crate::teams::subagent_loop::run_subagent_loop;
 use crate::teams::subagent_mailbox::SubagentResultMailbox;
 use crate::tools::{Tool, ToolError, ToolOutput};
+use crate::transcript::{SubagentEventRecord, SubagentTranscript, TranscriptStatus};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::transcript::{SubagentTranscript, TranscriptStatus, SubagentEventRecord};
 
 /// Detect whether a prompt is complex enough to warrant RLM delegation.
 ///
@@ -255,12 +255,17 @@ impl Tool for TaskTool {
         let background = input["background"].as_bool().unwrap_or(false);
 
         // Token budget: explicit input takes priority, then settings default.
-        let token_budget: Option<u64> = input.get("token_budget")
+        let token_budget: Option<u64> = input
+            .get("token_budget")
             .and_then(|v| v.as_u64())
-            .and_then(|v| if v == 0 { None } else { Some(v) })  // 0 = unlimited
+            .and_then(|v| if v == 0 { None } else { Some(v) }) // 0 = unlimited
             .or_else(|| {
                 let default_k = self.settings.default_subagent_token_budget_k;
-                if default_k > 0 { Some(default_k as u64) } else { None }
+                if default_k > 0 {
+                    Some(default_k as u64)
+                } else {
+                    None
+                }
             });
 
         let session_id = input["_session_id"]
@@ -515,27 +520,36 @@ impl Tool for TaskTool {
                 };
 
                 // Offload large results to mailbox before storing.
-                let content = mailbox_bg.offload_if_large(&st_bg, &desc_full_bg, &sid_bg, &content)
+                let content = mailbox_bg
+                    .offload_if_large(&st_bg, &desc_full_bg, &sid_bg, &content)
                     .to_content();
 
                 bg.push_subagent_result(&desc, &content, success).await;
 
                 // ── Save transcript ────────────────────────────────────────
                 if let Some(ref store) = transcript_store_bg {
-                    let retention = if retention_days > 0 { Some(retention_days) } else { None };
+                    let retention = if retention_days > 0 {
+                        Some(retention_days)
+                    } else {
+                        None
+                    };
                     let transcript = build_transcript(
                         bg_node_id,
                         &sid_bg,
                         &desc_bg,
-                        if success { TranscriptStatus::Completed } else { TranscriptStatus::Failed },
+                        if success {
+                            TranscriptStatus::Completed
+                        } else {
+                            TranscriptStatus::Failed
+                        },
                         Some(sys_prompt_bg),
                         prompt_bg,
                         started_at_bg,
-                        0,     // total_tokens — not yet tracked from subagent loop
-                        0,     // actual_rounds
+                        0, // total_tokens — not yet tracked from subagent loop
+                        0, // actual_rounds
                         token_budget,
-                        None,  // error_message captured in content, not individual
-                        None,  // summary
+                        None,   // error_message captured in content, not individual
+                        None,   // summary
                         vec![], // events — not yet tracked from subagent loop
                     );
                     let _ = store.save(&transcript, retention);
@@ -662,7 +676,11 @@ impl Tool for TaskTool {
 
                     // Save completed transcript
                     if let Some(ref store) = transcript_store_sync {
-                        let retention = if retention_days_sync > 0 { Some(retention_days_sync) } else { None };
+                        let retention = if retention_days_sync > 0 {
+                            Some(retention_days_sync)
+                        } else {
+                            None
+                        };
                         let transcript = build_transcript(
                             sync_node_id,
                             &sid_sync,
@@ -671,8 +689,8 @@ impl Tool for TaskTool {
                             Some(sys_prompt_sync),
                             prompt_sync,
                             started_at_sync,
-                            0,    // total_tokens
-                            0,    // actual_rounds
+                            0, // total_tokens
+                            0, // actual_rounds
                             token_budget,
                             None,
                             Some(result.chars().take(500).collect()),
@@ -701,7 +719,11 @@ impl Tool for TaskTool {
                 Err(e) => {
                     // Save failed transcript
                     if let Some(ref store) = transcript_store_sync {
-                        let retention = if retention_days_sync > 0 { Some(retention_days_sync) } else { None };
+                        let retention = if retention_days_sync > 0 {
+                            Some(retention_days_sync)
+                        } else {
+                            None
+                        };
                         let transcript = build_transcript(
                             sync_node_id,
                             &sid_sync,
@@ -724,7 +746,7 @@ impl Tool for TaskTool {
                         message: e,
                         code: Some("subagent_error".to_string()),
                     })
-                },
+                }
             }
         }
     }
@@ -802,7 +824,8 @@ mod tests {
             std::sync::Arc::new(crate::tools::execution::background::BackgroundManager::new()),
             std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             None, // transcript_store
-        ).input_schema();
+        )
+        .input_schema();
         let desc = schema["properties"]["token_budget"]["description"]
             .as_str()
             .unwrap();
@@ -826,18 +849,23 @@ mod tests {
         // immediately triggers budget exceeded in the subagent loop.
         let default_k = 0u64;
         let input = serde_json::json!({"token_budget": 0});
-        let result: Option<u64> = input.get("token_budget")
+        let result: Option<u64> = input
+            .get("token_budget")
             .and_then(|v| v.as_u64())
             .and_then(|v| if v == 0 { None } else { Some(v) })
             .or_else(|| if default_k > 0 { Some(default_k) } else { None });
-        assert_eq!(result, None, "token_budget=0 should produce None (unlimited)");
+        assert_eq!(
+            result, None,
+            "token_budget=0 should produce None (unlimited)"
+        );
     }
 
     #[test]
     fn test_token_budget_positive_is_preserved() {
         let default_k = 0u64;
         let input = serde_json::json!({"token_budget": 10});
-        let result: Option<u64> = input.get("token_budget")
+        let result: Option<u64> = input
+            .get("token_budget")
             .and_then(|v| v.as_u64())
             .and_then(|v| if v == 0 { None } else { Some(v) })
             .or_else(|| if default_k > 0 { Some(default_k) } else { None });
@@ -848,22 +876,31 @@ mod tests {
     fn test_token_budget_missing_defaults_to_none() {
         let default_k = 0u64;
         let input = serde_json::json!({"prompt": "hello"});
-        let result: Option<u64> = input.get("token_budget")
+        let result: Option<u64> = input
+            .get("token_budget")
             .and_then(|v| v.as_u64())
             .and_then(|v| if v == 0 { None } else { Some(v) })
             .or_else(|| if default_k > 0 { Some(default_k) } else { None });
-        assert_eq!(result, None, "missing token_budget with no default should produce None");
+        assert_eq!(
+            result, None,
+            "missing token_budget with no default should produce None"
+        );
     }
 
     #[test]
     fn test_token_budget_uses_settings_default_when_missing() {
         let default_k = 20u64;
         let input = serde_json::json!({"prompt": "hello"});
-        let result: Option<u64> = input.get("token_budget")
+        let result: Option<u64> = input
+            .get("token_budget")
             .and_then(|v| v.as_u64())
             .and_then(|v| if v == 0 { None } else { Some(v) })
             .or_else(|| if default_k > 0 { Some(default_k) } else { None });
-        assert_eq!(result, Some(20), "missing token_budget with default=20 should produce Some(20)");
+        assert_eq!(
+            result,
+            Some(20),
+            "missing token_budget with default=20 should produce Some(20)"
+        );
     }
 
     #[test]
@@ -872,10 +909,15 @@ mod tests {
         // the 0→None mapping makes or_else pick up the default.
         let default_k = 20u64;
         let input = serde_json::json!({"token_budget": 0});
-        let result: Option<u64> = input.get("token_budget")
+        let result: Option<u64> = input
+            .get("token_budget")
             .and_then(|v| v.as_u64())
             .and_then(|v| if v == 0 { None } else { Some(v) })
             .or_else(|| if default_k > 0 { Some(default_k) } else { None });
-        assert_eq!(result, Some(20), "explicit token_budget=0 with non-zero default should use the default");
+        assert_eq!(
+            result,
+            Some(20),
+            "explicit token_budget=0 with non-zero default should use the default"
+        );
     }
 }

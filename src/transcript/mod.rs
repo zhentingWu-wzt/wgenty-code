@@ -11,14 +11,14 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentTranscript {
-    pub id: String,                         // UUID v4
+    pub id: String, // UUID v4
     pub session_id: String,
     pub parent_id: Option<String>,
     pub label: String,
     pub status: TranscriptStatus,
     pub system_prompt: Option<String>,
     pub user_prompt: String,
-    pub started_at: i64,                    // Unix ms
+    pub started_at: i64, // Unix ms
     pub finished_at: Option<i64>,
     pub total_tokens: u64,
     pub max_rounds: Option<u32>,
@@ -53,7 +53,7 @@ impl std::fmt::Display for TranscriptStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentEventRecord {
     pub round: u32,
-    pub event_type: String,            // thought | action | tool_result | error | completion
+    pub event_type: String, // thought | action | tool_result | error | completion
     pub tool_name: Option<String>,
     pub tool_params: Option<serde_json::Value>,
     pub data: String,

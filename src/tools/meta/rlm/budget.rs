@@ -3,10 +3,10 @@
 /// Budget allocation across RLM pipeline phases.
 #[derive(Debug, Clone)]
 pub struct BudgetAllocation {
-    pub total: u64,          // total budget in thousands
-    pub planner: u64,        // 10%
-    pub executor_pool: u64,  // 80%
-    pub aggregator: u64,     // 10%
+    pub total: u64,         // total budget in thousands
+    pub planner: u64,       // 10%
+    pub executor_pool: u64, // 80%
+    pub aggregator: u64,    // 10%
 }
 
 impl BudgetAllocation {
@@ -22,7 +22,9 @@ impl BudgetAllocation {
 
     /// Distribute executor pool across individual tasks.
     pub fn distribute_to_tasks(&self, task_count: usize) -> Vec<u64> {
-        if task_count == 0 { return vec![]; }
+        if task_count == 0 {
+            return vec![];
+        }
         let per_task = self.executor_pool / task_count as u64;
         vec![per_task; task_count]
     }
@@ -83,7 +85,7 @@ mod tests {
     #[test]
     fn test_small_budget() {
         let a = BudgetAllocation::new(1); // 1k tokens
-        assert_eq!(a.planner, 0);  // integer division: 1/10 = 0
+        assert_eq!(a.planner, 0); // integer division: 1/10 = 0
         assert_eq!(a.executor_pool, 0);
         assert_eq!(a.aggregator, 0);
     }

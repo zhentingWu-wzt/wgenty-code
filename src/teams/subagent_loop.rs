@@ -159,7 +159,8 @@ pub async fn run_subagent_loop(
         let current_params_val: Mutex<Option<String>> = Mutex::new(None);
         let cumulative_tokens: Mutex<usize> = Mutex::new(0);
         // Progress tracker for stuck detection
-        let mut tool_types_used: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut tool_types_used: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let mut stale_rounds: u32 = 0;
 
         let emit = |status: SubagentStatus,
@@ -232,7 +233,13 @@ pub async fn run_subagent_loop(
                 max_rounds
             );
 
-            emit(SubagentStatus::Running, Some(round + 1), None, None, last_delta);
+            emit(
+                SubagentStatus::Running,
+                Some(round + 1),
+                None,
+                None,
+                last_delta,
+            );
 
             let response = tokio::time::timeout(
                 PER_ROUND_API_TIMEOUT,
@@ -277,7 +284,10 @@ pub async fn run_subagent_loop(
             if let Some(budget_k) = token_budget_k {
                 let used = *cumulative_tokens.lock().unwrap();
                 if used > (budget_k as usize) * 1000 {
-                    let last_tool = current_params_val.lock().unwrap().clone()
+                    let last_tool = current_params_val
+                        .lock()
+                        .unwrap()
+                        .clone()
                         .unwrap_or_else(|| "none".to_string());
                     let msg = format!(
                         "Token budget exceeded: limit {}k, used {}k tokens after {} rounds (last tool: {})",
@@ -286,7 +296,13 @@ pub async fn run_subagent_loop(
                         round + 1,
                         last_tool,
                     );
-                    emit(SubagentStatus::Failed, Some(round + 1), None, Some(msg.clone()), None);
+                    emit(
+                        SubagentStatus::Failed,
+                        Some(round + 1),
+                        None,
+                        Some(msg.clone()),
+                        None,
+                    );
                     return Err(msg);
                 }
             }
@@ -305,7 +321,9 @@ pub async fn run_subagent_loop(
                         let mut log = action_log.lock().unwrap();
                         let elapsed = start.elapsed().as_millis() as u64;
                         log.push(SubagentEvent {
-                            event_type: SubagentEventType::Thought { text: trimmed.to_string() },
+                            event_type: SubagentEventType::Thought {
+                                text: trimmed.to_string(),
+                            },
                             elapsed_ms: elapsed,
                         });
                     }
@@ -392,7 +410,8 @@ pub async fn run_subagent_loop(
             let tool_results: Vec<ToolCall> = tool_calls.unwrap();
             let mut had_parse_error_this_round = false;
             // Collect tool names for progress delta computation (before for loop consumes tool_results).
-            let round_tool_names: Vec<String> = tool_results.iter()
+            let round_tool_names: Vec<String> = tool_results
+                .iter()
                 .map(|tc| tc.function.name.clone())
                 .collect();
 
@@ -564,7 +583,8 @@ pub async fn run_subagent_loop(
             }
 
             // ── Progress delta computation ──────────────────────────────────
-            let round_tool_types: std::collections::HashSet<String> = round_tool_names.into_iter().collect();
+            let round_tool_types: std::collections::HashSet<String> =
+                round_tool_names.into_iter().collect();
             let new_types: Vec<&String> = round_tool_types.difference(&tool_types_used).collect();
             let delta = if tool_types_used.is_empty() {
                 1.0f32
@@ -640,10 +660,7 @@ pub async fn run_subagent_loop(
                     cumulative_tokens: 0,
                     error_details: Some(ErrorInfo {
                         error_type: ErrorType::Timeout,
-                        message: format!(
-                            "Timed out after {} seconds",
-                            timeout_duration.as_secs()
-                        ),
+                        message: format!("Timed out after {} seconds", timeout_duration.as_secs()),
                         last_tool: None,
                         last_params: None,
                         round: 0,

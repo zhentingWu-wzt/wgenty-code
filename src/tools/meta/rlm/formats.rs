@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaimsOutput {
-    pub format: String,  // "structured-claims/1"
+    pub format: String, // "structured-claims/1"
     pub claims: Vec<Claim>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<ClaimsMetadata>,
@@ -19,7 +19,7 @@ pub struct Claim {
     pub id: String,
     pub claim: String,
     pub evidence: String,
-    pub confidence: f32,               // 0.0 - 1.0
+    pub confidence: f32, // 0.0 - 1.0
     #[serde(default)]
     pub conflicts_with: Vec<String>,
     #[serde(default)]
@@ -39,18 +39,18 @@ pub struct ClaimsMetadata {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffOutput {
-    pub format: String,  // "unified-diff/1"
+    pub format: String, // "unified-diff/1"
     pub changes: Vec<FileChange>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileChange {
     pub file: String,
-    pub intent: String,               // change intent description
-    pub diff: String,                 // unified diff string
+    pub intent: String, // change intent description
+    pub diff: String,   // unified diff string
     pub confidence: f32,
     #[serde(default)]
-    pub depends_on: Vec<String>,      // dependent file paths
+    pub depends_on: Vec<String>, // dependent file paths
 }
 
 // ── Aggregator types ───────────────────────────────────────────────────
@@ -101,8 +101,10 @@ impl ClaimsOutput {
         }
 
         // Level 2: Extract from markdown code block
-        let re = Regex::new(r#"```(?:json)?\s*(\{[\s\S]*?"format"\s*:\s*"structured-claims/1"[\s\S]*?\})\s*```"#)
-            .map_err(|e| format!("Regex error: {}", e))?;
+        let re = Regex::new(
+            r#"```(?:json)?\s*(\{[\s\S]*?"format"\s*:\s*"structured-claims/1"[\s\S]*?\})\s*```"#,
+        )
+        .map_err(|e| format!("Regex error: {}", e))?;
         if let Some(caps) = re.captures(text) {
             if let Ok(claims) = serde_json::from_str::<Self>(&caps[1]) {
                 return Ok(claims);
@@ -132,7 +134,9 @@ impl ClaimsOutput {
             }],
             metadata: Some(ClaimsMetadata {
                 parse_method: "unstructured-fallback".into(),
-                parse_warning: Some("Failed to parse structured output; preserving raw text".into()),
+                parse_warning: Some(
+                    "Failed to parse structured output; preserving raw text".into(),
+                ),
             }),
         })
     }
@@ -147,8 +151,10 @@ impl DiffOutput {
         }
 
         // Level 2: Extract from markdown code block
-        let re = Regex::new(r#"```(?:json)?\s*(\{[\s\S]*?"format"\s*:\s*"unified-diff/1"[\s\S]*?\})\s*```"#)
-            .map_err(|e| format!("Regex error: {}", e))?;
+        let re = Regex::new(
+            r#"```(?:json)?\s*(\{[\s\S]*?"format"\s*:\s*"unified-diff/1"[\s\S]*?\})\s*```"#,
+        )
+        .map_err(|e| format!("Regex error: {}", e))?;
         if let Some(caps) = re.captures(text) {
             if let Ok(diff) = serde_json::from_str::<Self>(&caps[1]) {
                 return Ok(diff);
@@ -187,7 +193,9 @@ pub fn jaccard_similarity(a: &str, b: &str) -> f64 {
     let intersection = set_a.intersection(&set_b).count();
     let union = set_a.union(&set_b).count();
 
-    if union == 0 { return 0.0; }
+    if union == 0 {
+        return 0.0;
+    }
     intersection as f64 / union as f64
 }
 
@@ -229,7 +237,8 @@ impl Aggregator {
         // Merge file changes
         let file_changes = Self::merge_file_changes(changes);
 
-        let unresolved: Vec<ConflictEntry> = conflicts.iter()
+        let unresolved: Vec<ConflictEntry> = conflicts
+            .iter()
             .filter(|c| matches!(c.status, ConflictStatus::Unresolved))
             .cloned()
             .collect();
@@ -249,11 +258,15 @@ impl Aggregator {
         let mut merged_ids: HashSet<String> = HashSet::new();
 
         for i in 0..claims.len() {
-            if merged_ids.contains(&claims[i].id) { continue; }
+            if merged_ids.contains(&claims[i].id) {
+                continue;
+            }
             let mut claim = claims[i].clone();
 
             for j in (i + 1)..claims.len() {
-                if merged_ids.contains(&claims[j].id) { continue; }
+                if merged_ids.contains(&claims[j].id) {
+                    continue;
+                }
                 if jaccard_similarity(&claim.claim, &claims[j].claim) > threshold {
                     // Merge: keep higher confidence, concatenate evidence
                     if claims[j].confidence > claim.confidence {
@@ -271,9 +284,7 @@ impl Aggregator {
     /// Detect conflicts between claims based on conflicts_with references.
     fn detect_conflicts(claims: &[Claim]) -> Vec<ConflictEntry> {
         let mut conflicts = Vec::new();
-        let claim_map: HashMap<&str, &Claim> = claims.iter()
-            .map(|c| (c.id.as_str(), c))
-            .collect();
+        let claim_map: HashMap<&str, &Claim> = claims.iter().map(|c| (c.id.as_str(), c)).collect();
 
         for claim in claims {
             for conflict_id in &claim.conflicts_with {
@@ -296,21 +307,24 @@ impl Aggregator {
             by_file.entry(change.file.clone()).or_default().push(change);
         }
 
-        by_file.into_iter().map(|(file, file_changes)| {
-            if file_changes.len() > 1 {
-                FileChangeResult {
-                    file,
-                    status: ChangeStatus::PotentialWriteConflict,
-                    changes: file_changes,
+        by_file
+            .into_iter()
+            .map(|(file, file_changes)| {
+                if file_changes.len() > 1 {
+                    FileChangeResult {
+                        file,
+                        status: ChangeStatus::PotentialWriteConflict,
+                        changes: file_changes,
+                    }
+                } else {
+                    FileChangeResult {
+                        file,
+                        status: ChangeStatus::Clean,
+                        changes: file_changes,
+                    }
                 }
-            } else {
-                FileChangeResult {
-                    file,
-                    status: ChangeStatus::Clean,
-                    changes: file_changes,
-                }
-            }
-        }).collect()
+            })
+            .collect()
     }
 }
 
@@ -351,7 +365,10 @@ mod tests {
 
     #[test]
     fn test_jaccard_identical() {
-        let sim = jaccard_similarity("The quick brown fox jumps over the lazy dog", "The quick brown fox jumps over the lazy dog");
+        let sim = jaccard_similarity(
+            "The quick brown fox jumps over the lazy dog",
+            "The quick brown fox jumps over the lazy dog",
+        );
         assert!((sim - 1.0).abs() < 0.01);
     }
 
@@ -377,16 +394,31 @@ mod tests {
     fn test_deduplicate_claims() {
         let claims = vec![
             Claim {
-                id: "c1".into(), claim: "System uses JWT authentication for user login".into(),
-                evidence: "file1".into(), confidence: 0.8, conflicts_with: vec![], actionable: false, recommendation: None,
+                id: "c1".into(),
+                claim: "System uses JWT authentication for user login".into(),
+                evidence: "file1".into(),
+                confidence: 0.8,
+                conflicts_with: vec![],
+                actionable: false,
+                recommendation: None,
             },
             Claim {
-                id: "c2".into(), claim: "System uses JWT authentication for user login verification".into(),
-                evidence: "file2".into(), confidence: 0.9, conflicts_with: vec![], actionable: false, recommendation: None,
+                id: "c2".into(),
+                claim: "System uses JWT authentication for user login verification".into(),
+                evidence: "file2".into(),
+                confidence: 0.9,
+                conflicts_with: vec![],
+                actionable: false,
+                recommendation: None,
             },
             Claim {
-                id: "c3".into(), claim: "Database is PostgreSQL".into(),
-                evidence: "file3".into(), confidence: 0.7, conflicts_with: vec![], actionable: false, recommendation: None,
+                id: "c3".into(),
+                claim: "Database is PostgreSQL".into(),
+                evidence: "file3".into(),
+                confidence: 0.7,
+                conflicts_with: vec![],
+                actionable: false,
+                recommendation: None,
             },
         ];
         let deduped = Aggregator::deduplicate_claims(claims, 0.8);
@@ -397,12 +429,22 @@ mod tests {
     fn test_detect_conflicts() {
         let claims = vec![
             Claim {
-                id: "c1".into(), claim: "Use library A".into(), evidence: "".into(),
-                confidence: 0.9, conflicts_with: vec!["c2".into()], actionable: true, recommendation: None,
+                id: "c1".into(),
+                claim: "Use library A".into(),
+                evidence: "".into(),
+                confidence: 0.9,
+                conflicts_with: vec!["c2".into()],
+                actionable: true,
+                recommendation: None,
             },
             Claim {
-                id: "c2".into(), claim: "Use library B".into(), evidence: "".into(),
-                confidence: 0.7, conflicts_with: vec!["c1".into()], actionable: true, recommendation: None,
+                id: "c2".into(),
+                claim: "Use library B".into(),
+                evidence: "".into(),
+                confidence: 0.7,
+                conflicts_with: vec!["c1".into()],
+                actionable: true,
+                recommendation: None,
             },
         ];
         let conflicts = Aggregator::detect_conflicts(&claims);
@@ -411,9 +453,13 @@ mod tests {
 
     #[test]
     fn test_merge_file_changes_single() {
-        let changes = vec![
-            FileChange { file: "src/main.rs".into(), intent: "fix".into(), diff: "".into(), confidence: 0.9, depends_on: vec![] },
-        ];
+        let changes = vec![FileChange {
+            file: "src/main.rs".into(),
+            intent: "fix".into(),
+            diff: "".into(),
+            confidence: 0.9,
+            depends_on: vec![],
+        }];
         let merged = Aggregator::merge_file_changes(changes);
         assert_eq!(merged.len(), 1);
         assert!(matches!(merged[0].status, ChangeStatus::Clean));
@@ -422,11 +468,26 @@ mod tests {
     #[test]
     fn test_merge_file_changes_conflict() {
         let changes = vec![
-            FileChange { file: "src/main.rs".into(), intent: "fix".into(), diff: "diff1".into(), confidence: 0.9, depends_on: vec![] },
-            FileChange { file: "src/main.rs".into(), intent: "refactor".into(), diff: "diff2".into(), confidence: 0.8, depends_on: vec![] },
+            FileChange {
+                file: "src/main.rs".into(),
+                intent: "fix".into(),
+                diff: "diff1".into(),
+                confidence: 0.9,
+                depends_on: vec![],
+            },
+            FileChange {
+                file: "src/main.rs".into(),
+                intent: "refactor".into(),
+                diff: "diff2".into(),
+                confidence: 0.8,
+                depends_on: vec![],
+            },
         ];
         let merged = Aggregator::merge_file_changes(changes);
         assert_eq!(merged.len(), 1);
-        assert!(matches!(merged[0].status, ChangeStatus::PotentialWriteConflict));
+        assert!(matches!(
+            merged[0].status,
+            ChangeStatus::PotentialWriteConflict
+        ));
     }
 }

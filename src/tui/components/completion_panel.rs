@@ -32,7 +32,14 @@ impl CompletionPanel {
         let border_color = ACCENT;
 
         let block = Block::default()
-            .title(format!(" {} ", if state.prefix == '@' { "Skills" } else { "Commands" }))
+            .title(format!(
+                " {} ",
+                if state.prefix == '@' {
+                    "Skills"
+                } else {
+                    "Commands"
+                }
+            ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color))
             .style(Style::default().bg(Color::Rgb(26, 26, 46)));
@@ -54,10 +61,7 @@ impl CompletionPanel {
             };
 
             let mut parts = vec![
-                Span::styled(
-                    format!(" {}", m.text),
-                    style,
-                ),
+                Span::styled(format!(" {}", m.text), style),
                 Span::styled(
                     format!("  {}", m.description),
                     style.add_modifier(Modifier::DIM),
@@ -74,9 +78,10 @@ impl CompletionPanel {
 
         // Bottom hint
         let hint_style = Style::default().fg(Color::Rgb(108, 112, 134));
-        let hint = Line::from(vec![
-            Span::styled(" \u{2191}\u{2195} nav  Tab cycle  Enter select  Esc close ", hint_style),
-        ]);
+        let hint = Line::from(vec![Span::styled(
+            " \u{2191}\u{2195} nav  Tab cycle  Enter select  Esc close ",
+            hint_style,
+        )]);
 
         // Render block and content
         f.render_widget(block, panel_area);
@@ -86,12 +91,18 @@ impl CompletionPanel {
             width: inner.width,
             height: inner.height.saturating_sub(1),
         };
-        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), content_area);
-        f.render_widget(Paragraph::new(hint), Rect {
-            x: inner.x,
-            y: inner.y + inner.height.saturating_sub(1),
-            width: inner.width,
-            height: 1,
-        });
+        f.render_widget(
+            Paragraph::new(lines).wrap(Wrap { trim: false }),
+            content_area,
+        );
+        f.render_widget(
+            Paragraph::new(hint),
+            Rect {
+                x: inner.x,
+                y: inner.y + inner.height.saturating_sub(1),
+                width: inner.width,
+                height: 1,
+            },
+        );
     }
 }

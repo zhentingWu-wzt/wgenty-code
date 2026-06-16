@@ -57,10 +57,18 @@ impl WasmApiClient {
 
         let response = self.send_request(&request_body).await?;
 
-        // Parse response
+        // Parse response — check for API error embedded in the response body
+        if let Some(error) = response
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+        {
+            return Err(JsValue::from_str(&format!("API error: {}", error)));
+        }
+
         let content = response["choices"][0]["message"]["content"]
             .as_str()
-            .unwrap_or("")
+            .ok_or_else(|| JsValue::from_str("API returned empty response: no content in choices"))?
             .to_string();
 
         let usage = response["usage"].as_object().map(|u| Usage {
@@ -118,6 +126,13 @@ impl WasmApiClient {
                     }
 
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                        if let Some(error) = json
+                            .get("error")
+                            .and_then(|e| e.get("message"))
+                            .and_then(|m| m.as_str())
+                        {
+                            return Err(JsValue::from_str(&format!("API stream error: {}", error)));
+                        }
                         if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
                             callback(content.to_string());
                         }
@@ -149,6 +164,19 @@ impl WasmApiClient {
         let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
         let resp: Response = resp_value.dyn_into()?;
 
+        if !resp.ok() {
+            let status = resp.status();
+            let body = JsFuture::from(resp.text().unwrap_or_default())
+                .await
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| "[failed to read error body]".to_string());
+            return Err(JsValue::from_str(&format!(
+                "API error ({}): {}",
+                status, body
+            )));
+        }
+
         let json = JsFuture::from(resp.json()?).await?;
         let json_str = js_sys::JSON::stringify(&json)?
             .as_string()
@@ -178,6 +206,19 @@ impl WasmApiClient {
 
         let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
         let resp: Response = resp_value.dyn_into()?;
+
+        if !resp.ok() {
+            let status = resp.status();
+            let body = JsFuture::from(resp.text().unwrap_or_default())
+                .await
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| "[failed to read error body]".to_string());
+            return Err(JsValue::from_str(&format!(
+                "API error ({}): {}",
+                status, body
+            )));
+        }
 
         Ok(resp)
     }

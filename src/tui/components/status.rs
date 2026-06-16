@@ -1,6 +1,6 @@
 use crate::state::agent_phase::AgentPhase;
 use crate::tui::components::subagent_tree::SubagentTree;
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -103,6 +103,23 @@ pub fn render(
     let line = Line::from(vec![Span::raw("  "), status]);
 
     f.render_widget(Paragraph::new(line), area);
+
+    // Right-aligned shortcut hint (only when idle, to avoid clutter while
+    // the agent is busy). Skipped on narrow terminals.
+    if !is_active && !is_error && area.width >= 60 {
+        let hint = "Ctrl+O expand last · Ctrl+E expand all · Ctrl+S sessions · Ctrl+T tasks";
+        let hint_para = Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(DIM))))
+            .alignment(Alignment::Right);
+        // Reserve right portion of the same line for the hint.
+        let hint_width = (hint.chars().count() as u16 + 2).min(area.width);
+        let hint_area = Rect {
+            x: area.x + area.width.saturating_sub(hint_width),
+            y: area.y,
+            width: hint_width,
+            height: 1,
+        };
+        f.render_widget(hint_para, hint_area);
+    }
 }
 
 fn phase_label(phase: &AgentPhase, subagent_tree: Option<&SubagentTree>) -> String {

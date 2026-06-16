@@ -153,8 +153,16 @@ export class ApiClient {
   // ── Tools ────────────────────────────────────────────────────────────────
 
   async listTools(): Promise<{ tools: ToolInfo[] }> {
-    const res = await fetch(`${this.baseUrl}/api/v1/tools`);
-    return res.json();
+    try {
+      const res = await fetch(`${this.baseUrl}/api/v1/tools`);
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`Failed to list tools (${res.status}): ${body}`);
+      }
+      return res.json();
+    } catch (err) {
+      throw wrapFetchError(err, "listing tools");
+    }
   }
 
   async executeTool(request: ExecuteToolRequest): Promise<ExecuteToolResponse> {
@@ -181,11 +189,19 @@ export class ApiClient {
   }
 
   async approveTool(sessionRule: string): Promise<void> {
-    await fetch(`${this.baseUrl}/api/v1/tools/approve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_rule: sessionRule }),
-    });
+    try {
+      const res = await fetch(`${this.baseUrl}/api/v1/tools/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_rule: sessionRule }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`Failed to approve tool (${res.status}): ${body}`);
+      }
+    } catch (err) {
+      throw wrapFetchError(err, "approving tool");
+    }
   }
 
   // ── Background Tasks ─────────────────────────────────────────────────────
@@ -200,15 +216,31 @@ export class ApiClient {
   // ── Tasks ────────────────────────────────────────────────────────────────
 
   async listTasks(): Promise<TaskListResponse> {
-    const res = await fetch(`${this.baseUrl}/api/v1/tasks`);
-    return res.json();
+    try {
+      const res = await fetch(`${this.baseUrl}/api/v1/tasks`);
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`Failed to list tasks (${res.status}): ${body}`);
+      }
+      return res.json();
+    } catch (err) {
+      throw wrapFetchError(err, "listing tasks");
+    }
   }
 
   // ── Todos (s03 TodoWrite) ────────────────────────────────────────────────
 
   async getTodos(): Promise<TodoResponse> {
-    const res = await fetch(`${this.baseUrl}/api/v1/todos`);
-    return res.json();
+    try {
+      const res = await fetch(`${this.baseUrl}/api/v1/todos`);
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`Failed to get todos (${res.status}): ${body}`);
+      }
+      return res.json();
+    } catch (err) {
+      throw wrapFetchError(err, "getting todos");
+    }
   }
 
   // ── Sessions ──────────────────────────────────────────────────────────────

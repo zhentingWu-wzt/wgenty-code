@@ -157,16 +157,22 @@ fn default_rlm_max_replan() -> usize {
     2
 }
 
-fn default_rlm_jaccard_threshold() -> f64 { 0.8 }
+fn default_rlm_jaccard_threshold() -> f64 {
+    0.8
+}
 
 fn default_true() -> bool {
     true
 }
 
-fn default_max_transcript_age_days() -> u32 { 30 }
+fn default_max_transcript_age_days() -> u32 {
+    30
+}
 
 fn default_transcript_db_path() -> String {
-    let home = dirs::home_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    let home = dirs::home_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
     format!("{}/.wgenty-code/subagent_transcripts.db", home)
 }
 
@@ -440,17 +446,17 @@ impl Settings {
             "rlm.delegate_tool" => settings.rlm.delegate_tool = value.parse().unwrap_or(true),
             "rlm.auto_routing" => settings.rlm.auto_routing = value.parse().unwrap_or(true),
             "rlm.retry_enabled" => settings.rlm.retry_enabled = value.parse().unwrap_or(true),
-            "rlm.max_replan_cycles" => {
-                settings.rlm.max_replan_cycles = value.parse().unwrap_or(2)
-            }
+            "rlm.max_replan_cycles" => settings.rlm.max_replan_cycles = value.parse().unwrap_or(2),
             // legacy aliases (backward compatible)
             "rlm_retry_enabled" => settings.rlm.retry_enabled = value.parse().unwrap_or(true),
-            "rlm_max_replan_cycles" => {
-                settings.rlm.max_replan_cycles = value.parse().unwrap_or(2)
-            }
+            "rlm_max_replan_cycles" => settings.rlm.max_replan_cycles = value.parse().unwrap_or(2),
             "token_budget_k" => settings.token_budget_k = value.parse().unwrap_or(0),
-            "default_subagent_token_budget_k" => settings.default_subagent_token_budget_k = value.parse().unwrap_or(0),
-            "rlm_jaccard_threshold" => settings.rlm_jaccard_threshold = value.parse().unwrap_or(0.8),
+            "default_subagent_token_budget_k" => {
+                settings.default_subagent_token_budget_k = value.parse().unwrap_or(0)
+            }
+            "rlm_jaccard_threshold" => {
+                settings.rlm_jaccard_threshold = value.parse().unwrap_or(0.8)
+            }
             "planner_model" => settings.planner_model = Some(value.to_string()),
             "planner_model_base_url" => settings.planner_model_base_url = Some(value.to_string()),
             "planner_model_api_key" => settings.planner_model_api_key = Some(value.to_string()),
@@ -488,7 +494,9 @@ impl Settings {
                     settings.plugin_marketplaces = Some(serde_json::Value::Object(map));
                 }
             }
-            "max_transcript_age_days" => settings.max_transcript_age_days = value.parse().unwrap_or(30),
+            "max_transcript_age_days" => {
+                settings.max_transcript_age_days = value.parse().unwrap_or(30)
+            }
             "transcript_db_path" => settings.transcript_db_path = value.to_string(),
             _ => return Err(anyhow::anyhow!("Unknown setting: {}", key)),
         }

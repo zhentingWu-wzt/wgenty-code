@@ -93,6 +93,33 @@ impl ApiClient {
         self.settings.api.get_base_url()
     }
 
+    /// Build a full endpoint URL from `base_url` and a path suffix like
+    /// `chat/completions` or `messages`.
+    ///
+    /// If `base_url` already ends in a version segment (`/v1`, `/v2`, `/v3`, …),
+    /// the suffix is appended directly. Otherwise `/v1/` is inserted to keep
+    /// backward compatibility with bases that point at the API root
+    /// (e.g. `https://api.openai.com`).
+    fn build_endpoint(&self, suffix: &str) -> String {
+        let base = self.get_base_url();
+        let trimmed = base.trim_end_matches('/');
+        // Detect a trailing `/v<digits>` segment.
+        let has_version = trimmed
+            .rsplit('/')
+            .next()
+            .map(|seg| {
+                seg.starts_with('v')
+                    && seg.len() > 1
+                    && seg[1..].chars().all(|c| c.is_ascii_digit())
+            })
+            .unwrap_or(false);
+        if has_version {
+            format!("{}/{}", trimmed, suffix)
+        } else {
+            format!("{}/v1/{}", trimmed, suffix)
+        }
+    }
+
     pub fn get_model(&self) -> &str {
         &self.settings.model
     }
@@ -129,7 +156,7 @@ impl ApiClient {
             stream_options: None,
         };
 
-        let url = format!("{}/v1/chat/completions", self.get_base_url());
+        let url = self.build_endpoint("chat/completions");
 
         let response = self
             .http_client
@@ -172,7 +199,7 @@ impl ApiClient {
             stream: false,
         };
 
-        let url = format!("{}/v1/messages", self.get_base_url());
+        let url = self.build_endpoint("messages");
 
         let response = self
             .http_client
@@ -234,7 +261,7 @@ impl ApiClient {
             }),
         };
 
-        let url = format!("{}/v1/chat/completions", self.get_base_url());
+        let url = self.build_endpoint("chat/completions");
 
         let response = self
             .http_client
@@ -245,6 +272,15 @@ impl ApiClient {
             .send()
             .await
             .map_err(|e| wrap_network_error(e, &self.provider.name()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("[failed to read error body: {}]", e));
+            return Err(anyhow::anyhow!("API error ({}): {}", status, body));
+        }
 
         Ok(response)
     }
@@ -273,7 +309,7 @@ impl ApiClient {
             stream: true,
         };
 
-        let url = format!("{}/v1/messages", self.get_base_url());
+        let url = self.build_endpoint("messages");
 
         let response = self
             .http_client
@@ -557,7 +593,13 @@ pub fn parse_sse_line(line: &str) -> Option<StreamChunk> {
     if line == "[DONE]" {
         return None;
     }
-    serde_json::from_str(line).ok()
+    match serde_json::from_str(line) {
+        Ok(chunk) => Some(chunk),
+        Err(e) => {
+            tracing::warn!(error = %e, raw = %line, "Failed to parse SSE chunk");
+            None
+        }
+    }
 }
 
 pub type AnthropicClient = ApiClient;

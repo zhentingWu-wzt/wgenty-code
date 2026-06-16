@@ -6,7 +6,7 @@
 
 use crate::tools::codegraph::adapters::LanguageAdapter;
 use crate::tools::codegraph::types::{
-    Confidence, RefKind, RelKind, Reference, Relationship, Symbol, SymbolKind, Visibility,
+    Confidence, RefKind, Reference, RelKind, Relationship, Symbol, SymbolKind, Visibility,
 };
 use tree_sitter::{Language, Node, Tree};
 
@@ -44,12 +44,7 @@ impl LanguageAdapter for RustAdapter {
         extractor.symbols
     }
 
-    fn extract_references(
-        &self,
-        tree: &Tree,
-        source: &str,
-        symbols: &[Symbol],
-    ) -> Vec<Reference> {
+    fn extract_references(&self, tree: &Tree, source: &str, symbols: &[Symbol]) -> Vec<Reference> {
         let mut extractor = RustExtractor::new(source, "");
         extractor.target_symbols = symbols.to_vec();
         extractor.collect_references_pass(tree.root_node());
@@ -150,19 +145,14 @@ impl<'a> RustExtractor<'a> {
         if node.kind() == "call_expression" {
             if let Some(func_node) = node.child(0) {
                 let called_name = self.utf8_text(func_node).to_string();
-                if !called_name.is_empty()
-                    && called_name != "self"
-                    && called_name != "Self"
-                {
+                if !called_name.is_empty() && called_name != "self" && called_name != "Self" {
                     let pos = func_node.start_position();
                     let ref_kind = if func_node.kind() == "field_expression" {
                         RefKind::MethodCall
                     } else {
                         RefKind::Call
                     };
-                    let symbol_id = self
-                        .resolve_symbol_id(&called_name)
-                        .unwrap_or(-1);
+                    let symbol_id = self.resolve_symbol_id(&called_name).unwrap_or(-1);
 
                     self.references.push(Reference {
                         id: None,
@@ -194,10 +184,7 @@ impl<'a> RustExtractor<'a> {
         if kind_str == "call_expression" {
             if let Some(func_node) = node.child(0) {
                 let called_name = self.utf8_text(func_node).to_string();
-                if !called_name.is_empty()
-                    && called_name != "self"
-                    && called_name != "Self"
-                {
+                if !called_name.is_empty() && called_name != "self" && called_name != "Self" {
                     let pos = func_node.start_position();
                     let target_id = self.resolve_symbol_id(&called_name).unwrap_or(-1);
                     // Find the enclosing function (source of the call)
@@ -286,15 +273,8 @@ impl<'a> RustExtractor<'a> {
 
     fn get_name_node<'n>(&self, node: Node<'n>, kind: &str) -> Option<Node<'n>> {
         match kind {
-            "function_item"
-            | "struct_item"
-            | "enum_item"
-            | "trait_item"
-            | "type_item"
-            | "const_item"
-            | "static_item"
-            | "macro_definition"
-            | "mod_item" => {
+            "function_item" | "struct_item" | "enum_item" | "trait_item" | "type_item"
+            | "const_item" | "static_item" | "macro_definition" | "mod_item" => {
                 for i in 0..node.child_count() {
                     if let Some(child) = node.child(i) {
                         let ck = child.kind();
@@ -415,7 +395,7 @@ impl<'a> RustExtractor<'a> {
 mod tests {
     use super::*;
     use crate::tools::codegraph::adapters::LanguageAdapter;
-    use crate::tools::codegraph::types::{RelKind, RefKind, SymbolKind, Visibility};
+    use crate::tools::codegraph::types::{RefKind, RelKind, SymbolKind, Visibility};
 
     fn adapter() -> RustAdapter {
         RustAdapter::new()

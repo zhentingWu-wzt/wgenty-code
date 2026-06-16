@@ -239,7 +239,13 @@ pub fn parse_anthropic_sse_line(
         return Some(vec![]);
     };
 
-    let event: AnthropicSseEvent = serde_json::from_str(data).ok()?;
+    let event: AnthropicSseEvent = match serde_json::from_str(data) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(error = %e, raw = %data, "Failed to parse Anthropic SSE event");
+            return Some(vec![]);
+        }
+    };
     Some(state.process_event(&event))
 }
 

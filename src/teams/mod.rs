@@ -16,5 +16,5 @@ pub use subagent::{
 };
 pub use subagent_loop::run_subagent_loop;
 pub use subagent_mailbox::{
-    SubagentResponse, SubagentResultMailbox, StoredResult, MAX_INLINE_RESULT_LEN,
+    StoredResult, SubagentResponse, SubagentResultMailbox, MAX_INLINE_RESULT_LEN,
 };
