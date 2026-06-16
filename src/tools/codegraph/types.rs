@@ -92,7 +92,9 @@ pub struct Symbol {
     pub language: String,
 }
 
-fn default_language() -> String { "rust".to_string() }
+fn default_language() -> String {
+    "rust".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reference {

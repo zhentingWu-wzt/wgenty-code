@@ -61,7 +61,10 @@ mod tests {
         drop(logger);
         assert!(log_path.exists());
         let content = std::fs::read_to_string(&log_path).unwrap();
-        assert!(content.is_empty(), "audit.log should be empty after creation");
+        assert!(
+            content.is_empty(),
+            "audit.log should be empty after creation"
+        );
     }
 
     #[test]

@@ -164,21 +164,31 @@ fn render_tree_with_expand(
     let tokens_str = if node.progress.cumulative_tokens > 0 {
         if let Some(budget_k) = node.progress.token_budget_k {
             if budget_k > 0 {
-                format!(" · {:.1}k/{}k tokens",
+                format!(
+                    " · {:.1}k/{}k tokens",
                     node.progress.cumulative_tokens as f64 / 1000.0,
-                    budget_k)
+                    budget_k
+                )
             } else {
-                format!(" · {:.1}k tokens", node.progress.cumulative_tokens as f64 / 1000.0)
+                format!(
+                    " · {:.1}k tokens",
+                    node.progress.cumulative_tokens as f64 / 1000.0
+                )
             }
         } else {
-            format!(" · {:.1}k tokens", node.progress.cumulative_tokens as f64 / 1000.0)
+            format!(
+                " · {:.1}k tokens",
+                node.progress.cumulative_tokens as f64 / 1000.0
+            )
         }
     } else {
         String::new()
     };
 
     // Progress delta warning
-    let progress_warn = node.progress.progress_delta
+    let progress_warn = node
+        .progress
+        .progress_delta
         .filter(|d| *d < 0.05 && node.progress.status == SubagentStatus::Running)
         .map(|_| " ⚠ low progress".to_string())
         .unwrap_or_default();
@@ -211,7 +221,10 @@ fn render_tree_with_expand(
     let label = if status_detail.is_empty() {
         format!(" {}{}", node.progress.label, progress_warn)
     } else {
-        format!(" {} — {}{}", node.progress.label, status_detail, progress_warn)
+        format!(
+            " {} — {}{}",
+            node.progress.label, status_detail, progress_warn
+        )
     };
 
     lines.push(Line::from(vec![
@@ -224,45 +237,51 @@ fn render_tree_with_expand(
     ]));
 
     // ── Selected + Failed/Cancelled: show inline error detail ─────────
-    if is_selected && matches!(node.progress.status, SubagentStatus::Failed | SubagentStatus::Cancelled) {
+    if is_selected
+        && matches!(
+            node.progress.status,
+            SubagentStatus::Failed | SubagentStatus::Cancelled
+        )
+    {
         let err_indent = " ".repeat((indent + 4) as usize);
         // Error header
-        if let Some(ref error) = node.progress.metadata.as_ref().and_then(|m| m.error.as_ref()) {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{}┌─ Error: {}", err_indent, error),
-                    Style::default().fg(Color::Rgb(243, 139, 168)),
-                ),
-            ]));
+        if let Some(ref error) = node
+            .progress
+            .metadata
+            .as_ref()
+            .and_then(|m| m.error.as_ref())
+        {
+            lines.push(Line::from(vec![Span::styled(
+                format!("{}┌─ Error: {}", err_indent, error),
+                Style::default().fg(Color::Rgb(243, 139, 168)),
+            )]));
         }
 
         // Token info
         let tokens = node.progress.cumulative_tokens;
-        let budget = node.progress.token_budget_k.map(|b| format!("{}k", b)).unwrap_or_else(|| "unlimited".to_string());
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{}├─ Tokens: {}/{}", err_indent, tokens, budget),
-                Style::default().fg(Color::Rgb(108, 112, 134)),
-            ),
-        ]));
+        let budget = node
+            .progress
+            .token_budget_k
+            .map(|b| format!("{}k", b))
+            .unwrap_or_else(|| "unlimited".to_string());
+        lines.push(Line::from(vec![Span::styled(
+            format!("{}├─ Tokens: {}/{}", err_indent, tokens, budget),
+            Style::default().fg(Color::Rgb(108, 112, 134)),
+        )]));
 
         // Round info
         if let (Some(r), Some(mr)) = (node.progress.round, node.progress.max_rounds) {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{}├─ Round: {}/{}", err_indent, r, mr),
-                    Style::default().fg(Color::Rgb(108, 112, 134)),
-                ),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                format!("{}├─ Round: {}/{}", err_indent, r, mr),
+                Style::default().fg(Color::Rgb(108, 112, 134)),
+            )]));
         }
 
         // Action buttons
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{}└─ [r]etry  [d]etails  [Esc] close", err_indent),
-                Style::default().fg(Color::Rgb(255, 200, 80)),
-            ),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            format!("{}└─ [r]etry  [d]etails  [Esc] close", err_indent),
+            Style::default().fg(Color::Rgb(255, 200, 80)),
+        )]));
     }
 
     // ── Expanded: show full event timeline ──────────────────────────

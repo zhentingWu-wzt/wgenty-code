@@ -6,7 +6,7 @@
 
 use crate::tools::codegraph::adapters::LanguageAdapter;
 use crate::tools::codegraph::types::{
-    Confidence, RefKind, RelKind, Reference, Relationship, Symbol, SymbolKind, Visibility,
+    Confidence, RefKind, Reference, RelKind, Relationship, Symbol, SymbolKind, Visibility,
 };
 use tree_sitter::{Language, Node, Tree};
 
@@ -44,12 +44,7 @@ impl LanguageAdapter for JavaAdapter {
         extractor.symbols
     }
 
-    fn extract_references(
-        &self,
-        tree: &Tree,
-        source: &str,
-        symbols: &[Symbol],
-    ) -> Vec<Reference> {
+    fn extract_references(&self, tree: &Tree, source: &str, symbols: &[Symbol]) -> Vec<Reference> {
         let mut extractor = JavaExtractor::new(source, "");
         extractor.target_symbols = symbols.to_vec();
         extractor.collect_references_pass(tree.root_node());
@@ -399,8 +394,7 @@ impl<'a> JavaExtractor<'a> {
                                 let method_name = child_of_kind(method_node, "identifier")
                                     .map(|n| self.utf8_text(n).to_string())
                                     .unwrap_or_default();
-                                let source_id =
-                                    self.resolve_symbol_id(&method_name).unwrap_or(-1);
+                                let source_id = self.resolve_symbol_id(&method_name).unwrap_or(-1);
                                 let pos = type_id.start_position();
                                 self.relationships.push(Relationship {
                                     id: None,
@@ -503,9 +497,7 @@ impl<'a> JavaExtractor<'a> {
     fn find_enclosing_method_id(&self, node: Node<'_>) -> i64 {
         let mut current = node;
         while let Some(parent) = current.parent() {
-            if parent.kind() == "method_declaration"
-                || parent.kind() == "constructor_declaration"
-            {
+            if parent.kind() == "method_declaration" || parent.kind() == "constructor_declaration" {
                 if let Some(name_node) = child_of_kind(parent, "identifier") {
                     let name = self.utf8_text(name_node);
                     if let Some(id) = self.resolve_symbol_id(name) {
@@ -514,9 +506,7 @@ impl<'a> JavaExtractor<'a> {
                 }
             }
             // Stop at class boundary
-            if parent.kind() == "class_declaration"
-                || parent.kind() == "interface_declaration"
-            {
+            if parent.kind() == "class_declaration" || parent.kind() == "interface_declaration" {
                 break;
             }
             current = parent;
@@ -574,11 +564,7 @@ impl<'a> JavaExtractor<'a> {
         None
     }
 
-    fn find_child_recursive<'n>(
-        &self,
-        node: Node<'n>,
-        target_kind: &str,
-    ) -> Option<Node<'n>> {
+    fn find_child_recursive<'n>(&self, node: Node<'n>, target_kind: &str) -> Option<Node<'n>> {
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i) {
                 if child.kind() == target_kind {
@@ -650,7 +636,9 @@ mod tests {
         let source = "class Hello { public void greet() {} }";
         let tree = a.parse(source).unwrap();
         let symbols = a.extract_symbols(&tree, source, "test.java");
-        assert!(symbols.iter().any(|s| s.name == "greet" && s.kind == SymbolKind::Function));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "greet" && s.kind == SymbolKind::Function));
     }
 
     #[test]
@@ -674,8 +662,12 @@ mod tests {
         let tree = a.parse(source).unwrap();
         let symbols = a.extract_symbols(&tree, source, "test.java");
         // Should have Runner (interface→Trait) and App (class→Struct)
-        assert!(symbols.iter().any(|s| s.name == "Runner" && s.kind == SymbolKind::Trait));
-        assert!(symbols.iter().any(|s| s.name == "App" && s.kind == SymbolKind::Struct));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "Runner" && s.kind == SymbolKind::Trait));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "App" && s.kind == SymbolKind::Struct));
     }
 
     #[test]
@@ -684,6 +676,8 @@ mod tests {
         let source = "enum Color { RED, GREEN, BLUE }";
         let tree = a.parse(source).unwrap();
         let symbols = a.extract_symbols(&tree, source, "test.java");
-        assert!(symbols.iter().any(|s| s.name == "Color" && s.kind == SymbolKind::Enum));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "Color" && s.kind == SymbolKind::Enum));
     }
 }

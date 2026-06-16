@@ -245,7 +245,9 @@ impl Tool for CodegraphExploreTool {
 pub struct CallPathTool;
 
 impl CallPathTool {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 #[async_trait]
@@ -284,12 +286,10 @@ impl Tool for CallPathTool {
         })?;
 
         let engine = get_engine()?;
-        let result = engine
-            .call_path_query(from, to)
-            .map_err(|e| ToolError {
-                message: format!("call_path query failed: {}", e),
-                code: Some("query_error".to_string()),
-            })?;
+        let result = engine.call_path_query(from, to).map_err(|e| ToolError {
+            message: format!("call_path query failed: {}", e),
+            code: Some("query_error".to_string()),
+        })?;
 
         Ok(ToolOutput {
             output_type: "json".to_string(),
@@ -307,7 +307,9 @@ impl Tool for CallPathTool {
 pub struct SymbolBatchTool;
 
 impl SymbolBatchTool {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 #[async_trait]
@@ -358,12 +360,10 @@ impl Tool for SymbolBatchTool {
         }
 
         let engine = get_engine()?;
-        let results = engine
-            .symbol_batch(&symbols)
-            .map_err(|e| ToolError {
-                message: format!("symbol_batch query failed: {}", e),
-                code: Some("query_error".to_string()),
-            })?;
+        let results = engine.symbol_batch(&symbols).map_err(|e| ToolError {
+            message: format!("symbol_batch query failed: {}", e),
+            code: Some("query_error".to_string()),
+        })?;
 
         let output: Vec<serde_json::Value> = results
             .iter()
@@ -392,7 +392,9 @@ impl Tool for SymbolBatchTool {
 pub struct ModuleSummaryTool;
 
 impl ModuleSummaryTool {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 #[async_trait]
@@ -429,12 +431,10 @@ impl Tool for ModuleSummaryTool {
         })?;
 
         let engine = get_engine()?;
-        let result = engine
-            .module_summary(module_path)
-            .map_err(|e| ToolError {
-                message: format!("module_summary query failed: {}", e),
-                code: Some("query_error".to_string()),
-            })?;
+        let result = engine.module_summary(module_path).map_err(|e| ToolError {
+            message: format!("module_summary query failed: {}", e),
+            code: Some("query_error".to_string()),
+        })?;
 
         Ok(ToolOutput {
             output_type: "json".to_string(),

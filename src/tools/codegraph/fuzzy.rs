@@ -21,10 +21,14 @@ pub fn levenshtein_distance(a: &str, b: &str) -> usize {
     for i in 1..=a_len {
         curr[0] = i;
         for j in 1..=b_len {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)           // deletion
-                .min(curr[j - 1] + 1)         // insertion
-                .min(prev[j - 1] + cost);     // substitution
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
+            curr[j] = (prev[j] + 1) // deletion
+                .min(curr[j - 1] + 1) // insertion
+                .min(prev[j - 1] + cost); // substitution
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -112,8 +116,12 @@ mod tests {
     #[test]
     fn test_fuzzy_search_returns_matches() {
         let candidates: Vec<String> = vec![
-            "run_async", "run_sync", "run_task", "runner",
-            "ToolRegistry", "completely_different",
+            "run_async",
+            "run_sync",
+            "run_task",
+            "runner",
+            "ToolRegistry",
+            "completely_different",
         ]
         .into_iter()
         .map(|s| s.to_string())

@@ -1,5 +1,7 @@
 use crate::tools::codegraph::migration::SchemaMigration;
-use crate::tools::codegraph::types::{Confidence, RefKind, Reference, RelKind, Relationship, Symbol, SymbolKind};
+use crate::tools::codegraph::types::{
+    Confidence, RefKind, Reference, RelKind, Relationship, Symbol, SymbolKind,
+};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -151,7 +153,7 @@ impl IndexStore {
             "SELECT r.id, r.source_id, r.target_id, r.rel_kind, r.confidence, \
              COALESCE(f.path,'') as file_path, \
              COALESCE(r.line,0) as line \
-             FROM relationships r LEFT JOIN files f ON r.file_id = f.id"
+             FROM relationships r LEFT JOIN files f ON r.file_id = f.id",
         )?;
         let rows = stmt.query_map([], |row| {
             let rel_kind_str: String = row.get(3)?;

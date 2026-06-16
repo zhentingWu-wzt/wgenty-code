@@ -144,7 +144,13 @@ impl SubagentResultMailbox {
     fn make_filename(subagent_type: &str, description: &str, session_id: &str) -> String {
         let safe_desc = description
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .take(40)
             .collect::<String>();
         let short_uuid = uuid::Uuid::new_v4().to_string();
@@ -264,9 +270,7 @@ mod tests {
 
     #[test]
     fn test_small_result_stays_inline() {
-        let mailbox = SubagentResultMailbox::new(
-            std::env::temp_dir().join("wgenty_test_mailbox"),
-        );
+        let mailbox = SubagentResultMailbox::new(std::env::temp_dir().join("wgenty_test_mailbox"));
         let response = mailbox.offload_if_large(
             "explore",
             "find auth functions",
@@ -283,9 +287,8 @@ mod tests {
 
     #[test]
     fn test_large_result_offloaded() {
-        let mailbox = SubagentResultMailbox::new(
-            std::env::temp_dir().join("wgenty_test_mailbox_large"),
-        );
+        let mailbox =
+            SubagentResultMailbox::new(std::env::temp_dir().join("wgenty_test_mailbox_large"));
         let large_content = "A".repeat(5000);
         let response = mailbox.offload_if_large(
             "general-purpose",
@@ -346,6 +349,9 @@ mod tests {
         let large = "X".repeat(5000);
         let resp = SubagentResponse::Inline { content: large };
         let compact = resp.to_compact();
-        assert_eq!(compact.len(), MAX_INLINE_RESULT_LEN + "…\n\n[truncated: 5000 total chars]".len());
+        assert_eq!(
+            compact.len(),
+            MAX_INLINE_RESULT_LEN + "…\n\n[truncated: 5000 total chars]".len()
+        );
     }
 }

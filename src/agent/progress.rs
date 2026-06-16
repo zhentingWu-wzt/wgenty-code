@@ -126,7 +126,9 @@ mod tests {
     #[test]
     fn test_subagent_event_type_thought_serialize() {
         let event = SubagentEvent {
-            event_type: SubagentEventType::Thought { text: "hello".to_string() },
+            event_type: SubagentEventType::Thought {
+                text: "hello".to_string(),
+            },
             elapsed_ms: 100,
         };
         let json = serde_json::to_string(&event).unwrap();
@@ -154,7 +156,10 @@ mod tests {
         assert!(json.contains("read_file"));
         let deserialized: SubagentEvent = serde_json::from_str(&json).unwrap();
         match deserialized.event_type {
-            SubagentEventType::Action { tool_name, params_summary } => {
+            SubagentEventType::Action {
+                tool_name,
+                params_summary,
+            } => {
                 assert_eq!(tool_name, "read_file");
                 assert_eq!(params_summary, "src/main.rs");
             }
@@ -178,7 +183,11 @@ mod tests {
         assert!(json.contains("true"));
         let deserialized: SubagentEvent = serde_json::from_str(&json).unwrap();
         match deserialized.event_type {
-            SubagentEventType::ToolResult { tool_name, success, summary } => {
+            SubagentEventType::ToolResult {
+                tool_name,
+                success,
+                summary,
+            } => {
                 assert_eq!(tool_name, "read_file");
                 assert!(success);
                 assert_eq!(summary, "file read successfully");
@@ -201,7 +210,10 @@ mod tests {
         assert!(json.contains("Timeout"));
         let deserialized: SubagentEvent = serde_json::from_str(&json).unwrap();
         match deserialized.event_type {
-            SubagentEventType::Error { message, error_type } => {
+            SubagentEventType::Error {
+                message,
+                error_type,
+            } => {
                 assert_eq!(message, "timeout occurred");
                 assert!(matches!(error_type, ErrorType::Timeout));
             }
@@ -214,7 +226,10 @@ mod tests {
         let event = SubagentEvent {
             event_type: SubagentEventType::Error {
                 message: "budget exceeded".to_string(),
-                error_type: ErrorType::BudgetExceeded { limit_k: 10, used: 15 },
+                error_type: ErrorType::BudgetExceeded {
+                    limit_k: 10,
+                    used: 15,
+                },
             },
             elapsed_ms: 500,
         };
@@ -224,7 +239,10 @@ mod tests {
         assert!(json.contains("15"));
         let deserialized: SubagentEvent = serde_json::from_str(&json).unwrap();
         match deserialized.event_type {
-            SubagentEventType::Error { error_type: ErrorType::BudgetExceeded { limit_k, used }, .. } => {
+            SubagentEventType::Error {
+                error_type: ErrorType::BudgetExceeded { limit_k, used },
+                ..
+            } => {
                 assert_eq!(limit_k, 10);
                 assert_eq!(used, 15);
             }
@@ -283,19 +301,29 @@ mod tests {
         assert!(matches!(ErrorType::Timeout, ErrorType::Timeout));
         assert!(matches!(ErrorType::Unknown, ErrorType::Unknown));
         assert!(matches!(
-            ErrorType::BudgetExceeded { limit_k: 5, used: 10 },
+            ErrorType::BudgetExceeded {
+                limit_k: 5,
+                used: 10
+            },
             ErrorType::BudgetExceeded { .. }
         ));
         assert!(matches!(
-            ErrorType::Stuck { reason: String::new() },
+            ErrorType::Stuck {
+                reason: String::new()
+            },
             ErrorType::Stuck { .. }
         ));
         assert!(matches!(
-            ErrorType::ToolError { tool: String::new(), message: String::new() },
+            ErrorType::ToolError {
+                tool: String::new(),
+                message: String::new()
+            },
             ErrorType::ToolError { .. }
         ));
         assert!(matches!(
-            ErrorType::ParseError { message: String::new() },
+            ErrorType::ParseError {
+                message: String::new()
+            },
             ErrorType::ParseError { .. }
         ));
     }
@@ -311,7 +339,10 @@ mod tests {
         assert_eq!(json, "\"Unknown\"");
 
         // Test BudgetExceeded
-        let be = ErrorType::BudgetExceeded { limit_k: 10, used: 15 };
+        let be = ErrorType::BudgetExceeded {
+            limit_k: 10,
+            used: 15,
+        };
         let json = serde_json::to_string(&be).unwrap();
         assert!(json.contains("BudgetExceeded"));
         let deserialized: ErrorType = serde_json::from_str(&json).unwrap();
@@ -469,7 +500,10 @@ mod tests {
             retryable: true,
         });
 
-        assert!(details.is_some(), "error_details should be Some when error_msg is Some");
+        assert!(
+            details.is_some(),
+            "error_details should be Some when error_msg is Some"
+        );
         let d = details.unwrap();
         assert!(matches!(d.error_type, ErrorType::Unknown));
         assert_eq!(d.message, "Token budget exceeded: limit 10k, used 15k");
@@ -495,7 +529,10 @@ mod tests {
             retryable: true,
         });
 
-        assert!(details.is_none(), "error_details should be None when error_msg is None");
+        assert!(
+            details.is_none(),
+            "error_details should be None when error_msg is None"
+        );
     }
 
     // ── progress_delta construction formula test ──
@@ -505,9 +542,11 @@ mod tests {
         // Simulate the delta computation pattern from subagent_loop.rs:
         // tool_types_used tracks all tool types seen so far.
         // After a round with tools, the delta is computed and should be >0 if new types seen.
-        let mut tool_types_used: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut tool_types_used: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         let round_tool_names = vec!["read_file".to_string(), "grep".to_string()];
-        let round_tool_types: std::collections::HashSet<String> = round_tool_names.into_iter().collect();
+        let round_tool_types: std::collections::HashSet<String> =
+            round_tool_names.into_iter().collect();
         let new_types: Vec<&String> = round_tool_types.difference(&tool_types_used).collect();
         let delta = if tool_types_used.is_empty() {
             1.0f32
@@ -521,7 +560,8 @@ mod tests {
 
         // After the second round with the same tool types, delta should be 0.0
         let round_tool_names2 = vec!["read_file".to_string(), "grep".to_string()];
-        let round_tool_types2: std::collections::HashSet<String> = round_tool_names2.into_iter().collect();
+        let round_tool_types2: std::collections::HashSet<String> =
+            round_tool_names2.into_iter().collect();
         let new_types2: Vec<&String> = round_tool_types2.difference(&tool_types_used).collect();
         let delta2 = if tool_types_used.is_empty() {
             1.0f32

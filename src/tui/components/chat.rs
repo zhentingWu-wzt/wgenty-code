@@ -471,14 +471,18 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
                 // Body lines: indented
                 let content_lines: Vec<&str> = msg.content.lines().collect();
                 let total = content_lines.len();
-                let show = if msg.tool_collapsed {
-                    content_lines.iter().take(3).copied().collect::<Vec<_>>()
+                // When collapsed, show ONLY the header — skip body entirely so
+                // historical sessions don't drown the user in tool output. The
+                // "+N lines (Ctrl+O to expand)" hint below tells them how to
+                // recover the full body.
+                let show: Vec<&str> = if msg.tool_collapsed {
+                    Vec::new()
                 } else {
                     content_lines
                         .iter()
                         .take(MAX_TOOL_DISPLAY_LINES)
                         .copied()
-                        .collect::<Vec<_>>()
+                        .collect()
                 };
                 let wrap_width = width.saturating_sub(4) as usize;
                 for line in &show {

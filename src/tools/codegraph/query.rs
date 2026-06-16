@@ -69,7 +69,13 @@ impl QueryEngine {
         self
     }
 
-    fn log(&self, query_type: &str, params: &serde_json::Value, result_count: usize, elapsed_ms: u64) {
+    fn log(
+        &self,
+        query_type: &str,
+        params: &serde_json::Value,
+        result_count: usize,
+        elapsed_ms: u64,
+    ) {
         if let Some(logger) = &self.logger {
             let entry = audit::AuditEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
@@ -157,12 +163,11 @@ impl QueryEngine {
         let mut call_graph = Vec::new();
 
         // Build call graph from matched symbols
-        let graph = call_path::CallGraph::build(&self.store).unwrap_or_else(|_| {
-            call_path::CallGraph {
+        let graph =
+            call_path::CallGraph::build(&self.store).unwrap_or_else(|_| call_path::CallGraph {
                 edges: Default::default(),
                 symbols: Default::default(),
-            }
-        });
+            });
 
         // Get call paths for the first matched symbol
         let call_paths = matched
@@ -251,11 +256,9 @@ impl QueryEngine {
             }
             _ => {
                 let missing = if from_id.is_none() { from } else { to };
-                Ok(serde_json::to_value(
-                    call_path::CallPathResult::not_found(
-                        &format!("symbol '{}' not found in index", missing),
-                    ),
-                )?)
+                Ok(serde_json::to_value(call_path::CallPathResult::not_found(
+                    &format!("symbol '{}' not found in index", missing),
+                ))?)
             }
         }
     }
@@ -298,7 +301,8 @@ impl QueryEngine {
             .copied()
             .collect();
 
-        let mut by_kind: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut by_kind: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for s in &filtered {
             *by_kind.entry(s.kind.as_str().to_string()).or_default() += 1;
         }
@@ -329,12 +333,15 @@ impl QueryEngine {
         matches
             .into_iter()
             .filter_map(|m| {
-                all_syms.iter().find(|s| s.name == m.name).map(|sym| SymbolSuggestion {
-                    name: sym.name.clone(),
-                    kind: sym.kind.clone(),
-                    file_path: sym.file_path.clone(),
-                    line: sym.line,
-                })
+                all_syms
+                    .iter()
+                    .find(|s| s.name == m.name)
+                    .map(|sym| SymbolSuggestion {
+                        name: sym.name.clone(),
+                        kind: sym.kind.clone(),
+                        file_path: sym.file_path.clone(),
+                        line: sym.line,
+                    })
             })
             .collect()
     }

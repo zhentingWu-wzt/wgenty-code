@@ -1,6 +1,9 @@
 //! SQLite-backed SubagentTranscriptStore.
 
-use super::{SubagentEventRecord, SubagentTranscript, SubagentTranscriptHeader, TranscriptError, TranscriptStatus};
+use super::{
+    SubagentEventRecord, SubagentTranscript, SubagentTranscriptHeader, TranscriptError,
+    TranscriptStatus,
+};
 use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
@@ -77,7 +80,11 @@ impl SubagentTranscriptStore {
     ///
     /// If `retention_days` is `Some(d)` and `d > 0`, also deletes transcripts
     /// older than `d` days within the same transaction.
-    pub fn save(&self, transcript: &SubagentTranscript, retention_days: Option<u32>) -> Result<(), TranscriptError> {
+    pub fn save(
+        &self,
+        transcript: &SubagentTranscript,
+        retention_days: Option<u32>,
+    ) -> Result<(), TranscriptError> {
         let db = self.db.lock().unwrap();
         let tx = db.unchecked_transaction()?;
 
@@ -147,7 +154,13 @@ impl SubagentTranscriptStore {
     }
 
     /// Update transcript header status (for checkpoint).
-    pub fn checkpoint_status(&self, id: &str, status: TranscriptStatus, round: u32, tokens: u64) -> Result<(), TranscriptError> {
+    pub fn checkpoint_status(
+        &self,
+        id: &str,
+        status: TranscriptStatus,
+        round: u32,
+        tokens: u64,
+    ) -> Result<(), TranscriptError> {
         let db = self.db.lock().unwrap();
         let status_str = status.to_string();
         let rows_affected = db.execute(
@@ -161,7 +174,11 @@ impl SubagentTranscriptStore {
     }
 
     /// Append events to an existing transcript.
-    pub fn append_events(&self, transcript_id: &str, events: &[SubagentEventRecord]) -> Result<(), TranscriptError> {
+    pub fn append_events(
+        &self,
+        transcript_id: &str,
+        events: &[SubagentEventRecord],
+    ) -> Result<(), TranscriptError> {
         let db = self.db.lock().unwrap();
         let tx = db.unchecked_transaction()?;
         for event in events {
@@ -185,14 +202,17 @@ impl SubagentTranscriptStore {
     }
 
     /// List transcripts by session (headers only, no events).
-    pub fn list_by_session(&self, session_id: &str) -> Result<Vec<SubagentTranscriptHeader>, TranscriptError> {
+    pub fn list_by_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SubagentTranscriptHeader>, TranscriptError> {
         let db = self.db.lock().unwrap();
         let mut stmt = db.prepare(
             "SELECT id, session_id, parent_id, label, status, started_at, finished_at,
                     total_tokens, actual_rounds, error_message, summary
              FROM subagent_transcripts
              WHERE session_id = ?1
-             ORDER BY started_at DESC"
+             ORDER BY started_at DESC",
         )?;
         let rows = stmt.query_map(params![session_id], |row| {
             Ok(SubagentTranscriptHeader {
@@ -223,7 +243,7 @@ impl SubagentTranscriptStore {
             "SELECT id, session_id, parent_id, label, status, system_prompt, user_prompt,
                     started_at, finished_at, total_tokens, max_rounds, actual_rounds,
                     token_budget_k, error_message, summary
-             FROM subagent_transcripts WHERE id = ?1"
+             FROM subagent_transcripts WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
             Ok(SubagentTranscript {
@@ -257,7 +277,7 @@ impl SubagentTranscriptStore {
             // Load events
             let mut evt_stmt = db.prepare(
                 "SELECT round, event_type, tool_name, tool_params, data, elapsed_ms, token_count
-                 FROM subagent_events WHERE transcript_id = ?1 ORDER BY round, id"
+                 FROM subagent_events WHERE transcript_id = ?1 ORDER BY round, id",
             )?;
             let evt_rows = evt_stmt.query_map(params![id], |row| {
                 Ok(SubagentEventRecord {
@@ -300,7 +320,7 @@ impl SubagentTranscriptStore {
              FROM subagent_transcripts
              WHERE label LIKE ?1
              ORDER BY started_at DESC
-             LIMIT 100"
+             LIMIT 100",
         )?;
         let rows = stmt.query_map(params![pattern], |row| {
             Ok(SubagentTranscriptHeader {
@@ -436,23 +456,28 @@ mod tests {
         let t = sample_transcript("cp-1", "session-1");
         store.save(&t, None).unwrap();
 
-        store.checkpoint_status("cp-1", TranscriptStatus::Running, 5, 1000).unwrap();
+        store
+            .checkpoint_status("cp-1", TranscriptStatus::Running, 5, 1000)
+            .unwrap();
 
         let loaded = store.get_by_id("cp-1").unwrap().unwrap();
         assert_eq!(loaded.actual_rounds, 5);
         assert_eq!(loaded.total_tokens, 1000);
 
-        store.append_events("cp-1", &[
-            SubagentEventRecord {
-                round: 2,
-                event_type: "completion".to_string(),
-                tool_name: None,
-                tool_params: None,
-                data: "done".to_string(),
-                elapsed_ms: 3000,
-                token_count: None,
-            },
-        ]).unwrap();
+        store
+            .append_events(
+                "cp-1",
+                &[SubagentEventRecord {
+                    round: 2,
+                    event_type: "completion".to_string(),
+                    tool_name: None,
+                    tool_params: None,
+                    data: "done".to_string(),
+                    elapsed_ms: 3000,
+                    token_count: None,
+                }],
+            )
+            .unwrap();
 
         let loaded2 = store.get_by_id("cp-1").unwrap().unwrap();
         assert_eq!(loaded2.events.len(), 3);
@@ -490,7 +515,11 @@ mod tests {
             store.save(&t, None).unwrap();
         }
         let results = store.search("batch").unwrap();
-        assert_eq!(results.len(), 60, "search should return all 60 results, not limited to 50");
+        assert_eq!(
+            results.len(),
+            60,
+            "search should return all 60 results, not limited to 50"
+        );
     }
 
     #[test]
@@ -530,6 +559,9 @@ mod tests {
 
         let deleted = store.cleanup(0).unwrap();
         assert_eq!(deleted, 0, "cleanup(0) should not delete anything");
-        assert!(store.get_by_id("zero-guard-old").unwrap().is_some(), "old transcript should still exist");
+        assert!(
+            store.get_by_id("zero-guard-old").unwrap().is_some(),
+            "old transcript should still exist"
+        );
     }
 }

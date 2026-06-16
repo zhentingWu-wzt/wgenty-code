@@ -5,7 +5,7 @@
 
 use crate::tools::codegraph::adapters::LanguageAdapter;
 use crate::tools::codegraph::types::{
-    Confidence, RefKind, RelKind, Reference, Relationship, Symbol, SymbolKind, Visibility,
+    Confidence, RefKind, Reference, RelKind, Relationship, Symbol, SymbolKind, Visibility,
 };
 use tree_sitter::{Language, Node, Tree};
 
@@ -43,12 +43,7 @@ impl LanguageAdapter for PythonAdapter {
         extractor.symbols
     }
 
-    fn extract_references(
-        &self,
-        tree: &Tree,
-        source: &str,
-        symbols: &[Symbol],
-    ) -> Vec<Reference> {
+    fn extract_references(&self, tree: &Tree, source: &str, symbols: &[Symbol]) -> Vec<Reference> {
         let mut extractor = PythonExtractor::new(source, "");
         extractor.target_symbols = symbols.to_vec();
         extractor.collect_references_pass(tree.root_node());
@@ -388,8 +383,7 @@ impl<'a> PythonExtractor<'a> {
         let mut current = node;
         while let Some(parent) = current.parent() {
             if parent.kind() == "class_definition" {
-                return child_of_kind(parent, "identifier")
-                    .map(|n| self.utf8_text(n).to_string());
+                return child_of_kind(parent, "identifier").map(|n| self.utf8_text(n).to_string());
             }
             current = parent;
         }
@@ -553,8 +547,12 @@ mod tests {
         let source = "class Dog:\n    def bark(self):\n        pass\n";
         let tree = a.parse(source).unwrap();
         let symbols = a.extract_symbols(&tree, source, "test.py");
-        assert!(symbols.iter().any(|s| s.name == "Dog" && s.kind == SymbolKind::Struct));
-        assert!(symbols.iter().any(|s| s.name == "bark" && s.kind == SymbolKind::Function));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "Dog" && s.kind == SymbolKind::Struct));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "bark" && s.kind == SymbolKind::Function));
     }
 
     #[test]
