@@ -237,7 +237,7 @@ impl Tool for TaskTool {
                 },
                 "token_budget": {
                     "type": "integer",
-                    "description": "Optional token budget in thousands (e.g., 10 = 10k tokens). 0 = use the configured default (from settings.default_subagent_token_budget_k). Omit the parameter for unlimited. Default: 0"
+                    "description": "Optional token budget in thousands (e.g., 10 = 10k tokens). 0 = use the configured default (from settings.agent.token_budget.subagent_default_k). Omit the parameter for unlimited. Default: 0"
                 },
                 "prompt": {
                     "type": "string",
@@ -254,13 +254,22 @@ impl Tool for TaskTool {
         let prompt = input["prompt"].as_str().unwrap_or("");
         let background = input["background"].as_bool().unwrap_or(false);
 
-        // Token budget: explicit input takes priority, then settings default.
+        // Token budget: 4-level fallback per spec §3.3a.
+        // 1. explicit input.token_budget (caller-explicit; 0 = unlimited stays None)
+        // 2. agent.subagent.token_budget_k (subagent override)
+        // 3. agent.token_budget.subagent_default_k (when > 0)
+        // 4. agent.token_budget.main_k (when > 0; 0 = unlimited)
         let token_budget: Option<u64> = input.get("token_budget")
             .and_then(|v| v.as_u64())
-            .and_then(|v| if v == 0 { None } else { Some(v) })  // 0 = unlimited
+            .and_then(|v| if v == 0 { None } else { Some(v) })
+            .or_else(|| self.settings.agent.subagent.token_budget_k.map(|v| v as u64))
             .or_else(|| {
-                let default_k = self.settings.default_subagent_token_budget_k;
-                if default_k > 0 { Some(default_k as u64) } else { None }
+                let d = self.settings.agent.token_budget.subagent_default_k;
+                if d > 0 { Some(d as u64) } else { None }
+            })
+            .or_else(|| {
+                let m = self.settings.agent.token_budget.main_k;
+                if m > 0 { Some(m as u64) } else { None }
             });
 
         let session_id = input["_session_id"]
@@ -320,7 +329,7 @@ impl Tool for TaskTool {
             .map(|t| t.name().to_string())
             .filter(|name| {
                 if name == "task" {
-                    depth < self.settings.max_subagent_depth
+                    depth < self.settings.agent.subagent.max_depth
                 } else {
                     true
                 }
@@ -370,19 +379,19 @@ impl Tool for TaskTool {
 
         // ── Guard: depth limit ──────────────────────────────────────────
         let depth = input["_subagent_depth"].as_u64().unwrap_or(0) as usize;
-        if depth >= self.settings.max_subagent_depth {
+        if depth >= self.settings.agent.subagent.max_depth {
             return Ok(ToolOutput {
                 output_type: "text".to_string(),
                 content: format!(
                     "Maximum subagent depth ({}) reached. Refusing to spawn deeper subagent.",
-                    self.settings.max_subagent_depth
+                    self.settings.agent.subagent.max_depth
                 ),
                 metadata: HashMap::new(),
             });
         }
 
         // ── Guard: concurrency limit — queue until slot opens ───────────
-        let max = self.settings.max_concurrent_subagents;
+        let max = self.settings.agent.subagent.max_concurrent;
         let wait_start = tokio::time::Instant::now();
         const POLL_INTERVAL_MS: u64 = 250;
         const MAX_WAIT_SECS: u64 = 120;
@@ -407,26 +416,11 @@ impl Tool for TaskTool {
         self.active_count.fetch_add(1, Ordering::SeqCst);
 
         // Use small model when requested and configured.
-        // Falls back to main model's base_url/api_key when small_model fields are absent.
+        // small_model_settings() returns a clone with main endpoint overridden
+        // by models.small (or self unchanged when models.small is None).
         let use_small = input["use_small_model"].as_bool().unwrap_or(false);
-        let api_client = if use_small {
-            if let Some(ref small_model) = self.settings.small_model {
-                let mut small_settings = self.settings.clone();
-                small_settings.model = small_model.clone();
-                small_settings.api.max_tokens = 2048;
-                if let Some(ref url) = self.settings.small_model_base_url {
-                    small_settings.api.base_url = url.clone();
-                }
-                if let Some(ref key) = self.settings.small_model_api_key {
-                    small_settings.api.api_key = Some(key.clone());
-                }
-                if let Some(ref appkey) = self.settings.small_model_appkey {
-                    small_settings.api.api_key = Some(appkey.clone());
-                }
-                ApiClient::new(small_settings)
-            } else {
-                ApiClient::new(self.settings.clone())
-            }
+        let api_client = if use_small && self.settings.models.small.is_some() {
+            ApiClient::new(self.settings.small_model_settings())
         } else {
             ApiClient::new(self.settings.clone())
         };
@@ -441,7 +435,7 @@ impl Tool for TaskTool {
             let reg = tool_registry.clone();
             let tools = allowed_tools.clone();
             let api_client_bg = ApiClient::new(self.settings.clone());
-            let timeout_secs = self.settings.subagent_timeout_secs;
+            let timeout_secs = self.settings.agent.subagent.timeout_secs;
 
             let subagent_node_id = uuid::Uuid::new_v4().to_string();
             {
@@ -486,7 +480,7 @@ impl Tool for TaskTool {
             let sys_prompt_bg = sys_prompt.clone();
             let prompt_bg = full_prompt.clone();
             let transcript_store_bg = self.transcript_store.clone();
-            let retention_days = self.settings.max_transcript_age_days;
+            let retention_days = self.settings.storage.transcript.max_age_days;
             let started_at_bg = chrono::Utc::now().timestamp_millis();
             let bg_node_id = subagent_node_id.clone();
 
@@ -596,8 +590,8 @@ impl Tool for TaskTool {
                 format!("subagent: {}", description),
             );
 
-            let (result, routing_reason) = if self.settings.rlm.enabled
-                && self.settings.rlm.auto_routing
+            let (result, routing_reason) = if self.settings.agent.rlm.enabled
+                && self.settings.agent.rlm.auto_routing
                 && is_complex_task(&full_prompt, use_small)
             {
                 let reason = format!(
@@ -632,7 +626,7 @@ impl Tool for TaskTool {
                     &full_prompt,
                     &allowed_tools,
                     30,
-                    self.settings.subagent_timeout_secs,
+                    self.settings.agent.subagent.timeout_secs,
                     Some(cb),
                     token_budget,
                 )
@@ -648,7 +642,7 @@ impl Tool for TaskTool {
             let sys_prompt_sync = system_prompt.to_string();
             let prompt_sync = full_prompt.clone();
             let sync_node_id = subagent_node_id.clone();
-            let retention_days_sync = self.settings.max_transcript_age_days;
+            let retention_days_sync = self.settings.storage.transcript.max_age_days;
 
             match result {
                 Ok(result) => {
