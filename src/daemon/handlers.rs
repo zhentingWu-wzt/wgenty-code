@@ -48,11 +48,11 @@ pub async fn health() -> Json<HealthResponse> {
 pub async fn get_config(State(state): State<Arc<DaemonState>>) -> Json<ConfigResponse> {
     let s = &state.app_state.settings;
     Json(ConfigResponse {
-        model: s.model.clone(),
-        api_base: s.api.base_url.clone(),
-        max_tokens: s.api.max_tokens,
-        timeout: s.api.timeout,
-        streaming: s.api.streaming,
+        model: s.models.main.name.clone(),
+        api_base: s.models.main.endpoint_base_url(),
+        max_tokens: s.models.transport.max_tokens,
+        timeout: s.models.transport.timeout,
+        streaming: s.models.transport.streaming,
     })
 }
 
@@ -396,6 +396,7 @@ pub async fn list_mcp_servers(
     let servers: Vec<McpServerInfo> = state
         .app_state
         .settings
+        .integrations
         .mcp_servers
         .iter()
         .map(|cfg| McpServerInfo {
