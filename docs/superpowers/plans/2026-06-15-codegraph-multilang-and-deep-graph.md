@@ -2,6 +2,7 @@
 change: codegraph-multilang-and-deep-graph
 design-doc: docs/superpowers/specs/2026-06-15-codegraph-multilang-and-deep-graph-design.md
 base-ref: d69210652f377344d876f7bcd7b5db787d750e09
+archived-with: 2026-06-15-codegraph-multilang-and-deep-graph
 ---
 
 # Codegraph Multilang & Deep Graph 实施计划
@@ -10,6 +11,7 @@ base-ref: d69210652f377344d876f7bcd7b5db787d750e09
 
 **Architecture:** adapters/ (3 语言适配器) + 重构 parser.rs → ParserPool + migration.rs (schema v1→v2)
 
+archived-with: 2026-06-15-codegraph-multilang-and-deep-graph
 ---
 
 ## Phase 0: 依赖 + 基础设施
@@ -25,6 +27,7 @@ base-ref: d69210652f377344d876f7bcd7b5db787d750e09
 - [x] 单元测试: as_str/parse
 - [x] Commit
 
+archived-with: 2026-06-15-codegraph-multilang-and-deep-graph
 ---
 
 ## Phase 1: LanguageAdapter + 适配器
@@ -51,6 +54,7 @@ base-ref: d69210652f377344d876f7bcd7b5db787d750e09
 - [x] 单元测试
 - [x] Commit
 
+archived-with: 2026-06-15-codegraph-multilang-and-deep-graph
 ---
 
 ## Phase 2: Parser Pool + Indexer 重构
@@ -66,6 +70,7 @@ base-ref: d69210652f377344d876f7bcd7b5db787d750e09
 - [x] language 字段写入 symbol
 - [x] Commit
 
+archived-with: 2026-06-15-codegraph-multilang-and-deep-graph
 ---
 
 ## Phase 3: Schema 迁移 + Store
@@ -81,6 +86,7 @@ base-ref: d69210652f377344d876f7bcd7b5db787d750e09
 - [x] 新 RelKind 的 insert/query
 - [x] Commit
 
+archived-with: 2026-06-15-codegraph-multilang-and-deep-graph
 ---
 
 ## Phase 4: 验收 + 归档
