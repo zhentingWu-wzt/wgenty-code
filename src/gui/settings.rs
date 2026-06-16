@@ -75,20 +75,24 @@ impl SettingsPanel {
 
     /// Load settings from configuration
     pub fn load_from_settings(&mut self, settings: &crate::config::Settings) {
-        self.api_key = settings.api.api_key.clone().unwrap_or_default();
-        self.base_url = settings.api.get_base_url();
-        self.model = settings.model.clone();
+        self.api_key = settings.models.main.api_key.clone().unwrap_or_default();
+        self.base_url = settings.models.main.endpoint_base_url();
+        self.model = settings.models.main.name.clone();
     }
 
     /// Save settings to configuration
     pub fn save_to_settings(&self, settings: &mut crate::config::Settings) {
-        settings.api.api_key = if self.api_key.is_empty() {
+        settings.models.main.api_key = if self.api_key.is_empty() {
             None
         } else {
             Some(self.api_key.clone())
         };
-        settings.api.base_url = self.base_url.clone();
-        settings.model = self.model.clone();
+        settings.models.main.base_url = if self.base_url.is_empty() {
+            None
+        } else {
+            Some(self.base_url.clone())
+        };
+        settings.models.main.name = self.model.clone();
     }
 
     /// Render the settings panel
