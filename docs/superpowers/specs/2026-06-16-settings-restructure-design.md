@@ -27,7 +27,7 @@
 - **向后兼容旧 `~/.wgenty-code/settings.json`**。本次明确选择不兼容方案——旧 JSON 加载会因字段未知而失败，用户需手动重写或删除文件让默认配置重新生成。
 - **保留 CC 兼容别名 (`enabledPlugins` / `pluginMarketplaces`)**。这些 alias 整体删除；如果将来仍需要 CC 兼容层，应作为独立的输入适配器实现，不再混入主 `Settings`。
 - **`migrate_rlm_settings` 迁移函数**。整体删除（含相关单元测试 `test_migrate_rlm_legacy_keys`、`test_migrate_rlm_no_override_when_group_present`）。
-- **新增运行时功能**。本次只重组现有字段。
+- **新增运行时功能（除 §3.3a 所述的 subagent 继承机制以外）**。本次除了重组现有字段，还引入一项功能性扩展：subagent 可独立覆盖部分主 agent 配置字段，未覆盖项继承主 agent。详见 §3.3a。
 
 ## 3. 目标新结构
 
@@ -100,9 +100,45 @@ pub struct TokenBudget {
 }
 
 pub struct SubagentLimits {
+    // —— 硬限额（subagent 独有，主 agent 没有对应物，不参与继承）——
     pub max_depth:      usize,
     pub max_concurrent: usize,
     pub timeout_secs:   u64,
+
+    // —— 覆盖位（None = 继承主 agent 同名/同义字段；Some = subagent 独立设置）——
+    // 详细继承规则见 §3.3a
+    pub token_budget_k: Option<usize>,                  // 继承自 agent.token_budget.main_k
+    pub max_rounds:     Option<usize>,                  // 继承自 agent.max_rounds，0 = 不限
+    pub plan_mode:      Option<bool>,                   // 继承自 agent.plan_mode
+    pub rlm:            SubagentRlmOverride,
+    pub prompt:         SubagentPromptOverride,
+}
+
+#[derive(Default)]
+pub struct SubagentRlmOverride {
+    pub enabled:           Option<bool>,
+    pub delegate_tool:     Option<bool>,
+    pub auto_routing:      Option<bool>,
+    pub retry_enabled:     Option<bool>,
+    pub max_replan_cycles: Option<usize>,
+    pub jaccard_threshold: Option<f64>,
+}
+
+#[derive(Default)]
+pub struct SubagentPromptOverride {
+    pub include: SubagentPromptIncludesOverride,
+    pub developer_instructions:  Option<String>,
+    pub collaboration_mode:      Option<String>,
+    pub model_instructions_file: Option<String>,
+}
+
+#[derive(Default)]
+pub struct SubagentPromptIncludesOverride {
+    pub permissions:   Option<bool>,
+    pub developer:     Option<bool>,
+    pub collaboration: Option<bool>,
+    pub environment:   Option<bool>,
+    pub skills:        Option<bool>,
 }
 
 pub struct RlmSettings {
@@ -124,6 +160,54 @@ pub struct RlmSettings {
 - `max_concurrent_subagents` → `agent.subagent.max_concurrent`
 - `subagent_timeout_secs` → `agent.subagent.timeout_secs`
 - `rlm.*` 整体保留，新增 `rlm.jaccard_threshold`（原顶层 `rlm_jaccard_threshold`）
+- 新增覆盖字段：`agent.subagent.{token_budget_k, max_rounds, plan_mode, rlm.*, prompt.**}`——这些字段在旧 Settings 里**不存在**，是本次新增的功能（继承机制见 §3.3a）。
+
+### 3.3a Subagent 继承机制
+
+**目标**：subagent 跑起来时，未显式覆盖的字段自动继承主 agent 的同名/同义字段。用户什么都不写时，subagent 行为完全等同于主 agent；用户只在想区别对待 subagent 时才写覆盖项。
+
+**继承映射表**（覆盖字段 → 主 agent 源字段）：
+
+| `agent.subagent.X` | 当 `None` 时回退到 | 当 `Some(v)` 时使用 |
+|---|---|---|
+| `token_budget_k` | `agent.token_budget.main_k` | `v` |
+| `max_rounds` | `agent.max_rounds`（注：主端类型 `Option<usize>`，约定 `0` ≡ `None`，下方说明） | `Some(v)` |
+| `plan_mode` | `agent.plan_mode` | `v` |
+| `rlm.enabled` | `agent.rlm.enabled` | `v` |
+| `rlm.delegate_tool` | `agent.rlm.delegate_tool` | `v` |
+| `rlm.auto_routing` | `agent.rlm.auto_routing` | `v` |
+| `rlm.retry_enabled` | `agent.rlm.retry_enabled` | `v` |
+| `rlm.max_replan_cycles` | `agent.rlm.max_replan_cycles` | `v` |
+| `rlm.jaccard_threshold` | `agent.rlm.jaccard_threshold` | `v` |
+| `prompt.include.permissions` | `prompt.include.permissions` | `v` |
+| `prompt.include.developer` | `prompt.include.developer` | `v` |
+| `prompt.include.collaboration` | `prompt.include.collaboration` | `v` |
+| `prompt.include.environment` | `prompt.include.environment` | `v` |
+| `prompt.include.skills` | `prompt.include.skills` | `v` |
+| `prompt.developer_instructions` | `prompt.developer_instructions` | `Some(v)` |
+| `prompt.collaboration_mode` | `prompt.collaboration_mode` | `Some(v)` |
+| `prompt.model_instructions_file` | `prompt.model_instructions_file` | `Some(v)` |
+
+**关于 `max_rounds` 的类型选择**：主 agent 的 `agent.max_rounds: Option<usize>` 中 `None` 表示"使用内部默认 100"。subagent 覆盖位本可写成 `Option<Option<usize>>`（外层 `None` = 继承，内层 `None` = 不限）但可读性差。本设计选择简化：覆盖位类型为 `Option<usize>`，约定 `Some(0)` ≡ "不限" / `None` ≡ "继承"。这与 `token_budget_k` 现状语义一致（0 = unlimited）。在 spawn subagent 解析配置时，遇到 subagent 端 `Some(0)` 时按"不限"处理（等价于主端的 `None`），不再设上限。
+
+**解析时机**：subagent 配置解析发生在 spawn subagent 时（`task` tool 等触发点），而不是 `Settings::load` 时。`Settings` 结构始终保存原始覆盖位（`Option<...>`），主 agent 启动时使用 `agent.*` 直接路径——不参与合并；subagent 启动时按上表临时构造一份"effective config"传给子 agent loop。这避免了"merge 后回填到 Settings"的副作用，也使得 `set("agent.subagent.rlm.enabled", "false")` 这类 dotted-path 操作语义清晰：它就是设置覆盖位，不会污染主 agent 字段。
+
+**不参与继承的字段**（subagent 不能覆盖）：
+- `models.*`（subagent 用不同模型由 `models.small` 接住，不在 subagent override 里重复）
+- `models.transport.*`（YAGNI）
+- `plugins.*` / `storage.*` / `integrations.*` / `verbose`（全局生效）
+- `agent.subagent.*` 自身（防止递归二级嵌套）
+- `agent.token_budget.subagent_default_k`（这是"主 agent 启动子 agent 时给的默认预算"，与 subagent 自己的 `token_budget_k` 是不同概念，详见下）
+
+**`token_budget_k` 与 `subagent_default_k` 的区分**：
+- `agent.token_budget.subagent_default_k` 由**主 agent** 在 spawn subagent 时读取，作为"如果 subagent 自己没指定预算，给它分这么多"的默认。
+- `agent.subagent.token_budget_k` 是**subagent 自己读取**的覆盖位——如果用户在 settings 里显式给了，subagent 启动时使用此值；否则继承 `main_k`。
+
+实际 effective budget 解析顺序（由 spawn 逻辑实现，不是 `Settings` 结构关心的）：
+1. 调用方在 `task` 工具调用里显式指定（最优先）
+2. `agent.subagent.token_budget_k` 若 `Some` 则用之
+3. `agent.token_budget.subagent_default_k` 若 `> 0` 则用之
+4. 否则继承 `agent.token_budget.main_k`
 
 ### 3.4 `prompt`
 
@@ -281,6 +365,8 @@ impl Settings {
 
 每个子组提供 `impl Default`，`Settings::default()` 由各子组 default 聚合而成。新 default 数值与现状一致（`models.main.name = "sonnet"`、`agent.subagent.max_depth = 3`、`agent.subagent.max_concurrent = 5`、`agent.subagent.timeout_secs = 240`、`agent.token_budget.{main_k, subagent_default_k} = 0`、`agent.rlm.jaccard_threshold = 0.8`、`agent.rlm.max_replan_cycles = 2`、`prompt.include.*` 全 true、`integrations.guardian.{enabled, auto_deny_critical} = true, llm_review = false`、`storage.transcript.{db_path = ~/.wgenty-code/subagent_transcripts.db, max_age_days = 30}` 等）。
 
+**Subagent 覆盖位的默认值**：所有 `Option<T>` 字段默认 `None`，所有 `SubagentXxxOverride` 子结构通过 `#[derive(Default)]` 默认全部为 `None`。语义即"什么都不写时，subagent 行为完全等同于主 agent"。这本身就是合理且无意外的默认——本次重构对"合理默认值"的回答是：**让继承位的"无设置"等价于"完全继承主 agent"**，而不是给每个覆盖位编造一个独立的硬编码默认。
+
 ## 6. 影响面
 
 ### 6.1 项目内字段读访问点
@@ -297,6 +383,10 @@ impl Settings {
 - `set()` dotted-path：嵌套字段、HashMap 字段、未知 key、类型不符。
 - `models` 三套对称：small/planner 缺省字段时继承 main 的解析结构。
 - `prompt.include` 全 5 个布尔在 default 下为 true。
+- **subagent 覆盖位默认全 None**：`Settings::default().agent.subagent.{token_budget_k, max_rounds, plan_mode}` 都是 `None`；`SubagentRlmOverride::default()` 与 `SubagentPromptOverride::default()` 所有字段 `None`。
+- **subagent effective config 解析**：覆盖位为 `None` 时使用主 agent 字段；为 `Some` 时使用覆盖值。覆盖 `agent.subagent.rlm.enabled = false` 不影响主 agent 的 `agent.rlm.enabled`。
+- **`max_rounds = Some(0)` 解析为"不限"**（subagent 端语义）。
+- **`token_budget_k` 解析顺序**：调用方显式 > `agent.subagent.token_budget_k` > `agent.token_budget.subagent_default_k` > `agent.token_budget.main_k`（spawn 逻辑测试，不是 `Settings` 结构测试，但放在 spec 里以确保实现期不漏）。
 
 ### 6.3 文档与示例
 
@@ -337,3 +427,4 @@ impl Settings {
 - **`agent.subagent` 不再细分 `limits`**（用户：A）：3 平字段直接放 subagent 下。
 - **`prompt` 用"开关组 + 内容平铺"**（用户：A → 方式 1）：5 个 include 布尔聚组，3 个内容字段平铺。
 - **`set()` 改 dotted-path**（用户：B）：通用 setter，删除手写 dispatch。
+- **新增 subagent 字段继承机制**（用户：B → 推荐方案 A）：subagent 可独立覆盖部分主 agent 配置字段，覆盖位类型为 `Option<T>`，默认 `None` 即"完全继承主 agent"。覆盖范围限定于 `token_budget_k` / `max_rounds` / `plan_mode` / `rlm.*` / `prompt.include.*` / `prompt.{developer_instructions, collaboration_mode, model_instructions_file}`。`models.*` / `transport.*` / `plugins.*` / `storage.*` / `integrations.*` / `verbose` / `agent.subagent.{max_depth, max_concurrent, timeout_secs, default}` 不参与继承。
