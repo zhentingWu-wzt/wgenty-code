@@ -1,7 +1,6 @@
 //! Configuration Module
 
 pub mod api_config;
-pub mod cc_mapping;
 pub mod mcp_config;
 pub mod watcher;
 
@@ -11,148 +10,19 @@ pub use mcp_config::{McpConfig, McpServerStatus};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Main configuration structure
+/// Main configuration structure (top-level grouped form).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
-    /// API configuration
-    pub api: ApiConfig,
-    /// MCP server configurations
-    pub mcp_servers: Vec<McpConfig>,
-    /// Model selection
-    pub model: String,
-    /// Small model for delegating simple tasks (e.g., "haiku", "gpt-4o-mini").
-    /// When set, the agent can call the `task` tool with `use_small_model: true`
-    /// to spawn subagents with this model instead of the main model.
-    #[serde(default)]
-    pub small_model: Option<String>,
-    /// Base URL for the small model API. Falls back to api.base_url if not set.
-    #[serde(default)]
-    pub small_model_base_url: Option<String>,
-    /// API key for the small model. Falls back to api.get_api_key() if not set.
-    #[serde(default)]
-    pub small_model_api_key: Option<String>,
-    /// App key for the small model API (provider-specific, e.g., OpenRouter).
-    /// When absent, falls back to small_model_api_key.
-    #[serde(default)]
-    pub small_model_appkey: Option<String>,
-    /// Maximum subagent nesting depth. Subagents cannot spawn further
-    /// subagents once this depth is reached. Default: 3.
-    #[serde(default = "default_subagent_depth")]
-    pub max_subagent_depth: usize,
-    /// Maximum concurrent subagents. The task tool will refuse new
-    /// subagent spawns when this many are already running. Default: 5.
-    #[serde(default = "default_max_concurrent_subagents")]
-    pub max_concurrent_subagents: usize,
-    /// Maximum wall-clock seconds for a single subagent execution.
-    /// Subagent loops that exceed this duration are aborted. Default: 240.
-    #[serde(default = "default_subagent_timeout")]
-    pub subagent_timeout_secs: u64,
-    /// RLM (Recursive Language Model) pipeline settings.
-    #[serde(default)]
-    pub rlm: RlmSettings,
-    /// Token budget in thousands (k). When cumulative token usage across
-    /// all models exceeds this limit, the agent stops and signals budget
-    /// exhaustion. 0 = unlimited. Default: 0.
-    #[serde(default)]
-    pub token_budget_k: usize,
-    /// Default token budget for subagents in thousands (0 = unlimited).
-    #[serde(default)]
-    pub default_subagent_token_budget_k: usize,
-    /// Jaccard similarity threshold for RLM claim deduplication (0.0–1.0).
-    /// Claims with Jaccard index above this threshold are considered duplicates.
-    /// Default: 0.8.
-    #[serde(default = "default_rlm_jaccard_threshold")]
-    pub rlm_jaccard_threshold: f64,
-    /// Maximum LLM rounds per turn. None = use internal default (100).
-    #[serde(default)]
-    pub max_rounds: Option<usize>,
-    /// Planner model name. When set and PlanMode is active, this model is
-    /// used for plan generation while the main model handles execution.
-    /// Falls back to main `model` if not configured.
-    #[serde(default)]
-    pub planner_model: Option<String>,
-    /// Base URL for the planner model API. Falls back to api.base_url.
-    #[serde(default)]
-    pub planner_model_base_url: Option<String>,
-    /// API key for the planner model. Falls back to api.get_api_key().
-    #[serde(default)]
-    pub planner_model_api_key: Option<String>,
-    /// Enable plan mode: agent generates a plan before executing tools.
-    /// User reviews and approves the plan before execution begins.
-    #[serde(default)]
-    pub plan_mode: bool,
-    /// Enable verbose logging
-    pub verbose: bool,
-    /// Working directory
-    pub working_dir: PathBuf,
-    /// Memory settings
-    pub memory: MemorySettings,
-    /// Voice settings
-    pub voice: VoiceSettings,
-    /// Plugin settings
-    pub plugins: PluginSettings,
-    /// Hook definitions for lifecycle events
-    /// Format: { "PreToolUse": [{ "command": "...", "timeout_secs": 30 }] }
-    #[serde(default)]
-    pub hooks: Option<serde_json::Value>,
-    /// CC compatible: enabledPlugins — maps "name@publisher" to bool.
-    /// Takes priority over plugins.enabled_map when both are set.
-    #[serde(default, alias = "enabledPlugins")]
-    pub enabled_plugins: Option<std::collections::HashMap<String, bool>>,
-    /// CC compatible: pluginMarketplaces — marketplace source configuration.
-    /// Merged with existing marketplace registry.
-    #[serde(default, alias = "pluginMarketplaces")]
-    pub plugin_marketplaces: Option<serde_json::Value>,
-    /// User-defined developer instructions injected into the system prompt.
-    /// When set and non-empty, wraps in <developer_instructions> tags.
-    #[serde(default)]
-    pub developer_instructions: Option<String>,
-    /// Collaboration mode: "default", "plan", "execute", or "pair_programming".
-    /// When set, injects the corresponding collaboration instructions.
-    #[serde(default)]
-    pub collaboration_mode: Option<String>,
-    /// Include permissions instructions (sandbox mode + approval policy) in system prompt.
-    #[serde(default = "default_true")]
-    pub include_permissions_instructions: bool,
-    /// Include developer instructions in system prompt.
-    #[serde(default = "default_true")]
-    pub include_developer_instructions: bool,
-    /// Include collaboration mode instructions in system prompt.
-    #[serde(default = "default_true")]
-    pub include_collaboration_instructions: bool,
-    /// Include environment context (cwd, shell, date, timezone) in system prompt.
-    #[serde(default = "default_true")]
-    pub include_environment_context: bool,
-    /// Include skill instructions in system prompt.
-    #[serde(default = "default_true")]
-    pub include_skill_instructions: bool,
-    /// Path to a file containing model instructions that override base instructions.
-    #[serde(default)]
-    pub model_instructions_file: Option<String>,
-    /// Guardian (security review) configuration.
-    #[serde(default)]
-    pub guardian: GuardianSettings,
-    /// Maximum age in days for stored transcripts. Older records are cleaned up.
-    /// 0 = unlimited retention.
-    #[serde(default = "default_max_transcript_age_days")]
-    pub max_transcript_age_days: u32,
-    /// Path to the SQLite database for subagent transcript persistence.
-    /// Defaults to `~/.wgenty-code/subagent_transcripts.db`.
-    #[serde(default = "default_transcript_db_path")]
-    pub transcript_db_path: String,
+    #[serde(default)] pub models: ModelsConfig,
+    #[serde(default)] pub agent: AgentConfig,
+    #[serde(default)] pub prompt: PromptConfig,
+    #[serde(default)] pub plugins: PluginsConfig,
+    #[serde(default)] pub storage: StorageConfig,
+    #[serde(default)] pub integrations: IntegrationsConfig,
+    #[serde(default)] pub verbose: bool,
 }
 
 /// Default helper for serde: returns true.
-fn default_subagent_depth() -> usize {
-    3
-}
-
-fn default_max_concurrent_subagents() -> usize {
-    5
-}
-fn default_subagent_timeout() -> u64 {
-    240
-}
 fn default_rlm_max_replan() -> usize {
     2
 }
@@ -464,19 +334,6 @@ impl Default for VoiceSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PluginSettings {
-    /// Enable plugin system
-    pub enabled: bool,
-    /// Plugin directory
-    pub plugin_dir: PathBuf,
-    /// Auto-update plugins
-    pub auto_update: bool,
-    /// CC-compatible: enabled plugins map (keyed by "name@publisher")
-    #[serde(default)]
-    pub enabled_map: std::collections::HashMap<String, bool>,
-}
-
 /// Guardian (security review) settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardianSettings {
@@ -544,127 +401,47 @@ impl Default for RlmSettings {
 
 impl Default for Settings {
     fn default() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let config_dir = home.join(".wgenty-code");
-
         Self {
-            api: ApiConfig::default(),
-            mcp_servers: Vec::new(),
-            model: "sonnet".to_string(),
-            small_model: None,
-            small_model_base_url: None,
-            small_model_api_key: None,
-            small_model_appkey: None,
-            max_subagent_depth: 3,
-            max_concurrent_subagents: 5,
-            subagent_timeout_secs: 240,
-            rlm: RlmSettings::default(),
-            token_budget_k: 0,
-            default_subagent_token_budget_k: 0,
-            rlm_jaccard_threshold: 0.8,
-            max_rounds: None,
-            planner_model: None,
-            planner_model_base_url: None,
-            planner_model_api_key: None,
-            plan_mode: false,
+            models: ModelsConfig::default(),
+            agent: AgentConfig::default(),
+            prompt: PromptConfig::default(),
+            plugins: PluginsConfig::default(),
+            storage: StorageConfig::default(),
+            integrations: IntegrationsConfig::default(),
             verbose: false,
-            working_dir: PathBuf::from("."),
-            memory: MemorySettings {
-                enabled: true,
-                path: config_dir.join("memory.json"),
-                consolidation_interval: 24,
-                max_memories: 1000,
-            },
-            voice: VoiceSettings {
-                enabled: false,
-                push_to_talk: false,
-                silence_threshold: 0.01,
-                sample_rate: 16000,
-            },
-            plugins: PluginSettings {
-                enabled: true,
-                plugin_dir: config_dir.join("plugins"),
-                auto_update: true,
-                enabled_map: std::collections::HashMap::new(),
-            },
-            hooks: None,
-            enabled_plugins: None,
-            plugin_marketplaces: None,
-            developer_instructions: None,
-            collaboration_mode: None,
-            include_permissions_instructions: true,
-            include_developer_instructions: true,
-            include_collaboration_instructions: true,
-            include_environment_context: true,
-            include_skill_instructions: true,
-            model_instructions_file: None,
-            guardian: GuardianSettings::default(),
-            max_transcript_age_days: 30,
-            transcript_db_path: default_transcript_db_path(),
         }
     }
 }
 
 impl Settings {
-    /// Load settings from file
+    /// Resolve the path to ~/.wgenty-code/settings.json
+    fn config_path() -> PathBuf {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        home.join(".wgenty-code").join("settings.json")
+    }
+
+    /// Load settings from file. No backward-compatibility migration: an old
+    /// settings.json containing flat fields will fail to deserialize.
     pub fn load() -> anyhow::Result<Self> {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let config_path = home.join(".wgenty-code").join("settings.json");
-
-        if config_path.exists() {
-            let content = std::fs::read_to_string(&config_path)?;
-            let mut settings: Settings = serde_json::from_str(&content)?;
-            // Migrate legacy flat RLM keys into the rlm group.
-            Self::migrate_rlm_settings(&content, &mut settings);
-            cc_mapping::CcConfigMapper::apply_mappings(&mut settings);
-            Ok(settings)
+        let path = Self::config_path();
+        if path.exists() {
+            let content = std::fs::read_to_string(&path)?;
+            Ok(serde_json::from_str(&content)?)
         } else {
-            let settings = Settings::default();
-            settings.save()?;
-            Ok(settings)
+            let s = Settings::default();
+            s.save()?;
+            Ok(s)
         }
     }
 
-    /// Migrate legacy flat `rlm_retry_enabled` / `rlm_max_replan_cycles` keys
-    /// from the raw JSON into `Settings.rlm`. Only touch rlm fields when the
-    /// raw JSON contains the legacy key AND the rlm group was not provided.
-    fn migrate_rlm_settings(raw_json: &str, settings: &mut Settings) {
-        let Ok(raw) = serde_json::from_str::<serde_json::Value>(raw_json) else {
-            return;
-        };
-        // If the new "rlm" group is present, legacy keys are ignored.
-        if raw.get("rlm").is_some() {
-            return;
-        }
-        let mut migrated = false;
-        if let Some(val) = raw.get("rlm_retry_enabled").and_then(|v| v.as_bool()) {
-            settings.rlm.retry_enabled = val;
-            migrated = true;
-        }
-        if let Some(val) = raw.get("rlm_max_replan_cycles").and_then(|v| v.as_u64()) {
-            settings.rlm.max_replan_cycles = val as usize;
-            migrated = true;
-        }
-        if migrated {
-            tracing::info!(
-                target: "config",
-                rlm_retry = settings.rlm.retry_enabled,
-                rlm_replan = settings.rlm.max_replan_cycles,
-                "Migrated legacy RLM config keys into rlm group"
-            );
-        }
-    }
-
-    /// Save settings to file
+    /// Save settings to file (~/.wgenty-code/settings.json) as pretty JSON.
     pub fn save(&self) -> anyhow::Result<()> {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let config_dir = home.join(".wgenty-code");
-        std::fs::create_dir_all(&config_dir)?;
-
-        let config_path = config_dir.join("settings.json");
+        let path = Self::config_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
         let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(&config_path, content)?;
-
+        std::fs::write(&path, content)?;
         Ok(())
     }
 
@@ -674,102 +451,105 @@ impl Settings {
         Self::load()
     }
 
-    /// Build settings for the small model. Falls back to main model config when
-    /// small_model fields are absent.
+    /// Build a Settings clone configured for the small model.
+    /// If `models.small` is None, returns a clone of self (no-op).
+    /// If `models.small` is Some, overrides `models.main` name/base_url/api_key/appkey
+    /// from the small endpoint where present, and forces transport.max_tokens = 2048.
+    /// (`appkey` if present overrides `api_key` — preserves prior behavior.)
     pub fn small_model_settings(&self) -> Self {
         let mut s = self.clone();
-        if let Some(ref m) = self.small_model {
-            s.model = m.clone();
-        }
-        s.api.max_tokens = 2048;
-        if let Some(ref url) = self.small_model_base_url {
-            s.api.base_url = url.clone();
-        }
-        if let Some(ref key) = self.small_model_api_key {
-            s.api.api_key = Some(key.clone());
+        if let Some(small) = &self.models.small {
+            s.models.main.name = small.name.clone();
+            if let Some(url) = &small.base_url { s.models.main.base_url = Some(url.clone()); }
+            if let Some(key) = &small.api_key  { s.models.main.api_key  = Some(key.clone()); }
+            if let Some(ak)  = &small.appkey   { s.models.main.api_key  = Some(ak.clone()); }
+            s.models.transport.max_tokens = 2048;
         }
         s
     }
 
-    /// Set a configuration value
-    pub fn set(key: &str, value: &str) -> anyhow::Result<()> {
-        let mut settings = Self::load()?;
+    /// Build a Settings clone where subagent override fields (under agent.subagent)
+    /// have been folded into the corresponding agent.* fields. Used at subagent spawn
+    /// time so the subagent loop can read agent.* directly.
+    ///
+    /// Special cases:
+    /// - max_rounds: subagent override `Some(0)` means "unlimited" (mapped to None).
+    /// - subagent_default_k from token_budget is NOT consulted here; it is read by
+    ///   the spawn caller separately as a fallback when no subagent override exists.
+    pub fn resolve_subagent_config(&self) -> Self {
+        let mut s = self.clone();
+        let ov = &self.agent.subagent;
 
-        match key {
-            "model" => settings.model = value.to_string(),
-            "verbose" => settings.verbose = value.parse().unwrap_or(false),
-            "api_key" => settings.api.api_key = Some(value.to_string()),
-            "base_url" => settings.api.base_url = value.to_string(),
-            "small_model" => settings.small_model = Some(value.to_string()),
-            "small_model_base_url" => settings.small_model_base_url = Some(value.to_string()),
-            "small_model_api_key" => settings.small_model_api_key = Some(value.to_string()),
-            "small_model_appkey" => settings.small_model_appkey = Some(value.to_string()),
-            "max_subagent_depth" => settings.max_subagent_depth = value.parse().unwrap_or(3),
-            "max_concurrent_subagents" => {
-                settings.max_concurrent_subagents = value.parse().unwrap_or(5)
-            }
-            "subagent_timeout_secs" => {
-                settings.subagent_timeout_secs = value.parse().unwrap_or(240)
-            }
-            // rlm group — new canonical keys
-            "rlm.enabled" => settings.rlm.enabled = value.parse().unwrap_or(true),
-            "rlm.delegate_tool" => settings.rlm.delegate_tool = value.parse().unwrap_or(true),
-            "rlm.auto_routing" => settings.rlm.auto_routing = value.parse().unwrap_or(true),
-            "rlm.retry_enabled" => settings.rlm.retry_enabled = value.parse().unwrap_or(true),
-            "rlm.max_replan_cycles" => {
-                settings.rlm.max_replan_cycles = value.parse().unwrap_or(2)
-            }
-            // legacy aliases (backward compatible)
-            "rlm_retry_enabled" => settings.rlm.retry_enabled = value.parse().unwrap_or(true),
-            "rlm_max_replan_cycles" => {
-                settings.rlm.max_replan_cycles = value.parse().unwrap_or(2)
-            }
-            "token_budget_k" => settings.token_budget_k = value.parse().unwrap_or(0),
-            "default_subagent_token_budget_k" => settings.default_subagent_token_budget_k = value.parse().unwrap_or(0),
-            "rlm_jaccard_threshold" => settings.rlm_jaccard_threshold = value.parse().unwrap_or(0.8),
-            "planner_model" => settings.planner_model = Some(value.to_string()),
-            "planner_model_base_url" => settings.planner_model_base_url = Some(value.to_string()),
-            "planner_model_api_key" => settings.planner_model_api_key = Some(value.to_string()),
-            "plan_mode" => settings.plan_mode = value.parse().unwrap_or(false),
-            "max_tokens" => settings.api.max_tokens = value.parse().unwrap_or(4096),
-            "timeout" => settings.api.timeout = value.parse().unwrap_or(120),
-            "streaming" => settings.api.streaming = value.parse().unwrap_or(true),
-            "memory.enabled" => settings.memory.enabled = value.parse().unwrap_or(true),
-            "voice.enabled" => settings.voice.enabled = value.parse().unwrap_or(false),
-            // CC-compatible: enabledPlugins.<plugin@publisher>
-            _ if key.starts_with("enabledPlugins.") => {
-                let plugin_key = key.strip_prefix("enabledPlugins.").unwrap();
-                let enabled = value.parse().unwrap_or(true);
-                if let Some(ref mut map) = settings.enabled_plugins {
-                    map.insert(plugin_key.to_string(), enabled);
-                } else {
-                    let mut map = std::collections::HashMap::new();
-                    map.insert(plugin_key.to_string(), enabled);
-                    settings.enabled_plugins = Some(map);
-                }
-            }
-            // CC-compatible: pluginMarketplaces.<name>
-            _ if key.starts_with("pluginMarketplaces.") => {
-                // Store as a nested JSON value
-                let mkt_name = key.strip_prefix("pluginMarketplaces.").unwrap();
-                let parsed: serde_json::Value = serde_json::from_str(value)
-                    .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
-                if let Some(ref mut map) = settings.plugin_marketplaces {
-                    if let Some(obj) = map.as_object_mut() {
-                        obj.insert(mkt_name.to_string(), parsed);
-                    }
-                } else {
-                    let mut map = serde_json::Map::new();
-                    map.insert(mkt_name.to_string(), parsed);
-                    settings.plugin_marketplaces = Some(serde_json::Value::Object(map));
-                }
-            }
-            "max_transcript_age_days" => settings.max_transcript_age_days = value.parse().unwrap_or(30),
-            "transcript_db_path" => settings.transcript_db_path = value.to_string(),
-            _ => return Err(anyhow::anyhow!("Unknown setting: {}", key)),
+        if let Some(b) = ov.token_budget_k { s.agent.token_budget.main_k = b; }
+        if let Some(r) = ov.max_rounds {
+            s.agent.max_rounds = if r == 0 { None } else { Some(r) };
+        }
+        if let Some(p) = ov.plan_mode { s.agent.plan_mode = p; }
+
+        if let Some(v) = ov.rlm.enabled            { s.agent.rlm.enabled = v; }
+        if let Some(v) = ov.rlm.delegate_tool      { s.agent.rlm.delegate_tool = v; }
+        if let Some(v) = ov.rlm.auto_routing       { s.agent.rlm.auto_routing = v; }
+        if let Some(v) = ov.rlm.retry_enabled      { s.agent.rlm.retry_enabled = v; }
+        if let Some(v) = ov.rlm.max_replan_cycles  { s.agent.rlm.max_replan_cycles = v; }
+        if let Some(v) = ov.rlm.jaccard_threshold  { s.agent.rlm.jaccard_threshold = v; }
+
+        if let Some(v) = ov.prompt.include.permissions   { s.prompt.include.permissions = v; }
+        if let Some(v) = ov.prompt.include.developer     { s.prompt.include.developer = v; }
+        if let Some(v) = ov.prompt.include.collaboration { s.prompt.include.collaboration = v; }
+        if let Some(v) = ov.prompt.include.environment   { s.prompt.include.environment = v; }
+        if let Some(v) = ov.prompt.include.skills        { s.prompt.include.skills = v; }
+
+        if let Some(v) = &ov.prompt.developer_instructions  { s.prompt.developer_instructions  = Some(v.clone()); }
+        if let Some(v) = &ov.prompt.collaboration_mode      { s.prompt.collaboration_mode      = Some(v.clone()); }
+        if let Some(v) = &ov.prompt.model_instructions_file { s.prompt.model_instructions_file = Some(v.clone()); }
+
+        s
+    }
+
+    /// Set a configuration value via dotted path.
+    /// Examples:
+    ///   set("models.main.name", "sonnet")
+    ///   set("agent.subagent.max_depth", "7")
+    ///   set("prompt.include.skills", "false")
+    ///   set("plugins.enabled_map.foo@bar", "true")
+    /// Values are parsed as JSON literals first (so "true"/"42"/"3.14" become bool/number);
+    /// on parse failure, the value is treated as a string.
+    /// Type validation happens at deserialize time — invalid paths/types return Err
+    /// and the on-disk settings.json is left unchanged.
+    pub fn set(key: &str, value: &str) -> anyhow::Result<()> {
+        use serde_json::Value;
+        let settings = Self::load()?;
+        let mut json = serde_json::to_value(&settings)?;
+
+        let parsed: Value = serde_json::from_str(value)
+            .unwrap_or_else(|_| Value::String(value.to_string()));
+
+        let parts: Vec<&str> = key.split('.').collect();
+        if parts.is_empty() || parts.iter().any(|p| p.is_empty()) {
+            return Err(anyhow::anyhow!("Invalid empty key segment in '{}'", key));
         }
 
-        settings.save()?;
+        fn set_at(node: &mut Value, parts: &[&str], val: Value) -> anyhow::Result<()> {
+            let (head, rest) = parts.split_first().ok_or_else(|| anyhow::anyhow!("empty path"))?;
+            if rest.is_empty() {
+                match node {
+                    Value::Object(map) => { map.insert(head.to_string(), val); Ok(()) }
+                    _ => Err(anyhow::anyhow!("path segment '{}' is not under an object", head)),
+                }
+            } else {
+                let next = match node {
+                    Value::Object(map) => map.entry(head.to_string()).or_insert(Value::Object(Default::default())),
+                    _ => return Err(anyhow::anyhow!("path segment '{}' is not under an object", head)),
+                };
+                set_at(next, rest, val)
+            }
+        }
+
+        set_at(&mut json, &parts, parsed)?;
+
+        let new_settings: Settings = serde_json::from_value(json)
+            .map_err(|e| anyhow::anyhow!("invalid setting at '{}': {}", key, e))?;
+        new_settings.save()?;
         Ok(())
     }
 
@@ -793,6 +573,7 @@ mod tests {
         assert!(rlm.auto_routing);
         assert!(rlm.retry_enabled);
         assert_eq!(rlm.max_replan_cycles, 2);
+        assert_eq!(rlm.jaccard_threshold, 0.8);
     }
 
     #[test]
@@ -800,11 +581,11 @@ mod tests {
         let json = r#"{"enabled": false}"#;
         let rlm: RlmSettings = serde_json::from_str(json).unwrap();
         assert!(!rlm.enabled);
-        // Other fields should use defaults
         assert!(rlm.delegate_tool);
         assert!(rlm.auto_routing);
         assert!(rlm.retry_enabled);
         assert_eq!(rlm.max_replan_cycles, 2);
+        assert_eq!(rlm.jaccard_threshold, 0.8);
     }
 
     #[test]
@@ -814,7 +595,8 @@ mod tests {
             "delegate_tool": false,
             "auto_routing": false,
             "retry_enabled": false,
-            "max_replan_cycles": 0
+            "max_replan_cycles": 0,
+            "jaccard_threshold": 0.95
         }"#;
         let rlm: RlmSettings = serde_json::from_str(json).unwrap();
         assert!(!rlm.enabled);
@@ -822,70 +604,221 @@ mod tests {
         assert!(!rlm.auto_routing);
         assert!(!rlm.retry_enabled);
         assert_eq!(rlm.max_replan_cycles, 0);
-    }
-
-    #[test]
-    fn test_migrate_rlm_legacy_keys() {
-        // Simulate old config format with flat keys
-        let old_json = r#"{
-            "model": "sonnet",
-            "rlm_retry_enabled": false,
-            "rlm_max_replan_cycles": 5
-        }"#;
-        let mut settings = Settings::default();
-        Settings::migrate_rlm_settings(old_json, &mut settings);
-        // Legacy values should be copied into rlm group
-        assert!(!settings.rlm.retry_enabled);
-        assert_eq!(settings.rlm.max_replan_cycles, 5);
-        // Fields not in old JSON stay at defaults
-        assert!(settings.rlm.enabled);
-        assert!(settings.rlm.delegate_tool);
-    }
-
-    #[test]
-    fn test_migrate_rlm_no_override_when_group_present() {
-        // When the new "rlm" group is present, legacy flat keys are ignored.
-        // migrate_rlm_settings returns early without touching anything.
-        let json = r#"{
-            "rlm": {"enabled": false, "retry_enabled": true},
-            "rlm_retry_enabled": false
-        }"#;
-        let mut settings = Settings::default();
-        Settings::migrate_rlm_settings(json, &mut settings);
-        // rlm group present -> migration returns early, legacy key is ignored
-        // settings.rlm fields remain at their default values
-        assert!(settings.rlm.enabled);
-        assert!(settings.rlm.delegate_tool);
-        assert!(settings.rlm.retry_enabled); // legacy rlm_retry_enabled:false is ignored
+        assert!((rlm.jaccard_threshold - 0.95).abs() < 1e-9);
     }
 
     #[test]
     fn test_settings_default_includes_rlm() {
         let settings = Settings::default();
-        assert!(settings.rlm.enabled);
-        assert!(settings.rlm.delegate_tool);
-        assert!(settings.rlm.auto_routing);
+        assert!(settings.agent.rlm.enabled);
+        assert!(settings.agent.rlm.delegate_tool);
+        assert!(settings.agent.rlm.auto_routing);
     }
 
     #[test]
     fn test_rlm_deserialize_in_settings() {
         let json = r#"{
-            "api": {"base_url": "http://localhost", "max_tokens": 4096, "timeout": 120, "streaming": true, "beta_headers": []},
-            "mcp_servers": [],
-            "model": "test",
-            "verbose": false,
-            "working_dir": ".",
-            "memory": {"enabled": false, "path": ".", "consolidation_interval": 24, "max_memories": 100},
-            "voice": {"enabled": false, "push_to_talk": false, "silence_threshold": 0.0, "sample_rate": 16000},
-            "plugins": {"enabled": false, "plugin_dir": ".", "auto_update": false},
-            "rlm": {"enabled": false, "delegate_tool": false}
+            "models": {
+                "transport": {"max_tokens": 4096, "timeout": 120, "streaming": true, "beta_headers": []},
+                "main": {"name": "test"}
+            },
+            "agent": {
+                "rlm": {"enabled": false, "delegate_tool": false}
+            },
+            "storage": {
+                "working_dir": ".",
+                "memory": {"enabled": false, "path": ".", "consolidation_interval": 24, "max_memories": 100}
+            },
+            "plugins": {"enabled": false, "dir": ".", "auto_update": false}
         }"#;
         let settings: Settings = serde_json::from_str(json).unwrap();
-        assert!(!settings.rlm.enabled);
-        assert!(!settings.rlm.delegate_tool);
+        assert!(!settings.agent.rlm.enabled);
+        assert!(!settings.agent.rlm.delegate_tool);
         // Unspecified rlm fields use defaults
-        assert!(settings.rlm.auto_routing);
-        assert!(settings.rlm.retry_enabled);
-        assert_eq!(settings.rlm.max_replan_cycles, 2);
+        assert!(settings.agent.rlm.auto_routing);
+        assert!(settings.agent.rlm.retry_enabled);
+        assert_eq!(settings.agent.rlm.max_replan_cycles, 2);
+    }
+
+    #[test]
+    fn test_prompt_includes_default_all_true() {
+        let s = Settings::default();
+        assert!(s.prompt.include.permissions);
+        assert!(s.prompt.include.developer);
+        assert!(s.prompt.include.collaboration);
+        assert!(s.prompt.include.environment);
+        assert!(s.prompt.include.skills);
+    }
+
+    #[test]
+    fn test_models_default_no_small_or_planner() {
+        let s = Settings::default();
+        assert_eq!(s.models.main.name, "sonnet");
+        assert!(s.models.small.is_none());
+        assert!(s.models.planner.is_none());
+    }
+
+    #[test]
+    fn test_models_small_inherits_when_url_absent() {
+        let json = r#"{
+            "models": {
+                "main": {"name": "sonnet", "base_url": "https://api.example.com", "api_key": "main-key"},
+                "small": {"name": "haiku"}
+            }
+        }"#;
+        let s: Settings = serde_json::from_str(json).unwrap();
+        let small = s.models.small.as_ref().unwrap();
+        assert_eq!(small.name, "haiku");
+        // Inheritance is the consumer's job — see small_model_settings
+        assert!(small.base_url.is_none());
+        assert!(small.api_key.is_none());
+    }
+
+    #[test]
+    fn test_small_model_settings_uses_small_overrides() {
+        let mut s = Settings::default();
+        s.models.main.base_url = Some("https://api.main.example".to_string());
+        s.models.main.api_key = Some("main-key".to_string());
+        s.models.small = Some(ModelEndpoint {
+            name: "haiku".to_string(),
+            base_url: None,                                      // inherits main
+            api_key: Some("small-key".to_string()),
+            appkey: None,
+        });
+        let small_s = s.small_model_settings();
+        assert_eq!(small_s.models.main.name, "haiku");
+        assert_eq!(small_s.models.main.base_url, Some("https://api.main.example".to_string())); // unchanged
+        assert_eq!(small_s.models.main.api_key, Some("small-key".to_string()));                 // overridden
+        assert_eq!(small_s.models.transport.max_tokens, 2048);
+    }
+
+    #[test]
+    fn test_subagent_overrides_default_none() {
+        let s = Settings::default();
+        let ov = &s.agent.subagent;
+        assert!(ov.token_budget_k.is_none());
+        assert!(ov.max_rounds.is_none());
+        assert!(ov.plan_mode.is_none());
+        assert!(ov.rlm.enabled.is_none());
+        assert!(ov.rlm.delegate_tool.is_none());
+        assert!(ov.rlm.auto_routing.is_none());
+        assert!(ov.rlm.retry_enabled.is_none());
+        assert!(ov.rlm.max_replan_cycles.is_none());
+        assert!(ov.rlm.jaccard_threshold.is_none());
+        assert!(ov.prompt.include.permissions.is_none());
+        assert!(ov.prompt.include.developer.is_none());
+        assert!(ov.prompt.include.collaboration.is_none());
+        assert!(ov.prompt.include.environment.is_none());
+        assert!(ov.prompt.include.skills.is_none());
+        assert!(ov.prompt.developer_instructions.is_none());
+        assert!(ov.prompt.collaboration_mode.is_none());
+        assert!(ov.prompt.model_instructions_file.is_none());
+    }
+
+    #[test]
+    fn test_resolve_subagent_config_noop_when_no_overrides() {
+        let s = Settings::default();
+        let r = s.resolve_subagent_config();
+        assert_eq!(r.agent.plan_mode, s.agent.plan_mode);
+        assert_eq!(r.agent.max_rounds, s.agent.max_rounds);
+        assert_eq!(r.agent.token_budget.main_k, s.agent.token_budget.main_k);
+        assert_eq!(r.agent.rlm.enabled, s.agent.rlm.enabled);
+        assert_eq!(r.prompt.include.skills, s.prompt.include.skills);
+    }
+
+    #[test]
+    fn test_resolve_subagent_config_applies_overrides() {
+        let mut s = Settings::default();
+        s.agent.token_budget.main_k = 100;
+        s.agent.rlm.enabled = true;
+        s.prompt.include.skills = true;
+
+        s.agent.subagent.token_budget_k = Some(50);
+        s.agent.subagent.rlm.enabled = Some(false);
+        s.agent.subagent.prompt.include.skills = Some(false);
+
+        let r = s.resolve_subagent_config();
+        assert_eq!(r.agent.token_budget.main_k, 50);
+        assert!(!r.agent.rlm.enabled);
+        assert!(!r.prompt.include.skills);
+        // Source unchanged
+        assert_eq!(s.agent.token_budget.main_k, 100);
+        assert!(s.agent.rlm.enabled);
+    }
+
+    #[test]
+    fn test_resolve_subagent_max_rounds_zero_means_unlimited() {
+        let mut s = Settings::default();
+        s.agent.max_rounds = Some(50);
+        s.agent.subagent.max_rounds = Some(0);
+        let r = s.resolve_subagent_config();
+        assert_eq!(r.agent.max_rounds, None);
+    }
+
+    #[test]
+    fn test_set_dotted_path_nested_field() {
+        use serde_json::Value;
+        let s = Settings::default();
+        let mut json = serde_json::to_value(&s).unwrap();
+        let parts: &[&str] = &["agent", "subagent", "max_depth"];
+        fn walk_set(n: &mut Value, p: &[&str], v: Value) {
+            let (h, r) = p.split_first().unwrap();
+            if r.is_empty() {
+                n.as_object_mut().unwrap().insert(h.to_string(), v);
+            } else {
+                let nx = n.as_object_mut().unwrap()
+                    .entry(h.to_string()).or_insert(Value::Object(Default::default()));
+                walk_set(nx, r, v);
+            }
+        }
+        walk_set(&mut json, parts, Value::Number(7.into()));
+        let new: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(new.agent.subagent.max_depth, 7);
+    }
+
+    #[test]
+    fn test_set_dotted_path_unknown_field_fails_validation() {
+        use serde_json::Value;
+        let s = Settings::default();
+        let mut json = serde_json::to_value(&s).unwrap();
+        json.as_object_mut().unwrap()
+            .insert("nonexistent_top".to_string(), Value::Bool(true));
+        // serde_json by default tolerates extra fields; document behavior here.
+        let r: Result<Settings, _> = serde_json::from_value(json);
+        assert!(r.is_ok(), "extra fields are tolerated by default; if rejection is desired, add deny_unknown_fields");
+    }
+
+    /// Mirrors the budget-fallback chain in src/tools/meta/task.rs.
+    fn resolve_token_budget_k(s: &Settings, caller: Option<usize>) -> usize {
+        caller
+            .or(s.agent.subagent.token_budget_k)
+            .or((s.agent.token_budget.subagent_default_k > 0)
+                .then_some(s.agent.token_budget.subagent_default_k))
+            .unwrap_or(s.agent.token_budget.main_k)
+    }
+
+    #[test]
+    fn test_subagent_token_budget_fallback_chain() {
+        let mut s = Settings::default();
+        s.agent.token_budget.main_k = 100;
+
+        // Level 4: only main_k set
+        assert_eq!(resolve_token_budget_k(&s, None), 100);
+
+        // Level 3: subagent_default_k > 0 wins over main_k
+        s.agent.token_budget.subagent_default_k = 50;
+        assert_eq!(resolve_token_budget_k(&s, None), 50);
+
+        // Level 3 ignored when subagent_default_k == 0
+        s.agent.token_budget.subagent_default_k = 0;
+        assert_eq!(resolve_token_budget_k(&s, None), 100);
+
+        // Level 2: subagent override beats subagent_default and main
+        s.agent.token_budget.subagent_default_k = 50;
+        s.agent.subagent.token_budget_k = Some(30);
+        assert_eq!(resolve_token_budget_k(&s, None), 30);
+
+        // Level 1: caller-explicit beats everything
+        assert_eq!(resolve_token_budget_k(&s, Some(7)), 7);
     }
 }
