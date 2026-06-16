@@ -55,8 +55,14 @@ impl CallGraph {
 
         let mut edges: HashMap<i64, Vec<Edge>> = HashMap::new();
         for rel in relationships {
-            let from_name = symbols.get(&rel.source_id).map(|s| s.name.clone()).unwrap_or_default();
-            let to_name = symbols.get(&rel.target_id).map(|s| s.name.clone()).unwrap_or_default();
+            let from_name = symbols
+                .get(&rel.source_id)
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
+            let to_name = symbols
+                .get(&rel.target_id)
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
             let edge = Edge {
                 from_id: rel.source_id,
                 to_id: rel.target_id,
@@ -85,7 +91,11 @@ impl CallGraph {
         let mut queue = VecDeque::new();
 
         // Initial paths: just the root symbol
-        let root_name = self.symbols.get(&root_id).map(|s| s.name.clone()).unwrap_or_default();
+        let root_name = self
+            .symbols
+            .get(&root_id)
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
         let initial_path = CallPath {
             depth: 0,
             hops: Vec::new(),
@@ -130,7 +140,11 @@ impl CallGraph {
     /// Dijkstra shortest path from from_id to to_id.
     pub fn shortest_path(&self, from_id: i64, to_id: i64) -> Option<CallPath> {
         if from_id == to_id {
-            let name = self.symbols.get(&from_id).map(|s| s.name.clone()).unwrap_or_default();
+            let name = self
+                .symbols
+                .get(&from_id)
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
             return Some(CallPath {
                 depth: 0,
                 hops: vec![Hop {
@@ -168,7 +182,11 @@ impl CallGraph {
         }
 
         let mut heap = BinaryHeap::new();
-        let root_name = self.symbols.get(&from_id).map(|s| s.name.clone()).unwrap_or_default();
+        let root_name = self
+            .symbols
+            .get(&from_id)
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
         heap.push(State {
             cost: 0,
             id: from_id,
@@ -264,21 +282,91 @@ mod tests {
         // Manually build a simple graph for testing
         let mut edges: HashMap<i64, Vec<Edge>> = HashMap::new();
         // main → init → run_async
-        edges.insert(1, vec![Edge {
-            from_id: 1, to_id: 2, from_name: "main".into(), to_name: "init".into(),
-            rel_kind: "calls".into(), location: "src/main.rs:10".into(),
-        }]);
-        edges.insert(2, vec![Edge {
-            from_id: 2, to_id: 3, from_name: "init".into(), to_name: "run_async".into(),
-            rel_kind: "calls".into(), location: "src/agent.rs:20".into(),
-        }]);
+        edges.insert(
+            1,
+            vec![Edge {
+                from_id: 1,
+                to_id: 2,
+                from_name: "main".into(),
+                to_name: "init".into(),
+                rel_kind: "calls".into(),
+                location: "src/main.rs:10".into(),
+            }],
+        );
+        edges.insert(
+            2,
+            vec![Edge {
+                from_id: 2,
+                to_id: 3,
+                from_name: "init".into(),
+                to_name: "run_async".into(),
+                rel_kind: "calls".into(),
+                location: "src/agent.rs:20".into(),
+            }],
+        );
 
         let mut symbols = HashMap::new();
         use crate::tools::codegraph::types::Visibility;
-        symbols.insert(1, Symbol { id: Some(1), name: "main".into(), kind: crate::tools::codegraph::types::SymbolKind::Function, file_path: String::new(), line: 0, col: 0, signature: None, visibility: Visibility::Private, parent_module: None, language: "rust".to_string() });
-        symbols.insert(2, Symbol { id: Some(2), name: "init".into(), kind: crate::tools::codegraph::types::SymbolKind::Function, file_path: String::new(), line: 0, col: 0, signature: None, visibility: Visibility::Private, parent_module: None, language: "rust".to_string() });
-        symbols.insert(3, Symbol { id: Some(3), name: "run_async".into(), kind: crate::tools::codegraph::types::SymbolKind::Function, file_path: String::new(), line: 0, col: 0, signature: None, visibility: Visibility::Private, parent_module: None, language: "rust".to_string() });
-        symbols.insert(4, Symbol { id: Some(4), name: "orphan".into(), kind: crate::tools::codegraph::types::SymbolKind::Function, file_path: String::new(), line: 0, col: 0, signature: None, visibility: Visibility::Private, parent_module: None, language: "rust".to_string() });
+        symbols.insert(
+            1,
+            Symbol {
+                id: Some(1),
+                name: "main".into(),
+                kind: crate::tools::codegraph::types::SymbolKind::Function,
+                file_path: String::new(),
+                line: 0,
+                col: 0,
+                signature: None,
+                visibility: Visibility::Private,
+                parent_module: None,
+                language: "rust".to_string(),
+            },
+        );
+        symbols.insert(
+            2,
+            Symbol {
+                id: Some(2),
+                name: "init".into(),
+                kind: crate::tools::codegraph::types::SymbolKind::Function,
+                file_path: String::new(),
+                line: 0,
+                col: 0,
+                signature: None,
+                visibility: Visibility::Private,
+                parent_module: None,
+                language: "rust".to_string(),
+            },
+        );
+        symbols.insert(
+            3,
+            Symbol {
+                id: Some(3),
+                name: "run_async".into(),
+                kind: crate::tools::codegraph::types::SymbolKind::Function,
+                file_path: String::new(),
+                line: 0,
+                col: 0,
+                signature: None,
+                visibility: Visibility::Private,
+                parent_module: None,
+                language: "rust".to_string(),
+            },
+        );
+        symbols.insert(
+            4,
+            Symbol {
+                id: Some(4),
+                name: "orphan".into(),
+                kind: crate::tools::codegraph::types::SymbolKind::Function,
+                file_path: String::new(),
+                line: 0,
+                col: 0,
+                signature: None,
+                visibility: Visibility::Private,
+                parent_module: None,
+                language: "rust".to_string(),
+            },
+        );
 
         CallGraph { edges, symbols }
     }

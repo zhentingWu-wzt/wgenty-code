@@ -26,7 +26,7 @@ export const App: React.FC<Props> = ({ workingDir }) => {
     const c = new ApiClient({ baseUrl: `http://127.0.0.1:${port}` });
     c.getConfig()
       .then((cfg) => setModel(cfg.model))
-      .catch(() => {})
+      .catch((err: unknown) => console.error("Failed to get daemon config:", err))
       .finally(() => setClient(c));
   }, []);
 
@@ -90,7 +90,7 @@ const AgentView: React.FC<{
           loadSession(latest.id);
         }
       }
-    }).catch(() => {});
+    }).catch((err: unknown) => console.error("Failed to auto-restore session:", err));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Save session on exit (SIGINT/SIGTERM)

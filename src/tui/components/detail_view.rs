@@ -27,44 +27,74 @@ impl DetailView {
         let header_count: usize;
         if let Some(ref status) = detail.status {
             let (status_label, status_color) = match status {
-                crate::agent::progress::SubagentStatus::Completed => ("COMPLETED", Color::Rgb(166, 227, 161)),
-                crate::agent::progress::SubagentStatus::Failed => ("FAILED", Color::Rgb(243, 139, 168)),
-                crate::agent::progress::SubagentStatus::Cancelled => ("CANCELLED", Color::Rgb(243, 139, 168)),
-                crate::agent::progress::SubagentStatus::Running => ("RUNNING", Color::Rgb(249, 226, 175)),
-                crate::agent::progress::SubagentStatus::Pending => ("PENDING", Color::Rgb(108, 112, 134)),
+                crate::agent::progress::SubagentStatus::Completed => {
+                    ("COMPLETED", Color::Rgb(166, 227, 161))
+                }
+                crate::agent::progress::SubagentStatus::Failed => {
+                    ("FAILED", Color::Rgb(243, 139, 168))
+                }
+                crate::agent::progress::SubagentStatus::Cancelled => {
+                    ("CANCELLED", Color::Rgb(243, 139, 168))
+                }
+                crate::agent::progress::SubagentStatus::Running => {
+                    ("RUNNING", Color::Rgb(249, 226, 175))
+                }
+                crate::agent::progress::SubagentStatus::Pending => {
+                    ("PENDING", Color::Rgb(108, 112, 134))
+                }
             };
             lines.push(Line::from(vec![
                 Span::styled(" Status:  ", Style::default().fg(Color::Rgb(108, 112, 134))),
-                Span::styled(status_label, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    status_label,
+                    Style::default()
+                        .fg(status_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]));
             let total_secs = detail.total_elapsed_ms as f64 / 1000.0;
             lines.push(Line::from(vec![
                 Span::styled(" Time:    ", Style::default().fg(Color::Rgb(108, 112, 134))),
-                Span::styled(format!("{:.1}s", total_secs), Style::default().fg(Color::Rgb(180, 180, 200))),
+                Span::styled(
+                    format!("{:.1}s", total_secs),
+                    Style::default().fg(Color::Rgb(180, 180, 200)),
+                ),
             ]));
-            let budget_str = detail.token_budget_k.map(|b| format!("{}k", b)).unwrap_or_else(|| "unlimited".to_string());
+            let budget_str = detail
+                .token_budget_k
+                .map(|b| format!("{}k", b))
+                .unwrap_or_else(|| "unlimited".to_string());
             lines.push(Line::from(vec![
                 Span::styled(" Tokens:  ", Style::default().fg(Color::Rgb(108, 112, 134))),
-                Span::styled(format!("{}/{}", detail.cumulative_tokens, budget_str), Style::default().fg(Color::Rgb(180, 180, 200))),
+                Span::styled(
+                    format!("{}/{}", detail.cumulative_tokens, budget_str),
+                    Style::default().fg(Color::Rgb(180, 180, 200)),
+                ),
             ]));
             if let (Some(r), Some(mr)) = (detail.round, detail.max_rounds) {
                 lines.push(Line::from(vec![
                     Span::styled(" Rounds:  ", Style::default().fg(Color::Rgb(108, 112, 134))),
-                    Span::styled(format!("{}/{}", r, mr), Style::default().fg(Color::Rgb(180, 180, 200))),
+                    Span::styled(
+                        format!("{}/{}", r, mr),
+                        Style::default().fg(Color::Rgb(180, 180, 200)),
+                    ),
                 ]));
             }
             if let Some(ref err) = detail.error_message {
                 lines.push(Line::from(vec![
                     Span::styled(" Error:   ", Style::default().fg(Color::Rgb(108, 112, 134))),
-                    Span::styled(err, Style::default().fg(Color::Rgb(243, 139, 168)).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        err,
+                        Style::default()
+                            .fg(Color::Rgb(243, 139, 168))
+                            .add_modifier(Modifier::BOLD),
+                    ),
                 ]));
             }
-            lines.push(Line::from(vec![
-                Span::styled(
-                    "\u{2500}".repeat(inner.width.saturating_sub(2) as usize),
-                    Style::default().fg(Color::Rgb(80, 80, 100)),
-                ),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "\u{2500}".repeat(inner.width.saturating_sub(2) as usize),
+                Style::default().fg(Color::Rgb(80, 80, 100)),
+            )]));
             header_count = lines.len();
         } else {
             header_count = 0;
@@ -76,9 +106,10 @@ impl DetailView {
         let visible_events: Vec<_> = detail.events.iter().skip(scroll).take(available).collect();
 
         if visible_events.is_empty() && header_count == 0 {
-            lines.push(Line::from(vec![
-                Span::styled("No events recorded.", Style::default().fg(Color::Rgb(108, 112, 134))),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "No events recorded.",
+                Style::default().fg(Color::Rgb(108, 112, 134)),
+            )]));
         }
 
         for event in &visible_events {
@@ -87,14 +118,30 @@ impl DetailView {
                 SubagentEventType::Thought { text } => {
                     let max_w = inner.width.saturating_sub(12) as usize;
                     let preview: String = text.chars().take(max_w).collect();
-                    let display = if text.len() > max_w { format!("{}...", preview) } else { preview };
+                    let display = if text.len() > max_w {
+                        format!("{}...", preview)
+                    } else {
+                        preview
+                    };
                     lines.push(Line::from(vec![
-                        Span::styled(format!(" {:<8} ", elapsed), Style::default().fg(Color::Rgb(108, 112, 134))),
-                        Span::styled(" THOUGHT ", Style::default().fg(Color::Rgb(180, 180, 200)).add_modifier(Modifier::DIM)),
+                        Span::styled(
+                            format!(" {:<8} ", elapsed),
+                            Style::default().fg(Color::Rgb(108, 112, 134)),
+                        ),
+                        Span::styled(
+                            " THOUGHT ",
+                            Style::default()
+                                .fg(Color::Rgb(180, 180, 200))
+                                .add_modifier(Modifier::DIM),
+                        ),
                         Span::styled(display, Style::default().fg(Color::Rgb(180, 180, 200))),
                     ]));
                 }
-                SubagentEventType::Action { tool_name, params_summary, .. } => {
+                SubagentEventType::Action {
+                    tool_name,
+                    params_summary,
+                    ..
+                } => {
                     let action_str = if params_summary.is_empty() {
                         tool_name.clone()
                     } else {
@@ -103,28 +150,53 @@ impl DetailView {
                     let max_w = inner.width.saturating_sub(12) as usize;
                     let display: String = action_str.chars().take(max_w).collect();
                     lines.push(Line::from(vec![
-                        Span::styled(format!(" {:<8} ", elapsed), Style::default().fg(Color::Rgb(108, 112, 134))),
+                        Span::styled(
+                            format!(" {:<8} ", elapsed),
+                            Style::default().fg(Color::Rgb(108, 112, 134)),
+                        ),
                         Span::styled(" TOOL    ", Style::default().fg(Color::Rgb(137, 180, 250))),
                         Span::styled(display, Style::default().fg(Color::Rgb(137, 180, 250))),
                     ]));
                 }
-                SubagentEventType::ToolResult { tool_name, success, summary } => {
+                SubagentEventType::ToolResult {
+                    tool_name,
+                    success,
+                    summary,
+                } => {
                     let icon = if *success { "OK" } else { "FAIL" };
-                    let color = if *success { Color::Rgb(166, 227, 161) } else { Color::Rgb(243, 139, 168) };
+                    let color = if *success {
+                        Color::Rgb(166, 227, 161)
+                    } else {
+                        Color::Rgb(243, 139, 168)
+                    };
                     let max_w = inner.width.saturating_sub(12) as usize;
                     let display: String = summary.chars().take(max_w).collect();
                     lines.push(Line::from(vec![
-                        Span::styled(format!(" {:<8} ", elapsed), Style::default().fg(Color::Rgb(108, 112, 134))),
+                        Span::styled(
+                            format!(" {:<8} ", elapsed),
+                            Style::default().fg(Color::Rgb(108, 112, 134)),
+                        ),
                         Span::styled(format!(" {} ", icon), Style::default().fg(color)),
-                        Span::styled(format!("{}: {}", tool_name, display), Style::default().fg(Color::Rgb(148, 148, 165))),
+                        Span::styled(
+                            format!("{}: {}", tool_name, display),
+                            Style::default().fg(Color::Rgb(148, 148, 165)),
+                        ),
                     ]));
                 }
                 SubagentEventType::Error { message, .. } => {
                     let max_w = inner.width.saturating_sub(12) as usize;
                     let display: String = message.chars().take(max_w).collect();
                     lines.push(Line::from(vec![
-                        Span::styled(format!(" {:<8} ", elapsed), Style::default().fg(Color::Rgb(108, 112, 134))),
-                        Span::styled(" ERROR   ", Style::default().fg(Color::Rgb(243, 139, 168)).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            format!(" {:<8} ", elapsed),
+                            Style::default().fg(Color::Rgb(108, 112, 134)),
+                        ),
+                        Span::styled(
+                            " ERROR   ",
+                            Style::default()
+                                .fg(Color::Rgb(243, 139, 168))
+                                .add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(display, Style::default().fg(Color::Rgb(243, 139, 168))),
                     ]));
                 }
@@ -134,13 +206,23 @@ impl DetailView {
                         "failed" => "FAILED",
                         _ => status,
                     };
-                    let color = if status == "completed" { Color::Rgb(166, 227, 161) } else { Color::Rgb(243, 139, 168) };
+                    let color = if status == "completed" {
+                        Color::Rgb(166, 227, 161)
+                    } else {
+                        Color::Rgb(243, 139, 168)
+                    };
                     let sum = summary.as_deref().unwrap_or("");
                     let max_w = inner.width.saturating_sub(12) as usize;
                     let display: String = sum.chars().take(max_w).collect();
                     lines.push(Line::from(vec![
-                        Span::styled(format!(" {:<8} ", elapsed), Style::default().fg(Color::Rgb(108, 112, 134))),
-                        Span::styled(format!(" {}  ", status_display), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            format!(" {:<8} ", elapsed),
+                            Style::default().fg(Color::Rgb(108, 112, 134)),
+                        ),
+                        Span::styled(
+                            format!(" {}  ", status_display),
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(display, Style::default().fg(color)),
                     ]));
                 }
@@ -185,11 +267,13 @@ impl DetailView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::progress::{SubagentEvent, SubagentEventType, ErrorType};
+    use crate::agent::progress::{ErrorType, SubagentEvent, SubagentEventType};
 
     fn make_thought_event(text: &str) -> SubagentEvent {
         SubagentEvent {
-            event_type: SubagentEventType::Thought { text: text.to_string() },
+            event_type: SubagentEventType::Thought {
+                text: text.to_string(),
+            },
             elapsed_ms: 100,
         }
     }
@@ -235,7 +319,11 @@ mod tests {
         }
     }
 
-    fn make_detail(transcript_id: &str, scroll_offset: usize, events: Vec<SubagentEvent>) -> DetailViewState {
+    fn make_detail(
+        transcript_id: &str,
+        scroll_offset: usize,
+        events: Vec<SubagentEvent>,
+    ) -> DetailViewState {
         DetailViewState {
             transcript_id: transcript_id.to_string(),
             scroll_offset,
@@ -292,7 +380,9 @@ mod tests {
         ];
 
         // Find first error position using the same logic as event.rs
-        let error_pos = events.iter().position(|e| matches!(e.event_type, SubagentEventType::Error { .. }));
+        let error_pos = events
+            .iter()
+            .position(|e| matches!(e.event_type, SubagentEventType::Error { .. }));
         assert_eq!(error_pos, Some(3));
 
         // Simulate jumping to error

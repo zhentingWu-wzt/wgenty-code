@@ -127,11 +127,15 @@ Context: {context}
     // ── Budget allocation ──────────────────────────────────────────
     let budget_used = token_budget_k.unwrap_or(0);
     let mut allocation = if budget_used > 0 {
-        Some(crate::tools::meta::rlm::budget::BudgetAllocation::new(budget_used))
+        Some(crate::tools::meta::rlm::budget::BudgetAllocation::new(
+            budget_used,
+        ))
     } else {
         None
     };
-    let per_task_budget = allocation.as_ref().map(|a| a.distribute_to_tasks(sub_tasks.len()));
+    let per_task_budget = allocation
+        .as_ref()
+        .map(|a| a.distribute_to_tasks(sub_tasks.len()));
 
     // ── Executor phase ────────────────────────────────────────────────
     let main_client = ApiClient::new(settings.clone());
@@ -304,7 +308,9 @@ Context: {context}
                 } else {
                     None
                 };
-            let task_budget = per_task_budget.as_ref().and_then(|budgets| budgets.get(idx).copied());
+            let task_budget = per_task_budget
+                .as_ref()
+                .and_then(|budgets| budgets.get(idx).copied());
             let handle = tokio::spawn(async move {
                 let mut sub_system_prompt = "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.".to_string();
                 inject_format_instruction("analysis", &mut sub_system_prompt);
@@ -358,7 +364,10 @@ Context: {context}
     // ── Roll over unused executor budget to aggregator ────────────
     if let Some(ref mut alloc) = allocation {
         let failed_count = task_errors.iter().filter(|e| e.is_some()).count() as u64;
-        let per_task = per_task_budget.as_ref().and_then(|b| b.first().copied()).unwrap_or(0);
+        let per_task = per_task_budget
+            .as_ref()
+            .and_then(|b| b.first().copied())
+            .unwrap_or(0);
         let unused = per_task * failed_count;
         if unused > 0 {
             alloc.rollover_unused("executor", unused);
@@ -453,7 +462,9 @@ fn inject_format_instruction(task_type: &str, prompt: &mut String) {
     match task_type {
         "analysis" => {
             prompt.push_str("\n\nOUTPUT FORMAT: structured-claims/1 JSON.\n");
-            prompt.push_str("Your output MUST be valid JSON matching the structured-claims schema.\n");
+            prompt.push_str(
+                "Your output MUST be valid JSON matching the structured-claims schema.\n",
+            );
             prompt.push_str("{\n  \"format\": \"structured-claims/1\",\n  \"claims\": [\n    {\n      \"id\": \"c1\",\n      \"claim\": \"...\",\n      \"evidence\": \"...\",\n      \"confidence\": 0.9,\n      \"conflicts_with\": [],\n      \"actionable\": false\n    }\n  ]\n}\n");
         }
         "modification" => {

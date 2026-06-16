@@ -22,22 +22,30 @@ impl SchemaMigration {
     /// Returns 0 if the meta table doesn't exist (fresh database).
     pub fn detect_version(&self) -> anyhow::Result<u32> {
         // Check if meta table exists
-        let table_exists: bool = self.conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='meta'",
-            [],
-            |row| row.get::<_, i64>(0),
-        ).unwrap_or(0) > 0;
+        let table_exists: bool = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='meta'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
 
         if !table_exists {
             return Ok(0);
         }
 
         // Check if schema_version key exists
-        let key_exists: bool = self.conn.query_row(
-            "SELECT COUNT(*) FROM meta WHERE key='schema_version'",
-            [],
-            |row| row.get::<_, i64>(0),
-        ).unwrap_or(0) > 0;
+        let key_exists: bool = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM meta WHERE key='schema_version'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
 
         if !key_exists {
             return Ok(0);
@@ -60,9 +68,8 @@ impl SchemaMigration {
         }
 
         // Ensure meta table exists
-        self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);",
-        )?;
+        self.conn
+            .execute_batch("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);")?;
 
         // Apply migrations sequentially
         let mut current = version;
@@ -133,7 +140,8 @@ impl SchemaMigration {
     /// v1 → v2: Add language column to symbols table.
     fn migrate_to_v2(&mut self) -> anyhow::Result<u32> {
         // Check if language column already exists
-        let has_lang: bool = self.conn
+        let has_lang: bool = self
+            .conn
             .prepare("SELECT language FROM symbols LIMIT 0")
             .is_ok();
 
@@ -237,11 +245,9 @@ mod tests {
         {
             let conn = rusqlite::Connection::open(&db_path).unwrap();
             let lang: String = conn
-                .query_row(
-                    "SELECT language FROM symbols WHERE name='my_fn'",
-                    [],
-                    |r| r.get(0),
-                )
+                .query_row("SELECT language FROM symbols WHERE name='my_fn'", [], |r| {
+                    r.get(0)
+                })
                 .unwrap();
             assert_eq!(lang, "rust");
         }

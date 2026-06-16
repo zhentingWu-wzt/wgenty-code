@@ -51,7 +51,11 @@ impl ParserPool {
     }
 
     /// Get or create a parser for the given language.
-    pub fn get_or_create(&mut self, language: tree_sitter::Language, name: &str) -> Arc<Mutex<CodeParser>> {
+    pub fn get_or_create(
+        &mut self,
+        language: tree_sitter::Language,
+        name: &str,
+    ) -> Arc<Mutex<CodeParser>> {
         self.parsers
             .entry(name.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(CodeParser::new(language, name))))
@@ -69,10 +73,7 @@ impl ParserPool {
     }
 
     /// Get a parser by file extension (creates if needed).
-    pub fn get_for_extension(
-        &mut self,
-        ext: &str,
-    ) -> Option<Arc<Mutex<CodeParser>>> {
+    pub fn get_for_extension(&mut self, ext: &str) -> Option<Arc<Mutex<CodeParser>>> {
         match ext {
             "rs" => Some(self.get_or_create(tree_sitter_rust::LANGUAGE.into(), "rust")),
             "java" => Some(self.get_or_create(tree_sitter_java::LANGUAGE.into(), "java")),

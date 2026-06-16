@@ -269,17 +269,33 @@ impl Cli {
 
         let json: serde_json::Value = response.json().await?;
 
-        if let Some(choices) = json.get("choices").and_then(|c| c.as_array()) {
-            if let Some(choice) = choices.first() {
-                if let Some(content) = choice
-                    .get("message")
-                    .and_then(|m| m.get("content"))
-                    .and_then(|c| c.as_str())
-                {
-                    println!("{}", content);
-                }
-            }
+        // Check for API error embedded in the response body
+        if let Some(error) = json
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+        {
+            return Err(anyhow::anyhow!("API error: {}", error));
         }
+
+        let choices = json
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .ok_or_else(|| {
+                anyhow::anyhow!("API returned unexpected response: missing 'choices' field")
+            })?;
+
+        let choice = choices
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("API returned empty 'choices' array"))?;
+
+        let content = choice
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .ok_or_else(|| anyhow::anyhow!("API returned response with no content"))?;
+
+        println!("{}", content);
 
         Ok(())
     }

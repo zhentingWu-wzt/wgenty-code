@@ -2,9 +2,9 @@
 
 use super::types::*;
 use super::App;
+use crate::agent::progress::SubagentEventType;
 use crate::prompts::{self, PromptContext};
 use crate::tui::traits::Component;
-use crate::agent::progress::SubagentEventType;
 use crate::tui::util::{
     agent_phase_from_event, compute_collapse_state, extract_diff_data, extract_tool_metadata,
     format_tool_result, tool_label,
@@ -29,7 +29,11 @@ impl App {
                 // Permission panel handling (inline, not popup)
                 // Shift+Tab: cycle agent mode (but not when completion panel is active)
                 if key.code == KeyCode::BackTab
-                    && !self.completion_state.as_ref().map(|s| s.visible).unwrap_or(false)
+                    && !self
+                        .completion_state
+                        .as_ref()
+                        .map(|s| s.visible)
+                        .unwrap_or(false)
                 {
                     self.mode = self.mode.next();
                     return;
@@ -68,7 +72,12 @@ impl App {
                     return;
                 }
                 // If completion panel is visible, route keys to it
-                if self.completion_state.as_ref().map(|s| s.visible).unwrap_or(false) {
+                if self
+                    .completion_state
+                    .as_ref()
+                    .map(|s| s.visible)
+                    .unwrap_or(false)
+                {
                     match key.code {
                         KeyCode::Esc => {
                             self.completion_state = None;
@@ -174,7 +183,9 @@ impl App {
                             }
                             KeyCode::Char('f') => {
                                 // Jump to first Error event
-                                if let Some(pos) = detail.events.iter().position(|e| matches!(e.event_type, SubagentEventType::Error { .. })) {
+                                if let Some(pos) = detail.events.iter().position(|e| {
+                                    matches!(e.event_type, SubagentEventType::Error { .. })
+                                }) {
                                     detail.scroll_offset = pos;
                                 }
                                 return;
@@ -201,13 +212,25 @@ impl App {
                         KeyCode::Enter => {
                             // Completed/Failed/Cancelled: open detail view
                             // Running/Pending: toggle expand
-                            let is_terminal = self.subagent_panel_state.selected_node_id(&self.subagent_tree).and_then(|node_id| {
-                                self.subagent_tree.nodes.get(&node_id).map(|node| {
-                                    matches!(node.progress.status, crate::agent::progress::SubagentStatus::Completed | crate::agent::progress::SubagentStatus::Failed | crate::agent::progress::SubagentStatus::Cancelled)
+                            let is_terminal = self
+                                .subagent_panel_state
+                                .selected_node_id(&self.subagent_tree)
+                                .and_then(|node_id| {
+                                    self.subagent_tree.nodes.get(&node_id).map(|node| {
+                                        matches!(
+                                            node.progress.status,
+                                            crate::agent::progress::SubagentStatus::Completed
+                                                | crate::agent::progress::SubagentStatus::Failed
+                                                | crate::agent::progress::SubagentStatus::Cancelled
+                                        )
+                                    })
                                 })
-                            }).unwrap_or(false);
+                                .unwrap_or(false);
                             if is_terminal {
-                                if let Some(detail) = self.subagent_panel_state.build_detail_view(&self.subagent_tree) {
+                                if let Some(detail) = self
+                                    .subagent_panel_state
+                                    .build_detail_view(&self.subagent_tree)
+                                {
                                     self.subagent_panel_state.detail_view = Some(detail);
                                 }
                             } else {
@@ -224,17 +247,32 @@ impl App {
                             return;
                         }
                         KeyCode::Char('d') => {
-                            if let Some(detail) = self.subagent_panel_state.build_detail_view(&self.subagent_tree) {
+                            if let Some(detail) = self
+                                .subagent_panel_state
+                                .build_detail_view(&self.subagent_tree)
+                            {
                                 self.subagent_panel_state.detail_view = Some(detail);
                             }
                             return;
                         }
                         KeyCode::Char('r') => {
                             // Retry selected failed/cancelled node (defensive guard)
-                            if let Some(node_id) = self.subagent_panel_state.selected_node_id(&self.subagent_tree) {
-                                let is_retryable = self.subagent_tree.nodes.get(&node_id).map(|node| {
-                                    matches!(node.progress.status, crate::agent::progress::SubagentStatus::Failed | crate::agent::progress::SubagentStatus::Cancelled)
-                                }).unwrap_or(false);
+                            if let Some(node_id) = self
+                                .subagent_panel_state
+                                .selected_node_id(&self.subagent_tree)
+                            {
+                                let is_retryable = self
+                                    .subagent_tree
+                                    .nodes
+                                    .get(&node_id)
+                                    .map(|node| {
+                                        matches!(
+                                            node.progress.status,
+                                            crate::agent::progress::SubagentStatus::Failed
+                                                | crate::agent::progress::SubagentStatus::Cancelled
+                                        )
+                                    })
+                                    .unwrap_or(false);
                                 if is_retryable {
                                     let _ = self.event_tx.send(AppEvent::RetrySubagent(node_id));
                                 }
@@ -351,14 +389,18 @@ impl App {
                 }
                 // Detect @ and / completion triggers BEFORE feeding to textarea
                 if let KeyCode::Char(c) = key.code {
-                    let is_completion_char = (c == '@' && !key.modifiers.contains(KeyModifiers::CONTROL))
+                    let is_completion_char = (c == '@'
+                        && !key.modifiers.contains(KeyModifiers::CONTROL))
                         || (c == '/' && key.modifiers.is_empty());
                     if is_completion_char {
                         let text = self.input_box.textarea.lines().join("\n");
-                        let should_trigger = text.is_empty() || text.ends_with(' ') || text.ends_with('\n');
+                        let should_trigger =
+                            text.is_empty() || text.ends_with(' ') || text.ends_with('\n');
                         if should_trigger {
                             let partial = String::new();
-                            let matches = self.completion_engine.as_ref()
+                            let matches = self
+                                .completion_engine
+                                .as_ref()
                                 .map(|e| e.filter(c, &partial))
                                 .unwrap_or_default();
                             self.completion_state = Some(CompletionState {
@@ -383,7 +425,12 @@ impl App {
                     }
                 }
                 // Update filter as user types more characters after @ or /
-                if self.completion_state.as_ref().map(|s| s.visible).unwrap_or(false) {
+                if self
+                    .completion_state
+                    .as_ref()
+                    .map(|s| s.visible)
+                    .unwrap_or(false)
+                {
                     let text = self.input_box.textarea.lines().join("\n");
                     if let Some(ref mut state) = self.completion_state {
                         if let Some(pos) = text.rfind(state.prefix) {
@@ -413,22 +460,36 @@ impl App {
                 self.user_scrolled = true;
             }
             AppEvent::ToggleCollapseAll => {
-                let any_expanded = self
-                    .committed_messages
-                    .iter()
-                    .any(|m| !m.content_collapsed || !m.tool_collapsed);
-                let new_state = any_expanded;
+                // Real toggle: if anything is currently expanded, collapse everything;
+                // otherwise expand everything. We only flip the field that's relevant
+                // for each message's role to avoid no-op toggles on user/system rows.
+                let any_expanded = self.committed_messages.iter().any(|m| match m.role {
+                    MessageRole::Assistant => !m.content_collapsed,
+                    MessageRole::Tool => !m.tool_collapsed,
+                    _ => false,
+                });
+                let collapse = any_expanded;
                 for m in &mut self.committed_messages {
-                    m.content_collapsed = new_state;
-                    m.tool_collapsed = new_state;
+                    match m.role {
+                        MessageRole::Assistant => m.content_collapsed = collapse,
+                        MessageRole::Tool => m.tool_collapsed = collapse,
+                        _ => {}
+                    }
                 }
             }
             AppEvent::ToggleCollapseLatest => {
+                // Real toggle for the last message: flip only the field that
+                // controls visibility for its role.
                 if let Some(last) = self.committed_messages.last_mut() {
-                    let any_expanded = !last.content_collapsed || !last.tool_collapsed;
-                    let new_state = any_expanded;
-                    last.content_collapsed = new_state;
-                    last.tool_collapsed = new_state;
+                    match last.role {
+                        MessageRole::Assistant => {
+                            last.content_collapsed = !last.content_collapsed;
+                        }
+                        MessageRole::Tool => {
+                            last.tool_collapsed = !last.tool_collapsed;
+                        }
+                        _ => {}
+                    }
                 }
             }
             AppEvent::Submit(text) => {
@@ -664,6 +725,13 @@ impl App {
                         "tool" => MessageRole::Tool,
                         _ => MessageRole::System,
                     };
+                    // Skip tool messages when restoring history — they create
+                    // excessive noise on session reload. Tool calls remain
+                    // available in the underlying conversation_history for the
+                    // model; only the visual stream is filtered.
+                    if matches!(role, MessageRole::Tool) {
+                        continue;
+                    }
                     let content = msg.content.clone().unwrap_or_default();
                     let (content_collapsed, tool_collapsed) =
                         compute_collapse_state(&role, &content);

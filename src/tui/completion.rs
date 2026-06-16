@@ -65,7 +65,8 @@ impl CompletionEngine {
     pub fn filter(&self, prefix: char, partial: &str) -> Vec<CompletionMatch> {
         let partial_lower = partial.to_lowercase();
         match prefix {
-            '@' => self.skills
+            '@' => self
+                .skills
                 .iter()
                 .filter(|s| s.name.to_lowercase().contains(&partial_lower))
                 .map(|s| CompletionMatch {
@@ -74,7 +75,8 @@ impl CompletionEngine {
                     args_hint: None,
                 })
                 .collect(),
-            '/' => self.commands
+            '/' => self
+                .commands
                 .iter()
                 .filter(|c| c.name.to_lowercase().starts_with(&partial_lower))
                 .map(|c| CompletionMatch {
@@ -92,15 +94,19 @@ fn extract_skill_description(skill_dir: &std::path::Path) -> String {
     let skill_md = skill_dir.join("SKILL.md");
     if let Ok(content) = std::fs::read_to_string(&skill_md) {
         // Try frontmatter description first
-        if let Some(desc) = content.lines()
+        if let Some(desc) = content
+            .lines()
             .find(|l| l.trim().starts_with("description:"))
             .and_then(|l| l.split(':').nth(1))
             .map(|s| s.trim().trim_matches('"').to_string())
         {
-            if !desc.is_empty() { return desc; }
+            if !desc.is_empty() {
+                return desc;
+            }
         }
         // Fallback to first non-empty, non-frontmatter line
-        if let Some(line) = content.lines()
+        if let Some(line) = content
+            .lines()
             .skip_while(|l| l.trim().starts_with("---"))
             .skip(1)
             .find(|l| !l.trim().is_empty() && !l.trim().starts_with("---"))
@@ -118,13 +124,33 @@ mod tests {
     fn test_engine() -> CompletionEngine {
         CompletionEngine {
             skills: vec![
-                SkillEntry { name: "comet-design".into(), description: "Design phase".into(), path: PathBuf::new() },
-                SkillEntry { name: "comet-build".into(), description: "Build phase".into(), path: PathBuf::new() },
-                SkillEntry { name: "comet-open".into(), description: "Open change".into(), path: PathBuf::new() },
+                SkillEntry {
+                    name: "comet-design".into(),
+                    description: "Design phase".into(),
+                    path: PathBuf::new(),
+                },
+                SkillEntry {
+                    name: "comet-build".into(),
+                    description: "Build phase".into(),
+                    path: PathBuf::new(),
+                },
+                SkillEntry {
+                    name: "comet-open".into(),
+                    description: "Open change".into(),
+                    path: PathBuf::new(),
+                },
             ],
             commands: vec![
-                CommandEntry { name: "code-review".into(), description: "Review code".into(), args_hint: None },
-                CommandEntry { name: "clear".into(), description: "Clear screen".into(), args_hint: None },
+                CommandEntry {
+                    name: "code-review".into(),
+                    description: "Review code".into(),
+                    args_hint: None,
+                },
+                CommandEntry {
+                    name: "clear".into(),
+                    description: "Clear screen".into(),
+                    args_hint: None,
+                },
             ],
         }
     }
@@ -177,9 +203,11 @@ mod tests {
     fn test_commands_filter_includes_args_hint() {
         let mut e = test_engine();
         // Override commands with one that has an args_hint
-        e.commands = vec![
-            CommandEntry { name: "code-review".into(), description: "Review code".into(), args_hint: Some("<change-name>".into()) },
-        ];
+        e.commands = vec![CommandEntry {
+            name: "code-review".into(),
+            description: "Review code".into(),
+            args_hint: Some("<change-name>".into()),
+        }];
         let matches = e.filter('/', "code");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].args_hint, Some("<change-name>".to_string()));
@@ -188,9 +216,11 @@ mod tests {
     #[test]
     fn test_update_commands() {
         let mut e = test_engine();
-        let new_commands = vec![
-            CommandEntry { name: "new-cmd".into(), description: "New command".into(), args_hint: Some("<arg>".into()) },
-        ];
+        let new_commands = vec![CommandEntry {
+            name: "new-cmd".into(),
+            description: "New command".into(),
+            args_hint: Some("<arg>".into()),
+        }];
         e.update_commands(new_commands);
         // Old commands should be replaced
         let matches_old = e.filter('/', "code");

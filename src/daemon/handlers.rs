@@ -85,7 +85,8 @@ pub async fn chat_stream(
         let response = match client.chat_stream(messages, tools).await {
             Ok(r) => r,
             Err(e) => {
-                let _ = tx.send(Ok(Event::default().data(format!(r#"{{"error":"{}"}}"#, e))));
+                let error_json = serde_json::json!({"error": e.to_string()}).to_string();
+                let _ = tx.send(Ok(Event::default().data(error_json)));
                 return;
             }
         };
@@ -93,9 +94,11 @@ pub async fn chat_stream(
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            let _ = tx.send(Ok(
-                Event::default().data(format!(r#"{{"error":"API error ({}): {}"}}"#, status, body))
-            ));
+            let error_json = serde_json::json!({
+                "error": format!("API error ({}): {}", status, body)
+            })
+            .to_string();
+            let _ = tx.send(Ok(Event::default().data(error_json)));
             return;
         }
 
@@ -103,7 +106,7 @@ pub async fn chat_stream(
         // Use a buffer to handle chunk boundaries — a TCP chunk may split an SSE line
         // in the middle, and String::lines() would discard the partial fragment.
         let mut stream = response.bytes_stream();
-        let mut stream_error = false;
+        let mut stream_error: Option<String> = None;
         let mut buffer = String::new();
         while let Some(chunk) = stream.next().await {
             match chunk {
@@ -124,23 +127,22 @@ pub async fn chat_stream(
                 }
                 Err(e) => {
                     error!(error = %e, "stream chunk error");
-                    stream_error = true;
+                    stream_error = Some(format!("Upstream stream interrupted: {}", e));
                     break;
                 }
             }
         }
         // Flush any remaining data in the buffer
         let remainder = buffer.trim().to_string();
-        if !remainder.is_empty() && !stream_error {
+        if !remainder.is_empty() && stream_error.is_none() {
             let payload = remainder.strip_prefix("data: ").unwrap_or(&remainder);
             let _ = tx.send(Ok(Event::default().data(payload)));
         }
 
         // Signal done or error (not normal end — lets the TS side detect incomplete streams)
-        if stream_error {
-            let _ = tx.send(Ok(
-                Event::default().data(r#"{"error":"Upstream stream interrupted"}"#)
-            ));
+        if let Some(error_msg) = stream_error {
+            let error_json = serde_json::json!({"error": error_msg}).to_string();
+            let _ = tx.send(Ok(Event::default().data(error_json)));
         } else {
             let _ = tx.send(Ok(Event::default().data("[DONE]")));
         }

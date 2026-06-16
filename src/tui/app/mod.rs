@@ -244,16 +244,17 @@ impl App {
                     description: "Show help".to_string(),
                     args_hint: None,
                 });
-                Some(crate::tui::completion::CompletionEngine::load(&skills_dir, &builtin_commands))
+                Some(crate::tui::completion::CompletionEngine::load(
+                    &skills_dir,
+                    &builtin_commands,
+                ))
             },
             completion_state: None,
             transcript_store: {
                 let db_path_str = &settings.transcript_db_path;
                 let db_path = std::path::PathBuf::from(db_path_str);
                 match crate::transcript::SubagentTranscriptStore::open(&db_path) {
-                    Ok(store) => {
-                        Some(std::sync::Arc::new(store))
-                    }
+                    Ok(store) => Some(std::sync::Arc::new(store)),
                     Err(e) => {
                         tracing::warn!("Failed to open transcript store at {}: {}. Running without persistence.", db_path.display(), e);
                         None
