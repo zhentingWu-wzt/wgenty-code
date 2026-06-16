@@ -170,6 +170,270 @@ fn default_transcript_db_path() -> String {
     format!("{}/.wgenty-code/subagent_transcripts.db", home)
 }
 
+// ===== New grouped sub-config types (Task 1; will replace flat Settings in Task 2) =====
+
+/// One model endpoint: name + optional override of base_url/api_key/appkey.
+/// On `models.small` / `models.planner`, `None` for url/key/appkey means inherit from `models.main`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelEndpoint {
+    pub name: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub appkey: Option<String>,
+}
+
+impl ModelEndpoint {
+    /// Resolve the effective base_url for this endpoint. If `self.base_url` is None,
+    /// fall back to env var `API_BASE_URL`, then "https://api.anthropic.com".
+    pub fn endpoint_base_url(&self) -> String {
+        if let Some(u) = &self.base_url { return u.clone(); }
+        std::env::var("API_BASE_URL").unwrap_or_else(|_| "https://api.anthropic.com".to_string())
+    }
+
+    /// Resolve the effective api_key for this endpoint, checking env first.
+    pub fn endpoint_api_key(&self) -> Option<String> {
+        std::env::var("ANTHROPIC_API_KEY").ok()
+            .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok())
+            .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok())
+            .or_else(|| self.api_key.clone())
+    }
+}
+
+/// HTTP/SSE transport-layer config shared by all model endpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransportConfig {
+    pub max_tokens: usize,
+    pub timeout: u64,
+    pub streaming: bool,
+    pub beta_headers: Vec<String>,
+}
+
+impl Default for TransportConfig {
+    fn default() -> Self {
+        Self {
+            max_tokens: 4096,
+            timeout: 120,
+            streaming: true,
+            beta_headers: vec![],
+        }
+    }
+}
+
+/// All model endpoints + shared transport.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelsConfig {
+    #[serde(default)]
+    pub transport: TransportConfig,
+    pub main: ModelEndpoint,
+    #[serde(default)]
+    pub small: Option<ModelEndpoint>,
+    #[serde(default)]
+    pub planner: Option<ModelEndpoint>,
+}
+
+impl Default for ModelsConfig {
+    fn default() -> Self {
+        Self {
+            transport: TransportConfig::default(),
+            main: ModelEndpoint {
+                name: "sonnet".to_string(),
+                base_url: std::env::var("API_BASE_URL").ok(),
+                api_key: std::env::var("ANTHROPIC_API_KEY").ok()
+                    .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok())
+                    .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok()),
+                appkey: None,
+            },
+            small: None,
+            planner: None,
+        }
+    }
+}
+
+/// Token budgets for main agent and subagents (units of 1000 tokens; 0 = unlimited).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TokenBudget {
+    #[serde(default)]
+    pub main_k: usize,
+    #[serde(default)]
+    pub subagent_default_k: usize,
+}
+
+/// Per-field overrides that subagents can specify. None on every field = inherit
+/// the corresponding main-agent value. Resolution: see Settings::resolve_subagent_config.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SubagentRlmOverride {
+    #[serde(default)] pub enabled: Option<bool>,
+    #[serde(default)] pub delegate_tool: Option<bool>,
+    #[serde(default)] pub auto_routing: Option<bool>,
+    #[serde(default)] pub retry_enabled: Option<bool>,
+    #[serde(default)] pub max_replan_cycles: Option<usize>,
+    #[serde(default)] pub jaccard_threshold: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SubagentPromptIncludesOverride {
+    #[serde(default)] pub permissions: Option<bool>,
+    #[serde(default)] pub developer: Option<bool>,
+    #[serde(default)] pub collaboration: Option<bool>,
+    #[serde(default)] pub environment: Option<bool>,
+    #[serde(default)] pub skills: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SubagentPromptOverride {
+    #[serde(default)] pub include: SubagentPromptIncludesOverride,
+    #[serde(default)] pub developer_instructions: Option<String>,
+    #[serde(default)] pub collaboration_mode: Option<String>,
+    #[serde(default)] pub model_instructions_file: Option<String>,
+}
+
+/// Subagent runtime limits + overrides.
+/// max_depth/max_concurrent/timeout_secs are subagent-only (no main-agent counterpart).
+/// The remaining fields are overrides; None = inherit from agent.* — see resolve_subagent_config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentLimits {
+    pub max_depth: usize,
+    pub max_concurrent: usize,
+    pub timeout_secs: u64,
+
+    #[serde(default)] pub token_budget_k: Option<usize>,
+    #[serde(default)] pub max_rounds: Option<usize>, // Some(0) = unlimited
+    #[serde(default)] pub plan_mode: Option<bool>,
+    #[serde(default)] pub rlm: SubagentRlmOverride,
+    #[serde(default)] pub prompt: SubagentPromptOverride,
+}
+
+impl Default for SubagentLimits {
+    fn default() -> Self {
+        Self {
+            max_depth: 3,
+            max_concurrent: 5,
+            timeout_secs: 240,
+            token_budget_k: None,
+            max_rounds: None,
+            plan_mode: None,
+            rlm: SubagentRlmOverride::default(),
+            prompt: SubagentPromptOverride::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    #[serde(default)] pub plan_mode: bool,
+    #[serde(default)] pub max_rounds: Option<usize>,
+    #[serde(default)] pub token_budget: TokenBudget,
+    #[serde(default)] pub subagent: SubagentLimits,
+    #[serde(default)] pub rlm: RlmSettings,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            plan_mode: false,
+            max_rounds: None,
+            token_budget: TokenBudget::default(),
+            subagent: SubagentLimits::default(),
+            rlm: RlmSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptIncludes {
+    #[serde(default = "default_true")] pub permissions: bool,
+    #[serde(default = "default_true")] pub developer: bool,
+    #[serde(default = "default_true")] pub collaboration: bool,
+    #[serde(default = "default_true")] pub environment: bool,
+    #[serde(default = "default_true")] pub skills: bool,
+}
+
+impl Default for PromptIncludes {
+    fn default() -> Self {
+        Self { permissions: true, developer: true, collaboration: true, environment: true, skills: true }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PromptConfig {
+    #[serde(default)] pub include: PromptIncludes,
+    #[serde(default)] pub developer_instructions: Option<String>,
+    #[serde(default)] pub collaboration_mode: Option<String>,
+    #[serde(default)] pub model_instructions_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginsConfig {
+    pub enabled: bool,
+    pub dir: PathBuf,
+    pub auto_update: bool,
+    #[serde(default)] pub enabled_map: std::collections::HashMap<String, bool>,
+    #[serde(default)] pub marketplaces: Option<serde_json::Value>,
+}
+
+impl Default for PluginsConfig {
+    fn default() -> Self {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let config_dir = home.join(".wgenty-code");
+        Self {
+            enabled: true,
+            dir: config_dir.join("plugins"),
+            auto_update: true,
+            enabled_map: std::collections::HashMap::new(),
+            marketplaces: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptConfig {
+    #[serde(default = "default_transcript_db_path")] pub db_path: String,
+    #[serde(default = "default_max_transcript_age_days")] pub max_age_days: u32,
+}
+
+impl Default for TranscriptConfig {
+    fn default() -> Self {
+        Self { db_path: default_transcript_db_path(), max_age_days: 30 }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConfig {
+    pub working_dir: PathBuf,
+    pub memory: MemorySettings,
+    #[serde(default)] pub transcript: TranscriptConfig,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let config_dir = home.join(".wgenty-code");
+        Self {
+            working_dir: PathBuf::from("."),
+            memory: MemorySettings {
+                enabled: true,
+                path: config_dir.join("memory.json"),
+                consolidation_interval: 24,
+                max_memories: 1000,
+            },
+            transcript: TranscriptConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct IntegrationsConfig {
+    #[serde(default)] pub mcp_servers: Vec<McpConfig>,
+    #[serde(default)] pub hooks: Option<serde_json::Value>,
+    #[serde(default)] pub voice: VoiceSettings,
+    #[serde(default)] pub guardian: GuardianSettings,
+}
+
+// ===== End new sub-config types =====
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemorySettings {
     /// Enable memory persistence
@@ -192,6 +456,12 @@ pub struct VoiceSettings {
     pub silence_threshold: f32,
     /// Sample rate
     pub sample_rate: u32,
+}
+
+impl Default for VoiceSettings {
+    fn default() -> Self {
+        Self { enabled: false, push_to_talk: false, silence_threshold: 0.01, sample_rate: 16000 }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,6 +522,11 @@ pub struct RlmSettings {
     /// 0 = disabled (no feedback loop). Default: 2.
     #[serde(default = "default_rlm_max_replan")]
     pub max_replan_cycles: usize,
+    /// Jaccard similarity threshold for RLM claim deduplication (0.0–1.0).
+    /// Claims with Jaccard index above this threshold are considered duplicates.
+    /// Default: 0.8.
+    #[serde(default = "default_rlm_jaccard_threshold")]
+    pub jaccard_threshold: f64,
 }
 
 impl Default for RlmSettings {
@@ -262,6 +537,7 @@ impl Default for RlmSettings {
             auto_routing: true,
             retry_enabled: true,
             max_replan_cycles: 2,
+            jaccard_threshold: 0.8,
         }
     }
 }
