@@ -84,11 +84,11 @@ base-ref: a27faf8a82946a5dc5931653b9ed9c95867adafa
 **Files:**
 - Modify: `src/tui/components/chat.rs` (render_message 的 System 分支, lines 526-535)
 
-- [ ] **Step 1: System 分支改为 `Vec::new()`**
+- [x] **Step 1: System 分支改为 `Vec::new()`**
 
-- [ ] **Step 2: 编译验证**
+- [x] **Step 2: 编译验证**
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ---
 

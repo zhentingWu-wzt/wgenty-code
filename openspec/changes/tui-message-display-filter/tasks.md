@@ -5,7 +5,7 @@
 - 文件：`src/tui/app/event.rs`
 
 ### 2. 跳过 system 消息渲染
-- [ ] 在 `src/tui/components/chat.rs` 中，`MessageRole::System` 的渲染分支改为返回空 Vec（不渲染任何内容）
+- [x] 在 `src/tui/components/chat.rs` 中，`MessageRole::System` 的渲染分支改为返回空 Vec（不渲染任何内容）
 - 文件：`src/tui/components/chat.rs`
 
 ### 3. 实现 tool 消息折叠渲染
