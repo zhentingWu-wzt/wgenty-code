@@ -478,14 +478,14 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
                 // Body lines: indented
                 let content_lines: Vec<&str> = msg.content.lines().collect();
                 let total = content_lines.len();
-                let show = if msg.tool_collapsed {
-                    content_lines.iter().take(3).copied().collect::<Vec<_>>()
+                let show: Vec<&str> = if msg.tool_collapsed {
+                    Vec::new()
                 } else {
                     content_lines
                         .iter()
-                        .take(MAX_TOOL_DISPLAY_LINES)
+                        .take(MAX_TOOL_EXPANDED_LINES)
                         .copied()
-                        .collect::<Vec<_>>()
+                        .collect()
                 };
                 let wrap_width = width.saturating_sub(4) as usize;
                 for line in &show {
@@ -501,7 +501,7 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
                 if total > show.len() {
                     lines.push(Line::from(vec![Span::styled(
                         format!(
-                            "  {} +{} lines (Ctrl+O to expand)",
+                            "  {} +{} lines (Enter to expand)",
                             '\u{2026}',
                             total - show.len()
                         ),
@@ -536,8 +536,8 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
     }
 }
 
-/// Max lines to show in tool result before truncating.
-const MAX_TOOL_DISPLAY_LINES: usize = 5;
+/// Max lines to show in expanded tool result before truncating.
+const MAX_TOOL_EXPANDED_LINES: usize = 100;
 
 /// Map tool name to a human-readable action verb.
 fn tool_verb(name: &str) -> &str {
