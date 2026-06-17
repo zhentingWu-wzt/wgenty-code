@@ -65,17 +65,17 @@ base-ref: a27faf8a82946a5dc5931653b9ed9c95867adafa
 **Files:**
 - Modify: `src/tui/components/chat.rs` (render_message 的 Tool 分支, lines 390-512; 常量 line 539-540)
 
-- [ ] **Step 1: 修改常量为 `MAX_TOOL_EXPANDED_LINES = 100`**
+- [x] **Step 1: 修改常量为 `MAX_TOOL_EXPANDED_LINES = 100`**
 
-- [ ] **Step 2: 修改 Tool body lines 渲染**
+- [x] **Step 2: 修改 Tool body lines 渲染**
 
 折叠态: `show = Vec::new()`（0 行内容，仅 header）
 展开态: `show = content_lines.iter().take(MAX_TOOL_EXPANDED_LINES)`（最多 100 行）
 提示文案: `Ctrl+O to expand` 改为 `Enter to expand`
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ---
 
