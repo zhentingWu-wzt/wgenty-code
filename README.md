@@ -76,7 +76,7 @@ The `task` tool detects complex prompts (>500 chars, multi-step indicators) and 
 
 **Recursion control:**
 - Depth propagation via `_subagent_depth` — each sub-agent knows its level
-- Hard limit via `max_subagent_depth` (default: 3) — prevents runaway recursion
+- Hard limit via `agent.subagent.max_depth` (default: 3) — prevents runaway recursion
 - Self-referential: sub-agents can spawn further sub-agents when depth allows
 - Trace ID: every sub-agent logs a unique monotonically-increasing ID
 
@@ -152,18 +152,20 @@ Settings live in `~/.wgenty-code/settings.json` (auto-generated). Key options:
 
 | Setting | Default | Purpose |
 |:--------|:--------|:--------|
-| `api.base_url` | `https://api.anthropic.com` | AI provider endpoint |
-| `model` | `sonnet` | Model alias (auto-mapped) |
-| `small_model` | *(none)* | Smaller/cheaper model for delegated sub-tasks |
-| `small_model_base_url` | *(falls back to api.base_url)* | Endpoint for small model |
-| `small_model_api_key` | *(falls back to api.api_key)* | API key for small model |
-| `planner_model` | *(none)* | Dedicated model for plan generation |
-| `plan_mode` | `false` | Enable plan-before-execute mode |
-| `collaboration_mode` | *(none)* | Agent behavior: `plan`, `execute`, or `pair_programming` |
-| `max_subagent_depth` | `3` | Max recursion depth for nested sub-agents |
-| `max_concurrent_subagents` | `5` | Max parallel sub-agents |
-| `token_budget_k` | `0` | Cumulative token limit (0 = unlimited) |
-| `guardian.enabled` | `true` | Toggle command safety review |
+| `models.main.name` | `sonnet` | Main model alias (auto-mapped) |
+| `models.small.name` | *(none)* | Smaller/cheaper model for delegated sub-tasks |
+| `models.planner.name` | *(none)* | Dedicated model for plan generation |
+| `models.transport.max_tokens` | `4096` | Max tokens per request |
+| `agent.plan_mode` | `false` | Enable plan-before-execute mode |
+| `agent.subagent.max_depth` | `3` | Max recursion depth for nested sub-agents |
+| `agent.subagent.max_concurrent` | `5` | Max parallel sub-agents |
+| `agent.token_budget.main_k` | `0` | Cumulative token limit (0 = unlimited) |
+| `agent.rlm.enabled` | `true` | RLM pipeline master switch |
+| `prompt.collaboration_mode` | *(none)* | Agent behavior: `plan`, `execute`, or `pair_programming` |
+| `integrations.guardian.enabled` | `true` | Toggle command safety review |
+| `storage.transcript.max_age_days` | `30` | Days to retain subagent transcripts |
+
+> Use `wgenty-code config set <dotted.path> <value>` to change any setting, e.g. `config set agent.subagent.max_depth 5`. The old flat key names (`model`, `max_subagent_depth`, etc.) are no longer supported.
 
 ---
 
