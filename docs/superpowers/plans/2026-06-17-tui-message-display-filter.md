@@ -94,9 +94,9 @@ base-ref: a27faf8a82946a5dc5931653b9ed9c95867adafa
 
 ### Task 4: 验证与测试
 
-- [ ] 启动 TUI → `/clear` → 无 system 消息
-- [ ] 正常对话 → tool 仅显示折叠标签，0 行内容
-- [ ] Enter 选中 tool → 展开 ≤100 行；再次 Enter → 折叠
-- [ ] Ctrl+O → 所有消息 toggle
-- [ ] Session 保存 → 退出 → 重新加载 → system 不可见、tool 标签正确
-- [ ] 提交
+- [x] 启动 TUI → `/clear` → 无 system 消息
+- [x] 正常对话 → tool 仅显示折叠标签，0 行内容
+- [x] Enter 选中 tool → 展开 ≤100 行；再次 Enter → 折叠
+- [x] Ctrl+O → 所有消息 toggle
+- [x] Session 保存 → 退出 → 重新加载 → system 不可见、tool 标签正确
+- [x] 提交
