@@ -523,16 +523,7 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
                     .collect()
             }
         }
-        MessageRole::System => msg
-            .content
-            .lines()
-            .map(|line| {
-                Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(DIM_COLOR),
-                ))
-            })
-            .collect(),
+        MessageRole::System => Vec::new(),
     }
 }
 
