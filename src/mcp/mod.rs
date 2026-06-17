@@ -121,6 +121,7 @@ impl McpManager {
         let settings = crate::config::Settings::load()?;
         let servers = self.servers.read().await;
         Ok(settings
+            .integrations
             .mcp_servers
             .iter()
             .map(|config| {
@@ -140,7 +141,7 @@ impl McpManager {
 
     pub async fn add_server(&self, config: McpConfig) -> anyhow::Result<()> {
         let mut settings = crate::config::Settings::load()?;
-        settings.mcp_servers.push(config);
+        settings.integrations.mcp_servers.push(config);
         settings.save()?;
         Ok(())
     }
@@ -149,7 +150,7 @@ impl McpManager {
         self.stop_server(name).await?;
 
         let mut settings = crate::config::Settings::load()?;
-        settings.mcp_servers.retain(|s| s.name != name);
+        settings.integrations.mcp_servers.retain(|s| s.name != name);
         settings.save()?;
         Ok(())
     }
@@ -158,6 +159,7 @@ impl McpManager {
         if name == "filesystem" {
             let settings = crate::config::Settings::load()?;
             let mut config = settings
+                .integrations
                 .mcp_servers
                 .iter()
                 .find(|s| s.name == name)
@@ -180,6 +182,7 @@ impl McpManager {
         }
         let settings = crate::config::Settings::load()?;
         let config = settings
+            .integrations
             .mcp_servers
             .iter()
             .find(|s| s.name == name)
@@ -252,7 +255,7 @@ impl McpManager {
 
     pub async fn start_all(&self) -> anyhow::Result<()> {
         let settings = crate::config::Settings::load()?;
-        for server in &settings.mcp_servers {
+        for server in &settings.integrations.mcp_servers {
             if server.auto_start {
                 let _ = self.start_server(&server.name).await;
             }
