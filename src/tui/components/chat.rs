@@ -501,7 +501,7 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
                 if total > show.len() {
                     lines.push(Line::from(vec![Span::styled(
                         format!(
-                            "  {} +{} lines (Enter to expand)",
+                            "  {} +{} lines (Ctrl+O to expand)",
                             '\u{2026}',
                             total - show.len()
                         ),
