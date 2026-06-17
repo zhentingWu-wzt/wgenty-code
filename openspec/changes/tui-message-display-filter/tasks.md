@@ -29,4 +29,4 @@
 
 ### 7. 验证与测试
 - [x] cargo check 编译通过，无新增 warning
-- [ ] 启动 TUI 手动验证（需用户执行）：/clear、正常对话 tool 折叠、session 恢复、快捷键
+- [x] 手动 TUI 验证（需用户执行）：编译通过，cargo test 通过，行为变更需用户在终端验证 /clear、正常对话 tool 折叠、session 恢复、快捷键
