@@ -10,6 +10,7 @@ use crate::tui::util::{
     format_tool_result, tool_label,
 };
 use crossterm::event::{KeyCode, KeyModifiers};
+use std::collections::HashMap;
 
 impl App {
     pub(super) async fn handle_event(&mut self, event: AppEvent) {
@@ -693,28 +694,73 @@ impl App {
                 });
             }
             AppEvent::HistoryLoaded(messages) => {
-                // Convert ChatMessage to UIMessage for display
+                // First pass: build tool_use_map from assistant messages' tool_calls
+                // Maps tool_call id -> (tool_name, tool_args)
+                let mut tool_use_map: HashMap<String, (String, serde_json::Value)> =
+                    HashMap::new();
+                for msg in &messages {
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        for tc in tool_calls {
+                            let args = serde_json::from_str(&tc.function.arguments)
+                                .unwrap_or(serde_json::Value::Null);
+                            tool_use_map
+                                .insert(tc.id.clone(), (tc.function.name.clone(), args));
+                        }
+                    }
+                }
+
+                // Second pass: convert ChatMessage to UIMessage, filtering system messages
                 self.committed_messages.clear();
                 for msg in &messages {
-                    let role = match msg.role.as_str() {
-                        "user" => MessageRole::User,
-                        "assistant" => MessageRole::Assistant,
-                        "tool" => MessageRole::Tool,
-                        _ => MessageRole::System,
-                    };
-                    let content = msg.content.clone().unwrap_or_default();
-                    let (content_collapsed, tool_collapsed) =
-                        compute_collapse_state(&role, &content);
-                    self.committed_messages.push(UIMessage {
-                        role,
-                        content,
-                        tool_name: msg.tool_call_id.clone(),
-                        tool_args: None,
-                        content_collapsed,
-                        tool_collapsed,
-                        diff_data: None,
-                        tool_metadata: None,
-                    });
+                    match msg.role.as_str() {
+                        "system" => continue,
+                        "tool" => {
+                            let (tool_name, tool_args) = msg
+                                .tool_call_id
+                                .as_ref()
+                                .and_then(|id| tool_use_map.get(id))
+                                .map(|(n, a)| (Some(n.clone()), Some(a.clone())))
+                                .unwrap_or_else(|| {
+                                    // Fallback: use the call_id as the display name
+                                    (msg.tool_call_id.clone(), None)
+                                });
+                            let role = MessageRole::Tool;
+                            let content = msg.content.clone().unwrap_or_default();
+                            let (content_collapsed, tool_collapsed) =
+                                compute_collapse_state(&role, &content);
+                            self.committed_messages.push(UIMessage {
+                                role,
+                                content,
+                                tool_name,
+                                tool_args,
+                                content_collapsed,
+                                tool_collapsed,
+                                diff_data: None,
+                                tool_metadata: None,
+                            });
+                        }
+                        "user" | "assistant" => {
+                            let role = if msg.role == "user" {
+                                MessageRole::User
+                            } else {
+                                MessageRole::Assistant
+                            };
+                            let content = msg.content.clone().unwrap_or_default();
+                            let (content_collapsed, tool_collapsed) =
+                                compute_collapse_state(&role, &content);
+                            self.committed_messages.push(UIMessage {
+                                role,
+                                content,
+                                tool_name: None,
+                                tool_args: None,
+                                content_collapsed,
+                                tool_collapsed,
+                                diff_data: None,
+                                tool_metadata: None,
+                            });
+                        }
+                        _ => continue,
+                    }
                 }
                 self.scroll_offset = 0;
                 self.user_scrolled = false;
