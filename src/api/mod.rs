@@ -63,7 +63,7 @@ pub struct ApiClient {
 impl ApiClient {
     pub fn new(settings: Settings) -> Self {
         let http_client = Client::builder()
-            .timeout(Duration::from_secs(settings.api.timeout))
+            .timeout(Duration::from_secs(settings.models.transport.timeout))
             .build()
             .unwrap_or_else(|e| {
                 tracing::error!(error = %e, "failed to build HTTP client, using default");
@@ -71,7 +71,7 @@ impl ApiClient {
             });
 
         let provider: Arc<dyn Provider> =
-            Arc::from(provider::detect_provider(&settings.api.get_base_url()));
+            Arc::from(provider::detect_provider(&settings.models.main.endpoint_base_url()));
 
         Self {
             settings,
@@ -86,15 +86,15 @@ impl ApiClient {
     }
 
     pub fn get_api_key(&self) -> Option<String> {
-        self.settings.api.get_api_key()
+        self.settings.models.main.endpoint_api_key()
     }
 
     pub fn get_base_url(&self) -> String {
-        self.settings.api.get_base_url()
+        self.settings.models.main.endpoint_base_url()
     }
 
     pub fn get_model(&self) -> &str {
-        &self.settings.model
+        &self.settings.models.main.name
     }
 
     pub async fn chat(
@@ -120,9 +120,9 @@ impl ApiClient {
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<ChatResponse> {
         let request = ChatRequest {
-            model: self.provider.resolve_model_id(&self.settings.model),
+            model: self.provider.resolve_model_id(&self.settings.models.main.name),
             messages,
-            max_tokens: self.settings.api.max_tokens,
+            max_tokens: self.settings.models.transport.max_tokens,
             stream: false,
             temperature: 0.7,
             tools,
@@ -164,9 +164,9 @@ impl ApiClient {
         let anthropic_tools = tools.as_ref().map(|t| convert_tools_to_anthropic(t));
 
         let request = anthropic::AnthropicRequest {
-            model: self.provider.resolve_model_id(&self.settings.model),
+            model: self.provider.resolve_model_id(&self.settings.models.main.name),
             messages: anthropic_msgs,
-            max_tokens: self.settings.api.max_tokens,
+            max_tokens: self.settings.models.transport.max_tokens,
             system: system_prompt,
             tools: anthropic_tools,
             stream: false,
@@ -223,9 +223,9 @@ impl ApiClient {
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<reqwest::Response> {
         let request = ChatRequest {
-            model: self.provider.resolve_model_id(&self.settings.model),
+            model: self.provider.resolve_model_id(&self.settings.models.main.name),
             messages,
-            max_tokens: self.settings.api.max_tokens,
+            max_tokens: self.settings.models.transport.max_tokens,
             stream: true,
             temperature: 0.7,
             tools,
@@ -265,9 +265,9 @@ impl ApiClient {
         let anthropic_tools = tools.as_ref().map(|t| convert_tools_to_anthropic(t));
 
         let request = AnthropicRequest {
-            model: self.provider.resolve_model_id(&self.settings.model),
+            model: self.provider.resolve_model_id(&self.settings.models.main.name),
             messages: anthropic_msgs,
-            max_tokens: self.settings.api.max_tokens,
+            max_tokens: self.settings.models.transport.max_tokens,
             system: system_prompt,
             tools: anthropic_tools,
             stream: true,

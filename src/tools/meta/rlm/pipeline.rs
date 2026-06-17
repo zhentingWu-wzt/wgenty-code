@@ -135,14 +135,8 @@ Context: {context}
 
     // ── Executor phase ────────────────────────────────────────────────
     let main_client = ApiClient::new(settings.clone());
-    let small_client = if settings.small_model.is_some() {
-        let mut small_settings = settings.clone();
-        small_settings.model = settings.small_model.clone().unwrap();
-        small_settings.api.max_tokens = 2048;
-        if let Some(ref url) = settings.small_model_base_url {
-            small_settings.api.base_url = url.clone();
-        }
-        Some(ApiClient::new(small_settings))
+    let small_client = if settings.models.small.is_some() {
+        Some(ApiClient::new(settings.small_model_settings()))
     } else {
         tracing::warn!(target: "rlm", phase = "execute", "No small model configured, using main model");
         None
@@ -154,7 +148,7 @@ Context: {context}
         .map(|t| t.name().to_string())
         .filter(|name| {
             if name == "task" {
-                0 < settings.max_subagent_depth
+                0 < settings.agent.subagent.max_depth
             } else if name == "delegate" {
                 false
             } else {
@@ -241,7 +235,7 @@ Context: {context}
         );
 
         let mut handles = Vec::new();
-        let timeout_secs = settings.subagent_timeout_secs;
+        let timeout_secs = settings.agent.subagent.timeout_secs;
 
         for (idx, registry, api_client, prompt, allowed) in level_data {
             // ── Create a per-sub-task progress callback with unique node_id ──

@@ -58,20 +58,20 @@ impl App {
         // Read agent config from settings
         let (planner_client, max_rounds) = {
             let s = self.settings_lock.read().unwrap();
-            let planner = if let Some(ref pm) = s.planner_model {
+            let planner = if let Some(ref pm) = s.models.planner {
                 let mut planner_settings = s.clone();
-                planner_settings.model = pm.clone();
-                if let Some(ref url) = s.planner_model_base_url {
-                    planner_settings.api.base_url = url.clone();
+                planner_settings.models.main.name = pm.name.clone();
+                if let Some(ref url) = pm.base_url {
+                    planner_settings.models.main.base_url = Some(url.clone());
                 }
-                if let Some(ref key) = s.planner_model_api_key {
-                    planner_settings.api.api_key = Some(key.clone());
+                if let Some(ref key) = pm.api_key {
+                    planner_settings.models.main.api_key = Some(key.clone());
                 }
                 Some(crate::api::ApiClient::new(planner_settings))
             } else {
                 None
             };
-            (planner, s.max_rounds.unwrap_or(100))
+            (planner, s.agent.max_rounds.unwrap_or(100))
         };
         let token_counter = self.token_counter.clone();
         self.current_turn_handle = Some(tokio::spawn(async move {

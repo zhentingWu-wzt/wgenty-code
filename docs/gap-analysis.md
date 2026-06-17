@@ -149,7 +149,7 @@ learn 项目：文件即数据库（JSON 任务文件、JSONL 邮箱、SKILL.md 
 
 - `teams/subagent_loop.rs:1-577` — 完整子代理循环
 - TUI agent `core.rs:100-117` — 并行 task 执行
-- 子代理通过 `tool_result` 返回结果，`max_subagent_depth` 限制递归
+- 子代理通过 `tool_result` 返回结果，`agent.subagent.max_depth` 限制递归
 
 ### ✅ P1-1: Skill 接入 (s05)
 
