@@ -557,7 +557,7 @@ impl App {
                     .with_sandbox("workspace-write")
                     .with_approval("never")
                     .with_collaboration(
-                        new_settings.collaboration_mode.clone().unwrap_or_default(),
+                        new_settings.prompt.collaboration_mode.clone().unwrap_or_default(),
                     );
                 let project_root =
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));

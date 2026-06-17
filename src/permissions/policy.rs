@@ -22,7 +22,7 @@ pub struct PermissionRequest {
 
 impl ToolPermissionPolicy {
     pub fn from_settings(settings: &Settings) -> Self {
-        let workspace_root = canonical_or_original(&settings.working_dir);
+        let workspace_root = canonical_or_original(&settings.storage.working_dir);
         Self { workspace_root }
     }
 
