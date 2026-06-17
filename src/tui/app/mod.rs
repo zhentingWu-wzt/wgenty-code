@@ -122,7 +122,7 @@ impl App {
             guard.clone()
         };
         let prompt_ctx =
-            prompt_ctx.with_collaboration(settings.collaboration_mode.clone().unwrap_or_default());
+            prompt_ctx.with_collaboration(settings.prompt.collaboration_mode.clone().unwrap_or_default());
 
         // Load skills inventory for system prompt injection
         let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -184,7 +184,7 @@ impl App {
             streaming_active: false,
             token_counter: {
                 let s = settings_lock.read().unwrap();
-                crate::api::token_counter::TokenCounter::new(s.token_budget_k)
+                crate::api::token_counter::TokenCounter::new(s.agent.token_budget.main_k)
             },
             phase: AgentPhase::Idle,
             session_id,
@@ -199,7 +199,7 @@ impl App {
             current_turn_handle: None,
             current_turn_id: None,
             turn_count: 0,
-            mode: if settings.plan_mode {
+            mode: if settings.agent.plan_mode {
                 AgentMode::PlanMode
             } else {
                 AgentMode::Normal
@@ -248,7 +248,7 @@ impl App {
             },
             completion_state: None,
             transcript_store: {
-                let db_path_str = &settings.transcript_db_path;
+                let db_path_str = &settings.storage.transcript.db_path;
                 let db_path = std::path::PathBuf::from(db_path_str);
                 match crate::transcript::SubagentTranscriptStore::open(&db_path) {
                     Ok(store) => {
