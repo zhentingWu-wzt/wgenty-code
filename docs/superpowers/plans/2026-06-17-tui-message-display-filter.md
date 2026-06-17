@@ -2,6 +2,8 @@
 change: tui-message-display-filter
 design-doc: docs/superpowers/specs/2026-06-17-tui-message-display-filter-design.md
 base-ref: a27faf8a82946a5dc5931653b9ed9c95867adafa
+status: archived
+archived-date: 2026-06-17
 ---
 
 # TUI 消息展示过滤 — 实施计划
