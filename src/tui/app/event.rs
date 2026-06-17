@@ -305,26 +305,35 @@ impl App {
                     return;
                 }
                 // Scroll handling (when no popup is active)
-                // scroll_offset = ratatui-native: lines skipped from top (0 = oldest, max = newest)
+                // scroll_offset = lines scrolled UP from bottom:
+                //   0 = at bottom (newest), higher values = further up (older)
                 match key.code {
                     KeyCode::Up => {
-                        // Scroll UP → see OLDER content → fewer lines skipped from top
-                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                        // Scroll UP → see OLDER content → more lines from bottom
+                        self.scroll_offset = self.scroll_offset.saturating_add(1);
                         self.user_scrolled = true;
                         return;
                     }
                     KeyCode::Down => {
-                        // Scroll DOWN → see NEWER content → more lines skipped from top
-                        self.scroll_offset = self.scroll_offset.saturating_add(1);
+                        // Scroll DOWN → see NEWER content → fewer lines from bottom
+                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                        // If scrolled back to bottom, resume auto-scroll for future content
+                        if self.scroll_offset == 0 {
+                            self.user_scrolled = false;
+                        }
                         return;
                     }
                     KeyCode::PageUp => {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(10);
+                        self.scroll_offset = self.scroll_offset.saturating_add(10);
                         self.user_scrolled = true;
                         return;
                     }
                     KeyCode::PageDown => {
-                        self.scroll_offset = self.scroll_offset.saturating_add(10);
+                        self.scroll_offset = self.scroll_offset.saturating_sub(10);
+                        // If scrolled back to bottom, resume auto-scroll
+                        if self.scroll_offset == 0 {
+                            self.user_scrolled = false;
+                        }
                         return;
                     }
                     _ => {}
@@ -405,10 +414,35 @@ impl App {
                 }
             }
             AppEvent::MouseScrolled(delta) => {
+                // When a popup or detail view is active, route scroll appropriately
+                // instead of scrolling the main chat behind it.
+                if self.subagent_panel_state.detail_view.is_some() {
+                    // Detail view: scroll the event timeline (0=top, higher=older)
+                    if let Some(ref mut detail) = self.subagent_panel_state.detail_view {
+                        if delta > 0 {
+                            detail.scroll_offset = detail.scroll_offset.saturating_sub(delta as usize);
+                        } else {
+                            detail.scroll_offset = detail.scroll_offset.saturating_add((-delta) as usize);
+                        }
+                    }
+                    return;
+                }
+                if self.subagent_panel_visible || self.session_state.visible {
+                    // Subagent panel / session list: keyboard navigation only, ignore mouse scroll
+                    return;
+                }
+                // Main chat scroll: 0 = bottom (newest), larger = further up (older)
                 if delta > 0 {
-                    self.scroll_offset = self.scroll_offset.saturating_sub(delta as u16);
+                    // ScrollUp: see OLDER content → further from bottom
+                    self.scroll_offset = self.scroll_offset.saturating_add(delta as u16);
                 } else {
-                    self.scroll_offset = self.scroll_offset.saturating_add((-delta) as u16);
+                    // ScrollDown: see NEWER content → closer to bottom
+                    self.scroll_offset = self.scroll_offset.saturating_sub((-delta) as u16);
+                    // If scrolled back to bottom, resume auto-scroll for future content
+                    if self.scroll_offset == 0 {
+                        self.user_scrolled = false;
+                        return;
+                    }
                 }
                 self.user_scrolled = true;
             }
@@ -468,8 +502,12 @@ impl App {
                     });
                 }
                 self.streaming_active = false;
-                self.scroll_offset = 0;
-                self.user_scrolled = false;
+                // Only reset scroll position if user was at auto-scroll bottom.
+                // If the user scrolled up to read older content mid-stream,
+                // preserve their position across stream completion.
+                if !self.user_scrolled {
+                    self.scroll_offset = 0;
+                }
             }
             AppEvent::ToolStart { name, args } => {
                 // Clear any "preparing tools..." hint
