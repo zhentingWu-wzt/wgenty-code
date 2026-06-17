@@ -302,10 +302,17 @@ pub fn render(
     let total_lines = lines.len() as u16;
     let viewport = area.height;
 
+    // Auto-scroll: always show newest content (bottom).
+    // Manual scroll: `scroll_offset` counts lines scrolled UP from bottom:
+    //   0 = at bottom (newest), max = at top (oldest).
+    // This convention ensures that transitioning from auto→manual never
+    // jumps — at auto-scroll bottom, scroll_offset starts at 0, which
+    // renders as bottom, not top.
+    let max_scroll = total_lines.saturating_sub(viewport);
     let actual_scroll = if user_scrolled {
-        scroll_offset.min(total_lines.saturating_sub(viewport))
+        max_scroll.saturating_sub(scroll_offset.min(max_scroll))
     } else {
-        total_lines.saturating_sub(viewport)
+        max_scroll
     };
 
     let para = Paragraph::new(Text::from(lines)).scroll((actual_scroll, 0));
