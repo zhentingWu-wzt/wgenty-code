@@ -9,9 +9,9 @@
 - 文件：`src/tui/components/chat.rs`
 
 ### 3. 实现 tool 消息折叠渲染
-- [ ] 新增 `render_collapsed_tool_result()` 方法，生成 "▸ tool_name result (N lines)" 摘要行
-- [ ] `render_expanded_tool_result()` 方法，展开时显示完整内容（保持当前 dim 样式）
-- [ ] 修改 `MessageRole::Tool` 渲染分支，根据 `tool_collapsed` 状态渲染
+- [x] 新增 `render_collapsed_tool_result()` 方法，生成 "▸ tool_name result (N lines)" 摘要行
+- [x] `render_expanded_tool_result()` 方法，展开时显示完整内容（保持当前 dim 样式）
+- [x] 修改 `MessageRole::Tool` 渲染分支，根据 `tool_collapsed` 状态渲染
 - 文件：`src/tui/components/chat.rs`
 
 ### 4. 实现 tool 消息展开/折叠键盘交互
