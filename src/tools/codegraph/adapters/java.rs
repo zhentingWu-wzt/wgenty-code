@@ -595,7 +595,7 @@ fn child_of_kind<'n>(node: Node<'n>, kind: &str) -> Option<Node<'n>> {
 mod tests {
     use super::*;
     use crate::tools::codegraph::adapters::LanguageAdapter;
-    use crate::tools::codegraph::types::{RelKind, SymbolKind, Visibility};
+    use crate::tools::codegraph::types::{RelKind, SymbolKind};
 
     fn adapter() -> JavaAdapter {
         JavaAdapter::new()

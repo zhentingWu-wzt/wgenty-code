@@ -215,20 +215,22 @@ mod tests {
 
     #[test]
     fn test_reset_detail_clears_view() {
-        let mut state = SubagentPanelState::default();
-        state.detail_view = Some(DetailViewState {
-            transcript_id: "node1".to_string(),
-            scroll_offset: 5,
-            events: vec![],
-            loading: false,
-            status: None,
-            total_elapsed_ms: 0,
-            cumulative_tokens: 0,
-            token_budget_k: None,
-            error_message: None,
-            round: None,
-            max_rounds: None,
-        });
+        let mut state = SubagentPanelState {
+            detail_view: Some(DetailViewState {
+                transcript_id: "node1".to_string(),
+                scroll_offset: 5,
+                events: vec![],
+                loading: false,
+                status: None,
+                total_elapsed_ms: 0,
+                cumulative_tokens: 0,
+                token_budget_k: None,
+                error_message: None,
+                round: None,
+                max_rounds: None,
+            }),
+            ..Default::default()
+        };
         assert!(state.detail_view.is_some());
         state.reset_detail();
         assert!(state.detail_view.is_none());
@@ -284,20 +286,22 @@ mod tests {
 
     #[test]
     fn test_reset_clears_detail_view() {
-        let mut state = SubagentPanelState::default();
-        state.detail_view = Some(DetailViewState {
-            transcript_id: "node1".to_string(),
-            scroll_offset: 0,
-            events: vec![],
-            loading: true,
-            status: None,
-            total_elapsed_ms: 0,
-            cumulative_tokens: 0,
-            token_budget_k: None,
-            error_message: None,
-            round: None,
-            max_rounds: None,
-        });
+        let mut state = SubagentPanelState {
+            detail_view: Some(DetailViewState {
+                transcript_id: "node1".to_string(),
+                scroll_offset: 0,
+                events: vec![],
+                loading: true,
+                status: None,
+                total_elapsed_ms: 0,
+                cumulative_tokens: 0,
+                token_budget_k: None,
+                error_message: None,
+                round: None,
+                max_rounds: None,
+            }),
+            ..Default::default()
+        };
         state.reset();
         assert!(state.detail_view.is_none());
         assert_eq!(state.selected_index, 0);

@@ -47,6 +47,7 @@ pub struct AgentLoop {
 }
 
 impl AgentLoop {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: DaemonClient,
         event_tx: mpsc::UnboundedSender<AppEvent>,

@@ -208,7 +208,7 @@ fn render_tree_nodes(
                 } = &event.event_type
                 {
                     let action_str = if params_summary.is_empty() {
-                        format!("{}", tool_name)
+                        tool_name.to_string()
                     } else {
                         format!("{}(\"{}\")", tool_name, params_summary)
                     };
@@ -240,6 +240,7 @@ fn running_suffix(frame: u8) -> &'static str {
 /// Messages are grouped into turns: each user message starts a new turn,
 /// followed by the assistant's streaming response and any tool calls.
 /// A gray separator line is drawn between turns.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     f: &mut Frame,
     area: Rect,

@@ -22,28 +22,27 @@ impl SkillExecutor {
         let mut named_params = std::collections::HashMap::new();
         let mut flags = std::collections::HashMap::new();
 
-        // Simple parsing logic
-        let tokens: Vec<&str> = input.split_whitespace().collect();
+        let tokens = tokenize_input(input);
 
         for token in tokens {
             if token.starts_with("--") {
                 // Named parameter or flag
-                let parts: Vec<&str> = token.strip_prefix("--").unwrap().splitn(2, '=').collect();
-                if parts.len() == 2 {
+                let parameter = token.strip_prefix("--").unwrap_or_default();
+                if let Some((key, value)) = parameter.split_once('=') {
                     // Named parameter: --key=value
-                    named_params.insert(parts[0].to_string(), parts[1].to_string());
+                    named_params.insert(key.to_string(), value.to_string());
                 } else {
                     // Flag: --flag
-                    flags.insert(parts[0].to_string(), true);
+                    flags.insert(parameter.to_string(), true);
                 }
             } else if token.starts_with('-') && token.len() > 1 {
                 // Short flag: -f
-                for c in token.strip_prefix('-').unwrap().chars() {
-                    flags.insert(c.to_string(), true);
+                for flag in token.strip_prefix('-').unwrap_or_default().chars() {
+                    flags.insert(flag.to_string(), true);
                 }
             } else {
                 // Positional argument
-                args.push(token.to_string());
+                args.push(token);
             }
         }
 
@@ -134,4 +133,31 @@ impl SkillExecutor {
 
         Ok(help)
     }
+}
+
+fn tokenize_input(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+
+    for character in input.chars() {
+        match (character, quote) {
+            ('\'' | '"', None) => quote = Some(character),
+            (quote_character, Some(active_quote)) if quote_character == active_quote => {
+                quote = None;
+            }
+            (character, None) if character.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(character),
+        }
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    tokens
 }

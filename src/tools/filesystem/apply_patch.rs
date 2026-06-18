@@ -345,7 +345,7 @@ fn resolve_patch_path(workdir: &Path, raw_path: &str) -> PathBuf {
         // Best-effort: strip common prefixes, but if it's truly absolute
         // and outside workdir, fall back to filename only
         path.file_name()
-            .map(|f| PathBuf::from(f))
+            .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("unknown"))
     } else {
         path

@@ -18,81 +18,73 @@ impl ChatPanel {
         let is_user = matches!(message.role, MessageRole::User);
 
         // Full-width message container
-        Frame::NONE
-            .fill(if is_user {
-                theme.background_darkest()
-            } else {
-                theme.background_darkest()
-            })
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
+        Frame::NONE.fill(theme.background_darkest()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
 
-                // Message content with proper padding
-                ui.horizontal(|ui| {
-                    // Left margin/avatar area
-                    ui.add_space(if is_user { 80.0 } else { 24.0 });
+            // Message content with proper padding
+            ui.horizontal(|ui| {
+                // Left margin/avatar area
+                ui.add_space(if is_user { 80.0 } else { 24.0 });
 
-                    // Message content
-                    ui.vertical(|ui| {
-                        // Avatar and name row
-                        ui.horizontal(|ui| {
-                            if !is_user {
-                                // Claude avatar
-                                self.render_claude_avatar(ui, theme);
-                                ui.add_space(12.0);
+                // Message content
+                ui.vertical(|ui| {
+                    // Avatar and name row
+                    ui.horizontal(|ui| {
+                        if !is_user {
+                            // Claude avatar
+                            self.render_claude_avatar(ui, theme);
+                            ui.add_space(12.0);
 
-                                ui.vertical(|ui| {
-                                    ui.label(
-                                        RichText::new("wgenty")
-                                            .size(14.0)
-                                            .strong()
-                                            .color(theme.primary_color()),
-                                    );
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    RichText::new("wgenty")
+                                        .size(14.0)
+                                        .strong()
+                                        .color(theme.primary_color()),
+                                );
 
-                                    // Timestamp
-                                    ui.label(
-                                        RichText::new(
-                                            message.timestamp.format("%I:%M %p").to_string(),
-                                        )
+                                // Timestamp
+                                ui.label(
+                                    RichText::new(message.timestamp.format("%I:%M %p").to_string())
                                         .size(11.0)
                                         .color(theme.muted_text_color()),
-                                    );
-                                });
-                            } else {
-                                // User info
-                                ui.with_layout(Layout::right_to_left(egui::Align::Min), |ui| {
-                                    self.render_user_avatar(ui, theme);
-                                });
-                            }
-                        });
-
-                        ui.add_space(8.0);
-
-                        // Message content or bubble
-                        if is_user {
-                            // User message - right aligned bubble
-                            ui.with_layout(Layout::right_to_left(egui::Align::Min), |ui| {
-                                self.render_user_message_bubble(ui, message, theme);
+                                );
                             });
                         } else {
-                            // Claude message - left aligned with full width content
-                            self.render_claude_message_content(ui, message, theme, is_last);
-                        }
-
-                        // Tool calls for assistant messages
-                        if !is_user && !message.tool_calls.is_empty() {
-                            ui.add_space(16.0);
-                            for tool_call in &message.tool_calls {
-                                self.render_tool_call_card(ui, tool_call, theme);
-                                ui.add_space(8.0);
-                            }
+                            // User info
+                            ui.with_layout(Layout::right_to_left(egui::Align::Min), |ui| {
+                                self.render_user_avatar(ui, theme);
+                            });
                         }
                     });
 
-                    // Right margin
-                    ui.add_space(24.0);
+                    ui.add_space(8.0);
+
+                    // Message content or bubble
+                    if is_user {
+                        // User message - right aligned bubble
+                        ui.with_layout(Layout::right_to_left(egui::Align::Min), |ui| {
+                            self.render_user_message_bubble(ui, message, theme);
+                        });
+                    } else {
+                        // Claude message - left aligned with full width content
+                        self.render_claude_message_content(ui, message, theme, is_last);
+                    }
+
+                    // Tool calls for assistant messages
+                    if !is_user && !message.tool_calls.is_empty() {
+                        ui.add_space(16.0);
+                        for tool_call in &message.tool_calls {
+                            self.render_tool_call_card(ui, tool_call, theme);
+                            ui.add_space(8.0);
+                        }
+                    }
                 });
+
+                // Right margin
+                ui.add_space(24.0);
             });
+        });
 
         ui.add_space(24.0);
     }

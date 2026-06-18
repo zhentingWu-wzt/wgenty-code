@@ -21,6 +21,8 @@ pub struct RlmResult {
 
 /// Tuple for a single sub-task execution entry in a dependency level.
 type SubTaskExecItem = (usize, Arc<ToolRegistry>, ApiClient, String, Vec<String>);
+type ProgressStore = Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>;
+type ProgressContext = (ProgressStore, String);
 
 /// Run the full RLM pipeline: Planner → Executor → Aggregator.
 /// Used by both the `delegate` tool and auto-routing in `task` tool.
@@ -33,10 +35,7 @@ pub async fn run_rlm_pipeline(
     tool_registry: Arc<ToolRegistry>,
     task: &str,
     context: &str,
-    progress_store: Option<(
-        Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
-        String,
-    )>, // (store, session_id)
+    progress_store: Option<ProgressContext>, // (store, session_id)
     root_node_id: Option<String>,
     token_budget_k: Option<u64>,
 ) -> Result<RlmResult, String> {
@@ -159,10 +158,8 @@ Context: {context}
         .filter(|name| {
             if name == "task" {
                 0 < settings.max_subagent_depth
-            } else if name == "delegate" {
-                false
             } else {
-                true
+                name != "delegate"
             }
         })
         .collect();

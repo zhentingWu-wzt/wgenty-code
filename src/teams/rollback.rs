@@ -11,7 +11,6 @@ pub struct RollbackContext {
     pub stashed_ref: String,
     pub affected_files: Vec<PathBuf>,
     pub parent_commit: String,
-    label: String,
 }
 
 #[derive(Debug, Clone)]
@@ -92,7 +91,6 @@ impl RollbackContext {
             stashed_ref: stash_ref,
             affected_files: Vec::new(),
             parent_commit,
-            label: label.to_string(),
         })
     }
 
@@ -185,7 +183,6 @@ mod tests {
             stashed_ref: "stash@{0}".to_string(),
             affected_files: Vec::new(),
             parent_commit: "abc123".to_string(),
-            label: "test".to_string(),
         };
 
         ctx.record_modification(PathBuf::from("src/main.rs"));

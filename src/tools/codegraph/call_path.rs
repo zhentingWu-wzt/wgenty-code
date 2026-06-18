@@ -1,5 +1,5 @@
 use crate::tools::codegraph::store::IndexStore;
-use crate::tools::codegraph::types::{RelKind, Relationship, Symbol};
+use crate::tools::codegraph::types::Symbol;
 use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::sync::Arc;
@@ -91,7 +91,7 @@ impl CallGraph {
         let mut queue = VecDeque::new();
 
         // Initial paths: just the root symbol
-        let root_name = self
+        let _root_name = self
             .symbols
             .get(&root_id)
             .map(|s| s.name.clone())
@@ -119,7 +119,7 @@ impl CallGraph {
                         rel: edge.rel_kind.clone(),
                         location: edge.location.clone(),
                     };
-                    let mut new_path = CallPath {
+                    let new_path = CallPath {
                         depth: path.depth + 1,
                         hops: {
                             let mut h = path.hops.clone();
@@ -172,7 +172,7 @@ impl CallGraph {
         impl Eq for State {}
         impl PartialOrd for State {
             fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-                Some(other.cost.cmp(&self.cost)) // reverse for min-heap
+                Some(self.cmp(other))
             }
         }
         impl Ord for State {

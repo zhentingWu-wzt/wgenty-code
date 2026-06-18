@@ -161,6 +161,7 @@ impl TaskTool {
 }
 
 /// Helper to build a SubagentTranscript from subagent execution metadata.
+#[allow(clippy::too_many_arguments)]
 fn build_transcript(
     id: String,
     session_id: &str,
@@ -853,7 +854,7 @@ mod tests {
             .get("token_budget")
             .and_then(|v| v.as_u64())
             .and_then(|v| if v == 0 { None } else { Some(v) })
-            .or_else(|| if default_k > 0 { Some(default_k) } else { None });
+            .or(if default_k > 0 { Some(default_k) } else { None });
         assert_eq!(
             result, None,
             "token_budget=0 should produce None (unlimited)"
@@ -868,7 +869,7 @@ mod tests {
             .get("token_budget")
             .and_then(|v| v.as_u64())
             .and_then(|v| if v == 0 { None } else { Some(v) })
-            .or_else(|| if default_k > 0 { Some(default_k) } else { None });
+            .or(if default_k > 0 { Some(default_k) } else { None });
         assert_eq!(result, Some(10), "token_budget=10 should produce Some(10)");
     }
 
@@ -880,7 +881,7 @@ mod tests {
             .get("token_budget")
             .and_then(|v| v.as_u64())
             .and_then(|v| if v == 0 { None } else { Some(v) })
-            .or_else(|| if default_k > 0 { Some(default_k) } else { None });
+            .or(if default_k > 0 { Some(default_k) } else { None });
         assert_eq!(
             result, None,
             "missing token_budget with no default should produce None"
@@ -895,7 +896,7 @@ mod tests {
             .get("token_budget")
             .and_then(|v| v.as_u64())
             .and_then(|v| if v == 0 { None } else { Some(v) })
-            .or_else(|| if default_k > 0 { Some(default_k) } else { None });
+            .or(if default_k > 0 { Some(default_k) } else { None });
         assert_eq!(
             result,
             Some(20),
@@ -913,7 +914,7 @@ mod tests {
             .get("token_budget")
             .and_then(|v| v.as_u64())
             .and_then(|v| if v == 0 { None } else { Some(v) })
-            .or_else(|| if default_k > 0 { Some(default_k) } else { None });
+            .or(if default_k > 0 { Some(default_k) } else { None });
         assert_eq!(
             result,
             Some(20),

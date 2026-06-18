@@ -244,6 +244,12 @@ impl Tool for CodegraphExploreTool {
 /// Tool: `call_path` — shortest call path between two symbols.
 pub struct CallPathTool;
 
+impl Default for CallPathTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CallPathTool {
     pub fn new() -> Self {
         Self
@@ -305,6 +311,12 @@ impl Tool for CallPathTool {
 
 /// Tool: `symbol_batch` — batch symbol lookup (max 10).
 pub struct SymbolBatchTool;
+
+impl Default for SymbolBatchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl SymbolBatchTool {
     pub fn new() -> Self {
@@ -390,6 +402,12 @@ impl Tool for SymbolBatchTool {
 
 /// Tool: `module_summary` — module-level overview.
 pub struct ModuleSummaryTool;
+
+impl Default for ModuleSummaryTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ModuleSummaryTool {
     pub fn new() -> Self {

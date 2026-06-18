@@ -61,10 +61,7 @@ impl Tool for FileWriteTool {
 
         // Read old content before writing (for diff) — use tokio::fs to
         // avoid blocking the async runtime.
-        let old_content = match tokio::fs::read_to_string(path).await {
-            Ok(c) => Some(c),
-            Err(_) => None,
-        };
+        let old_content = tokio::fs::read_to_string(path).await.ok();
 
         // Create parent directories if needed
         if let Some(parent) = path.parent() {

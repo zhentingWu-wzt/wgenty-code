@@ -227,7 +227,7 @@ impl PluginMarketplaceService {
         let mut found_publisher = String::new();
         let mut found_desc = String::new();
 
-        for (_mkt_name, entry) in &known.marketplaces {
+        for entry in known.marketplaces.values() {
             let repo_dir = entry.install_location.clone();
             if !repo_dir.join(".git").exists() {
                 let _ = marketplace_resolver::ensure_marketplace_cloned(entry, &base_cache).await;

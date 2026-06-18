@@ -429,16 +429,15 @@ impl<'a> PythonExtractor<'a> {
             if let Some(child) = node.child(i) {
                 match child.kind() {
                     "identifier" => return Some(self.utf8_text(child).to_string()),
-                    "attribute" => {
+                    "attribute"
                         // obj.method() → method is the attribute name
                         // attribute: object . attribute
-                        if child.child_count() >= 3 {
+                        if child.child_count() >= 3 => {
                             // The last child (attribute name) is at index 2
                             if let Some(attr) = child.child(2) {
                                 return Some(self.utf8_text(attr).to_string());
                             }
                         }
-                    }
                     _ => {}
                 }
             }
@@ -494,7 +493,7 @@ fn child_of_kind<'n>(node: Node<'n>, kind: &str) -> Option<Node<'n>> {
 mod tests {
     use super::*;
     use crate::tools::codegraph::adapters::LanguageAdapter;
-    use crate::tools::codegraph::types::{RelKind, SymbolKind, Visibility};
+    use crate::tools::codegraph::types::{RelKind, SymbolKind};
 
     fn adapter() -> PythonAdapter {
         PythonAdapter::new()

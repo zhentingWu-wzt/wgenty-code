@@ -70,7 +70,7 @@ impl App {
                 let label_clone = label.to_string();
                 tokio::spawn(async move {
                     let mut h = history.lock().await;
-                    h.push(ChatMessage::system(&format!(
+                    h.push(ChatMessage::system(format!(
                         "[User pressed /continue after {}. Continue working on the previous task from where you left off.]",
                         label_clone
                     )));

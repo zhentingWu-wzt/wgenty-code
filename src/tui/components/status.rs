@@ -18,6 +18,7 @@ const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 /// Render a status line:
 ///   ⠋ Subagent 3 active · 5/8 done (12s · ↓ 4.5k tokens · NORMAL)
 ///   ● Ready (↓ 1.2k tokens)
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     f: &mut Frame,
     area: Rect,
