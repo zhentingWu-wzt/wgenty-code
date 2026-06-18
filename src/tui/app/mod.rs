@@ -143,6 +143,38 @@ impl App {
                 });
             }
         }
+
+        // Also discover external skills from all sources and merge into inventory
+        let project_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let external_registry_roots = vec![
+            crate::knowledge::ExternalSkillRoot::new(
+                home.join(".wgenty-code").join("skills"),
+                crate::knowledge::ExternalSkillSource::UserWgentyCode {
+                    root: home.join(".wgenty-code").join("skills"),
+                },
+            ),
+            crate::knowledge::ExternalSkillRoot::new(
+                project_root.join(".wgenty-code").join("skills"),
+                crate::knowledge::ExternalSkillSource::ProjectWgentyCode {
+                    root: project_root.join(".wgenty-code").join("skills"),
+                },
+            ),
+        ];
+        if let Ok(external_registry) =
+            crate::knowledge::ExternalSkillRegistry::discover(external_registry_roots)
+        {
+            for skill_def in external_registry.list() {
+                // Avoid duplicates: only add external skills not already in inventory
+                if !skill_inventory.iter().any(|s| s.name == skill_def.canonical_name) {
+                    skill_inventory.push(prompts::SkillEntry {
+                        name: skill_def.canonical_name.clone(),
+                        description: skill_def.description.clone(),
+                    });
+                }
+            }
+        }
+
         let prompt_ctx = prompt_ctx.with_skills(skill_inventory);
 
         // Load WGENTY.md and AGENTS.md sections from project root

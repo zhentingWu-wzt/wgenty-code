@@ -5,6 +5,64 @@ use super::external::{
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Result of slash command routing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlashRoute {
+    /// Matched a built-in command.
+    BuiltIn { command: String, args: String },
+    /// Matched an external skill.
+    ExternalSkill { skill: String, args: String },
+    /// No match — unknown command.
+    Unknown {
+        command: String,
+        suggestions: Vec<String>,
+    },
+    /// Input does not start with `/`.
+    NotSlash,
+}
+
+/// Route a slash command. `builtins` is a set of known built-in commands.
+/// `registry` provides external skill resolution and suggestions.
+pub fn route_slash_command(
+    input: &str,
+    builtins: &[&str],
+    registry: Option<&ExternalSkillRegistry>,
+) -> SlashRoute {
+    let trimmed = input.trim();
+    if !trimmed.starts_with('/') {
+        return SlashRoute::NotSlash;
+    }
+
+    // Split on first whitespace: "/comet hello world" -> command="comet", args="hello world"
+    let rest = &trimmed[1..]; // strip '/'
+    let (command, args) = match rest.find(char::is_whitespace) {
+        Some(pos) => (rest[..pos].to_string(), rest[pos..].trim().to_string()),
+        None => (rest.to_string(), String::new()),
+    };
+
+    // Built-in commands have priority
+    if builtins.contains(&command.as_str()) {
+        return SlashRoute::BuiltIn { command, args };
+    }
+
+    // Try external skill fallback
+    if let Some(registry) = registry {
+        if registry.resolve(&command).is_some() {
+            return SlashRoute::ExternalSkill {
+                skill: command,
+                args,
+            };
+        }
+        let suggestions = registry.suggest(&command, 3);
+        return SlashRoute::Unknown { command, suggestions };
+    }
+
+    SlashRoute::Unknown {
+        command,
+        suggestions: vec![],
+    }
+}
+
 /// A root directory that serves as a source of external skills.
 #[derive(Debug, Clone)]
 pub struct ExternalSkillRoot {

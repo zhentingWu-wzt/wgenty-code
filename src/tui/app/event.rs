@@ -671,7 +671,51 @@ impl App {
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let wgenty_sections = crate::utils::project::read_wgenty_md_sections(&project_root);
                 let agents_sections = crate::utils::project::read_agents_md_sections(&project_root);
+
+                // Load skills inventory (including external skills)
+                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                let skills_dirs = vec![home.join(".wgenty-code").join("skills")];
+                let skill_loader = crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);
+                let mut skill_inventory: Vec<crate::prompts::SkillEntry> = Vec::new();
+                for name in skill_loader.skill_names() {
+                    if let Some(skill) = skill_loader.load_skill(&name) {
+                        skill_inventory.push(crate::prompts::SkillEntry {
+                            name,
+                            description: skill.description.clone(),
+                        });
+                    }
+                }
+
+                // Merge external skills
+                let external_registry_roots = vec![
+                    crate::knowledge::ExternalSkillRoot::new(
+                        home.join(".wgenty-code").join("skills"),
+                        crate::knowledge::ExternalSkillSource::UserWgentyCode {
+                            root: home.join(".wgenty-code").join("skills"),
+                        },
+                    ),
+                    crate::knowledge::ExternalSkillRoot::new(
+                        project_root.join(".wgenty-code").join("skills"),
+                        crate::knowledge::ExternalSkillSource::ProjectWgentyCode {
+                            root: project_root.join(".wgenty-code").join("skills"),
+                        },
+                    ),
+                ];
+                if let Ok(external_registry) =
+                    crate::knowledge::ExternalSkillRegistry::discover(external_registry_roots)
+                {
+                    for skill_def in external_registry.list() {
+                        if !skill_inventory.iter().any(|s| s.name == skill_def.canonical_name) {
+                            skill_inventory.push(crate::prompts::SkillEntry {
+                                name: skill_def.canonical_name.clone(),
+                                description: skill_def.description.clone(),
+                            });
+                        }
+                    }
+                }
+
                 let prompt_ctx = prompt_ctx
+                    .with_skills(skill_inventory)
                     .with_wgenty_md(wgenty_sections)
                     .with_agents_md(agents_sections);
                 let assembled = prompts::assemble_instructions(&new_settings, &prompt_ctx);
