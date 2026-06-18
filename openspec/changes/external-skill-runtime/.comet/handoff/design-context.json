@@ -1,0 +1,15 @@
+{
+  "change": "external-skill-runtime",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "9c088ff94266e3c52a63b8752c46361cf71bdcfa2b1a3b8038ca7dc5b058ca52",
+  "files": [
+    { "path": "openspec/changes/external-skill-runtime/proposal.md", "sha256": "cd8940be369ff13872132d7917a3e25387c4f1a7cd0719fa7f38e1bee677699b" },
+    { "path": "openspec/changes/external-skill-runtime/design.md", "sha256": "d5812b83812ab45953a9ec2569cdef352f2d659502cef05d068b039791b24771" },
+    { "path": "openspec/changes/external-skill-runtime/tasks.md", "sha256": "060b1f0c26cb42129d9659caad7b7f45c8a9dafe9142239640df087156a35aa6" },
+    { "path": "openspec/changes/external-skill-runtime/specs/external-skill-runtime/spec.md", "sha256": "3d80fe04862f84ef5b9b84f8fb4782f2806bd0384509be8a0ff167518f4e3b5f" },
+    { "path": "openspec/changes/external-skill-runtime/specs/plugin-format-compat/spec.md", "sha256": "eb79c41e0912d0816121e021606918b526637f9c2f850bbf0f34dae5174178dc" }
+  ]
+}
