@@ -305,6 +305,21 @@ fn test_external_registry_project_shadows_user_skill() {
 }
 
 #[test]
+fn test_external_skill_error_io_error() {
+    let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+    let err = ExternalSkillError::IoError(io_err);
+    let msg = err.to_string();
+    assert!(msg.contains("I/O error"));
+}
+
+#[test]
+fn test_external_skill_error_no_parent_directory() {
+    let err = ExternalSkillError::NoParentDirectory(PathBuf::from("/"));
+    let msg = err.to_string();
+    assert!(msg.contains("no parent directory"));
+}
+
+#[test]
 fn test_external_registry_suggests_similar_names() {
     let repo = TempDir::new().unwrap();
     write_skill(repo.path(), ".wgenty-code/skills/comet/SKILL.md",
