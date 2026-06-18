@@ -2,6 +2,8 @@
 comet_change: external-skill-runtime
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-18-external-skill-runtime
+status: final
 ---
 
 # External Skill Runtime Design
