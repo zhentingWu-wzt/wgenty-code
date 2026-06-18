@@ -9,6 +9,7 @@ pub mod executor;
 pub mod external;
 pub mod external_registry;
 pub mod loader;
+pub mod policy;
 pub mod registry;
 
 use async_trait::async_trait;
@@ -108,3 +109,7 @@ pub use external::{
 pub use loader::{SkillInfo, SkillLoader};
 pub use registry::SkillRegistry;
 pub use external_registry::{ExternalSkillRegistry, ExternalSkillRoot};
+pub use policy::{
+    DefaultAllowPolicy, LoadedSkillContext, LoadedSkillRecord, NestedSkillCallEvent,
+    PolicyDecision, SkillLoadEvent, SkillPolicy, ToolCallObservedEvent, MAX_NESTED_SKILL_DEPTH,
+};

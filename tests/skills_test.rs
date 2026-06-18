@@ -332,3 +332,47 @@ fn test_external_registry_suggests_similar_names() {
 
     assert_eq!(registry.suggest("comte", 3), vec!["comet".to_string()]);
 }
+
+use wgenty_code::knowledge::{
+    DefaultAllowPolicy, LoadedSkillContext, LoadedSkillRecord, PolicyDecision, SkillLoadEvent,
+    SkillPolicy, MAX_NESTED_SKILL_DEPTH,
+};
+
+#[test]
+fn test_default_allow_policy_allows_skill_load() {
+    let policy = DefaultAllowPolicy::default();
+    let context = LoadedSkillContext::default();
+    let event = SkillLoadEvent {
+        skill_name: "comet".to_string(),
+        args: Some("hello".to_string()),
+        depth: 0,
+        loaded_context: context,
+    };
+
+    assert!(matches!(policy.before_skill_load(&event), PolicyDecision::Allow));
+}
+
+#[test]
+fn test_loaded_skill_context_prevents_duplicate_body_injection() {
+    let mut context = LoadedSkillContext::default();
+    let first = LoadedSkillRecord {
+        name: "comet".to_string(),
+        source_path: "one/SKILL.md".into(),
+        base_dir: "one".into(),
+        args: Some("a".to_string()),
+        parent: None,
+        depth: 0,
+        turn_id: 1,
+    };
+
+    assert!(context.record_load(first.clone()));
+    assert!(!context.record_load(first));
+    assert_eq!(context.records().len(), 1);
+}
+
+#[test]
+fn test_loaded_skill_context_depth_limit() {
+    let context = LoadedSkillContext::default();
+    assert!(context.depth_allowed(MAX_NESTED_SKILL_DEPTH));
+    assert!(!context.depth_allowed(MAX_NESTED_SKILL_DEPTH + 1));
+}
