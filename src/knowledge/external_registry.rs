@@ -1,6 +1,6 @@
 use super::external::{
     derive_canonical_skill_name, parse_external_skill_document, ExternalSkillDefinition,
-    ExternalSkillSource, ShadowedSkillDefinition, SkillFrontmatter,
+    ExternalSkillError, ExternalSkillSource, ShadowedSkillDefinition, SkillFrontmatter,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -37,7 +37,7 @@ impl ExternalSkillRegistry {
     /// Roots are scanned in order of `ExternalSkillSource::priority_rank()`.
     /// If two roots contain a skill with the same canonical name, the lower-ranked
     /// (higher priority) source wins, and the shadowed definition is recorded.
-    pub fn discover(roots: Vec<ExternalSkillRoot>) -> Result<Self, String> {
+    pub fn discover(roots: Vec<ExternalSkillRoot>) -> Result<Self, ExternalSkillError> {
         let mut discovered = Vec::new();
         let mut diagnostics = Vec::new();
 
@@ -115,9 +115,8 @@ fn scan_root(
     root: &ExternalSkillRoot,
     discovered: &mut Vec<ExternalSkillDefinition>,
     diagnostics: &mut Vec<String>,
-) -> Result<(), String> {
-    let entries =
-        std::fs::read_dir(skills_root).map_err(|e| format!("read {} failed: {}", skills_root.display(), e))?;
+) -> Result<(), ExternalSkillError> {
+    let entries = std::fs::read_dir(skills_root)?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -136,26 +135,25 @@ fn collect_skill_files(
     root: &ExternalSkillRoot,
     discovered: &mut Vec<ExternalSkillDefinition>,
     diagnostics: &mut Vec<String>,
-) -> Result<(), String> {
+) -> Result<(), ExternalSkillError> {
     let skill_file = directory.join("SKILL.md");
     if skill_file.exists() {
         match load_skill_file(&skill_file, skills_root, root) {
             Ok(s) => discovered.push(s),
-            Err(e) => diagnostics.push(e),
+            Err(e) => diagnostics.push(e.to_string()),
         }
         return Ok(());
     }
 
     // Check subdirectories that contain a SKILL.md
-    let entries = std::fs::read_dir(directory)
-        .map_err(|e| format!("read {} failed: {}", directory.display(), e))?;
+    let entries = std::fs::read_dir(directory)?;
 
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() && path.join("SKILL.md").exists() {
             match load_skill_file(&path.join("SKILL.md"), skills_root, root) {
                 Ok(s) => discovered.push(s),
-                Err(e) => diagnostics.push(e),
+                Err(e) => diagnostics.push(e.to_string()),
             }
         }
     }
@@ -167,19 +165,18 @@ fn load_skill_file(
     skill_file: &Path,
     skills_root: &Path,
     root: &ExternalSkillRoot,
-) -> Result<ExternalSkillDefinition, String> {
-    let content = std::fs::read_to_string(skill_file)
-        .map_err(|e| format!("read {} failed: {}", skill_file.display(), e))?;
+) -> Result<ExternalSkillDefinition, ExternalSkillError> {
+    let content = std::fs::read_to_string(skill_file)?;
 
-    let parsed = parse_external_skill_document(&content).map_err(|e| e.to_string())?;
+    let parsed = parse_external_skill_document(&content)?;
 
-    let canonical_name = derive_canonical_skill_name(parsed.name.as_deref(), skill_file, skills_root)
-        .map_err(|e| e.to_string())?;
+    let canonical_name =
+        derive_canonical_skill_name(parsed.name.as_deref(), skill_file, skills_root)?;
 
     let description = parsed.description.clone().unwrap_or_default();
     let base_dir = skill_file
         .parent()
-        .ok_or_else(|| format!("{} has no parent directory", skill_file.display()))?
+        .ok_or_else(|| ExternalSkillError::NoParentDirectory(skill_file.to_path_buf()))?
         .to_path_buf();
 
     Ok(ExternalSkillDefinition {

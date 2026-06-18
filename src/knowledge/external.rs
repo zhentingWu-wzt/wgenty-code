@@ -134,6 +134,12 @@ pub enum ExternalSkillError {
     /// or `skills/<namespace>/<name>/SKILL.md` pattern.
     #[error("unsupported skill path {0}; expected skills/<name>/SKILL.md or skills/<namespace>/<name>/SKILL.md")]
     UnsupportedPath(PathBuf),
+    /// I/O error during skill discovery or loading.
+    #[error("I/O error: {0}")]
+    IoError(#[from] std::io::Error),
+    /// A file path has no parent directory.
+    #[error("{0} has no parent directory")]
+    NoParentDirectory(PathBuf),
 }
 
 /// Parse an external skill document (SKILL.md) into its structured components.
