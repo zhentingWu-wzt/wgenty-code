@@ -1,5 +1,6 @@
 //! Tests for Tools Module
 
+use std::fs;
 use wgenty_code::tools::ToolRegistry;
 
 #[tokio::test]
@@ -411,6 +412,110 @@ async fn test_skill_tool_not_configured_error() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.code.as_deref(), Some("skill_registry_unconfigured"));
+}
+
+#[tokio::test]
+async fn test_skill_tool_loads_external_skill_body() {
+    use std::sync::Arc;
+    use wgenty_code::knowledge::{
+        ExternalSkillRegistry, ExternalSkillRoot, ExternalSkillSource, LoadedSkillContext,
+    };
+    use wgenty_code::tools::meta::SkillTool;
+    use wgenty_code::tools::Tool;
+
+    let repo = tempfile::tempdir().expect("tempdir should be created");
+    let root = repo.path().join(".wgenty-code/skills");
+    let skill_dir = root.join("comet");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: comet\ndescription: Comet workflow\n---\n# Comet\nInstructions.",
+    )
+    .unwrap();
+
+    let registry = ExternalSkillRegistry::discover(vec![ExternalSkillRoot::new(
+        root.clone(),
+        ExternalSkillSource::ProjectWgentyCode { root: root.clone() },
+    )])
+    .unwrap();
+
+    let tool = SkillTool::with_registry(Arc::new(registry), LoadedSkillContext::default());
+    let output = tool
+        .execute(serde_json::json!({"skill": "comet", "args": "hello"}))
+        .await
+        .expect("skill should load");
+
+    assert_eq!(output.output_type, "markdown");
+    assert!(output.content.contains("Base directory for this skill:"));
+    assert!(output.content.contains("# Comet"));
+    assert!(output.content.contains("ARGUMENTS: hello"));
+}
+
+#[tokio::test]
+async fn test_skill_tool_missing_skill_suggests_similar_name() {
+    use std::sync::Arc;
+    use wgenty_code::knowledge::{
+        ExternalSkillRegistry, ExternalSkillRoot, ExternalSkillSource, LoadedSkillContext,
+    };
+    use wgenty_code::tools::meta::SkillTool;
+    use wgenty_code::tools::Tool;
+
+    let repo = tempfile::tempdir().expect("tempdir should be created");
+    let root = repo.path().join(".wgenty-code/skills");
+    fs::create_dir_all(root.join("comet")).unwrap();
+    fs::write(
+        root.join("comet/SKILL.md"),
+        "---\nname: comet\ndescription: Comet\n---\n# Comet",
+    )
+    .unwrap();
+
+    let registry = ExternalSkillRegistry::discover(vec![ExternalSkillRoot::new(
+        root.clone(),
+        ExternalSkillSource::ProjectWgentyCode { root: root.clone() },
+    )])
+    .unwrap();
+    let tool = SkillTool::with_registry(Arc::new(registry), LoadedSkillContext::default());
+
+    let error = tool
+        .execute(serde_json::json!({"skill": "comte"}))
+        .await
+        .expect_err("missing skill should error");
+
+    assert_eq!(error.code.as_deref(), Some("skill_not_found"));
+    assert!(error.message.contains("comet"));
+}
+
+#[tokio::test]
+async fn test_skill_tool_depth_exceeded() {
+    use std::sync::Arc;
+    use wgenty_code::knowledge::{
+        ExternalSkillRegistry, ExternalSkillRoot, ExternalSkillSource, LoadedSkillContext,
+    };
+    use wgenty_code::tools::meta::SkillTool;
+    use wgenty_code::tools::Tool;
+
+    let repo = tempfile::tempdir().expect("tempdir should be created");
+    let root = repo.path().join(".wgenty-code/skills");
+    fs::create_dir_all(root.join("comet")).unwrap();
+    fs::write(
+        root.join("comet/SKILL.md"),
+        "---\nname: comet\ndescription: C\n---\n# C",
+    )
+    .unwrap();
+
+    let registry = ExternalSkillRegistry::discover(vec![ExternalSkillRoot::new(
+        root.clone(),
+        ExternalSkillSource::ProjectWgentyCode { root: root.clone() },
+    )])
+    .unwrap();
+    let tool = SkillTool::with_registry(Arc::new(registry), LoadedSkillContext::default());
+
+    let error = tool
+        .execute(serde_json::json!({"skill": "comet", "depth": 9}))
+        .await
+        .expect_err("depth exceeded should error");
+
+    assert_eq!(error.code.as_deref(), Some("skill_depth_exceeded"));
 }
 
 #[tokio::test]
