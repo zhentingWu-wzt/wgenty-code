@@ -74,7 +74,7 @@ impl WgentyCodeApp {
         // Load settings into settings panel
         app.settings_panel.load_from_settings(&app.settings);
         app.chat_panel
-            .set_current_model(app.settings.api.get_model_id(&app.settings.model));
+            .set_current_model(crate::config::ApiConfig::default().get_model_id(&app.settings.models.main.name));
 
         // Set up chat panel callback
         let tx_clone = app.message_tx.clone().unwrap();
@@ -332,7 +332,7 @@ impl WgentyCodeApp {
         // Recreate API client with new settings
         self.api_client = Some(crate::api::ApiClient::new(self.settings.clone()));
         self.chat_panel
-            .set_current_model(self.settings.api.get_model_id(&self.settings.model));
+            .set_current_model(crate::config::ApiConfig::default().get_model_id(&self.settings.models.main.name));
 
         self.show_status("Settings saved successfully");
     }
