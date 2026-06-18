@@ -1,5 +1,6 @@
 //! Completion engine for TUI input — skills (@) and commands (/) completion.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -29,32 +30,95 @@ pub struct CompletionEngine {
 }
 
 impl CompletionEngine {
-    /// Scan ~/.claude/skills/ for skills, load from PluginRegistry for commands.
+    /// Scan skills directories for completion (both @skills and /commands).
+    /// Scans project `.wgenty-code/skills/`, user `~/.wgenty-code/skills/`,
+    /// and the legacy `~/.claude/skills/` directory.
     pub fn load(skills_dir: &std::path::Path, command_registry_commands: &[CommandEntry]) -> Self {
         let mut skills = Vec::new();
-        if skills_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(skills_dir) {
+        let mut commands = command_registry_commands.to_vec();
+
+        // Scan multiple skill roots and merge into both @skills and /commands.
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let project_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+        let scan_roots: &[std::path::PathBuf] = &[
+            project_root.join(".wgenty-code").join("skills"),
+            home.join(".wgenty-code").join("skills"),
+            skills_dir.to_path_buf(),
+        ];
+
+        let mut seen: HashSet<String> = HashSet::new();
+        for root in scan_roots {
+            if !root.exists() {
+                continue;
+            }
+            if let Ok(entries) = std::fs::read_dir(&root) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_dir() {
                         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                            if seen.contains(name) {
+                                continue;
+                            }
+                            seen.insert(name.to_string());
                             let description = extract_skill_description(&path);
                             skills.push(SkillEntry {
                                 name: name.to_string(),
+                                description: description.clone(),
+                                path: path.clone(),
+                            });
+                            // Also register as a slash command for / completion
+                            commands.push(CommandEntry {
+                                name: name.to_string(),
                                 description,
-                                path,
+                                args_hint: None,
                             });
                         }
                     }
                 }
             }
         }
-        // Sort skills by name for deterministic display
-        skills.sort_by(|a, b| a.name.cmp(&b.name));
-        Self {
-            skills,
-            commands: command_registry_commands.to_vec(),
+
+        // Scan namespace directories (e.g. superpowers/brainstorming)
+        for root in &[project_root.join(".wgenty-code").join("skills"), home.join(".wgenty-code").join("skills")] {
+            if !root.exists() { continue; }
+            if let Ok(entries) = std::fs::read_dir(root) {
+                for entry in entries.flatten() {
+                    let ns_path = entry.path();
+                    if !ns_path.is_dir() { continue; }
+                    if let Some(ns_name) = ns_path.file_name().and_then(|n| n.to_str()) {
+                        if let Ok(sub_entries) = std::fs::read_dir(&ns_path) {
+                            for sub in sub_entries.flatten() {
+                                let skill_path = sub.path();
+                                if !skill_path.is_dir() { continue; }
+                                if let Some(skill_name) = skill_path.file_name().and_then(|n| n.to_str()) {
+                                    let canonical = format!("{}:{}", ns_name, skill_name);
+                                    if seen.contains(&canonical) { continue; }
+                                    seen.insert(canonical.clone());
+                                    let description = extract_skill_description(&skill_path);
+                                    skills.push(SkillEntry {
+                                        name: canonical.clone(),
+                                        description: description.clone(),
+                                        path: skill_path,
+                                    });
+                                    commands.push(CommandEntry {
+                                        name: canonical,
+                                        description,
+                                        args_hint: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
+
+        // Sort by name for deterministic display
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        commands.sort_by(|a, b| a.name.cmp(&b.name));
+        Self { skills, commands }
     }
 
     /// Replace all commands with a new list (e.g. after PluginRegistry loads).
