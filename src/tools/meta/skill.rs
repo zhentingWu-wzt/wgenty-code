@@ -74,7 +74,8 @@ impl Tool for SkillTool {
 
     fn description(&self) -> &str {
         "Load a Claude Code-compatible external skill by canonical name. \
-         Use for nested skill invocation."
+         Use for nested skill invocation. \
+         Leave skill name empty to list available external skills."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -83,7 +84,7 @@ impl Tool for SkillTool {
             "properties": {
                 "skill": {
                     "type": "string",
-                    "description": "Canonical external skill name to load"
+                    "description": "Canonical external skill name to load. Omit or leave empty to list available skills."
                 },
                 "args": {
                     "type": "string",
@@ -93,8 +94,7 @@ impl Tool for SkillTool {
                     "type": "integer",
                     "description": "Nested skill depth"
                 }
-            },
-            "required": ["skill"]
+            }
         })
     }
 
@@ -104,12 +104,47 @@ impl Tool for SkillTool {
             code: Some("skill_registry_unconfigured".to_string()),
         })?;
 
-        let skill_name = input["skill"].as_str().ok_or_else(|| ToolError {
-            message: "Missing required field: skill".to_string(),
-            code: Some("invalid_input".to_string()),
-        })?;
+        let skill_name = input["skill"].as_str().unwrap_or("");
         let args = input["args"].as_str().map(|v| v.to_string());
         let depth = input["depth"].as_u64().unwrap_or(0) as usize;
+
+        // List available skills when name is empty
+        if skill_name.is_empty() {
+            let skills_list: Vec<serde_json::Value> = registry
+                .list()
+                .iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "name": s.canonical_name,
+                        "description": s.description,
+                        "source": s.source.label(),
+                        "source_path": s.source_path.display().to_string(),
+                    })
+                })
+                .collect();
+
+            if skills_list.is_empty() {
+                return Ok(ToolOutput {
+                    output_type: "text".to_string(),
+                    content: "No external skills found. Place SKILL.md files in \
+                              ~/.wgenty-code/skills/<name>/ or \
+                              .wgenty-code/skills/<name>/."
+                        .to_string(),
+                    metadata: std::collections::HashMap::new(),
+                });
+            }
+
+            return Ok(ToolOutput {
+                output_type: "json".to_string(),
+                content: serde_json::to_string_pretty(&serde_json::json!({
+                    "skills": skills_list,
+                    "count": skills_list.len(),
+                    "hint": "Use skill with a specific name to load full instructions."
+                }))
+                .unwrap(),
+                metadata: std::collections::HashMap::new(),
+            });
+        }
 
         let mut context = self.loaded_context.lock().map_err(|_| ToolError {
             message: "Loaded skill context lock poisoned".to_string(),

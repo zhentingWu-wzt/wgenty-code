@@ -81,20 +81,33 @@ impl CompletionEngine {
         }
 
         // Scan namespace directories (e.g. superpowers/brainstorming)
-        for root in &[project_root.join(".wgenty-code").join("skills"), home.join(".wgenty-code").join("skills")] {
-            if !root.exists() { continue; }
+        for root in &[
+            project_root.join(".wgenty-code").join("skills"),
+            home.join(".wgenty-code").join("skills"),
+        ] {
+            if !root.exists() {
+                continue;
+            }
             if let Ok(entries) = std::fs::read_dir(root) {
                 for entry in entries.flatten() {
                     let ns_path = entry.path();
-                    if !ns_path.is_dir() { continue; }
+                    if !ns_path.is_dir() {
+                        continue;
+                    }
                     if let Some(ns_name) = ns_path.file_name().and_then(|n| n.to_str()) {
                         if let Ok(sub_entries) = std::fs::read_dir(&ns_path) {
                             for sub in sub_entries.flatten() {
                                 let skill_path = sub.path();
-                                if !skill_path.is_dir() { continue; }
-                                if let Some(skill_name) = skill_path.file_name().and_then(|n| n.to_str()) {
+                                if !skill_path.is_dir() {
+                                    continue;
+                                }
+                                if let Some(skill_name) =
+                                    skill_path.file_name().and_then(|n| n.to_str())
+                                {
                                     let canonical = format!("{}:{}", ns_name, skill_name);
-                                    if seen.contains(&canonical) { continue; }
+                                    if seen.contains(&canonical) {
+                                        continue;
+                                    }
                                     seen.insert(canonical.clone());
                                     let description = extract_skill_description(&skill_path);
                                     skills.push(SkillEntry {

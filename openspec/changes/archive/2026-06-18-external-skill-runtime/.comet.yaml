@@ -1,5 +1,5 @@
 workflow: full
-phase: verify
+phase: archive
 context_compression: off
 build_mode: subagent-driven-development
 build_pause: null
@@ -11,11 +11,11 @@ auto_transition: true
 base_ref: 114424659d602468c4bfbfa981a344e5c8792ec6
 design_doc: docs/superpowers/specs/2026-06-18-external-skill-runtime-design.md
 plan: docs/superpowers/plans/2026-06-18-external-skill-runtime.md
-verify_result: pending
+verify_result: pass
 verification_report: docs/superpowers/reports/2026-06-19-external-skill-runtime-verify.md
-branch_status: pending
+branch_status: handled
 created_at: 2026-06-18
-verified_at: null
-archived: false
+verified_at: 2026-06-18
+archived: true
 handoff_context: openspec/changes/external-skill-runtime/.comet/handoff/design-context.json
 handoff_hash: 9c088ff94266e3c52a63b8752c46361cf71bdcfa2b1a3b8038ca7dc5b058ca52

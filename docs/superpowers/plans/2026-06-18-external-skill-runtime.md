@@ -2,6 +2,7 @@
 change: external-skill-runtime
 design-doc: docs/superpowers/specs/2026-06-18-external-skill-runtime-design.md
 base-ref: 114424659d602468c4bfbfa981a344e5c8792ec6
+archived-with: 2026-06-18-external-skill-runtime
 ---
 
 # External Skill Runtime Implementation Plan
@@ -14,6 +15,7 @@ base-ref: 114424659d602468c4bfbfa981a344e5c8792ec6
 
 **Tech Stack:** Rust, async_trait, serde/serde_json, existing wgenty-code `Tool` trait, existing `knowledge` module, existing plugin/cache conventions, Cargo tests.
 
+archived-with: 2026-06-18-external-skill-runtime
 ---
 
 ## File Structure
@@ -61,6 +63,7 @@ fn test_external_skill_frontmatter_name_and_description() {
     let body = r#"---
 name: comet
 description: Comet workflow
+archived-with: 2026-06-18-external-skill-runtime
 ---
 # Comet
 

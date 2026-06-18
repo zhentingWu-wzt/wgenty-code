@@ -147,9 +147,7 @@ impl App {
             let route = crate::knowledge::route_slash_command(
                 &text,
                 builtins,
-                self.external_skill_registry
-                    .as_ref()
-                    .map(|r| r.as_ref()),
+                self.external_skill_registry.as_ref().map(|r| r.as_ref()),
             );
             match route {
                 crate::knowledge::SlashRoute::ExternalSkill { skill, args } => {
@@ -179,9 +177,15 @@ impl App {
                     }
                     return;
                 }
-                crate::knowledge::SlashRoute::Unknown { command, suggestions } => {
+                crate::knowledge::SlashRoute::Unknown {
+                    command,
+                    suggestions,
+                } => {
                     let msg = if suggestions.is_empty() {
-                        format!("Unknown command: /{}. Type /help for available commands.", command)
+                        format!(
+                            "Unknown command: /{}. Type /help for available commands.",
+                            command
+                        )
                     } else {
                         format!(
                             "Unknown command: /{}. Did you mean: /{}?",

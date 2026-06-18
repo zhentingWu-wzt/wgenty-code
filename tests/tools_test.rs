@@ -523,9 +523,7 @@ async fn test_skill_tool_depth_exceeded() {
 #[tokio::test]
 async fn test_skill_tool_set_registry() {
     use std::sync::Arc;
-    use wgenty_code::knowledge::{
-        ExternalSkillRegistry, ExternalSkillRoot, ExternalSkillSource,
-    };
+    use wgenty_code::knowledge::{ExternalSkillRegistry, ExternalSkillRoot, ExternalSkillSource};
     use wgenty_code::tools::meta::SkillTool;
     use wgenty_code::tools::Tool;
 
@@ -565,9 +563,7 @@ async fn test_skill_tool_set_registry() {
 #[tokio::test]
 async fn test_skill_tool_registry_wired_through_tool_registry() {
     use std::sync::Arc;
-    use wgenty_code::knowledge::{
-        ExternalSkillRegistry, ExternalSkillRoot, ExternalSkillSource,
-    };
+    use wgenty_code::knowledge::{ExternalSkillRegistry, ExternalSkillRoot, ExternalSkillSource};
 
     let repo = tempfile::tempdir().expect("tempdir should be created");
     let root = repo.path().join(".wgenty-code/skills");
