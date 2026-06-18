@@ -104,7 +104,8 @@ impl DaemonState {
             // of this Arc (created by Arc::new_cyclic).
             // Initialize optional transcript store for subagent persistence.
             let transcript_store = {
-                let db_path = std::path::PathBuf::from(&app_state.settings.storage.transcript.db_path);
+                let db_path =
+                    std::path::PathBuf::from(&app_state.settings.storage.transcript.db_path);
                 match crate::transcript::SubagentTranscriptStore::open(&db_path) {
                     Ok(store) => Some(std::sync::Arc::new(store)),
                     Err(e) => {

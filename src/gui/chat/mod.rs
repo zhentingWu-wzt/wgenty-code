@@ -68,7 +68,7 @@ impl ChatPanel {
                 .auto_shrink([false; 2])
                 .stick_to_bottom(self.scroll_to_bottom)
                 .show(ui, |ui| {
-                    ui.add_space(24.0);
+                    ui.add_space(8.0);
 
                     // Welcome banner for first load
                     if self.messages.len() <= 1 {
@@ -104,7 +104,7 @@ impl ChatPanel {
 
     fn render_welcome_banner(&self, ui: &mut Ui, theme: &super::Theme) {
         ui.vertical_centered(|ui| {
-            ui.add_space(40.0);
+            ui.add_space(8.0);
 
             Frame::NONE
                 .fill(theme.surface_color())

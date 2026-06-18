@@ -182,6 +182,7 @@ pub struct UIMessage {
     pub tool_args: Option<serde_json::Value>,
     pub content_collapsed: bool,
     pub tool_collapsed: bool,
+    pub tool_running: bool,
     pub diff_data: Option<DiffData>,
     pub tool_metadata: Option<serde_json::Value>,
 }

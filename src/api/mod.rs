@@ -70,8 +70,9 @@ impl ApiClient {
                 Client::default()
             });
 
-        let provider: Arc<dyn Provider> =
-            Arc::from(provider::detect_provider(&settings.models.main.endpoint_base_url()));
+        let provider: Arc<dyn Provider> = Arc::from(provider::detect_provider(
+            &settings.models.main.endpoint_base_url(),
+        ));
 
         Self {
             settings,
@@ -147,7 +148,9 @@ impl ApiClient {
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<ChatResponse> {
         let request = ChatRequest {
-            model: self.provider.resolve_model_id(&self.settings.models.main.name),
+            model: self
+                .provider
+                .resolve_model_id(&self.settings.models.main.name),
             messages,
             max_tokens: self.settings.models.transport.max_tokens,
             stream: false,
@@ -191,7 +194,9 @@ impl ApiClient {
         let anthropic_tools = tools.as_ref().map(|t| convert_tools_to_anthropic(t));
 
         let request = anthropic::AnthropicRequest {
-            model: self.provider.resolve_model_id(&self.settings.models.main.name),
+            model: self
+                .provider
+                .resolve_model_id(&self.settings.models.main.name),
             messages: anthropic_msgs,
             max_tokens: self.settings.models.transport.max_tokens,
             system: system_prompt,
@@ -250,7 +255,9 @@ impl ApiClient {
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<reqwest::Response> {
         let request = ChatRequest {
-            model: self.provider.resolve_model_id(&self.settings.models.main.name),
+            model: self
+                .provider
+                .resolve_model_id(&self.settings.models.main.name),
             messages,
             max_tokens: self.settings.models.transport.max_tokens,
             stream: true,
@@ -301,7 +308,9 @@ impl ApiClient {
         let anthropic_tools = tools.as_ref().map(|t| convert_tools_to_anthropic(t));
 
         let request = AnthropicRequest {
-            model: self.provider.resolve_model_id(&self.settings.models.main.name),
+            model: self
+                .provider
+                .resolve_model_id(&self.settings.models.main.name),
             messages: anthropic_msgs,
             max_tokens: self.settings.models.transport.max_tokens,
             system: system_prompt,

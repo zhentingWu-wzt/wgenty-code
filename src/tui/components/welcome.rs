@@ -1,4 +1,4 @@
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
@@ -24,7 +24,7 @@ pub fn render(f: &mut Frame, area: Rect) {
         Color::Rgb(100, 60, 150),
     ];
 
-    let mut lines: Vec<Line> = vec![Line::raw("")];
+    let mut lines: Vec<Line> = Vec::new();
 
     // Gradient ASCII logo
     for (i, logo_line) in logo_lines.iter().enumerate() {
@@ -59,54 +59,11 @@ pub fn render(f: &mut Frame, area: Rect) {
     )));
     lines.push(Line::raw(""));
 
-    // Feature bar divider
-    let divider = "─".repeat(area.width.min(70) as usize);
-    lines.push(Line::from(Span::styled(
-        format!("   {}", divider),
-        Style::default().fg(Color::Rgb(80, 60, 100)),
-    )));
-    lines.push(Line::from(vec![
-        Span::raw("     "),
-        Span::styled("⚡", Style::default().fg(Color::Rgb(255, 200, 50))),
-        Span::raw(" 启动 "),
-        Span::styled(
-            "2.5x",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(ratatui::style::Modifier::BOLD),
-        ),
-        Span::raw("   "),
-        Span::styled("💾", Style::default().fg(Color::Rgb(100, 200, 255))),
-        Span::raw(" 内存 "),
-        Span::styled(
-            "-60%",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(ratatui::style::Modifier::BOLD),
-        ),
-        Span::raw("   "),
-        Span::styled("🚀", Style::default().fg(Color::Rgb(255, 140, 66))),
-        Span::raw(" 响应 "),
-        Span::styled(
-            "+40%",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(ratatui::style::Modifier::BOLD),
-        ),
-    ]));
-    lines.push(Line::from(Span::styled(
-        format!("   {}", divider),
-        Style::default().fg(Color::Rgb(80, 60, 100)),
-    )));
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(10), Constraint::Min(0)])
+        .split(area);
 
-    lines.push(Line::raw(""));
-    lines.push(Line::from(Span::styled(
-        "     输入 help 查看命令 · 输入 exit 退出",
-        Style::default()
-            .fg(Color::Rgb(150, 150, 160))
-            .add_modifier(ratatui::style::Modifier::ITALIC),
-    )));
-
-    let para = Paragraph::new(Text::from(lines)).alignment(Alignment::Left);
-    f.render_widget(para, area);
+    let para = Paragraph::new(Text::from(lines)).alignment(Alignment::Center);
+    f.render_widget(para, layout[0]);
 }
