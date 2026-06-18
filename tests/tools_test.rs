@@ -521,6 +521,173 @@ async fn test_skill_tool_depth_exceeded() {
 }
 
 #[tokio::test]
+async fn test_skill_tool_set_registry() {
+    use std::sync::Arc;
+    use wgenty_code::knowledge::{
+        ExternalSkillRegistry, ExternalSkillRoot, ExternalSkillSource,
+    };
+    use wgenty_code::tools::meta::SkillTool;
+    use wgenty_code::tools::Tool;
+
+    let repo = tempfile::tempdir().expect("tempdir should be created");
+    let root = repo.path().join(".wgenty-code/skills");
+    fs::create_dir_all(root.join("testskill")).unwrap();
+    fs::write(
+        root.join("testskill/SKILL.md"),
+        "---\nname: testskill\ndescription: Test\n---\n# Test Content",
+    )
+    .unwrap();
+
+    let external_registry = ExternalSkillRegistry::discover(vec![ExternalSkillRoot::new(
+        root.clone(),
+        ExternalSkillSource::ProjectWgentyCode { root: root.clone() },
+    )])
+    .unwrap();
+
+    // Start with no registry -- should return not-configured
+    let mut tool = SkillTool::new();
+    let err = tool
+        .execute(serde_json::json!({"skill": "testskill"}))
+        .await
+        .expect_err("should fail without registry");
+    assert_eq!(err.code.as_deref(), Some("skill_registry_unconfigured"));
+
+    // Wire registry via set_registry
+    tool.set_registry(Arc::new(external_registry));
+    let result = tool
+        .execute(serde_json::json!({"skill": "testskill"}))
+        .await
+        .expect("should work after set_registry");
+    assert_eq!(result.output_type, "markdown");
+    assert!(result.content.contains("# Test Content"));
+}
+
+#[tokio::test]
+async fn test_skill_tool_registry_wired_through_tool_registry() {
+    use std::sync::Arc;
+    use wgenty_code::knowledge::{
+        ExternalSkillRegistry, ExternalSkillRoot, ExternalSkillSource,
+    };
+
+    let repo = tempfile::tempdir().expect("tempdir should be created");
+    let root = repo.path().join(".wgenty-code/skills");
+    let skill_dir = root.join("comet");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: comet\ndescription: Comet workflow\n---\n# Comet\nInstructions.",
+    )
+    .unwrap();
+
+    let external_registry = ExternalSkillRegistry::discover(vec![ExternalSkillRoot::new(
+        root.clone(),
+        ExternalSkillSource::ProjectWgentyCode { root: root.clone() },
+    )])
+    .unwrap();
+
+    let mut registry = ToolRegistry::new();
+    registry.wire_skill_registry(Arc::new(external_registry));
+
+    let result = registry
+        .execute("skill", serde_json::json!({"skill": "comet"}))
+        .await
+        .expect("skill should load after wiring through ToolRegistry");
+    assert_eq!(result.output_type, "markdown");
+    assert!(result.content.contains("# Comet"));
+}
+
+#[tokio::test]
+async fn test_skill_tool_policy_denies_skill_load() {
+    use std::sync::Arc;
+    use wgenty_code::knowledge::{
+        ExternalSkillRegistry, ExternalSkillRoot, ExternalSkillSource, LoadedSkillContext,
+        PolicyDecision, SkillLoadEvent, SkillPolicy,
+    };
+    use wgenty_code::tools::meta::SkillTool;
+    use wgenty_code::tools::Tool;
+
+    struct DenyAllPolicy;
+    impl SkillPolicy for DenyAllPolicy {
+        fn before_skill_load(&self, _event: &SkillLoadEvent) -> PolicyDecision {
+            PolicyDecision::Deny {
+                message: "Denied for test purposes".to_string(),
+            }
+        }
+    }
+
+    let repo = tempfile::tempdir().expect("tempdir should be created");
+    let root = repo.path().join(".wgenty-code/skills");
+    fs::create_dir_all(root.join("testskill")).unwrap();
+    fs::write(
+        root.join("testskill/SKILL.md"),
+        "---\nname: testskill\ndescription: Test\n---\n# Test",
+    )
+    .unwrap();
+
+    let external_registry = ExternalSkillRegistry::discover(vec![ExternalSkillRoot::new(
+        root.clone(),
+        ExternalSkillSource::ProjectWgentyCode { root: root.clone() },
+    )])
+    .unwrap();
+
+    let mut tool =
+        SkillTool::with_registry(Arc::new(external_registry), LoadedSkillContext::default());
+    tool.set_policy(Arc::new(DenyAllPolicy));
+
+    let error = tool
+        .execute(serde_json::json!({"skill": "testskill"}))
+        .await
+        .expect_err("policy should deny skill load");
+
+    assert_eq!(error.code.as_deref(), Some("skill_policy_denied"));
+    assert!(error.message.contains("Denied"));
+}
+
+#[tokio::test]
+async fn test_skill_tool_policy_allows_skill_load() {
+    use std::sync::Arc;
+    use wgenty_code::knowledge::{
+        ExternalSkillRegistry, ExternalSkillRoot, ExternalSkillSource, LoadedSkillContext,
+        PolicyDecision, SkillLoadEvent, SkillPolicy,
+    };
+    use wgenty_code::tools::meta::SkillTool;
+    use wgenty_code::tools::Tool;
+
+    struct AllowAllPolicy;
+    impl SkillPolicy for AllowAllPolicy {
+        fn before_skill_load(&self, _event: &SkillLoadEvent) -> PolicyDecision {
+            PolicyDecision::Allow
+        }
+    }
+
+    let repo = tempfile::tempdir().expect("tempdir should be created");
+    let root = repo.path().join(".wgenty-code/skills");
+    fs::create_dir_all(root.join("testskill")).unwrap();
+    fs::write(
+        root.join("testskill/SKILL.md"),
+        "---\nname: testskill\ndescription: Test\n---\n# Test\nContent.",
+    )
+    .unwrap();
+
+    let external_registry = ExternalSkillRegistry::discover(vec![ExternalSkillRoot::new(
+        root.clone(),
+        ExternalSkillSource::ProjectWgentyCode { root: root.clone() },
+    )])
+    .unwrap();
+
+    let mut tool =
+        SkillTool::with_registry(Arc::new(external_registry), LoadedSkillContext::default());
+    tool.set_policy(Arc::new(AllowAllPolicy));
+
+    let result = tool
+        .execute(serde_json::json!({"skill": "testskill"}))
+        .await
+        .expect("policy should allow skill load");
+    assert_eq!(result.output_type, "markdown");
+    assert!(result.content.contains("Content"));
+}
+
+#[tokio::test]
 async fn test_glob_tool() {
     use serde_json::json;
     use tempfile::tempdir;

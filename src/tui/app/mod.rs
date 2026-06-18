@@ -97,6 +97,8 @@ pub struct App {
     pub completion_state: Option<CompletionState>,
     /// Shared, optional transcript store for browsing completed subagent records.
     pub transcript_store: Option<std::sync::Arc<crate::transcript::SubagentTranscriptStore>>,
+    /// External skill registry for resolving slash commands via route_slash_command.
+    pub external_skill_registry: Option<std::sync::Arc<crate::knowledge::ExternalSkillRegistry>>,
 }
 
 impl App {
@@ -161,9 +163,9 @@ impl App {
                 },
             ),
         ];
-        if let Ok(external_registry) =
-            crate::knowledge::ExternalSkillRegistry::discover(external_registry_roots)
-        {
+        let external_skill_registry =
+            crate::knowledge::ExternalSkillRegistry::discover(external_registry_roots).ok();
+        if let Some(ref external_registry) = external_skill_registry {
             for skill_def in external_registry.list() {
                 // Avoid duplicates: only add external skills not already in inventory
                 if !skill_inventory
@@ -302,6 +304,7 @@ impl App {
                     }
                 }
             },
+            external_skill_registry: external_skill_registry.map(std::sync::Arc::new),
         }
     }
 

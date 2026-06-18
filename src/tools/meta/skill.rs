@@ -4,7 +4,10 @@
 //! not-configured error, signalling that the runtime needs to be set up before
 //! skill resolution is available.
 
-use crate::knowledge::{ExternalSkillRegistry, LoadedSkillContext, LoadedSkillRecord};
+use crate::knowledge::{
+    ExternalSkillRegistry, LoadedSkillContext, LoadedSkillRecord, PolicyDecision, SkillLoadEvent,
+    SkillPolicy,
+};
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
@@ -17,6 +20,7 @@ use std::sync::{Arc, Mutex};
 pub struct SkillTool {
     registry: Option<Arc<ExternalSkillRegistry>>,
     loaded_context: Arc<Mutex<LoadedSkillContext>>,
+    policy: Option<Arc<dyn SkillPolicy>>,
 }
 
 impl SkillTool {
@@ -25,6 +29,7 @@ impl SkillTool {
         Self {
             registry: None,
             loaded_context: Arc::new(Mutex::new(LoadedSkillContext::default())),
+            policy: None,
         }
     }
 
@@ -36,7 +41,18 @@ impl SkillTool {
         Self {
             registry: Some(registry),
             loaded_context: Arc::new(Mutex::new(loaded_context)),
+            policy: None,
         }
+    }
+
+    /// Wire the external skill registry into an already-constructed tool.
+    pub fn set_registry(&mut self, registry: Arc<ExternalSkillRegistry>) {
+        self.registry = Some(registry);
+    }
+
+    /// Set the policy hook for skill lifecycle events.
+    pub fn set_policy(&mut self, policy: Arc<dyn SkillPolicy>) {
+        self.policy = Some(policy);
     }
 }
 
@@ -123,6 +139,28 @@ impl Tool for SkillTool {
                 code: Some("skill_not_found".to_string()),
             }
         })?;
+
+        // Policy hook: check before loading
+        if let Some(ref policy) = self.policy {
+            let event = SkillLoadEvent {
+                skill_name: skill_name.to_string(),
+                args: args.clone(),
+                depth,
+                loaded_context: context.clone(),
+            };
+            match policy.before_skill_load(&event) {
+                PolicyDecision::Deny { message } => {
+                    return Err(ToolError {
+                        message,
+                        code: Some("skill_policy_denied".to_string()),
+                    });
+                }
+                PolicyDecision::Warn { message } => {
+                    tracing::warn!("Skill policy warning for '{}': {}", skill_name, message);
+                }
+                PolicyDecision::Allow => {}
+            }
+        }
 
         let was_new = context.record_load(LoadedSkillRecord {
             name: skill.canonical_name.clone(),
