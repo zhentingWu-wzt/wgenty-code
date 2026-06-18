@@ -61,7 +61,7 @@ impl DaemonState {
 
         // Load team manager if .team/config.json exists
         let team_manager = {
-            let root = &app_state.settings.working_dir;
+            let root = &app_state.settings.storage.working_dir;
             TeamManager::load(root).map(Arc::new)
         };
 
@@ -70,7 +70,7 @@ impl DaemonState {
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
             let base_dirs = vec![
                 home.join(".wgenty-code"),
-                app_state.settings.working_dir.clone(),
+                app_state.settings.storage.working_dir.clone(),
             ];
             let loader = SkillLoader::load_from_dirs(&base_dirs);
             Arc::new(loader)
@@ -104,7 +104,7 @@ impl DaemonState {
             // of this Arc (created by Arc::new_cyclic).
             // Initialize optional transcript store for subagent persistence.
             let transcript_store = {
-                let db_path = std::path::PathBuf::from(&app_state.settings.transcript_db_path);
+                let db_path = std::path::PathBuf::from(&app_state.settings.storage.transcript.db_path);
                 match crate::transcript::SubagentTranscriptStore::open(&db_path) {
                     Ok(store) => Some(std::sync::Arc::new(store)),
                     Err(e) => {
@@ -122,7 +122,7 @@ impl DaemonState {
             );
             registry.register(Box::new(task_tool));
 
-            if app_state.settings.rlm.enabled && app_state.settings.rlm.delegate_tool {
+            if app_state.settings.agent.rlm.enabled && app_state.settings.agent.rlm.delegate_tool {
                 let rlm_tool = crate::tools::meta::rlm::RlmDelegateTool::new(
                     app_state.settings.clone(),
                     weak_reg.clone(),
@@ -144,6 +144,7 @@ impl DaemonState {
         // Initialize HookManager from settings hooks configuration
         let hooks_config = app_state
             .settings
+            .integrations
             .hooks
             .as_ref()
             .cloned()

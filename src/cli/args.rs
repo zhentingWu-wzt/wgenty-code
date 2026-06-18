@@ -240,7 +240,7 @@ impl Cli {
         let messages = vec![crate::api::ChatMessage::user(&prompt)];
         let base_url = client.get_base_url().to_string();
         let model = client.get_model().to_string();
-        let max_tokens = state.settings.api.max_tokens;
+        let max_tokens = state.settings.models.transport.max_tokens;
 
         let request_body = serde_json::json!({
             "model": model,

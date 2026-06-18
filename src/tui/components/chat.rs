@@ -303,10 +303,17 @@ pub fn render(
     let total_lines = lines.len() as u16;
     let viewport = area.height;
 
+    // Auto-scroll: always show newest content (bottom).
+    // Manual scroll: `scroll_offset` counts lines scrolled UP from bottom:
+    //   0 = at bottom (newest), max = at top (oldest).
+    // This convention ensures that transitioning from auto→manual never
+    // jumps — at auto-scroll bottom, scroll_offset starts at 0, which
+    // renders as bottom, not top.
+    let max_scroll = total_lines.saturating_sub(viewport);
     let actual_scroll = if user_scrolled {
-        scroll_offset.min(total_lines.saturating_sub(viewport))
+        max_scroll.saturating_sub(scroll_offset.min(max_scroll))
     } else {
-        total_lines.saturating_sub(viewport)
+        max_scroll
     };
 
     let para = Paragraph::new(Text::from(lines)).scroll((actual_scroll, 0));
@@ -472,16 +479,12 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
                 // Body lines: indented
                 let content_lines: Vec<&str> = msg.content.lines().collect();
                 let total = content_lines.len();
-                // When collapsed, show ONLY the header — skip body entirely so
-                // historical sessions don't drown the user in tool output. The
-                // "+N lines (Ctrl+O to expand)" hint below tells them how to
-                // recover the full body.
                 let show: Vec<&str> = if msg.tool_collapsed {
                     Vec::new()
                 } else {
                     content_lines
                         .iter()
-                        .take(MAX_TOOL_DISPLAY_LINES)
+                        .take(MAX_TOOL_EXPANDED_LINES)
                         .copied()
                         .collect()
                 };
@@ -521,21 +524,12 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
                     .collect()
             }
         }
-        MessageRole::System => msg
-            .content
-            .lines()
-            .map(|line| {
-                Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(DIM_COLOR),
-                ))
-            })
-            .collect(),
+        MessageRole::System => Vec::new(),
     }
 }
 
-/// Max lines to show in tool result before truncating.
-const MAX_TOOL_DISPLAY_LINES: usize = 5;
+/// Max lines to show in expanded tool result before truncating.
+const MAX_TOOL_EXPANDED_LINES: usize = 100;
 
 /// Map tool name to a human-readable action verb.
 fn tool_verb(name: &str) -> &str {
