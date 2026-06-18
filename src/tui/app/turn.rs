@@ -17,6 +17,7 @@ impl App {
                 tool_name: None,
                 content_collapsed: false,
                 tool_collapsed: false,
+                tool_running: false,
                 tool_args: None,
                 diff_data: None,
                 tool_metadata: None,

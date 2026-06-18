@@ -58,6 +58,7 @@ impl App {
                         tool_name: None,
                         content_collapsed: false,
                         tool_collapsed: true,
+                        tool_running: false,
                         tool_args: None,
                         diff_data: None,
                         tool_metadata: None,
@@ -463,9 +464,11 @@ impl App {
                     // Detail view: scroll the event timeline (0=top, higher=older)
                     if let Some(ref mut detail) = self.subagent_panel_state.detail_view {
                         if delta > 0 {
-                            detail.scroll_offset = detail.scroll_offset.saturating_sub(delta as usize);
+                            detail.scroll_offset =
+                                detail.scroll_offset.saturating_sub(delta as usize);
                         } else {
-                            detail.scroll_offset = detail.scroll_offset.saturating_add((-delta) as usize);
+                            detail.scroll_offset =
+                                detail.scroll_offset.saturating_add((-delta) as usize);
                         }
                     }
                     return;
@@ -554,6 +557,7 @@ impl App {
                         tool_args: None,
                         content_collapsed: false,
                         tool_collapsed: true,
+                        tool_running: false,
                         diff_data: None,
                         tool_metadata: None,
                     });
@@ -579,6 +583,7 @@ impl App {
                     tool_args: Some(args.clone()),
                     content_collapsed: false,
                     tool_collapsed: true,
+                    tool_running: true,
                     diff_data: None,
                     tool_metadata: None,
                 });
@@ -595,11 +600,12 @@ impl App {
                 // Replace the placeholder ToolStart message with the result
                 if let Some(last) = self.committed_messages.last_mut() {
                     if last.role == MessageRole::Tool
-                        && last.content.is_empty()
+                        && last.tool_running
                         && last.tool_name.as_deref() == Some(&name)
                     {
                         last.content = format_tool_result(&name, &args, &content);
                         last.tool_collapsed = true;
+                        last.tool_running = false;
                         last.diff_data = diff_data;
                         last.tool_metadata = tool_metadata;
                     } else {
@@ -611,6 +617,7 @@ impl App {
                             tool_args: Some(args),
                             content_collapsed: false,
                             tool_collapsed: true,
+                            tool_running: false,
                             diff_data,
                             tool_metadata,
                         });
@@ -628,6 +635,7 @@ impl App {
                     tool_name: None,
                     content_collapsed: false,
                     tool_collapsed: true,
+                    tool_running: false,
                     tool_args: None,
                     diff_data: None,
                     tool_metadata: None,
@@ -652,7 +660,11 @@ impl App {
                     .with_sandbox("workspace-write")
                     .with_approval("never")
                     .with_collaboration(
-                        new_settings.prompt.collaboration_mode.clone().unwrap_or_default(),
+                        new_settings
+                            .prompt
+                            .collaboration_mode
+                            .clone()
+                            .unwrap_or_default(),
                     );
                 let project_root =
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -669,6 +681,7 @@ impl App {
                     tool_name: None,
                     content_collapsed: false,
                     tool_collapsed: true,
+                    tool_running: false,
                     tool_args: None,
                     diff_data: None,
                     tool_metadata: None,
@@ -752,15 +765,13 @@ impl App {
             AppEvent::HistoryLoaded(messages) => {
                 // First pass: build tool_use_map from assistant messages' tool_calls
                 // Maps tool_call id -> (tool_name, tool_args)
-                let mut tool_use_map: HashMap<String, (String, serde_json::Value)> =
-                    HashMap::new();
+                let mut tool_use_map: HashMap<String, (String, serde_json::Value)> = HashMap::new();
                 for msg in &messages {
                     if let Some(tool_calls) = &msg.tool_calls {
                         for tc in tool_calls {
                             let args = serde_json::from_str(&tc.function.arguments)
                                 .unwrap_or(serde_json::Value::Null);
-                            tool_use_map
-                                .insert(tc.id.clone(), (tc.function.name.clone(), args));
+                            tool_use_map.insert(tc.id.clone(), (tc.function.name.clone(), args));
                         }
                     }
                 }
@@ -791,6 +802,7 @@ impl App {
                                 tool_args,
                                 content_collapsed,
                                 tool_collapsed,
+                                tool_running: false,
                                 diff_data: None,
                                 tool_metadata: None,
                             });
@@ -811,6 +823,7 @@ impl App {
                                 tool_args: None,
                                 content_collapsed,
                                 tool_collapsed,
+                                tool_running: false,
                                 diff_data: None,
                                 tool_metadata: None,
                             });
@@ -830,6 +843,7 @@ impl App {
                     tool_metadata: None,
                     content_collapsed: false,
                     tool_collapsed: false,
+                    tool_running: false,
                     diff_data: extract_diff_data("undo", &serde_json::json!({}), &output),
                 });
             }
@@ -862,20 +876,7 @@ impl App {
                 self.last_ctrl_c = Some(now);
             }
             AppEvent::PlanUpdate(value) => {
-                use crate::tui::components::plan_panel::PlanItem;
-                use crate::tui::components::plan_panel::PlanStatus;
-                if let Some(plan_array) = value.get("plan").and_then(|p| p.as_array()) {
-                    let items: Vec<PlanItem> = plan_array
-                        .iter()
-                        .filter_map(|v| {
-                            let step = v.get("step")?.as_str()?.to_string();
-                            let status_str = v.get("status")?.as_str().unwrap_or("pending");
-                            let status = PlanStatus::parse_status(status_str);
-                            Some(PlanItem { step, status })
-                        })
-                        .collect();
-                    self.plan_panel_state.update(items);
-                }
+                self.plan_panel_state.apply_update_value(&value);
             }
             AppEvent::ToggleTaskPanel => {
                 self.task_panel.toggle();
@@ -903,6 +904,7 @@ impl App {
                     tool_name: None,
                     content_collapsed: false,
                     tool_collapsed: true,
+                    tool_running: false,
                     tool_args: None,
                     diff_data: None,
                     tool_metadata: None,
@@ -922,6 +924,7 @@ impl App {
             tool_name: Some("ask".to_string()),
             content_collapsed: false,
             tool_collapsed: false,
+            tool_running: false,
             tool_args: None,
             diff_data: None,
             tool_metadata: None,
@@ -936,6 +939,7 @@ impl App {
             tool_name: Some("permission".to_string()),
             content_collapsed: false,
             tool_collapsed: false,
+            tool_running: false,
             tool_args: None,
             diff_data: None,
             tool_metadata: None,
