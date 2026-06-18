@@ -169,6 +169,19 @@ impl ToolRegistry {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
+    /// Wire the external skill registry into the `skill` tool so it can resolve external skills.
+    ///
+    /// Replaces the existing `SkillTool` (created via `SkillTool::new()` without a registry)
+    /// with one that has the registry wired, enabling the model to invoke external skills
+    /// via the `skill` tool.
+    pub fn wire_skill_registry(&mut self, registry: Arc<crate::knowledge::ExternalSkillRegistry>) {
+        let new_tool = Box::new(meta::skill::SkillTool::with_registry(
+            registry,
+            crate::knowledge::LoadedSkillContext::default(),
+        ));
+        self.tools.insert("skill".to_string(), new_tool);
+    }
+
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
         self.tools.get(name).map(|b| b.as_ref())
     }
