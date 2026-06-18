@@ -10,6 +10,7 @@ use crate::tui::util::{
     format_tool_result, tool_label,
 };
 use crossterm::event::{KeyCode, KeyModifiers};
+use std::collections::HashMap;
 
 impl App {
     pub(super) async fn handle_event(&mut self, event: AppEvent) {
@@ -343,26 +344,35 @@ impl App {
                     return;
                 }
                 // Scroll handling (when no popup is active)
-                // scroll_offset = ratatui-native: lines skipped from top (0 = oldest, max = newest)
+                // scroll_offset = lines scrolled UP from bottom:
+                //   0 = at bottom (newest), higher values = further up (older)
                 match key.code {
                     KeyCode::Up => {
-                        // Scroll UP → see OLDER content → fewer lines skipped from top
-                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                        // Scroll UP → see OLDER content → more lines from bottom
+                        self.scroll_offset = self.scroll_offset.saturating_add(1);
                         self.user_scrolled = true;
                         return;
                     }
                     KeyCode::Down => {
-                        // Scroll DOWN → see NEWER content → more lines skipped from top
-                        self.scroll_offset = self.scroll_offset.saturating_add(1);
+                        // Scroll DOWN → see NEWER content → fewer lines from bottom
+                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                        // If scrolled back to bottom, resume auto-scroll for future content
+                        if self.scroll_offset == 0 {
+                            self.user_scrolled = false;
+                        }
                         return;
                     }
                     KeyCode::PageUp => {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(10);
+                        self.scroll_offset = self.scroll_offset.saturating_add(10);
                         self.user_scrolled = true;
                         return;
                     }
                     KeyCode::PageDown => {
-                        self.scroll_offset = self.scroll_offset.saturating_add(10);
+                        self.scroll_offset = self.scroll_offset.saturating_sub(10);
+                        // If scrolled back to bottom, resume auto-scroll
+                        if self.scroll_offset == 0 {
+                            self.user_scrolled = false;
+                        }
                         return;
                     }
                     _ => {}
@@ -447,10 +457,35 @@ impl App {
                 }
             }
             AppEvent::MouseScrolled(delta) => {
+                // When a popup or detail view is active, route scroll appropriately
+                // instead of scrolling the main chat behind it.
+                if self.subagent_panel_state.detail_view.is_some() {
+                    // Detail view: scroll the event timeline (0=top, higher=older)
+                    if let Some(ref mut detail) = self.subagent_panel_state.detail_view {
+                        if delta > 0 {
+                            detail.scroll_offset = detail.scroll_offset.saturating_sub(delta as usize);
+                        } else {
+                            detail.scroll_offset = detail.scroll_offset.saturating_add((-delta) as usize);
+                        }
+                    }
+                    return;
+                }
+                if self.subagent_panel_visible || self.session_state.visible {
+                    // Subagent panel / session list: keyboard navigation only, ignore mouse scroll
+                    return;
+                }
+                // Main chat scroll: 0 = bottom (newest), larger = further up (older)
                 if delta > 0 {
-                    self.scroll_offset = self.scroll_offset.saturating_sub(delta as u16);
+                    // ScrollUp: see OLDER content → further from bottom
+                    self.scroll_offset = self.scroll_offset.saturating_add(delta as u16);
                 } else {
-                    self.scroll_offset = self.scroll_offset.saturating_add((-delta) as u16);
+                    // ScrollDown: see NEWER content → closer to bottom
+                    self.scroll_offset = self.scroll_offset.saturating_sub((-delta) as u16);
+                    // If scrolled back to bottom, resume auto-scroll for future content
+                    if self.scroll_offset == 0 {
+                        self.user_scrolled = false;
+                        return;
+                    }
                 }
                 self.user_scrolled = true;
             }
@@ -524,9 +559,12 @@ impl App {
                     });
                 }
                 self.streaming_active = false;
-                self.plan_panel_state.complete_active_items();
-                self.scroll_offset = 0;
-                self.user_scrolled = false;
+                // Only reset scroll position if user was at auto-scroll bottom.
+                // If the user scrolled up to read older content mid-stream,
+                // preserve their position across stream completion.
+                if !self.user_scrolled {
+                    self.scroll_offset = 0;
+                }
             }
             AppEvent::ToolStart { name, args } => {
                 // Clear any "preparing tools..." hint
@@ -614,7 +652,7 @@ impl App {
                     .with_sandbox("workspace-write")
                     .with_approval("never")
                     .with_collaboration(
-                        new_settings.collaboration_mode.clone().unwrap_or_default(),
+                        new_settings.prompt.collaboration_mode.clone().unwrap_or_default(),
                     );
                 let project_root =
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -712,35 +750,73 @@ impl App {
                 });
             }
             AppEvent::HistoryLoaded(messages) => {
-                // Convert ChatMessage to UIMessage for display
+                // First pass: build tool_use_map from assistant messages' tool_calls
+                // Maps tool_call id -> (tool_name, tool_args)
+                let mut tool_use_map: HashMap<String, (String, serde_json::Value)> =
+                    HashMap::new();
+                for msg in &messages {
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        for tc in tool_calls {
+                            let args = serde_json::from_str(&tc.function.arguments)
+                                .unwrap_or(serde_json::Value::Null);
+                            tool_use_map
+                                .insert(tc.id.clone(), (tc.function.name.clone(), args));
+                        }
+                    }
+                }
+
+                // Second pass: convert ChatMessage to UIMessage, filtering system messages
                 self.committed_messages.clear();
                 for msg in &messages {
-                    let role = match msg.role.as_str() {
-                        "user" => MessageRole::User,
-                        "assistant" => MessageRole::Assistant,
-                        "tool" => MessageRole::Tool,
-                        _ => MessageRole::System,
-                    };
-                    // Skip tool messages when restoring history — they create
-                    // excessive noise on session reload. Tool calls remain
-                    // available in the underlying conversation_history for the
-                    // model; only the visual stream is filtered.
-                    if matches!(role, MessageRole::Tool) {
-                        continue;
+                    match msg.role.as_str() {
+                        "system" => continue,
+                        "tool" => {
+                            let (tool_name, tool_args) = msg
+                                .tool_call_id
+                                .as_ref()
+                                .and_then(|id| tool_use_map.get(id))
+                                .map(|(n, a)| (Some(n.clone()), Some(a.clone())))
+                                .unwrap_or_else(|| {
+                                    // Fallback: use the call_id as the display name
+                                    (msg.tool_call_id.clone(), None)
+                                });
+                            let role = MessageRole::Tool;
+                            let content = msg.content.clone().unwrap_or_default();
+                            let (content_collapsed, tool_collapsed) =
+                                compute_collapse_state(&role, &content);
+                            self.committed_messages.push(UIMessage {
+                                role,
+                                content,
+                                tool_name,
+                                tool_args,
+                                content_collapsed,
+                                tool_collapsed,
+                                diff_data: None,
+                                tool_metadata: None,
+                            });
+                        }
+                        "user" | "assistant" => {
+                            let role = if msg.role == "user" {
+                                MessageRole::User
+                            } else {
+                                MessageRole::Assistant
+                            };
+                            let content = msg.content.clone().unwrap_or_default();
+                            let (content_collapsed, tool_collapsed) =
+                                compute_collapse_state(&role, &content);
+                            self.committed_messages.push(UIMessage {
+                                role,
+                                content,
+                                tool_name: None,
+                                tool_args: None,
+                                content_collapsed,
+                                tool_collapsed,
+                                diff_data: None,
+                                tool_metadata: None,
+                            });
+                        }
+                        _ => continue,
                     }
-                    let content = msg.content.clone().unwrap_or_default();
-                    let (content_collapsed, tool_collapsed) =
-                        compute_collapse_state(&role, &content);
-                    self.committed_messages.push(UIMessage {
-                        role,
-                        content,
-                        tool_name: msg.tool_call_id.clone(),
-                        tool_args: None,
-                        content_collapsed,
-                        tool_collapsed,
-                        diff_data: None,
-                        tool_metadata: None,
-                    });
                 }
                 self.scroll_offset = 0;
                 self.user_scrolled = false;

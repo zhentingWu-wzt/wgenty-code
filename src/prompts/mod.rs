@@ -123,7 +123,7 @@ pub fn assemble_instructions(
     }
 
     // ── Layer 3: Developer Instructions (from settings) ─────────────────
-    if let Some(ref dev_instr) = settings.developer_instructions {
+    if let Some(ref dev_instr) = settings.prompt.developer_instructions {
         if !dev_instr.trim().is_empty() {
             system_messages.push(ChatMessage::system(format!(
                 "<developer_instructions>\n{}\n</developer_instructions>",
@@ -143,7 +143,7 @@ pub fn assemble_instructions(
     system_messages.push(ChatMessage::system(env_text));
 
     // ── Layer 6: Skills (discoverable + on-demand via load_skill tool) ──
-    if settings.include_skill_instructions && !context.skills_inventory.is_empty() {
+    if settings.prompt.include.skills && !context.skills_inventory.is_empty() {
         let mut skills_lines = Vec::new();
         for skill in &context.skills_inventory {
             skills_lines.push(format!("- `{}`: {}", skill.name, skill.description));

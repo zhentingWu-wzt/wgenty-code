@@ -142,7 +142,7 @@ impl ToolRegistry {
     /// The local tool uses DuckDuckGo by default (zero-config), with optional
     /// Tavily fallback.
     pub fn with_settings(mut self, settings: &crate::config::Settings) -> Self {
-        let provider = crate::api::provider::detect_provider(&settings.api.get_base_url());
+        let provider = crate::api::provider::detect_provider(&settings.models.main.endpoint_base_url());
 
         // Whitelist: only these providers lack built-in web search.
         const PROVIDERS_WITHOUT_BUILTIN_SEARCH: &[&str] = &["deepseek", "openai"];

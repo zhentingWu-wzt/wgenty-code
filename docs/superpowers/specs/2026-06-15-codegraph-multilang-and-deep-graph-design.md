@@ -2,6 +2,8 @@
 comet_change: codegraph-multilang-and-deep-graph
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-15-codegraph-multilang-and-deep-graph
+status: final
 ---
 
 # Codegraph Multilang & Deep Graph — 技术设计
