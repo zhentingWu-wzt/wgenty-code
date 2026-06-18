@@ -6,7 +6,7 @@ base-ref: 114424659d602468c4bfbfa981a344e5c8792ec6
 
 # External Skill Runtime Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add a wgenty-code-native external instruction skill runtime that can discover, list, load, route, and nest Claude Code-style markdown skills such as Comet without hardcoding those workflows.
 
@@ -46,7 +46,7 @@ Do not implement Comet-specific policy enforcement in this change.
 - Modify: `src/knowledge/mod.rs`
 - Test: `tests/skills_test.rs`
 
-- [ ] **Step 1: Write failing tests for metadata parsing and canonical names**
+- [x] **Step 1: Write failing tests for metadata parsing and canonical names**
 
 Add tests to `tests/skills_test.rs`:
 
@@ -110,7 +110,7 @@ fn test_external_skill_source_labels() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run:
 
@@ -120,7 +120,7 @@ cargo test --test skills_test external_skill -- --nocapture
 
 Expected: FAIL because `ExternalSkillSource`, `parse_external_skill_document`, and `derive_canonical_skill_name` do not exist yet.
 
-- [ ] **Step 3: Implement `src/knowledge/external.rs`**
+- [x] **Step 3: Implement `src/knowledge/external.rs`**
 
 Create `src/knowledge/external.rs`:
 
@@ -289,7 +289,7 @@ pub fn derive_canonical_skill_name(
 }
 ```
 
-- [ ] **Step 4: Export new types from `src/knowledge/mod.rs`**
+- [x] **Step 4: Export new types from `src/knowledge/mod.rs`**
 
 Add module and exports:
 
@@ -302,7 +302,7 @@ pub use external::{
 };
 ```
 
-- [ ] **Step 5: Run tests to verify Task 1 passes**
+- [x] **Step 5: Run tests to verify Task 1 passes**
 
 Run:
 
@@ -312,7 +312,7 @@ cargo test --test skills_test external_skill -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 1**
+- [x] **Step 6: Commit Task 1**
 
 ```bash
 git add src/knowledge/external.rs src/knowledge/mod.rs tests/skills_test.rs
@@ -326,7 +326,7 @@ git commit -m "feat(skills): add external skill data model"
 - Modify: `src/knowledge/mod.rs`
 - Test: `tests/skills_test.rs`
 
-- [ ] **Step 1: Write failing tests for discovery priority and shadowing**
+- [x] **Step 1: Write failing tests for discovery priority and shadowing**
 
 Add tests to `tests/skills_test.rs`:
 
@@ -423,7 +423,7 @@ fn test_external_registry_suggests_similar_names() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run:
 
@@ -433,7 +433,7 @@ cargo test --test skills_test external_registry -- --nocapture
 
 Expected: FAIL because `ExternalSkillRegistry` and `ExternalSkillRoot` do not exist.
 
-- [ ] **Step 3: Implement `src/knowledge/external_registry.rs`**
+- [x] **Step 3: Implement `src/knowledge/external_registry.rs`**
 
 Create `src/knowledge/external_registry.rs`:
 
@@ -634,7 +634,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 }
 ```
 
-- [ ] **Step 4: Export registry types**
+- [x] **Step 4: Export registry types**
 
 Update `src/knowledge/mod.rs`:
 
@@ -644,7 +644,7 @@ pub mod external_registry;
 pub use external_registry::{ExternalSkillRegistry, ExternalSkillRoot};
 ```
 
-- [ ] **Step 5: Run registry tests**
+- [x] **Step 5: Run registry tests**
 
 Run:
 
@@ -654,7 +654,7 @@ cargo test --test skills_test external_registry -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 2**
+- [x] **Step 6: Commit Task 2**
 
 ```bash
 git add src/knowledge/external_registry.rs src/knowledge/mod.rs tests/skills_test.rs
@@ -668,7 +668,7 @@ git commit -m "feat(skills): discover external skill roots"
 - Modify: `src/knowledge/mod.rs`
 - Test: `tests/skills_test.rs`
 
-- [ ] **Step 1: Write failing tests for default policy and denial**
+- [x] **Step 1: Write failing tests for default policy and denial**
 
 Add tests to `tests/skills_test.rs`:
 
@@ -718,7 +718,7 @@ fn test_loaded_skill_context_depth_limit() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run:
 
@@ -728,7 +728,7 @@ cargo test --test skills_test loaded_skill_context default_allow_policy -- --noc
 
 Expected: FAIL because policy and context types do not exist.
 
-- [ ] **Step 3: Implement `src/knowledge/policy.rs`**
+- [x] **Step 3: Implement `src/knowledge/policy.rs`**
 
 Create `src/knowledge/policy.rs`:
 
@@ -822,7 +822,7 @@ pub struct DefaultAllowPolicy;
 impl SkillPolicy for DefaultAllowPolicy {}
 ```
 
-- [ ] **Step 4: Export policy types**
+- [x] **Step 4: Export policy types**
 
 Update `src/knowledge/mod.rs`:
 
@@ -835,7 +835,7 @@ pub use policy::{
 };
 ```
 
-- [ ] **Step 5: Run policy tests**
+- [x] **Step 5: Run policy tests**
 
 Run:
 
@@ -845,7 +845,7 @@ cargo test --test skills_test loaded_skill_context default_allow_policy -- --noc
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 3**
+- [x] **Step 6: Commit Task 3**
 
 ```bash
 git add src/knowledge/policy.rs src/knowledge/mod.rs tests/skills_test.rs
@@ -860,7 +860,7 @@ git commit -m "feat(skills): add skill policy hooks"
 - Modify: `src/tools/mod.rs`
 - Test: `tests/tools_test.rs`
 
-- [ ] **Step 1: Write failing tests for tool registration and schema**
+- [x] **Step 1: Write failing tests for tool registration and schema**
 
 Add tests to `tests/tools_test.rs`:
 
@@ -880,7 +880,7 @@ async fn test_skill_tool_registered() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -890,7 +890,7 @@ cargo test --test tools_test test_skill_tool_registered -- --nocapture
 
 Expected: FAIL because `skill` tool is not registered.
 
-- [ ] **Step 3: Implement `src/tools/meta/skill.rs`**
+- [x] **Step 3: Implement `src/tools/meta/skill.rs`**
 
 Create a minimal read-only tool first. It can return a clear not-configured error until the registry is wired in Task 5:
 
@@ -946,7 +946,7 @@ impl Tool for SkillTool {
 }
 ```
 
-- [ ] **Step 4: Export and register the tool**
+- [x] **Step 4: Export and register the tool**
 
 Update `src/tools/meta/mod.rs`:
 
@@ -967,7 +967,7 @@ Update re-export list:
 SkillTool,
 ```
 
-- [ ] **Step 5: Run tool registration test**
+- [x] **Step 5: Run tool registration test**
 
 Run:
 
@@ -977,7 +977,7 @@ cargo test --test tools_test test_skill_tool_registered -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 4**
+- [x] **Step 6: Commit Task 4**
 
 ```bash
 git add src/tools/meta/skill.rs src/tools/meta/mod.rs src/tools/mod.rs tests/tools_test.rs
@@ -992,7 +992,7 @@ git commit -m "feat(tools): add skill runtime tool"
 - Modify: `src/tools/mod.rs`
 - Test: `tests/tools_test.rs`
 
-- [ ] **Step 1: Write failing tests for registry-backed skill tool execution**
+- [x] **Step 1: Write failing tests for registry-backed skill tool execution**
 
 Add tests to `tests/tools_test.rs`:
 
@@ -1071,7 +1071,7 @@ async fn test_skill_tool_missing_skill_suggests_similar_name() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run:
 
@@ -1081,7 +1081,7 @@ cargo test --test tools_test skill_tool_ -- --nocapture
 
 Expected: FAIL because `SkillTool::with_registry` and registry-backed execution do not exist.
 
-- [ ] **Step 3: Implement registry-backed `SkillTool`**
+- [x] **Step 3: Implement registry-backed `SkillTool`**
 
 Update `src/tools/meta/skill.rs`:
 
@@ -1223,7 +1223,7 @@ impl Tool for SkillTool {
 }
 ```
 
-- [ ] **Step 4: Preserve `load_skill` compatibility**
+- [x] **Step 4: Preserve `load_skill` compatibility**
 
 Do not remove `LoadSkillTool`. If changing it to use `ExternalSkillRegistry`, keep its current behavior:
 
@@ -1233,7 +1233,7 @@ Do not remove `LoadSkillTool`. If changing it to use `ExternalSkillRegistry`, ke
 
 If no registry is available in `ToolRegistry::new()`, keep `load_skill` unchanged for now and only add registry-backed behavior in call sites that can supply a registry.
 
-- [ ] **Step 5: Run skill tool tests**
+- [x] **Step 5: Run skill tool tests**
 
 Run:
 
@@ -1243,7 +1243,7 @@ cargo test --test tools_test skill_tool_ -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 5**
+- [x] **Step 6: Commit Task 5**
 
 ```bash
 git add src/tools/meta/skill.rs src/tools/meta/load_skill.rs src/tools/mod.rs tests/tools_test.rs
@@ -1257,7 +1257,7 @@ git commit -m "feat(skills): load external skills with skill tool"
 - Modify: slash command handling file discovered by search before implementation
 - Test: add or extend the nearest prompt/routing test file
 
-- [ ] **Step 1: Locate slash command routing**
+- [x] **Step 1: Locate slash command routing**
 
 Run:
 
@@ -1267,7 +1267,7 @@ grep -R "strip_prefix(\"/\"\|slash\|command" -n src tests
 
 Expected: identify the smallest existing handler for user slash commands. If none exists, create a pure helper in the module that receives `(input, builtins, external_registry)` and returns a routing enum.
 
-- [ ] **Step 2: Write failing tests for routing helper**
+- [x] **Step 2: Write failing tests for routing helper**
 
 Add tests near the routing helper:
 
@@ -1287,7 +1287,7 @@ fn test_slash_routing_builtin_wins() {
 }
 ```
 
-- [ ] **Step 3: Implement built-in-first external fallback**
+- [x] **Step 3: Implement built-in-first external fallback**
 
 Implement the smallest routing helper needed by the existing loop:
 
@@ -1309,7 +1309,7 @@ Rules:
 - built-ins win over external skills
 - unknown returns suggestions from `ExternalSkillRegistry::suggest`
 
-- [ ] **Step 4: Wire prompt inventory**
+- [x] **Step 4: Wire prompt inventory**
 
 Where prompt context is built, convert `ExternalSkillRegistry::list()` into `Vec<SkillEntry>`:
 
@@ -1322,7 +1322,7 @@ SkillEntry {
 
 Keep `prompts/mod.rs` behavior compact: names and descriptions only.
 
-- [ ] **Step 5: Run routing/prompt tests**
+- [x] **Step 5: Run routing/prompt tests**
 
 Run the nearest tests identified in Step 1. Also run:
 
@@ -1333,7 +1333,7 @@ cargo test --test tools_test test_skill_tool_registered -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit Task 6**
+- [x] **Step 6: Commit Task 6**
 
 ```bash
 git add src/prompts/mod.rs <slash-routing-file> <routing-test-file>
@@ -1347,7 +1347,7 @@ git commit -m "feat(skills): route slash commands to external skills"
 - Potentially modify: `src/plugins/registry.rs` or the existing plugin cache integration point discovered during implementation
 - Test: `tests/skills_test.rs`
 
-- [ ] **Step 1: Write failing plugin cache fixture test**
+- [x] **Step 1: Write failing plugin cache fixture test**
 
 Add to `tests/skills_test.rs`:
 
@@ -1391,7 +1391,7 @@ fn test_external_registry_discovers_plugin_cache_skill() {
 }
 ```
 
-- [ ] **Step 2: Run plugin cache test**
+- [x] **Step 2: Run plugin cache test**
 
 Run:
 
@@ -1401,7 +1401,7 @@ cargo test --test skills_test plugin_cache_skill -- --nocapture
 
 Expected: FAIL if plugin cache source handling is incomplete, PASS if Task 2 already covers it generically. If it passes, still keep the fixture as regression coverage.
 
-- [ ] **Step 3: Add helper for enabled plugin roots if needed**
+- [x] **Step 3: Add helper for enabled plugin roots if needed**
 
 If implementation needs a helper, add a method such as:
 
@@ -1411,7 +1411,7 @@ ExternalSkillRoot::plugin_cache(plugin_name, version, plugin_root.join("skills")
 
 Do not execute plugin commands or load plugin modules for instruction skill discovery.
 
-- [ ] **Step 4: Run plugin cache test again**
+- [x] **Step 4: Run plugin cache test again**
 
 Run:
 
@@ -1421,7 +1421,7 @@ cargo test --test skills_test plugin_cache_skill -- --nocapture
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 7**
+- [x] **Step 5: Commit Task 7**
 
 ```bash
 git add src/knowledge/external_registry.rs tests/skills_test.rs
@@ -1434,7 +1434,7 @@ git commit -m "feat(skills): discover plugin cache skills"
 - Modify: `openspec/changes/external-skill-runtime/tasks.md`
 - Maybe modify docs if implementation exposed user-facing behavior
 
-- [ ] **Step 1: Run focused tests**
+- [x] **Step 1: Run focused tests**
 
 Run:
 
@@ -1447,7 +1447,7 @@ cargo test --test tools_test skill_tool_ -- --nocapture
 
 Expected: all PASS.
 
-- [ ] **Step 2: Run broader tests**
+- [x] **Step 2: Run broader tests**
 
 Run:
 
@@ -1457,7 +1457,7 @@ cargo test --all
 
 Expected: PASS.
 
-- [ ] **Step 3: Run format and clippy**
+- [x] **Step 3: Run format and clippy**
 
 Run:
 
@@ -1468,7 +1468,7 @@ cargo clippy --all-targets -- -D warnings
 
 Expected: PASS.
 
-- [ ] **Step 4: Manually verify minimal external skill flow**
+- [x] **Step 4: Manually verify minimal external skill flow**
 
 Create a temporary fixture outside committed source or use a test fixture:
 
@@ -1487,11 +1487,11 @@ loads `comet`, preserves `ARGUMENTS: test`, and nested `skill({ skill: "comet-op
 
 Expected: skill body includes base directory, markdown body, and arguments.
 
-- [ ] **Step 5: Update OpenSpec task checkboxes after verified implementation**
+- [x] **Step 5: Update OpenSpec task checkboxes after verified implementation**
 
 Only after implementation and tests pass, update `openspec/changes/external-skill-runtime/tasks.md` checkboxes corresponding to completed work.
 
-- [ ] **Step 6: Commit verification/task sync**
+- [x] **Step 6: Commit verification/task sync**
 
 ```bash
 git add openspec/changes/external-skill-runtime/tasks.md
