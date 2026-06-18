@@ -40,6 +40,12 @@ impl SkillTool {
     }
 }
 
+impl Default for SkillTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Tool for SkillTool {
     fn name(&self) -> &str {

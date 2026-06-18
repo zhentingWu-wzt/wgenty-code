@@ -675,7 +675,8 @@ impl App {
                 // Load skills inventory (including external skills)
                 let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
                 let skills_dirs = vec![home.join(".wgenty-code").join("skills")];
-                let skill_loader = crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);
+                let skill_loader =
+                    crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);
                 let mut skill_inventory: Vec<crate::prompts::SkillEntry> = Vec::new();
                 for name in skill_loader.skill_names() {
                     if let Some(skill) = skill_loader.load_skill(&name) {
@@ -705,7 +706,10 @@ impl App {
                     crate::knowledge::ExternalSkillRegistry::discover(external_registry_roots)
                 {
                     for skill_def in external_registry.list() {
-                        if !skill_inventory.iter().any(|s| s.name == skill_def.canonical_name) {
+                        if !skill_inventory
+                            .iter()
+                            .any(|s| s.name == skill_def.canonical_name)
+                        {
                             skill_inventory.push(crate::prompts::SkillEntry {
                                 name: skill_def.canonical_name.clone(),
                                 description: skill_def.description.clone(),
