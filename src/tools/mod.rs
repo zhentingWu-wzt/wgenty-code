@@ -120,6 +120,7 @@ impl ToolRegistry {
         registry.register(Box::new(meta::compact::CompactTool::new()));
         registry.register(Box::new(meta::lsp::LspTool::new()));
         registry.register(Box::new(meta::note_edit::NoteEditTool::new()));
+        registry.register(Box::new(crate::tasks::management::TaskManagementTool::new()));
         // CodeGraph tools (lazy-init from .codegraph/index.db)
         registry.register(Box::new(codegraph::tools::CodegraphNodeTool::new()));
         registry.register(Box::new(codegraph::tools::CodegraphExploreTool::new()));

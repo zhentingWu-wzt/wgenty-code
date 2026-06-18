@@ -126,10 +126,7 @@ impl Translator {
 
     /// Get the text direction (LTR or RTL)
     pub fn text_direction(&self) -> TextDirection {
-        match self.current_language {
-            // Add RTL languages here when supported
-            _ => TextDirection::Ltr,
-        }
+        TextDirection::Ltr
     }
 
     /// Get plural form for a number

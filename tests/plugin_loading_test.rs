@@ -84,7 +84,7 @@ async fn test_load_all_cc_priority_over_legacy() {
     // Both should be loaded (different keys: "myplugin@testpub" vs "myplugin")
     // The registry key for CC format is "myplugin@testpub" vs legacy "myplugin"
     assert!(
-        plugins.len() >= 1,
+        !plugins.is_empty(),
         "Expected at least 1 plugin, got {}",
         plugins.len()
     );

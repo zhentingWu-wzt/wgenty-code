@@ -156,9 +156,9 @@ pub enum AppEvent {
     /// Todo items updated from daemon
     TodosUpdated(Vec<TodoItem>),
     /// Settings were hot-reloaded from disk
-    ConfigChanged(crate::config::Settings),
+    ConfigChanged(Box<crate::config::Settings>),
     /// A subagent progress update from daemon polling.
-    SubagentUpdate(SubagentProgress),
+    SubagentUpdate(Box<SubagentProgress>),
     /// Toggle the subagent monitor panel.
     ToggleSubagentPanel,
     /// Retry a failed/cancelled subagent by node_id.

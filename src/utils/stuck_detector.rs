@@ -10,6 +10,12 @@ pub struct StuckDetector {
     stale_rounds: usize,
 }
 
+impl Default for StuckDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StuckDetector {
     pub fn new() -> Self {
         Self {

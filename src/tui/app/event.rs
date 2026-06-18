@@ -416,13 +416,8 @@ impl App {
                 // Feed to tui-textarea for CJK/IME input.
                 // Returns true if tui-textarea consumed the key.
                 let handled = self.input_box.textarea.input(*key);
-                if !handled {
-                    match key.code {
-                        KeyCode::Esc => {
-                            self.should_quit = true;
-                        }
-                        _ => {}
-                    }
+                if !handled && key.code == KeyCode::Esc {
+                    self.should_quit = true;
                 }
                 // Update filter as user types more characters after @ or /
                 if self
@@ -529,6 +524,7 @@ impl App {
                     });
                 }
                 self.streaming_active = false;
+                self.plan_panel_state.complete_active_items();
                 self.scroll_offset = 0;
                 self.user_scrolled = false;
             }
@@ -762,7 +758,7 @@ impl App {
                 });
             }
             AppEvent::SubagentUpdate(progress) => {
-                self.subagent_tree.upsert(progress);
+                self.subagent_tree.upsert(*progress);
             }
             AppEvent::ToggleSubagentPanel => {
                 self.subagent_panel_visible = !self.subagent_panel_visible;
@@ -798,7 +794,7 @@ impl App {
                         .filter_map(|v| {
                             let step = v.get("step")?.as_str()?.to_string();
                             let status_str = v.get("status")?.as_str().unwrap_or("pending");
-                            let status = PlanStatus::from_str(status_str);
+                            let status = PlanStatus::parse_status(status_str);
                             Some(PlanItem { step, status })
                         })
                         .collect();

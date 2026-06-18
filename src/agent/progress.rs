@@ -489,14 +489,14 @@ mod tests {
         let error_msg = Some("Token budget exceeded: limit 10k, used 15k".to_string());
         let current_tool = Some("read_file".to_string());
         let current_params = Some("src/main.rs".to_string());
-        let round = Some(5usize);
+        let round = 5usize;
 
         let details = error_msg.as_ref().map(|msg| ErrorInfo {
             error_type: ErrorType::Unknown,
             message: msg.clone(),
             last_tool: current_tool.clone(),
             last_params: current_params.clone(),
-            round: round.unwrap_or(0) as u32,
+            round: round as u32,
             retryable: true,
         });
 
@@ -518,14 +518,13 @@ mod tests {
         let error_msg: Option<String> = None;
         let current_tool: Option<String> = None;
         let current_params: Option<String> = None;
-        let round: Option<usize> = None;
 
         let details = error_msg.as_ref().map(|msg| ErrorInfo {
             error_type: ErrorType::Unknown,
             message: msg.clone(),
             last_tool: current_tool.clone(),
             last_params: current_params.clone(),
-            round: round.unwrap_or(0) as u32,
+            round: 0,
             retryable: true,
         });
 

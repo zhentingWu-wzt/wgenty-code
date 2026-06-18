@@ -228,22 +228,23 @@ impl App {
             completion_engine: {
                 let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
                 let skills_dir = home.join(".claude").join("skills");
-                let mut builtin_commands = Vec::new();
-                builtin_commands.push(crate::tui::completion::CommandEntry {
-                    name: "code-review".to_string(),
-                    description: "Review code changes".to_string(),
-                    args_hint: None,
-                });
-                builtin_commands.push(crate::tui::completion::CommandEntry {
-                    name: "clear".to_string(),
-                    description: "Clear screen".to_string(),
-                    args_hint: None,
-                });
-                builtin_commands.push(crate::tui::completion::CommandEntry {
-                    name: "help".to_string(),
-                    description: "Show help".to_string(),
-                    args_hint: None,
-                });
+                let builtin_commands = vec![
+                    crate::tui::completion::CommandEntry {
+                        name: "code-review".to_string(),
+                        description: "Review code changes".to_string(),
+                        args_hint: None,
+                    },
+                    crate::tui::completion::CommandEntry {
+                        name: "clear".to_string(),
+                        description: "Clear screen".to_string(),
+                        args_hint: None,
+                    },
+                    crate::tui::completion::CommandEntry {
+                        name: "help".to_string(),
+                        description: "Show help".to_string(),
+                        args_hint: None,
+                    },
+                ];
                 Some(crate::tui::completion::CompletionEngine::load(
                     &skills_dir,
                     &builtin_commands,

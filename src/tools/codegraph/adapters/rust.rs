@@ -395,7 +395,7 @@ impl<'a> RustExtractor<'a> {
 mod tests {
     use super::*;
     use crate::tools::codegraph::adapters::LanguageAdapter;
-    use crate::tools::codegraph::types::{RefKind, RelKind, SymbolKind, Visibility};
+    use crate::tools::codegraph::types::{RelKind, SymbolKind, Visibility};
 
     fn adapter() -> RustAdapter {
         RustAdapter::new()
