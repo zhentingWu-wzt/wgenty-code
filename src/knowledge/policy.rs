@@ -36,11 +36,9 @@ impl LoadedSkillContext {
     /// Record a skill load. Returns `true` if the record is new (name+source_path not already seen),
     /// `false` if it was already loaded.
     pub fn record_load(&mut self, record: LoadedSkillRecord) -> bool {
-        if self
-            .records
-            .iter()
-            .any(|existing| existing.name == record.name && existing.source_path == record.source_path)
-        {
+        if self.records.iter().any(|existing| {
+            existing.name == record.name && existing.source_path == record.source_path
+        }) {
             return false;
         }
         self.records.push(record);

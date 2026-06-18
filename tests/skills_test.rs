@@ -162,9 +162,7 @@ fn test_external_skill_error_display_path_not_under_root() {
 
 #[test]
 fn test_external_skill_error_display_unsupported_path() {
-    let err = ExternalSkillError::UnsupportedPath(PathBuf::from(
-        "skills/a/b/c/SKILL.md",
-    ));
+    let err = ExternalSkillError::UnsupportedPath(PathBuf::from("skills/a/b/c/SKILL.md"));
     let msg = err.to_string();
     assert!(msg.contains("unsupported skill path"));
 }
@@ -288,17 +286,32 @@ fn test_external_registry_project_shadows_user_skill() {
     let repo = TempDir::new().unwrap();
     let user = TempDir::new().unwrap();
 
-    write_skill(repo.path(), ".wgenty-code/skills/comet/SKILL.md",
-        "---\nname: comet\ndescription: Project Comet\n---\n# Project");
-    write_skill(user.path(), ".wgenty-code/skills/comet/SKILL.md",
-        "---\nname: comet\ndescription: User Comet\n---\n# User");
+    write_skill(
+        repo.path(),
+        ".wgenty-code/skills/comet/SKILL.md",
+        "---\nname: comet\ndescription: Project Comet\n---\n# Project",
+    );
+    write_skill(
+        user.path(),
+        ".wgenty-code/skills/comet/SKILL.md",
+        "---\nname: comet\ndescription: User Comet\n---\n# User",
+    );
 
     let registry = ExternalSkillRegistry::discover(vec![
-        ExternalSkillRoot::new(repo.path().join(".wgenty-code/skills"),
-            ExternalSkillSource::ProjectWgentyCode { root: repo.path().join(".wgenty-code/skills") }),
-        ExternalSkillRoot::new(user.path().join(".wgenty-code/skills"),
-            ExternalSkillSource::UserWgentyCode { root: user.path().join(".wgenty-code/skills") }),
-    ]).expect("registry should discover skills");
+        ExternalSkillRoot::new(
+            repo.path().join(".wgenty-code/skills"),
+            ExternalSkillSource::ProjectWgentyCode {
+                root: repo.path().join(".wgenty-code/skills"),
+            },
+        ),
+        ExternalSkillRoot::new(
+            user.path().join(".wgenty-code/skills"),
+            ExternalSkillSource::UserWgentyCode {
+                root: user.path().join(".wgenty-code/skills"),
+            },
+        ),
+    ])
+    .expect("registry should discover skills");
 
     let skill = registry.resolve("comet").expect("comet should resolve");
     assert_eq!(skill.description, "Project Comet");
@@ -324,13 +337,19 @@ fn test_external_skill_error_no_parent_directory() {
 #[test]
 fn test_external_registry_suggests_similar_names() {
     let repo = TempDir::new().unwrap();
-    write_skill(repo.path(), ".wgenty-code/skills/comet/SKILL.md",
-        "---\nname: comet\ndescription: Comet\n---\n# Comet");
+    write_skill(
+        repo.path(),
+        ".wgenty-code/skills/comet/SKILL.md",
+        "---\nname: comet\ndescription: Comet\n---\n# Comet",
+    );
 
     let registry = ExternalSkillRegistry::discover(vec![ExternalSkillRoot::new(
         repo.path().join(".wgenty-code/skills"),
-        ExternalSkillSource::ProjectWgentyCode { root: repo.path().join(".wgenty-code/skills") },
-    )]).expect("registry should discover skills");
+        ExternalSkillSource::ProjectWgentyCode {
+            root: repo.path().join(".wgenty-code/skills"),
+        },
+    )])
+    .expect("registry should discover skills");
 
     assert_eq!(registry.suggest("comte", 3), vec!["comet".to_string()]);
 }
@@ -351,7 +370,10 @@ fn test_default_allow_policy_allows_skill_load() {
         loaded_context: context,
     };
 
-    assert!(matches!(policy.before_skill_load(&event), PolicyDecision::Allow));
+    assert!(matches!(
+        policy.before_skill_load(&event),
+        PolicyDecision::Allow
+    ));
 }
 
 #[test]

@@ -54,7 +54,10 @@ pub fn route_slash_command(
             };
         }
         let suggestions = registry.suggest(&command, 3);
-        return SlashRoute::Unknown { command, suggestions };
+        return SlashRoute::Unknown {
+            command,
+            suggestions,
+        };
     }
 
     SlashRoute::Unknown {
@@ -75,7 +78,10 @@ pub struct ExternalSkillRoot {
 impl ExternalSkillRoot {
     /// Creates a new `ExternalSkillRoot` from a filesystem path and a source type.
     pub fn new(skills_root: PathBuf, source: ExternalSkillSource) -> Self {
-        Self { skills_root, source }
+        Self {
+            skills_root,
+            source,
+        }
     }
 }
 
@@ -127,7 +133,10 @@ impl ExternalSkillRegistry {
             }
         }
 
-        Ok(Self { skills, diagnostics })
+        Ok(Self {
+            skills,
+            diagnostics,
+        })
     }
 
     /// Resolves a skill by its canonical name.
@@ -238,7 +247,10 @@ fn load_skill_file(
         .to_path_buf();
 
     Ok(ExternalSkillDefinition {
-        display_name: parsed.name.clone().unwrap_or_else(|| canonical_name.clone()),
+        display_name: parsed
+            .name
+            .clone()
+            .unwrap_or_else(|| canonical_name.clone()),
         canonical_name,
         description,
         body: content,

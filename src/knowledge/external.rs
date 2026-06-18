@@ -161,7 +161,9 @@ pub fn parse_external_skill_document(
     }
 
     let rest = &trimmed[3..];
-    let end = rest.find("---").ok_or(ExternalSkillError::UnclosedFrontmatter)?;
+    let end = rest
+        .find("---")
+        .ok_or(ExternalSkillError::UnclosedFrontmatter)?;
     let raw_frontmatter = rest[..end].trim().to_string();
     let body = rest[end + 3..].trim_start().to_string();
 
@@ -206,9 +208,9 @@ pub fn derive_canonical_skill_name(
     let relative = skill_file.strip_prefix(skills_root).map_err(|_| {
         ExternalSkillError::PathNotUnderRoot(skill_file.to_path_buf(), skills_root.to_path_buf())
     })?;
-    let parent = relative.parent().ok_or_else(|| {
-        ExternalSkillError::UnsupportedPath(relative.to_path_buf())
-    })?;
+    let parent = relative
+        .parent()
+        .ok_or_else(|| ExternalSkillError::UnsupportedPath(relative.to_path_buf()))?;
     let parts: Vec<String> = parent
         .components()
         .map(|component| component.as_os_str().to_string_lossy().to_string())

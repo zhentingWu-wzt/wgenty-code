@@ -166,7 +166,10 @@ impl App {
         {
             for skill_def in external_registry.list() {
                 // Avoid duplicates: only add external skills not already in inventory
-                if !skill_inventory.iter().any(|s| s.name == skill_def.canonical_name) {
+                if !skill_inventory
+                    .iter()
+                    .any(|s| s.name == skill_def.canonical_name)
+                {
                     skill_inventory.push(prompts::SkillEntry {
                         name: skill_def.canonical_name.clone(),
                         description: skill_def.description.clone(),
