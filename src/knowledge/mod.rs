@@ -103,13 +103,15 @@ pub use docs::{MagicDocHeader, MagicDocInfo, MagicDocsConfig, MagicDocsService, 
 pub use executor::SkillExecutor;
 pub use external::{
     derive_canonical_skill_name, parse_external_skill_document, ExternalSkillDefinition,
-    ExternalSkillError, ExternalSkillSource, ParsedExternalSkillDocument,
-    ShadowedSkillDefinition, SkillFrontmatter,
+    ExternalSkillError, ExternalSkillSource, ParsedExternalSkillDocument, ShadowedSkillDefinition,
+    SkillFrontmatter,
+};
+pub use external_registry::{
+    route_slash_command, ExternalSkillRegistry, ExternalSkillRoot, SlashRoute,
 };
 pub use loader::{SkillInfo, SkillLoader};
-pub use registry::SkillRegistry;
-pub use external_registry::{route_slash_command, ExternalSkillRegistry, ExternalSkillRoot, SlashRoute};
 pub use policy::{
     DefaultAllowPolicy, LoadedSkillContext, LoadedSkillRecord, NestedSkillCallEvent,
     PolicyDecision, SkillLoadEvent, SkillPolicy, ToolCallObservedEvent, MAX_NESTED_SKILL_DEPTH,
 };
+pub use registry::SkillRegistry;

@@ -408,7 +408,9 @@ async fn test_skill_tool_registered() {
 #[tokio::test]
 async fn test_skill_tool_not_configured_error() {
     let registry = ToolRegistry::new();
-    let result = registry.execute("skill", serde_json::json!({"skill": "comet"})).await;
+    let result = registry
+        .execute("skill", serde_json::json!({"skill": "comet"}))
+        .await;
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.code.as_deref(), Some("skill_registry_unconfigured"));
