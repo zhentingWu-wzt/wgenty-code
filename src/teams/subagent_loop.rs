@@ -108,6 +108,7 @@ fn extract_params_summary(tool_name: &str, args: &serde_json::Value) -> String {
 /// # Returns
 /// * `Ok(String)` — The final assistant content (text response).
 /// * `Err(String)` — An error description if the loop fails or times out.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_subagent_loop(
     api_client: &ApiClient,
     tool_registry: &ToolRegistry,

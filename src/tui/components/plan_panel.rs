@@ -21,7 +21,7 @@ pub enum PlanStatus {
 }
 
 impl PlanStatus {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_status(s: &str) -> Self {
         match s.to_lowercase().trim() {
             "in_progress" | "in-progress" | "inprogress" => PlanStatus::InProgress,
             "completed" | "complete" | "done" => PlanStatus::Completed,
@@ -69,6 +69,26 @@ impl PlanPanelState {
     pub fn update(&mut self, items: Vec<PlanItem>) {
         self.items = items;
         self.visible = !self.items.is_empty();
+    }
+
+    pub fn height_needed(&self) -> u16 {
+        if !self.visible || self.items.is_empty() {
+            return 0;
+        }
+
+        (self.items.len() as u16 + 2).clamp(3, 8)
+    }
+
+    pub fn complete_active_items(&mut self) {
+        if !self.visible {
+            return;
+        }
+
+        for item in &mut self.items {
+            if item.status == PlanStatus::InProgress {
+                item.status = PlanStatus::Completed;
+            }
+        }
     }
 
     pub fn dismiss(&mut self) {

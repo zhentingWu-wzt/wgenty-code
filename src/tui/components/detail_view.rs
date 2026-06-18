@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn test_detail_view_error_jump_position() {
-        let events = vec![
+        let events = [
             make_thought_event("step 1"),
             make_action_event(),
             make_tool_result(true),

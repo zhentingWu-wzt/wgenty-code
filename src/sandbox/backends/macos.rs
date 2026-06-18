@@ -53,7 +53,7 @@ impl MacOSBackend {
         sb.push_str("(allow file-write-unlink\n");
         for path in &profile.writable_paths {
             sb.push_str(&format!("    (subpath \"{}\")", path.display()));
-            sb.push_str("\n");
+            sb.push('\n');
         }
         sb.push_str(")\n\n");
 

@@ -290,7 +290,7 @@ impl AgentLoop {
                         // Spawn progress poller for task/delegate tools in sequential path
                         let poll_handle = if (tc.function.name == "task"
                             || tc.function.name == "delegate")
-                            && self.event_tx.is_closed() == false
+                            && !self.event_tx.is_closed()
                         {
                             let tx = self.event_tx.clone();
                             let client = self.client.clone();
@@ -306,7 +306,9 @@ impl AgentLoop {
                                     match client.poll_subagent_progress(&session_id).await {
                                         Ok(map) => {
                                             for (_id, progress) in map {
-                                                let _ = tx.send(AppEvent::SubagentUpdate(progress));
+                                                let _ = tx.send(AppEvent::SubagentUpdate(
+                                                    Box::new(progress),
+                                                ));
                                             }
                                         }
                                         Err(_) => break,

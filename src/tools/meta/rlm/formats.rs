@@ -263,17 +263,17 @@ impl Aggregator {
             }
             let mut claim = claims[i].clone();
 
-            for j in (i + 1)..claims.len() {
-                if merged_ids.contains(&claims[j].id) {
+            for other_claim in claims.iter().skip(i + 1) {
+                if merged_ids.contains(&other_claim.id) {
                     continue;
                 }
-                if jaccard_similarity(&claim.claim, &claims[j].claim) > threshold {
+                if jaccard_similarity(&claim.claim, &other_claim.claim) > threshold {
                     // Merge: keep higher confidence, concatenate evidence
-                    if claims[j].confidence > claim.confidence {
-                        claim.confidence = claims[j].confidence;
+                    if other_claim.confidence > claim.confidence {
+                        claim.confidence = other_claim.confidence;
                     }
-                    claim.evidence = format!("{}; {}", claim.evidence, claims[j].evidence);
-                    merged_ids.insert(claims[j].id.clone());
+                    claim.evidence = format!("{}; {}", claim.evidence, other_claim.evidence);
+                    merged_ids.insert(other_claim.id.clone());
                 }
             }
             result.push(claim);

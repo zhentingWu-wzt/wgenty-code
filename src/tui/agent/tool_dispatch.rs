@@ -32,8 +32,8 @@ impl AgentLoop {
         // Poll subagent progress while task/delegate tools are running
         let is_long_running = name == "task" || name == "delegate";
 
-        let poll_handle = if is_long_running && event_tx.is_some() {
-            let tx = event_tx.as_ref().unwrap().clone();
+        let poll_handle = if let (true, Some(tx)) = (is_long_running, event_tx.as_ref()) {
+            let tx = tx.clone();
             let client_clone = client.clone();
             let sid = session_id.to_string();
             Some(tokio::spawn(async move {
@@ -50,7 +50,7 @@ impl AgentLoop {
                                 continue;
                             }
                             for (_id, progress) in map {
-                                let _ = tx.send(AppEvent::SubagentUpdate(progress));
+                                let _ = tx.send(AppEvent::SubagentUpdate(Box::new(progress)));
                             }
                         }
                         Err(_) => break,

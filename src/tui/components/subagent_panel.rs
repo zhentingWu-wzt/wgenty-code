@@ -333,7 +333,7 @@ fn render_tree_with_expand(
                         params_summary,
                     } => {
                         let action_str = if params_summary.is_empty() {
-                            format!("{}", tool_name)
+                            tool_name.to_string()
                         } else {
                             format!("{}(\"{}\")", tool_name, params_summary)
                         };
@@ -483,7 +483,7 @@ fn render_tree_with_expand(
             } = &event.event_type
             {
                 let action_str = if params_summary.is_empty() {
-                    format!("{}", tool_name)
+                    tool_name.to_string()
                 } else {
                     format!("{}(\"{}\")", tool_name, params_summary)
                 };

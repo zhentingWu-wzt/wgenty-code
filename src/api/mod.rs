@@ -70,8 +70,7 @@ impl ApiClient {
                 Client::default()
             });
 
-        let provider: Arc<dyn Provider> =
-            Arc::from(provider::detect_provider(&settings.api.get_base_url()));
+        let provider: Arc<dyn Provider> = provider::detect_provider(&settings.api.get_base_url());
 
         Self {
             settings,
@@ -166,7 +165,7 @@ impl ApiClient {
             .json(&request)
             .send()
             .await
-            .map_err(|e| wrap_network_error(e, &self.provider.name()))?;
+            .map_err(|e| wrap_network_error(e, self.provider.name()))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -210,7 +209,7 @@ impl ApiClient {
             .json(&request)
             .send()
             .await
-            .map_err(|e| wrap_network_error(e, &self.provider.name()))?;
+            .map_err(|e| wrap_network_error(e, self.provider.name()))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -271,7 +270,7 @@ impl ApiClient {
             .json(&request)
             .send()
             .await
-            .map_err(|e| wrap_network_error(e, &self.provider.name()))?;
+            .map_err(|e| wrap_network_error(e, self.provider.name()))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -320,7 +319,7 @@ impl ApiClient {
             .json(&request)
             .send()
             .await
-            .map_err(|e| wrap_network_error(e, &self.provider.name()))?;
+            .map_err(|e| wrap_network_error(e, self.provider.name()))?;
 
         if !response.status().is_success() {
             let status = response.status();

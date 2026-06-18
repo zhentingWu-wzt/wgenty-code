@@ -76,7 +76,7 @@ async fn test_skill_system_integration() {
     };
 
     // Test each skill
-    for skill_name in vec!["commit", "review", "test", "document", "build"] {
+    for skill_name in ["commit", "review", "test", "document", "build"] {
         let result = executor.execute(skill_name, "", context.clone()).await;
         assert!(
             result.is_ok(),

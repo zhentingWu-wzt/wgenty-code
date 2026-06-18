@@ -28,11 +28,12 @@ impl Indexer {
     }
 
     /// Find the adapter for a given file path (by extension).
-    fn adapter_for_path(&self, path: &Path) -> Option<&Box<dyn LanguageAdapter>> {
+    fn adapter_for_path(&self, path: &Path) -> Option<&dyn LanguageAdapter> {
         let ext = path.extension()?.to_str()?;
         self.adapters
             .iter()
             .find(|a| a.file_extensions().contains(&ext))
+            .map(|adapter| adapter.as_ref())
     }
 
     /// Check if a file extension is supported.
@@ -392,7 +393,7 @@ mod tests {
         let (store, _dir) = setup();
         let indexer = multi_lang_indexer(store);
         let source = "class Hello { public void greet() {} }";
-        let (symbols, refs, _rels) = indexer.extract_from_source(source, "Hello.java").unwrap();
+        let (symbols, _refs, _rels) = indexer.extract_from_source(source, "Hello.java").unwrap();
         assert!(symbols
             .iter()
             .any(|s| s.name == "Hello" && s.language == "java"));

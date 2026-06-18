@@ -17,11 +17,14 @@ impl App {
         // Layout: chat | [panel] | status | pending | input
         let has_question = self.question_state.visible;
         let has_permission = self.permission_state.visible;
-        let show_panel = has_question || has_permission;
+        let has_plan = self.plan_panel_state.visible;
+        let show_panel = has_question || has_permission || has_plan;
         let panel_height = if has_question {
             self.question_state.height_needed()
         } else if has_permission {
             self.permission_state.height_needed()
+        } else if has_plan {
+            self.plan_panel_state.height_needed()
         } else {
             0
         };
@@ -33,7 +36,7 @@ impl App {
                 Constraint::Length(panel_height),
                 Constraint::Length(1),
                 Constraint::Length(if has_pending { pending_height } else { 0 }),
-                Constraint::Length(0),
+                Constraint::Length((self.input_box.textarea.lines().len() + 3).clamp(6, 16) as u16),
             ]
         } else {
             vec![
@@ -105,8 +108,7 @@ impl App {
             );
         }
         // Detail view (full-screen, highest z-order)
-        if self.subagent_panel_state.detail_view.is_some() {
-            let detail = self.subagent_panel_state.detail_view.as_ref().unwrap();
+        if let Some(detail) = self.subagent_panel_state.detail_view.as_ref() {
             if !detail.loading {
                 components::detail_view::DetailView::render(f, f.area(), detail);
             }
