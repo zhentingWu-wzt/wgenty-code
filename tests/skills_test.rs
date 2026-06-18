@@ -461,3 +461,37 @@ fn test_slash_route_no_registry_fallback_to_unknown() {
     let result = route_slash_command("/comet hello", &["help"], None);
     assert!(matches!(result, SlashRoute::Unknown { ref command, .. } if command == "comet"));
 }
+
+#[test]
+fn test_external_registry_discovers_plugin_cache_skill() {
+    let cache = TempDir::new().unwrap();
+    let plugin_root = cache.path().join("anthropic/superpowers/5.1.0");
+    let skills_root = plugin_root.join("skills");
+    fs::create_dir_all(skills_root.join("brainstorming")).unwrap();
+    fs::write(
+        plugin_root.join("package.json"),
+        r#"{"name":"@anthropic/superpowers","version":"5.1.0","main":"index.js"}"#,
+    )
+    .unwrap();
+    fs::write(
+        skills_root.join("brainstorming/SKILL.md"),
+        "---\nname: superpowers:brainstorming\ndescription: Brainstorming\n---\n# Brainstorming",
+    )
+    .unwrap();
+
+    let registry = ExternalSkillRegistry::discover(vec![ExternalSkillRoot::new(
+        skills_root.clone(),
+        ExternalSkillSource::PluginCache {
+            plugin_name: "superpowers".to_string(),
+            version: Some("5.1.0".to_string()),
+            root: skills_root,
+        },
+    )])
+    .unwrap();
+
+    let skill = registry
+        .resolve("superpowers:brainstorming")
+        .expect("plugin cache skill should resolve");
+    assert_eq!(skill.description, "Brainstorming");
+    assert!(skill.source.label().contains("plugin:superpowers@5.1.0"));
+}
