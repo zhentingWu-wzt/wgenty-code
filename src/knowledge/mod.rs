@@ -6,6 +6,7 @@
 pub mod builtin;
 pub mod docs;
 pub mod executor;
+pub mod external;
 pub mod loader;
 pub mod registry;
 
@@ -98,5 +99,9 @@ impl std::fmt::Display for SkillCategory {
 pub use builtin::BuiltinSkills;
 pub use docs::{MagicDocHeader, MagicDocInfo, MagicDocsConfig, MagicDocsService, MagicDocsStatus};
 pub use executor::SkillExecutor;
+pub use external::{
+    derive_canonical_skill_name, parse_external_skill_document, ExternalSkillDefinition,
+    ExternalSkillSource, ParsedExternalSkillDocument, ShadowedSkillDefinition, SkillFrontmatter,
+};
 pub use loader::{SkillInfo, SkillLoader};
 pub use registry::SkillRegistry;

@@ -137,3 +137,68 @@ fn test_skill_parameter_parsing() {
     assert_eq!(params2.args[0], "file1.rs");
     assert_eq!(params2.args[1], "file2.rs");
 }
+
+use std::path::PathBuf;
+use wgenty_code::knowledge::{
+    derive_canonical_skill_name, parse_external_skill_document, ExternalSkillSource,
+};
+
+#[test]
+fn test_external_skill_frontmatter_name_and_description() {
+    let body = r#"---
+name: comet
+description: Comet workflow
+---
+# Comet
+
+Instructions here.
+"#;
+
+    let parsed = parse_external_skill_document(body).expect("frontmatter should parse");
+
+    assert_eq!(parsed.name.as_deref(), Some("comet"));
+    assert_eq!(parsed.description.as_deref(), Some("Comet workflow"));
+    assert!(parsed.body.contains("# Comet"));
+    assert!(parsed.raw_frontmatter.contains("name: comet"));
+}
+
+#[test]
+fn test_external_skill_frontmatter_no_closing_marker() {
+    let body = "---\nname: comet";
+    let result = parse_external_skill_document(body);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_external_skill_missing_name_falls_back_to_directory() {
+    let canonical = derive_canonical_skill_name(
+        None,
+        &PathBuf::from(".wgenty-code/skills/comet/SKILL.md"),
+        &PathBuf::from(".wgenty-code/skills"),
+    )
+    .expect("canonical name should derive from directory");
+
+    assert_eq!(canonical, "comet");
+}
+
+#[test]
+fn test_external_skill_portable_namespace_directory() {
+    let canonical = derive_canonical_skill_name(
+        None,
+        &PathBuf::from(".wgenty-code/skills/superpowers/brainstorming/SKILL.md"),
+        &PathBuf::from(".wgenty-code/skills"),
+    )
+    .expect("canonical name should derive from namespace directory");
+
+    assert_eq!(canonical, "superpowers:brainstorming");
+}
+
+#[test]
+fn test_external_skill_source_labels() {
+    let source = ExternalSkillSource::ProjectWgentyCode {
+        root: PathBuf::from("/repo/.wgenty-code/skills"),
+    };
+
+    assert_eq!(source.priority_rank(), 0);
+    assert!(source.label().contains("project"));
+}
