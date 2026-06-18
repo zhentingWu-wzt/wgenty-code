@@ -1,20 +1,27 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use thiserror::Error;
 
+/// Origin of an external skill file, determining its priority and label.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExternalSkillSource {
+    /// Skill bundled in the project's `.wgenty-code/skills/` directory.
     ProjectWgentyCode { root: PathBuf },
+    /// Skill from the user's home directory `.wgenty-code/skills/`.
     UserWgentyCode { root: PathBuf },
+    /// Skill installed from a plugin cache.
     PluginCache {
         plugin_name: String,
         version: Option<String>,
         root: PathBuf,
     },
+    /// Skill configured via an explicit path or label.
     Configured { label: String, root: PathBuf },
 }
 
 impl ExternalSkillSource {
+    /// Returns a numeric rank for priority ordering (lower = higher priority).
     pub fn priority_rank(&self) -> u8 {
         match self {
             Self::ProjectWgentyCode { .. } => 0,
@@ -24,6 +31,7 @@ impl ExternalSkillSource {
         }
     }
 
+    /// Returns a human-readable label identifying this source.
     pub fn label(&self) -> String {
         match self {
             Self::ProjectWgentyCode { root } => format!("project:{}", root.display()),
@@ -42,6 +50,7 @@ impl ExternalSkillSource {
         }
     }
 
+    /// Returns the root filesystem path of this source.
     pub fn root(&self) -> &Path {
         match self {
             Self::ProjectWgentyCode { root }
@@ -52,45 +61,89 @@ impl ExternalSkillSource {
     }
 }
 
+/// Parsed frontmatter of an external skill's SKILL.md file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SkillFrontmatter {
+    /// Skill name declared in the frontmatter (if present).
     pub name: Option<String>,
+    /// Skill description declared in the frontmatter (if present).
     pub description: Option<String>,
-    pub raw: String,
+    /// Raw frontmatter text between `---` markers.
+    pub raw_frontmatter: String,
+    /// Additional frontmatter fields (reserved for future extension).
     pub extra: HashMap<String, String>,
 }
 
+/// Parsed result of an external skill document (frontmatter + body).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedExternalSkillDocument {
+    /// Skill name parsed from the frontmatter (if present).
     pub name: Option<String>,
+    /// Skill description parsed from the frontmatter (if present).
     pub description: Option<String>,
+    /// Raw frontmatter text between `---` markers.
     pub raw_frontmatter: String,
+    /// Markdown body after the frontmatter.
     pub body: String,
 }
 
+/// Metadata for a skill that was shadowed (overridden) by a higher-priority source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShadowedSkillDefinition {
+    /// Canonical name of the shadowed skill.
     pub canonical_name: String,
+    /// Source from which the shadowed skill originated.
     pub source: ExternalSkillSource,
+    /// Filesystem path to the shadowed skill file.
     pub source_path: PathBuf,
 }
 
+/// Fully resolved external skill definition loaded from disk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalSkillDefinition {
+    /// Canonical name derived from frontmatter or directory structure.
     pub canonical_name: String,
+    /// Human-displayable name (populated when frontmatter `name` is present).
     pub display_name: String,
+    /// Description of the skill's purpose.
     pub description: String,
+    /// Markdown body of the skill document.
     pub body: String,
+    /// Parsed frontmatter of the skill document.
     pub frontmatter: SkillFrontmatter,
+    /// Origin source of this skill.
     pub source: ExternalSkillSource,
+    /// Filesystem path to the SKILL.md file.
     pub source_path: PathBuf,
+    /// Base directory under which this skill resides.
     pub base_dir: PathBuf,
+    /// Previously-loaded skills that were shadowed by this definition.
     pub shadowed: Vec<ShadowedSkillDefinition>,
 }
 
+/// Errors that can occur when parsing external skill documents or deriving skill names.
+#[derive(Error, Debug)]
+pub enum ExternalSkillError {
+    /// Frontmatter has a start `---` marker but no closing `---` marker.
+    #[error("frontmatter has no closing marker")]
+    UnclosedFrontmatter,
+    /// The skill file path is not contained within the expected root directory.
+    #[error("{0} is not under {1}")]
+    PathNotUnderRoot(PathBuf, PathBuf),
+    /// The skill file path does not match the expected `skills/<name>/SKILL.md`
+    /// or `skills/<namespace>/<name>/SKILL.md` pattern.
+    #[error("unsupported skill path {0}; expected skills/<name>/SKILL.md or skills/<namespace>/<name>/SKILL.md")]
+    UnsupportedPath(PathBuf),
+}
+
+/// Parse an external skill document (SKILL.md) into its structured components.
+///
+/// Returns a [`ParsedExternalSkillDocument`] containing the extracted frontmatter
+/// fields and the remaining markdown body. If no frontmatter is found (no `---`
+/// marker at the start), the entire content is treated as body.
 pub fn parse_external_skill_document(
     content: &str,
-) -> Result<ParsedExternalSkillDocument, String> {
+) -> Result<ParsedExternalSkillDocument, ExternalSkillError> {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
         return Ok(ParsedExternalSkillDocument {
@@ -102,9 +155,7 @@ pub fn parse_external_skill_document(
     }
 
     let rest = &trimmed[3..];
-    let end = rest
-        .find("---")
-        .ok_or_else(|| "frontmatter start marker has no closing marker".to_string())?;
+    let end = rest.find("---").ok_or(ExternalSkillError::UnclosedFrontmatter)?;
     let raw_frontmatter = rest[..end].trim().to_string();
     let body = rest[end + 3..].trim_start().to_string();
 
@@ -127,11 +178,18 @@ pub fn parse_external_skill_document(
     })
 }
 
+/// Derive a canonical skill name from the frontmatter `name` field or the
+/// directory structure.
+///
+/// If `frontmatter_name` is `Some` and non-empty, it is returned directly.
+/// Otherwise the function falls back to the path relative to `skills_root`:
+/// - `skills/<name>/SKILL.md` => `<name>`
+/// - `skills/<namespace>/<name>/SKILL.md` => `<namespace>:<name>`
 pub fn derive_canonical_skill_name(
     frontmatter_name: Option<&str>,
     skill_file: &Path,
     skills_root: &Path,
-) -> Result<String, String> {
+) -> Result<String, ExternalSkillError> {
     if let Some(name) = frontmatter_name {
         let trimmed = name.trim();
         if !trimmed.is_empty() {
@@ -139,12 +197,12 @@ pub fn derive_canonical_skill_name(
         }
     }
 
-    let relative = skill_file
-        .strip_prefix(skills_root)
-        .map_err(|_| format!("{} is not under {}", skill_file.display(), skills_root.display()))?;
-    let parent = relative
-        .parent()
-        .ok_or_else(|| format!("{} has no skill directory", relative.display()))?;
+    let relative = skill_file.strip_prefix(skills_root).map_err(|_| {
+        ExternalSkillError::PathNotUnderRoot(skill_file.to_path_buf(), skills_root.to_path_buf())
+    })?;
+    let parent = relative.parent().ok_or_else(|| {
+        ExternalSkillError::UnsupportedPath(relative.to_path_buf())
+    })?;
     let parts: Vec<String> = parent
         .components()
         .map(|component| component.as_os_str().to_string_lossy().to_string())
@@ -154,9 +212,6 @@ pub fn derive_canonical_skill_name(
     match parts.as_slice() {
         [name] => Ok(name.clone()),
         [namespace, name] => Ok(format!("{}:{}", namespace, name)),
-        _ => Err(format!(
-            "unsupported skill path {}; expected skills/<name>/SKILL.md or skills/<namespace>/<name>/SKILL.md",
-            relative.display()
-        )),
+        _ => Err(ExternalSkillError::UnsupportedPath(relative.to_path_buf())),
     }
 }

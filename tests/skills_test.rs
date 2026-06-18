@@ -140,8 +140,52 @@ fn test_skill_parameter_parsing() {
 
 use std::path::PathBuf;
 use wgenty_code::knowledge::{
-    derive_canonical_skill_name, parse_external_skill_document, ExternalSkillSource,
+    derive_canonical_skill_name, parse_external_skill_document, ExternalSkillError,
+    ExternalSkillSource,
 };
+
+#[test]
+fn test_external_skill_error_display_unclosed() {
+    let err = ExternalSkillError::UnclosedFrontmatter;
+    assert_eq!(err.to_string(), "frontmatter has no closing marker");
+}
+
+#[test]
+fn test_external_skill_error_display_path_not_under_root() {
+    let err = ExternalSkillError::PathNotUnderRoot(
+        PathBuf::from("/other/skill.md"),
+        PathBuf::from("/skills"),
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("is not under"));
+}
+
+#[test]
+fn test_external_skill_error_display_unsupported_path() {
+    let err = ExternalSkillError::UnsupportedPath(PathBuf::from(
+        "skills/a/b/c/SKILL.md",
+    ));
+    let msg = err.to_string();
+    assert!(msg.contains("unsupported skill path"));
+}
+
+#[test]
+fn test_parse_external_skill_returns_external_skill_error() {
+    let result: Result<_, ExternalSkillError> = parse_external_skill_document("---\nname: comet");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_skill_frontmatter_raw_frontmatter_field() {
+    let extra = std::collections::HashMap::new();
+    let fm = wgenty_code::knowledge::SkillFrontmatter {
+        name: Some("test".to_string()),
+        description: None,
+        raw_frontmatter: "name: test".to_string(),
+        extra: extra.clone(),
+    };
+    assert_eq!(fm.raw_frontmatter, "name: test");
+}
 
 #[test]
 fn test_external_skill_frontmatter_name_and_description() {

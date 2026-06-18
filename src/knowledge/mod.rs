@@ -101,7 +101,8 @@ pub use docs::{MagicDocHeader, MagicDocInfo, MagicDocsConfig, MagicDocsService, 
 pub use executor::SkillExecutor;
 pub use external::{
     derive_canonical_skill_name, parse_external_skill_document, ExternalSkillDefinition,
-    ExternalSkillSource, ParsedExternalSkillDocument, ShadowedSkillDefinition, SkillFrontmatter,
+    ExternalSkillError, ExternalSkillSource, ParsedExternalSkillDocument,
+    ShadowedSkillDefinition, SkillFrontmatter,
 };
 pub use loader::{SkillInfo, SkillLoader};
 pub use registry::SkillRegistry;
