@@ -246,3 +246,74 @@ fn test_external_skill_source_labels() {
     assert_eq!(source.priority_rank(), 0);
     assert!(source.label().contains("project"));
 }
+
+use std::fs;
+use tempfile::TempDir;
+
+fn write_skill(root: &std::path::Path, relative: &str, content: &str) {
+    let path = root.join(relative);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, content).unwrap();
+}
+
+use wgenty_code::knowledge::{ExternalSkillRegistry, ExternalSkillRoot};
+
+#[test]
+fn test_external_registry_discovers_project_skill() {
+    let repo = TempDir::new().unwrap();
+    write_skill(
+        repo.path(),
+        ".wgenty-code/skills/comet/SKILL.md",
+        "---\nname: comet\ndescription: Comet\n---\n# Comet",
+    );
+
+    let registry = ExternalSkillRegistry::discover(vec![ExternalSkillRoot::new(
+        repo.path().join(".wgenty-code/skills"),
+        ExternalSkillSource::ProjectWgentyCode {
+            root: repo.path().join(".wgenty-code/skills"),
+        },
+    )])
+    .expect("registry should discover skills");
+
+    let skill = registry.resolve("comet").expect("comet should resolve");
+    assert_eq!(skill.canonical_name, "comet");
+    assert_eq!(skill.description, "Comet");
+    assert!(skill.source_path.ends_with("SKILL.md"));
+}
+
+#[test]
+fn test_external_registry_project_shadows_user_skill() {
+    let repo = TempDir::new().unwrap();
+    let user = TempDir::new().unwrap();
+
+    write_skill(repo.path(), ".wgenty-code/skills/comet/SKILL.md",
+        "---\nname: comet\ndescription: Project Comet\n---\n# Project");
+    write_skill(user.path(), ".wgenty-code/skills/comet/SKILL.md",
+        "---\nname: comet\ndescription: User Comet\n---\n# User");
+
+    let registry = ExternalSkillRegistry::discover(vec![
+        ExternalSkillRoot::new(repo.path().join(".wgenty-code/skills"),
+            ExternalSkillSource::ProjectWgentyCode { root: repo.path().join(".wgenty-code/skills") }),
+        ExternalSkillRoot::new(user.path().join(".wgenty-code/skills"),
+            ExternalSkillSource::UserWgentyCode { root: user.path().join(".wgenty-code/skills") }),
+    ]).expect("registry should discover skills");
+
+    let skill = registry.resolve("comet").expect("comet should resolve");
+    assert_eq!(skill.description, "Project Comet");
+    assert_eq!(skill.shadowed.len(), 1);
+    assert!(registry.diagnostics().join("\n").contains("shadowed"));
+}
+
+#[test]
+fn test_external_registry_suggests_similar_names() {
+    let repo = TempDir::new().unwrap();
+    write_skill(repo.path(), ".wgenty-code/skills/comet/SKILL.md",
+        "---\nname: comet\ndescription: Comet\n---\n# Comet");
+
+    let registry = ExternalSkillRegistry::discover(vec![ExternalSkillRoot::new(
+        repo.path().join(".wgenty-code/skills"),
+        ExternalSkillSource::ProjectWgentyCode { root: repo.path().join(".wgenty-code/skills") },
+    )]).expect("registry should discover skills");
+
+    assert_eq!(registry.suggest("comte", 3), vec!["comet".to_string()]);
+}
