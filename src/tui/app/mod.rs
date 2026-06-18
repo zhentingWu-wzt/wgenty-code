@@ -121,8 +121,13 @@ impl App {
             let guard = settings_lock.read().unwrap();
             guard.clone()
         };
-        let prompt_ctx =
-            prompt_ctx.with_collaboration(settings.prompt.collaboration_mode.clone().unwrap_or_default());
+        let prompt_ctx = prompt_ctx.with_collaboration(
+            settings
+                .prompt
+                .collaboration_mode
+                .clone()
+                .unwrap_or_default(),
+        );
 
         // Load skills inventory for system prompt injection
         let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));

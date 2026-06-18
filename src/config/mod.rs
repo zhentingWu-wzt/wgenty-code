@@ -13,13 +13,20 @@ use std::path::PathBuf;
 /// Main configuration structure (top-level grouped form).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
-    #[serde(default)] pub models: ModelsConfig,
-    #[serde(default)] pub agent: AgentConfig,
-    #[serde(default)] pub prompt: PromptConfig,
-    #[serde(default)] pub plugins: PluginsConfig,
-    #[serde(default)] pub storage: StorageConfig,
-    #[serde(default)] pub integrations: IntegrationsConfig,
-    #[serde(default)] pub verbose: bool,
+    #[serde(default)]
+    pub models: ModelsConfig,
+    #[serde(default)]
+    pub agent: AgentConfig,
+    #[serde(default)]
+    pub prompt: PromptConfig,
+    #[serde(default)]
+    pub plugins: PluginsConfig,
+    #[serde(default)]
+    pub storage: StorageConfig,
+    #[serde(default)]
+    pub integrations: IntegrationsConfig,
+    #[serde(default)]
+    pub verbose: bool,
 }
 
 /// Default helper for serde: returns true.
@@ -65,13 +72,16 @@ impl ModelEndpoint {
     /// Resolve the effective base_url for this endpoint. If `self.base_url` is None,
     /// fall back to env var `API_BASE_URL`, then "https://api.anthropic.com".
     pub fn endpoint_base_url(&self) -> String {
-        if let Some(u) = &self.base_url { return u.clone(); }
+        if let Some(u) = &self.base_url {
+            return u.clone();
+        }
         std::env::var("API_BASE_URL").unwrap_or_else(|_| "https://api.anthropic.com".to_string())
     }
 
     /// Resolve the effective api_key for this endpoint, checking env first.
     pub fn endpoint_api_key(&self) -> Option<String> {
-        std::env::var("ANTHROPIC_API_KEY").ok()
+        std::env::var("ANTHROPIC_API_KEY")
+            .ok()
             .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok())
             .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok())
             .or_else(|| self.api_key.clone())
@@ -117,7 +127,8 @@ impl Default for ModelsConfig {
             main: ModelEndpoint {
                 name: "sonnet".to_string(),
                 base_url: std::env::var("API_BASE_URL").ok(),
-                api_key: std::env::var("ANTHROPIC_API_KEY").ok()
+                api_key: std::env::var("ANTHROPIC_API_KEY")
+                    .ok()
                     .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok())
                     .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok()),
                 appkey: None,
@@ -141,29 +152,44 @@ pub struct TokenBudget {
 /// the corresponding main-agent value. Resolution: see Settings::resolve_subagent_config.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SubagentRlmOverride {
-    #[serde(default)] pub enabled: Option<bool>,
-    #[serde(default)] pub delegate_tool: Option<bool>,
-    #[serde(default)] pub auto_routing: Option<bool>,
-    #[serde(default)] pub retry_enabled: Option<bool>,
-    #[serde(default)] pub max_replan_cycles: Option<usize>,
-    #[serde(default)] pub jaccard_threshold: Option<f64>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub delegate_tool: Option<bool>,
+    #[serde(default)]
+    pub auto_routing: Option<bool>,
+    #[serde(default)]
+    pub retry_enabled: Option<bool>,
+    #[serde(default)]
+    pub max_replan_cycles: Option<usize>,
+    #[serde(default)]
+    pub jaccard_threshold: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SubagentPromptIncludesOverride {
-    #[serde(default)] pub permissions: Option<bool>,
-    #[serde(default)] pub developer: Option<bool>,
-    #[serde(default)] pub collaboration: Option<bool>,
-    #[serde(default)] pub environment: Option<bool>,
-    #[serde(default)] pub skills: Option<bool>,
+    #[serde(default)]
+    pub permissions: Option<bool>,
+    #[serde(default)]
+    pub developer: Option<bool>,
+    #[serde(default)]
+    pub collaboration: Option<bool>,
+    #[serde(default)]
+    pub environment: Option<bool>,
+    #[serde(default)]
+    pub skills: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SubagentPromptOverride {
-    #[serde(default)] pub include: SubagentPromptIncludesOverride,
-    #[serde(default)] pub developer_instructions: Option<String>,
-    #[serde(default)] pub collaboration_mode: Option<String>,
-    #[serde(default)] pub model_instructions_file: Option<String>,
+    #[serde(default)]
+    pub include: SubagentPromptIncludesOverride,
+    #[serde(default)]
+    pub developer_instructions: Option<String>,
+    #[serde(default)]
+    pub collaboration_mode: Option<String>,
+    #[serde(default)]
+    pub model_instructions_file: Option<String>,
 }
 
 /// Subagent runtime limits + overrides.
@@ -175,11 +201,16 @@ pub struct SubagentLimits {
     pub max_concurrent: usize,
     pub timeout_secs: u64,
 
-    #[serde(default)] pub token_budget_k: Option<usize>,
-    #[serde(default)] pub max_rounds: Option<usize>, // Some(0) = unlimited
-    #[serde(default)] pub plan_mode: Option<bool>,
-    #[serde(default)] pub rlm: SubagentRlmOverride,
-    #[serde(default)] pub prompt: SubagentPromptOverride,
+    #[serde(default)]
+    pub token_budget_k: Option<usize>,
+    #[serde(default)]
+    pub max_rounds: Option<usize>, // Some(0) = unlimited
+    #[serde(default)]
+    pub plan_mode: Option<bool>,
+    #[serde(default)]
+    pub rlm: SubagentRlmOverride,
+    #[serde(default)]
+    pub prompt: SubagentPromptOverride,
 }
 
 impl Default for SubagentLimits {
@@ -199,11 +230,16 @@ impl Default for SubagentLimits {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
-    #[serde(default)] pub plan_mode: bool,
-    #[serde(default)] pub max_rounds: Option<usize>,
-    #[serde(default)] pub token_budget: TokenBudget,
-    #[serde(default)] pub subagent: SubagentLimits,
-    #[serde(default)] pub rlm: RlmSettings,
+    #[serde(default)]
+    pub plan_mode: bool,
+    #[serde(default)]
+    pub max_rounds: Option<usize>,
+    #[serde(default)]
+    pub token_budget: TokenBudget,
+    #[serde(default)]
+    pub subagent: SubagentLimits,
+    #[serde(default)]
+    pub rlm: RlmSettings,
 }
 
 impl Default for AgentConfig {
@@ -220,25 +256,40 @@ impl Default for AgentConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptIncludes {
-    #[serde(default = "default_true")] pub permissions: bool,
-    #[serde(default = "default_true")] pub developer: bool,
-    #[serde(default = "default_true")] pub collaboration: bool,
-    #[serde(default = "default_true")] pub environment: bool,
-    #[serde(default = "default_true")] pub skills: bool,
+    #[serde(default = "default_true")]
+    pub permissions: bool,
+    #[serde(default = "default_true")]
+    pub developer: bool,
+    #[serde(default = "default_true")]
+    pub collaboration: bool,
+    #[serde(default = "default_true")]
+    pub environment: bool,
+    #[serde(default = "default_true")]
+    pub skills: bool,
 }
 
 impl Default for PromptIncludes {
     fn default() -> Self {
-        Self { permissions: true, developer: true, collaboration: true, environment: true, skills: true }
+        Self {
+            permissions: true,
+            developer: true,
+            collaboration: true,
+            environment: true,
+            skills: true,
+        }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PromptConfig {
-    #[serde(default)] pub include: PromptIncludes,
-    #[serde(default)] pub developer_instructions: Option<String>,
-    #[serde(default)] pub collaboration_mode: Option<String>,
-    #[serde(default)] pub model_instructions_file: Option<String>,
+    #[serde(default)]
+    pub include: PromptIncludes,
+    #[serde(default)]
+    pub developer_instructions: Option<String>,
+    #[serde(default)]
+    pub collaboration_mode: Option<String>,
+    #[serde(default)]
+    pub model_instructions_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -246,8 +297,10 @@ pub struct PluginsConfig {
     pub enabled: bool,
     pub dir: PathBuf,
     pub auto_update: bool,
-    #[serde(default)] pub enabled_map: std::collections::HashMap<String, bool>,
-    #[serde(default)] pub marketplaces: Option<serde_json::Value>,
+    #[serde(default)]
+    pub enabled_map: std::collections::HashMap<String, bool>,
+    #[serde(default)]
+    pub marketplaces: Option<serde_json::Value>,
 }
 
 impl Default for PluginsConfig {
@@ -266,13 +319,18 @@ impl Default for PluginsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptConfig {
-    #[serde(default = "default_transcript_db_path")] pub db_path: String,
-    #[serde(default = "default_max_transcript_age_days")] pub max_age_days: u32,
+    #[serde(default = "default_transcript_db_path")]
+    pub db_path: String,
+    #[serde(default = "default_max_transcript_age_days")]
+    pub max_age_days: u32,
 }
 
 impl Default for TranscriptConfig {
     fn default() -> Self {
-        Self { db_path: default_transcript_db_path(), max_age_days: 30 }
+        Self {
+            db_path: default_transcript_db_path(),
+            max_age_days: 30,
+        }
     }
 }
 
@@ -280,7 +338,8 @@ impl Default for TranscriptConfig {
 pub struct StorageConfig {
     pub working_dir: PathBuf,
     pub memory: MemorySettings,
-    #[serde(default)] pub transcript: TranscriptConfig,
+    #[serde(default)]
+    pub transcript: TranscriptConfig,
 }
 
 impl Default for StorageConfig {
@@ -302,10 +361,14 @@ impl Default for StorageConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IntegrationsConfig {
-    #[serde(default)] pub mcp_servers: Vec<McpConfig>,
-    #[serde(default)] pub hooks: Option<serde_json::Value>,
-    #[serde(default)] pub voice: VoiceSettings,
-    #[serde(default)] pub guardian: GuardianSettings,
+    #[serde(default)]
+    pub mcp_servers: Vec<McpConfig>,
+    #[serde(default)]
+    pub hooks: Option<serde_json::Value>,
+    #[serde(default)]
+    pub voice: VoiceSettings,
+    #[serde(default)]
+    pub guardian: GuardianSettings,
 }
 
 // ===== End new sub-config types =====
@@ -336,7 +399,12 @@ pub struct VoiceSettings {
 
 impl Default for VoiceSettings {
     fn default() -> Self {
-        Self { enabled: false, push_to_talk: false, silence_threshold: 0.01, sample_rate: 16000 }
+        Self {
+            enabled: false,
+            push_to_talk: false,
+            silence_threshold: 0.01,
+            sample_rate: 16000,
+        }
     }
 }
 
@@ -466,9 +534,15 @@ impl Settings {
         let mut s = self.clone();
         if let Some(small) = &self.models.small {
             s.models.main.name = small.name.clone();
-            if let Some(url) = &small.base_url { s.models.main.base_url = Some(url.clone()); }
-            if let Some(key) = &small.api_key  { s.models.main.api_key  = Some(key.clone()); }
-            if let Some(ak)  = &small.appkey   { s.models.main.api_key  = Some(ak.clone()); }
+            if let Some(url) = &small.base_url {
+                s.models.main.base_url = Some(url.clone());
+            }
+            if let Some(key) = &small.api_key {
+                s.models.main.api_key = Some(key.clone());
+            }
+            if let Some(ak) = &small.appkey {
+                s.models.main.api_key = Some(ak.clone());
+            }
             s.models.transport.max_tokens = 2048;
         }
         s
@@ -486,28 +560,60 @@ impl Settings {
         let mut s = self.clone();
         let ov = &self.agent.subagent;
 
-        if let Some(b) = ov.token_budget_k { s.agent.token_budget.main_k = b; }
+        if let Some(b) = ov.token_budget_k {
+            s.agent.token_budget.main_k = b;
+        }
         if let Some(r) = ov.max_rounds {
             s.agent.max_rounds = if r == 0 { None } else { Some(r) };
         }
-        if let Some(p) = ov.plan_mode { s.agent.plan_mode = p; }
+        if let Some(p) = ov.plan_mode {
+            s.agent.plan_mode = p;
+        }
 
-        if let Some(v) = ov.rlm.enabled            { s.agent.rlm.enabled = v; }
-        if let Some(v) = ov.rlm.delegate_tool      { s.agent.rlm.delegate_tool = v; }
-        if let Some(v) = ov.rlm.auto_routing       { s.agent.rlm.auto_routing = v; }
-        if let Some(v) = ov.rlm.retry_enabled      { s.agent.rlm.retry_enabled = v; }
-        if let Some(v) = ov.rlm.max_replan_cycles  { s.agent.rlm.max_replan_cycles = v; }
-        if let Some(v) = ov.rlm.jaccard_threshold  { s.agent.rlm.jaccard_threshold = v; }
+        if let Some(v) = ov.rlm.enabled {
+            s.agent.rlm.enabled = v;
+        }
+        if let Some(v) = ov.rlm.delegate_tool {
+            s.agent.rlm.delegate_tool = v;
+        }
+        if let Some(v) = ov.rlm.auto_routing {
+            s.agent.rlm.auto_routing = v;
+        }
+        if let Some(v) = ov.rlm.retry_enabled {
+            s.agent.rlm.retry_enabled = v;
+        }
+        if let Some(v) = ov.rlm.max_replan_cycles {
+            s.agent.rlm.max_replan_cycles = v;
+        }
+        if let Some(v) = ov.rlm.jaccard_threshold {
+            s.agent.rlm.jaccard_threshold = v;
+        }
 
-        if let Some(v) = ov.prompt.include.permissions   { s.prompt.include.permissions = v; }
-        if let Some(v) = ov.prompt.include.developer     { s.prompt.include.developer = v; }
-        if let Some(v) = ov.prompt.include.collaboration { s.prompt.include.collaboration = v; }
-        if let Some(v) = ov.prompt.include.environment   { s.prompt.include.environment = v; }
-        if let Some(v) = ov.prompt.include.skills        { s.prompt.include.skills = v; }
+        if let Some(v) = ov.prompt.include.permissions {
+            s.prompt.include.permissions = v;
+        }
+        if let Some(v) = ov.prompt.include.developer {
+            s.prompt.include.developer = v;
+        }
+        if let Some(v) = ov.prompt.include.collaboration {
+            s.prompt.include.collaboration = v;
+        }
+        if let Some(v) = ov.prompt.include.environment {
+            s.prompt.include.environment = v;
+        }
+        if let Some(v) = ov.prompt.include.skills {
+            s.prompt.include.skills = v;
+        }
 
-        if let Some(v) = &ov.prompt.developer_instructions  { s.prompt.developer_instructions  = Some(v.clone()); }
-        if let Some(v) = &ov.prompt.collaboration_mode      { s.prompt.collaboration_mode      = Some(v.clone()); }
-        if let Some(v) = &ov.prompt.model_instructions_file { s.prompt.model_instructions_file = Some(v.clone()); }
+        if let Some(v) = &ov.prompt.developer_instructions {
+            s.prompt.developer_instructions = Some(v.clone());
+        }
+        if let Some(v) = &ov.prompt.collaboration_mode {
+            s.prompt.collaboration_mode = Some(v.clone());
+        }
+        if let Some(v) = &ov.prompt.model_instructions_file {
+            s.prompt.model_instructions_file = Some(v.clone());
+        }
 
         s
     }
@@ -527,8 +633,8 @@ impl Settings {
         let settings = Self::load()?;
         let mut json = serde_json::to_value(&settings)?;
 
-        let parsed: Value = serde_json::from_str(value)
-            .unwrap_or_else(|_| Value::String(value.to_string()));
+        let parsed: Value =
+            serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()));
 
         let parts: Vec<&str> = key.split('.').collect();
         if parts.is_empty() || parts.iter().any(|p| p.is_empty()) {
@@ -536,16 +642,31 @@ impl Settings {
         }
 
         fn set_at(node: &mut Value, parts: &[&str], val: Value) -> anyhow::Result<()> {
-            let (head, rest) = parts.split_first().ok_or_else(|| anyhow::anyhow!("empty path"))?;
+            let (head, rest) = parts
+                .split_first()
+                .ok_or_else(|| anyhow::anyhow!("empty path"))?;
             if rest.is_empty() {
                 match node {
-                    Value::Object(map) => { map.insert(head.to_string(), val); Ok(()) }
-                    _ => Err(anyhow::anyhow!("path segment '{}' is not under an object", head)),
+                    Value::Object(map) => {
+                        map.insert(head.to_string(), val);
+                        Ok(())
+                    }
+                    _ => Err(anyhow::anyhow!(
+                        "path segment '{}' is not under an object",
+                        head
+                    )),
                 }
             } else {
                 let next = match node {
-                    Value::Object(map) => map.entry(head.to_string()).or_insert(Value::Object(Default::default())),
-                    _ => return Err(anyhow::anyhow!("path segment '{}' is not under an object", head)),
+                    Value::Object(map) => map
+                        .entry(head.to_string())
+                        .or_insert(Value::Object(Default::default())),
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "path segment '{}' is not under an object",
+                            head
+                        ))
+                    }
                 };
                 set_at(next, rest, val)
             }
@@ -687,14 +808,17 @@ mod tests {
         s.models.main.api_key = Some("main-key".to_string());
         s.models.small = Some(ModelEndpoint {
             name: "haiku".to_string(),
-            base_url: None,                                      // inherits main
+            base_url: None, // inherits main
             api_key: Some("small-key".to_string()),
             appkey: None,
         });
         let small_s = s.small_model_settings();
         assert_eq!(small_s.models.main.name, "haiku");
-        assert_eq!(small_s.models.main.base_url, Some("https://api.main.example".to_string())); // unchanged
-        assert_eq!(small_s.models.main.api_key, Some("small-key".to_string()));                 // overridden
+        assert_eq!(
+            small_s.models.main.base_url,
+            Some("https://api.main.example".to_string())
+        ); // unchanged
+        assert_eq!(small_s.models.main.api_key, Some("small-key".to_string())); // overridden
         assert_eq!(small_s.models.transport.max_tokens, 2048);
     }
 
@@ -772,8 +896,11 @@ mod tests {
             if r.is_empty() {
                 n.as_object_mut().unwrap().insert(h.to_string(), v);
             } else {
-                let nx = n.as_object_mut().unwrap()
-                    .entry(h.to_string()).or_insert(Value::Object(Default::default()));
+                let nx = n
+                    .as_object_mut()
+                    .unwrap()
+                    .entry(h.to_string())
+                    .or_insert(Value::Object(Default::default()));
                 walk_set(nx, r, v);
             }
         }
@@ -787,7 +914,8 @@ mod tests {
         use serde_json::Value;
         let s = Settings::default();
         let mut json = serde_json::to_value(&s).unwrap();
-        json.as_object_mut().unwrap()
+        json.as_object_mut()
+            .unwrap()
             .insert("nonexistent_top".to_string(), Value::Bool(true));
         // serde_json by default tolerates extra fields; document behavior here.
         let r: Result<Settings, _> = serde_json::from_value(json);

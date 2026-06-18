@@ -256,14 +256,20 @@ pub fn render(
     let mut lines: Vec<Line> = Vec::new();
 
     let mut prev_role: Option<MessageRole> = None;
-    for msg in committed_messages.iter() {
+    for (idx, msg) in committed_messages.iter().enumerate() {
         if msg.role == MessageRole::User {
             add_turn_separator(&mut lines, area.width);
         } else if matches!(prev_role, Some(MessageRole::Tool)) && msg.role == MessageRole::Assistant
         {
             add_inline_separator(&mut lines, area.width);
         }
-        lines.extend(message_to_lines(msg, area.width, spinner_frame));
+        let show_tool_expand_hint = idx + 1 == committed_messages.len();
+        lines.extend(message_to_lines(
+            msg,
+            area.width,
+            spinner_frame,
+            show_tool_expand_hint,
+        ));
         if msg.role == MessageRole::Tool {
             let tool_name = msg.tool_name.as_deref().unwrap_or("");
             if tool_name == "task" || tool_name == "delegate" {
@@ -348,7 +354,12 @@ fn add_inline_separator(lines: &mut Vec<Line<'static>>, width: u16) {
     }
 }
 
-fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<'static>> {
+fn message_to_lines(
+    msg: &UIMessage,
+    width: u16,
+    spinner_frame: u8,
+    show_tool_expand_hint: bool,
+) -> Vec<Line<'static>> {
     let max_w = width.saturating_sub(4) as usize;
 
     match msg.role {
@@ -406,7 +417,7 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
                 let mut lines: Vec<Line<'static>> = Vec::new();
 
                 // Header: • {verb} [mode] {detail} — or spinner {verb} [mode] {detail} while running
-                let is_running = msg.content.is_empty();
+                let is_running = msg.tool_running;
                 let execution_mode = msg
                     .tool_metadata
                     .as_ref()
@@ -435,10 +446,15 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
                     )
                 };
                 let verb_with_mode = format!("{}{}", verb, mode_tag);
+                let detail_text = if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", detail)
+                };
                 lines.push(Line::from(vec![
                     Span::styled(prefix, Style::default().fg(DIM_COLOR)),
                     Span::styled(verb_with_mode.clone(), verb_style),
-                    Span::styled(format!(" {}", detail), Style::default().fg(DIM_COLOR)),
+                    Span::styled(detail_text, Style::default().fg(DIM_COLOR)),
                     if is_running {
                         Span::styled(
                             format!(" {}", running_suffix(spinner_frame)),
@@ -499,7 +515,7 @@ fn message_to_lines(msg: &UIMessage, width: u16, spinner_frame: u8) -> Vec<Line<
                         push_wrapped(&mut lines, line, "  ", DIM_COLOR, DIM_COLOR, wrap_width + 2);
                     }
                 }
-                if total > show.len() {
+                if show_tool_expand_hint && total > show.len() {
                     lines.push(Line::from(vec![Span::styled(
                         format!(
                             "  {} +{} lines (Ctrl+O to expand)",
@@ -539,32 +555,91 @@ fn tool_verb(name: &str) -> &str {
         "file_write" => "Wrote",
         "file_edit" => "Edited",
         "apply_patch" => "Patched",
+        "background" => "Started",
         "grep" | "search" => "Searched",
         "glob_search" | "glob" | "list_files" => "Listed",
+        "git_operations" => "Git",
+        "kill_session" => "Killed",
+        "run_test" => "Tested",
+        "write_stdin" => "Wrote stdin",
         "web_search" => "Searched web",
         "web_fetch" => "Fetched",
         "view" => "Viewed",
         "task" => "Subagent",
         "delegate" => "Delegated",
+        "ask_user_question" => "Asked",
         "TodoWrite" => "Planned",
+        "task_management" => "Managed task",
         "compact" => "Compacted",
+        "checkpoint" => "Checkpointed",
+        "load_skill" => "Loaded skill",
+        "note_edit" => "Edited note",
+        "run_script" => "Ran script",
+        "team_message" => "Messaged",
+        "think" => "Thought",
+        "undo" => "Undid",
+        "update_plan" => "Planned",
+        "codegraph_node" | "codegraph_explore" | "module_summary" | "symbol_batch"
+        | "call_path" | "lsp" => "Inspected",
         _ => "Used",
+    }
+}
+
+fn arg_str(args: &serde_json::Value, key: &str) -> String {
+    args.get(key)
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn arg_u64(args: &serde_json::Value, key: &str) -> String {
+    args.get(key)
+        .and_then(|value| value.as_u64())
+        .map(|value| value.to_string())
+        .unwrap_or_default()
+}
+
+fn arg_array(args: &serde_json::Value, key: &str) -> String {
+    args.get(key)
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default()
+}
+
+fn truncate_label(label: String) -> String {
+    const MAX_LABEL_CHARS: usize = 80;
+    if label.chars().count() <= MAX_LABEL_CHARS {
+        label
+    } else {
+        let mut truncated = label.chars().take(MAX_LABEL_CHARS).collect::<String>();
+        truncated.push('…');
+        truncated
     }
 }
 
 /// Extract a human-readable label from tool args (e.g., command string, file path).
 fn tool_label(name: &str, args: &serde_json::Value) -> String {
     match name {
-        "exec_command" | "execute_command" => args
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        "file_read" | "read_file" | "file_write" | "file_edit" | "apply_patch" | "view" => args
+        "exec_command" | "execute_command" | "background" => arg_str(args, "command"),
+        "file_read" | "read_file" | "file_write" | "file_edit" | "view" => args
             .get("path")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
+        "apply_patch" => {
+            let workdir = arg_str(args, "workdir");
+            if workdir.is_empty() {
+                truncate_label(arg_str(args, "patch"))
+            } else {
+                workdir
+            }
+        }
         "grep" | "search" => args
             .get("pattern")
             .and_then(|v| v.as_str())
@@ -586,6 +661,82 @@ fn tool_label(name: &str, args: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
+        "ask_user_question" => truncate_label(arg_str(args, "question")),
+        "checkpoint" => arg_str(args, "description"),
+        "codegraph_node" | "lsp" => arg_str(args, "symbol"),
+        "codegraph_explore" => arg_str(args, "query"),
+        "git_operations" => {
+            let operation = arg_str(args, "operation");
+            let branch = arg_str(args, "branch");
+            let path = arg_str(args, "path");
+            if !branch.is_empty() {
+                format!("{} {}", operation, branch)
+            } else if !path.is_empty() && path != "." {
+                format!("{} {}", operation, path)
+            } else {
+                operation
+            }
+        }
+        "kill_session" | "write_stdin" => {
+            let session_id = arg_u64(args, "session_id");
+            if session_id.is_empty() {
+                String::new()
+            } else {
+                format!("session {}", session_id)
+            }
+        }
+        "load_skill" => {
+            let skill_name = arg_str(args, "name");
+            if skill_name.is_empty() {
+                "available skills".to_string()
+            } else {
+                skill_name
+            }
+        }
+        "module_summary" => arg_str(args, "module_path"),
+        "note_edit" => {
+            let operation = arg_str(args, "operation");
+            let title = arg_str(args, "title");
+            let note_id = arg_str(args, "note_id");
+            let search_query = arg_str(args, "search_query");
+            [operation, title, note_id, search_query]
+                .into_iter()
+                .find(|value| !value.is_empty())
+                .unwrap_or_default()
+        }
+        "run_script" => truncate_label(arg_str(args, "script")),
+        "run_test" => {
+            let file = arg_str(args, "file");
+            let filter = arg_str(args, "filter");
+            let framework = arg_str(args, "framework");
+            [file, filter, framework]
+                .into_iter()
+                .find(|value| !value.is_empty())
+                .unwrap_or_else(|| "auto".to_string())
+        }
+        "symbol_batch" => arg_array(args, "symbols"),
+        "call_path" => {
+            let from = args.get("from").and_then(|v| v.as_str()).unwrap_or("");
+            let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("");
+            if from.is_empty() || to.is_empty() {
+                String::new()
+            } else {
+                format!("{} → {}", from, to)
+            }
+        }
+        "TodoWrite" | "update_plan" => {
+            let item_key = if name == "TodoWrite" { "items" } else { "plan" };
+            let item_count = args
+                .get(item_key)
+                .and_then(|value| value.as_array())
+                .map(|items| items.len())
+                .unwrap_or(0);
+            format!(
+                "{} item{}",
+                item_count,
+                if item_count == 1 { "" } else { "s" }
+            )
+        }
         "task" => {
             let desc = args
                 .get("description")
@@ -601,7 +752,34 @@ fn tool_label(name: &str, args: &serde_json::Value) -> String {
                 format!("[{}] {}", sub_type, desc)
             }
         }
-        _ => String::new(),
+        "delegate" => truncate_label(arg_str(args, "task")),
+        "task_management" => {
+            let operation = arg_str(args, "operation");
+            let subject = arg_str(args, "subject");
+            let task_id = arg_str(args, "task_id");
+            if !subject.is_empty() {
+                format!("{} {}", operation, subject)
+            } else if !task_id.is_empty() {
+                format!("{} {}", operation, task_id)
+            } else {
+                operation
+            }
+        }
+        "team_message" => {
+            let action = arg_str(args, "action");
+            let to = arg_str(args, "to");
+            let from = arg_str(args, "from");
+            if !to.is_empty() {
+                format!("{} → {}", action, to)
+            } else if !from.is_empty() {
+                format!("{} {}", action, from)
+            } else {
+                action
+            }
+        }
+        "think" => "scratchpad".to_string(),
+        "undo" => "latest checkpoint".to_string(),
+        _ => name.to_string(),
     }
 }
 

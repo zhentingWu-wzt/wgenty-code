@@ -260,17 +260,32 @@ impl Tool for TaskTool {
         // 2. agent.subagent.token_budget_k (subagent override)
         // 3. agent.token_budget.subagent_default_k (when > 0)
         // 4. agent.token_budget.main_k (when > 0; 0 = unlimited)
-        let token_budget: Option<u64> = input.get("token_budget")
+        let token_budget: Option<u64> = input
+            .get("token_budget")
             .and_then(|v| v.as_u64())
             .and_then(|v| if v == 0 { None } else { Some(v) })
-            .or_else(|| self.settings.agent.subagent.token_budget_k.map(|v| v as u64))
+            .or_else(|| {
+                self.settings
+                    .agent
+                    .subagent
+                    .token_budget_k
+                    .map(|v| v as u64)
+            })
             .or_else(|| {
                 let d = self.settings.agent.token_budget.subagent_default_k;
-                if d > 0 { Some(d as u64) } else { None }
+                if d > 0 {
+                    Some(d as u64)
+                } else {
+                    None
+                }
             })
             .or_else(|| {
                 let m = self.settings.agent.token_budget.main_k;
-                if m > 0 { Some(m as u64) } else { None }
+                if m > 0 {
+                    Some(m as u64)
+                } else {
+                    None
+                }
             });
 
         let session_id = input["_session_id"]
