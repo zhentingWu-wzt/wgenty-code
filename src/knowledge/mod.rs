@@ -7,6 +7,7 @@ pub mod builtin;
 pub mod docs;
 pub mod executor;
 pub mod external;
+pub mod external_registry;
 pub mod loader;
 pub mod registry;
 
@@ -106,3 +107,4 @@ pub use external::{
 };
 pub use loader::{SkillInfo, SkillLoader};
 pub use registry::SkillRegistry;
+pub use external_registry::{ExternalSkillRegistry, ExternalSkillRoot};
