@@ -84,6 +84,7 @@ impl ToolRegistry {
         // Meta tools
         registry.register(Box::new(meta::ask_user_question::AskUserQuestionTool::new()));
         registry.register(Box::new(meta::update_plan::UpdatePlanTool::new()));
+        registry.register(Box::new(meta::skill::SkillTool::new()));
         // Filesystem tools
         registry.register(Box::new(filesystem::apply_patch::ApplyPatchTool::new()));
         registry.register(Box::new(filesystem::file_read::FileReadTool::new()));
@@ -209,6 +210,6 @@ pub use filesystem::{
 };
 pub use meta::{
     AskUserQuestionTool, CompactTool, LoadSkillTool, LspTool, NoteEditTool, RlmDelegateTool,
-    TaskTool, TeamMessageTool, ThinkTool, UpdatePlanTool,
+    SkillTool, TaskTool, TeamMessageTool, ThinkTool, UpdatePlanTool,
 };
 pub use search::{GlobTool, GrepTool, SearchTool, WebFetchTool, WebSearchTool};

@@ -391,6 +391,29 @@ async fn test_grep_and_search_compatibility() {
 }
 
 #[tokio::test]
+async fn test_skill_tool_registered() {
+    let registry = ToolRegistry::new();
+    let tool = registry.get("skill").expect("skill tool should exist");
+
+    assert_eq!(tool.name(), "skill");
+    assert!(tool.is_read_only());
+    assert!(tool.description().contains("skill"));
+
+    let schema = tool.input_schema();
+    assert!(schema["properties"].get("skill").is_some());
+    assert!(schema["properties"].get("args").is_some());
+}
+
+#[tokio::test]
+async fn test_skill_tool_not_configured_error() {
+    let registry = ToolRegistry::new();
+    let result = registry.execute("skill", serde_json::json!({"skill": "comet"})).await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.code.as_deref(), Some("skill_registry_unconfigured"));
+}
+
+#[tokio::test]
 async fn test_glob_tool() {
     use serde_json::json;
     use tempfile::tempdir;
