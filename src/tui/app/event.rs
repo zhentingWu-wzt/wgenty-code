@@ -133,7 +133,8 @@ impl App {
                                     let text = self.input_box.textarea.lines().join("\n");
                                     if let Some(pos) = text.rfind(state.prefix) {
                                         let before = &text[..pos];
-                                        self.input_box.textarea = tui_textarea::TextArea::default();
+                                        self.input_box.textarea.select_all();
+                                        self.input_box.textarea.cut();
                                         self.input_box.textarea.insert_str(before);
                                         // @-triggered completion outputs /skill-name, /-triggered keeps /name
                                         let insert = if state.prefix == '@' {

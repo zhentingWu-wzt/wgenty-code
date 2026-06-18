@@ -7,6 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use textwrap::Options;
 
 const USER_COLOR: Color = Color::Rgb(255, 140, 66);
 const ASSISTANT_COLOR: Color = Color::Rgb(147, 112, 219);
@@ -451,19 +452,19 @@ fn message_to_lines(
                 } else {
                     format!(" {}", detail)
                 };
-                lines.push(Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(DIM_COLOR)),
-                    Span::styled(verb_with_mode.clone(), verb_style),
-                    Span::styled(detail_text, Style::default().fg(DIM_COLOR)),
-                    if is_running {
-                        Span::styled(
-                            format!(" {}", running_suffix(spinner_frame)),
-                            Style::default().fg(Color::Rgb(180, 180, 100)),
-                        )
-                    } else {
-                        Span::styled("", Style::default())
-                    },
-                ]));
+                let suffix = if is_running {
+                    format!(" {}", running_suffix(spinner_frame))
+                } else {
+                    String::new()
+                };
+                push_wrapped(
+                    &mut lines,
+                    &format!("{}{}{}", verb_with_mode, detail_text, suffix),
+                    &prefix,
+                    DIM_COLOR,
+                    verb_style.fg.unwrap_or(TEXT_COLOR),
+                    max_w + 2,
+                );
 
                 // Routing reason for task/delegate tools
                 if !is_running {
@@ -473,10 +474,14 @@ fn message_to_lines(
                         .and_then(|m| m.get("routing_reason"))
                         .and_then(|v| v.as_str())
                     {
-                        lines.push(Line::from(vec![Span::styled(
-                            format!("   ⓘ {}", reason),
-                            Style::default().fg(Color::Rgb(80, 80, 100)),
-                        )]));
+                        push_wrapped(
+                            &mut lines,
+                            &format!("ⓘ {}", reason),
+                            "   ",
+                            Color::Rgb(80, 80, 100),
+                            Color::Rgb(80, 80, 100),
+                            max_w + 2,
+                        );
                     }
                 }
 
@@ -516,28 +521,28 @@ fn message_to_lines(
                     }
                 }
                 if show_tool_expand_hint && total > show.len() {
-                    lines.push(Line::from(vec![Span::styled(
-                        format!(
-                            "  {} +{} lines (Ctrl+O to expand)",
+                    push_wrapped(
+                        &mut lines,
+                        &format!(
+                            "{} +{} lines (Ctrl+O to expand)",
                             '\u{2026}',
                             total - show.len()
                         ),
-                        Style::default().fg(DIM_COLOR),
-                    )]));
+                        "  ",
+                        DIM_COLOR,
+                        DIM_COLOR,
+                        max_w + 2,
+                    );
                 }
                 lines.push(Line::raw(""));
                 lines
             } else {
                 // ToolResult — content already formatted by format_tool_result
-                msg.content
-                    .lines()
-                    .map(|line| {
-                        Line::from(Span::styled(
-                            line.to_string(),
-                            Style::default().fg(DIM_COLOR),
-                        ))
-                    })
-                    .collect()
+                let mut lines = Vec::new();
+                for line in msg.content.lines() {
+                    push_wrapped(&mut lines, line, "", DIM_COLOR, DIM_COLOR, max_w + 2);
+                }
+                lines
             }
         }
         MessageRole::System => Vec::new(),
@@ -815,7 +820,7 @@ fn push_wrapped(
     max_w: usize,
 ) {
     let prefix_len = prefix.chars().count();
-    let content_w = max_w.saturating_sub(prefix_len);
+    let content_w = max_w.saturating_sub(prefix_len).max(1);
 
     if text.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -826,38 +831,12 @@ fn push_wrapped(
     }
 
     let prefix_owned = prefix.to_string();
-    let chars: Vec<char> = text.chars().collect();
-    let mut start = 0;
+    let options = Options::new(content_w).break_words(true);
 
-    while start < chars.len() {
-        let end = (start + content_w).min(chars.len());
-        let end = if end < chars.len() {
-            let mut break_at = end;
-            for i in (start..end).rev() {
-                if chars[i] == ' ' {
-                    break_at = i;
-                    break;
-                }
-            }
-            if break_at == start {
-                end
-            } else {
-                break_at
-            }
-        } else {
-            end
-        };
-
-        let chunk: String = chars[start..end].iter().collect();
+    for chunk in textwrap::wrap(text, &options) {
         lines.push(Line::from(vec![
             Span::styled(prefix_owned.clone(), Style::default().fg(prefix_color)),
-            Span::styled(chunk, Style::default().fg(text_color)),
+            Span::styled(chunk.to_string(), Style::default().fg(text_color)),
         ]));
-
-        start = if end < chars.len() && chars[end] == ' ' {
-            end + 1
-        } else {
-            end
-        };
     }
 }
