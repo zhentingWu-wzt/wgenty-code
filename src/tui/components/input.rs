@@ -10,7 +10,9 @@ const ACCENT: Color = Color::Rgb(147, 112, 219);
 /// Input box wrapping tui-textarea for CJK/IME-compatible text input.
 pub struct InputBox {
     pub textarea: TextArea<'static>,
-    last_style_was_accent: bool,
+    /// Previously observed space boundary position in the first line.
+    /// `None` = no slash command; `Some(0)` = slash but no space yet; `Some(n)` = space at column n.
+    last_boundary: Option<usize>,
 }
 
 impl InputBox {
@@ -32,29 +34,32 @@ impl InputBox {
 
         Self {
             textarea,
-            last_style_was_accent: false,
+            last_boundary: None,
         }
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        let is_slash = self
+        let first_line = self
             .textarea
             .lines()
             .first()
-            .map(|l| l.trim_start().starts_with('/'))
-            .unwrap_or(false);
+            .map(|l| l.to_string())
+            .unwrap_or_default();
 
-        // tui-textarea's set_style only affects future input, not existing text.
-        // When slash state changes, re-insert all text with the correct style.
-        if is_slash != self.last_style_was_accent {
-            self.last_style_was_accent = is_slash;
-            let target_style = if is_slash {
-                Style::default().fg(ACCENT)
-            } else {
-                Style::default().fg(Color::White)
-            };
+        let is_slash = first_line.trim_start().starts_with('/');
+        let space_pos = first_line.find(' ');
 
-            // Save text, re-insert with target style
+        // Current boundary state
+        let current_boundary: Option<usize> = if is_slash {
+            Some(space_pos.unwrap_or(0))
+        } else {
+            None
+        };
+
+        // Re-style only when the boundary actually moves
+        if current_boundary != self.last_boundary {
+            self.last_boundary = current_boundary;
+
             let text = self
                 .textarea
                 .lines()
@@ -62,20 +67,44 @@ impl InputBox {
                 .map(|l| l.to_string())
                 .collect::<Vec<_>>()
                 .join("\n");
-            self.textarea.set_style(target_style);
-            self.textarea.select_all();
-            self.textarea.cut();
-            if !text.is_empty() {
-                self.textarea.insert_str(&text);
+
+            if is_slash && !text.is_empty() {
+                self.textarea.set_style(Style::default().fg(ACCENT));
+                self.textarea.select_all();
+                self.textarea.cut();
+                if let Some(pos) = space_pos {
+                    self.textarea.insert_str(&first_line[..pos]);
+                    self.textarea.set_style(Style::default().fg(Color::White));
+                    self.textarea.insert_str(&first_line[pos..]);
+                } else {
+                    self.textarea.insert_str(&first_line);
+                }
+                let rest_start = first_line.len();
+                if text.len() > rest_start {
+                    self.textarea.set_style(Style::default().fg(Color::White));
+                    self.textarea.insert_str(&text[rest_start..]);
+                }
+            } else if is_slash {
+                // Empty — just accent
+                self.textarea.set_style(Style::default().fg(ACCENT));
+            } else {
+                // Not a slash command — re-style as white
+                self.textarea.set_style(Style::default().fg(Color::White));
+                self.textarea.select_all();
+                self.textarea.cut();
+                if !text.is_empty() {
+                    self.textarea.insert_str(&text);
+                }
+            }
+        } else if is_slash {
+            // Boundary unchanged, just sync style for next typed char
+            if space_pos.is_some() {
+                self.textarea.set_style(Style::default().fg(Color::White));
+            } else {
+                self.textarea.set_style(Style::default().fg(ACCENT));
             }
         } else {
-            // Keep style in sync for newly typed characters
-            let style = if is_slash {
-                Style::default().fg(ACCENT)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            self.textarea.set_style(style);
+            self.textarea.set_style(Style::default().fg(Color::White));
         }
 
         f.render_widget(&self.textarea, area);
@@ -92,7 +121,7 @@ impl InputBox {
             .join("\n");
         self.textarea.select_all();
         self.textarea.cut();
-        self.last_style_was_accent = false;
+        self.last_boundary = None;
         self.textarea.set_style(Style::default().fg(Color::White));
         text
     }
