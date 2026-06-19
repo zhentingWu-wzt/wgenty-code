@@ -783,10 +783,43 @@ impl Cli {
     async fn run_skills(&self, action: &super::SkillsCommands) -> anyhow::Result<()> {
         match action {
             super::SkillsCommands::List => {
-                println!("Available skills:");
-                println!("  - simplify: Review and simplify code");
-                println!("  - loop: Run recurring tasks");
-                println!("  - schedule: Schedule automated tasks");
+                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                let project_root =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+                // load_from_dirs appends "skills" to each base dir,
+                // so pass parent directories here.
+                let skills_dirs: Vec<std::path::PathBuf> = vec![
+                    project_root.join(".wgenty-code"),
+                    home.join(".wgenty-code"),
+                    // Legacy Claude Code skills location
+                    home.join(".claude"),
+                ];
+
+                let skill_loader =
+                    crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);
+
+                let names = skill_loader.skill_names();
+                if names.is_empty() {
+                    println!("No skills found.");
+                    println!(
+                        "Place SKILL.md files under ~/.wgenty-code/skills/<name>/ or project/.wgenty-code/skills/<name>/"
+                    );
+                } else {
+                    println!("Available skills:");
+                    for name in &names {
+                        if let Some(skill) = skill_loader.load_skill(name) {
+                            let desc = if skill.description.is_empty() {
+                                "(no description)"
+                            } else {
+                                &skill.description
+                            };
+                            println!("  - {}: {}", name, desc);
+                        } else {
+                            println!("  - {}", name);
+                        }
+                    }
+                }
             }
             super::SkillsCommands::Execute { skill, args } => {
                 println!("Executing skill: {} with args: {:?}", skill, args);
