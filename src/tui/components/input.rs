@@ -4,6 +4,9 @@ use ratatui::widgets::{Block, BorderType, Borders};
 use ratatui::Frame;
 use tui_textarea::TextArea;
 
+/// Accent color used for command highlighting.
+const ACCENT: Color = Color::Rgb(147, 112, 219);
+
 /// Input box wrapping tui-textarea for CJK/IME-compatible text input.
 pub struct InputBox {
     pub textarea: TextArea<'static>,
@@ -17,7 +20,7 @@ impl InputBox {
         textarea.set_block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(147, 112, 219)))
+                .border_style(Style::default().fg(ACCENT))
                 .border_type(BorderType::Rounded)
                 .title(" Input (Enter 提交 · Shift+Enter 换行) "),
         );
@@ -29,8 +32,21 @@ impl InputBox {
         Self { textarea }
     }
 
-    pub fn render(&self, f: &mut Frame, area: Rect) {
+    pub fn render(&mut self, f: &mut Frame, area: Rect) {
+        // When input starts with /, use accent color for visual distinction
+        let is_slash = self
+            .textarea
+            .lines()
+            .first()
+            .map(|l| l.trim_start().starts_with('/'))
+            .unwrap_or(false);
+        if is_slash {
+            self.textarea.set_style(Style::default().fg(ACCENT));
+        }
         f.render_widget(&self.textarea, area);
+        if is_slash {
+            self.textarea.set_style(Style::default().fg(Color::White));
+        }
     }
 
     /// Extract text and reset for next input.

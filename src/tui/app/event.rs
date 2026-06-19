@@ -136,12 +136,8 @@ impl App {
                                         self.input_box.textarea.select_all();
                                         self.input_box.textarea.cut();
                                         self.input_box.textarea.insert_str(before);
-                                        // @-triggered completion outputs /skill-name, /-triggered keeps /name
-                                        let insert = if state.prefix == '@' {
-                                            format!("/{} ", m.text)
-                                        } else {
-                                            format!("{} ", m.text)
-                                        };
+                                        // Both @ and / completion insert /name to input
+                                        let insert = format!("/{} ", m.text);
                                         self.input_box.textarea.insert_str(&insert);
                                     }
                                 }

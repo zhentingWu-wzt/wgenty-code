@@ -12,7 +12,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 impl App {
-    pub(super) fn render(&self, f: &mut Frame) {
+    pub(super) fn render(&mut self, f: &mut Frame) {
         let area = f.area();
         // Layout: chat | [panel] | status | pending | input
         let has_question = self.question_state.visible;
@@ -148,7 +148,7 @@ impl App {
         );
     }
 
-    fn render_input(&self, f: &mut Frame, area: Rect) {
+    fn render_input(&mut self, f: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(0), Constraint::Length(1)])
