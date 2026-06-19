@@ -33,7 +33,7 @@ impl InputBox {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        // When input starts with /, use accent color for visual distinction
+        // When input starts with /, use accent color for visual distinction.
         let is_slash = self
             .textarea
             .lines()
@@ -42,11 +42,10 @@ impl InputBox {
             .unwrap_or(false);
         if is_slash {
             self.textarea.set_style(Style::default().fg(ACCENT));
-        }
-        f.render_widget(&self.textarea, area);
-        if is_slash {
+        } else {
             self.textarea.set_style(Style::default().fg(Color::White));
         }
+        f.render_widget(&self.textarea, area);
     }
 
     /// Extract text and reset for next input.
