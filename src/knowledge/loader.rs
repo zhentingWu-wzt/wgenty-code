@@ -107,7 +107,7 @@ impl SkillLoader {
 }
 
 /// Parse YAML frontmatter (--- ... ---) from SKILL.md content.
-fn parse_frontmatter(content: &str) -> (Option<String>, Option<String>) {
+pub(crate) fn parse_frontmatter(content: &str) -> (Option<String>, Option<String>) {
     let content = content.trim();
     if !content.starts_with("---") {
         return (None, None);

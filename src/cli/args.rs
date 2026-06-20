@@ -115,6 +115,9 @@ impl Cli {
         state: crate::state::AppState,
         prompt: Option<String>,
     ) -> anyhow::Result<()> {
+        // Auto-install bundled skills on first run (silent, non-blocking)
+        crate::knowledge::embedded::auto_install();
+
         use crate::tui::app::{self, App};
         use crate::tui::client::DaemonClient;
         use crossterm::{
@@ -829,6 +832,53 @@ impl Cli {
             }
             super::SkillsCommands::Search { query } => {
                 println!("Searching skills for: {}", query);
+            }
+            super::SkillsCommands::Install => {
+                use crate::knowledge::embedded;
+
+                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                let base = home.join(".wgenty-code");
+
+                #[cfg(feature = "bundled-skills")]
+                let bundled_count = embedded::BundledSkills::count();
+                #[cfg(not(feature = "bundled-skills"))]
+                let bundled_count: usize = 0;
+
+                if bundled_count == 0 {
+                    println!("No bundled skills available.");
+                    println!("This binary was built without the 'bundled-skills' feature.");
+                    return Ok(());
+                }
+
+                println!(
+                    "Installing {} bundled skill(s) to {} ...",
+                    bundled_count,
+                    base.join("skills").display()
+                );
+
+                match embedded::BundledSkills::install_to(&base) {
+                    Ok(installed) => {
+                        if installed.is_empty() {
+                            println!("All bundled skills are already installed (no overwrites).");
+                        } else {
+                            println!("Installed {} skill(s):", installed.len());
+                            // Show name + description for each newly installed skill
+                            let all = embedded::BundledSkills::list_bundled();
+                            for name in &installed {
+                                let desc = all
+                                    .iter()
+                                    .find(|(n, _)| n == name)
+                                    .map(|(_, d)| d.as_str())
+                                    .unwrap_or("");
+                                println!("  - {}: {}", name, desc);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to install bundled skills: {}", e);
+                        return Err(anyhow::anyhow!("install failed: {}", e));
+                    }
+                }
             }
         }
         Ok(())

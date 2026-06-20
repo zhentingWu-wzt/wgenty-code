@@ -421,6 +421,9 @@ pub enum SkillsCommands {
         /// Search query
         query: String,
     },
+
+    /// Install bundled skills to the user's skills directory
+    Install,
 }
 
 #[derive(Subcommand, Debug)]

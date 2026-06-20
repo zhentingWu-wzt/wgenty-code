@@ -55,6 +55,9 @@ pub struct App {
     /// Number of completed turns (for UI / debugging).
     pub turn_count: usize,
     pub mode: AgentMode,
+    /// Previous mode before entering PlanMode via toggle (Ctrl+P or /plan).
+    /// Used to restore the correct mode when toggling back.
+    pub previous_mode: Option<AgentMode>,
     /// Pre-assembled system messages (layered instructions from PromptAssembler).
     /// Cloned into each new AgentLoop so every Turn inherits the same base instructions.
     pub assembled_system_messages: Vec<ChatMessage>,
@@ -246,6 +249,7 @@ impl App {
             } else {
                 AgentMode::Normal
             },
+            previous_mode: None,
             event_tx,
             event_rx,
             should_quit: false,

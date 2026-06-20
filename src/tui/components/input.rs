@@ -38,7 +38,17 @@ impl InputBox {
         }
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect) {
+    pub fn render(&mut self, f: &mut Frame, area: Rect, border_color: Option<Color>) {
+        // Update border color to reflect current agent mode
+        let border_fg = border_color.unwrap_or(ACCENT);
+        self.textarea.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_fg))
+                .border_type(BorderType::Rounded)
+                .title(" Input (Enter 提交 · Shift+Enter 换行) "),
+        );
+
         let first_line = self
             .textarea
             .lines()

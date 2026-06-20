@@ -5,6 +5,7 @@
 
 pub mod builtin;
 pub mod docs;
+pub mod embedded;
 pub mod executor;
 pub mod external;
 pub mod external_registry;

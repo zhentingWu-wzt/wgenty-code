@@ -119,7 +119,7 @@ askama = { version = "0.12", optional = true }
 fluent = { version = "0.16", optional = true }
 fluent-bundle = { version = "0.15", optional = true }
 unic-langid = { version = "0.9", optional = true, features = ["macros"] }
-rust-embed = { version = "8.4", optional = true }
+rust-embed = { version = "8.5", optional = true }
 
 [dev-dependencies]
 tempfile = "3.10"
@@ -127,14 +127,15 @@ mockall = "0.12"
 wasm-bindgen-test = "0.3"
 
 [features]
-default = ["gui-egui", "i18n", "daemon"]
+default = ["gui-egui", "i18n", "daemon", "bundled-skills"]
 wasm = ["wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys"]
 gui-egui = ["eframe", "egui", "egui_extras"]
 # gui-iced = ["iced"]
 daemon = ["axum", "tower", "tower-http", "tokio-stream"]
 web = ["axum", "tower", "tower-http", "askama"]
 i18n = ["fluent", "fluent-bundle", "unic-langid", "rust-embed"]
-full = ["wasm", "gui-egui", "web", "i18n", "daemon"]
+bundled-skills = ["rust-embed"]
+full = ["wasm", "gui-egui", "web", "i18n", "daemon", "bundled-skills"]
 
 [[bin]]
 name = "wgenty-code"

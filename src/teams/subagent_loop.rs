@@ -159,10 +159,6 @@ pub async fn run_subagent_loop(
         let text_snapshot: Mutex<Option<String>> = Mutex::new(None);
         let current_params_val: Mutex<Option<String>> = Mutex::new(None);
         let cumulative_tokens: Mutex<usize> = Mutex::new(0);
-        // Progress tracker for stuck detection
-        let mut tool_types_used: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        let mut stale_rounds: u32 = 0;
 
         let emit = |status: SubagentStatus,
                     round: Option<usize>,
@@ -218,9 +214,6 @@ pub async fn run_subagent_loop(
 
         emit(SubagentStatus::Running, Some(0), None, None, None);
 
-        // Track the previous round's progress delta for the next Running emit.
-        let mut last_delta: Option<f32> = None;
-
         for round in 0..max_rounds {
             let elapsed = start.elapsed().as_secs();
             // Info-level progress log every round (not just debug)
@@ -239,7 +232,7 @@ pub async fn run_subagent_loop(
                 Some(round + 1),
                 None,
                 None,
-                last_delta,
+                None,
             );
 
             let response = tokio::time::timeout(
@@ -410,11 +403,6 @@ pub async fn run_subagent_loop(
             // Execute each tool call and push results back as tool-result messages.
             let tool_results: Vec<ToolCall> = tool_calls.unwrap();
             let mut had_parse_error_this_round = false;
-            // Collect tool names for progress delta computation (before for loop consumes tool_results).
-            let round_tool_names: Vec<String> = tool_results
-                .iter()
-                .map(|tc| tc.function.name.clone())
-                .collect();
 
             for tool_call in tool_results {
                 let tool_name = &tool_call.function.name;
@@ -583,36 +571,6 @@ pub async fn run_subagent_loop(
                 ));
             }
 
-            // ── Progress delta computation ──────────────────────────────────
-            let round_tool_types: std::collections::HashSet<String> =
-                round_tool_names.into_iter().collect();
-            let new_types: Vec<&String> = round_tool_types.difference(&tool_types_used).collect();
-            let delta = if tool_types_used.is_empty() {
-                1.0f32
-            } else {
-                new_types.len() as f32 / tool_types_used.len() as f32
-            };
-            tool_types_used.extend(round_tool_types);
-            last_delta = Some(delta);
-            if delta < 0.05 {
-                stale_rounds += 1;
-            } else {
-                stale_rounds = 0;
-            }
-            if stale_rounds >= 3 {
-                let msg = format!(
-                    "Subagent stalled: no progress for {} consecutive rounds (delta={:.2})",
-                    stale_rounds, delta
-                );
-                emit(
-                    SubagentStatus::Failed,
-                    Some(round + 1),
-                    None,
-                    Some(msg.clone()),
-                    Some(delta),
-                );
-                return Err(msg);
-            }
         }
 
         tracing::info!(
