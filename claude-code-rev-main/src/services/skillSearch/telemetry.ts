@@ -1,1 +1,0 @@
-export function logSkillSearchTelemetry(): void {}
