@@ -52,24 +52,23 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            binary_name: wgenty_code_rs
+            binary_name: wgenty-code
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary_name: wgenty_code_rs.exe
+            binary_name: wgenty-code.exe
           - os: macos-latest
             target: x86_64-apple-darwin
-            binary_name: wgenty_code_rs
+            binary_name: wgenty-code
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: 构建 Release 版本
         run: cargo build --release --target ${{ matrix.target }}
       - name: 上传构建产物
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.os }}-binary
           path: target/${{ matrix.target }}/release/${{ matrix.binary_name }}
