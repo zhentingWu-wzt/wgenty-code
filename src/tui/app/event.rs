@@ -288,10 +288,15 @@ impl App {
                 if self.permission_state.handle_key(&key) {
                     return;
                 }
-                // Question panel handling — delegated to Component
+                // Question panel handling — delegated to Component.
+                // handle_key sets just_submitted=true only for explicit confirmation
+                // keys (Enter, number in single-select). Navigation keys (↑↓, j, k,
+                // Space) only mutate cursor/selection and keep just_submitted=false.
                 if self.question_state.handle_key(&key) {
-                    if let Some(answers) = self.question_state.take_response() {
-                        self.push_question_answer(&answers);
+                    if self.question_state.just_submitted {
+                        if let Some(answers) = self.question_state.take_response() {
+                            self.push_question_answer(&answers);
+                        }
                     }
                     return;
                 }
