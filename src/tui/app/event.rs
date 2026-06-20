@@ -535,13 +535,12 @@ impl App {
                 self.subagent_panel_state.reset();
                 self.submit_input(text);
             }
-            AppEvent::PreparingTools => {
+            AppEvent::PreparingTools if self.streaming_content.is_empty() => {
                 // Show "preparing..." hint in streaming area immediately
-                if self.streaming_content.is_empty() {
-                    self.streaming_content = "\u{23F3} preparing tools...".to_string();
-                    self.streaming_active = true;
-                }
+                self.streaming_content = "\u{23F3} preparing tools...".to_string();
+                self.streaming_active = true;
             }
+            AppEvent::PreparingTools => {}
             AppEvent::ContentDelta(text) => {
                 self.streaming_content.push_str(&text);
                 self.streaming_active = true;
@@ -647,11 +646,10 @@ impl App {
                 });
                 self.streaming_active = false;
             }
-            AppEvent::Tick => {
-                if self.has_running_tool {
-                    self.spinner_frame = self.spinner_frame.wrapping_add(1);
-                }
+            AppEvent::Tick if self.has_running_tool => {
+                self.spinner_frame = self.spinner_frame.wrapping_add(1);
             }
+            AppEvent::Tick => {}
             AppEvent::ConfigChanged(new_settings) => {
                 // Rebuild system messages from new settings
                 let prompt_ctx = PromptContext::new()

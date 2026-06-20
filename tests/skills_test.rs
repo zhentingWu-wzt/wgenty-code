@@ -361,7 +361,7 @@ use wgenty_code::knowledge::{
 
 #[test]
 fn test_default_allow_policy_allows_skill_load() {
-    let policy = DefaultAllowPolicy::default();
+    let policy = DefaultAllowPolicy;
     let context = LoadedSkillContext::default();
     let event = SkillLoadEvent {
         skill_name: "comet".to_string(),

@@ -1,0 +1,22 @@
+{
+  "full_index": {
+  "samples": [
+    0.635,
+    0.640,
+    0.636
+  ],
+  "count": 3,
+  "median": 0.636,
+  "p95": 0.640
+},
+  "incremental_index": {
+    "1_file": {"samples":[]},
+    "10_files": {"samples":[]},
+    "100_files": {"samples":[]}
+  },
+  "index_size": {
+    "index_db_bytes": 606208,
+    "source_rs_bytes": 1992112,
+    "ratio": 0.30
+  }
+}
