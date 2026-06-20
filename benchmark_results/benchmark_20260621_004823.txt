@@ -1,0 +1,9 @@
+Wgenty Code Rust Benchmark Results
+Date: 2026-06-21 00:48:24
+OS: macOS 26.3.1
+
+--version: avg=14.9ms min=14.5ms max=15.5ms std=0.4ms
+--help: avg=12.3ms min=11.7ms max=13.2ms std=0.6ms
+config show: avg=14.5ms min=14.0ms max=14.9ms std=0.4ms
+binary size: 22 MB
+concurrent 10: 26.4ms

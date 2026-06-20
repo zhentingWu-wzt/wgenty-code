@@ -70,9 +70,8 @@ impl ApiClient {
                 Client::default()
             });
 
-        let provider: Arc<dyn Provider> = Arc::from(provider::detect_provider(
-            &settings.models.main.endpoint_base_url(),
-        ));
+        let provider: Arc<dyn Provider> =
+            provider::detect_provider(&settings.models.main.endpoint_base_url());
 
         Self {
             settings,

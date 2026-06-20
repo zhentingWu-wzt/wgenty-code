@@ -1,0 +1,34 @@
+{
+  "file_coverage": {
+    "total_rs_files": 233,
+    "indexed_files": 233,
+    "coverage_pct": 100.0,
+    "unindexed_top10": []
+  },
+  "symbols": {
+    "total": 3879,
+    "by_kind": {
+  "function": 2444,
+  "struct": 471,
+  "impl": 430,
+  "mod": 278,
+  "const": 114,
+  "enum": 103,
+  "static": 15,
+  "type_alias": 14,
+  "trait": 10
+}
+  },
+  "relationships": {
+    "total": 871,
+    "by_kind": {
+  "calls": 441,
+  "implements": 430
+}
+  },
+  "parse_failures": {
+    "total": 0,
+    "pct": 0,
+    "top_reasons": []
+  }
+}

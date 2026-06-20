@@ -432,57 +432,57 @@ impl AgentLoop {
                     // User is responding to a plan — execute normally.
                     // Fall through to the normal tool execution path below.
                 } else {
-                if let Some(ref planner) = self.planner_client {
-                    let _ = self
-                        .event_tx
-                        .send(AppEvent::ContentDelta("(generating plan)...".to_string()));
-                    match self.plan_with_model(planner, &messages).await {
-                        Ok(plan) => {
-                            let _ = self.event_tx.send(AppEvent::ContentDelta(plan.clone()));
-                            let _ = self
-                                .event_tx
-                                .send(AppEvent::ContentDelta(confirmation.to_string()));
-                            let _ = self.event_tx.send(AppEvent::StreamDone {
-                                finish_reason: "stop".to_string(),
-                            });
-                            {
-                                let mut history = self.conversation_history.lock().await;
-                                history.push(ChatMessage {
-                                    role: "assistant".to_string(),
-                                    content: Some(format!("{}{}", plan, confirmation)),
-                                    reasoning_content: None,
-                                    tool_calls: None,
-                                    tool_call_id: None,
+                    if let Some(ref planner) = self.planner_client {
+                        let _ = self
+                            .event_tx
+                            .send(AppEvent::ContentDelta("(generating plan)...".to_string()));
+                        match self.plan_with_model(planner, &messages).await {
+                            Ok(plan) => {
+                                let _ = self.event_tx.send(AppEvent::ContentDelta(plan.clone()));
+                                let _ = self
+                                    .event_tx
+                                    .send(AppEvent::ContentDelta(confirmation.to_string()));
+                                let _ = self.event_tx.send(AppEvent::StreamDone {
+                                    finish_reason: "stop".to_string(),
                                 });
+                                {
+                                    let mut history = self.conversation_history.lock().await;
+                                    history.push(ChatMessage {
+                                        role: "assistant".to_string(),
+                                        content: Some(format!("{}{}", plan, confirmation)),
+                                        reasoning_content: None,
+                                        tool_calls: None,
+                                        tool_call_id: None,
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                let _ = self.event_tx.send(AppEvent::StreamError(e.clone()));
+                                return Err(e);
                             }
                         }
-                        Err(e) => {
-                            let _ = self.event_tx.send(AppEvent::StreamError(e.clone()));
-                            return Err(e);
+                    } else {
+                        // Content already streamed via ContentDelta during stream_with_retry.
+                        // Just append confirmation prompt and finish.
+                        let _ = self
+                            .event_tx
+                            .send(AppEvent::ContentDelta(confirmation.to_string()));
+                        {
+                            let mut history = self.conversation_history.lock().await;
+                            history.push(ChatMessage {
+                                role: "assistant".to_string(),
+                                content: Some(format!("{}{}", result.content, confirmation)),
+                                reasoning_content: Some(result.reasoning_content.clone()),
+                                tool_calls: None,
+                                tool_call_id: None,
+                            });
                         }
-                    }
-                } else {
-                    // Content already streamed via ContentDelta during stream_with_retry.
-                    // Just append confirmation prompt and finish.
-                    let _ = self
-                        .event_tx
-                        .send(AppEvent::ContentDelta(confirmation.to_string()));
-                    {
-                        let mut history = self.conversation_history.lock().await;
-                        history.push(ChatMessage {
-                            role: "assistant".to_string(),
-                            content: Some(format!("{}{}", result.content, confirmation)),
-                            reasoning_content: Some(result.reasoning_content.clone()),
-                            tool_calls: None,
-                            tool_call_id: None,
+                        let _ = self.event_tx.send(AppEvent::StreamDone {
+                            finish_reason: result.finish_reason.clone(),
                         });
                     }
-                    let _ = self.event_tx.send(AppEvent::StreamDone {
-                        finish_reason: result.finish_reason.clone(),
-                    });
-                }
-                let _ = self.event_tx.send(AppEvent::SaveSession);
-                return Ok(());
+                    let _ = self.event_tx.send(AppEvent::SaveSession);
+                    return Ok(());
                 } // end if is_plan_reply / else
             }
 

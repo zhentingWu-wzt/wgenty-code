@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Main configuration structure (top-level grouped form).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
     #[serde(default)]
     pub models: ModelsConfig,
@@ -228,7 +228,7 @@ impl Default for SubagentLimits {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentConfig {
     #[serde(default)]
     pub plan_mode: bool,
@@ -240,18 +240,6 @@ pub struct AgentConfig {
     pub subagent: SubagentLimits,
     #[serde(default)]
     pub rlm: RlmSettings,
-}
-
-impl Default for AgentConfig {
-    fn default() -> Self {
-        Self {
-            plan_mode: false,
-            max_rounds: None,
-            token_budget: TokenBudget::default(),
-            subagent: SubagentLimits::default(),
-            rlm: RlmSettings::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -469,20 +457,6 @@ impl Default for RlmSettings {
             retry_enabled: true,
             max_replan_cycles: 2,
             jaccard_threshold: 0.8,
-        }
-    }
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            models: ModelsConfig::default(),
-            agent: AgentConfig::default(),
-            prompt: PromptConfig::default(),
-            plugins: PluginsConfig::default(),
-            storage: StorageConfig::default(),
-            integrations: IntegrationsConfig::default(),
-            verbose: false,
         }
     }
 }

@@ -1,0 +1,32 @@
+{
+  "file_coverage": {
+    "total_rs_files": 233,
+    "indexed_files": 0,
+    "coverage_pct": 0.0,
+    "unindexed_top10": [
+  "src/agent/core.rs",
+  "src/agent/events.rs",
+  "src/agent/mod.rs",
+  "src/agent/progress.rs",
+  "src/api/anthropic/conversions.rs",
+  "src/api/anthropic/mod.rs",
+  "src/api/anthropic/stream.rs",
+  "src/api/anthropic/types.rs",
+  "src/api/mod.rs",
+  "src/api/provider.rs"
+]
+  },
+  "symbols": {
+    "total": 0,
+    "by_kind": {}
+  },
+  "relationships": {
+    "total": 0,
+    "by_kind": {}
+  },
+  "parse_failures": {
+    "total": 0,
+    "pct": 0,
+    "top_reasons": []
+  }
+}

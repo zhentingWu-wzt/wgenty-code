@@ -18,13 +18,17 @@ fn create_test_project(dir: &std::path::Path) {
     let src = dir.join("src");
     std::fs::create_dir_all(&src).unwrap();
 
-    std::fs::write(dir.join("Cargo.toml"), r#"[package]
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
 name = "mini-payment"
 version = "0.1.0"
 edition = "2021"
 [dependencies]
 uuid = { version = "1", features = ["v4"] }
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     std::fs::write(src.join("lib.rs"), r#"//! Mini payment processing library
 
@@ -138,9 +142,12 @@ fn count_occurrences(dir: &std::path::Path, pattern: &str) -> usize {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() { count += count_occurrences(&path, pattern); }
-            else if path.extension().map(|e| e == "rs").unwrap_or(false) {
-                if let Ok(content) = std::fs::read_to_string(&path) { count += content.matches(pattern).count(); }
+            if path.is_dir() {
+                count += count_occurrences(&path, pattern);
+            } else if path.extension().map(|e| e == "rs").unwrap_or(false) {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    count += content.matches(pattern).count();
+                }
             }
         }
     }
@@ -154,11 +161,15 @@ fn progress_printer(progress: SubagentProgress) {
         wgenty_code::agent::progress::SubagentStatus::Failed => "❌",
         _ => "⏳",
     };
-    println!("  {} {:>5}ms  round {}/{}  {:20}  {}",
-        icon, progress.elapsed_ms,
-        progress.round.unwrap_or(0), progress.max_rounds.unwrap_or(0),
+    println!(
+        "  {} {:>5}ms  round {}/{}  {:20}  {}",
+        icon,
+        progress.elapsed_ms,
+        progress.round.unwrap_or(0),
+        progress.max_rounds.unwrap_or(0),
         progress.current_tool.as_deref().unwrap_or("thinking"),
-        progress.current_params.as_deref().unwrap_or(""));
+        progress.current_params.as_deref().unwrap_or("")
+    );
 }
 
 #[tokio::test]
@@ -175,11 +186,20 @@ async fn test_refactor_rename_trait_method_across_project() {
     assert!(before >= 5);
 
     let settings = Settings::load().expect("Failed to load settings");
-    println!("   API: {} / {}", settings.models.main.endpoint_base_url(), settings.models.main.name);
+    println!(
+        "   API: {} / {}",
+        settings.models.main.endpoint_base_url(),
+        settings.models.main.name
+    );
 
     let registry = Arc::new(ToolRegistry::new());
     let api_client = ApiClient::new(settings.clone());
-    let allowed_tools: Vec<String> = registry.list().iter().map(|t| t.name().to_string()).filter(|n| n != "task").collect();
+    let allowed_tools: Vec<String> = registry
+        .list()
+        .iter()
+        .map(|t| t.name().to_string())
+        .filter(|n| n != "task")
+        .collect();
     println!("\n🔧 Tools: {}", allowed_tools.len());
 
     let system_prompt = r#"You are a code refactoring subagent. RULES:
@@ -188,7 +208,8 @@ async fn test_refactor_rename_trait_method_across_project() {
 3. VERIFY changes by reading modified files
 4. Return a summary of ALL changes with file paths"#;
 
-    let user_prompt = format!(r#"## Refactoring Task
+    let user_prompt = format!(
+        r#"## Refactoring Task
 Rename the trait method `process_transaction` to `process_payment` across the ENTIRE codebase at: {}
 
 What to do:
@@ -197,14 +218,27 @@ What to do:
 3. src/auth.rs: update call site
 4. src/notification.rs: update ALL call sites
 
-Return summary with files changed and remaining occurrences of "process_transaction" (should be 0 in code)."#, project_dir.display());
+Return summary with files changed and remaining occurrences of "process_transaction" (should be 0 in code)."#,
+        project_dir.display()
+    );
 
     println!("\n🚀 Starting refactoring subagent (max_rounds=100, stuck_detection=10)...\n");
 
     let progress_cb: ProgressCallback = Arc::new(progress_printer);
     let start = std::time::Instant::now();
 
-    let result = run_subagent_loop(&api_client, &registry, system_prompt, &user_prompt, &allowed_tools, 100, 600, Some(progress_cb), None).await;
+    let result = run_subagent_loop(
+        &api_client,
+        &registry,
+        system_prompt,
+        &user_prompt,
+        &allowed_tools,
+        100,
+        600,
+        Some(progress_cb),
+        None,
+    )
+    .await;
     let elapsed = start.elapsed();
 
     println!("\n⏱️  Total time: {:.1}s", elapsed.as_secs_f64());
@@ -221,19 +255,35 @@ Return summary with files changed and remaining occurrences of "process_transact
             println!("\n📊 VERIFICATION:");
             println!("   'process_transaction' (old): {} → {}", before, after);
             println!("   'process_payment'    (new): {}", payment);
-            if after < before && payment > 0 { println!("   ✅ REFACTORING VERIFIED"); }
-            if after == 0 { println!("   ✅ CLEAN: old name fully eliminated"); }
+            if after < before && payment > 0 {
+                println!("   ✅ REFACTORING VERIFIED");
+            }
+            if after == 0 {
+                println!("   ✅ CLEAN: old name fully eliminated");
+            }
             assert!(!summary.is_empty());
         }
         Err(e) => {
             println!("❌ FAILED: {}", e);
             let lower = e.to_lowercase();
-            if lower.contains("stuck") { println!("   Cause: STUCK DETECTION — would have been false positive with old 3-repeat threshold"); }
-            else if lower.contains("max") && lower.contains("round") { println!("   Cause: MAX ROUNDS — would have failed at round 30 with old threshold"); }
-            else if lower.contains("timeout") { println!("   Cause: TIMEOUT"); }
-            else { println!("   Cause: OTHER — {}", e); }
+            if lower.contains("stuck") {
+                println!("   Cause: STUCK DETECTION — would have been false positive with old 3-repeat threshold");
+            } else if lower.contains("max") && lower.contains("round") {
+                println!("   Cause: MAX ROUNDS — would have failed at round 30 with old threshold");
+            } else if lower.contains("timeout") {
+                println!("   Cause: TIMEOUT");
+            } else {
+                println!("   Cause: OTHER — {}", e);
+            }
             println!("\n   Old max_rounds=30: would have failed at round 30");
-            println!("   New max_rounds=100: {}", if elapsed.as_secs() > 200 { "may still fail for very complex tasks" } else { "had enough headroom" });
+            println!(
+                "   New max_rounds=100: {}",
+                if elapsed.as_secs() > 200 {
+                    "may still fail for very complex tasks"
+                } else {
+                    "had enough headroom"
+                }
+            );
         }
     }
 }
