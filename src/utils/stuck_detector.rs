@@ -45,7 +45,7 @@ impl StuckDetector {
         self.prev_signatures = signatures;
 
         match self.stale_rounds {
-            0..=7 => StuckStatus::Ok,   // first 7 repeats: legitimate multi-step work
+            0..=7 => StuckStatus::Ok, // first 7 repeats: legitimate multi-step work
             8..=9 => StuckStatus::Warn(
                 "\n\n\u{26A0}\u{FE0F} You have repeated the same tool calls many times. \
                  Consider a different approach or ask the user for guidance."

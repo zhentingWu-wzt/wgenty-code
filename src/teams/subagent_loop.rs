@@ -227,13 +227,7 @@ pub async fn run_subagent_loop(
                 max_rounds
             );
 
-            emit(
-                SubagentStatus::Running,
-                Some(round + 1),
-                None,
-                None,
-                None,
-            );
+            emit(SubagentStatus::Running, Some(round + 1), None, None, None);
 
             let response = tokio::time::timeout(
                 PER_ROUND_API_TIMEOUT,
@@ -570,7 +564,6 @@ pub async fn run_subagent_loop(
                      </system-reminder>"
                 ));
             }
-
         }
 
         tracing::info!(

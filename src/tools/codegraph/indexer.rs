@@ -106,6 +106,7 @@ impl Indexer {
                 if let (Some((_, src_real)), Some((_, tgt_real))) = (src_mapped, tgt_mapped) {
                     r.source_id = src_real;
                     r.target_id = tgt_real;
+                    r.file_path = data.relative_path.clone();
                     self.store.insert_relationship(&r)?;
                 }
             }
@@ -249,6 +250,7 @@ impl Indexer {
             if let (Some((_, s)), Some((_, t))) = (src, tgt) {
                 r.source_id = s;
                 r.target_id = t;
+                r.file_path = relative.clone();
                 self.store.insert_relationship(&r)?;
             }
         }

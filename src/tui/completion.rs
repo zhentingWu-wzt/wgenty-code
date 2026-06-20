@@ -53,7 +53,7 @@ impl CompletionEngine {
             if !root.exists() {
                 continue;
             }
-            if let Ok(entries) = std::fs::read_dir(&root) {
+            if let Ok(entries) = std::fs::read_dir(root) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_dir() {

@@ -26,6 +26,28 @@ mkdir -p "$RESULTS_DIR"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RESULT_FILE="$RESULTS_DIR/benchmark_${TIMESTAMP}.txt"
 
+# Python helper functions for robust statistics (via stdin — avoids bash quoting issues)
+py_avg() {
+  python3 -c "import sys; data=[float(x) for x in sys.stdin.read().split()]; print(round(sum(data)/len(data),1))"
+}
+py_min() {
+  python3 -c "import sys; data=[float(x) for x in sys.stdin.read().split()]; print(min(data))"
+}
+py_max() {
+  python3 -c "import sys; data=[float(x) for x in sys.stdin.read().split()]; print(max(data))"
+}
+py_std() {
+  python3 -c "
+import sys, statistics
+data = [float(x) for x in sys.stdin.read().split()]
+print(round(statistics.stdev(data), 1)) if len(data) > 1 else print(0)
+"
+}
+py_divide() {
+  local a="$1" b="$2"
+  python3 -c "print(round($a / $b, 1))" 2>/dev/null || echo 0
+}
+
 echo -e "${BOLD}${CYAN}"
 echo "========================================"
 echo "  📊 Wgenty Code Rust - macOS Benchmark"
@@ -69,7 +91,7 @@ echo "  运行 $RUNS 次..."
 RUST_TIMES=()
 for i in $(seq 1 $RUNS); do
     # 清除磁盘缓存 (macOS)
-    sudo purge 2>/dev/null || true
+    # sudo purge 2>/dev/null || true
     START=$(python3 -c 'import time; print(time.time())')
     "$RUST_BIN" --version > /dev/null 2>&1
     END=$(python3 -c 'import time; print(time.time())')
@@ -78,15 +100,11 @@ for i in $(seq 1 $RUNS); do
     echo "  Run $i: ${ELAPSED}ms"
 done
 
-# 计算统计
-RUST_AVG=$(python3 -c "print(round(sum(${RUST_TIMES[*]}) / len([${RUST_TIMES[*]}]), 1))")
-RUST_MIN=$(python3 -c "print(min(${RUST[*]}))" 2>/dev/null || python3 -c "print(min(${RUST_TIMES[*]}))")
-RUST_MAX=$(python3 -c "print(max(${RUST_TIMES[*]}))")
-RUST_STD=$(python3 -c "
-import statistics
-data = [${RUST_TIMES[*]}]
-print(round(statistics.stdev(data), 1)) if len(data) > 1 else print(0)
-")
+# 计算统计 (via stdin helpers — avoids bash quoting issues)
+RUST_AVG=$(echo "${RUST_TIMES[*]}" | py_avg)
+RUST_MIN=$(echo "${RUST_TIMES[*]}" | py_min)
+RUST_MAX=$(echo "${RUST_TIMES[*]}" | py_max)
+RUST_STD=$(echo "${RUST_TIMES[*]}" | py_std)
 
 echo -e "  ${GREEN}平均: ${RUST_AVG}ms | 最快: ${RUST_MIN}ms | 最慢: ${RUST_MAX}ms | 标准差: ${RUST_STD}ms${NC}"
 echo ""
@@ -107,14 +125,10 @@ for i in $(seq 1 $RUNS); do
     echo "  Run $i: ${ELAPSED}ms"
 done
 
-HELP_AVG=$(python3 -c "print(round(sum(${HELP_TIMES[*]}) / len([${HELP_TIMES[*]}]), 1))")
-HELP_MIN=$(python3 -c "print(min(${HELP_TIMES[*]}))")
-HELP_MAX=$(python3 -c "print(max(${HELP_TIMES[*]}))")
-HELP_STD=$(python3 -c "
-import statistics
-data = [${HELP_TIMES[*]}]
-print(round(statistics.stdev(data), 1)) if len(data) > 1 else print(0)
-")
+HELP_AVG=$(echo "${HELP_TIMES[*]}" | py_avg)
+HELP_MIN=$(echo "${HELP_TIMES[*]}" | py_min)
+HELP_MAX=$(echo "${HELP_TIMES[*]}" | py_max)
+HELP_STD=$(echo "${HELP_TIMES[*]}" | py_std)
 
 echo -e "  ${GREEN}平均: ${HELP_AVG}ms | 最快: ${HELP_MIN}ms | 最慢: ${HELP_MAX}ms | 标准差: ${HELP_STD}ms${NC}"
 echo ""
@@ -135,14 +149,10 @@ for i in $(seq 1 $RUNS); do
     echo "  Run $i: ${ELAPSED}ms"
 done
 
-CONFIG_AVG=$(python3 -c "print(round(sum(${CONFIG_TIMES[*]}) / len([${CONFIG_TIMES[*]}]), 1))")
-CONFIG_MIN=$(python3 -c "print(min(${CONFIG_TIMES[*]}))")
-CONFIG_MAX=$(python3 -c "print(max(${CONFIG_TIMES[*]}))")
-CONFIG_STD=$(python3 -c "
-import statistics
-data = [${CONFIG_TIMES[*]}]
-print(round(statistics.stdev(data), 1)) if len(data) > 1 else print(0)
-")
+CONFIG_AVG=$(echo "${CONFIG_TIMES[*]}" | py_avg)
+CONFIG_MIN=$(echo "${CONFIG_TIMES[*]}" | py_min)
+CONFIG_MAX=$(echo "${CONFIG_TIMES[*]}" | py_max)
+CONFIG_STD=$(echo "${CONFIG_TIMES[*]}" | py_std)
 
 echo -e "  ${GREEN}平均: ${CONFIG_AVG}ms | 最快: ${CONFIG_MIN}ms | 最慢: ${CONFIG_MAX}ms | 标准差: ${CONFIG_STD}ms${NC}"
 echo ""
@@ -193,7 +203,7 @@ END=$(python3 -c 'import time; print(time.time())')
 CONCURRENT_TIME=$(python3 -c "print(round(($END - $START) * 1000, 1))")
 
 echo "  ${CONCURRENT} 个并发实例总耗时: ${CONCURRENT_TIME}ms"
-echo "  平均每个实例: $(python3 -c "print(round($CONCURRENT_TIME / $CONCURRENT, 1))")ms"
+echo "  平均每个实例: $(py_divide "$CONCURRENT_TIME" "$CONCURRENT")ms"
 echo ""
 
 # ============================================================
@@ -220,7 +230,7 @@ if command -v npx &> /dev/null; then
             echo "  TS Run $i: ${ELAPSED}ms"
         done
         
-        TS_AVG=$(python3 -c "print(round(sum(${TS_TIMES[*]}) / len([${TS_TIMES[*]}]), 1))")
+        TS_AVG=$(echo "${TS_TIMES[*]}" | py_avg)
         echo -e "  TypeScript 平均启动: ${TS_AVG}ms"
     else
         echo "  未检测到 claude CLI，跳过 TS 对比"
@@ -266,7 +276,7 @@ echo ""
 
 if [ "$TS_AVG" != "N/A" ]; then
     echo -e "${BOLD}Rust vs TypeScript 对比:${NC}"
-    SPEEDUP=$(python3 -c "print(round($TS_AVG / $RUST_AVG, 1))")
+    SPEEDUP=$(py_divide "$TS_AVG" "$RUST_AVG")
     echo "  Rust 启动:        ${RUST_AVG}ms"
     echo "  TypeScript 启动:  ${TS_AVG}ms"
     echo -e "  ${GREEN}性能提升: ${SPEEDUP}x ⚡${NC}"
