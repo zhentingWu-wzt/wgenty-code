@@ -154,7 +154,7 @@ impl App {
             .constraints([Constraint::Min(0), Constraint::Length(1)])
             .split(area);
         self.render_mode_label(f, chunks[1]);
-        self.input_box.render(f, chunks[0]);
+        self.input_box.render(f, chunks[0], Some(self.mode.color()));
     }
 
     /// Render the agent mode label at the top-left of the input area.

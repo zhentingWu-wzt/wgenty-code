@@ -411,7 +411,27 @@ impl AgentLoop {
             }
 
             if self.plan_mode {
+                // If the last assistant message is a plan confirmation,
+                // the user is replying to the plan — skip re-planning
+                // and process their response as a normal turn.
                 let confirmation = "\n\n---\nPlan generated. Reply with **execute** to proceed, or describe any changes you'd like.";
+                let is_plan_reply = {
+                    let history = self.conversation_history.lock().await;
+                    history
+                        .last()
+                        .map(|m| {
+                            m.role == "assistant"
+                                && m.content
+                                    .as_deref()
+                                    .map(|c| c.contains("Reply with **execute** to proceed"))
+                                    .unwrap_or(false)
+                        })
+                        .unwrap_or(false)
+                };
+                if is_plan_reply {
+                    // User is responding to a plan — execute normally.
+                    // Fall through to the normal tool execution path below.
+                } else {
                 if let Some(ref planner) = self.planner_client {
                     let _ = self
                         .event_tx
@@ -463,6 +483,7 @@ impl AgentLoop {
                 }
                 let _ = self.event_tx.send(AppEvent::SaveSession);
                 return Ok(());
+                } // end if is_plan_reply / else
             }
 
             // Detect completely empty response — likely a silent API error
