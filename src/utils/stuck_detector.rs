@@ -25,9 +25,9 @@ impl StuckDetector {
     }
 
     /// Record a round of tool calls. Returns:
-    /// - `StuckStatus::Ok` on first occurrence or first repeat (could be legitimate)
-    /// - `StuckStatus::Warn(msg)` on second repeat (warning to inject into tool results)
-    /// - `StuckStatus::Abort(msg)` on third+ repeat (agent should stop)
+    /// - `StuckStatus::Ok` on first 7 occurrences (legitimate multi-step operations)
+    /// - `StuckStatus::Warn(msg)` on 8th-9th repeat (warning to inject into tool results)
+    /// - `StuckStatus::Abort(msg)` on 10th+ repeat (agent is genuinely stuck)
     pub fn record_round(&mut self, tool_calls: &[crate::api::ToolCall]) -> StuckStatus {
         let signatures: Vec<(String, String)> = tool_calls
             .iter()
@@ -45,15 +45,14 @@ impl StuckDetector {
         self.prev_signatures = signatures;
 
         match self.stale_rounds {
-            0 => StuckStatus::Ok,
-            1 => StuckStatus::Ok, // first repeat could be legitimate
-            2 => StuckStatus::Warn(
-                "\n\n\u{26A0}\u{FE0F} You have repeated the same tool calls multiple times. \
+            0..=7 => StuckStatus::Ok,   // first 7 repeats: legitimate multi-step work
+            8..=9 => StuckStatus::Warn(
+                "\n\n\u{26A0}\u{FE0F} You have repeated the same tool calls many times. \
                  Consider a different approach or ask the user for guidance."
                     .to_string(),
             ),
             _ => StuckStatus::Abort(
-                "Stuck in loop: repeated identical tool calls 3+ times".to_string(),
+                "Stuck in loop: repeated identical tool calls 10+ times".to_string(),
             ),
         }
     }

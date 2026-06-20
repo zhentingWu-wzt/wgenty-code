@@ -188,7 +188,7 @@ fn build_transcript(
         started_at,
         finished_at: Some(chrono::Utc::now().timestamp_millis()),
         total_tokens,
-        max_rounds: Some(30),
+        max_rounds: Some(100),
         actual_rounds,
         token_budget_k,
         error_message,
@@ -441,7 +441,7 @@ impl Tool for TaskTool {
             ApiClient::new(self.settings.clone())
         };
 
-        // Run the subagent loop (capped at 30 rounds).
+        // Run the subagent loop (capped at 100 rounds).
         if background {
             // ── Background mode: spawn and return immediately ──────────────
             let desc = description.to_string();
@@ -464,7 +464,7 @@ impl Tool for TaskTool {
                         label: format!("subagent: {}", desc),
                         status: SubagentStatus::Pending,
                         round: None,
-                        max_rounds: Some(30),
+                        max_rounds: Some(100),
                         current_tool: None,
                         current_params: None,
                         action_log: Vec::new(),
@@ -510,7 +510,7 @@ impl Tool for TaskTool {
                     &sys_prompt,
                     &prompt_owned,
                     &tools,
-                    30,
+                    100,
                     timeout_secs,
                     Some(cb),
                     token_budget,
@@ -591,7 +591,7 @@ impl Tool for TaskTool {
                         label: format!("subagent: {}", description),
                         status: SubagentStatus::Pending,
                         round: None,
-                        max_rounds: Some(30),
+                        max_rounds: Some(100),
                         current_tool: None,
                         current_params: None,
                         action_log: Vec::new(),
@@ -650,7 +650,7 @@ impl Tool for TaskTool {
                     system_prompt,
                     &full_prompt,
                     &allowed_tools,
-                    30,
+                    100,
                     self.settings.agent.subagent.timeout_secs,
                     Some(cb),
                     token_budget,
