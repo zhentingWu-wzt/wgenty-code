@@ -101,7 +101,7 @@ fn extract_params_summary(tool_name: &str, args: &serde_json::Value) -> String {
 /// * `system_prompt`   — System prompt that sets the subagent's role/behavior.
 /// * `user_prompt`     — The task description and instructions to execute.
 /// * `allowed_tools`   — Names of tools the subagent is permitted to call.
-/// * `max_rounds`      — Maximum tool-use iterations (cap at 30 to prevent runaway).
+/// * `max_rounds`      — Maximum tool-use iterations (typically 100; caller decides).
 /// * `timeout_secs`    — Wall-clock timeout in seconds for the entire loop.
 /// * `on_progress`     — Optional callback for real-time execution progress updates.
 ///
