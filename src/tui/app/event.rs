@@ -39,14 +39,17 @@ impl App {
                     self.mode = self.mode.next();
                     return;
                 }
-                // Ctrl+P: toggle plan mode
+                // Ctrl+P: toggle plan mode (restores previous mode when leaving PlanMode)
                 if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     let is_plan = self.mode == AgentMode::PlanMode;
-                    self.mode = if is_plan {
-                        AgentMode::Normal
+                    if is_plan {
+                        // Leaving PlanMode: restore previous mode if saved
+                        self.mode = self.previous_mode.take().unwrap_or(AgentMode::Normal);
                     } else {
-                        AgentMode::PlanMode
-                    };
+                        // Entering PlanMode: save current mode for restore
+                        self.previous_mode = Some(self.mode);
+                        self.mode = AgentMode::PlanMode;
+                    }
                     let msg = if !is_plan {
                         "Plan mode enabled"
                     } else {

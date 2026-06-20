@@ -247,7 +247,14 @@ Context: {context}
                 // Truncate prompt to ~50 chars for a readable label.
                 let p = prompt.trim();
                 if p.len() > 50 {
-                    format!("sub: {}…", &p[..47])
+                    let truncate_at = {
+                        let mut end = 47;
+                        while end > 0 && !p.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        end
+                    };
+                    format!("sub: {}…", &p[..truncate_at])
                 } else {
                     format!("sub: {}", p)
                 }

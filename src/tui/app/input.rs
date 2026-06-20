@@ -26,11 +26,14 @@ impl App {
         }
         if text.trim() == "/plan" {
             let is_plan = self.mode == AgentMode::PlanMode;
-            self.mode = if is_plan {
-                AgentMode::Normal
+            if is_plan {
+                // Leaving PlanMode: restore previous mode if saved
+                self.mode = self.previous_mode.take().unwrap_or(AgentMode::Normal);
             } else {
-                AgentMode::PlanMode
-            };
+                // Entering PlanMode: save current mode for restore
+                self.previous_mode = Some(self.mode);
+                self.mode = AgentMode::PlanMode;
+            }
             let msg = if !is_plan {
                 "Plan mode enabled"
             } else {
@@ -214,7 +217,8 @@ impl App {
             self.phase = AgentPhase::Thinking;
             self.pending_inputs.push_back(text);
             self.start_next_turn();
-            self.mode = AgentMode::Normal;
+            // PlanMode now persists across turns — the agent detects plan
+            // confirmation replies and skips re-planning automatically.
             return;
         }
         self.pending_inputs.push_back(text);
