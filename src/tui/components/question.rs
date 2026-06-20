@@ -22,6 +22,9 @@ pub struct QuestionState {
     pub other_value: String,
     /// Pending oneshot sender for question response.
     pub responder: Option<QuestionResponder>,
+    /// Set to true by handle_key when the user confirms submission (Enter / number-key auto-select).
+    /// The event loop reads this flag to decide whether to call take_response().
+    pub just_submitted: bool,
 }
 
 const ACCENT_COLOR: Color = Color::Rgb(255, 200, 100);
@@ -40,6 +43,7 @@ impl QuestionState {
             cursor: 0,
             other_value: String::new(),
             responder: None,
+            just_submitted: false,
         }
     }
 
@@ -58,6 +62,7 @@ impl QuestionState {
         self.cursor = 0;
         self.other_value.clear();
         self.responder = Some(responder);
+        self.just_submitted = false;
     }
 
     pub fn cursor_on_other(&self) -> bool {
@@ -89,24 +94,36 @@ impl QuestionState {
     }
 
     /// Take pending response if any (after handle_key triggered a submission).
+    /// Returns None if there is no pending responder, or if multi-select has
+    /// no selections (Enter pressed with nothing checked), or if the Other
+    /// text input field is empty.
     pub fn take_response(&mut self) -> Option<Vec<String>> {
-        if let Some(responder) = self.responder.take() {
-            let answers = if self.cursor_on_other() {
-                vec![std::mem::take(&mut self.other_value)]
-            } else if self.multi_select {
-                self.selected
-                    .iter()
-                    .filter_map(|&i| self.options.get(i).cloned())
-                    .collect()
-            } else {
-                self.options.get(self.cursor).cloned().into_iter().collect()
-            };
-            let _ = responder.0.map(|tx| tx.send(answers.clone()));
-            self.visible = false;
-            Some(answers)
-        } else {
-            None
+        // Guard: no responder means already taken (e.g. Esc cancelled).
+        self.responder.as_ref()?;
+        // In multi-select mode, require at least one selection to submit.
+        if self.multi_select && self.selected.is_empty() {
+            return None;
         }
+        // Build answers BEFORE consuming the responder, so we can bail out
+        // early without dropping the oneshot sender (e.g. empty Other value).
+        let answers = if self.cursor_on_other() {
+            if self.other_value.is_empty() {
+                return None;
+            }
+            vec![std::mem::take(&mut self.other_value)]
+        } else if self.multi_select {
+            self.selected
+                .iter()
+                .filter_map(|&i| self.options.get(i).cloned())
+                .collect()
+        } else {
+            self.options.get(self.cursor).cloned().into_iter().collect()
+        };
+        // Now it is safe to consume the responder and submit.
+        let responder = self.responder.take()?;
+        let _ = responder.0.map(|tx| tx.send(answers.clone()));
+        self.visible = false;
+        Some(answers)
     }
 
     pub fn move_up(&mut self) {
@@ -153,7 +170,7 @@ impl QuestionState {
                 false
             } else {
                 self.cursor = idx;
-                true // Auto-submit for single-select
+                true // Signal auto-submit for single-select
             }
         } else {
             false
@@ -173,6 +190,10 @@ impl Component for QuestionState {
             return false;
         }
 
+        // Every key press resets the submission flag; only explicit submission
+        // keys (Enter, number in single-select) set it to true.
+        self.just_submitted = false;
+
         // Text input mode: cursor is on "Other" option
         if self.cursor_on_other() {
             match key.code {
@@ -185,7 +206,7 @@ impl Component for QuestionState {
                     true
                 }
                 KeyCode::Enter => {
-                    self.take_response();
+                    self.just_submitted = true;
                     true
                 }
                 KeyCode::Up => {
@@ -204,7 +225,7 @@ impl Component for QuestionState {
                 _ => false,
             }
         } else {
-            // Navigation mode
+            // Navigation / selection mode
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.move_up();
@@ -215,9 +236,10 @@ impl Component for QuestionState {
                     true
                 }
                 KeyCode::Enter => {
-                    let can_submit = !self.multi_select || !self.selected.is_empty();
-                    if can_submit {
-                        self.take_response();
+                    // For multi-select, Enter only submits when at least one item is checked.
+                    // Otherwise the key is consumed but no submission occurs.
+                    if !self.multi_select || !self.selected.is_empty() {
+                        self.just_submitted = true;
                     }
                     true
                 }
@@ -232,10 +254,8 @@ impl Component for QuestionState {
                 }
                 KeyCode::Char(c) if c.is_ascii_digit() => {
                     let n = c.to_digit(10).unwrap() as usize;
-                    if self.select_number(n) {
-                        self.take_response();
-                    }
-                    true
+                    self.just_submitted = self.select_number(n);
+                    self.just_submitted
                 }
                 _ => false,
             }
