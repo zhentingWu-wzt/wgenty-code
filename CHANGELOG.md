@@ -1,6 +1,9 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to Wgenty Code will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
@@ -26,3 +29,28 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - `UserPromptSubmit` hook 触发时机：从 `tui/app/input.rs` 的 `tokio::spawn` fire-and-forget 改为 `AgentLoop::process_input_inner` 内 `await`（10s 超时降级为空 outcomes）。
+
+## [0.1.0] - Unreleased
+
+### Added
+
+- Initial Rust rewrite of Wgenty Code CLI
+- High-performance REPL with ratatui TUI
+- Multi-provider API support (Anthropic, DeepSeek, DashScope)
+- 25 built-in agent tools (filesystem, search, execution, meta)
+- Two-stage guardian security review (rule-based + LLM)
+- OS-level sandboxing (macOS Seatbelt, Linux seccomp-bpf, Windows Job Objects)
+- 8-layer prompt assembly system
+- RLM architecture (Planner → Executor → Aggregator) for complex task decomposition
+- Plan mode with structured plan panel
+- Sub-agent delegation with recursion control
+- MCP protocol support
+- Plugin system with hot-reload
+- Session management (save/load/delete/search)
+- Feature-gated modularity (CLI, GUI, Web)
+- Internationalization (10 languages, Fluent format)
+- Daemon mode with HTTP API
+- Team memory sync
+- Skills system with bundled skills
+
+[0.1.0]: https://github.com/zhentingWu-wzt/wgenty-code/releases/tag/v0.1.0
