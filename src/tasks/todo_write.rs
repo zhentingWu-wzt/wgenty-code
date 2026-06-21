@@ -18,6 +18,15 @@ use tokio::sync::RwLock;
 
 // ── Todo item model ──────────────────────────────────────────────────────────
 
+/// Metadata for tasks that originate from subagent executions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentTodoMeta {
+    pub subagent_type: String, // "explore" | "plan" | "general-purpose" | ...
+    pub token_usage: u64,
+    pub rounds: u32,
+    pub duration_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TodoItem {
     pub content: String,
@@ -25,6 +34,8 @@ pub struct TodoItem {
     #[serde(default)]
     #[serde(rename = "activeForm")]
     pub active_form: String, // shown when in_progress, e.g. "Fixing auth bug"
+    #[serde(default)]
+    pub subagent: Option<SubagentTodoMeta>,
 }
 
 // ── Shared todo state ────────────────────────────────────────────────────────
@@ -131,6 +142,28 @@ impl Tool for TodoWriteTool {
                             "activeForm": {
                                 "type": "string",
                                 "description": "REQUIRED when status is in_progress. Present continuous verb form (e.g. 'Fixing auth bug', 'Writing tests'). Omit or leave empty for pending/completed items."
+                            },
+                            "subagent": {
+                                "type": "object",
+                                "description": "Metadata for tasks originating from subagent executions. Omit for regular tasks.",
+                                "properties": {
+                                    "subagent_type": {
+                                        "type": "string",
+                                        "description": "Type of subagent: explore, plan, general-purpose"
+                                    },
+                                    "token_usage": {
+                                        "type": "integer",
+                                        "description": "Total tokens consumed by the subagent"
+                                    },
+                                    "rounds": {
+                                        "type": "integer",
+                                        "description": "Number of rounds completed"
+                                    },
+                                    "duration_ms": {
+                                        "type": "integer",
+                                        "description": "Wall-clock duration in milliseconds"
+                                    }
+                                }
                             }
                         },
                         "required": ["content", "status"]
@@ -198,10 +231,27 @@ impl Tool for TodoWriteTool {
                 });
             }
 
+            // Parse optional subagent metadata from input
+            let subagent = item.get("subagent").and_then(|s| {
+                if s.is_null() {
+                    return None;
+                }
+                Some(SubagentTodoMeta {
+                    subagent_type: s["subagent_type"]
+                        .as_str()
+                        .unwrap_or("general-purpose")
+                        .to_string(),
+                    token_usage: s["token_usage"].as_u64().unwrap_or(0),
+                    rounds: s["rounds"].as_u64().unwrap_or(0) as u32,
+                    duration_ms: s["duration_ms"].as_u64().unwrap_or(0),
+                })
+            });
+
             validated.push(TodoItem {
                 content,
                 status,
                 active_form: active_form.clone(),
+                subagent,
             });
         }
 

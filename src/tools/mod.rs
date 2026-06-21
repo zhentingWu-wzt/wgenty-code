@@ -223,6 +223,6 @@ pub use filesystem::{
 };
 pub use meta::{
     AskUserQuestionTool, CompactTool, LoadSkillTool, LspTool, NoteEditTool, RlmDelegateTool,
-    SkillTool, TaskTool, TeamMessageTool, ThinkTool, UpdatePlanTool,
+    SkillTool, TaskTool, TeamMessageTool, ThinkTool, UpdatePlanTool, SubagentTraceTool,
 };
 pub use search::{GlobTool, GrepTool, SearchTool, WebFetchTool, WebSearchTool};
