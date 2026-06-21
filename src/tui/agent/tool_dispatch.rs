@@ -135,9 +135,8 @@ impl AgentLoop {
                 responder: crate::tui::app::PermissionResponder(Some(tx)),
             });
 
-            const PERMISSION_TIMEOUT: Duration = Duration::from_secs(120);
-            match tokio::time::timeout(PERMISSION_TIMEOUT, rx).await {
-                Ok(Ok(crate::tui::app::PermissionResponse::AllowOnce)) => {
+            match rx.await {
+                Ok(crate::tui::app::PermissionResponse::AllowOnce) => {
                     // Approve → execute → unapprove (one-shot)
                     if self.client.approve_tool(&perm.session_rule).await.is_err() {
                         return r#"{"success":false,"error":"Failed to approve permission"}"#
@@ -168,7 +167,7 @@ impl AgentLoop {
                         }
                     }
                 }
-                Ok(Ok(crate::tui::app::PermissionResponse::AlwaysAllow)) => {
+                Ok(crate::tui::app::PermissionResponse::AlwaysAllow) => {
                     // Approve the rule, then re-execute the tool
                     if self.client.approve_tool(&perm.session_rule).await.is_err() {
                         return r#"{{"success":false,"error":"Failed to approve permission"}}"#
@@ -195,17 +194,10 @@ impl AgentLoop {
                         }
                     }
                 }
-                Ok(Ok(crate::tui::app::PermissionResponse::Deny)) | Ok(Err(_)) => {
+                Ok(crate::tui::app::PermissionResponse::Deny) | Err(_) => {
                     return format!(
                         r#"{{"success":false,"error":"PERMISSION DENIED: {}"}}"#,
                         perm.reason
-                    );
-                }
-                Err(_elapsed) => {
-                    return format!(
-                        r#"{{"success":false,"error":"PERMISSION TIMEOUT: {} (no response in {}s)"}}"#,
-                        perm.reason,
-                        PERMISSION_TIMEOUT.as_secs()
                     );
                 }
             }
