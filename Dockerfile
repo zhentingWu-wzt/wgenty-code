@@ -18,36 +18,36 @@ RUN cargo build --release
 
 # ==========================================
 # 阶段 2: 运行时阶段（最小镜像）
-FROM alpine:3.18
+FROM debian:bookworm-slim
 
 LABEL maintainer="wgenty-code"
 LABEL description="High-performance Wgenty Code CLI - Rust Edition"
 LABEL version="0.1.0"
 
 # 安装必要的运行时依赖
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     libssl3 \
-    libcrypto3
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # 从构建阶段复制二进制文件
 COPY --from=builder /build/target/release/wgenty-code /usr/local/bin/
 
+# 创建非特权用户
+RUN groupadd -r claude && \
+    useradd -r -g claude -m -d /home/claude -s /usr/sbin/nologin claude
+
 # 创建配置目录
-RUN mkdir -p /home/claude/.config/wgenty-code
+RUN mkdir -p /home/claude/.config/wgenty-code && \
+    chown -R claude:claude /home/claude
 
 # 设置环境变量
 ENV PATH="/usr/local/bin:${PATH}" \
     HOME="/home/claude" \
     XDG_CONFIG_HOME="/home/claude/.config"
-
-# 创建非特权用户
-RUN addgroup -D claude && \
-    adduser -D -G claude claude && \
-    chown -R claude:claude /home/claude
 
 # 切换到非特权用户
 USER claude
