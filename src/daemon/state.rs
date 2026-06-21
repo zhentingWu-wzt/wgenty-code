@@ -119,9 +119,15 @@ impl DaemonState {
                 weak_reg.clone(),
                 bg_manager.clone(),
                 progress_store.clone(),
-                transcript_store,
+                transcript_store.clone(),
             );
             registry.register(Box::new(task_tool));
+
+            // Register subagent trace tool (read-only visualization for subagent transcripts)
+            let trace_tool = crate::tools::meta::subagent_trace::SubagentTraceTool::new(
+                transcript_store,
+            );
+            registry.register(Box::new(trace_tool));
 
             if app_state.settings.agent.rlm.enabled && app_state.settings.agent.rlm.delegate_tool {
                 let rlm_tool = crate::tools::meta::rlm::RlmDelegateTool::new(

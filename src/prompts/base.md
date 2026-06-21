@@ -51,10 +51,24 @@ Use `update_plan` or `TodoWrite` to break non-trivial tasks into steps. Plans ma
 
 ## Task delegation
 
-The `task` tool lets you spawn subagents with isolated context. There are two ways to use it:
+The `task` tool lets you spawn subagents with isolated context. Subagents are expensive — each one incurs an LLM round-trip. **Reserve them for work that genuinely needs an LLM reasoning loop.** If the job can be done with 1-2 direct tool calls, do NOT spawn a subagent.
 
-- **Complex/deep tasks**: use the default model (`use_small_model: false`). The subagent gets the full model's reasoning power.
-- **Simple, self-contained tasks**: set `use_small_model: true`. The subagent runs on a cheaper, faster model. Use this for clear-cut jobs like reading a file, running a search, executing a known command, or verifying a simple fact.
+**When to use a subagent:**
+
+- **Complex/deep tasks**: use the default model (`use_small_model: false`). Examples: multi-file refactoring, debugging a complex bug across modules, architecture analysis that requires reasoning across many files.
+- **Simple reasoning tasks**: set `use_small_model: true`. Examples: "analyze this single file's structure", "check if these two functions are consistent", "explain what this module does".
+
+**When NOT to use a subagent — use direct tools instead:**
+
+| Task | Direct tool(s) |
+|------|-------------|
+| Find all occurrences of a pattern | `grep` |
+| Count usages of something | `grep` + `files_with_matches` |
+| Read a known file | `file_read` |
+| Run a known command | `exec_command` |
+| Find files by name | `glob` |
+| Look up a symbol definition | `codegraph_node` |
+| Discover module structure | `codegraph_explore` |
 
 The parent agent decides — use the small model when the task is obviously simple and the outcome is unlikely to need deep reasoning.
 
@@ -134,7 +148,7 @@ If `codegraph_node` returns "No codegraph index found", run `wgenty-code codegra
 
 ## Subagents and tasks
 
-- **`task`**: Spawn a subagent for complex, multi-step work. Available types: `explore` (codebase analysis), `plan` (architecture breakdown), `general-purpose` (tool-use tasks). Subagents have isolated context and filtered tools.
+- **`task`**: Spawn a subagent for complex, multi-step work. Available types: `explore` (codebase analysis), `plan` (architecture breakdown), `general-purpose` (tool-use tasks). Subagents have isolated context and filtered tools (no recursive task spawning). **Before spawning a subagent, check the anti-patterns in §Task delegation above — if the job is 1-2 direct tool calls, use the direct tools instead.**
 - **`TodoWrite`**: Session-scoped checklist. Replace the ENTIRE list each call. Max 20 items, one `in_progress` at a time.
 - **`note_edit`**: Persistent notes with Markdown support. Use for tracking decisions, gotchas, or patterns across sessions.
 
@@ -168,3 +182,8 @@ If `codegraph_node` returns "No codegraph index found", run `wgenty-code codegra
 | Delegate research/analysis | `task` with `explore` type |
 | Save a decision or finding | `note_edit` |
 | Free up context space | `compact` |
+| **DO NOT** use subagent for these | **Use this instead** |
+| Pattern search / counting | `grep` directly |
+| Reading a known file | `file_read` directly |
+| Running a known command | `exec_command` directly |
+| Browsing module structure | `codegraph_explore` directly |

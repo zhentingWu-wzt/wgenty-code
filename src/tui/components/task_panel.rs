@@ -39,20 +39,50 @@ pub fn render(f: &mut Frame, area: Rect, state: &TaskPanelState) {
         .items
         .iter()
         .map(|item| {
-            let (icon, color) = match item.status.as_str() {
-                "completed" => ("\u{2713}", theme::SUCCESS),
-                "in_progress" => ("\u{25cf}", theme::ACCENT),
-                _ => ("\u{25cb}", theme::DIM),
-            };
-            let label = if item.active_form.is_empty() {
-                &item.content
+            if let Some(ref meta) = item.subagent {
+                // Subagent task: show 🤖 + type + stats
+                let dur_str = if meta.duration_ms >= 60_000 {
+                    format!("{:.1}m", meta.duration_ms as f64 / 60_000.0)
+                } else if meta.duration_ms >= 1_000 {
+                    format!("{:.1}s", meta.duration_ms as f64 / 1_000.0)
+                } else {
+                    format!("{}ms", meta.duration_ms)
+                };
+                let tokens_str = if meta.token_usage >= 1000 {
+                    format!("{:.1}k", meta.token_usage as f64 / 1000.0)
+                } else {
+                    format!("{}", meta.token_usage)
+                };
+                let stats = format!(
+                    "{} · {}r · {} · {} tokens",
+                    meta.subagent_type, meta.rounds, dur_str, tokens_str
+                );
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        "\u{1f916} ",
+                        Style::default().fg(theme::INFO),
+                    ),
+                    Span::styled(stats, Style::default().fg(theme::DIM)),
+                    Span::raw("  "),
+                    Span::raw(&item.content),
+                ]))
             } else {
-                &item.active_form
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{} ", icon), Style::default().fg(color)),
-                Span::raw(label),
-            ]))
+                // Regular task: existing rendering
+                let (icon, color) = match item.status.as_str() {
+                    "completed" => ("\u{2713}", theme::SUCCESS),
+                    "in_progress" => ("\u{25cf}", theme::ACCENT),
+                    _ => ("\u{25cb}", theme::DIM),
+                };
+                let label = if item.active_form.is_empty() {
+                    &item.content
+                } else {
+                    &item.active_form
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("{} ", icon), Style::default().fg(color)),
+                    Span::raw(label),
+                ]))
+            }
         })
         .collect();
 

@@ -1,0 +1,15 @@
+{
+  "change": "subagent-visualization",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "3085e9768b4d7928ce9d1bc5d4919afcefb25408f377af46491c05ad8e4a43e3",
+  "files": [
+    { "path": "openspec/changes/subagent-visualization/proposal.md", "sha256": "87f1be65291a6fa2e3b78d917dc043b7887677ff5bb795948febab11a962eec1" },
+    { "path": "openspec/changes/subagent-visualization/design.md", "sha256": "872cfbd35c72926884fbd3251b55b9097da9528b042efbcb20cb293cce541fb4" },
+    { "path": "openspec/changes/subagent-visualization/tasks.md", "sha256": "8713190065c5deba83b36981c444880f53d173d3e9df492a38b677224d96b835" },
+    { "path": "openspec/changes/subagent-visualization/specs/subagent-status-display/spec.md", "sha256": "bc12fe44c077041a5ef807230c57bcdb89cfdeaa87c405791fecd29271eaa323" },
+    { "path": "openspec/changes/subagent-visualization/specs/subagent-trace-html-report/spec.md", "sha256": "00359e53749f3d0924f5ce3a1f5f90a3306e32a2a858411cdbf419928ee5d55a" }
+  ]
+}

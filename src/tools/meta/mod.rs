@@ -23,3 +23,5 @@ pub mod rlm;
 pub use rlm::RlmDelegateTool;
 pub mod run_script;
 pub use run_script::RunScriptTool;
+pub mod subagent_trace;
+pub use subagent_trace::SubagentTraceTool;

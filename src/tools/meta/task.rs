@@ -101,8 +101,15 @@ impl Tool for TaskTool {
         "Launch a subagent to handle complex, multi-step tasks. \
          Available types: general-purpose (default), explore (codebase search), \
          plan (architecture). Subagents have isolated context and filtered tools \
-         (no recursive task spawning). Use for: parallel work, context-heavy \
-         research, complex multi-step tasks."
+         (no recursive task spawning). \
+         Use for: tasks requiring reasoning across multiple files, architecture \
+         analysis, refactoring planning, debugging complex bugs, or research \
+         that needs an LLM loop. \
+         AVOID for: purely deterministic tasks (pattern search, statistics, \
+         counting occurrences, finding simple text patterns) — use grep/glob \
+         directly in parallel instead. \
+         AVOID for: reading a single known file — use file_read directly. \
+         AVOID for: running a single known command — use exec_command directly."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -270,15 +277,29 @@ impl Tool for TaskTool {
         // Build system prompt based on subagent type.
         let base_system_prompt: &str = match _subagent_type {
             "explore" => {
-                "You are a subagent spawned by a coordinator. The coordinator is waiting for your result. Do not attempt to coordinate other agents yourself — focus solely on your assigned task. Return a complete, self-contained result so the coordinator can proceed without follow-up questions.\n\nYou are a code exploration subagent. Your role is to search and \
-                 analyze codebases thoroughly.\n\nKey responsibilities:\n\
+                "You are a code exploration subagent. Your role is to search \
+                 and analyze codebases thoroughly.\n\n\
+                 IMPORTANT — Choose your strategy based on the task type:\n\
+                 - For PATTERN SEARCH tasks (e.g. 'find all .unwrap() calls', \
+                   'count .clone() usages'): use grep directly with precise \
+                   regex patterns. Do NOT read full files — grep gives you \
+                   matching lines directly. Call grep with the exact pattern \
+                   and max_results to control output size. Report counts, file \
+                   locations, and representative examples.\n\
+                 - For STRUCTURAL ANALYSIS tasks (e.g. 'how does module X \
+                   work'): use glob to find relevant files, then file_read \
+                   to understand key files, then grep for cross-references.\n\
+                 - For COUNTING/STATISTICS tasks: prefer grep with \
+                   files_with_matches=true first to scope the work, then \
+                   detailed grep for actual matches.\n\n\
+                 Key responsibilities:\n\
                  1. Search for relevant files and code patterns\n\
                  2. Read and understand code structure\n\
                  3. Analyze dependencies and relationships\n\
                  4. Report findings clearly and concisely\n\n\
                  Use search, grep, glob, and file_read tools to explore the \
                  codebase. Be thorough but efficient — focus on answering the \
-                 specific question."
+                 specific question. Return a complete, self-contained result."
             }
             "plan" => {
                 "You are a subagent spawned by a coordinator. The coordinator is waiting for your result. Do not attempt to coordinate other agents yourself — focus solely on your assigned task. Return a complete, self-contained result so the coordinator can proceed without follow-up questions.\n\nYou are a planning subagent. Your role is to break down complex \
