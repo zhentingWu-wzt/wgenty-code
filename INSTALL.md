@@ -13,8 +13,8 @@
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/zhentingWu-wzt/wgenty-code-rust
-cd wgenty-code-rust
+git clone https://github.com/zhentingWu-wzt/wgenty-code
+cd wgenty-code
 ```
 
 ### 2. 运行安装脚本
@@ -146,7 +146,7 @@ wgenty-code --help
 ### 手动升级
 
 ```bash
-cd wgenty-code-rust
+cd wgenty-code
 git pull
 cargo build --release
 # 然后重新复制可执行文件到安装目录
@@ -212,4 +212,4 @@ RUST_LOG=wgenty_code=debug wgenty-code query --prompt "Hello!"
 ## 联系方式
 
 如果您遇到任何问题，请在 GitHub 仓库中创建 issue：
-https://github.com/zhentingWu-wzt/wgenty-code-rust/issues
+https://github.com/zhentingWu-wzt/wgenty-code/issues
