@@ -40,10 +40,11 @@ pub async fn start_daemon(
     use std::sync::Arc;
     let daemon_state = Arc::new(DaemonState::new(app_state));
     let api_token = auth::generate_api_token();
-    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    eprintln!("  Daemon API token: {}", api_token);
-    eprintln!("  Use: Authorization: Bearer {}", api_token);
-    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    crate::utils::write_daemon_token(&api_token)?;
+    eprintln!(
+        "Daemon API token saved to: {}",
+        crate::utils::daemon_token_path().display()
+    );
     let (health, protected) = routes::create_routers(daemon_state, api_token);
     let app = health.merge(protected).layer(
         tower_http::cors::CorsLayer::new()
@@ -69,6 +70,8 @@ pub async fn start_daemon(
             })
             .await
             .ok();
+        // Clean up token file on daemon shutdown.
+        let _ = crate::utils::remove_daemon_token();
     });
     // Wait for daemon to be ready (poll health endpoint)
     let client = super::client::DaemonClient::new(base_url.clone());

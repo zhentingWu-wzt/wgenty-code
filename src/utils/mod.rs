@@ -91,3 +91,49 @@ fn is_cjk(c: char) -> bool {
         | '\u{AC00}'..='\u{D7AF}' // Hangul Syllables
     )
 }
+
+// ── Daemon token file management ────────────────────────────────────────────
+
+/// Path to the daemon auth token file (`~/.wgenty-code/daemon.token`).
+pub fn daemon_token_path() -> PathBuf {
+    config_dir().join("daemon.token")
+}
+
+/// Write the daemon API token to the token file with restricted permissions.
+/// Creates parent directories if they don't exist.
+pub fn write_daemon_token(token: &str) -> anyhow::Result<()> {
+    let path = daemon_token_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, token)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+/// Read the daemon auth token from the token file.
+/// Returns `None` if the file doesn't exist or can't be read.
+pub fn read_daemon_token() -> Option<String> {
+    let path = daemon_token_path();
+    if path.exists() {
+        std::fs::read_to_string(&path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    } else {
+        None
+    }
+}
+
+/// Remove the daemon token file. Succeeds silently if the file doesn't exist.
+pub fn remove_daemon_token() -> anyhow::Result<()> {
+    let path = daemon_token_path();
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
+}
