@@ -35,16 +35,31 @@ pub async fn start_daemon(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
     let base_url = format!("http://127.0.0.1:{}", port);
-    use crate::daemon::routes;
     use crate::daemon::state::DaemonState;
+    use crate::daemon::{auth, routes};
     use std::sync::Arc;
-    use tower_http::cors::{Any, CorsLayer};
     let daemon_state = Arc::new(DaemonState::new(app_state));
-    let app = routes::create_router(daemon_state).layer(
-        CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any),
+    let api_token = auth::generate_api_token();
+    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    eprintln!("  Daemon API token: {}", api_token);
+    eprintln!("  Use: Authorization: Bearer {}", api_token);
+    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    let (health, protected) = routes::create_routers(daemon_state, api_token);
+    let app = health.merge(protected).layer(
+        tower_http::cors::CorsLayer::new()
+            .allow_origin([
+                "http://localhost:3000".parse().unwrap(),
+                "http://localhost:5173".parse().unwrap(),
+                "http://127.0.0.1:3000".parse().unwrap(),
+                "http://127.0.0.1:5173".parse().unwrap(),
+            ])
+            .allow_methods([
+                http::Method::GET,
+                http::Method::POST,
+                http::Method::PUT,
+                http::Method::DELETE,
+            ])
+            .allow_headers([http::header::AUTHORIZATION, http::header::CONTENT_TYPE]),
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let handle = tokio::spawn(async move {
