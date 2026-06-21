@@ -20,17 +20,17 @@
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/zhentingWu-wzt/wgenty-code-rust/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/zhentingWu-wzt/wgenty-code/master/install.ps1 | iex
 ```
 
 **Linux / macOS:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/zhentingWu-wzt/wgenty-code-rust/master/install-unix.sh | bash
+curl -sSL https://raw.githubusercontent.com/zhentingWu-wzt/wgenty-code/master/install-unix.sh | bash
 ```
 
 ### 选项 2: 直接下载二进制
 
-从 [GitHub Releases 页面](https://github.com/zhentingWu-wzt/wgenty-code-rust/releases) 下载预编译的二进制文件。
+从 [GitHub Releases 页面](https://github.com/zhentingWu-wzt/wgenty-code/releases) 下载预编译的二进制文件。
 
 ```bash
 # 手动下载后，添加到 PATH
@@ -42,8 +42,8 @@ chmod +x wgenty-code  # Linux/macOS
 
 ```bash
 # 克隆仓库
-git clone https://github.com/zhentingWu-wzt/wgenty-code-rust.git
-cd wgenty-code-rust
+git clone https://github.com/zhentingWu-wzt/wgenty-code.git
+cd wgenty-code
 
 # 构建
 cargo build --release
@@ -56,11 +56,11 @@ cargo build --release
 
 ```bash
 # 构建本地镜像
-docker build -t wgenty-code-rust .
+docker build -t wgenty-code .
 
 # 运行容器
-docker run -it --rm wgenty-code-rust --version
-docker run -it --rm wgenty-code-rust repl
+docker run -it --rm wgenty-code --version
+docker run -it --rm wgenty-code repl
 ```
 
 ### 验证安装
@@ -156,10 +156,10 @@ $env:CLAUDE_MODEL="claude-3-5-sonnet-20241022"
 
 ```bash
 # 创建配置目录
-mkdir -p ~/.config/wgenty-code-rust
+mkdir -p ~/.config/wgenty-code
 
 # 创建配置文件
-cat > ~/.config/wgenty-code-rust/config.toml << EOF
+cat > ~/.config/wgenty-code/config.toml << EOF
 [api]
 provider = "anthropic"
 api_key = "sk-ant-..."

@@ -1,4 +1,4 @@
-# Gap Analysis: wgenty-code-rust vs learn-wgenty-code
+# Gap Analysis: wgenty-code vs learn-wgenty-code
 
 > **更新日期**: 2026-06-14 — 根据当前代码状态修正 s04/s05/s06/s08 的结论。
 > TUI 路径 (`src/tui/agent/`) 已实现大部分机制；CLI/daemon 路径待移植。
@@ -21,7 +21,7 @@
 
 ## 机制对照表：12 层逐项对比
 
-| 层 | 机制 | learn-wgenty-code | wgenty-code-rust 现状 | 差距 |
+| 层 | 机制 | learn-wgenty-code | wgenty-code 现状 | 差距 |
 |----|------|-------------------|----------------------|------|
 | s01 | Agent Loop (核心) | `agent_loop()` 最小循环，tool dispatch | `tui/agent/core.rs` 完整循环；`agent/core.rs` 共享 SSE 解析 | **已实现** |
 | s02 | 工具分发表 | bash/read/write/edit 4 工具 | 25 个工具（filesystem/search/execution/meta/checkpoint） | **已实现** |
