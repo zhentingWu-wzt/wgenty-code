@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "High-performance Rust implementation of Wgenty Code CLI"
 license = "MIT"
-repository = "https://github.com/lorryjovens-hub/wgenty-code"
+repository = "https://github.com/zhentingWu-wzt/wgenty-code"
 default-run = "wgenty-code"
 
 [dependencies]
