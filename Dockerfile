@@ -20,7 +20,7 @@ RUN cargo build --release
 # 阶段 2: 运行时阶段（最小镜像）
 FROM alpine:3.18
 
-LABEL maintainer="wgenty-code-rust"
+LABEL maintainer="wgenty-code"
 LABEL description="High-performance Wgenty Code CLI - Rust Edition"
 LABEL version="0.1.0"
 
@@ -64,13 +64,13 @@ CMD ["--help"]
 # ==========================================
 # 构建说明：
 # ==========================================
-# docker build -t wgenty-code-rust:latest .
-# docker build -t wgenty-code-rust:0.1.0 .
+# docker build -t wgenty-code:latest .
+# docker build -t wgenty-code:0.1.0 .
 #
 # 运行数据卷挂载：
-# docker run -it --rm -v ~/.config/wgenty-code:/home/claude/.config/wgenty-code wgenty-code-rust
+# docker run -it --rm -v ~/.config/wgenty-code:/home/claude/.config/wgenty-code wgenty-code
 # 
 # 使用示例：
-# docker run --rm wgenty-code-rust --version
-# docker run -it --rm wgenty-code-rust repl
-# docker run --rm wgenty-code-rust query --prompt "What is Rust?"
+# docker run --rm wgenty-code --version
+# docker run -it --rm wgenty-code repl
+# docker run --rm wgenty-code query --prompt "What is Rust?"

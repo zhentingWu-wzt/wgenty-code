@@ -2,7 +2,7 @@
 
 **部署时间**: 2024
 **版本**: v0.1.0
-**GitHub 地址**: https://github.com/zhentingWu-wzt/wgenty-code-rust
+**GitHub 地址**: https://github.com/zhentingWu-wzt/wgenty-code
 
 ---
 
@@ -28,7 +28,7 @@
 
 #### Windows (PowerShell):
 ```powershell
-irm https://raw.githubusercontent.com/zhentingWu-wzt/wgenty-code-rust/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/zhentingWu-wzt/wgenty-code/master/install.ps1 | iex
 ```
 
 **特性**：
@@ -39,7 +39,7 @@ irm https://raw.githubusercontent.com/zhentingWu-wzt/wgenty-code-rust/master/ins
 
 #### Linux / macOS (Bash):
 ```bash
-curl -sSL https://raw.githubusercontent.com/zhentingWu-wzt/wgenty-code-rust/master/install-unix.sh | bash
+curl -sSL https://raw.githubusercontent.com/zhentingWu-wzt/wgenty-code/master/install-unix.sh | bash
 ```
 
 **特性**：
@@ -50,7 +50,7 @@ curl -sSL https://raw.githubusercontent.com/zhentingWu-wzt/wgenty-code-rust/mast
 
 ### 2. **从 GitHub Releases 直接下载**
 
-前往 [Releases 页面](https://github.com/zhentingWu-wzt/wgenty-code-rust/releases) 下载预编译二进制文件。
+前往 [Releases 页面](https://github.com/zhentingWu-wzt/wgenty-code/releases) 下载预编译二进制文件。
 
 **优点**：
 - 无需脚本执行
@@ -59,8 +59,8 @@ curl -sSL https://raw.githubusercontent.com/zhentingWu-wzt/wgenty-code-rust/mast
 ### 3. **从源代码编译**
 
 ```bash
-git clone https://github.com/zhentingWu-wzt/wgenty-code-rust.git
-cd wgenty-code-rust
+git clone https://github.com/zhentingWu-wzt/wgenty-code.git
+cd wgenty-code
 cargo build --release
 ```
 
@@ -70,13 +70,13 @@ cargo build --release
 
 #### 使用 Docker:
 ```bash
-docker run -it --rm wgenty-code-rust --version
-docker run -it --rm wgenty-code-rust repl
+docker run -it --rm wgenty-code --version
+docker run -it --rm wgenty-code repl
 ```
 
 #### 使用 Docker Compose:
 ```bash
-docker-compose run --rm wgenty-code-rust repl
+docker-compose run --rm wgenty-code repl
 ```
 
 **镜像大小**：约 20 MB（Alpine Linux 基础）
@@ -262,10 +262,10 @@ Deletions: 27
 
 | 项目 | 链接 |
 |------|------|
-| **GitHub 仓库** | https://github.com/zhentingWu-wzt/wgenty-code-rust |
-| **Releases 页面** | https://github.com/zhentingWu-wzt/wgenty-code-rust/releases |
-| **Issues 跟踪** | https://github.com/zhentingWu-wzt/wgenty-code-rust/issues |
-| **Discussions** | https://github.com/zhentingWu-wzt/wgenty-code-rust/discussions |
+| **GitHub 仓库** | https://github.com/zhentingWu-wzt/wgenty-code |
+| **Releases 页面** | https://github.com/zhentingWu-wzt/wgenty-code/releases |
+| **Issues 跟踪** | https://github.com/zhentingWu-wzt/wgenty-code/issues |
+| **Discussions** | https://github.com/zhentingWu-wzt/wgenty-code/discussions |
 
 ---
 

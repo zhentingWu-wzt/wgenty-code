@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: wgenty-code-rust:latest
+    image: wgenty-code:latest
     container_name: wgenty-code
     
     # 交互式终端

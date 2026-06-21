@@ -56,7 +56,7 @@ archived-date: 2026-06-17
 
 - [x] **Step 3: 编译验证**
 
-`cargo check --bin wgenty-code-rust 2>&1 | head -40`
+`cargo check --bin wgenty-code 2>&1 | head -40`
 
 - [x] **Step 4: 提交**
 

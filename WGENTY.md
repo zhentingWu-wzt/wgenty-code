@@ -38,9 +38,9 @@ cargo run -- --version / --help
 ### Docker
 
 ```bash
-docker build -t wgenty-code-rust:latest .
-docker run --rm wgenty-code-rust --version
-docker run -it --rm -v ~/.config/wgenty-code:/home/claude/.config/wgenty-code wgenty-code-rust repl
+docker build -t wgenty-code:latest .
+docker run --rm wgenty-code --version
+docker run -it --rm -v ~/.config/wgenty-code:/home/claude/.config/wgenty-code wgenty-code repl
 ```
 
 ---
