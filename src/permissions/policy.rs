@@ -34,7 +34,7 @@ impl ToolPermissionPolicy {
         session_rules: &HashSet<String>,
     ) -> Result<PolicyDecision, ToolError> {
         if tool.is_read_only() {
-            return Ok(PolicyDecision::Allow);
+            return self.validate_read_paths(tool_name, args, session_rules);
         }
 
         match tool_name {
@@ -46,6 +46,53 @@ impl ToolPermissionPolicy {
             }
             _ => Ok(PolicyDecision::Allow),
         }
+    }
+
+    /// Validate read-only tools that access filesystem paths.
+    /// Read-only tools that reference paths outside the workspace require
+    /// approval (Ask), matching the write-path behaviour.
+    fn validate_read_paths(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        session_rules: &HashSet<String>,
+    ) -> Result<PolicyDecision, ToolError> {
+        match tool_name {
+            "file_read" | "list_files" | "view" | "grep" | "glob" | "search" | "lsp" => {
+                if let Some(path_str) = args["path"].as_str() {
+                    return self.check_path_boundary(tool_name, path_str, "read", session_rules);
+                }
+            }
+            "module_summary" => {
+                if let Some(path_str) = args["module_path"].as_str() {
+                    return self.check_path_boundary(tool_name, path_str, "read", session_rules);
+                }
+            }
+            _ => {}
+        }
+        Ok(PolicyDecision::Allow)
+    }
+
+    /// Shared helper: check whether `path_str` lies inside the workspace.
+    /// Returns `Ask` with a `path:` session-rule when the path is outside.
+    fn check_path_boundary(
+        &self,
+        tool_name: &str,
+        path_str: &str,
+        operation: &str,
+        session_rules: &HashSet<String>,
+    ) -> Result<PolicyDecision, ToolError> {
+        if let Some(rule_key) = self.path_rule_key(path_str)? {
+            if session_rules.contains(&rule_key) {
+                return Ok(PolicyDecision::Allow);
+            }
+            return Ok(PolicyDecision::Ask(PermissionRequest {
+                tool_name: tool_name.to_string(),
+                reason: format!("{operation} path is outside the workspace: {path_str}"),
+                session_rule: rule_key,
+            }));
+        }
+        Ok(PolicyDecision::Allow)
     }
 
     fn validate_write_paths(
@@ -333,6 +380,144 @@ fn classify_command_risk(command: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::filesystem::file_read::FileReadTool;
+    use crate::tools::filesystem::list_files::ListFilesTool;
+    use crate::tools::search::grep::GrepTool;
+    use crate::tools::ToolOutput;
+    use std::collections::HashSet;
+
+    // ── validate_read_paths tests ─────────────────────────────────
+
+    fn policy_for_test() -> ToolPermissionPolicy {
+        // Use the current working directory as the "workspace"
+        ToolPermissionPolicy {
+            workspace_root: std::env::current_dir().unwrap().canonicalize().unwrap(),
+        }
+    }
+
+    fn empty_rules() -> HashSet<String> {
+        HashSet::new()
+    }
+
+    #[test]
+    fn test_read_inside_workspace_allowed() {
+        let policy = policy_for_test();
+        let tool = FileReadTool::new();
+        let args = serde_json::json!({"path": "Cargo.toml"});
+        let result = policy.validate_tool_call(&tool, "file_read", &args, &empty_rules());
+        assert!(matches!(result, Ok(PolicyDecision::Allow)));
+    }
+
+    #[test]
+    fn test_read_outside_workspace_asks() {
+        let policy = policy_for_test();
+        let tool = FileReadTool::new();
+        let args = serde_json::json!({"path": "/etc/passwd"});
+        let result = policy.validate_tool_call(&tool, "file_read", &args, &empty_rules());
+        assert!(matches!(result, Ok(PolicyDecision::Ask(_))));
+    }
+
+    #[test]
+    fn test_read_outside_with_session_rule_allowed() {
+        let policy = policy_for_test();
+        let tool = FileReadTool::new();
+        let path = "/etc/passwd";
+        let args = serde_json::json!({"path": path});
+
+        // Compute expected rule key to pre-approve
+        let rule_key = policy.path_rule_key(path).unwrap().unwrap();
+        let mut rules = HashSet::new();
+        rules.insert(rule_key);
+
+        let result = policy.validate_tool_call(&tool, "file_read", &args, &rules);
+        assert!(matches!(result, Ok(PolicyDecision::Allow)));
+    }
+
+    #[test]
+    fn test_list_files_outside_asks() {
+        let policy = policy_for_test();
+        let tool = ListFilesTool::new();
+        let args = serde_json::json!({"path": "/Users"});
+        let result = policy.validate_tool_call(&tool, "list_files", &args, &empty_rules());
+        assert!(matches!(result, Ok(PolicyDecision::Ask(_))));
+    }
+
+    #[test]
+    fn test_grep_outside_asks() {
+        let policy = policy_for_test();
+        let tool = GrepTool::new();
+        let args = serde_json::json!({"path": "/home", "pattern": ".*"});
+        let result = policy.validate_tool_call(&tool, "grep", &args, &empty_rules());
+        assert!(matches!(result, Ok(PolicyDecision::Ask(_))));
+    }
+
+    #[test]
+    fn test_non_filesystem_read_tool_allowed() {
+        let policy = policy_for_test();
+        // web_search has no path param — should always be allowed
+        struct WebSearchTool;
+        #[async_trait::async_trait]
+        impl Tool for WebSearchTool {
+            fn name(&self) -> &str {
+                "web_search"
+            }
+            fn is_read_only(&self) -> bool {
+                true
+            }
+            fn description(&self) -> &str {
+                ""
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+                Ok(ToolOutput {
+                    output_type: "text".to_string(),
+                    content: String::new(),
+                    metadata: std::collections::HashMap::new(),
+                })
+            }
+        }
+        let tool = WebSearchTool;
+        let args = serde_json::json!({"query": "anything"});
+        let result = policy.validate_tool_call(&tool, "web_search", &args, &empty_rules());
+        assert!(matches!(result, Ok(PolicyDecision::Allow)));
+    }
+
+    #[test]
+    fn test_module_summary_outside_asks() {
+        let policy = policy_for_test();
+        // module_summary uses "module_path" not "path"
+        struct ModuleSummaryTool;
+        #[async_trait::async_trait]
+        impl Tool for ModuleSummaryTool {
+            fn name(&self) -> &str {
+                "module_summary"
+            }
+            fn is_read_only(&self) -> bool {
+                true
+            }
+            fn description(&self) -> &str {
+                ""
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+                Ok(ToolOutput {
+                    output_type: "text".to_string(),
+                    content: String::new(),
+                    metadata: std::collections::HashMap::new(),
+                })
+            }
+        }
+        let tool = ModuleSummaryTool;
+        let args = serde_json::json!({"module_path": "/etc"});
+        let result = policy.validate_tool_call(&tool, "module_summary", &args, &empty_rules());
+        assert!(matches!(result, Ok(PolicyDecision::Ask(_))));
+    }
+
+    // ── Existing classify/split tests ─────────────────────────────
 
     #[test]
     fn test_split_simple() {
