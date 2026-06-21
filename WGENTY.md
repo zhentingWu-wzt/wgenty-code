@@ -9,7 +9,7 @@
 - **描述**: High-performance Rust implementation of Wgenty Code CLI
 - **语言**: Rust 2021 edition (MSRV 1.75+)
 - **许可证**: MIT
-- **仓库**: https://github.com/lorryjovens-hub/wgenty-code
+- **仓库**: https://github.com/zhentingWu-wzt/wgenty-code
 
 ## 构建与运行
 
