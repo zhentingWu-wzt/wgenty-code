@@ -49,13 +49,12 @@ RUN groupadd -r claude && \
     useradd -r -g claude -m -d /home/claude -s /usr/sbin/nologin claude
 
 # 创建配置目录
-RUN mkdir -p /home/claude/.config/wgenty-code && \
+RUN mkdir -p /home/claude/.wgenty-code && \
     chown -R claude:claude /home/claude
 
 # 设置环境变量
 ENV PATH="/usr/local/bin:${PATH}" \
-    HOME="/home/claude" \
-    XDG_CONFIG_HOME="/home/claude/.config"
+    HOME="/home/claude"
 
 # 切换到非特权用户
 USER claude
@@ -76,7 +75,7 @@ CMD ["--help"]
 # docker build -t wgenty-code:0.1.0 .
 #
 # 运行数据卷挂载：
-# docker run -it --rm -v ~/.config/wgenty-code:/home/claude/.config/wgenty-code wgenty-code
+# docker run -it --rm -v ~/.wgenty-code:/home/claude/.wgenty-code wgenty-code
 #
 # 使用示例：
 # docker run --rm wgenty-code --version
