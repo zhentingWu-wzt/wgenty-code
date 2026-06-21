@@ -1,17 +1,26 @@
 //! Axum router definition for the daemon API.
+//!
+//! Returns two routers so the daemon can apply auth middleware only to protected
+//! routes while keeping `GET /api/v1/health` public.
 
+use crate::daemon::auth;
 use crate::daemon::handlers;
 use crate::daemon::state::DaemonState;
 use axum::{
+    middleware,
     routing::{get, post},
     Router,
 };
 use std::sync::Arc;
 
-pub fn create_router(state: Arc<DaemonState>) -> Router {
-    Router::new()
-        // Health & Config
+/// Return `(health_router, protected_router)` so callers can layer differently.
+pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Router) {
+    let health = Router::new()
         .route("/api/v1/health", get(handlers::health))
+        .with_state(state.clone());
+
+    let protected = Router::new()
+        // Config
         .route("/api/v1/config", get(handlers::get_config))
         // Chat
         .route("/api/v1/chat/stream", post(handlers::chat_stream))
@@ -36,19 +45,23 @@ pub fn create_router(state: Arc<DaemonState>) -> Router {
         )
         // MCP
         .route("/api/v1/mcp/servers", get(handlers::list_mcp_servers))
-        // Sessions — list/create at base path
+        // Sessions
         .route(
             "/api/v1/sessions",
             get(handlers::list_sessions).post(handlers::create_session),
         )
-        // Sessions — search (must be before /{id} to avoid path capture)
         .route("/api/v1/sessions/search", get(handlers::search_sessions))
-        // Sessions — get/update/delete by id
         .route(
             "/api/v1/sessions/:id",
             get(handlers::get_session)
                 .put(handlers::update_session)
                 .delete(handlers::delete_session),
         )
-        .with_state(state)
+        .route_layer(middleware::from_fn_with_state(
+            api_token,
+            auth::require_auth,
+        ))
+        .with_state(state);
+
+    (health, protected)
 }

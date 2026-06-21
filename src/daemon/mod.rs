@@ -7,6 +7,7 @@
 //!
 //! Launch via: `wgenty-code daemon --port 8371`
 
+pub mod auth;
 pub mod handlers;
 pub mod models;
 pub mod routes;
@@ -16,7 +17,7 @@ use crate::state::AppState;
 use state::DaemonState;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tracing::info;
 
 /// Start the daemon HTTP server. Blocks until the server exits.
@@ -33,11 +34,31 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
         }
     });
 
-    let app = routes::create_router(daemon_state).layer(
+    // Generate a random API token — printed once to stdout.
+    let api_token = auth::generate_api_token();
+    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    eprintln!("  Daemon API token: {}", api_token);
+    eprintln!("  Use: Authorization: Bearer {}", api_token);
+    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+    // Split the router: health stays public, everything else requires auth.
+    let (health_router, protected_router) = routes::create_routers(daemon_state, api_token);
+
+    let app = health_router.merge(protected_router).layer(
         CorsLayer::new()
-            .allow_origin(Any)
-            .allow_methods(Any)
-            .allow_headers(Any),
+            .allow_origin([
+                "http://localhost:3000".parse().unwrap(),
+                "http://localhost:5173".parse().unwrap(),
+                "http://127.0.0.1:3000".parse().unwrap(),
+                "http://127.0.0.1:5173".parse().unwrap(),
+            ])
+            .allow_methods([
+                http::Method::GET,
+                http::Method::POST,
+                http::Method::PUT,
+                http::Method::DELETE,
+            ])
+            .allow_headers([http::header::AUTHORIZATION, http::header::CONTENT_TYPE]),
     );
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
