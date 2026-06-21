@@ -1,51 +1,60 @@
-# Git
-.git
+# ==========================================
+# .dockerignore — 减少 Docker 构建上下文
+# ==========================================
+
+# Rust 编译产物（最大体积）
+target/
+
+# Git 版本控制
+.git/
 .gitignore
 .gitattributes
 
-# IDEs
-.vscode
-.idea
+# GitHub workflows / CI
+.github/
+
+# 文档和说明（构建不需要）
+*.md
+INSTALL.md
+LICENSE
+
+# 跨项目文件
+*.yml
+*.yaml
+Dockerfile
+.dockerignore
+
+# 资源 / Benchmark / 脚本
+assets/
+benchmark_results/
+benchmark.sh
+docs/
+locales/
+openspec/
+scripts/
+tests/
+SUBAGENT_EVALUATION_REPORT.md
+DEPLOYMENT_COMPLETION.md
+DEPLOYMENT_SUMMARY.md
+QUICKSTART.md
+
+# 环境变量（安全）
+.env
+.env.*
+
+# IDE / 编辑器
+.vscode/
+.idea/
 *.swp
 *.swo
 *~
-*.sublime-project
-*.sublime-workspace
 
-# OS
+# macOS
 .DS_Store
+.AppleDouble
+
+# Linux
+.directory
+
+# Windows
 Thumbs.db
-*.log
-
-# Build artifacts
-target/
-dist/
-build/
-*.o
-*.a
-*.so
-*.dylib
-*.dll
-
-# Dependencies
-node_modules/
-vendor/
-.cargo
-
-# Documentation
-*.md
-
-# CI/CD
-.github
-.gitlab-ci.yml
-.travis.yml
-azure-pipelines.yml
-
-# Testing
-tests/
-examples/
-
-# Temporary files
-.tmp
-*.bak
-*.backup
