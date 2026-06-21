@@ -3,9 +3,18 @@
 # ==========================================
 
 # 阶段 1: 构建阶段
-FROM rust:1.75 as builder
+FROM rust:1.85 AS builder
 
 WORKDIR /build
+
+# 安装 GUI 构建所需的系统依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libxcb-render0-dev \
+    libxcb-shape0-dev \
+    libxcb-xfixes0-dev \
+    libxkbcommon-dev \
+    libwayland-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # 复制依赖文件
 COPY Cargo.toml Cargo.lock ./
@@ -13,8 +22,8 @@ COPY Cargo.toml Cargo.lock ./
 # 复制源代码
 COPY src ./src
 
-# 构建优化版本（跳过 GUI feature — 容器无需图形界面）
-RUN cargo build --release --no-default-features --features daemon,i18n,bundled-skills
+# 构建优化版本（完整功能）
+RUN cargo build --release
 
 # ==========================================
 # 阶段 2: 运行时阶段（最小镜像）
@@ -68,7 +77,7 @@ CMD ["--help"]
 #
 # 运行数据卷挂载：
 # docker run -it --rm -v ~/.config/wgenty-code:/home/claude/.config/wgenty-code wgenty-code
-# 
+#
 # 使用示例：
 # docker run --rm wgenty-code --version
 # docker run -it --rm wgenty-code repl
