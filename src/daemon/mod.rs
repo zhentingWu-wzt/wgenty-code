@@ -34,12 +34,13 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
         }
     });
 
-    // Generate a random API token — printed once to stdout.
+    // Generate a random API token — saved to a restricted-permission file.
     let api_token = auth::generate_api_token();
-    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    eprintln!("  Daemon API token: {}", api_token);
-    eprintln!("  Use: Authorization: Bearer {}", api_token);
-    eprintln!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    crate::utils::write_daemon_token(&api_token)?;
+    eprintln!(
+        "Daemon API token saved to: {}",
+        crate::utils::daemon_token_path().display()
+    );
 
     // Split the router: health stays public, everything else requires auth.
     let (health_router, protected_router) = routes::create_routers(daemon_state, api_token);
@@ -66,6 +67,9 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
+
+    // Clean up token file on daemon shutdown.
+    let _ = crate::utils::remove_daemon_token();
 
     Ok(())
 }
