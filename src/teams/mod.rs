@@ -10,6 +10,7 @@ pub mod subagent;
 pub mod subagent_health;
 pub mod subagent_loop;
 pub mod subagent_mailbox;
+pub mod subagent_trace;
 
 pub use mailbox::{Mailbox, TeamConfig, TeamManager, TeamMember, TeamMessage};
 pub use subagent::{
@@ -22,3 +23,4 @@ pub use subagent_loop::run_subagent_loop;
 pub use subagent_mailbox::{
     StoredResult, SubagentResponse, SubagentResultMailbox, MAX_INLINE_RESULT_LEN,
 };
+pub use subagent_trace::SubagentTraceReporter;

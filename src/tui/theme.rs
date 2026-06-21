@@ -5,6 +5,7 @@ pub const PRIMARY: Color = Color::Magenta;
 pub const ACCENT: Color = Color::Rgb(255, 140, 66);
 pub const DIM: Color = Color::Rgb(120, 120, 120);
 pub const SUCCESS: Color = Color::Rgb(100, 255, 100);
+pub const INFO: Color = Color::Rgb(137, 180, 250);
 pub const ERROR: Color = Color::Rgb(255, 100, 100);
 pub const WARNING: Color = Color::Rgb(255, 200, 100);
 

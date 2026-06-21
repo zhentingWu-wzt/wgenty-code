@@ -383,11 +383,24 @@ pub struct SessionResponse {
     pub messages: Vec<ChatMessage>,
 }
 
+/// Metadata for subagent tasks in the TUI layer.
+/// Mirrors `tasks::SubagentTodoMeta` — communicates via JSON serialization.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SubagentTodoMeta {
+    pub subagent_type: String,
+    pub token_usage: u64,
+    pub rounds: u32,
+    pub duration_ms: u64,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TodoItem {
     pub content: String,
     pub status: String,
+    #[serde(default)]
     pub active_form: String,
+    #[serde(default)]
+    pub subagent: Option<SubagentTodoMeta>,
 }
 
 #[derive(Debug, Deserialize)]

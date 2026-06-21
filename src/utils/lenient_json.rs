@@ -214,7 +214,30 @@ fn truncate_for_display(s: &str, max_len: usize) -> String {
     }
     let head_len = max_len * 2 / 3;
     let tail_len = max_len - head_len - 3; // 3 for "..."
-    format!("{}...{}", &s[..head_len], &s[s.len() - tail_len..])
+
+    // Ensure we slice at valid UTF-8 char boundaries.
+    // Multi-byte characters (like box-drawing '─' at 3 bytes) can straddle
+    // the byte-index split, causing a panic.
+    let head_len = floor_char_boundary(s, head_len);
+    let tail_start = ceil_char_boundary(s, s.len().saturating_sub(tail_len));
+
+    format!("{}...{}", &s[..head_len], &s[tail_start..])
+}
+
+/// Find the largest byte index <= `idx` that is a UTF-8 char boundary.
+fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
+/// Find the smallest byte index >= `idx` that is a UTF-8 char boundary.
+fn ceil_char_boundary(s: &str, mut idx: usize) -> usize {
+    while idx < s.len() && !s.is_char_boundary(idx) {
+        idx += 1;
+    }
+    idx
 }
 
 /// Basic JSON string unescaping: \" → ", \\ → \, \n → newline, etc.

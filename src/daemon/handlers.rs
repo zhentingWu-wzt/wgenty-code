@@ -352,6 +352,7 @@ pub async fn get_todos(State(state): State<Arc<DaemonState>>) -> Json<GetTodosRe
             content: t.content.clone(),
             status: t.status.clone(),
             active_form: t.active_form.clone(),
+            subagent: t.subagent.clone(),
         })
         .collect();
     let has_open = todo_state.has_open_items();
