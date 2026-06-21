@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use crate::api::ChatMessage;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
@@ -18,10 +19,21 @@ pub struct DaemonClient {
 
 impl DaemonClient {
     pub fn new(base_url: String) -> Self {
+        // Read auth token from token file (if present) and set as default
+        // header for all requests. Protected endpoints require this header.
+        let mut default_headers = HeaderMap::new();
+        if let Some(token) = crate::utils::read_daemon_token() {
+            if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", token)) {
+                default_headers.insert(AUTHORIZATION, val);
+            }
+        }
+
         let http = reqwest::Client::builder()
+            .default_headers(default_headers.clone())
             .build()
             .expect("reqwest client build");
         let http_tools = reqwest::Client::builder()
+            .default_headers(default_headers)
             .timeout(std::time::Duration::from_secs(300))
             .pool_max_idle_per_host(0) // don't keep idle connections — always fresh
             .build()
