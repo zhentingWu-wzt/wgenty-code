@@ -129,15 +129,16 @@ docker run -it --rm -v ~/.wgenty-code:/root/.wgenty-code wgenty-code:latest repl
 
 配置文件位于 `~/.wgenty-code/settings.json`（自动生成）。关键选项：
 
-| 配置项 | 默认值 | 用途 |
+| 配置键 | 默认值 | 用途 |
 |:-------|:-------|:-----|
-| `api.base_url` | `https://api.anthropic.com` | AI 提供商端点 |
-| `model` | `sonnet` | 模型别名（自动映射） |
-| `small_model` | *(无)* | 委托子任务的小型/廉价模型 |
-| `plan_mode` | `false` | 启用先计划后执行模式 |
-| `max_subagent_depth` | `3` | 嵌套子 agent 最大深度 |
-| `max_concurrent_subagents` | `5` | 并行子 agent 最大数量 |
-| `token_budget_k` | `0` | 累计 token 限制（0 = 无限制） |
+| `models.main.name` | `sonnet` | 主模型别名（自动映射） |
+| `models.small.name` | *(无)* | 委托子任务的小型/廉价模型 |
+| `agent.plan_mode` | `false` | 启用先计划后执行模式 |
+| `agent.subagent.max_depth` | `3` | 嵌套子 agent 最大深度 |
+| `agent.subagent.max_concurrent` | `5` | 并行子 agent 最大数量 |
+| `agent.token_budget.main_k` | `0` | 累计 token 限制（0 = 无限制） |
+
+> 使用 `wgenty-code config set <dotted.key> <value>` 修改配置，例如 `config set agent.subagent.max_depth 5`。
 
 ---
 
@@ -146,7 +147,7 @@ docker run -it --rm -v ~/.wgenty-code:/root/.wgenty-code wgenty-code:latest repl
 ```bash
 wgenty-code repl                      # 交互式 TUI 会话
 wgenty-code query -p "重构这段代码"    # 一次性查询
-wgenty-code config set model haiku    # 切换模型
+wgenty-code config set models.main.name haiku    # 切换模型
 wgenty-code mcp add --name fs         # 注册 MCP 服务器
 wgenty-code sandbox status            # 检查沙箱状态
 wgenty-code agent --agent-type plan --prompt "设计一个 API"

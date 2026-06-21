@@ -29,6 +29,11 @@ settings.json
 # Logs
 *.log
 .superpowers/
+
 # CodeGraph index
 .codegraph/
 .claude/worktrees/
+
+# Install scripts (self-contained, don't ignore)
+# install.ps1 and install-unix.sh are part of the repo
+>>>>>>> b4a1728 (fix(review): address Critical issues from code review)

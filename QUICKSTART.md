@@ -1,6 +1,6 @@
 # 快速开始指南
 
-欢迎！这个指南将帮助你快速开始使用 Wgenty Code Rust。
+欢迎！这个指南将帮助你快速开始使用 Wgenty Code。
 
 ## 📋 目录
 
@@ -14,18 +14,18 @@
 
 ## 安装
 
-### 选项 1: 自动化 CLI 安装 ⚡ **推荐**
+### 选项 1: 从源代码编译（推荐）
 
-使用我们的自动化脚本快速安装，支持所有主流操作系统。
-
-**Windows (PowerShell):**
-```powershell
-irm https://raw.githubusercontent.com/zhentingWu-wzt/wgenty-code/master/install.ps1 | iex
-```
-
-**Linux / macOS:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/zhentingWu-wzt/wgenty-code/master/install-unix.sh | bash
+# 克隆仓库
+git clone https://github.com/zhentingWu-wzt/wgenty-code.git
+cd wgenty-code
+
+# 构建（需要 Rust 1.75+）
+cargo build --release
+
+# 可执行文件位于: ./target/release/wgenty-code (Linux/macOS) 或 wgenty-code.exe (Windows)
+./target/release/wgenty-code --version
 ```
 
 ### 选项 2: 直接下载二进制
@@ -38,21 +38,7 @@ chmod +x wgenty-code  # Linux/macOS
 ./wgenty-code --version
 ```
 
-### 选项 3: 从源代码编译
-
-```bash
-# 克隆仓库
-git clone https://github.com/zhentingWu-wzt/wgenty-code.git
-cd wgenty-code
-
-# 构建
-cargo build --release
-
-# 可执行文件位于: ./target/release/wgenty-code (Linux/macOS) 或 wgenty-code.exe (Windows)
-./target/release/wgenty-code --version
-```
-
-### 选项 4: Docker
+### 选项 3: Docker
 
 ```bash
 # 构建本地镜像
@@ -60,14 +46,14 @@ docker build -t wgenty-code .
 
 # 运行容器
 docker run -it --rm wgenty-code --version
-docker run -it --rm wgenty-code repl
+docker run -it --rm -v ~/.wgenty-code:/root/.wgenty-code wgenty-code repl
 ```
 
 ### 验证安装
 
 ```bash
 wgenty-code --version
-# 输出: wgenty-code v0.1.0
+# 输出: wgenty-code 0.1.0
 ```
 
 ---
@@ -82,19 +68,22 @@ wgenty-code --help
 
 # 显示版本
 wgenty-code --version
+
+# 显示系统信息
+wgenty-code --info
 ```
 
 ### 2. 单次查询
 
 ```bash
-# 最简单的用法
-wgenty-code "What is Rust?"
-
-# 使用特定模型
-wgenty-code --model claude-3-sonnet "Explain async/await"
-
 # 使用 --prompt 标志
 wgenty-code query --prompt "分析这个项目的结构"
+
+# 或使用 -p 缩写
+wgenty-code query -p "Explain async/await in Rust"
+
+# 使用特定模型（sonnet / opus / haiku）
+wgenty-code --model haiku query -p "Summarize this code"
 ```
 
 ### 3. REPL 交互模式
@@ -103,31 +92,39 @@ wgenty-code query --prompt "分析这个项目的结构"
 # 启动交互式 REPL
 wgenty-code repl
 
-# 在 REPL 中你可以输入多个问题
-> What is machine learning?
-> Explain neural networks
-> .help     # 显示帮助
-> .config   # 显示当前配置
-> .exit     # 退出
+# 带初始 prompt 启动
+wgenty-code repl --prompt "分析当前项目"
 ```
+
+REPL 快捷键：
+
+| 按键 | 功能 |
+|:-----|:-----|
+| `Ctrl+P` | 切换 Plan 模式 |
+| `Ctrl+O` | 展开/折叠最后一条工具输出 |
+| `Ctrl+E` | 展开/折叠全部工具输出 |
+| `Ctrl+T` | 切换任务面板 |
+| `Ctrl+Shift+T` | 切换子代理监控面板 |
+| `Ctrl+S` | 会话管理 |
+| `Ctrl+L` | 清屏 |
+| `Shift+Enter` | 输入中换行 |
+| `Enter` | 提交输入 |
+| `Ctrl+C`（双击） | 退出 |
 
 ### 4. 配置管理
 
 ```bash
 # 查看当前配置
-wgenty-code-rs config show
+wgenty-code config show
+
+# 设置模型
+wgenty-code config set models.main.name haiku
 
 # 设置 API 密钥
-wgenty-code-rs config set api_key "sk-ant-..."
-
-# 设置默认模型
-wgenty-code-rs config set model "claude-3-5-sonnet-20241022"
-
-# 查看特定配置
-wgenty-code-rs config get api_key
+wgenty-code config set models.main.api_key "sk-ant-..."
 
 # 重置配置到默认值
-wgenty-code-rs config reset
+wgenty-code config reset
 ```
 
 ---
@@ -144,53 +141,58 @@ wgenty-code-rs config reset
 
 ```bash
 # Linux/macOS
-export CLAUDE_API_KEY="sk-ant-..."
-export CLAUDE_MODEL="claude-3-5-sonnet-20241022"
+export ANTHROPIC_API_KEY="sk-ant-..."
 
 # Windows (PowerShell)
-$env:CLAUDE_API_KEY="sk-ant-..."
-$env:CLAUDE_MODEL="claude-3-5-sonnet-20241022"
+$env:ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-#### 3. 或创建配置文件
+支持的环境变量（按优先级）：
+- `ANTHROPIC_API_KEY` — Anthropic API 密钥
+- `DASHSCOPE_API_KEY` — 阿里云 DashScope API 密钥
+- `DEEPSEEK_API_KEY` — DeepSeek API 密钥
+- `API_BASE_URL` — 自定义 API 端点
+
+#### 3. 或通过配置文件
+
+配置文件位于 `~/.wgenty-code/settings.json`（JSON 格式，首次运行自动生成）：
+
+```json
+{
+  "models": {
+    "main": {
+      "name": "sonnet",
+      "api_key": "sk-ant-..."
+    },
+    "transport": {
+      "max_tokens": 4096,
+      "timeout": 120
+    }
+  }
+}
+```
+
+### 常用配置项
+
+| 配置键 | 类型 | 默认值 | 说明 |
+|:-------|:-----|:-------|:-----|
+| `models.main.name` | string | `sonnet` | 主模型别名（sonnet/haiku/opus） |
+| `models.main.api_key` | string | — | API 密钥（推荐用环境变量） |
+| `models.main.base_url` | string | `https://api.anthropic.com` | API 端点 |
+| `models.small` | object | — | 子代理专用小模型 |
+| `models.transport.max_tokens` | number | 4096 | 单次请求最大 token |
+| `models.transport.timeout` | number | 120 | 请求超时（秒） |
+| `agent.plan_mode` | bool | false | Plan 模式开关 |
+| `agent.subagent.max_depth` | number | 3 | 子代理最大嵌套深度 |
+| `agent.subagent.max_concurrent` | number | 5 | 最大并发子代理数 |
+| `agent.token_budget.main_k` | number | 0 | Token 预算（千），0=无限 |
+| `integrations.guardian.enabled` | bool | true | 命令安全审查开关 |
+
+使用 `wgenty-code config set <dotted.key> <value>` 修改任意配置项。例如：
 
 ```bash
-# 创建配置目录
-mkdir -p ~/.config/wgenty-code
-
-# 创建配置文件
-cat > ~/.config/wgenty-code/config.toml << EOF
-[api]
-provider = "anthropic"
-api_key = "sk-ant-..."
-model = "claude-3-5-sonnet-20241022"
-
-[settings]
-theme = "dark"
-language = "zh-CN"
-EOF
-```
-
-### 完整配置选项
-
-```toml
-[api]
-provider = "anthropic"              # API 提供者
-api_key = "sk-ant-..."              # API 密钥
-model = "claude-3-5-sonnet-20241022" # 模型名称
-timeout = 30                        # 请求超时 (秒)
-max_retries = 3                     # 重试次数
-
-[terminal]
-theme = "dark"                      # "dark" 或 "light"
-language = "zh-CN"                  # 显示语言
-enable_colors = true                # 彩色输出
-enable_unicode = true               # Unicode 支持
-
-[cache]
-enabled = true                      # 启用缓存
-ttl = 3600                          # 缓存 TTL (秒)
-max_size = 1000                     # 最大缓存条目
+wgenty-code config set agent.subagent.max_depth 5
+wgenty-code config set agent.plan_mode true
 ```
 
 ---
@@ -200,69 +202,89 @@ max_size = 1000                     # 最大缓存条目
 ### 📝 代码分析
 
 ```bash
-# 分析 Python 代码
-wgenty-code-rs << EOF
-请分析这个函数：
-
-def fibonacci(n):
-    if n <= 1:
-        return n
-    return fibonacci(n-1) + fibonacci(n-2)
-
-有什么性能问题吗？
-EOF
+# 分析代码文件
+wgenty-code query -p "分析 src/main.rs 的架构并指出潜在问题"
 ```
 
 ### 🐛 调试帮助
 
 ```bash
-# 获取错误信息解释
-wgenty-code-rs << EOF
-我遇到这个错误：
-TypeError: Cannot read property 'map' of undefined
-
-这是什么意思？如何修复？
-EOF
+# 获取错误帮助
+wgenty-code query -p "我遇到这个 Rust 编译错误: [粘贴错误信息]。如何修复？"
 ```
 
 ### 🚀 项目初始化
 
 ```bash
-# 创建新项目
-wgenty-code-rs init my-project
+# 初始化新项目
+wgenty-code init --name my-project
 cd my-project
-
-# 使用模板
-wgenty-code-rs init --template web my-web-app
 ```
 
-### 🔌 MCP 服务器
+### 🔌 MCP 服务器管理
 
 ```bash
-# 启动 MCP 服务器
-wgenty-code-rs mcp start
+# 列出已配置的 MCP 服务器
+wgenty-code mcp list
 
-# 列出可用工具
-wgenty-code-rs mcp tools
+# 添加 MCP 服务器
+wgenty-code mcp add --name filesystem --path /path/to/allowed/dir
 
-# 执行工具
-wgenty-code-rs mcp exec tool-name --args "..."
+# 移除 MCP 服务器
+wgenty-code mcp remove --name filesystem
+
+# 重启 MCP 服务器
+wgenty-code mcp restart --name filesystem
 ```
 
 ### 🧩 插件管理
 
 ```bash
-# 列出插件
-wgenty-code-rs plugin list
+# 列出已安装插件
+wgenty-code plugin list
 
 # 安装插件
-wgenty-code-rs plugin install https://github.com/.../plugin
+wgenty-code plugin install plugin-name
 
-# 卸载插件
-wgenty-code-rs plugin uninstall plugin-name
+# 搜索插件
+wgenty-code plugin search "关键词"
 
-# 查看插件详情
-wgenty-code-rs plugin info plugin-name
+# 移除插件
+wgenty-code plugin remove --name plugin-name
+
+# 启用/禁用插件
+wgenty-code plugin enable --name plugin-name
+wgenty-code plugin disable --name plugin-name
+
+# 更新所有插件
+wgenty-code plugin update
+```
+
+### 🧠 内存与技能管理
+
+```bash
+# 查看内存状态
+wgenty-code memory status
+
+# 列出可用技能
+wgenty-code skills list
+
+# 搜索技能
+wgenty-code skills search "关键词"
+
+# 安装内置技能
+wgenty-code skills install
+```
+
+### 🛡️ 沙箱管理
+
+```bash
+# 查看沙箱状态
+wgenty-code sandbox status
+
+# 启用/禁用沙箱
+wgenty-code sandbox enable
+wgenty-code sandbox disable
 ```
 
 ---
@@ -272,15 +294,14 @@ wgenty-code-rs plugin info plugin-name
 ### 📚 更多资源
 
 - [完整文档](./README.md)
+- [安装指南](./INSTALL.md)
 - [性能基准](./PERFORMANCE_BENCHMARKS.md)
-- [迁移指南](./MIGRATION_GUIDE.md) (从 TypeScript 版本)
-- [API 参考](./docs/API.md)
+- [变更日志](./CHANGELOG.md)
 
-### 🆘 获帮助
+### 🆘 获取帮助
 
 - GitHub Issues: [报告问题](../../issues)
 - Discussions: [讨论和建议](../../discussions)
-- 性能问题: 查看[性能基准](./PERFORMANCE_BENCHMARKS.md)
 
 ### 💡 学习更多
 

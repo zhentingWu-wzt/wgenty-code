@@ -1,0 +1,93 @@
+{
+  "models": {
+    "main": {
+      "name": "sonnet",
+      "api_key": null,
+      "base_url": null,
+      "appkey": null
+    },
+    "small": null,
+    "planner": null,
+    "transport": {
+      "max_tokens": 4096,
+      "timeout": 120,
+      "streaming": true,
+      "beta_headers": []
+    }
+  },
+  "agent": {
+    "plan_mode": false,
+    "max_rounds": null,
+    "token_budget": {
+      "main_k": 0,
+      "subagent_default_k": 0
+    },
+    "subagent": {
+      "max_depth": 3,
+      "max_concurrent": 5,
+      "timeout_secs": 240,
+      "token_budget_k": null,
+      "max_rounds": null,
+      "plan_mode": null,
+      "rlm": {
+        "enabled": null,
+        "delegate_tool": null,
+        "auto_routing": null,
+        "retry_enabled": null,
+        "max_replan_cycles": null,
+        "jaccard_threshold": null
+      },
+      "prompt": {
+        "include": {
+          "permissions": null,
+          "developer": null,
+          "collaboration": null,
+          "environment": null,
+          "skills": null
+        },
+        "developer_instructions": null,
+        "collaboration_mode": null
+      }
+    },
+    "rlm": {
+      "enabled": true,
+      "delegate_tool": true,
+      "auto_routing": true,
+      "retry_enabled": true,
+      "max_replan_cycles": 2,
+      "jaccard_threshold": 0.8
+    }
+  },
+  "prompt": {
+    "include": {
+      "permissions": true,
+      "developer": true,
+      "collaboration": true,
+      "environment": true,
+      "skills": true
+    },
+    "developer_instructions": null,
+    "collaboration_mode": null,
+    "model_instructions_file": null
+  },
+  "plugins": {
+    "plugin_dir": null,
+    "enabled": {},
+    "disabled": []
+  },
+  "storage": {
+    "transcript": {
+      "db_path": null,
+      "max_age_days": 30,
+      "max_size_mb": 500
+    }
+  },
+  "integrations": {
+    "guardian": {
+      "enabled": true,
+      "llm_review": false,
+      "auto_deny_critical": true
+    }
+  },
+  "verbose": false
+}

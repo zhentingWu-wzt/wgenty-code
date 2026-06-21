@@ -49,8 +49,8 @@ impl Tool for SubagentTraceTool {
                 },
                 "format": {
                     "type": "string",
-                    "enum": ["call_tree", "chrome_trace", "error_timeline"],
-                    "description": "Output format: 'call_tree' (ASCII tree+waterfall), 'chrome_trace' (JSON for Perfetto), or 'error_timeline' (failure breakdown). Default: 'call_tree'."
+                    "enum": ["call_tree", "chrome_trace", "error_timeline", "html"],
+                    "description": "Output format: 'call_tree' (ASCII tree+waterfall), 'chrome_trace' (JSON for Perfetto), 'error_timeline' (failure breakdown), or 'html' (self-contained HTML report). Default: 'call_tree'."
                 }
             },
             "required": ["session_id"]
@@ -103,6 +103,20 @@ impl Tool for SubagentTraceTool {
                     metadata: std::collections::HashMap::from([(
                         "format".to_string(),
                         serde_json::Value::String("error_timeline".to_string()),
+                    )]),
+                })
+            }
+            "html" => {
+                let output = reporter.render_html_report(session_id).map_err(|e| ToolError {
+                    message: e,
+                    code: Some("trace_html_report_failed".to_string()),
+                })?;
+                Ok(ToolOutput {
+                    output_type: "html".to_string(),
+                    content: output,
+                    metadata: std::collections::HashMap::from([(
+                        "format".to_string(),
+                        serde_json::Value::String("html".to_string()),
                     )]),
                 })
             }

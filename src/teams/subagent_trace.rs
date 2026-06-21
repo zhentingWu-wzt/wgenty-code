@@ -1081,3 +1081,212 @@ fn attach_children(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── safe_truncate ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_safe_truncate_ascii_short() {
+        assert_eq!(safe_truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn test_safe_truncate_ascii_long() {
+        let s = "abcdefghijklmnopqrstuvwxyz";
+        let result = safe_truncate(s, 10);
+        assert!(result.len() <= 13); // "abcdefgh…"
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn test_safe_truncate_unicode_boundary() {
+        // '─' is 3 bytes in UTF-8: E2 94 80
+        // Build a string where byte-index 4 falls inside '─'
+        let s = "ab─defghijkl";
+        // bytes: a(0) b(1) ─(2-4) d(5) e(6) ...
+        let result = safe_truncate(s, 4);
+        // Should not panic; should truncate at char boundary (byte 2, after 'b')
+        assert!(result.ends_with('…'));
+        assert!(!result.contains('─')); // truncated before the multi-byte char
+    }
+
+    #[test]
+    fn test_safe_truncate_empty() {
+        assert_eq!(safe_truncate("", 10), "");
+    }
+
+    #[test]
+    fn test_safe_truncate_exact_boundary() {
+        assert_eq!(safe_truncate("abcd", 4), "abcd");
+    }
+
+    // ── nodes_to_json ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_nodes_to_json_empty() {
+        let result = nodes_to_json(&[]);
+        assert_eq!(result, serde_json::Value::Array(vec![]));
+    }
+
+    #[test]
+    fn test_nodes_to_json_single() {
+        let node = TraceNode {
+            id: "n1".into(),
+            label: "test-agent".into(),
+            status: "completed".into(),
+            started_at: 1000,
+            finished_at: Some(5000),
+            error_message: None,
+            total_tokens: 1500,
+            actual_rounds: 3,
+            summary: Some("done".into()),
+            events: vec![TraceEvent {
+                round: 1,
+                event_type: "action".into(),
+                tool_name: Some("read".into()),
+                tool_params: Some("src/main.rs".into()),
+                elapsed_ms: 200,
+                data: "ok".into(),
+            }],
+            children: vec![],
+        };
+        let result = nodes_to_json(&[node]);
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        let n = &arr[0];
+        assert_eq!(n["id"], "n1");
+        assert_eq!(n["label"], "test-agent");
+        assert_eq!(n["status"], "completed");
+        assert_eq!(n["duration_ms"], 4000);
+        assert_eq!(n["total_tokens"], 1500);
+        assert_eq!(n["actual_rounds"], 3);
+        assert_eq!(n["is_success"], true);
+        assert_eq!(n["children"].as_array().unwrap().len(), 0);
+        assert_eq!(n["events"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_nodes_to_json_nested() {
+        let child = TraceNode {
+            id: "c1".into(),
+            label: "child".into(),
+            status: "completed".into(),
+            started_at: 2000,
+            finished_at: Some(3000),
+            error_message: None,
+            total_tokens: 500,
+            actual_rounds: 2,
+            summary: None,
+            events: vec![],
+            children: vec![],
+        };
+        let parent = TraceNode {
+            id: "p1".into(),
+            label: "parent".into(),
+            status: "completed".into(),
+            started_at: 1000,
+            finished_at: Some(4000),
+            error_message: None,
+            total_tokens: 1000,
+            actual_rounds: 3,
+            summary: None,
+            events: vec![],
+            children: vec![child],
+        };
+        let result = nodes_to_json(&[parent]);
+        let arr = result.as_array().unwrap();
+        let p = &arr[0];
+        let children = p["children"].as_array().unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0]["id"], "c1");
+        assert_eq!(children[0]["label"], "child");
+    }
+
+    #[test]
+    fn test_nodes_to_json_unicode() {
+        // Node with multi-byte UTF-8 in label
+        let node = TraceNode {
+            id: "u1".into(),
+            label: "─── HTML Report ───".into(),
+            status: "completed".into(),
+            started_at: 0,
+            finished_at: Some(100),
+            error_message: None,
+            total_tokens: 0,
+            actual_rounds: 0,
+            summary: None,
+            events: vec![],
+            children: vec![],
+        };
+        let result = nodes_to_json(&[node]);
+        let s = serde_json::to_string(&result).unwrap();
+        assert!(s.contains("─── HTML Report ───"));
+    }
+
+    // ── build_html_report ──────────────────────────────────────────────
+
+    #[test]
+    fn test_build_html_report_basic() {
+        let tree = nodes_to_json(&[]);
+        let health = serde_json::json!({
+            "period": "All Time",
+            "total_runs": 10,
+            "completed": 8,
+            "failed": 1,
+            "cancelled": 1,
+            "success_rate": 0.8,
+            "avg_rounds": 3.5,
+            "avg_tokens": 5000.0,
+            "avg_duration_ms": 12000.0,
+            "health_score": 80.0,
+            "status": "Degraded",
+            "failure_modes": [],
+            "recommendations": []
+        });
+        let html = build_html_report(&tree, &health, "test-session");
+
+        // Must contain key structural elements
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(html.contains("<style>"));
+        assert!(html.contains("</style>"));
+        assert!(html.contains("<script>"));
+        assert!(html.contains("</script>"));
+        assert!(html.contains("const DATA"));
+        assert!(html.contains("tab-tree"));
+        assert!(html.contains("tab-health"));
+        assert!(html.contains("tab-errors"));
+        assert!(html.contains("test-session"));
+        assert!(html.contains("renderTree"));
+        assert!(html.contains("renderHealthDashboard"));
+        assert!(html.contains("renderErrorTimeline"));
+    }
+
+    #[test]
+    fn test_build_html_report_empty() {
+        let tree = nodes_to_json(&[]);
+        let health = serde_json::json!({});
+        let html = build_html_report(&tree, &health, "empty");
+        assert!(html.contains("<!DOCTYPE html>"));
+        assert!(!html.is_empty());
+    }
+
+    #[test]
+    fn test_build_html_report_health_data_embedded() {
+        let tree = nodes_to_json(&[]);
+        let health = serde_json::json!({
+            "total_runs": 5,
+            "completed": 5,
+            "failed": 0,
+            "cancelled": 0,
+            "success_rate": 1.0,
+            "health_score": 95.0,
+            "status": "🟢 Healthy"
+        });
+        let html = build_html_report(&tree, &health, "s");
+        assert!(html.contains("total_runs"));
+        assert!(html.contains("95"));
+    }
+}
+
