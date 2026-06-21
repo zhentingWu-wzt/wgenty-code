@@ -174,7 +174,7 @@ Settings live in `~/.wgenty-code/settings.json` (auto-generated). Key options:
 ```bash
 wgenty-code repl                      # Interactive TUI session
 wgenty-code query -p "Refactor this"  # One-shot query
-wgenty-code config set model haiku    # Switch models
+wgenty-code config set models.main.name haiku    # Switch models
 wgenty-code mcp add --name fs         # Register an MCP server
 wgenty-code sandbox status            # Check sandbox state
 wgenty-code agent --agent-type plan --prompt "Design an API"

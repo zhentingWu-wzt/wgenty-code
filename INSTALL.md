@@ -1,10 +1,10 @@
 # Wgenty Code Rust 安装指南
 
-本指南将帮助您通过命令行安装和配置 Wgenty Code Rust 版本。
+本指南将帮助您安装和配置 Wgenty Code。
 
 ## 系统要求
 
-- **Rust**：需要安装 Rust 1.70 或更高版本
+- **Rust**：需要安装 Rust 1.75 或更高版本
 - **Git**：需要安装 Git 用于克隆仓库
 - **操作系统**：支持 Windows、Linux、macOS
 
@@ -13,56 +13,20 @@
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/zhentingWu-wzt/wgenty-code
+git clone https://github.com/zhentingWu-wzt/wgenty-code.git
 cd wgenty-code
 ```
 
-### 2. 运行安装脚本
+### 2. 构建项目
 
-#### Windows (PowerShell)
-
-**默认安装（临时目录）：**
-```powershell
-# 使用 PowerShell 运行以下命令
-Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-.\scripts\install-windows.ps1
-```
-
-**安装到D盘：**
-```powershell
-# 使用 PowerShell 运行以下命令
-Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
-.\scripts\install-windows.ps1 -InstallDir "D:\wgenty-code\install"
-```
-
-#### Linux / macOS (Bash)
-
-**默认安装：**
-```bash
-# 使用 Bash 运行以下命令
-chmod +x ./scripts/install-linux.sh
-./scripts/install-linux.sh
-```
-
-**指定安装目录：**
-```bash
-# 使用 Bash 运行以下命令
-chmod +x ./scripts/install-linux.sh
-./scripts/install-linux.sh --install-dir "/path/to/install"
-```
-
-### 3. 手动安装（可选）
-
-如果安装脚本出现问题，您可以手动安装：
-
-#### 构建项目
 ```bash
 cargo build --release
 ```
 
-#### 安装到系统
+### 3. 安装到系统
 
-##### Windows
+#### Windows
+
 ```powershell
 # 创建安装目录
 $installDir = "$env:USERPROFILE\.wgenty-code\bin"
@@ -78,7 +42,8 @@ if (-not $currentPath.Contains($installDir)) {
 }
 ```
 
-##### Linux / macOS
+#### Linux / macOS
+
 ```bash
 # 创建安装目录
 mkdir -p ~/.wgenty-code/bin
@@ -87,31 +52,58 @@ mkdir -p ~/.wgenty-code/bin
 cp ./target/release/wgenty-code ~/.wgenty-code/bin/
 chmod +x ~/.wgenty-code/bin/wgenty-code
 
-# 添加到 PATH
-echo "export PATH=\"$HOME/.wgenty-code/bin:\$PATH\"" >> ~/.bashrc
+# 添加到 PATH (bash)
+echo 'export PATH="$HOME/.wgenty-code/bin:$PATH"' >> ~/.bashrc
+
 # 或对于 zsh
-# echo "export PATH=\"$HOME/.wgenty-code/bin:\$PATH\"" >> ~/.zshrc
+# echo 'export PATH="$HOME/.wgenty-code/bin:$PATH"' >> ~/.zshrc
+```
+
+### 4. 验证安装
+
+```bash
+wgenty-code --version
+# 输出: wgenty-code 0.1.0
 ```
 
 ## 配置
 
+### 配置文件
+
+配置文件位于 `~/.wgenty-code/settings.json`（JSON 格式，首次运行自动生成）。
+
 ### 设置 API 密钥
 
+推荐使用环境变量：
+
 ```bash
-# 设置 API 密钥
-wgenty-code config set api_key "your-api-key"
+# Linux/macOS
+export ANTHROPIC_API_KEY="sk-ant-..."
 
-# 设置 API 基础 URL
-wgenty-code config set base_url "https://api.deepseek.com"
-
-# 设置模型
-wgenty-code config set model "deepseek-reasoner"
+# Windows (PowerShell)
+$env:ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-### 验证配置
+支持的环境变量（按优先级）：
+- `ANTHROPIC_API_KEY` — Anthropic API 密钥
+- `DASHSCOPE_API_KEY` — 阿里云 DashScope API 密钥
+- `DEEPSEEK_API_KEY` — DeepSeek API 密钥
+- `API_BASE_URL` — 自定义 API 端点
+
+### 通过命令行配置
 
 ```bash
-wgenty-code config list
+# 查看当前配置
+wgenty-code config show
+
+# 设置模型
+wgenty-code config set models.main.name haiku
+
+# 设置 API 基础 URL
+wgenty-code config set models.main.base_url "https://api.deepseek.com"
+
+# 重置配置到默认值
+wgenty-code config reset
 ```
 
 ## 测试安装
@@ -125,25 +117,12 @@ wgenty-code repl
 
 # 查看帮助信息
 wgenty-code --help
+
+# 查看系统信息
+wgenty-code --info
 ```
 
 ## 升级
-
-### 通过安装脚本升级
-
-重新运行安装脚本即可自动升级到最新版本：
-
-#### Windows
-```powershell
-.\scripts\install-windows.ps1
-```
-
-#### Linux / macOS
-```bash
-./scripts/install-linux.sh
-```
-
-### 手动升级
 
 ```bash
 cd wgenty-code
@@ -162,24 +141,21 @@ Remove-Item -Path "$env:USERPROFILE\.wgenty-code" -Recurse -Force
 
 # 从 PATH 中移除
 $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-$newPath = $currentPath -replace "$env:USERPROFILE\\.wgenty-code\\bin;?", ""
+$newPath = $currentPath -replace [regex]::Escape("$env:USERPROFILE\.wgenty-code\bin;"), ""
 [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
 
 # 删除配置目录
-Remove-Item -Path "$env:USERPROFILE\.config\wgenty-code" -Recurse -Force
+Remove-Item -Path "$env:USERPROFILE\.wgenty-code" -Recurse -Force
 ```
 
 ### Linux / macOS
 
 ```bash
-# 删除安装目录
+# 删除安装目录和配置
 rm -rf ~/.wgenty-code
 
 # 从 PATH 中移除
-# 编辑 ~/.bashrc 或 ~/.zshrc 文件，删除包含 "~/.wgenty-code/bin" 的行
-
-# 删除配置目录
-rm -rf ~/.config/wgenty-code
+# 编辑 ~/.bashrc 或 ~/.zshrc，删除包含 "~/.wgenty-code/bin" 的行
 ```
 
 ## 故障排除
@@ -187,7 +163,7 @@ rm -rf ~/.config/wgenty-code
 ### 常见问题
 
 1. **Rust 未安装**
-   - 访问 https://rustup.rs/ 安装 Rust
+   - 访问 https://rustup.rs/ 安装 Rust（需要 1.75+）
 
 2. **Git 未安装**
    - Windows: 访问 https://git-scm.com/ 安装 Git
@@ -195,7 +171,7 @@ rm -rf ~/.config/wgenty-code
    - macOS: 使用 Homebrew 安装 (`brew install git`)
 
 3. **API 密钥配置错误**
-   - 确保使用正确的 API 密钥格式
+   - 确保使用正确的环境变量名（`ANTHROPIC_API_KEY` / `DASHSCOPE_API_KEY` / `DEEPSEEK_API_KEY`）
    - 确保 API 密钥具有足够的权限
 
 4. **PATH 配置问题**
