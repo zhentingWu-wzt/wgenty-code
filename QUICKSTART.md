@@ -20,17 +20,17 @@
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/lorryjovens-hub/wgenty-code-rust/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/zhentingWu-wzt/wgenty-code-rust/master/install.ps1 | iex
 ```
 
 **Linux / macOS:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/lorryjovens-hub/wgenty-code-rust/master/install-unix.sh | bash
+curl -sSL https://raw.githubusercontent.com/zhentingWu-wzt/wgenty-code-rust/master/install-unix.sh | bash
 ```
 
 ### 选项 2: 直接下载二进制
 
-从 [GitHub Releases 页面](https://github.com/lorryjovens-hub/wgenty-code-rust/releases) 下载预编译的二进制文件。
+从 [GitHub Releases 页面](https://github.com/zhentingWu-wzt/wgenty-code-rust/releases) 下载预编译的二进制文件。
 
 ```bash
 # 手动下载后，添加到 PATH
@@ -42,7 +42,7 @@ chmod +x wgenty-code  # Linux/macOS
 
 ```bash
 # 克隆仓库
-git clone https://github.com/lorryjovens-hub/wgenty-code-rust.git
+git clone https://github.com/zhentingWu-wzt/wgenty-code-rust.git
 cd wgenty-code-rust
 
 # 构建

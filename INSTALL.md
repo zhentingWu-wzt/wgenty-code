@@ -13,7 +13,7 @@
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/lorryjovens-hub/wgenty-code-rust
+git clone https://github.com/zhentingWu-wzt/wgenty-code-rust
 cd wgenty-code-rust
 ```
 
@@ -212,4 +212,4 @@ RUST_LOG=wgenty_code=debug wgenty-code query --prompt "Hello!"
 ## 联系方式
 
 如果您遇到任何问题，请在 GitHub 仓库中创建 issue：
-https://github.com/lorryjovens-hub/wgenty-code-rust/issues
+https://github.com/zhentingWu-wzt/wgenty-code-rust/issues
