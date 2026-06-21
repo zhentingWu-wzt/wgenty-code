@@ -135,7 +135,7 @@ impl VoiceService {
                 .arg("--version")
                 .output()
                 .await;
-            return result.is_ok();
+            result.is_ok()
         }
         #[cfg(not(target_os = "linux"))]
         false
