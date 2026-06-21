@@ -13,8 +13,8 @@ COPY Cargo.toml Cargo.lock ./
 # 复制源代码
 COPY src ./src
 
-# 构建优化版本
-RUN cargo build --release
+# 构建优化版本（跳过 GUI feature — 容器无需图形界面）
+RUN cargo build --release --no-default-features --features daemon,i18n,bundled-skills
 
 # ==========================================
 # 阶段 2: 运行时阶段（最小镜像）
