@@ -8,7 +8,7 @@
 
 | 项目 | 状态 | 链接 |
 |:--:|:--:|:--|
-| **GitHub 仓库** | ✅ 已创建 | [lorryjovens-hub/wgenty-code-rust](https://github.com/lorryjovens-hub/wgenty-code-rust) |
+| **GitHub 仓库** | ✅ 已创建 | [zhentingWu-wzt/wgenty-code-rust](https://github.com/zhentingWu-wzt/wgenty-code-rust) |
 | **代码推送** | ✅ 已完成 | 62 个文件，49.37 KB |
 | **文档完成度** | ✅ 100% | 7 份关键文档 |
 | **CI/CD 工作流** | ✅ 已配置 | GitHub Actions 自动化 |
@@ -212,7 +212,7 @@ smaller binary
 
 🏆 100% 功能兼容，零学习成本
 
-⭐ GitHub: https://github.com/lorryjovens-hub/wgenty-code-rust
+⭐ GitHub: https://github.com/zhentingWu-wzt/wgenty-code-rust
 📖 文档: 性能基准 | 迁移指南 | 快速开始
 
 #Rust #Performance #AI #OpenSource
@@ -284,7 +284,7 @@ smaller binary
 
 **🎯 下一步**: 访问你的 GitHub 仓库，开始收获社区的认可！
 
-🔗 **仓库地址**: https://github.com/lorryjovens-hub/wgenty-code-rust
+🔗 **仓库地址**: https://github.com/zhentingWu-wzt/wgenty-code-rust
 
 ---
 
