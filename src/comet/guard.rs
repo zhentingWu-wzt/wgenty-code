@@ -42,8 +42,10 @@ impl CometGuard {
             };
         }
 
-        // Bash is special: check the command to distinguish read-only vs mutating.
-        if tool_name == "Bash" && is_read_only_bash_command(args) {
+        // Shell commands are special: distinguish read-only vs mutating by the command.
+        if (tool_name == "exec_command" || tool_name == "execute_command")
+            && is_read_only_bash_command(args)
+        {
             return CometGuardDecision {
                 blocked: false,
                 error_message: None,
@@ -78,15 +80,40 @@ impl CometGuard {
 }
 
 /// Returns true if the named tool is inherently read-only.
+///
+/// Tool names match the actual `Tool::name()` values from `src/tools/`.
+/// This list is kept in sync with tools that return `true` from
+/// `Tool::is_read_only()`, plus meta-tools (`ask_user_question`,
+/// `update_plan`) that do not mutate source code.
 pub fn is_read_only(tool_name: &str) -> bool {
-    matches!(tool_name, "Read" | "WebSearch" | "WebFetch" | "Skill")
+    matches!(
+        tool_name,
+        "file_read"
+            | "web_search"
+            | "web_fetch"
+            | "skill"
+            | "think"
+            | "compact"
+            | "lsp"
+            | "list_files"
+            | "glob"
+            | "view"
+            | "grep"
+            | "search"
+            | "load_skill"
+            | "codegraph_node"
+            | "codegraph_explore"
+            | "ask_user_question"
+            | "update_plan"
+    )
 }
 
 /// Returns true if the named tool is an inherently mutating tool
-/// (Write, Edit, NotebookEdit). Bash is NOT inherently mutating —
+/// (`file_write`, `file_edit`, `apply_patch`). Shell tools
+/// (`exec_command` / `execute_command`) are NOT inherently mutating —
 /// it depends on the command being run.
 pub fn is_mutating_command(tool_name: &str) -> bool {
-    matches!(tool_name, "Write" | "Edit" | "NotebookEdit")
+    matches!(tool_name, "file_write" | "file_edit" | "apply_patch")
 }
 
 /// Returns true if the Bash command arguments describe a read-only operation.
@@ -99,9 +126,14 @@ fn is_read_only_bash_command(args: &[String]) -> bool {
 
     // git subcommands that are read-only.
     if args[0] == "git" && args.len() >= 2 {
+        // git stash bare (no subcommand) modifies the working tree.
+        // Only `git stash list` and `git stash show` are read-only.
+        if args[1] == "stash" {
+            return args.len() >= 3 && matches!(args[2].as_str(), "list" | "show");
+        }
         return matches!(
             args[1].as_str(),
-            "status" | "log" | "diff" | "branch" | "show" | "stash" | "remote" | "tag"
+            "status" | "log" | "diff" | "branch" | "show" | "remote" | "tag"
         );
     }
 
@@ -131,27 +163,27 @@ mod tests {
 
     #[test]
     fn test_file_read_allowed_in_open() {
-        let d = CometGuard::check(&CometPhase::Open, "Read", &read_args());
-        assert!(!d.blocked, "Read in Open should be allowed");
+        let d = CometGuard::check(&CometPhase::Open, "file_read", &read_args());
+        assert!(!d.blocked, "file_read in Open should be allowed");
     }
 
     #[test]
     fn test_file_write_blocked_in_open() {
-        let d = CometGuard::check(&CometPhase::Open, "Write", &write_args());
-        assert!(d.blocked, "Write in Open should be blocked");
+        let d = CometGuard::check(&CometPhase::Open, "file_write", &write_args());
+        assert!(d.blocked, "file_write in Open should be blocked");
         assert!(d.error_message.is_some());
     }
 
     #[test]
     fn test_file_write_allowed_in_build() {
-        let d = CometGuard::check(&CometPhase::Build, "Write", &write_args());
-        assert!(!d.blocked, "Write in Build should be allowed");
+        let d = CometGuard::check(&CometPhase::Build, "file_write", &write_args());
+        assert!(!d.blocked, "file_write in Build should be allowed");
     }
 
     #[test]
     fn test_file_write_blocked_in_verify() {
-        let d = CometGuard::check(&CometPhase::Verify, "Write", &write_args());
-        assert!(d.blocked, "Write in Verify should be blocked");
+        let d = CometGuard::check(&CometPhase::Verify, "file_write", &write_args());
+        assert!(d.blocked, "file_write in Verify should be blocked");
     }
 
     #[test]
@@ -164,7 +196,7 @@ mod tests {
             CometPhase::Verify,
             CometPhase::Archive,
         ] {
-            let d = CometGuard::check(phase, "Bash", &args);
+            let d = CometGuard::check(phase, "exec_command", &args);
             assert!(
                 !d.blocked,
                 "git status should be allowed in {:?}",
@@ -176,14 +208,14 @@ mod tests {
     #[test]
     fn test_mutating_bash_blocked_in_open() {
         let args = bash_args(&["rm", "-rf", "/tmp/test"]);
-        let d = CometGuard::check(&CometPhase::Open, "Bash", &args);
+        let d = CometGuard::check(&CometPhase::Open, "exec_command", &args);
         assert!(d.blocked, "rm -rf in Open should be blocked");
     }
 
     #[test]
     fn test_mutating_bash_allowed_in_build() {
         let args = bash_args(&["cargo", "build"]);
-        let d = CometGuard::check(&CometPhase::Build, "Bash", &args);
+        let d = CometGuard::check(&CometPhase::Build, "exec_command", &args);
         assert!(!d.blocked, "cargo build in Build should be allowed");
     }
 
@@ -191,20 +223,20 @@ mod tests {
     fn test_edit_blocked_in_open() {
         let d = CometGuard::check(
             &CometPhase::Open,
-            "Edit",
+            "file_edit",
             &["/file.rs".to_string(), "old".to_string(), "new".to_string()],
         );
-        assert!(d.blocked, "Edit in Open should be blocked");
+        assert!(d.blocked, "file_edit in Open should be blocked");
     }
 
     #[test]
     fn test_edit_allowed_in_build() {
         let d = CometGuard::check(
             &CometPhase::Build,
-            "Edit",
+            "file_edit",
             &["/file.rs".to_string(), "old".to_string(), "new".to_string()],
         );
-        assert!(!d.blocked, "Edit in Build should be allowed");
+        assert!(!d.blocked, "file_edit in Build should be allowed");
     }
 
     #[test]
@@ -246,23 +278,36 @@ mod tests {
 
     #[test]
     fn test_is_read_only_tools() {
-        assert!(is_read_only("Read"));
-        assert!(is_read_only("WebSearch"));
-        assert!(is_read_only("WebFetch"));
-        assert!(is_read_only("Skill"));
-        assert!(!is_read_only("Write"));
-        assert!(!is_read_only("Edit"));
-        assert!(!is_read_only("Bash"));
+        assert!(is_read_only("file_read"));
+        assert!(is_read_only("web_search"));
+        assert!(is_read_only("web_fetch"));
+        assert!(is_read_only("skill"));
+        assert!(is_read_only("think"));
+        assert!(is_read_only("compact"));
+        assert!(is_read_only("lsp"));
+        assert!(is_read_only("list_files"));
+        assert!(is_read_only("glob"));
+        assert!(is_read_only("view"));
+        assert!(is_read_only("grep"));
+        assert!(is_read_only("search"));
+        assert!(is_read_only("load_skill"));
+        assert!(is_read_only("ask_user_question"));
+        assert!(is_read_only("update_plan"));
+        assert!(!is_read_only("file_write"));
+        assert!(!is_read_only("file_edit"));
+        assert!(!is_read_only("apply_patch"));
+        assert!(!is_read_only("exec_command"));
+        assert!(!is_read_only("execute_command"));
     }
 
     #[test]
     fn test_is_mutating_command() {
-        assert!(is_mutating_command("Write"));
-        assert!(is_mutating_command("Edit"));
-        assert!(is_mutating_command("NotebookEdit"));
-        assert!(!is_mutating_command("Read"));
-        assert!(!is_mutating_command("Bash"));
-        assert!(!is_mutating_command("WebSearch"));
+        assert!(is_mutating_command("file_write"));
+        assert!(is_mutating_command("file_edit"));
+        assert!(is_mutating_command("apply_patch"));
+        assert!(!is_mutating_command("file_read"));
+        assert!(!is_mutating_command("exec_command"));
+        assert!(!is_mutating_command("web_search"));
     }
 
     #[test]
@@ -278,8 +323,40 @@ mod tests {
         ];
         for cmd in cmds {
             let args = bash_args(cmd);
-            let d = CometGuard::check(&CometPhase::Open, "Bash", &args);
+            let d = CometGuard::check(&CometPhase::Open, "exec_command", &args);
             assert!(!d.blocked, "{:?} should be allowed in Open", cmd);
         }
+    }
+
+    #[test]
+    fn test_git_stash_list_is_read_only() {
+        // git stash list: read-only, allowed in Open
+        let args = bash_args(&["git", "stash", "list"]);
+        let d = CometGuard::check(&CometPhase::Open, "exec_command", &args);
+        assert!(!d.blocked, "git stash list should be allowed in Open");
+    }
+
+    #[test]
+    fn test_git_stash_show_is_read_only() {
+        // git stash show: read-only, allowed in Open
+        let args = bash_args(&["git", "stash", "show"]);
+        let d = CometGuard::check(&CometPhase::Open, "exec_command", &args);
+        assert!(!d.blocked, "git stash show should be allowed in Open");
+    }
+
+    #[test]
+    fn test_git_stash_bare_is_mutating() {
+        // git stash (no subcommand): modifies working tree, blocked in Open
+        let args = bash_args(&["git", "stash"]);
+        let d = CometGuard::check(&CometPhase::Open, "exec_command", &args);
+        assert!(d.blocked, "git stash bare should be blocked in Open");
+    }
+
+    #[test]
+    fn test_git_stash_pop_is_mutating() {
+        // git stash pop: modifies working tree, blocked in Open
+        let args = bash_args(&["git", "stash", "pop"]);
+        let d = CometGuard::check(&CometPhase::Open, "exec_command", &args);
+        assert!(d.blocked, "git stash pop should be blocked in Open");
     }
 }

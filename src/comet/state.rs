@@ -26,7 +26,11 @@ pub struct CometState {
 }
 
 impl CometState {
-    /// Scan `openspec/changes/*/.comet.yaml`, return the first non-archived change.
+    /// Scan `openspec/changes/*/.comet.yaml` for all non-archived changes.
+    ///
+    /// If multiple active changes are found, a warning is logged and the
+    /// most restrictive phase across all changes is used (order: Archive >
+    /// Verify > Open > Design > Build).
     pub fn read(working_dir: &Path) -> Option<Self> {
         let changes_dir = working_dir.join("openspec").join("changes");
         if !changes_dir.exists() {
@@ -37,6 +41,8 @@ impl CometState {
             Ok(e) => e,
             Err(_) => return None,
         };
+
+        let mut active: Vec<CometState> = Vec::new();
 
         for entry in entries.flatten() {
             let path = entry.path();
@@ -75,7 +81,7 @@ impl CometState {
                 None => continue,
             };
 
-            return Some(CometState {
+            active.push(CometState {
                 change_name: file_name.to_string(),
                 phase,
                 workflow: parsed.get("workflow").map(|s| s.to_string()),
@@ -84,7 +90,21 @@ impl CometState {
             });
         }
 
-        None
+        if active.is_empty() {
+            return None;
+        }
+
+        // Multiple active changes: warn and use the most restrictive phase.
+        if active.len() > 1 {
+            let names: Vec<&str> = active.iter().map(|c| c.change_name.as_str()).collect();
+            tracing::warn!(
+                "Multiple active comet changes detected: {:?}. Using most restrictive phase rules.",
+                names
+            );
+        }
+
+        // Select the change with the most restrictive phase.
+        active.into_iter().max_by_key(|c| c.phase.restrictiveness())
     }
 
     /// Return a phase-specific Chinese instruction string for the system prompt.
@@ -110,6 +130,20 @@ impl CometState {
 }
 
 impl CometPhase {
+    /// Returns a numeric restrictiveness score (higher = more restrictive).
+    ///
+    /// Order (most → least restrictive): Archive (4) > Verify (3) > Open (2) >
+    /// Design (1) > Build (0).
+    fn restrictiveness(&self) -> u8 {
+        match self {
+            CometPhase::Build => 0,
+            CometPhase::Design => 1,
+            CometPhase::Open => 2,
+            CometPhase::Verify => 3,
+            CometPhase::Archive => 4,
+        }
+    }
+
     /// Parse a phase string from a `.comet.yaml` value.
     fn from_yaml_str(s: &str) -> Self {
         match s.trim().to_lowercase().as_str() {
@@ -326,5 +360,57 @@ mod tests {
         let state = CometState::read(tmp.path()).unwrap();
         assert_eq!(state.phase, CometPhase::Verify);
         assert_eq!(state.workflow.as_deref(), Some("full"));
+    }
+
+    #[test]
+    fn test_multiple_active_changes_uses_most_restrictive_phase() {
+        // Create changes with Design (least restrictive) and Verify (most restrictive).
+        let tmp = setup_changes_dir(&[
+            ("change-design", Some("phase: design\narchived: false\n")),
+            (
+                "change-verify",
+                Some("phase: verify\narchived: false\n"),
+            ),
+            ("change-build", Some("phase: build\narchived: false\n")),
+        ]);
+        let state = CometState::read(tmp.path()).unwrap();
+        // Verify is more restrictive than Design/Build, so it should be selected.
+        assert_eq!(state.phase, CometPhase::Verify);
+    }
+
+    #[test]
+    fn test_multiple_active_changes_uses_most_restrictive_archive() {
+        // Archive is the most restrictive phase.
+        let tmp = setup_changes_dir(&[
+            ("change-open", Some("phase: open\narchived: false\n")),
+            (
+                "change-archive",
+                Some("phase: archive\narchived: false\n"),
+            ),
+        ]);
+        let state = CometState::read(tmp.path()).unwrap();
+        assert_eq!(state.phase, CometPhase::Archive);
+    }
+
+    #[test]
+    fn test_single_active_change_no_warning() {
+        // Single change: no warning, returned as-is.
+        let tmp = setup_changes_dir(&[(
+            "only-change",
+            Some("phase: design\narchived: false\n"),
+        )]);
+        let state = CometState::read(tmp.path()).unwrap();
+        assert_eq!(state.change_name, "only-change");
+        assert_eq!(state.phase, CometPhase::Design);
+    }
+
+    #[test]
+    fn test_restrictiveness_ordering() {
+        use super::CometPhase;
+        // Higher score = more restrictive.
+        assert!(CometPhase::Build.restrictiveness() < CometPhase::Design.restrictiveness());
+        assert!(CometPhase::Design.restrictiveness() < CometPhase::Open.restrictiveness());
+        assert!(CometPhase::Open.restrictiveness() < CometPhase::Verify.restrictiveness());
+        assert!(CometPhase::Verify.restrictiveness() < CometPhase::Archive.restrictiveness());
     }
 }
