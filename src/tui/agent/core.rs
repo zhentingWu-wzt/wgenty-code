@@ -3,7 +3,29 @@ use crate::agent::StreamProcessor;
 use crate::api::ChatMessage;
 use crate::tui::app::AppEvent;
 use crate::utils::stuck_detector::StuckStatus;
+use std::cmp;
 use std::time::Duration;
+
+/// Resolve the timeout for a tool call based on its name and arguments.
+///
+/// | tool                         | timeout                                              |
+/// |------------------------------|------------------------------------------------------|
+/// | `task` / `delegate`          | 300s                                                 |
+/// | `execute_command` / `exec`   | `max(args.timeout + 30, 120)` where timeout defaults to 60 |
+/// | all other tools              | 120s                                                 |
+fn resolve_tool_timeout(tool_name: &str, args: &serde_json::Value) -> Duration {
+    match tool_name {
+        "task" | "delegate" => Duration::from_secs(300),
+        "execute_command" | "exec_command" => {
+            let user_timeout = args
+                .get("timeout")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(60);
+            Duration::from_secs(cmp::max(user_timeout + 30, 120))
+        }
+        _ => Duration::from_secs(120),
+    }
+}
 
 impl AgentLoop {
     /// Core LLM loop: stream, handle tools, compaction, etc.
@@ -319,11 +341,7 @@ impl AgentLoop {
                             None
                         };
 
-                        let tool_timeout = if tc.function.name == "task" {
-                            Duration::from_secs(300)
-                        } else {
-                            Duration::from_secs(120)
-                        };
+                        let tool_timeout = resolve_tool_timeout(&tc.function.name, &args);
                         let exec_result = match tokio::time::timeout(
                             tool_timeout,
                             self.execute_tool_with_permission(&tc.function.name, args.clone()),
@@ -521,5 +539,79 @@ impl AgentLoop {
             let _ = self.event_tx.send(AppEvent::SaveSession);
             return Ok(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_timeout_task() {
+        let args = json!({});
+        assert_eq!(resolve_tool_timeout("task", &args), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn test_timeout_delegate() {
+        let args = json!({});
+        assert_eq!(resolve_tool_timeout("delegate", &args), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn test_timeout_execute_command_with_default_timeout() {
+        // No timeout in args → defaults to 60 → max(60+30, 120) = 120
+        let args = json!({"command": "echo hello"});
+        assert_eq!(
+            resolve_tool_timeout("execute_command", &args),
+            Duration::from_secs(120)
+        );
+    }
+
+    #[test]
+    fn test_timeout_execute_command_with_custom_timeout_under_min() {
+        // timeout=30 → max(30+30, 120) = 120
+        let args = json!({"command": "echo hello", "timeout": 30});
+        assert_eq!(
+            resolve_tool_timeout("execute_command", &args),
+            Duration::from_secs(120)
+        );
+    }
+
+    #[test]
+    fn test_timeout_execute_command_with_large_timeout() {
+        // timeout=200 → max(200+30, 120) = 230
+        let args = json!({"command": "echo hello", "timeout": 200});
+        assert_eq!(
+            resolve_tool_timeout("execute_command", &args),
+            Duration::from_secs(230)
+        );
+    }
+
+    #[test]
+    fn test_timeout_exec_command_alias() {
+        let args = json!({"command": "echo hello", "timeout": 100});
+        assert_eq!(
+            resolve_tool_timeout("exec_command", &args),
+            Duration::from_secs(130)
+        );
+    }
+
+    #[test]
+    fn test_timeout_other_tool() {
+        let args = json!({});
+        assert_eq!(
+            resolve_tool_timeout("Bash", &args),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            resolve_tool_timeout("Read", &args),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            resolve_tool_timeout("WebSearch", &args),
+            Duration::from_secs(120)
+        );
     }
 }
