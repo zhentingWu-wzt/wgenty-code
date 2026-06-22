@@ -1,0 +1,19 @@
+{
+  "change": "comet-workflow-compat",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "4a30b136516518b99b1f931f00bc24e02c721fa1690529135027f2d0c7113914",
+  "files": [
+    { "path": "openspec/changes/comet-workflow-compat/proposal.md", "sha256": "4459ef177cc27d5bf30eeed2c0554141d4bb041e5764324b94ad8cb9bb518ff1" },
+    { "path": "openspec/changes/comet-workflow-compat/design.md", "sha256": "53a712065bc3077e0c61014efe89b73c3d873fb4cc26731853b7326272bedd56" },
+    { "path": "openspec/changes/comet-workflow-compat/tasks.md", "sha256": "a44efb61007f435ef335469fdca0b6cba92dbd7d1ad5183672b4e6c2135f158e" },
+    { "path": "openspec/changes/comet-workflow-compat/specs/comet-phase-guard/spec.md", "sha256": "586f5c9b2ddefba338cef4fe34fe8ed2180181467a7797a668f4eb63eeb24d04" },
+    { "path": "openspec/changes/comet-workflow-compat/specs/comet-skill-path-compat/spec.md", "sha256": "d6c8e59158a768c2ca254dd52bdf3db1f4ea1dcbfeef033fc68007b7a44713b8" },
+    { "path": "openspec/changes/comet-workflow-compat/specs/comet-subagent-orchestrator/spec.md", "sha256": "2e2d3f649878a416b590f63087da579b008bf3ab3b279eda4150471e324d73a2" },
+    { "path": "openspec/changes/comet-workflow-compat/specs/hook-lifecycle-complete/spec.md", "sha256": "8429f880f03f8b8151d623a161e7b0162c4166f4a54f8783af7b83643940c2a6" },
+    { "path": "openspec/changes/comet-workflow-compat/specs/long-command-timeout-config/spec.md", "sha256": "19a30ce30a180cc88bfd8149eb0621412c1c7ab69c9ae472fa98a97836f4e992" },
+    { "path": "openspec/changes/comet-workflow-compat/specs/worktree-isolation-tool/spec.md", "sha256": "13cee44fef9ed52bcebc3b6399db0479b5051ad9ab9181c53b3f27112ab1d5ec" }
+  ]
+}
