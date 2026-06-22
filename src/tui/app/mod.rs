@@ -366,6 +366,21 @@ impl App {
                 self.handle_event(event).await;
             }
         }
+
+        // Fire SessionEnd hook asynchronously before exit
+        {
+            let hm = self.hook_manager.clone();
+            let sid = self.session_id.clone();
+            let _handle = tokio::spawn(async move {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let comet_phase = crate::comet::CometState::read(&cwd)
+                    .map(|s| format!("{:?}", s.phase).to_lowercase());
+                let ctx = HookManager::session_end_context(&sid)
+                    .with_comet_phase(comet_phase);
+                hm.fire(&crate::hooks::HookEvent::SessionEnd, &ctx, None).await;
+            });
+        }
+
         Ok(())
     }
 }
