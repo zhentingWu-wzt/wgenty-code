@@ -5,11 +5,15 @@ use crate::tui::theme::ACCENT;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
+use std::ops::Range;
 
-const MAX_VISIBLE_ITEMS: usize = 8;
-const MAX_PANEL_WIDTH: u16 = 60;
+const MAX_VISIBLE_SKILL_ITEMS: usize = 8;
+const MAX_VISIBLE_COMMAND_ITEMS: usize = 10;
+const MAX_SKILL_PANEL_WIDTH: u16 = 60;
+const MAX_COMMAND_PANEL_WIDTH: u16 = 88;
+const HINT_ROWS: u16 = 1;
 
 pub struct CompletionPanel;
 
@@ -19,27 +23,41 @@ impl CompletionPanel {
             return;
         }
 
-        let max_visible = MAX_VISIBLE_ITEMS.min(state.matches.len());
-        let panel_height = max_visible as u16 + 2; // border top/bottom
+        let max_visible_items = if state.prefix == '/' {
+            MAX_VISIBLE_COMMAND_ITEMS
+        } else {
+            MAX_VISIBLE_SKILL_ITEMS
+        };
+        let max_panel_width = if state.prefix == '/' {
+            MAX_COMMAND_PANEL_WIDTH
+        } else {
+            MAX_SKILL_PANEL_WIDTH
+        };
+        let visible_item_count = max_visible_items.min(state.matches.len());
+        let panel_height = visible_item_count as u16 + HINT_ROWS + 2; // border top/bottom
 
         let panel_area = Rect {
             x: area.x,
             y: area.y.saturating_sub(panel_height),
-            width: area.width.min(MAX_PANEL_WIDTH),
+            width: area.width.min(max_panel_width),
             height: panel_height,
         };
 
         let border_color = ACCENT;
 
+        let selected_index = state.selected_index.min(state.matches.len() - 1);
+        let block_title = format!(
+            " {} {}/{} ",
+            if state.prefix == '@' {
+                "Skills"
+            } else {
+                "Commands"
+            },
+            selected_index + 1,
+            state.matches.len()
+        );
         let block = Block::default()
-            .title(format!(
-                " {} ",
-                if state.prefix == '@' {
-                    "Skills"
-                } else {
-                    "Commands"
-                }
-            ))
+            .title(block_title)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color))
             .style(Style::default().bg(Color::Rgb(26, 26, 46)));
@@ -47,10 +65,16 @@ impl CompletionPanel {
         let inner = block.inner(panel_area);
 
         let mut lines: Vec<Line> = Vec::new();
-        let visible_matches = &state.matches[..max_visible];
+        let visible_range = visible_item_range(
+            state.selected_index,
+            state.matches.len(),
+            visible_item_count,
+        );
+        let visible_matches = &state.matches[visible_range.clone()];
 
         for (i, m) in visible_matches.iter().enumerate() {
-            let is_selected = i == state.selected_index;
+            let item_index = visible_range.start + i;
+            let is_selected = item_index == selected_index;
             let style = if is_selected {
                 Style::default()
                     .fg(Color::Rgb(203, 166, 247))
@@ -59,9 +83,14 @@ impl CompletionPanel {
             } else {
                 Style::default().fg(Color::Rgb(205, 205, 220))
             };
+            let category_style = Style::default()
+                .fg(Color::Rgb(108, 112, 134))
+                .add_modifier(Modifier::DIM);
 
+            let marker = if is_selected { "›" } else { " " };
             let mut parts = vec![
-                Span::styled(format!(" {}", m.text), style),
+                Span::styled(format!("{} {}", marker, m.text), style),
+                Span::styled(format!("  [{}]", m.category), category_style),
                 Span::styled(
                     format!("  {}", m.description),
                     style.add_modifier(Modifier::DIM),
@@ -89,20 +118,65 @@ impl CompletionPanel {
             x: inner.x,
             y: inner.y,
             width: inner.width,
-            height: inner.height.saturating_sub(1),
+            height: inner.height.saturating_sub(HINT_ROWS),
         };
-        f.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: false }),
-            content_area,
-        );
+        f.render_widget(Paragraph::new(lines), content_area);
         f.render_widget(
             Paragraph::new(hint),
             Rect {
                 x: inner.x,
-                y: inner.y + inner.height.saturating_sub(1),
+                y: inner.y + inner.height.saturating_sub(HINT_ROWS),
                 width: inner.width,
-                height: 1,
+                height: HINT_ROWS,
             },
         );
+    }
+}
+
+fn visible_item_range(
+    selected_index: usize,
+    total_items: usize,
+    max_visible: usize,
+) -> Range<usize> {
+    if total_items <= max_visible {
+        return 0..total_items;
+    }
+
+    let selected_index = selected_index.min(total_items - 1);
+    let start = if selected_index < max_visible {
+        0
+    } else {
+        selected_index + 1 - max_visible
+    };
+    let end = (start + max_visible).min(total_items);
+
+    start..end
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visible_item_range_shows_initial_items() {
+        assert_eq!(visible_item_range(0, 12, MAX_VISIBLE_SKILL_ITEMS), 0..8);
+        assert_eq!(visible_item_range(7, 12, MAX_VISIBLE_SKILL_ITEMS), 0..8);
+    }
+
+    #[test]
+    fn visible_item_range_scrolls_to_selected_item() {
+        assert_eq!(visible_item_range(8, 12, MAX_VISIBLE_SKILL_ITEMS), 1..9);
+        assert_eq!(visible_item_range(11, 12, MAX_VISIBLE_SKILL_ITEMS), 4..12);
+    }
+
+    #[test]
+    fn visible_item_range_handles_short_and_empty_lists() {
+        assert_eq!(visible_item_range(0, 6, MAX_VISIBLE_SKILL_ITEMS), 0..6);
+        assert_eq!(visible_item_range(0, 0, MAX_VISIBLE_SKILL_ITEMS), 0..0);
+    }
+
+    #[test]
+    fn visible_item_range_clamps_out_of_bounds_selection() {
+        assert_eq!(visible_item_range(99, 12, MAX_VISIBLE_SKILL_ITEMS), 4..12);
     }
 }

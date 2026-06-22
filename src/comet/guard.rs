@@ -1,6 +1,6 @@
 //! Comet guard — phase restriction matrix for tool calls.
 //!
-//! Enforces that mutating operations (Write, Edit, NotebookEdit, and
+//! Enforces that mutating operations (file_write, file_edit, apply_patch, and
 //! mutating Bash commands) are only allowed during the Build phase.
 //! Read-only operations are permitted in all phases.
 
@@ -103,6 +103,9 @@ pub fn is_read_only(tool_name: &str) -> bool {
             | "load_skill"
             | "codegraph_node"
             | "codegraph_explore"
+            | "call_path"
+            | "symbol_batch"
+            | "module_summary"
             | "ask_user_question"
             | "update_plan"
     )
