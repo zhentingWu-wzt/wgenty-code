@@ -147,7 +147,8 @@ impl AgentLoop {
                         timestamp: chrono::Utc::now().to_rfc3339(),
                         comet_phase,
                     };
-                    hm.fire(&crate::hooks::HookEvent::PermissionRequest, &ctx, None).await;
+                    hm.fire(&crate::hooks::HookEvent::PermissionRequest, &ctx, None)
+                        .await;
                 });
             }
 
