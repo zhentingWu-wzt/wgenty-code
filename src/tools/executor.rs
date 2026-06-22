@@ -1,9 +1,11 @@
 use crate::api::ChatMessage;
+use crate::comet::{CometGuard, CometState};
 use crate::guardian::{Guardian, GuardianDecision};
 use crate::hooks::{HookEvent, HookManager};
 use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
 use crate::tools::ToolRegistry;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -13,16 +15,22 @@ pub struct ToolExecutor {
     session_rules: Arc<RwLock<HashSet<String>>>,
     hook_manager: Arc<HookManager>,
     guardian: Guardian,
+    /// Active comet workflow state, read once from the working directory.
+    /// `None` if no active comet change is in progress.
+    comet_state: Option<CometState>,
 }
 
 impl ToolExecutor {
     pub fn new(registry: Arc<ToolRegistry>, policy: ToolPermissionPolicy) -> Self {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let comet_state = CometState::read(&cwd);
         Self {
             registry,
             policy,
             session_rules: Arc::new(RwLock::new(HashSet::new())),
             hook_manager: Arc::new(HookManager::default()),
             guardian: Guardian::default(),
+            comet_state,
         }
     }
 
@@ -122,7 +130,10 @@ impl ToolExecutor {
 
     /// Execute a tool call with Pre/Post hooks wrapping execution.
     ///
-    /// PreToolUse hooks run before execution; if any hook returns
+    /// Comet phase guard runs first; if the current phase disallows this tool,
+    /// a Notification hook is fired and the call is blocked.
+    ///
+    /// PreToolUse hooks run after the comet guard; if any hook returns
     /// `{ "continue_execution": false }` the tool call is blocked.
     /// PostToolUse hooks run after execution and cannot block.
     pub async fn execute_with_hooks(
@@ -137,6 +148,36 @@ impl ToolExecutor {
             args_len = serde_json::to_string(&args).map(|s| s.len()).unwrap_or(0),
             "ToolExecutor: executing with hooks"
         );
+
+        // ── Comet phase guard (before PreToolUse hooks) ──────────────────
+        if let Some(ref state) = self.comet_state {
+            let guard_args = json_args_to_strings(&args);
+            let decision = CometGuard::check(&state.phase, tool_name, &guard_args);
+            if decision.blocked {
+                let msg = decision.error_message.unwrap_or_else(|| {
+                    format!(
+                        "Tool '{}' blocked by comet guard in {:?} phase",
+                        tool_name, state.phase
+                    )
+                });
+                // Fire Notification hook asynchronously (do not await)
+                let hook_manager = Arc::clone(&self.hook_manager);
+                let notif_ctx =
+                    HookManager::notification_context(Some(&msg), session_id);
+                let tool_name_owned = tool_name.to_string();
+                tokio::spawn(async move {
+                    hook_manager
+                        .fire(
+                            &HookEvent::Notification,
+                            &notif_ctx,
+                            Some(&tool_name_owned),
+                        )
+                        .await;
+                });
+                return ChatMessage::tool(tool_call_id, msg);
+            }
+        }
+
         // PreToolUse hook
         let pre_ctx = HookManager::pre_tool_context(tool_name, &args, session_id);
         let pre_outcomes = self
@@ -179,5 +220,29 @@ impl ToolExecutor {
             .await;
 
         ChatMessage::tool(tool_call_id, &content)
+    }
+}
+
+/// Convert tool arguments from JSON to `Vec<String>` for comet guard checking.
+///
+/// For `exec_command` / `execute_command` tools, the JSON object's `"command"`
+/// field is split on whitespace (e.g. `"git status"` → `["git", "status"]`).
+/// For other tools, object values are stringified.
+fn json_args_to_strings(args: &serde_json::Value) -> Vec<String> {
+    match args {
+        serde_json::Value::Object(obj) => {
+            if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
+                cmd.split_whitespace().map(|s| s.to_string()).collect()
+            } else {
+                obj.values()
+                    .filter_map(|v| match v {
+                        serde_json::Value::String(s) => Some(s.clone()),
+                        _ => Some(v.to_string()),
+                    })
+                    .collect()
+            }
+        }
+        serde_json::Value::String(s) => vec![s.clone()],
+        _ => vec![args.to_string()],
     }
 }
