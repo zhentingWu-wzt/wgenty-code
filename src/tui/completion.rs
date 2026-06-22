@@ -15,6 +15,7 @@ pub struct CommandEntry {
     pub name: String,
     pub description: String,
     pub args_hint: Option<String>,
+    pub category: String,
 }
 
 #[derive(Debug, Clone)]
@@ -22,6 +23,7 @@ pub struct CompletionMatch {
     pub text: String,
     pub description: String,
     pub args_hint: Option<String>,
+    pub category: String,
 }
 
 pub struct CompletionEngine {
@@ -30,26 +32,67 @@ pub struct CompletionEngine {
 }
 
 impl CompletionEngine {
+    pub fn default_builtin_commands() -> Vec<CommandEntry> {
+        vec![
+            CommandEntry {
+                name: "clear".to_string(),
+                description: "Clear the conversation screen".to_string(),
+                args_hint: None,
+                category: "Built-in".to_string(),
+            },
+            CommandEntry {
+                name: "plan".to_string(),
+                description: "Toggle plan mode".to_string(),
+                args_hint: None,
+                category: "Built-in".to_string(),
+            },
+            CommandEntry {
+                name: "continue".to_string(),
+                description: "Continue after an interrupted turn".to_string(),
+                args_hint: None,
+                category: "Built-in".to_string(),
+            },
+            CommandEntry {
+                name: "undo".to_string(),
+                description: "Ask the agent to undo the most recent operation".to_string(),
+                args_hint: None,
+                category: "Built-in".to_string(),
+            },
+            CommandEntry {
+                name: "init".to_string(),
+                description: "Analyze the repository and generate project guidance".to_string(),
+                args_hint: None,
+                category: "Built-in".to_string(),
+            },
+            CommandEntry {
+                name: "help".to_string(),
+                description: "Show available commands".to_string(),
+                args_hint: None,
+                category: "Built-in".to_string(),
+            },
+        ]
+    }
+
     /// Scan skills directories for completion (both @skills and /commands).
     /// Scans project `.wgenty-code/skills/`, user `~/.wgenty-code/skills/`,
     /// and the legacy `~/.claude/skills/` directory.
-    pub fn load(skills_dir: &std::path::Path, command_registry_commands: &[CommandEntry]) -> Self {
+    pub fn load(command_registry_commands: &[CommandEntry]) -> Self {
         let mut skills = Vec::new();
         let mut commands = command_registry_commands.to_vec();
 
-        // Scan multiple skill roots and merge into both @skills and /commands.
+        // Resolve all external skill roots through the central resolver.
         let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         let project_root =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let roots = crate::knowledge::SkillRootResolver::roots_with(&home, &project_root);
 
-        let scan_roots: &[std::path::PathBuf] = &[
-            project_root.join(".wgenty-code").join("skills"),
-            home.join(".wgenty-code").join("skills"),
-            skills_dir.to_path_buf(),
-        ];
+        let scan_roots: Vec<std::path::PathBuf> = roots
+            .iter()
+            .map(|r| r.skills_root.clone())
+            .collect();
 
         let mut seen: HashSet<String> = HashSet::new();
-        for root in scan_roots {
+        for root in &scan_roots {
             if !root.exists() {
                 continue;
             }
@@ -73,6 +116,7 @@ impl CompletionEngine {
                                 name: name.to_string(),
                                 description,
                                 args_hint: None,
+                                category: "Skill".to_string(),
                             });
                         }
                     }
@@ -81,10 +125,7 @@ impl CompletionEngine {
         }
 
         // Scan namespace directories (e.g. superpowers/brainstorming)
-        for root in &[
-            project_root.join(".wgenty-code").join("skills"),
-            home.join(".wgenty-code").join("skills"),
-        ] {
+        for root in &scan_roots {
             if !root.exists() {
                 continue;
             }
@@ -119,6 +160,7 @@ impl CompletionEngine {
                                         name: canonical,
                                         description,
                                         args_hint: None,
+                                        category: "Skill".to_string(),
                                     });
                                 }
                             }
@@ -150,6 +192,7 @@ impl CompletionEngine {
                     text: s.name.clone(),
                     description: s.description.clone(),
                     args_hint: None,
+                    category: "Skill".to_string(),
                 })
                 .collect(),
             '/' => self
@@ -160,6 +203,7 @@ impl CompletionEngine {
                     text: c.name.clone(),
                     description: c.description.clone(),
                     args_hint: c.args_hint.clone(),
+                    category: c.category.clone(),
                 })
                 .collect(),
             _ => vec![],
@@ -222,11 +266,13 @@ mod tests {
                     name: "code-review".into(),
                     description: "Review code".into(),
                     args_hint: None,
+                    category: "Built-in".into(),
                 },
                 CommandEntry {
                     name: "clear".into(),
                     description: "Clear screen".into(),
                     args_hint: None,
+                    category: "Built-in".into(),
                 },
             ],
         }
@@ -284,10 +330,35 @@ mod tests {
             name: "code-review".into(),
             description: "Review code".into(),
             args_hint: Some("<change-name>".into()),
+            category: "Built-in".into(),
         }];
         let matches = e.filter('/', "code");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].args_hint, Some("<change-name>".to_string()));
+    }
+
+    #[test]
+    fn test_default_commands_include_builtin_slash_commands_with_category() {
+        let commands = CompletionEngine::default_builtin_commands();
+        let command_names: Vec<&str> = commands
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect();
+
+        for expected in ["clear", "plan", "continue", "undo", "init", "help"] {
+            assert!(
+                command_names.contains(&expected),
+                "missing builtin command: {expected}"
+            );
+        }
+
+        let engine = CompletionEngine {
+            skills: Vec::new(),
+            commands,
+        };
+        let matches = engine.filter('/', "");
+
+        assert!(matches.iter().all(|item| item.category == "Built-in"));
     }
 
     #[test]
@@ -297,6 +368,7 @@ mod tests {
             name: "new-cmd".into(),
             description: "New command".into(),
             args_hint: Some("<arg>".into()),
+            category: "Plugin".into(),
         }];
         e.update_commands(new_commands);
         // Old commands should be replaced

@@ -142,20 +142,8 @@ impl DaemonState {
             // invoke external skills via the `skill` tool (fixes C1).
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
             let project_root = app_state.settings.storage.working_dir.clone();
-            let external_registry_roots = vec![
-                crate::knowledge::ExternalSkillRoot::new(
-                    home.join(".wgenty-code").join("skills"),
-                    crate::knowledge::ExternalSkillSource::UserWgentyCode {
-                        root: home.join(".wgenty-code").join("skills"),
-                    },
-                ),
-                crate::knowledge::ExternalSkillRoot::new(
-                    project_root.join(".wgenty-code").join("skills"),
-                    crate::knowledge::ExternalSkillSource::ProjectWgentyCode {
-                        root: project_root.join(".wgenty-code").join("skills"),
-                    },
-                ),
-            ];
+            let external_registry_roots =
+                crate::knowledge::SkillRootResolver::roots_with(&home, &project_root);
             if let Ok(external_registry) =
                 crate::knowledge::ExternalSkillRegistry::discover(external_registry_roots)
             {
