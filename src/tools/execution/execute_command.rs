@@ -61,7 +61,7 @@ impl Tool for ExecuteCommandTool {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in seconds (optional)"
+                    "description": "Timeout in seconds (optional); the agent adds a 30s buffer to this value, with a minimum of 120s"
                 }
             },
             "required": ["command"]
