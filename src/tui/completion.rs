@@ -86,10 +86,8 @@ impl CompletionEngine {
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let roots = crate::knowledge::SkillRootResolver::roots_with(&home, &project_root);
 
-        let scan_roots: Vec<std::path::PathBuf> = roots
-            .iter()
-            .map(|r| r.skills_root.clone())
-            .collect();
+        let scan_roots: Vec<std::path::PathBuf> =
+            roots.iter().map(|r| r.skills_root.clone()).collect();
 
         let mut seen: HashSet<String> = HashSet::new();
         for root in &scan_roots {
@@ -116,7 +114,7 @@ impl CompletionEngine {
                                 name: name.to_string(),
                                 description,
                                 args_hint: None,
-                                category: "Skill".to_string(),
+                                category: slash_command_category(name).to_string(),
                             });
                         }
                     }
@@ -160,7 +158,7 @@ impl CompletionEngine {
                                         name: canonical,
                                         description,
                                         args_hint: None,
-                                        category: "Skill".to_string(),
+                                        category: slash_command_category(ns_name).to_string(),
                                     });
                                 }
                             }
@@ -208,6 +206,21 @@ impl CompletionEngine {
                 .collect(),
             _ => vec![],
         }
+    }
+}
+
+fn slash_command_category(name: &str) -> &'static str {
+    if name == "comet" || name.starts_with("comet-") {
+        "Comet"
+    } else if name == "openspec" || name.starts_with("openspec-") {
+        "OpenSpec"
+    } else if name == "superpowers"
+        || name.starts_with("superpowers-")
+        || name.starts_with("superpowers:")
+    {
+        "Superpowers"
+    } else {
+        "Skill"
     }
 }
 
@@ -359,6 +372,18 @@ mod tests {
         let matches = engine.filter('/', "");
 
         assert!(matches.iter().all(|item| item.category == "Built-in"));
+    }
+
+    #[test]
+    fn test_slash_command_category_groups_known_workflows() {
+        assert_eq!(slash_command_category("comet"), "Comet");
+        assert_eq!(slash_command_category("comet-build"), "Comet");
+        assert_eq!(slash_command_category("openspec-propose"), "OpenSpec");
+        assert_eq!(
+            slash_command_category("superpowers:brainstorming"),
+            "Superpowers"
+        );
+        assert_eq!(slash_command_category("brainstorming"), "Skill");
     }
 
     #[test]

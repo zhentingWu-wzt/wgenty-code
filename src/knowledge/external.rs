@@ -254,9 +254,7 @@ mod tests {
     #[test]
     fn test_user_claude_variant_root() {
         let path = PathBuf::from("/home/user/.claude/skills");
-        let source = ExternalSkillSource::UserClaude {
-            root: path.clone(),
-        };
+        let source = ExternalSkillSource::UserClaude { root: path.clone() };
         assert_eq!(source.root(), path.as_path());
     }
 

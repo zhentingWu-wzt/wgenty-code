@@ -14,9 +14,17 @@ use wgenty_code::tools::ToolRegistry;
 static DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Create a temporary directory with a comet yaml in openspec/changes/<name>.
-fn setup_comet_dir(phase: &str, workflow: Option<&str>, build_mode: Option<&str>) -> tempfile::TempDir {
+fn setup_comet_dir(
+    phase: &str,
+    workflow: Option<&str>,
+    build_mode: Option<&str>,
+) -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
-    let changes = tmp.path().join("openspec").join("changes").join("test-change");
+    let changes = tmp
+        .path()
+        .join("openspec")
+        .join("changes")
+        .join("test-change");
     std::fs::create_dir_all(&changes).unwrap();
     let mut f = std::fs::File::create(changes.join(".comet.yaml")).unwrap();
     writeln!(f, "phase: {}", phase).unwrap();
@@ -166,8 +174,8 @@ async fn test_blocked_fires_notification_hook() {
         "Notification": [{"command": "echo 'notified'", "timeout_secs": 5}]
     });
     let hook_manager = Arc::new(HookManager::from_settings(&hooks_config));
-    let executor = wgenty_code::tools::ToolExecutor::new(registry, policy)
-        .with_hooks(hook_manager.clone());
+    let executor =
+        wgenty_code::tools::ToolExecutor::new(registry, policy).with_hooks(hook_manager.clone());
 
     let args = serde_json::json!({"file_path": "/tmp/test.rs", "content": "fn main() {}"});
     let msg = executor
@@ -195,8 +203,8 @@ async fn test_guard_runs_before_pre_tool_use_hook() {
         "Notification": [{"command": "echo 'notified'", "timeout_secs": 5}]
     });
     let hook_manager = Arc::new(HookManager::from_settings(&hooks_config));
-    let executor = wgenty_code::tools::ToolExecutor::new(registry, policy)
-        .with_hooks(hook_manager.clone());
+    let executor =
+        wgenty_code::tools::ToolExecutor::new(registry, policy).with_hooks(hook_manager.clone());
 
     let args = serde_json::json!({"file_path": "/tmp/test.rs", "content": "fn main() {}"});
     let msg = executor

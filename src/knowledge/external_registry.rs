@@ -2,6 +2,35 @@ use super::external::{
     derive_canonical_skill_name, parse_external_skill_document, ExternalSkillDefinition,
     ExternalSkillError, ExternalSkillSource, ShadowedSkillDefinition, SkillFrontmatter,
 };
+
+/// Builds an agent prompt for Comet slash commands that must be grounded in
+/// the OpenSpec workflow before any phase-specific action runs.
+pub fn comet_slash_agent_prompt(skill: &str, args: &str) -> Option<String> {
+    if skill != "comet" && !skill.starts_with("comet-") {
+        return None;
+    }
+
+    let invocation = if args.is_empty() {
+        format!("/{skill}")
+    } else {
+        format!("/{skill} {args}")
+    };
+
+    Some(format!(
+        r#"Comet slash command requested: {invocation}
+
+This is a native Comet dispatch wrapper. You MUST follow these steps exactly before taking any implementation action:
+
+1. Call `load_skill` for `{skill}` and follow that skill's instructions. If `{skill}` is unavailable, stop and report the missing skill.
+2. Run `openspec list --json` to discover active OpenSpec changes. If the command fails, inspect whether this repository has `openspec/` initialized and report the actionable failure.
+3. Use OpenSpec state as the source of truth. Inspect `openspec/changes`, `.comet.yaml`, `proposal.md`, `design.md`, `tasks.md`, and related delta specs as required by the loaded Comet skill.
+4. MUST NOT continue with brainstorming, design, build, verify, archive, or code edits until the OpenSpec discovery step has completed and its result has been considered.
+5. Preserve the user's original invocation and intent: `{invocation}`.
+
+After those required checks, continue with the loaded Comet workflow and route to the correct Comet/OpenSpec phase."#
+    ))
+}
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 

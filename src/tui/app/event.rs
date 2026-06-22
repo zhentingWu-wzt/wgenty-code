@@ -90,49 +90,46 @@ impl App {
                         }
                         KeyCode::Up | KeyCode::Char('k') => {
                             if let Some(ref mut s) = self.completion_state {
-                                if !s.matches.is_empty() {
-                                    s.selected_index = s.selected_index.saturating_sub(1);
-                                }
+                                s.move_previous();
                             }
                             return;
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
                             if let Some(ref mut s) = self.completion_state {
-                                let next = s.selected_index + 1;
-                                if next < s.matches.len() {
-                                    s.selected_index = next;
-                                } else {
-                                    s.selected_index = 0;
-                                }
+                                s.move_next();
+                            }
+                            return;
+                        }
+                        KeyCode::Left => {
+                            if let Some(ref mut s) = self.completion_state {
+                                s.move_to_previous_tab();
+                            }
+                            return;
+                        }
+                        KeyCode::Right => {
+                            if let Some(ref mut s) = self.completion_state {
+                                s.move_to_next_tab();
                             }
                             return;
                         }
                         KeyCode::Tab => {
                             // Cycle to next item
                             if let Some(ref mut s) = self.completion_state {
-                                if !s.matches.is_empty() {
-                                    s.selected_index = (s.selected_index + 1) % s.matches.len();
-                                }
+                                s.move_next();
                             }
                             return;
                         }
                         KeyCode::BackTab => {
                             // Cycle to previous item
                             if let Some(ref mut s) = self.completion_state {
-                                if !s.matches.is_empty() {
-                                    s.selected_index = if s.selected_index == 0 {
-                                        s.matches.len() - 1
-                                    } else {
-                                        s.selected_index - 1
-                                    };
-                                }
+                                s.move_previous();
                             }
                             return;
                         }
                         KeyCode::Enter => {
                             // Confirm selection: take ownership (one move, no deep clone)
                             if let Some(state) = self.completion_state.take() {
-                                if let Some(m) = state.matches.get(state.selected_index) {
+                                if let Some(m) = state.selected_match() {
                                     let text = self.input_box.textarea.lines().join("\n");
                                     if let Some(pos) = text.rfind(state.prefix) {
                                         let before = &text[..pos];
@@ -419,13 +416,7 @@ impl App {
                                 .as_ref()
                                 .map(|e| e.filter(c, &partial))
                                 .unwrap_or_default();
-                            self.completion_state = Some(CompletionState {
-                                prefix: c,
-                                partial,
-                                matches,
-                                selected_index: 0,
-                                visible: true,
-                            });
+                            self.completion_state = Some(CompletionState::new(c, partial, matches));
                         }
                     }
                 }
@@ -448,7 +439,7 @@ impl App {
                             let after = &text[pos + 1..];
                             state.partial = after.to_string();
                             if let Some(ref engine) = self.completion_engine {
-                                state.matches = engine.filter(state.prefix, after);
+                                state.replace_matches(engine.filter(state.prefix, after));
                             }
                         } else {
                             // Prefix no longer in text (e.g. user deleted @ with backspace) → dismiss

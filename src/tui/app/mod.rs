@@ -244,9 +244,9 @@ impl App {
                 let cwd = std::env::current_dir().unwrap_or_default();
                 let comet_phase = crate::comet::CometState::read(&cwd)
                     .map(|s| format!("{:?}", s.phase).to_lowercase());
-                let ctx = HookManager::session_start_context(&sid)
-                    .with_comet_phase(comet_phase);
-                hm.fire(&crate::hooks::HookEvent::SessionStart, &ctx, None).await;
+                let ctx = HookManager::session_start_context(&sid).with_comet_phase(comet_phase);
+                hm.fire(&crate::hooks::HookEvent::SessionStart, &ctx, None)
+                    .await;
             });
         }
 
@@ -375,9 +375,9 @@ impl App {
                 let cwd = std::env::current_dir().unwrap_or_default();
                 let comet_phase = crate::comet::CometState::read(&cwd)
                     .map(|s| format!("{:?}", s.phase).to_lowercase());
-                let ctx = HookManager::session_end_context(&sid)
-                    .with_comet_phase(comet_phase);
-                hm.fire(&crate::hooks::HookEvent::SessionEnd, &ctx, None).await;
+                let ctx = HookManager::session_end_context(&sid).with_comet_phase(comet_phase);
+                hm.fire(&crate::hooks::HookEvent::SessionEnd, &ctx, None)
+                    .await;
             });
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }

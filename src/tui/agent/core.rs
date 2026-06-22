@@ -17,10 +17,7 @@ fn resolve_tool_timeout(tool_name: &str, args: &serde_json::Value) -> Duration {
     match tool_name {
         "task" | "delegate" => Duration::from_secs(300),
         "execute_command" | "exec_command" => {
-            let user_timeout = args
-                .get("timeout")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(60);
+            let user_timeout = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(60);
             Duration::from_secs(cmp::max(user_timeout + 30, 120))
         }
         _ => Duration::from_secs(120),
@@ -550,13 +547,19 @@ mod tests {
     #[test]
     fn test_timeout_task() {
         let args = json!({});
-        assert_eq!(resolve_tool_timeout("task", &args), Duration::from_secs(300));
+        assert_eq!(
+            resolve_tool_timeout("task", &args),
+            Duration::from_secs(300)
+        );
     }
 
     #[test]
     fn test_timeout_delegate() {
         let args = json!({});
-        assert_eq!(resolve_tool_timeout("delegate", &args), Duration::from_secs(300));
+        assert_eq!(
+            resolve_tool_timeout("delegate", &args),
+            Duration::from_secs(300)
+        );
     }
 
     #[test]

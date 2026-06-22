@@ -109,7 +109,8 @@ pub use external::{
     SkillFrontmatter,
 };
 pub use external_registry::{
-    route_slash_command, ExternalSkillRegistry, ExternalSkillRoot, SlashRoute,
+    comet_slash_agent_prompt, route_slash_command, ExternalSkillRegistry, ExternalSkillRoot,
+    SlashRoute,
 };
 pub use loader::{SkillInfo, SkillLoader};
 pub use policy::{

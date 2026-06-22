@@ -162,16 +162,11 @@ impl ToolExecutor {
                 });
                 // Fire Notification hook asynchronously (do not await)
                 let hook_manager = Arc::clone(&self.hook_manager);
-                let notif_ctx =
-                    HookManager::notification_context(Some(&msg), session_id);
+                let notif_ctx = HookManager::notification_context(Some(&msg), session_id);
                 let tool_name_owned = tool_name.to_string();
                 tokio::spawn(async move {
                     hook_manager
-                        .fire(
-                            &HookEvent::Notification,
-                            &notif_ctx,
-                            Some(&tool_name_owned),
-                        )
+                        .fire(&HookEvent::Notification, &notif_ctx, Some(&tool_name_owned))
                         .await;
                 });
                 return ChatMessage::tool(tool_call_id, msg);

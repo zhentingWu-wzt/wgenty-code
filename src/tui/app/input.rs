@@ -177,7 +177,8 @@ impl App {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     comet_phase,
                 };
-                hm.fire(&crate::hooks::HookEvent::UserPromptSubmit, &ctx, None).await;
+                hm.fire(&crate::hooks::HookEvent::UserPromptSubmit, &ctx, None)
+                    .await;
             });
         }
 
@@ -194,12 +195,20 @@ impl App {
             );
             match route {
                 crate::knowledge::SlashRoute::ExternalSkill { skill, args } => {
+                    let agent_input = crate::knowledge::comet_slash_agent_prompt(&skill, &args)
+                        .unwrap_or_else(|| text.clone());
+                    let is_comet = agent_input != text;
                     let msg = format!(
-                        "🔧 External skill '/{}' detected. Sending to agent for invocation.",
+                        "🔧 External skill '/{}' detected. {}",
                         if args.is_empty() {
                             skill
                         } else {
                             format!("{} {}", skill, args)
+                        },
+                        if is_comet {
+                            "Sending OpenSpec-aware Comet workflow to agent."
+                        } else {
+                            "Sending to agent for invocation."
                         }
                     );
                     self.committed_messages.push(UIMessage {
@@ -213,8 +222,8 @@ impl App {
                         diff_data: None,
                         tool_metadata: None,
                     });
-                    // Queue the raw input for the agent to process
-                    self.pending_inputs.push_back(text);
+                    // Queue the routed input for the agent to process.
+                    self.pending_inputs.push_back(agent_input);
                     if self.current_turn_handle.is_none() {
                         self.start_next_turn();
                     }

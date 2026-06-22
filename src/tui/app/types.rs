@@ -203,4 +203,170 @@ pub struct CompletionState {
     pub matches: Vec<crate::tui::completion::CompletionMatch>,
     pub selected_index: usize,
     pub visible: bool,
+    pub tabs: Vec<String>,
+    pub active_tab: usize,
+}
+
+impl CompletionState {
+    pub fn new(
+        prefix: char,
+        partial: String,
+        matches: Vec<crate::tui::completion::CompletionMatch>,
+    ) -> Self {
+        let tabs = completion_tabs(prefix, &matches);
+        Self {
+            prefix,
+            partial,
+            matches,
+            selected_index: 0,
+            visible: true,
+            tabs,
+            active_tab: 0,
+        }
+    }
+
+    pub fn replace_matches(&mut self, matches: Vec<crate::tui::completion::CompletionMatch>) {
+        let previous_tab = self.active_tab_label().map(ToOwned::to_owned);
+        self.matches = matches;
+        self.tabs = completion_tabs(self.prefix, &self.matches);
+        self.active_tab = previous_tab
+            .and_then(|tab| self.tabs.iter().position(|candidate| candidate == &tab))
+            .unwrap_or(0);
+        self.selected_index = 0;
+    }
+
+    pub fn visible_matches(&self) -> Vec<&crate::tui::completion::CompletionMatch> {
+        let Some(tab) = self.active_tab_label() else {
+            return self.matches.iter().collect();
+        };
+        self.matches
+            .iter()
+            .filter(|item| item.category == tab)
+            .collect()
+    }
+
+    pub fn active_tab_label(&self) -> Option<&str> {
+        self.tabs.get(self.active_tab).map(String::as_str)
+    }
+
+    pub fn selected_match(&self) -> Option<&crate::tui::completion::CompletionMatch> {
+        self.visible_matches().get(self.selected_index).copied()
+    }
+
+    pub fn move_next(&mut self) {
+        let count = self.visible_matches().len();
+        if count > 0 {
+            self.selected_index = (self.selected_index + 1) % count;
+        }
+    }
+
+    pub fn move_previous(&mut self) {
+        let count = self.visible_matches().len();
+        if count > 0 {
+            self.selected_index = if self.selected_index == 0 {
+                count - 1
+            } else {
+                self.selected_index - 1
+            };
+        }
+    }
+
+    pub fn move_to_previous_tab(&mut self) {
+        if self.tabs.len() > 1 {
+            self.active_tab = if self.active_tab == 0 {
+                self.tabs.len() - 1
+            } else {
+                self.active_tab - 1
+            };
+            self.selected_index = 0;
+        }
+    }
+
+    pub fn move_to_next_tab(&mut self) {
+        if self.tabs.len() > 1 {
+            self.active_tab = (self.active_tab + 1) % self.tabs.len();
+            self.selected_index = 0;
+        }
+    }
+}
+
+fn completion_tabs(
+    prefix: char,
+    matches: &[crate::tui::completion::CompletionMatch],
+) -> Vec<String> {
+    if prefix != '/' {
+        return Vec::new();
+    }
+
+    let mut tabs = Vec::new();
+    for item in matches {
+        if !tabs.contains(&item.category) {
+            tabs.push(item.category.clone());
+        }
+    }
+    tabs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::completion::CompletionMatch;
+
+    fn completion_match(text: &str, category: &str) -> CompletionMatch {
+        CompletionMatch {
+            text: text.to_string(),
+            description: String::new(),
+            args_hint: None,
+            category: category.to_string(),
+        }
+    }
+
+    #[test]
+    fn slash_completion_state_groups_matches_into_tabs() {
+        let state = CompletionState::new(
+            '/',
+            String::new(),
+            vec![
+                completion_match("clear", "Built-in"),
+                completion_match("comet", "Comet"),
+                completion_match("comet-build", "Comet"),
+            ],
+        );
+
+        assert_eq!(state.tabs, vec!["Built-in", "Comet"]);
+        assert_eq!(state.active_tab_label(), Some("Built-in"));
+        assert_eq!(state.visible_matches().len(), 1);
+    }
+
+    #[test]
+    fn slash_completion_state_switches_tabs_and_resets_selection() {
+        let mut state = CompletionState::new(
+            '/',
+            String::new(),
+            vec![
+                completion_match("clear", "Built-in"),
+                completion_match("plan", "Built-in"),
+                completion_match("comet", "Comet"),
+            ],
+        );
+        state.move_next();
+
+        state.move_to_next_tab();
+
+        assert_eq!(state.active_tab_label(), Some("Comet"));
+        assert_eq!(state.selected_index, 0);
+        assert_eq!(
+            state.selected_match().map(|item| item.text.as_str()),
+            Some("comet")
+        );
+    }
+
+    #[test]
+    fn skill_completion_state_has_no_tabs() {
+        let state =
+            CompletionState::new('@', String::new(), vec![completion_match("comet", "Skill")]);
+
+        assert!(state.tabs.is_empty());
+        assert_eq!(state.visible_matches().len(), 1);
+    }
 }

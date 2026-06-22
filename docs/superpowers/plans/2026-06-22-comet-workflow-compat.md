@@ -2,6 +2,7 @@
 change: comet-workflow-compat
 design-doc: docs/superpowers/specs/2026-06-22-comet-workflow-compat-design.md
 base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
+archived-with: 2026-06-22-comet-workflow-compat
 ---
 
 # Comet Workflow Compatibility Implementation Plan
@@ -21,6 +22,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 - Read-only tools always allowed in all phases
 - Commit after each task using conventional commits: feat(comet): ...
 
+archived-with: 2026-06-22-comet-workflow-compat
 ---
 
 ## Task 1 — Skill path compat — Root resolver & wiring
@@ -48,6 +50,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 ### 1.6 Unit tests
 - `test_roots_returns_three_entries`, `test_roots_priority_order`
 
+archived-with: 2026-06-22-comet-workflow-compat
 ---
 
 ## Task 2 — Comet module — State, guard, workflow
@@ -81,6 +84,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 ### 2.7 Unit tests
 - `test_read_no_changes_dir`, `test_read_with_active_change`, `test_file_read_allowed_in_open`, `test_file_write_blocked_in_open`, `test_file_write_allowed_in_build`, `test_file_write_blocked_in_verify`, `test_git_status_allowed_in_all_phases`
 
+archived-with: 2026-06-22-comet-workflow-compat
 ---
 
 ## Task 3 — Hook lifecycle — Complete all 8 event fire sites
@@ -110,6 +114,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 
 ### 3.10 Integration test: verify each hook event fires (manual via TUI)
 
+archived-with: 2026-06-22-comet-workflow-compat
 ---
 
 ## Task 4 — Comet guard integration into ToolExecutor
@@ -125,6 +130,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 ### 4.3 Integration test
 - Full comet state flow test in `tests/comet_integration_test.rs`
 
+archived-with: 2026-06-22-comet-workflow-compat
 ---
 
 ## Task 5 — Worktree operations
@@ -141,6 +147,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 
 ### 5.6 Unit test — schema contains worktree operations
 
+archived-with: 2026-06-22-comet-workflow-compat
 ---
 
 ## Task 6 — Configurable tool timeout
@@ -157,6 +164,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 
 ### 6.4 Unit tests — 5 timeout scenarios
 
+archived-with: 2026-06-22-comet-workflow-compat
 ---
 
 ## Task 7 — Subagent Comet context
@@ -173,6 +181,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 
 ### 7.4 Inject Comet phase instruction into system messages
 
+archived-with: 2026-06-22-comet-workflow-compat
 ---
 
 ## Task 8 — Final integration & verification

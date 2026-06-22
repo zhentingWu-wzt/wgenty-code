@@ -25,8 +25,7 @@ impl SkillRootResolver {
     /// 3. User `~/.claude/skills/` (legacy Claude Code)
     pub fn roots() -> Vec<ExternalSkillRoot> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let project_root =
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self::roots_with(&home, &project_root)
     }
 

@@ -14,12 +14,18 @@ const MAX_VISIBLE_COMMAND_ITEMS: usize = 10;
 const MAX_SKILL_PANEL_WIDTH: u16 = 60;
 const MAX_COMMAND_PANEL_WIDTH: u16 = 88;
 const HINT_ROWS: u16 = 1;
+const TAB_ROWS: u16 = 1;
 
 pub struct CompletionPanel;
 
 impl CompletionPanel {
     pub fn render(f: &mut Frame, area: Rect, state: &CompletionState) {
-        if !state.visible || state.matches.is_empty() {
+        if !state.visible {
+            return;
+        }
+
+        let visible_matches = state.visible_matches();
+        if visible_matches.is_empty() {
             return;
         }
 
@@ -33,8 +39,10 @@ impl CompletionPanel {
         } else {
             MAX_SKILL_PANEL_WIDTH
         };
-        let visible_item_count = max_visible_items.min(state.matches.len());
-        let panel_height = visible_item_count as u16 + HINT_ROWS + 2; // border top/bottom
+        let has_tabs = state.prefix == '/' && !state.tabs.is_empty();
+        let tab_rows = if has_tabs { TAB_ROWS } else { 0 };
+        let visible_item_count = max_visible_items.min(visible_matches.len());
+        let panel_height = visible_item_count as u16 + tab_rows + HINT_ROWS + 2; // border top/bottom
 
         let panel_area = Rect {
             x: area.x,
@@ -45,7 +53,7 @@ impl CompletionPanel {
 
         let border_color = ACCENT;
 
-        let selected_index = state.selected_index.min(state.matches.len() - 1);
+        let selected_index = state.selected_index.min(visible_matches.len() - 1);
         let block_title = format!(
             " {} {}/{} ",
             if state.prefix == '@' {
@@ -54,7 +62,7 @@ impl CompletionPanel {
                 "Commands"
             },
             selected_index + 1,
-            state.matches.len()
+            visible_matches.len()
         );
         let block = Block::default()
             .title(block_title)
@@ -65,14 +73,17 @@ impl CompletionPanel {
         let inner = block.inner(panel_area);
 
         let mut lines: Vec<Line> = Vec::new();
+        if has_tabs {
+            lines.push(tab_line(state));
+        }
+
         let visible_range = visible_item_range(
             state.selected_index,
-            state.matches.len(),
+            visible_matches.len(),
             visible_item_count,
         );
-        let visible_matches = &state.matches[visible_range.clone()];
 
-        for (i, m) in visible_matches.iter().enumerate() {
+        for (i, m) in visible_matches[visible_range.clone()].iter().enumerate() {
             let item_index = visible_range.start + i;
             let is_selected = item_index == selected_index;
             let style = if is_selected {
@@ -107,10 +118,12 @@ impl CompletionPanel {
 
         // Bottom hint
         let hint_style = Style::default().fg(Color::Rgb(108, 112, 134));
-        let hint = Line::from(vec![Span::styled(
-            " \u{2191}\u{2195} nav  Tab cycle  Enter select  Esc close ",
-            hint_style,
-        )]);
+        let hint_text = if has_tabs {
+            " \u{2191}\u{2195} nav  \u{2190}\u{2192} tabs  Tab cycle  Enter select  Esc close "
+        } else {
+            " \u{2191}\u{2195} nav  Tab cycle  Enter select  Esc close "
+        };
+        let hint = Line::from(vec![Span::styled(hint_text, hint_style)]);
 
         // Render block and content
         f.render_widget(block, panel_area);
@@ -131,6 +144,39 @@ impl CompletionPanel {
             },
         );
     }
+}
+
+fn tab_line(state: &CompletionState) -> Line<'static> {
+    let active_tab = state.active_tab_label();
+    let mut parts = vec![Span::styled(
+        " \u{25c0} ",
+        Style::default().fg(Color::Rgb(108, 112, 134)),
+    )];
+
+    for tab in &state.tabs {
+        let is_active = active_tab == Some(tab.as_str());
+        let style = if is_active {
+            Style::default()
+                .fg(Color::Rgb(203, 166, 247))
+                .add_modifier(Modifier::BOLD)
+                .bg(Color::Rgb(40, 40, 70))
+        } else {
+            Style::default().fg(Color::Rgb(108, 112, 134))
+        };
+        let label = if is_active {
+            format!("[{}] ", tab)
+        } else {
+            format!(" {}  ", tab)
+        };
+        parts.push(Span::styled(label, style));
+    }
+
+    parts.push(Span::styled(
+        "\u{25b6}",
+        Style::default().fg(Color::Rgb(108, 112, 134)),
+    ));
+
+    Line::from(parts)
 }
 
 fn visible_item_range(

@@ -223,10 +223,7 @@ mod tests {
 
     #[test]
     fn test_read_skips_archived() {
-        let tmp = setup_changes_dir(&[(
-            "done-change",
-            Some("phase: archive\narchived: true\n"),
-        )]);
+        let tmp = setup_changes_dir(&[("done-change", Some("phase: archive\narchived: true\n"))]);
         assert!(CometState::read(tmp.path()).is_none());
     }
 
@@ -240,7 +237,10 @@ mod tests {
         )]);
         let state = CometState::read(tmp.path()).unwrap();
         assert_eq!(state.phase, CometPhase::Build);
-        assert_eq!(state.build_mode.as_deref(), Some("subagent-driven-development"));
+        assert_eq!(
+            state.build_mode.as_deref(),
+            Some("subagent-driven-development")
+        );
         assert_eq!(state.isolation.as_deref(), Some("branch"));
     }
 
@@ -248,10 +248,7 @@ mod tests {
     fn test_read_skips_directory_without_comet_yaml() {
         let tmp = setup_changes_dir(&[
             ("no-yaml", None),
-            (
-                "has-yaml",
-                Some("phase: open\narchived: false\n"),
-            ),
+            ("has-yaml", Some("phase: open\narchived: false\n")),
         ]);
         let state = CometState::read(tmp.path()).unwrap();
         assert_eq!(state.change_name, "has-yaml");
@@ -260,14 +257,8 @@ mod tests {
     #[test]
     fn test_read_returns_first_non_archived() {
         let tmp = setup_changes_dir(&[
-            (
-                "first",
-                Some("phase: design\narchived: false\n"),
-            ),
-            (
-                "second",
-                Some("phase: build\narchived: false\n"),
-            ),
+            ("first", Some("phase: design\narchived: false\n")),
+            ("second", Some("phase: build\narchived: false\n")),
         ]);
         let state = CometState::read(tmp.path()).unwrap();
         // Directory iteration order is not guaranteed, but the first one found
@@ -278,10 +269,7 @@ mod tests {
 
     #[test]
     fn test_read_malformed_yaml_falls_back() {
-        let tmp = setup_changes_dir(&[(
-            "broken",
-            Some("this is not yaml\nno colon here\n"),
-        )]);
+        let tmp = setup_changes_dir(&[("broken", Some("this is not yaml\nno colon here\n"))]);
         // Missing phase key → should be None
         assert!(CometState::read(tmp.path()).is_none());
     }
@@ -339,10 +327,7 @@ mod tests {
                 "archive/old-change",
                 Some("phase: build\narchived: false\n"),
             ),
-            (
-                "active-change",
-                Some("phase: open\narchived: false\n"),
-            ),
+            ("active-change", Some("phase: open\narchived: false\n")),
         ]);
         // The archive/ subdirectory should be skipped
         // active-change should be found
@@ -367,10 +352,7 @@ mod tests {
         // Create changes with Design (least restrictive) and Verify (most restrictive).
         let tmp = setup_changes_dir(&[
             ("change-design", Some("phase: design\narchived: false\n")),
-            (
-                "change-verify",
-                Some("phase: verify\narchived: false\n"),
-            ),
+            ("change-verify", Some("phase: verify\narchived: false\n")),
             ("change-build", Some("phase: build\narchived: false\n")),
         ]);
         let state = CometState::read(tmp.path()).unwrap();
@@ -383,10 +365,7 @@ mod tests {
         // Archive is the most restrictive phase.
         let tmp = setup_changes_dir(&[
             ("change-open", Some("phase: open\narchived: false\n")),
-            (
-                "change-archive",
-                Some("phase: archive\narchived: false\n"),
-            ),
+            ("change-archive", Some("phase: archive\narchived: false\n")),
         ]);
         let state = CometState::read(tmp.path()).unwrap();
         assert_eq!(state.phase, CometPhase::Archive);
@@ -395,10 +374,7 @@ mod tests {
     #[test]
     fn test_single_active_change_no_warning() {
         // Single change: no warning, returned as-is.
-        let tmp = setup_changes_dir(&[(
-            "only-change",
-            Some("phase: design\narchived: false\n"),
-        )]);
+        let tmp = setup_changes_dir(&[("only-change", Some("phase: design\narchived: false\n"))]);
         let state = CometState::read(tmp.path()).unwrap();
         assert_eq!(state.change_name, "only-change");
         assert_eq!(state.phase, CometPhase::Design);

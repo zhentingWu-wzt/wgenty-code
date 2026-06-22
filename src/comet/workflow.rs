@@ -71,11 +71,7 @@ mod tests {
     use std::io::Write;
 
     fn make_change(tmp: &tempfile::TempDir, name: &str, phase: &str, archived: bool) {
-        let dir = tmp
-            .path()
-            .join("openspec")
-            .join("changes")
-            .join(name);
+        let dir = tmp.path().join("openspec").join("changes").join(name);
         std::fs::create_dir_all(&dir).unwrap();
         let mut f = std::fs::File::create(dir.join(".comet.yaml")).unwrap();
         writeln!(f, "phase: {}", phase).unwrap();
@@ -117,11 +113,7 @@ mod tests {
     #[test]
     fn test_active_changes_skips_no_comet_yaml() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp
-            .path()
-            .join("openspec")
-            .join("changes")
-            .join("no-yaml");
+        let dir = tmp.path().join("openspec").join("changes").join("no-yaml");
         std::fs::create_dir_all(&dir).unwrap();
         // No .comet.yaml
 
