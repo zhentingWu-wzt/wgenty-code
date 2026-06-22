@@ -20,6 +20,7 @@
 pub mod agent;
 pub mod api;
 pub mod cli;
+pub mod comet;
 pub mod config;
 pub mod context;
 pub mod guardian;
