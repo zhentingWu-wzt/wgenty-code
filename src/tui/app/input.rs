@@ -6,6 +6,20 @@ use crate::api::ChatMessage;
 use crate::state::agent_phase::{AgentPhase, TurnAbortReason};
 
 impl App {
+    fn push_system_message(&mut self, content: impl Into<String>) {
+        self.committed_messages.push(UIMessage {
+            role: MessageRole::System,
+            content: content.into(),
+            tool_name: None,
+            content_collapsed: false,
+            tool_collapsed: false,
+            tool_running: false,
+            tool_args: None,
+            diff_data: None,
+            tool_metadata: None,
+        });
+    }
+
     /// Submit user input, automatically queueing if a Turn is already running.
     pub(super) fn submit_input(&mut self, text: String) {
         // Slash commands
@@ -122,22 +136,22 @@ impl App {
             return;
         }
         if text.trim() == "/init" {
-            self.committed_messages.push(UIMessage {
-                role: MessageRole::System,
-                content: "🔄 Running /init — 正在分析代码库以生成 WGENTY.md 和 AGENTS.md..."
-                    .to_string(),
-                tool_name: None,
-                content_collapsed: false,
-                tool_collapsed: false,
-                tool_running: false,
-                tool_args: None,
-                diff_data: None,
-                tool_metadata: None,
-            });
+            self.push_system_message(
+                "🔄 Running /init — 正在分析代码库以生成 WGENTY.md 和 AGENTS.md...",
+            );
             if self.current_turn_handle.is_none() {
                 let init_prompt = crate::prompts::get_init_prompt().to_string();
                 self.spawn_agent_turn(init_prompt, true);
             }
+            return;
+        }
+        if text.trim() == "/help" {
+            let commands = crate::tui::completion::CompletionEngine::default_builtin_commands()
+                .into_iter()
+                .map(|command| format!("/{} — {}", command.name, command.description))
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.push_system_message(format!("Available commands:\n{}", commands));
             return;
         }
 
@@ -146,7 +160,7 @@ impl App {
         // that are not handled by the built-in checks above.
         let trimmed = text.trim();
         if trimmed.starts_with('/') {
-            let builtins = &["clear", "plan", "continue", "undo", "init"];
+            let builtins = &["clear", "plan", "continue", "undo", "init", "help"];
             let route = crate::knowledge::route_slash_command(
                 &text,
                 builtins,
