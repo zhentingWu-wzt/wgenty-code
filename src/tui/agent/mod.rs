@@ -12,6 +12,7 @@ mod stream;
 mod tool_dispatch;
 
 use crate::api::ChatMessage;
+use crate::hooks::HookManager;
 use crate::tui::app::AppEvent;
 use crate::tui::client::DaemonClient;
 use crate::utils::stuck_detector::StuckDetector;
@@ -44,6 +45,8 @@ pub struct AgentLoop {
     /// generation when PlanMode is active and planner_model is configured.
     pub(super) planner_client: Option<crate::api::ApiClient>,
     pub(super) session_id: String,
+    /// Hook manager shared with the App for lifecycle event hooks.
+    pub(super) hook_manager: std::sync::Arc<HookManager>,
 }
 
 impl AgentLoop {
@@ -58,6 +61,7 @@ impl AgentLoop {
         planner_client: Option<crate::api::ApiClient>,
         max_rounds: usize,
         token_counter: crate::api::token_counter::TokenCounter,
+        hook_manager: std::sync::Arc<HookManager>,
     ) -> Self {
         Self {
             client,
@@ -73,6 +77,7 @@ impl AgentLoop {
             session_id,
             plan_mode,
             planner_client,
+            hook_manager,
         }
     }
 

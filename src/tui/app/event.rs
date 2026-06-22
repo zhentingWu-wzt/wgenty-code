@@ -730,6 +730,27 @@ impl App {
                 self.turn_started_at = Some(std::time::Instant::now());
             }
             AppEvent::TurnComplete => {
+                // Fire Stop hook asynchronously
+                {
+                    let hm = self.hook_manager.clone();
+                    let sid = self.session_id.clone();
+                    tokio::spawn(async move {
+                        let cwd = std::env::current_dir().unwrap_or_default();
+                        let comet_phase = crate::comet::CometState::read(&cwd)
+                            .map(|s| format!("{:?}", s.phase).to_lowercase());
+                        let ctx = crate::hooks::HookContext {
+                            event: "Stop".to_string(),
+                            tool_name: None,
+                            tool_input: None,
+                            tool_result: None,
+                            session_id: Some(sid),
+                            working_directory: cwd.to_string_lossy().to_string(),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            comet_phase,
+                        };
+                        hm.fire(&crate::hooks::HookEvent::Stop, &ctx, None).await;
+                    });
+                }
                 let snapshot = self.subagent_tree.clone();
                 let key = format!("turn_{}", chrono::Utc::now().timestamp_millis());
                 self.subagent_history.insert(key, snapshot);
@@ -742,6 +763,27 @@ impl App {
                 }
             }
             AppEvent::TurnAborted { ref reason } => {
+                // Fire Stop hook asynchronously
+                {
+                    let hm = self.hook_manager.clone();
+                    let sid = self.session_id.clone();
+                    tokio::spawn(async move {
+                        let cwd = std::env::current_dir().unwrap_or_default();
+                        let comet_phase = crate::comet::CometState::read(&cwd)
+                            .map(|s| format!("{:?}", s.phase).to_lowercase());
+                        let ctx = crate::hooks::HookContext {
+                            event: "Stop".to_string(),
+                            tool_name: None,
+                            tool_input: None,
+                            tool_result: None,
+                            session_id: Some(sid),
+                            working_directory: cwd.to_string_lossy().to_string(),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            comet_phase,
+                        };
+                        hm.fire(&crate::hooks::HookEvent::Stop, &ctx, None).await;
+                    });
+                }
                 self.last_abort_reason = Some(reason.clone());
                 self.turn_started_at = None;
             }
