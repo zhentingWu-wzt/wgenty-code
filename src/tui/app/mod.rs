@@ -9,6 +9,7 @@ pub mod types;
 pub use types::*;
 
 use crate::api::ChatMessage;
+use crate::hooks::HookManager;
 use crate::prompts::{self, PromptContext};
 use crate::state::agent_phase::{AgentPhase, TurnAbortReason, TurnId};
 use crate::tui::client::DaemonClient;
@@ -102,6 +103,8 @@ pub struct App {
     pub transcript_store: Option<std::sync::Arc<crate::transcript::SubagentTranscriptStore>>,
     /// External skill registry for resolving slash commands via route_slash_command.
     pub external_skill_registry: Option<std::sync::Arc<crate::knowledge::ExternalSkillRegistry>>,
+    /// Hook manager for lifecycle event hooks (SessionStart, Stop, etc.).
+    pub hook_manager: std::sync::Arc<HookManager>,
 }
 
 impl App {
@@ -221,6 +224,32 @@ impl App {
         let assembled = prompts::assemble_instructions(&settings, &prompt_ctx);
         let system_messages = assembled.system_messages;
         let conversation_history = Arc::new(TokioMutex::new(system_messages.clone()));
+
+        // Initialize hook manager from settings
+        let hook_manager = {
+            let hooks_config = settings
+                .integrations
+                .hooks
+                .as_ref()
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            std::sync::Arc::new(HookManager::from_settings(&hooks_config))
+        };
+
+        // Fire SessionStart hook asynchronously (non-blocking)
+        {
+            let hm = hook_manager.clone();
+            let sid = session_id.clone();
+            tokio::spawn(async move {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let comet_phase = crate::comet::CometState::read(&cwd)
+                    .map(|s| format!("{:?}", s.phase).to_lowercase());
+                let ctx = HookManager::session_start_context(&sid)
+                    .with_comet_phase(comet_phase);
+                hm.fire(&crate::hooks::HookEvent::SessionStart, &ctx, None).await;
+            });
+        }
+
         Self {
             daemon_client,
             input_box: InputBox::new(),
@@ -291,6 +320,7 @@ impl App {
                 }
             },
             external_skill_registry: external_skill_registry.map(std::sync::Arc::new),
+            hook_manager,
         }
     }
 
