@@ -229,6 +229,16 @@ pub struct HookContext {
     pub session_id: Option<String>,
     pub working_directory: String,
     pub timestamp: String,
+    /// Current Comet workflow phase (open/design/build/verify/archive), if any.
+    pub comet_phase: Option<String>,
+}
+
+impl HookContext {
+    /// Set the comet_phase field and return self (builder pattern).
+    pub fn with_comet_phase(mut self, phase: Option<String>) -> Self {
+        self.comet_phase = phase;
+        self
+    }
 }
 
 /// Result returned from a hook via stdout (JSON)
@@ -452,6 +462,7 @@ impl HookManager {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default(),
             timestamp: chrono::Utc::now().to_rfc3339(),
+            comet_phase: None,
         }
     }
 
@@ -472,6 +483,7 @@ impl HookManager {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default(),
             timestamp: chrono::Utc::now().to_rfc3339(),
+            comet_phase: None,
         }
     }
 
@@ -487,6 +499,7 @@ impl HookManager {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default(),
             timestamp: chrono::Utc::now().to_rfc3339(),
+            comet_phase: None,
         }
     }
 
@@ -502,6 +515,27 @@ impl HookManager {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default(),
             timestamp: chrono::Utc::now().to_rfc3339(),
+            comet_phase: None,
+        }
+    }
+
+    /// Build a Notification context (for CC-compatible notification hooks).
+    /// `message` is placed in `tool_input` as a JSON string value.
+    pub fn notification_context(
+        message: Option<&str>,
+        session_id: Option<&str>,
+    ) -> HookContext {
+        HookContext {
+            event: "Notification".to_string(),
+            tool_name: None,
+            tool_input: message.map(|m| serde_json::Value::String(m.to_string())),
+            tool_result: None,
+            session_id: session_id.map(|s| s.to_string()),
+            working_directory: std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            comet_phase: None,
         }
     }
 }
