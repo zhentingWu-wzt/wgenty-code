@@ -154,6 +154,7 @@ impl App {
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let external_registry_roots =
             crate::knowledge::SkillRootResolver::roots_with(&home, &project_root);
+        let root_count = external_registry_roots.len();
         let external_skill_registry =
             crate::knowledge::ExternalSkillRegistry::discover(external_registry_roots).ok();
         if let Some(ref external_registry) = external_skill_registry {
@@ -169,6 +170,17 @@ impl App {
                     });
                 }
             }
+            tracing::info!(
+                total_skills = skill_inventory.len(),
+                root_count,
+                "Skill registry initialized with external skills"
+            );
+        } else {
+            tracing::info!(
+                total_skills = skill_inventory.len(),
+                root_count,
+                "Skill registry initialized (no external skills discovered)"
+            );
         }
 
         let prompt_ctx = prompt_ctx.with_skills(skill_inventory);
