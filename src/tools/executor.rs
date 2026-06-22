@@ -235,9 +235,9 @@ fn json_args_to_strings(args: &serde_json::Value) -> Vec<String> {
                 cmd.split_whitespace().map(|s| s.to_string()).collect()
             } else {
                 obj.values()
-                    .filter_map(|v| match v {
-                        serde_json::Value::String(s) => Some(s.clone()),
-                        _ => Some(v.to_string()),
+                    .map(|v| match v {
+                        serde_json::Value::String(s) => s.clone(),
+                        _ => v.to_string(),
                     })
                     .collect()
             }
