@@ -12,6 +12,7 @@ pub mod external_registry;
 pub mod loader;
 pub mod policy;
 pub mod registry;
+pub mod root_resolver;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -116,3 +117,4 @@ pub use policy::{
     PolicyDecision, SkillLoadEvent, SkillPolicy, ToolCallObservedEvent, MAX_NESTED_SKILL_DEPTH,
 };
 pub use registry::SkillRegistry;
+pub use root_resolver::SkillRootResolver;
