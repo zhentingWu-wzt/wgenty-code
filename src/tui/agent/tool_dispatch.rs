@@ -127,6 +127,30 @@ impl AgentLoop {
                 perm.session_rule
             );
 
+            // Fire PermissionRequest hook asynchronously before sending event
+            {
+                let hm = self.hook_manager.clone();
+                let hook_name = name.to_string();
+                let hook_args = args.clone();
+                let hook_sid = self.session_id.clone();
+                tokio::spawn(async move {
+                    let cwd = std::env::current_dir().unwrap_or_default();
+                    let comet_phase = crate::comet::CometState::read(&cwd)
+                        .map(|s| format!("{:?}", s.phase).to_lowercase());
+                    let ctx = crate::hooks::HookContext {
+                        event: "PermissionRequest".to_string(),
+                        tool_name: Some(hook_name),
+                        tool_input: Some(hook_args),
+                        tool_result: None,
+                        session_id: Some(hook_sid),
+                        working_directory: cwd.to_string_lossy().to_string(),
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        comet_phase,
+                    };
+                    hm.fire(&crate::hooks::HookEvent::PermissionRequest, &ctx, None).await;
+                });
+            }
+
             let (tx, rx) = tokio::sync::oneshot::channel();
 
             let _ = self.event_tx.send(AppEvent::PermissionRequired {
