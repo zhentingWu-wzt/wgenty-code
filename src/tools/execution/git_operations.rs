@@ -381,10 +381,7 @@ impl GitOperationsTool {
     /// List all git worktrees.
     ///
     /// Runs `git worktree list` in the repository root.
-    async fn worktree_list(
-        &self,
-        repo_path: &Path,
-    ) -> Result<ToolOutput, ToolError> {
+    async fn worktree_list(&self, repo_path: &Path) -> Result<ToolOutput, ToolError> {
         let cmd_args = vec!["worktree".to_string(), "list".to_string()];
         self.execute_git_command(repo_path, &cmd_args).await
     }
@@ -403,23 +400,37 @@ mod tests {
             .as_array()
             .expect("operation enum should be an array");
 
-        let ops: Vec<&str> = operations
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
+        let ops: Vec<&str> = operations.iter().filter_map(|v| v.as_str()).collect();
 
-        assert!(ops.contains(&"worktree_add"), "schema must include worktree_add");
-        assert!(ops.contains(&"worktree_remove"), "schema must include worktree_remove");
-        assert!(ops.contains(&"worktree_list"), "schema must include worktree_list");
+        assert!(
+            ops.contains(&"worktree_add"),
+            "schema must include worktree_add"
+        );
+        assert!(
+            ops.contains(&"worktree_remove"),
+            "schema must include worktree_remove"
+        );
+        assert!(
+            ops.contains(&"worktree_list"),
+            "schema must include worktree_list"
+        );
     }
 
     #[test]
     fn test_schema_contains_worktree_properties() {
         let tool = GitOperationsTool::new();
         let schema = tool.input_schema();
-        let properties = schema["properties"].as_object().expect("properties should be an object");
+        let properties = schema["properties"]
+            .as_object()
+            .expect("properties should be an object");
 
-        assert!(properties.contains_key("base_ref"), "schema must include base_ref property");
-        assert!(properties.contains_key("force"), "schema must include force property");
+        assert!(
+            properties.contains_key("base_ref"),
+            "schema must include base_ref property"
+        );
+        assert!(
+            properties.contains_key("force"),
+            "schema must include force property"
+        );
     }
 }

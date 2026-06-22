@@ -200,11 +200,7 @@ mod tests {
             CometPhase::Archive,
         ] {
             let d = CometGuard::check(phase, "exec_command", &args);
-            assert!(
-                !d.blocked,
-                "git status should be allowed in {:?}",
-                phase
-            );
+            assert!(!d.blocked, "git status should be allowed in {:?}", phase);
         }
     }
 
@@ -258,7 +254,11 @@ mod tests {
     #[test]
     fn test_is_coordinator_mode_with_subagent() {
         let tmp = tempfile::tempdir().unwrap();
-        let changes = tmp.path().join("openspec").join("changes").join("my-change");
+        let changes = tmp
+            .path()
+            .join("openspec")
+            .join("changes")
+            .join("my-change");
         std::fs::create_dir_all(&changes).unwrap();
         let mut f = std::fs::File::create(changes.join(".comet.yaml")).unwrap();
         writeln!(f, "phase: build").unwrap();
@@ -270,7 +270,11 @@ mod tests {
     #[test]
     fn test_is_coordinator_mode_not_coordinator() {
         let tmp = tempfile::tempdir().unwrap();
-        let changes = tmp.path().join("openspec").join("changes").join("my-change");
+        let changes = tmp
+            .path()
+            .join("openspec")
+            .join("changes")
+            .join("my-change");
         std::fs::create_dir_all(&changes).unwrap();
         let mut f = std::fs::File::create(changes.join(".comet.yaml")).unwrap();
         writeln!(f, "phase: build").unwrap();

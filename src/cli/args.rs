@@ -793,8 +793,7 @@ impl Cli {
 
                 // load_from_dirs appends "skills" to each base dir,
                 // so pass parent directories (resolver returns .../skills paths).
-                let roots =
-                    crate::knowledge::SkillRootResolver::roots_with(&home, &project_root);
+                let roots = crate::knowledge::SkillRootResolver::roots_with(&home, &project_root);
                 let skills_dirs: Vec<std::path::PathBuf> = roots
                     .iter()
                     .map(|r| {

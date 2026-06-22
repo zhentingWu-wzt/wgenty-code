@@ -521,10 +521,7 @@ impl HookManager {
 
     /// Build a Notification context (for CC-compatible notification hooks).
     /// `message` is placed in `tool_input` as a JSON string value.
-    pub fn notification_context(
-        message: Option<&str>,
-        session_id: Option<&str>,
-    ) -> HookContext {
+    pub fn notification_context(message: Option<&str>, session_id: Option<&str>) -> HookContext {
         HookContext {
             event: "Notification".to_string(),
             tool_name: None,

@@ -2,6 +2,8 @@
 comet_change: comet-workflow-compat
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-22-comet-workflow-compat
+status: final
 ---
 
 # Comet Workflow Compatibility — Technical Design

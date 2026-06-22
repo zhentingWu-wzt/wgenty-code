@@ -119,9 +119,7 @@ pub fn assemble_instructions(
     // ── Layer 1b: Comet Phase Awareness (active OpenSpec change) ────────
     let working_dir = std::path::Path::new(&context.cwd);
     if let Some(comet_state) = crate::comet::CometState::read(working_dir) {
-        system_messages.push(ChatMessage::system(
-            comet_state.phase_instruction(),
-        ));
+        system_messages.push(ChatMessage::system(comet_state.phase_instruction()));
     }
     if crate::comet::CometGuard::is_coordinator_mode(working_dir) {
         system_messages.push(ChatMessage::system(
