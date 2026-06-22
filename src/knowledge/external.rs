@@ -10,6 +10,8 @@ pub enum ExternalSkillSource {
     ProjectWgentyCode { root: PathBuf },
     /// Skill from the user's home directory `.wgenty-code/skills/`.
     UserWgentyCode { root: PathBuf },
+    /// Skill from the user's Claude Code skills directory `~/.claude/skills/`.
+    UserClaude { root: PathBuf },
     /// Skill installed from a plugin cache.
     PluginCache {
         plugin_name: String,
@@ -26,8 +28,9 @@ impl ExternalSkillSource {
         match self {
             Self::ProjectWgentyCode { .. } => 0,
             Self::UserWgentyCode { .. } => 1,
-            Self::PluginCache { .. } => 2,
-            Self::Configured { .. } => 3,
+            Self::UserClaude { .. } => 2,
+            Self::PluginCache { .. } => 3,
+            Self::Configured { .. } => 4,
         }
     }
 
@@ -36,6 +39,7 @@ impl ExternalSkillSource {
         match self {
             Self::ProjectWgentyCode { root } => format!("project:{}", root.display()),
             Self::UserWgentyCode { root } => format!("user:{}", root.display()),
+            Self::UserClaude { root } => format!("user-claude:{}", root.display()),
             Self::PluginCache {
                 plugin_name,
                 version,
@@ -55,6 +59,7 @@ impl ExternalSkillSource {
         match self {
             Self::ProjectWgentyCode { root }
             | Self::UserWgentyCode { root }
+            | Self::UserClaude { root }
             | Self::PluginCache { root, .. }
             | Self::Configured { root, .. } => root,
         }
@@ -221,5 +226,48 @@ pub fn derive_canonical_skill_name(
         [name] => Ok(name.clone()),
         [namespace, name] => Ok(format!("{}:{}", namespace, name)),
         _ => Err(ExternalSkillError::UnsupportedPath(relative.to_path_buf())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_user_claude_variant_priority_rank() {
+        let source = ExternalSkillSource::UserClaude {
+            root: PathBuf::from("/home/user/.claude/skills"),
+        };
+        assert_eq!(source.priority_rank(), 2);
+    }
+
+    #[test]
+    fn test_user_claude_variant_label() {
+        let source = ExternalSkillSource::UserClaude {
+            root: PathBuf::from("/home/user/.claude/skills"),
+        };
+        let label = source.label();
+        assert!(label.starts_with("user-claude:"));
+        assert!(label.contains("/.claude/skills"));
+    }
+
+    #[test]
+    fn test_user_claude_variant_root() {
+        let path = PathBuf::from("/home/user/.claude/skills");
+        let source = ExternalSkillSource::UserClaude {
+            root: path.clone(),
+        };
+        assert_eq!(source.root(), path.as_path());
+    }
+
+    #[test]
+    fn test_user_claude_serialization_roundtrip() {
+        let source = ExternalSkillSource::UserClaude {
+            root: PathBuf::from("/home/user/.claude/skills"),
+        };
+        let json = serde_json::to_string(&source).unwrap();
+        let deserialized: ExternalSkillSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(source, deserialized);
+        assert_eq!(deserialized.priority_rank(), 2);
     }
 }
