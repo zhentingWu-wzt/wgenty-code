@@ -21,6 +21,13 @@ pub struct PermissionRequest {
 }
 
 impl ToolPermissionPolicy {
+    /// Create a new policy rooted at the given workspace directory.
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self {
+            workspace_root: canonical_or_original(&workspace_root),
+        }
+    }
+
     pub fn from_settings(settings: &Settings) -> Self {
         let workspace_root = canonical_or_original(&settings.storage.working_dir);
         Self { workspace_root }
