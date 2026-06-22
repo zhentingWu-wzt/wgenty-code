@@ -155,6 +155,32 @@ impl App {
             return;
         }
 
+        // Fire UserPromptSubmit hook asynchronously (after built-in checks,
+        // before slash routing and normal input processing).
+        {
+            let hm = self.hook_manager.clone();
+            let input_text = text.clone();
+            let sid = self.session_id.clone();
+            tokio::spawn(async move {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let comet_phase = crate::comet::CometState::read(&cwd)
+                    .map(|s| format!("{:?}", s.phase).to_lowercase());
+                let ctx = crate::hooks::HookContext {
+                    event: "UserPromptSubmit".to_string(),
+                    tool_name: None,
+                    tool_input: Some(serde_json::Value::String(input_text)),
+                    tool_result: None,
+                    session_id: Some(sid),
+                    working_directory: std::env::current_dir()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    comet_phase,
+                };
+                hm.fire(&crate::hooks::HookEvent::UserPromptSubmit, &ctx, None).await;
+            });
+        }
+
         // Route unrecognized slash commands via route_slash_command (I1).
         // This catches external skill invocations like /comet or /verify
         // that are not handled by the built-in checks above.
