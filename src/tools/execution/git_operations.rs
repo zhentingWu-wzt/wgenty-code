@@ -46,12 +46,16 @@ impl Tool for GitOperationsTool {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "description": "Git operation to perform: status, add, commit, push, pull, log, diff, branch, checkout",
-                    "enum": ["status", "add", "commit", "push", "pull", "log", "diff", "branch", "checkout"]
+                    "description": "Git operation to perform: status, add, commit, push, pull, log, diff, branch, checkout, worktree_add, worktree_remove, worktree_list",
+                    "enum": [
+                        "status", "add", "commit", "push", "pull", "log", "diff",
+                        "branch", "checkout", "worktree_add", "worktree_remove",
+                        "worktree_list"
+                    ]
                 },
                 "path": {
                     "type": "string",
-                    "description": "Path to the git repository (optional, defaults to current directory)"
+                    "description": "Path to the git repository (optional, defaults to current directory). For worktree_add this is the worktree path."
                 },
                 "args": {
                     "type": "array",
@@ -73,11 +77,19 @@ impl Tool for GitOperationsTool {
                 },
                 "branch": {
                     "type": "string",
-                    "description": "Branch name (for branch, checkout, push, pull operations)"
+                    "description": "Branch name (for branch, checkout, push, pull, worktree_add operations)"
+                },
+                "base_ref": {
+                    "type": "string",
+                    "description": "Base reference to branch from (for worktree_add operation)"
                 },
                 "remote": {
                     "type": "string",
                     "description": "Remote name (defaults to 'origin')"
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Force the operation (for worktree_remove)"
                 }
             },
             "required": ["operation"]
@@ -113,6 +125,9 @@ impl Tool for GitOperationsTool {
             "diff" => self.git_diff(repo_path, &args).await,
             "branch" => self.git_branch(repo_path, &input, &args).await,
             "checkout" => self.git_checkout(repo_path, &input, &args).await,
+            "worktree_add" => self.worktree_add(repo_path, &input).await,
+            "worktree_remove" => self.worktree_remove(repo_path, &input).await,
+            "worktree_list" => self.worktree_list(repo_path).await,
             _ => Err(ToolError {
                 message: format!("Unknown git operation: {}", operation),
                 code: Some("invalid_operation".to_string()),
@@ -300,5 +315,111 @@ impl GitOperationsTool {
         cmd_args.extend_from_slice(args);
 
         self.execute_git_command(repo_path, &cmd_args).await
+    }
+
+    /// Add a new git worktree.
+    ///
+    /// Creates a worktree at the given `path` on the specified `branch`,
+    /// optionally branching from `base_ref`.
+    async fn worktree_add(
+        &self,
+        repo_path: &Path,
+        input: &serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        let path = input["path"].as_str().ok_or_else(|| ToolError {
+            message: "path is required for worktree_add".to_string(),
+            code: Some("missing_parameter".to_string()),
+        })?;
+        let branch = input["branch"].as_str().ok_or_else(|| ToolError {
+            message: "branch is required for worktree_add".to_string(),
+            code: Some("missing_parameter".to_string()),
+        })?;
+
+        let mut cmd_args = vec!["worktree".to_string(), "add".to_string()];
+
+        // If base_ref is provided, add it after -b <branch>
+        if let Some(base_ref) = input["base_ref"].as_str().filter(|s| !s.is_empty()) {
+            cmd_args.push("-b".to_string());
+            cmd_args.push(branch.to_string());
+            cmd_args.push(path.to_string());
+            cmd_args.push(base_ref.to_string());
+        } else {
+            cmd_args.push("-b".to_string());
+            cmd_args.push(branch.to_string());
+            cmd_args.push(path.to_string());
+        }
+
+        self.execute_git_command(repo_path, &cmd_args).await
+    }
+
+    /// Remove a git worktree.
+    ///
+    /// Removes the worktree at the given `path`. If `force` is true, uses
+    /// `git worktree remove --force`.
+    async fn worktree_remove(
+        &self,
+        repo_path: &Path,
+        input: &serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        let path = input["path"].as_str().ok_or_else(|| ToolError {
+            message: "path is required for worktree_remove".to_string(),
+            code: Some("missing_parameter".to_string()),
+        })?;
+
+        let mut cmd_args = vec!["worktree".to_string(), "remove".to_string()];
+
+        let force = input["force"].as_bool().unwrap_or(false);
+        if force {
+            cmd_args.push("--force".to_string());
+        }
+
+        cmd_args.push(path.to_string());
+
+        self.execute_git_command(repo_path, &cmd_args).await
+    }
+
+    /// List all git worktrees.
+    ///
+    /// Runs `git worktree list` in the repository root.
+    async fn worktree_list(
+        &self,
+        repo_path: &Path,
+    ) -> Result<ToolOutput, ToolError> {
+        let cmd_args = vec!["worktree".to_string(), "list".to_string()];
+        self.execute_git_command(repo_path, &cmd_args).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_schema_contains_worktree_operations() {
+        let tool = GitOperationsTool::new();
+        let schema = tool.input_schema();
+
+        let operations = schema["properties"]["operation"]["enum"]
+            .as_array()
+            .expect("operation enum should be an array");
+
+        let ops: Vec<&str> = operations
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+
+        assert!(ops.contains(&"worktree_add"), "schema must include worktree_add");
+        assert!(ops.contains(&"worktree_remove"), "schema must include worktree_remove");
+        assert!(ops.contains(&"worktree_list"), "schema must include worktree_list");
+    }
+
+    #[test]
+    fn test_schema_contains_worktree_properties() {
+        let tool = GitOperationsTool::new();
+        let schema = tool.input_schema();
+        let properties = schema["properties"].as_object().expect("properties should be an object");
+
+        assert!(properties.contains_key("base_ref"), "schema must include base_ref property");
+        assert!(properties.contains_key("force"), "schema must include force property");
     }
 }
