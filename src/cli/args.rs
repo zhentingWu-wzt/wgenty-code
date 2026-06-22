@@ -169,6 +169,7 @@ impl Cli {
                         name: c.definition.name,
                         description: c.definition.description,
                         args_hint: c.definition.usage,
+                        category: "Plugin".to_string(),
                     })
                     .collect();
                 if !entries.is_empty() {
@@ -791,13 +792,18 @@ impl Cli {
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
                 // load_from_dirs appends "skills" to each base dir,
-                // so pass parent directories here.
-                let skills_dirs: Vec<std::path::PathBuf> = vec![
-                    project_root.join(".wgenty-code"),
-                    home.join(".wgenty-code"),
-                    // Legacy Claude Code skills location
-                    home.join(".claude"),
-                ];
+                // so pass parent directories (resolver returns .../skills paths).
+                let roots =
+                    crate::knowledge::SkillRootResolver::roots_with(&home, &project_root);
+                let skills_dirs: Vec<std::path::PathBuf> = roots
+                    .iter()
+                    .map(|r| {
+                        r.skills_root
+                            .parent()
+                            .unwrap_or(&r.skills_root)
+                            .to_path_buf()
+                    })
+                    .collect();
 
                 let skill_loader =
                     crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);

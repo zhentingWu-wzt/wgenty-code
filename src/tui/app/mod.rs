@@ -152,20 +152,8 @@ impl App {
         // Also discover external skills from all sources and merge into inventory
         let project_root =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let external_registry_roots = vec![
-            crate::knowledge::ExternalSkillRoot::new(
-                home.join(".wgenty-code").join("skills"),
-                crate::knowledge::ExternalSkillSource::UserWgentyCode {
-                    root: home.join(".wgenty-code").join("skills"),
-                },
-            ),
-            crate::knowledge::ExternalSkillRoot::new(
-                project_root.join(".wgenty-code").join("skills"),
-                crate::knowledge::ExternalSkillSource::ProjectWgentyCode {
-                    root: project_root.join(".wgenty-code").join("skills"),
-                },
-            ),
-        ];
+        let external_registry_roots =
+            crate::knowledge::SkillRootResolver::roots_with(&home, &project_root);
         let external_skill_registry =
             crate::knowledge::ExternalSkillRegistry::discover(external_registry_roots).ok();
         if let Some(ref external_registry) = external_skill_registry {
@@ -272,27 +260,9 @@ impl App {
             settings_lock,
 
             completion_engine: {
-                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-                let skills_dir = home.join(".claude").join("skills");
-                let builtin_commands = vec![
-                    crate::tui::completion::CommandEntry {
-                        name: "code-review".to_string(),
-                        description: "Review code changes".to_string(),
-                        args_hint: None,
-                    },
-                    crate::tui::completion::CommandEntry {
-                        name: "clear".to_string(),
-                        description: "Clear screen".to_string(),
-                        args_hint: None,
-                    },
-                    crate::tui::completion::CommandEntry {
-                        name: "help".to_string(),
-                        description: "Show help".to_string(),
-                        args_hint: None,
-                    },
-                ];
+                let builtin_commands =
+                    crate::tui::completion::CompletionEngine::default_builtin_commands();
                 Some(crate::tui::completion::CompletionEngine::load(
-                    &skills_dir,
                     &builtin_commands,
                 ))
             },
