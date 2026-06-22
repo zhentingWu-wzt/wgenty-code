@@ -243,6 +243,20 @@ impl Tool for TaskTool {
                 "prompt": {
                     "type": "string",
                     "description": "The detailed task for the subagent to perform"
+                },
+                "comet_context": {
+                    "type": "object",
+                    "description": "Optional Comet workflow context for implementer subagents",
+                    "properties": {
+                        "change": {
+                            "type": "string",
+                            "description": "The name of the Comet change being worked on"
+                        },
+                        "task_index": {
+                            "type": "integer",
+                            "description": "The task index within the change (1-based)"
+                        }
+                    }
                 }
             },
             "required": ["description", "prompt"]
@@ -287,6 +301,16 @@ impl Tool for TaskTool {
                     None
                 }
             });
+
+        // Extract optional Comet workflow context and build implementer prefix.
+        let comet_prefix: Option<String> = input.get("comet_context").and_then(|cc| {
+            let change = cc.get("change").and_then(|v| v.as_str())?;
+            let task_index = cc.get("task_index").and_then(|v| v.as_i64())?;
+            Some(format!(
+                "You are a Comet implementer subagent working on change '{}', task #{}. Follow test-driven-development: write tests first, ensure they fail, then implement the minimum code to pass. Report your results back to the coordinator.\n\n",
+                change, task_index
+            ))
+        });
 
         let session_id = input["_session_id"]
             .as_str()
@@ -353,7 +377,7 @@ impl Tool for TaskTool {
             .collect();
 
         // Build system prompt based on subagent type.
-        let system_prompt = match _subagent_type {
+        let base_system_prompt: &str = match _subagent_type {
             "explore" => {
                 "You are a subagent spawned by a coordinator. The coordinator is waiting for your result. Do not attempt to coordinate other agents yourself — focus solely on your assigned task. Return a complete, self-contained result so the coordinator can proceed without follow-up questions.\n\nYou are a code exploration subagent. Your role is to search and \
                  analyze codebases thoroughly.\n\nKey responsibilities:\n\
@@ -385,6 +409,11 @@ impl Tool for TaskTool {
                  If you need to read files, search, or execute commands, use the \
                  appropriate tools. Return a complete summary of what was accomplished."
             }
+        };
+        let system_prompt = if let Some(ref prefix) = comet_prefix {
+            format!("{}{}", prefix, base_system_prompt)
+        } else {
+            base_system_prompt.to_string()
         };
 
         // Build the full user prompt with context.
@@ -445,7 +474,7 @@ impl Tool for TaskTool {
         if background {
             // ── Background mode: spawn and return immediately ──────────────
             let desc = description.to_string();
-            let sys_prompt = system_prompt.to_string();
+            let sys_prompt = system_prompt.clone();
             let bg = self.background_manager.clone();
             let active = self.active_count.clone();
             let reg = tool_registry.clone();
@@ -647,7 +676,7 @@ impl Tool for TaskTool {
                 let result = run_subagent_loop(
                     &api_client,
                     &tool_registry,
-                    system_prompt,
+                    &system_prompt,
                     &full_prompt,
                     &allowed_tools,
                     100,
@@ -664,7 +693,7 @@ impl Tool for TaskTool {
             let transcript_store_sync = self.transcript_store.clone();
             let sid_sync = session_id.clone();
             let desc_sync = description.to_string();
-            let sys_prompt_sync = system_prompt.to_string();
+            let sys_prompt_sync = system_prompt.clone();
             let prompt_sync = full_prompt.clone();
             let sync_node_id = subagent_node_id.clone();
             let retention_days_sync = self.settings.storage.transcript.max_age_days;
