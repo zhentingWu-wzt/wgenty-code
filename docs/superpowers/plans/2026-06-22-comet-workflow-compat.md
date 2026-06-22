@@ -23,7 +23,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 
 ---
 
-## 1. Skill path compat — Root resolver & wiring
+## Task 1 — Skill path compat — Root resolver & wiring
 
 ### 1.1 Add `UserClaude` variant to `ExternalSkillSource`
 - File: `src/knowledge/external.rs`
@@ -50,7 +50,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 
 ---
 
-## 2. Comet module — State, guard, workflow
+## Task 2 — Comet module — State, guard, workflow
 
 ### 2.1 Create `src/comet/mod.rs`
 - Re-exports state, guard, workflow
@@ -83,7 +83,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 
 ---
 
-## 3. Hook lifecycle — Complete all 8 event fire sites
+## Task 3 — Hook lifecycle — Complete all 8 event fire sites
 
 ### 3.1 Add `comet_phase` to `HookContext`
 - File: `src/hooks/mod.rs`
@@ -112,7 +112,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 
 ---
 
-## 4. Comet guard integration into ToolExecutor
+## Task 4 — Comet guard integration into ToolExecutor
 
 ### 4.1 Add `comet_state` field to `ToolExecutor`
 - File: `src/tools/executor.rs`
@@ -127,7 +127,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 
 ---
 
-## 5. Worktree operations
+## Task 5 — Worktree operations
 
 ### 5.1 Update `input_schema()` — add worktree operations to enum
 
@@ -143,7 +143,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 
 ---
 
-## 6. Configurable tool timeout
+## Task 6 — Configurable tool timeout
 
 ### 6.1 Implement `resolve_tool_timeout(tool_name, args) -> Duration`
 - File: `src/tui/agent/core.rs`
@@ -159,7 +159,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 
 ---
 
-## 7. Subagent Comet context
+## Task 7 — Subagent Comet context
 
 ### 7.1 Add `comet_context` to TaskTool `input_schema()`
 - File: `src/tools/meta/task.rs`
@@ -175,7 +175,7 @@ base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
 
 ---
 
-## 8. Final integration & verification
+## Task 8 — Final integration & verification
 
 ### 8.1 Write integration test — full comet state + guard flow
 

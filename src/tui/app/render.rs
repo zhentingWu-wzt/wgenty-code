@@ -82,7 +82,8 @@ impl App {
         if has_pending {
             self.render_pending_inputs(f, layout[pending_idx]);
         }
-        // Completion panel — render above input area
+        self.render_input(f, layout[input_idx]);
+        // Completion panel is an overlay above the input and must render after the input box.
         if let Some(ref completion) = self.completion_state {
             if completion.visible && !completion.matches.is_empty() {
                 components::completion_panel::CompletionPanel::render(
@@ -92,7 +93,6 @@ impl App {
                 );
             }
         }
-        self.render_input(f, layout[input_idx]);
         // Session is still a popup overlay
         components::session::render(f, &self.session_state, centered_rect);
         // Subagent monitor panel (overlay, below session to render on top)
