@@ -75,6 +75,7 @@ impl App {
             (planner, s.agent.max_rounds.unwrap_or(100))
         };
         let token_counter = self.token_counter.clone();
+        let hook_manager = self.hook_manager.clone();
         self.current_turn_handle = Some(tokio::spawn(async move {
             let mut agent = AgentLoop::new(
                 client,
@@ -86,6 +87,7 @@ impl App {
                 planner_client,
                 max_rounds,
                 token_counter,
+                hook_manager,
             );
             let result = agent.process_input(input_text).await;
             if let Err(ref e) = result {
