@@ -1,0 +1,19 @@
+{
+  "change": "generic-agent-runtime",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "04e8148b483c8f88317eea5a114411f76a8f56f7072f715e224e842f59fc68b6",
+  "files": [
+    { "path": "openspec/changes/generic-agent-runtime/proposal.md", "sha256": "c512338863d51c7212666628b355dc7367383edf9de7b9803166fd5b5129d538" },
+    { "path": "openspec/changes/generic-agent-runtime/design.md", "sha256": "7da195edd61082ca8e9c1072630093ef781713bb30668bf9fcf4eb8146799007" },
+    { "path": "openspec/changes/generic-agent-runtime/tasks.md", "sha256": "4c7c92e24427508fa31361bd7f53ee48776d09436b979cefccb36409d214dac4" },
+    { "path": "openspec/changes/generic-agent-runtime/specs/agent-runtime-engine/spec.md", "sha256": "90c09143cb9da3cf4b1c861d02d17a857144542960f3c6eb83e01fc110ed2b3f" },
+    { "path": "openspec/changes/generic-agent-runtime/specs/comet-phase-guard/spec.md", "sha256": "8215f30c381d14163edde17e44b39187512a4f8bc918694962c3d45a3feaa719" },
+    { "path": "openspec/changes/generic-agent-runtime/specs/comet-skill-path-compat/spec.md", "sha256": "4f4add1981a05d11b3a34ec200e7139a5aa1283739fc000a3d0c41075a91f010" },
+    { "path": "openspec/changes/generic-agent-runtime/specs/declarative-workflow-definition/spec.md", "sha256": "ef876c078786f923d931cd3acbedbb70f81edd621db5d8306d60268b12085333" },
+    { "path": "openspec/changes/generic-agent-runtime/specs/external-skill-runtime/spec.md", "sha256": "6c477f2b0112a96891c7290f937a3466da90e2d3ba38b967d7ed9fbca8b33906" },
+    { "path": "openspec/changes/generic-agent-runtime/specs/hook-event-alignment/spec.md", "sha256": "6a0b987b85248f374479a343de8591e118205459eee19ce962c5690b7ca38ce3" }
+  ]
+}
