@@ -26,6 +26,7 @@ pub mod context;
 pub mod guardian;
 pub mod hooks;
 pub mod knowledge;
+pub mod runtime;
 pub mod mcp;
 pub mod permissions;
 pub mod plugins;
