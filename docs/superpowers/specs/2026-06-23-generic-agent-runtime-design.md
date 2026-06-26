@@ -749,3 +749,29 @@ Design principle: **fail-open for tool execution** (a broken guard doesn't block
 | `when_state` typo causes guard not to fire | Low | Runtime warns on undeclared state values at YAML load time |
 | Context visibility leak (internal shown to user) | High | `ContextAssembler` strictly separates streams. Integration test verifies internal text absent from user messages |
 | Session without workflow loses all guard rules | Medium | Correct — this is the design. No active workflow = no restrictions. Guardian still provides security baseline |
+
+## 15. Implementation Divergence (recorded during verify phase, 2026-06-26)
+
+The open-phase delta specs describe architectural concepts (WorkflowEngine, StateMachine, TransitionGuard, GuardPipeline, RuleBasedGuard, ScriptRunner, EventBus, StateSource source abstraction, SkillManager) that were **deliberately not implemented**. The brainstorming phase confirmed a hooks-only approach: extend the existing hooks system with 3 new primitives (SlashCommand event, inject_context/ask_user actions, when_state condition) rather than introduce new workflow abstractions in Rust.
+
+### Specific divergences
+
+| Delta Spec | Spec Concept | Implementation Reality |
+|---|---|---|
+| agent-runtime-engine | WorkflowEngine parsing/validating YAML | workflow.yaml parsed with simple `parse_yaml_list()` for entry_commands only; full YAML structure consumed at design-time by human readers |
+| agent-runtime-engine | StateMachine with transition guards | String-keyed state via `Arc<RwLock<str>>` + hook `when_state` filtering; state transitions driven by shell scripts |
+| agent-runtime-engine | GuardPipeline + RuleBasedGuard | Tool blocking via PreToolUse hooks with `when_state`; `comet-guard.sh` script evaluates phase rules |
+| agent-runtime-engine | ScriptRunner with JSON protocol | Shell execution embedded in HookManager; no standalone runner type |
+| agent-runtime-engine | EventBus + RuntimeEvent types | HookEvent system extended (SlashCommand) rather than separate event bus |
+| agent-runtime-engine | StateSource trait hierarchy | State discovery via shell scripts referenced in workflow.yaml; no Rust abstraction |
+| comet-phase-guard | RuleBasedGuard reading YAML tool_guards | Hook `when_state` filtering + script evaluation replaces Rust-level guard rules |
+| comet-skill-path-compat | SkillManager with progressive disclosure | ExternalSkillRegistry kept as-is; SkillManager not introduced |
+| hook-event-alignment | GuardPipeline runs BEFORE PreToolUse hooks | PreToolUse hooks ARE the guard mechanism; no separate pipeline |
+
+### Rationale
+
+The hooks-only design was confirmed as the final approved approach. It satisfies all functional requirements (state-based tool blocking, context injection, user interaction, slash command routing) without introducing new type-system abstractions in Rust. The trade-off is that some workflow semantics (YAML validation, transition guard types, state discovery protocol) are checked at runtime by scripts rather than at compile-time by Rust types.
+
+### Impact on delta specs
+
+The delta specs remain as originally written (open phase). They describe design intent and acceptance criteria but diverge from implementation in architectural details. This divergence is **accepted** — the implementation follows the confirmed final design. Delta spec alignment is deferred to a follow-up change.
