@@ -1465,7 +1465,7 @@ git commit -m "refactor(prompts): replace hardcoded comet Layer 1b with ContextA
 - 消费：Task 5 的 `CommandRouter`、`RouteResult`、Task 3 的 `HookManager`、Task 6 的 `InteractionService`
 - 产出：TUI 从 CommandRouter 读取命令、SlashCommand 事件触发 hooks、启动时初始化 workflow
 
-- [ ] **Step 1: 修改 `src/tui/app/input.rs`**
+- [x] **Step 1: 修改 `src/tui/app/input.rs`**
 
 找到 `route_slash_command()` 调用：
 ```rust
@@ -1508,7 +1508,7 @@ if let Some(ref router) = self.command_router {
 }
 ```
 
-- [ ] **Step 2: 修改 `src/tui/app/mod.rs` App 启动**
+- [x] **Step 2: 修改 `src/tui/app/mod.rs` App 启动**
 
 在 `ExternalSkillRegistry` 初始化之后，添加：
 
@@ -1544,7 +1544,7 @@ if workflow_yaml_path.exists() {
 }
 ```
 
-- [ ] **Step 3: 修改 `src/tui/completion.rs`**
+- [x] **Step 3: 修改 `src/tui/completion.rs`**
 
 将 slash 命令补全源从 `ExternalSkillRegistry` 改为 `CommandRouter`：
 
@@ -1558,13 +1558,13 @@ if let Some(ref router) = self.command_router {
 }
 ```
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 ```bash
 cargo check 2>&1 | head -50
 ```
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/tui/app/input.rs src/tui/app/mod.rs src/tui/completion.rs
