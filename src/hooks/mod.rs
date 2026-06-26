@@ -376,6 +376,47 @@ mod tests {
     }
 
     #[test]
+    fn test_user_answer_struct() {
+        // RED: UserAnswer struct should exist with selected field.
+        let answer = UserAnswer {
+            selected: vec!["opt1".to_string(), "opt2".to_string()],
+        };
+        assert_eq!(answer.selected.len(), 2);
+        assert_eq!(answer.selected[0], "opt1");
+        assert_eq!(answer.selected[1], "opt2");
+    }
+
+    #[test]
+    fn test_hook_outcome_new_fields() {
+        // RED: HookOutcome should have def, continue_execution, reason,
+        // injected_content, and user_answer fields.
+        let def = HookDefinition {
+            event: HookEvent::PreToolUse,
+            matcher: None,
+            when_state: None,
+            actions: vec![],
+        };
+        let outcome = HookOutcome {
+            def: def.clone(),
+            continue_execution: true,
+            reason: Some("test reason".to_string()),
+            injected_content: Some("injected text".to_string()),
+            user_answer: Some(UserAnswer {
+                selected: vec!["a".to_string()],
+            }),
+        };
+        assert_eq!(outcome.continue_execution, true);
+        assert_eq!(outcome.reason.as_deref(), Some("test reason"));
+        assert_eq!(outcome.injected_content.as_deref(), Some("injected text"));
+        assert!(outcome.user_answer.is_some());
+        assert_eq!(
+            outcome.user_answer.as_ref().unwrap().selected,
+            vec!["a"]
+        );
+        assert_eq!(outcome.def.event, HookEvent::PreToolUse);
+    }
+
+    #[test]
     fn test_hook_context_workflow_state_and_variables() {
         // RED: HookContext should serialize workflow_state and variables fields.
         let ctx = HookContext {
@@ -397,6 +438,223 @@ mod tests {
         let json = serde_json::to_value(&ctx).expect("serialize HookContext");
         assert_eq!(json["workflow_state"], "build");
         assert_eq!(json["variables"]["key"], "value");
+    }
+
+    // ── Step 3: execute_action tests (via fire()) ──────────────────────
+
+    #[tokio::test]
+    async fn test_fire_inject_context_inline() {
+        // RED → GREEN: InjectContext with Inline source produces injected_content.
+        let mut hm = HookManager::default();
+        let def = HookDefinition {
+            event: HookEvent::PreToolUse,
+            matcher: None,
+            when_state: None,
+            actions: vec![HookAction::InjectContext {
+                source: ContextSource::Inline("hello world".to_string()),
+                priority: 10,
+                visibility: LayerVisibility::Internal,
+            }],
+        };
+        hm.register_workflow_hooks(vec![def]);
+        let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
+        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, None).await;
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].injected_content.as_deref(), Some("hello world"));
+        assert!(outcomes[0].continue_execution);
+    }
+
+    #[tokio::test]
+    async fn test_fire_inject_context_template() {
+        // RED → GREEN: InjectContext with Template source renders variables.
+        let mut hm = HookManager::default();
+        let def = HookDefinition {
+            event: HookEvent::PreToolUse,
+            matcher: None,
+            when_state: None,
+            actions: vec![HookAction::InjectContext {
+                source: ContextSource::Template("Tool: {tool_name}".to_string()),
+                priority: 10,
+                visibility: LayerVisibility::Internal,
+            }],
+        };
+        hm.register_workflow_hooks(vec![def]);
+        let ctx = HookManager::pre_tool_context("MyTool", &serde_json::json!({}), None);
+        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, None).await;
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].injected_content.as_deref(), Some("Tool: MyTool"));
+    }
+
+    #[tokio::test]
+    async fn test_fire_ask_user_placeholder() {
+        // RED → GREEN: AskUser returns a UserAnswer with empty selected (placeholder).
+        let mut hm = HookManager::default();
+        let def = HookDefinition {
+            event: HookEvent::PreToolUse,
+            matcher: None,
+            when_state: None,
+            actions: vec![HookAction::AskUser {
+                question: "Proceed?".to_string(),
+                options: vec![UserOption {
+                    label: "Yes".to_string(),
+                    value: "yes".to_string(),
+                    description: None,
+                }],
+            }],
+        };
+        hm.register_workflow_hooks(vec![def]);
+        let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
+        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, None).await;
+        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes[0].user_answer.is_some());
+        assert!(outcomes[0].user_answer.as_ref().unwrap().selected.is_empty());
+        assert!(outcomes[0].continue_execution);
+    }
+
+    // ── Step 4: register_workflow_hooks tests ────────────────────────
+
+    #[test]
+    fn test_register_workflow_hooks_adds_hooks() {
+        // RED → GREEN: register_workflow_hooks makes hooks visible via has_hooks.
+        let mut hm = HookManager::default();
+        assert!(!hm.has_hooks(&HookEvent::PreToolUse));
+        let def = HookDefinition {
+            event: HookEvent::PreToolUse,
+            matcher: None,
+            when_state: None,
+            actions: vec![HookAction::Command {
+                command: "echo test".to_string(),
+                timeout_secs: 30,
+            }],
+        };
+        hm.register_workflow_hooks(vec![def]);
+        assert!(hm.has_hooks(&HookEvent::PreToolUse));
+    }
+
+    #[test]
+    fn test_register_workflow_hooks_multiple_events() {
+        // RED → GREEN: register_workflow_hooks supports multiple events.
+        let mut hm = HookManager::default();
+        let hooks = vec![
+            HookDefinition {
+                event: HookEvent::PreToolUse,
+                matcher: None,
+                when_state: None,
+                actions: vec![HookAction::Command {
+                    command: "echo a".to_string(),
+                    timeout_secs: 30,
+                }],
+            },
+            HookDefinition {
+                event: HookEvent::PostToolUse,
+                matcher: None,
+                when_state: None,
+                actions: vec![HookAction::Command {
+                    command: "echo b".to_string(),
+                    timeout_secs: 30,
+                }],
+            },
+        ];
+        hm.register_workflow_hooks(hooks);
+        assert!(hm.has_hooks(&HookEvent::PreToolUse));
+        assert!(hm.has_hooks(&HookEvent::PostToolUse));
+        assert!(!hm.has_hooks(&HookEvent::SessionStart));
+    }
+
+    // ── Step 2: when_state filtering tests ───────────────────────────
+
+    #[tokio::test]
+    async fn test_fire_when_state_filter_matches() {
+        // RED → GREEN: fire() with state matches when_state and fires the hook.
+        let mut hm = HookManager::default();
+        let def = HookDefinition {
+            event: HookEvent::PreToolUse,
+            matcher: None,
+            when_state: Some("build".to_string()),
+            actions: vec![HookAction::InjectContext {
+                source: ContextSource::Inline("matched".to_string()),
+                priority: 10,
+                visibility: LayerVisibility::Internal,
+            }],
+        };
+        hm.register_workflow_hooks(vec![def]);
+        let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
+        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, Some("build")).await;
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].injected_content.as_deref(), Some("matched"));
+    }
+
+    #[tokio::test]
+    async fn test_fire_when_state_filter_skips() {
+        // RED → GREEN: fire() with non-matching state skips the hook.
+        let mut hm = HookManager::default();
+        let def = HookDefinition {
+            event: HookEvent::PreToolUse,
+            matcher: None,
+            when_state: Some("build".to_string()),
+            actions: vec![HookAction::InjectContext {
+                source: ContextSource::Inline("should not fire".to_string()),
+                priority: 10,
+                visibility: LayerVisibility::Internal,
+            }],
+        };
+        hm.register_workflow_hooks(vec![def]);
+        let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
+        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, Some("design")).await;
+        assert!(outcomes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fire_when_state_none_fires_all() {
+        // RED → GREEN: fire() with state=None fires hooks regardless of when_state.
+        let mut hm = HookManager::default();
+        let def = HookDefinition {
+            event: HookEvent::PreToolUse,
+            matcher: None,
+            when_state: Some("build".to_string()),
+            actions: vec![HookAction::InjectContext {
+                source: ContextSource::Inline("always fires".to_string()),
+                priority: 10,
+                visibility: LayerVisibility::Internal,
+            }],
+        };
+        hm.register_workflow_hooks(vec![def]);
+        let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
+        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, None).await;
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].injected_content.as_deref(), Some("always fires"));
+    }
+
+    #[tokio::test]
+    async fn test_fire_when_state_pipe_separated() {
+        // RED → GREEN: when_state with pipe-separated values matches any.
+        let mut hm = HookManager::default();
+        let def = HookDefinition {
+            event: HookEvent::PreToolUse,
+            matcher: None,
+            when_state: Some("build|design".to_string()),
+            actions: vec![HookAction::InjectContext {
+                source: ContextSource::Inline("pipe matched".to_string()),
+                priority: 10,
+                visibility: LayerVisibility::Internal,
+            }],
+        };
+        hm.register_workflow_hooks(vec![def]);
+        let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
+        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, Some("design")).await;
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].injected_content.as_deref(), Some("pipe matched"));
+    }
+
+    // ── Step 5: with_state builder test ──────────────────────────────
+
+    #[test]
+    fn test_hook_context_with_state_builder() {
+        // RED → GREEN: with_state sets workflow_state and comet_phase.
+        let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None)
+            .with_state(Some("build".to_string()));
+        assert_eq!(ctx.workflow_state.as_deref(), Some("build"));
+        assert_eq!(ctx.comet_phase.as_deref(), Some("build"));
     }
 }
 
@@ -436,6 +694,13 @@ impl HookContext {
         self.comet_phase = state;
         self
     }
+
+    /// Set the workflow_state field and return self (shorthand alias).
+    pub fn with_state(mut self, state: Option<String>) -> Self {
+        self.workflow_state = state.clone();
+        self.comet_phase = state;
+        self
+    }
 }
 
 /// Result returned from a hook via stdout (JSON)
@@ -447,13 +712,26 @@ pub struct HookResult {
     pub reason: Option<String>, // reason if blocked
 }
 
+/// User's answer to an AskUser action
+#[derive(Debug, Clone)]
+pub struct UserAnswer {
+    pub selected: Vec<String>,
+}
+
 /// Outcome of executing a single hook
 #[derive(Debug, Clone)]
 pub struct HookOutcome {
-    pub hook_event: String,
-    pub success: bool,
-    pub output: String,
-    pub blocked: bool,
+    pub def: HookDefinition,
+    pub continue_execution: bool,
+    pub reason: Option<String>,
+    pub injected_content: Option<String>,
+    pub user_answer: Option<UserAnswer>,
+}
+
+/// Internal result from running a shell command hook.
+struct ShellCommandResult {
+    continue_execution: bool,
+    reason: Option<String>,
 }
 
 /// Manages registered hooks and their execution
@@ -522,61 +800,101 @@ impl HookManager {
             .unwrap_or(false)
     }
 
+    /// Register a batch of workflow hooks (e.g., from Comet phase definitions).
+    pub fn register_workflow_hooks(&mut self, hooks: Vec<HookDefinition>) {
+        for hook in hooks {
+            self.hooks.entry(hook.event.clone()).or_default().push(hook);
+        }
+    }
+
     /// Fire all hooks for an event. Returns outcomes for each hook.
-    /// Hooks are filtered by matcher before execution.
+    /// Hooks are filtered by matcher and optional workflow state.
+    /// Pass `state: None` to skip state filtering (backward-compatible).
     pub async fn fire(
         &self,
         event: &HookEvent,
         ctx: &HookContext,
-        notification_subtype: Option<&str>,
+        state: Option<&str>,
     ) -> Vec<HookOutcome> {
-        let defs = match self.hooks.get(event) {
-            Some(d) => d.clone(),
-            None => return vec![],
-        };
-
+        let defs = self.hooks.get(event).map(Vec::as_slice).unwrap_or(&[]);
         let mut outcomes = Vec::new();
-
-        for def in &defs {
+        for def in defs {
             // Filter: skip hooks whose matcher doesn't match
-            if !matches_matcher(
-                &def.matcher,
-                event,
-                ctx.tool_name.as_deref(),
-                notification_subtype,
-            ) {
+            if !matches_matcher(&def.matcher, event, ctx.tool_name.as_deref(), None) {
                 continue;
             }
-            let outcome = self.execute_hook(def, ctx).await;
-            outcomes.push(outcome);
+            // Filter: when_state condition
+            if let Some(ref when) = def.when_state {
+                if let Some(current) = state {
+                    let states: Vec<&str> = when.split('|').collect();
+                    if !states.contains(&current) {
+                        continue;
+                    }
+                }
+            }
+            // Execute all actions
+            for action in &def.actions {
+                let outcome = self.execute_action(def, action, ctx).await;
+                outcomes.push(outcome);
+            }
         }
-
         outcomes
     }
 
-    async fn execute_hook(&self, def: &HookDefinition, ctx: &HookContext) -> HookOutcome {
-        let event_label = format!("{:?}", def.event);
-        // Execute the first Command action (if multiple, later tasks can handle sequencing).
-        let command_action = def.actions.iter().find_map(|a| match a {
-            HookAction::Command { command, timeout_secs } => Some((command.clone(), *timeout_secs)),
-            _ => None,
-        });
-
-        let (command, timeout_secs) = match command_action {
-            Some(c) => c,
-            None => {
-                return HookOutcome {
-                    hook_event: event_label,
-                    success: true,
-                    output: "No command action in hook".to_string(),
-                    blocked: false,
+    /// Execute a single hook action and return the outcome.
+    async fn execute_action(
+        &self,
+        def: &HookDefinition,
+        action: &HookAction,
+        ctx: &HookContext,
+    ) -> HookOutcome {
+        match action {
+            HookAction::Command { command, timeout_secs } => {
+                let result = self.run_shell_command(command, *timeout_secs, ctx).await;
+                HookOutcome {
+                    def: def.clone(),
+                    continue_execution: result.continue_execution,
+                    reason: result.reason,
+                    injected_content: None,
+                    user_answer: None,
                 }
             }
-        };
+            HookAction::InjectContext { source, priority: _, visibility: _ } => {
+                let content = match source {
+                    ContextSource::Template(t) => Some(self.render_template(t, ctx)),
+                    ContextSource::File(p) => self.read_file_content(p).await,
+                    ContextSource::Inline(s) => Some(s.clone()),
+                };
+                HookOutcome {
+                    def: def.clone(),
+                    continue_execution: true,
+                    reason: None,
+                    injected_content: content,
+                    user_answer: None,
+                }
+            }
+            HookAction::AskUser { question: _, options: _ } => {
+                // Placeholder: InteractionService will integrate in Task 6
+                HookOutcome {
+                    def: def.clone(),
+                    continue_execution: true,
+                    reason: None,
+                    injected_content: None,
+                    user_answer: Some(UserAnswer { selected: vec![] }),
+                }
+            }
+        }
+    }
 
-        // Expand %tool% and %input% variables
+    /// Run a shell command as a hook action and return the parsed result.
+    async fn run_shell_command(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+        ctx: &HookContext,
+    ) -> ShellCommandResult {
         let expanded_command = expand_hook_variables(
-            &command,
+            command,
             ctx.tool_name.as_deref(),
             ctx.tool_input.as_ref().map(|v| v.to_string()).as_deref(),
         );
@@ -593,13 +911,11 @@ impl HookManager {
 
         let result = match child {
             Ok(mut child) => {
-                // Write context JSON to stdin
                 if let Some(stdin) = child.stdin.as_mut() {
                     use tokio::io::AsyncWriteExt;
                     let _ = stdin.write_all(ctx_json.as_bytes()).await;
                     let _ = stdin.flush().await;
                 }
-                // Drop stdin to signal EOF before waiting
                 drop(child.stdin.take());
 
                 tokio::time::timeout(
@@ -609,11 +925,9 @@ impl HookManager {
                 .await
             }
             Err(e) => {
-                return HookOutcome {
-                    hook_event: command.clone(),
-                    success: false,
-                    output: format!("Failed to spawn hook: {}", e),
-                    blocked: false,
+                return ShellCommandResult {
+                    continue_execution: true,
+                    reason: Some(format!("Failed to spawn hook: {}", e)),
                 }
             }
         };
@@ -622,45 +936,60 @@ impl HookManager {
             Ok(Ok(output)) => {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                    // Try to parse JSON result from stdout
                     if let Ok(parsed) = serde_json::from_str::<HookResult>(&stdout) {
-                        HookOutcome {
-                            hook_event: command.clone(),
-                            success: parsed.continue_execution,
-                            output: parsed.reason.unwrap_or_default(),
-                            blocked: !parsed.continue_execution,
+                        ShellCommandResult {
+                            continue_execution: parsed.continue_execution,
+                            reason: parsed.reason,
                         }
                     } else {
-                        HookOutcome {
-                            hook_event: command.clone(),
-                            success: true,
-                            output: stdout,
-                            blocked: false,
+                        ShellCommandResult {
+                            continue_execution: true,
+                            reason: Some(stdout),
                         }
                     }
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    HookOutcome {
-                        hook_event: command.clone(),
-                        success: false,
-                        output: stderr,
-                        blocked: false, // don't block on hook failure
+                    ShellCommandResult {
+                        continue_execution: true,
+                        reason: Some(stderr),
                     }
                 }
             }
-            Ok(Err(e)) => HookOutcome {
-                hook_event: command.clone(),
-                success: false,
-                output: format!("Hook execution error: {}", e),
-                blocked: false,
+            Ok(Err(e)) => ShellCommandResult {
+                continue_execution: true,
+                reason: Some(format!("Hook execution error: {}", e)),
             },
-            Err(_) => HookOutcome {
-                hook_event: command.clone(),
-                success: false,
-                output: "Hook timed out".to_string(),
-                blocked: false,
+            Err(_) => ShellCommandResult {
+                continue_execution: true,
+                reason: Some("Hook timed out".to_string()),
             },
         }
+    }
+
+    /// Render a template string by substituting context variables.
+    fn render_template(&self, template: &str, ctx: &HookContext) -> String {
+        let mut result = template.to_string();
+        result = result.replace("{event}", &ctx.event);
+        if let Some(ref name) = ctx.tool_name {
+            result = result.replace("{tool_name}", name);
+        }
+        if let Some(ref input) = ctx.tool_input {
+            result = result.replace("{tool_input}", &input.to_string());
+        }
+        if let Some(ref result_text) = ctx.tool_result {
+            result = result.replace("{tool_result}", result_text);
+        }
+        result = result.replace("{working_directory}", &ctx.working_directory);
+        result = result.replace("{timestamp}", &ctx.timestamp);
+        if let Some(ref phase) = ctx.workflow_state {
+            result = result.replace("{workflow_state}", phase);
+        }
+        result
+    }
+
+    /// Read the content of a file (async).
+    async fn read_file_content(&self, path: &std::path::Path) -> Option<String> {
+        tokio::fs::read_to_string(path).await.ok()
     }
 
     /// List registered hook events
