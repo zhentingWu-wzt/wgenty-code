@@ -9,12 +9,13 @@ pub mod types;
 pub use types::*;
 
 use crate::api::ChatMessage;
+use crate::knowledge::should_expose_skill_by_default;
+use crate::prompts::{self, PromptContext};
 use crate::runtime::command::CommandRouter;
 use crate::runtime::context::ContextAssembler;
 use crate::runtime::hooks::HookManager;
 use crate::runtime::interaction::InteractionService;
 use crate::runtime::interaction_tui::TuiInteractionService;
-use crate::prompts::{self, PromptContext};
 use crate::state::agent_phase::{AgentPhase, TurnAbortReason, TurnId};
 use crate::tui::client::DaemonClient;
 use crate::tui::components::input::InputBox;
@@ -35,6 +36,29 @@ use tokio::sync::mpsc;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::RwLock;
 
+/// A queued turn with separate user-facing text and agent-facing input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingInput {
+    pub display_text: String,
+    pub agent_input: String,
+}
+
+impl PendingInput {
+    pub fn new(text: String) -> Self {
+        Self {
+            display_text: text.clone(),
+            agent_input: text,
+        }
+    }
+
+    pub fn internal(display_text: String, agent_input: String) -> Self {
+        Self {
+            display_text,
+            agent_input,
+        }
+    }
+}
+
 /// Application state for the TUI.
 pub struct App {
     pub daemon_client: DaemonClient,
@@ -54,7 +78,7 @@ pub struct App {
     /// through this Arc, so each Turn inherits the accumulated context.
     pub conversation_history: Arc<TokioMutex<Vec<ChatMessage>>>,
     /// Pending user inputs queued while a Turn is running.
-    pub pending_inputs: VecDeque<String>,
+    pub pending_inputs: VecDeque<PendingInput>,
     /// Handle for the currently executing Turn (None when idle).
     pub current_turn_handle: Option<tokio::task::JoinHandle<()>>,
     /// ID of the currently executing turn (for lifecycle tracking).
@@ -155,6 +179,9 @@ impl App {
         let skill_loader = crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);
         let mut skill_inventory: Vec<prompts::SkillEntry> = Vec::new();
         for name in skill_loader.skill_names() {
+            if !should_expose_skill_by_default(&name) {
+                continue;
+            }
             if let Some(skill) = skill_loader.load_skill(&name) {
                 let desc = skill.description.clone();
                 skill_inventory.push(prompts::SkillEntry {
@@ -174,6 +201,9 @@ impl App {
             crate::knowledge::ExternalSkillRegistry::discover(external_registry_roots).ok();
         if let Some(ref external_registry) = external_skill_registry {
             for skill_def in external_registry.list() {
+                if !should_expose_skill_by_default(&skill_def.canonical_name) {
+                    continue;
+                }
                 // Avoid duplicates: only add external skills not already in inventory
                 if !skill_inventory
                     .iter()
@@ -236,7 +266,9 @@ impl App {
                 .filter(|s| s.canonical_name.starts_with("comet"))
                 .map(|s| s.canonical_name.clone())
                 .collect();
-            if !comet_cmds.is_empty() && command_router.entry_commands().len() == builtin_commands.len() {
+            if !comet_cmds.is_empty()
+                && command_router.entry_commands().len() == builtin_commands.len()
+            {
                 // Only register from registry if workflow.yaml didn't provide any
                 command_router.register_workflow("comet", &comet_cmds);
             }
@@ -297,7 +329,8 @@ impl App {
 
         // Set up TUI interaction service
         let (interaction_tx, _interaction_rx) = mpsc::unbounded_channel::<String>();
-        let (_answer_tx, answer_rx) = mpsc::unbounded_channel::<crate::runtime::interaction::UserAnswer>();
+        let (_answer_tx, answer_rx) =
+            mpsc::unbounded_channel::<crate::runtime::interaction::UserAnswer>();
         let interaction_service: Option<Arc<dyn InteractionService>> = Some(Arc::new(
             TuiInteractionService::new(interaction_tx, answer_rx),
         ));
@@ -308,8 +341,13 @@ impl App {
             let sid = session_id.clone();
             tokio::spawn(async move {
                 let ctx = HookManager::session_start_context(&sid);
-                hm.fire(&crate::runtime::hooks::HookEvent::SessionStart, &ctx, None, None)
-                    .await;
+                hm.fire(
+                    &crate::runtime::hooks::HookEvent::SessionStart,
+                    &ctx,
+                    None,
+                    None,
+                )
+                .await;
             });
         }
 
@@ -366,9 +404,7 @@ impl App {
             completion_engine: {
                 let builtin_commands =
                     crate::tui::completion::CompletionEngine::default_builtin_commands();
-                let mut engine = crate::tui::completion::CompletionEngine::load(
-                    &builtin_commands,
-                );
+                let mut engine = crate::tui::completion::CompletionEngine::load(&builtin_commands);
                 // Merge workflow entry commands from CommandRouter into completion
                 let entry_cmds = command_router.entry_commands();
                 engine.merge_from_entry_commands(&entry_cmds);
@@ -443,8 +479,13 @@ impl App {
             let sid = self.session_id.clone();
             let handle = tokio::spawn(async move {
                 let ctx = HookManager::session_end_context(&sid);
-                hm.fire(&crate::runtime::hooks::HookEvent::SessionEnd, &ctx, None, None)
-                    .await;
+                hm.fire(
+                    &crate::runtime::hooks::HookEvent::SessionEnd,
+                    &ctx,
+                    None,
+                    None,
+                )
+                .await;
             });
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }

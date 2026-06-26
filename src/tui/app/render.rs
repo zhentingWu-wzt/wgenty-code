@@ -179,7 +179,7 @@ impl App {
         }
         let mut lines: Vec<String> = Vec::new();
         for (i, input) in self.pending_inputs.iter().enumerate().take(max_show) {
-            let first_line = input.lines().next().unwrap_or("");
+            let first_line = input.display_text.lines().next().unwrap_or("");
             let trunc = if first_line.len() > 60 {
                 format!("{}...", &first_line[..57])
             } else {

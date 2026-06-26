@@ -111,8 +111,9 @@ pub use external::{
 pub use external_registry::{ExternalSkillRegistry, ExternalSkillRoot};
 pub use loader::{SkillInfo, SkillLoader};
 pub use policy::{
-    DefaultAllowPolicy, LoadedSkillContext, LoadedSkillRecord, NestedSkillCallEvent,
-    PolicyDecision, SkillLoadEvent, SkillPolicy, ToolCallObservedEvent, MAX_NESTED_SKILL_DEPTH,
+    should_expose_skill_by_default, DefaultAllowPolicy, LoadedSkillContext, LoadedSkillRecord,
+    NestedSkillCallEvent, PolicyDecision, SkillLoadEvent, SkillPolicy, ToolCallObservedEvent,
+    MAX_NESTED_SKILL_DEPTH,
 };
 pub use registry::SkillRegistry;
 pub use root_resolver::SkillRootResolver;

@@ -672,6 +672,9 @@ impl App {
                     crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);
                 let mut skill_inventory: Vec<crate::prompts::SkillEntry> = Vec::new();
                 for name in skill_loader.skill_names() {
+                    if !crate::knowledge::should_expose_skill_by_default(&name) {
+                        continue;
+                    }
                     if let Some(skill) = skill_loader.load_skill(&name) {
                         skill_inventory.push(crate::prompts::SkillEntry {
                             name,
@@ -687,6 +690,11 @@ impl App {
                     crate::knowledge::ExternalSkillRegistry::discover(external_registry_roots)
                 {
                     for skill_def in external_registry.list() {
+                        if !crate::knowledge::should_expose_skill_by_default(
+                            &skill_def.canonical_name,
+                        ) {
+                            continue;
+                        }
                         if !skill_inventory
                             .iter()
                             .any(|s| s.name == skill_def.canonical_name)
@@ -739,7 +747,8 @@ impl App {
                             workflow_state: None,
                             variables: Default::default(),
                         };
-                        hm.fire(&crate::runtime::hooks::HookEvent::Stop, &ctx, None, None).await;
+                        hm.fire(&crate::runtime::hooks::HookEvent::Stop, &ctx, None, None)
+                            .await;
                     });
                 }
                 let snapshot = self.subagent_tree.clone();
@@ -773,7 +782,8 @@ impl App {
                             workflow_state: None,
                             variables: Default::default(),
                         };
-                        hm.fire(&crate::runtime::hooks::HookEvent::Stop, &ctx, None, None).await;
+                        hm.fire(&crate::runtime::hooks::HookEvent::Stop, &ctx, None, None)
+                            .await;
                     });
                 }
                 self.last_abort_reason = Some(reason.clone());

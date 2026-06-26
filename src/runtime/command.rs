@@ -28,6 +28,27 @@ pub enum RouteResult {
     NotSlash,
 }
 
+/// Build the internal prompt sent to the agent for an explicit workflow slash command.
+///
+/// This keeps slash-command routing deterministic: the command router decides which
+/// workflow skill to load, instead of relying on the model to infer it from raw text.
+pub fn workflow_invocation_prompt(
+    name: &str,
+    command: &str,
+    args: &str,
+    raw_input: &str,
+) -> String {
+    format!(
+        "<slash_command_invocation>\n\
+Command: /{command}\n\
+Workflow: {name}\n\
+Arguments: {args}\n\
+Raw input: {raw_input}\n\n\
+This is an explicit slash command. Before any other response or action, use `load_skill` to load `{command}`, then follow that skill's instructions with the arguments above.\n\
+</slash_command_invocation>"
+    )
+}
+
 /// Pure-data router that maps slash-command input to a route result.
 ///
 /// Built-ins are resolved first. Afterwards the router checks its
@@ -109,7 +130,11 @@ mod tests {
         let mut router = CommandRouter::new(vec![]);
         router.register_workflow("example-workflow", &["workflow".into(), "wf".into()]);
         match router.route("/workflow fix bug") {
-            RouteResult::Workflow { name, command, args } => {
+            RouteResult::Workflow {
+                name,
+                command,
+                args,
+            } => {
                 assert_eq!(name, "example-workflow");
                 assert_eq!(command, "workflow");
                 assert_eq!(args, "fix bug");
@@ -123,7 +148,11 @@ mod tests {
         let mut router = CommandRouter::new(vec![]);
         router.register_workflow("example-workflow", &["workflow".into(), "wf".into()]);
         match router.route("/wf some args") {
-            RouteResult::Workflow { name, command, args } => {
+            RouteResult::Workflow {
+                name,
+                command,
+                args,
+            } => {
                 assert_eq!(name, "example-workflow");
                 assert_eq!(command, "wf");
                 assert_eq!(args, "some args");
@@ -152,13 +181,63 @@ mod tests {
         let mut router = CommandRouter::new(vec![]);
         router.register_workflow("example-workflow", &["workflow".into()]);
         match router.route("/workflow") {
-            RouteResult::Workflow { name, command, args } => {
+            RouteResult::Workflow {
+                name,
+                command,
+                args,
+            } => {
                 assert_eq!(name, "example-workflow");
                 assert_eq!(command, "workflow");
                 assert_eq!(args, "");
             }
             _ => panic!("expected Workflow route with empty args"),
         }
+    }
+
+    #[test]
+    fn test_workflow_longest_command_match() {
+        let mut router = CommandRouter::new(vec![]);
+        router.register_workflow("comet", &["comet".into(), "comet-build".into()]);
+
+        match router.route("/comet-build implement skill gating") {
+            RouteResult::Workflow {
+                name,
+                command,
+                args,
+            } => {
+                assert_eq!(name, "comet");
+                assert_eq!(command, "comet-build");
+                assert_eq!(args, "implement skill gating");
+            }
+            _ => panic!("expected longest Workflow route"),
+        }
+    }
+
+    #[test]
+    fn test_workflow_invocation_prompt_loads_exact_command_skill() {
+        let prompt = workflow_invocation_prompt(
+            "comet",
+            "comet-build",
+            "implement skill gating",
+            "/comet-build implement skill gating",
+        );
+
+        assert!(prompt.contains("Command: /comet-build"));
+        assert!(prompt.contains("Workflow: comet"));
+        assert!(prompt.contains("Arguments: implement skill gating"));
+        assert!(prompt.contains("Raw input: /comet-build implement skill gating"));
+        assert!(prompt.contains("use `load_skill` to load `comet-build`"));
+    }
+
+    #[test]
+    fn test_workflow_invocation_prompt_loads_base_command_skill() {
+        let prompt =
+            workflow_invocation_prompt("comet", "comet", "fix routing", "/comet fix routing");
+
+        assert!(prompt.contains("Command: /comet"));
+        assert!(prompt.contains("Workflow: comet"));
+        assert!(prompt.contains("Arguments: fix routing"));
+        assert!(prompt.contains("use `load_skill` to load `comet`"));
     }
 
     #[test]
