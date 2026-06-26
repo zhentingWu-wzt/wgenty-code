@@ -9,11 +9,11 @@ use crate::tui::util::truncate_session_name;
 impl App {
     /// Start the next pending turn (if any).
     pub(super) fn start_next_turn(&mut self) {
-        if let Some(text) = self.pending_inputs.pop_front() {
+        if let Some(pending) = self.pending_inputs.pop_front() {
             // Push user message to UI immediately
             self.committed_messages.push(UIMessage {
                 role: MessageRole::User,
-                content: text.clone(),
+                content: pending.display_text.clone(),
                 tool_name: None,
                 content_collapsed: false,
                 tool_collapsed: false,
@@ -24,10 +24,10 @@ impl App {
             });
             // Auto-name the session from the first user message
             if self.session_name == "New Session" {
-                let name = truncate_session_name(&text);
+                let name = truncate_session_name(&pending.display_text);
                 self.session_name = name;
             }
-            self.spawn_agent_turn(text, false);
+            self.spawn_agent_turn(pending.agent_input, false);
         }
     }
 

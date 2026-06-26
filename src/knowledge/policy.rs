@@ -104,3 +104,37 @@ pub trait SkillPolicy: Send + Sync {
 pub struct DefaultAllowPolicy;
 
 impl SkillPolicy for DefaultAllowPolicy {}
+
+/// Returns whether a skill should be listed in the default prompt inventory.
+///
+/// Gatekeeper skills that redefine global skill-loading behavior are kept
+/// explicit-only so they do not override unrelated conversations or workflows.
+pub fn should_expose_skill_by_default(skill_name: &str) -> bool {
+    !matches!(
+        skill_name,
+        "superpowers:using-superpowers" | "using-superpowers"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn superpowers_gatekeeper_is_not_exposed_by_default() {
+        assert!(!should_expose_skill_by_default(
+            "superpowers:using-superpowers"
+        ));
+        assert!(!should_expose_skill_by_default("using-superpowers"));
+    }
+
+    #[test]
+    fn ordinary_skills_are_exposed_by_default() {
+        assert!(should_expose_skill_by_default("comet"));
+        assert!(should_expose_skill_by_default("comet-build"));
+        assert!(should_expose_skill_by_default("systematic-debugging"));
+        assert!(should_expose_skill_by_default(
+            "superpowers:test-driven-development"
+        ));
+    }
+}
