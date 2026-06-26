@@ -1,11 +1,9 @@
 use crate::api::ChatMessage;
-use crate::comet::{CometGuard, CometState};
 use crate::runtime::guardian::{Guardian, GuardianDecision};
 use crate::runtime::hooks::{HookEvent, HookManager};
 use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
 use crate::tools::ToolRegistry;
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -15,28 +13,31 @@ pub struct ToolExecutor {
     session_rules: Arc<RwLock<HashSet<String>>>,
     hook_manager: Arc<HookManager>,
     guardian: Guardian,
-    /// Active comet workflow state, read once from the working directory.
-    /// `None` if no active comet change is in progress.
-    comet_state: Option<CometState>,
+    /// Active workflow state handle (e.g. Comet phase: "open", "design", "build", etc.).
+    /// `None` if no workflow state is active.
+    pub state_handle: Option<Arc<RwLock<String>>>,
 }
 
 impl ToolExecutor {
     pub fn new(registry: Arc<ToolRegistry>, policy: ToolPermissionPolicy) -> Self {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let comet_state = CometState::read(&cwd);
         Self {
             registry,
             policy,
             session_rules: Arc::new(RwLock::new(HashSet::new())),
             hook_manager: Arc::new(HookManager::default()),
             guardian: Guardian::default(),
-            comet_state,
+            state_handle: None,
         }
     }
 
     pub fn with_hooks(mut self, hook_manager: Arc<HookManager>) -> Self {
         self.hook_manager = hook_manager;
         self
+    }
+
+    /// Set the workflow state handle (e.g., from the Comet subsystem or TUI app).
+    pub fn set_state_handle(&mut self, handle: Option<Arc<RwLock<String>>>) {
+        self.state_handle = handle;
     }
 
     pub fn tool_definitions(&self) -> Vec<crate::api::ToolDefinition> {
@@ -130,11 +131,11 @@ impl ToolExecutor {
 
     /// Execute a tool call with Pre/Post hooks wrapping execution.
     ///
-    /// Comet phase guard runs first; if the current phase disallows this tool,
-    /// a Notification hook is fired and the call is blocked.
+    /// PreToolUse hooks with `when_state` filtering replace the old CometGuard
+    /// phase-guard logic. If the workflow state matches a hook's `when_state`
+    /// and that hook returns `{ "continue_execution": false }`, the tool call
+    /// is blocked.
     ///
-    /// PreToolUse hooks run after the comet guard; if any hook returns
-    /// `{ "continue_execution": false }` the tool call is blocked.
     /// PostToolUse hooks run after execution and cannot block.
     pub async fn execute_with_hooks(
         &self,
@@ -149,45 +150,46 @@ impl ToolExecutor {
             "ToolExecutor: executing with hooks"
         );
 
-        // ── Comet phase guard (before PreToolUse hooks) ──────────────────
-        if let Some(ref state) = self.comet_state {
-            let guard_args = json_args_to_strings(&args);
-            let decision = CometGuard::check(&state.phase, tool_name, &guard_args);
-            if decision.blocked {
-                let msg = decision.error_message.unwrap_or_else(|| {
-                    format!(
-                        "Tool '{}' blocked by comet guard in {:?} phase",
-                        tool_name, state.phase
-                    )
-                });
-                // Fire Notification hook asynchronously (do not await)
-                let hook_manager = Arc::clone(&self.hook_manager);
-                let notif_ctx = HookManager::notification_context(Some(&msg), session_id);
-                let tool_name_owned = tool_name.to_string();
-                tokio::spawn(async move {
-                    hook_manager
-                        .fire(&HookEvent::Notification, &notif_ctx, None, Some(&tool_name_owned))
-                        .await;
-                });
-                return ChatMessage::tool(tool_call_id, msg);
-            }
-        }
+        // Read the current workflow state from the shared handle
+        let state_val = self
+            .state_handle
+            .as_ref()
+            .and_then(|h| h.try_read().ok())
+            .map(|r| r.clone());
+        let state_str = state_val.as_deref();
 
-        // PreToolUse hook
-        let pre_ctx = HookManager::pre_tool_context(tool_name, &args, session_id);
+        // PreToolUse hooks — hooks with when_state matching the current state
+        // may block the tool by returning `{ "continue_execution": false }`.
+        let pre_ctx = HookManager::pre_tool_context(tool_name, &args, session_id)
+            .with_state(state_val.clone());
         let pre_outcomes = self
             .hook_manager
-            .fire(&HookEvent::PreToolUse, &pre_ctx, None, None)
+            .fire(&HookEvent::PreToolUse, &pre_ctx, state_str, None)
             .await;
 
-        // Check if any hook blocked execution
+        // If any hook blocked execution, fire a Notification hook and return
         for outcome in &pre_outcomes {
             if !outcome.continue_execution {
                 let reason = outcome.reason.as_deref().unwrap_or("unknown reason");
-                return ChatMessage::tool(
-                    tool_call_id,
-                    format!("Tool '{}' blocked by hook: {}", tool_name, reason),
-                );
+                let msg = format!("Tool '{}' blocked by hook: {}", tool_name, reason);
+                // Fire Notification hook asynchronously (do not await)
+                let hook_manager = Arc::clone(&self.hook_manager);
+                let notif_ctx =
+                    HookManager::notification_context(Some(&msg), session_id)
+                        .with_state(state_val.clone());
+                let tool_name_owned = tool_name.to_string();
+                let state_owned = state_val.clone();
+                tokio::spawn(async move {
+                    hook_manager
+                        .fire(
+                            &HookEvent::Notification,
+                            &notif_ctx,
+                            state_owned.as_deref(),
+                            Some(&tool_name_owned),
+                        )
+                        .await;
+                });
+                return ChatMessage::tool(tool_call_id, msg);
             }
         }
 
@@ -209,36 +211,115 @@ impl ToolExecutor {
         };
 
         // PostToolUse hook
-        let post_ctx = HookManager::post_tool_context(tool_name, &args, &content, session_id);
+        let post_ctx = HookManager::post_tool_context(tool_name, &args, &content, session_id)
+            .with_state(state_val.clone());
         let _post_outcomes = self
             .hook_manager
-            .fire(&HookEvent::PostToolUse, &post_ctx, None, None)
+            .fire(&HookEvent::PostToolUse, &post_ctx, state_str, None)
             .await;
 
         ChatMessage::tool(tool_call_id, &content)
     }
 }
 
-/// Convert tool arguments from JSON to `Vec<String>` for comet guard checking.
-///
-/// For `exec_command` / `execute_command` tools, the JSON object's `"command"`
-/// field is split on whitespace (e.g. `"git status"` → `["git", "status"]`).
-/// For other tools, object values are stringified.
-fn json_args_to_strings(args: &serde_json::Value) -> Vec<String> {
-    match args {
-        serde_json::Value::Object(obj) => {
-            if let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) {
-                cmd.split_whitespace().map(|s| s.to_string()).collect()
-            } else {
-                obj.values()
-                    .map(|v| match v {
-                        serde_json::Value::String(s) => s.clone(),
-                        _ => v.to_string(),
-                    })
-                    .collect()
-            }
-        }
-        serde_json::Value::String(s) => vec![s.clone()],
-        _ => vec![args.to_string()],
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::hooks::{HookAction, HookDefinition, HookEvent, HookManager};
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    fn make_executor(hook_manager: Arc<HookManager>) -> ToolExecutor {
+        let registry = Arc::new(ToolRegistry::new());
+        let policy = ToolPermissionPolicy::new(std::path::PathBuf::from("."));
+        ToolExecutor::new(registry, policy).with_hooks(hook_manager)
+    }
+
+    /// RED: set_state_handle should exist and wire state_handle into the executor.
+    #[test]
+    fn test_state_handle_setter() {
+        let mut executor = make_executor(Arc::new(HookManager::default()));
+        let handle = Arc::new(RwLock::new("open".to_string()));
+        executor.set_state_handle(Some(handle.clone()));
+        // The state_handle should be readable (not yet used in execute_with_hooks)
+        let state = executor
+            .state_handle
+            .as_ref()
+            .unwrap()
+            .try_read()
+            .unwrap()
+            .clone();
+        assert_eq!(state, "open");
+    }
+
+    /// RED: A PreToolUse hook with when_state matching the current state should block the tool.
+    #[tokio::test]
+    async fn test_execute_with_hooks_blocked_by_when_state_matching() {
+        let mut hm = HookManager::default();
+        hm.register_workflow_hooks(vec![HookDefinition {
+            event: HookEvent::PreToolUse,
+            matcher: Some("exec_command".to_string()),
+            when_state: Some("open".to_string()),
+            actions: vec![HookAction::Command {
+                command: "echo '{\"continue_execution\":false,\"reason\":\"blocked by open-phase hook\"}'"
+                    .to_string(),
+                timeout_secs: 5,
+            }],
+        }]);
+        let hook_manager = Arc::new(hm);
+        let mut executor = make_executor(hook_manager);
+        executor.set_state_handle(Some(Arc::new(RwLock::new("open".to_string()))));
+
+        let result = executor
+            .execute_with_hooks(
+                "test-1",
+                "exec_command",
+                serde_json::json!({"command": "echo hello"}),
+                None,
+            )
+            .await;
+
+        let msg = result.content.unwrap_or_default();
+        assert!(
+            msg.contains("blocked"),
+            "Expected exec_command to be blocked by hook in open phase, got: {}",
+            msg
+        );
+    }
+
+    /// RED: A PreToolUse hook with when_state NOT matching the current state should NOT block.
+    #[tokio::test]
+    async fn test_execute_with_hooks_allowed_when_state_mismatch() {
+        let mut hm = HookManager::default();
+        hm.register_workflow_hooks(vec![HookDefinition {
+            event: HookEvent::PreToolUse,
+            matcher: Some("exec_command".to_string()),
+            when_state: Some("open".to_string()), // only fires in "open"
+            actions: vec![HookAction::Command {
+                command: "echo '{\"continue_execution\":false,\"reason\":\"blocked by open-phase hook\"}'"
+                    .to_string(),
+                timeout_secs: 5,
+            }],
+        }]);
+        let hook_manager = Arc::new(hm);
+        let mut executor = make_executor(hook_manager);
+        // State is "build" — hook's when_state is "open" → should NOT fire
+        executor.set_state_handle(Some(Arc::new(RwLock::new("build".to_string()))));
+
+        let result = executor
+            .execute_with_hooks(
+                "test-2",
+                "exec_command",
+                serde_json::json!({"command": "echo hello"}),
+                None,
+            )
+            .await;
+
+        let msg = result.content.unwrap_or_default();
+        assert!(
+            !msg.contains("blocked"),
+            "Expected exec_command to NOT be blocked in build phase (when_state mismatch), got: {}",
+            msg
+        );
     }
 }
