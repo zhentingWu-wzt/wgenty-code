@@ -182,6 +182,7 @@ fn phase_label(phase: &AgentPhase, subagent_tree: Option<&SubagentTree>) -> Stri
         AgentPhase::Compacting => "Compacting…".to_string(),
         AgentPhase::Errored(_) => "Error".to_string(),
         AgentPhase::Planning => "Plan review…".to_string(),
+        AgentPhase::WaitingForInteraction => "Awaiting input…".to_string(),
     }
 }
 

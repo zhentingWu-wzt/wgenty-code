@@ -34,6 +34,8 @@ pub enum AgentPhase {
     Errored(String),
     /// Plan mode: agent has generated a plan, awaiting user review.
     Planning,
+    /// Awaiting user response to an interaction prompt (ask/confirm).
+    WaitingForInteraction,
 }
 
 impl AgentPhase {
@@ -52,6 +54,7 @@ impl AgentPhase {
             AgentPhase::Completed => "idle",
             AgentPhase::Errored(_) => "error",
             AgentPhase::Planning => "plan review",
+            AgentPhase::WaitingForInteraction => "awaiting input...",
         }
     }
 
@@ -63,6 +66,7 @@ impl AgentPhase {
                 | AgentPhase::Completed
                 | AgentPhase::Errored(_)
                 | AgentPhase::Planning
+                | AgentPhase::WaitingForInteraction
         )
     }
 }
