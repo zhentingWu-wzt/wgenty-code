@@ -1392,7 +1392,7 @@ git commit -m "refactor(executor): replace CometGuard::check() with hooks when_s
 - 消费：Task 4 的 `ContextAssembler`、`AssembledContext`
 - 产出：`PromptContext` 获得 `context_assembler: Option<Arc<ContextAssembler>>` 字段
 
-- [ ] **Step 1: 为 `PromptContext` 添加 `context_assembler` 字段**
+- [x] **Step 1: 为 `PromptContext` 添加 `context_assembler` 字段**
 
 ```rust
 pub struct PromptContext {
@@ -1401,7 +1401,7 @@ pub struct PromptContext {
 }
 ```
 
-- [ ] **Step 2: 替换 Layer 1b（硬编码 comet 注入）**
+- [x] **Step 2: 替换 Layer 1b（硬编码 comet 注入）**
 
 找到以下代码块（原始行 ~119-128）：
 ```rust
@@ -1423,29 +1423,29 @@ if let Some(ref assembler) = context.context_assembler {
 }
 ```
 
-- [ ] **Step 3: 移除 `use crate::comet` 相关导入**
+- [x] **Step 3: 移除 `use crate::comet` 相关导入**
 
 搜索并移除 `src/prompts/mod.rs` 中所有引用 `crate::comet` 的 `use` 语句。
 
 添加 `use crate::runtime::context::ContextAssembler;` 和 `use std::sync::Arc;`。
 
-- [ ] **Step 4: 移除 `comet_phase` 引用**
+- [x] **Step 4: 移除 `comet_phase` 引用**
 
 检查 `src/prompts/mod.rs` 中是否还有对 `comet_phase` 或 `phase_instruction` 的引用，全部清理。
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 ```bash
 cargo check 2>&1 | head -30
 ```
 
-- [ ] **Step 6: 运行 prompts 测试**
+- [x] **Step 6: 运行 prompts 测试**
 
 ```bash
 cargo test -p wgenty-core -- prompts 2>&1 | tail -30
 ```
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add src/prompts/mod.rs
