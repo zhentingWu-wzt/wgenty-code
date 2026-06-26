@@ -107,7 +107,7 @@ pub struct App {
     pub completion_state: Option<CompletionState>,
     /// Shared, optional transcript store for browsing completed subagent records.
     pub transcript_store: Option<std::sync::Arc<crate::transcript::SubagentTranscriptStore>>,
-    /// External skill registry for resolving slash commands via route_slash_command.
+    /// External skill registry for resolving slash commands.
     pub external_skill_registry: Option<std::sync::Arc<crate::knowledge::ExternalSkillRegistry>>,
     /// Hook manager for lifecycle event hooks (SessionStart, Stop, etc.).
     pub hook_manager: std::sync::Arc<HookManager>,
@@ -307,10 +307,7 @@ impl App {
             let hm = hook_manager.clone();
             let sid = session_id.clone();
             tokio::spawn(async move {
-                let cwd = std::env::current_dir().unwrap_or_default();
-                let comet_phase = crate::comet::CometState::read(&cwd)
-                    .map(|s| format!("{:?}", s.phase).to_lowercase());
-                let ctx = HookManager::session_start_context(&sid).with_comet_phase(comet_phase);
+                let ctx = HookManager::session_start_context(&sid);
                 hm.fire(&crate::runtime::hooks::HookEvent::SessionStart, &ctx, None, None)
                     .await;
             });
@@ -445,10 +442,7 @@ impl App {
             let hm = self.hook_manager.clone();
             let sid = self.session_id.clone();
             let handle = tokio::spawn(async move {
-                let cwd = std::env::current_dir().unwrap_or_default();
-                let comet_phase = crate::comet::CometState::read(&cwd)
-                    .map(|s| format!("{:?}", s.phase).to_lowercase());
-                let ctx = HookManager::session_end_context(&sid).with_comet_phase(comet_phase);
+                let ctx = HookManager::session_end_context(&sid);
                 hm.fire(&crate::runtime::hooks::HookEvent::SessionEnd, &ctx, None, None)
                     .await;
             });
