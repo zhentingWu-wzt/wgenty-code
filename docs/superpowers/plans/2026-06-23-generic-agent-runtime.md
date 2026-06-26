@@ -1017,7 +1017,7 @@ git commit -m "feat(runtime): implement InteractionService trait with TUI/CLI/He
 - 创建：`.wgenty-code/skills/comet/workflow.yaml`
 - 创建：`tests/workflow_comet_test.rs`
 
-- [ ] **Step 1: 创建 `.wgenty-code/skills/comet/workflow.yaml`**
+- [x] **Step 1: 创建 `.wgenty-code/skills/comet/workflow.yaml`**
 
 ```yaml
 name: comet
@@ -1114,7 +1114,7 @@ templates:
       Phase: Archive. Allowed: archive confirmation. Forbidden: source code changes.
 ```
 
-- [ ] **Step 2: 编写集成测试 `tests/workflow_comet_test.rs`**
+- [x] **Step 2: 编写集成测试 `tests/workflow_comet_test.rs`**
 
 ```rust
 #[cfg(test)]
@@ -1180,13 +1180,13 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 运行集成测试**
+- [x] **Step 3: 运行集成测试**
 
 ```bash
 cargo test --test workflow_comet_test 2>&1 | tail -20
 ```
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add .wgenty-code/skills/comet/workflow.yaml tests/workflow_comet_test.rs
