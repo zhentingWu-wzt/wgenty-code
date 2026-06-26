@@ -1,7 +1,7 @@
 //! Input submission — slash commands and normal user input.
 
 use super::types::*;
-use super::App;
+use super::{App, PendingInput};
 use crate::api::ChatMessage;
 use crate::state::agent_phase::{AgentPhase, TurnAbortReason};
 
@@ -95,8 +95,9 @@ impl App {
                     )));
                 });
                 self.last_abort_reason = None;
-                self.pending_inputs
-                    .push_back("Continue the current task from where you left off.".to_string());
+                self.pending_inputs.push_back(PendingInput::new(
+                    "Continue the current task from where you left off.".to_string(),
+                ));
                 if self.current_turn_handle.is_none() {
                     self.start_next_turn();
                 }
@@ -128,8 +129,9 @@ impl App {
                 diff_data: None,
                 tool_metadata: None,
             });
-            self.pending_inputs
-                .push_back("undo the most recent operation".to_string());
+            self.pending_inputs.push_back(PendingInput::new(
+                "undo the most recent operation".to_string(),
+            ));
             if self.current_turn_handle.is_none() {
                 self.start_next_turn();
             }
@@ -176,8 +178,13 @@ impl App {
                     workflow_state: None,
                     variables: Default::default(),
                 };
-                hm.fire(&crate::runtime::hooks::HookEvent::UserPromptSubmit, &ctx, None, None)
-                    .await;
+                hm.fire(
+                    &crate::runtime::hooks::HookEvent::UserPromptSubmit,
+                    &ctx,
+                    None,
+                    None,
+                )
+                .await;
             });
         }
 
@@ -227,8 +234,11 @@ impl App {
                         }
                         // Show friendly status message
                         self.push_system_message(format!("Starting {} workflow...", name));
-                        // Queue the original input for the agent to process.
-                        self.pending_inputs.push_back(text.clone());
+                        let agent_input = crate::runtime::command::workflow_invocation_prompt(
+                            &name, &command, &args, &text,
+                        );
+                        self.pending_inputs
+                            .push_back(PendingInput::internal(text.clone(), agent_input));
                         if self.current_turn_handle.is_none() {
                             self.start_next_turn();
                         }
@@ -262,13 +272,13 @@ impl App {
         }
         if self.mode == AgentMode::PlanMode {
             self.phase = AgentPhase::Thinking;
-            self.pending_inputs.push_back(text);
+            self.pending_inputs.push_back(PendingInput::new(text));
             self.start_next_turn();
             // PlanMode now persists across turns — the agent detects plan
             // confirmation replies and skips re-planning automatically.
             return;
         }
-        self.pending_inputs.push_back(text);
+        self.pending_inputs.push_back(PendingInput::new(text));
         if self.current_turn_handle.is_none() {
             self.start_next_turn();
         }
