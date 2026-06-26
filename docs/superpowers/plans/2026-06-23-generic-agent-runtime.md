@@ -1210,7 +1210,7 @@ git commit -m "feat(comet): create workflow.yaml defining comet as hook configur
 - 消费：Task 1 的 `pub mod runtime`
 - 产出：所有导入更新完毕、原有 hooks/guardian 保持功能不变、所有测试通过
 
-- [ ] **Step 1: 移动 hooks 文件**
+- [x] **Step 1: 移动 hooks 文件**
 
 ```bash
 mkdir -p src/runtime/hooks
@@ -1218,13 +1218,13 @@ git mv src/hooks/mod.rs src/runtime/hooks/mod.rs
 git mv src/hooks/cc_adapter.rs src/runtime/hooks/cc_adapter.rs
 ```
 
-- [ ] **Step 2: 移动 guardian 文件**
+- [x] **Step 2: 移动 guardian 文件**
 
 ```bash
 git mv src/guardian/mod.rs src/runtime/guardian.rs
 ```
 
-- [ ] **Step 3: 更新所有 `crate::hooks` 引用为 `crate::runtime::hooks`**
+- [x] **Step 3: 更新所有 `crate::hooks` 引用为 `crate::runtime::hooks`**
 
 ```bash
 # 查找所有引用 crate::hooks 的文件
@@ -1245,7 +1245,7 @@ sed -i '' 's/crate::hooks/crate::runtime::hooks/g' src/prompts/mod.rs
 # ... 对所有匹配文件重复
 ```
 
-- [ ] **Step 4: 更新所有 `crate::guardian` 引用为 `crate::runtime::guardian`**
+- [x] **Step 4: 更新所有 `crate::guardian` 引用为 `crate::runtime::guardian`**
 
 ```bash
 grep -rl "crate::guardian" src/ | grep -v target/
@@ -1254,14 +1254,14 @@ sed -i '' 's/crate::guardian/crate::runtime::guardian/g' src/tools/executor.rs
 # ... 对所有匹配文件重复
 ```
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 ```bash
 cargo check 2>&1 | head -30
 ```
 修复所有 "module not found" 错误。可能遗漏的引用文件也执行替换。
 
-- [ ] **Step 6: 运行所有 hooks 相关测试**
+- [x] **Step 6: 运行所有 hooks 相关测试**
 
 ```bash
 cargo test -p wgenty-core -- hooks 2>&1 | tail -20
@@ -1269,13 +1269,13 @@ cargo test -p wgenty-core -- guardian 2>&1 | tail -20
 ```
 确认所有测试仍然通过。
 
-- [ ] **Step 7: 删除空的 src/hooks/ 和 src/guardian/ 目录**
+- [x] **Step 7: 删除空的 src/hooks/ 和 src/guardian/ 目录**
 
 ```bash
 rmdir src/hooks 2>/dev/null; rmdir src/guardian 2>/dev/null; true
 ```
 
-- [ ] **Step 8: 提交**
+- [x] **Step 8: 提交**
 
 ```bash
 git add src/
