@@ -8,6 +8,7 @@ pub mod cc_adapter;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Types of hook events
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -24,6 +25,8 @@ pub enum HookEvent {
     UserPromptSubmit,
     /// CC-compatible: Triggered for permission requests
     PermissionRequest,
+    /// Triggered when a slash command (e.g. /comet-design) is invoked
+    SlashCommand,
 }
 
 impl std::fmt::Display for HookEvent {
@@ -37,29 +40,107 @@ impl std::fmt::Display for HookEvent {
             HookEvent::Stop => write!(f, "Stop"),
             HookEvent::UserPromptSubmit => write!(f, "UserPromptSubmit"),
             HookEvent::PermissionRequest => write!(f, "PermissionRequest"),
+            HookEvent::SlashCommand => write!(f, "SlashCommand"),
         }
     }
 }
 
-/// A single hook definition from settings.json
+/// Source for injected context
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ContextSource {
+    Template(String),
+    File(PathBuf),
+    Inline(String),
+}
+
+/// Visibility of an injected context layer
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LayerVisibility {
+    Internal,
+    Visible,
+}
+
+/// An option presented to the user in AskUser action
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserOption {
+    pub label: String,
+    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Actions that a hook can perform
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum HookAction {
+    Command {
+        command: String,
+        timeout_secs: u64,
+    },
+    InjectContext {
+        source: ContextSource,
+        priority: u8,
+        visibility: LayerVisibility,
+    },
+    AskUser {
+        question: String,
+        options: Vec<UserOption>,
+    },
+}
+
+/// A single hook definition from settings.json
+#[derive(Debug, Clone, Serialize)]
 pub struct HookDefinition {
-    /// Shell command to execute
-    pub command: String,
-    /// Optional timeout in seconds (default 30)
-    #[serde(default = "default_timeout")]
-    pub timeout_secs: u64,
+    /// The event that triggers this hook
+    pub event: HookEvent,
     /// CC-compatible: matcher for filtering hook execution.
     /// None/"" = match all, "ToolA|ToolB" = pipe-separated tool names.
     #[serde(default)]
     pub matcher: Option<String>,
-    /// CC-compatible: hook type ("command" or "prompt").
-    #[serde(default)]
-    pub hook_type: Option<String>,
+    /// Optional workflow state condition (e.g. "build", "design").
+    /// Hook only fires when Comet is in this state, if set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when_state: Option<String>,
+    /// Actions to execute when the hook fires
+    pub actions: Vec<HookAction>,
 }
 
-fn default_timeout() -> u64 {
-    30
+impl<'de> Deserialize<'de> for HookDefinition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct HookDefHelper {
+            event: HookEvent,
+            #[serde(default)]
+            matcher: Option<String>,
+            #[serde(default)]
+            when_state: Option<String>,
+            #[serde(default)]
+            command: Option<String>,
+            #[serde(default)]
+            timeout_secs: Option<u64>,
+            #[serde(default)]
+            #[allow(dead_code)]
+            hook_type: Option<String>,
+            #[serde(default)]
+            actions: Option<Vec<HookAction>>,
+        }
+        let helper = HookDefHelper::deserialize(deserializer)?;
+        let actions = match helper.actions {
+            Some(a) if !a.is_empty() => a,
+            _ => vec![HookAction::Command {
+                command: helper.command.unwrap_or_default(),
+                timeout_secs: helper.timeout_secs.unwrap_or(30),
+            }],
+        };
+        Ok(HookDefinition {
+            event: helper.event,
+            matcher: helper.matcher,
+            when_state: helper.when_state,
+            actions,
+        })
+    }
 }
 
 /// Check if a hook's matcher matches the given tool name or event.
@@ -217,6 +298,106 @@ mod tests {
         let escaped = shell_escape("it's working");
         assert_eq!(escaped, "'it'\\''s working'");
     }
+
+    #[test]
+    fn test_deserialize_hookevent_slash_command() {
+        // GREEN: SlashCommand variant now exists, deserialization should succeed.
+        let result: Result<HookEvent, _> = serde_json::from_str("\"SlashCommand\"");
+        assert!(result.is_ok(), "SlashCommand should deserialize as a HookEvent variant");
+        assert_eq!(result.unwrap(), HookEvent::SlashCommand);
+    }
+
+    #[test]
+    fn test_hook_action_inject_context_serde() {
+        // GREEN: HookAction::InjectContext should serialize/deserialize correctly.
+        let action = HookAction::InjectContext {
+            source: ContextSource::Inline("hello".to_string()),
+            priority: 10,
+            visibility: LayerVisibility::Internal,
+        };
+        let json = serde_json::to_string(&action).expect("serialize InjectContext");
+        let parsed: HookAction = serde_json::from_str(&json).expect("deserialize InjectContext");
+        match parsed {
+            HookAction::InjectContext { source, priority, visibility } => {
+                match source {
+                    ContextSource::Inline(s) => assert_eq!(s, "hello"),
+                    _ => panic!("expected Inline source"),
+                }
+                assert_eq!(priority, 10);
+                match visibility {
+                    LayerVisibility::Internal => {},
+                    _ => panic!("expected Internal visibility"),
+                }
+            }
+            _ => panic!("expected InjectContext variant"),
+        }
+    }
+
+    #[test]
+    fn test_hook_definition_new_actions_format() {
+        // GREEN: New HookDefinition format with 'actions' should now deserialize.
+        let json = serde_json::json!({
+            "event": "PreToolUse",
+            "matcher": "TaskCreate",
+            "when_state": "build",
+            "actions": [
+                {"Command": {"command": "echo hello", "timeout_secs": 10}}
+            ]
+        });
+        let result: Result<HookDefinition, _> = serde_json::from_value(json);
+        assert!(result.is_ok(), "New actions format should deserialize after refactor");
+        let def = result.unwrap();
+        assert_eq!(def.event, HookEvent::PreToolUse);
+        assert_eq!(def.matcher.as_deref(), Some("TaskCreate"));
+        assert_eq!(def.when_state.as_deref(), Some("build"));
+        assert_eq!(def.actions.len(), 1);
+    }
+
+    #[test]
+    fn test_hook_definition_backward_compat_command_format() {
+        // GREEN: Old format with 'command' field must continue to work after refactor.
+        let json = serde_json::json!({
+            "event": "PreToolUse",
+            "command": "echo hello",
+            "timeout_secs": 30
+        });
+        let result: Result<HookDefinition, _> = serde_json::from_value(json);
+        assert!(result.is_ok(), "Old command format should deserialize into new HookDefinition");
+        let def = result.unwrap();
+        assert_eq!(def.event, HookEvent::PreToolUse);
+        assert_eq!(def.actions.len(), 1);
+        match &def.actions[0] {
+            HookAction::Command { command, timeout_secs } => {
+                assert_eq!(command, "echo hello");
+                assert_eq!(*timeout_secs, 30);
+            }
+            _ => panic!("expected Command action"),
+        }
+    }
+
+    #[test]
+    fn test_hook_context_workflow_state_and_variables() {
+        // RED: HookContext should serialize workflow_state and variables fields.
+        let ctx = HookContext {
+            event: "PreToolUse".to_string(),
+            tool_name: Some("test".to_string()),
+            tool_input: None,
+            tool_result: None,
+            session_id: None,
+            working_directory: "/tmp".to_string(),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            comet_phase: None,
+            workflow_state: Some("build".to_string()),
+            variables: {
+                let mut m = HashMap::new();
+                m.insert("key".to_string(), "value".to_string());
+                m
+            },
+        };
+        let json = serde_json::to_value(&ctx).expect("serialize HookContext");
+        assert_eq!(json["workflow_state"], "build");
+        assert_eq!(json["variables"]["key"], "value");
+    }
 }
 
 /// Context passed to hooks via stdin (JSON)
@@ -230,13 +411,29 @@ pub struct HookContext {
     pub working_directory: String,
     pub timestamp: String,
     /// Current Comet workflow phase (open/design/build/verify/archive), if any.
+    /// Deprecated: use `workflow_state` instead.
     pub comet_phase: Option<String>,
+    /// Generic workflow state (replaces comet_phase for the runtime).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow_state: Option<String>,
+    /// Key-value variables for hook context (e.g., from slash commands).
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub variables: HashMap<String, String>,
 }
 
 impl HookContext {
     /// Set the comet_phase field and return self (builder pattern).
+    #[deprecated(note = "Use `with_workflow_state` instead")]
     pub fn with_comet_phase(mut self, phase: Option<String>) -> Self {
+        self.workflow_state = phase.clone();
         self.comet_phase = phase;
+        self
+    }
+
+    /// Set the workflow_state (and comet_phase for backward compat) field and return self.
+    pub fn with_workflow_state(mut self, state: Option<String>) -> Self {
+        self.workflow_state = state.clone();
+        self.comet_phase = state;
         self
     }
 }
@@ -291,13 +488,21 @@ impl HookManager {
                     "Stop" => HookEvent::Stop,
                     "UserPromptSubmit" => HookEvent::UserPromptSubmit,
                     "PermissionRequest" => HookEvent::PermissionRequest,
+                    "SlashCommand" => HookEvent::SlashCommand,
                     _ => continue,
                 };
 
                 if let Some(arr) = definitions.as_array() {
                     let defs: Vec<HookDefinition> = arr
                         .iter()
-                        .filter_map(|d| serde_json::from_value(d.clone()).ok())
+                        .filter_map(|d| {
+                            // Legacy flat format stores definitions without an explicit
+                            // "event" field — inject it from the surrounding map key.
+                            let mut obj = d.as_object()?.clone();
+                            obj.entry("event")
+                                .or_insert_with(|| serde_json::Value::String(event_name.clone()));
+                            serde_json::from_value(serde_json::Value::Object(obj)).ok()
+                        })
                         .collect();
                     if !defs.is_empty() {
                         hooks.insert(event, defs);
@@ -350,9 +555,28 @@ impl HookManager {
     }
 
     async fn execute_hook(&self, def: &HookDefinition, ctx: &HookContext) -> HookOutcome {
+        let event_label = format!("{:?}", def.event);
+        // Execute the first Command action (if multiple, later tasks can handle sequencing).
+        let command_action = def.actions.iter().find_map(|a| match a {
+            HookAction::Command { command, timeout_secs } => Some((command.clone(), *timeout_secs)),
+            _ => None,
+        });
+
+        let (command, timeout_secs) = match command_action {
+            Some(c) => c,
+            None => {
+                return HookOutcome {
+                    hook_event: event_label,
+                    success: true,
+                    output: "No command action in hook".to_string(),
+                    blocked: false,
+                }
+            }
+        };
+
         // Expand %tool% and %input% variables
         let expanded_command = expand_hook_variables(
-            &def.command,
+            &command,
             ctx.tool_name.as_deref(),
             ctx.tool_input.as_ref().map(|v| v.to_string()).as_deref(),
         );
@@ -379,14 +603,14 @@ impl HookManager {
                 drop(child.stdin.take());
 
                 tokio::time::timeout(
-                    std::time::Duration::from_secs(def.timeout_secs),
+                    std::time::Duration::from_secs(timeout_secs),
                     child.wait_with_output(),
                 )
                 .await
             }
             Err(e) => {
                 return HookOutcome {
-                    hook_event: def.command.clone(),
+                    hook_event: command.clone(),
                     success: false,
                     output: format!("Failed to spawn hook: {}", e),
                     blocked: false,
@@ -401,14 +625,14 @@ impl HookManager {
                     // Try to parse JSON result from stdout
                     if let Ok(parsed) = serde_json::from_str::<HookResult>(&stdout) {
                         HookOutcome {
-                            hook_event: def.command.clone(),
+                            hook_event: command.clone(),
                             success: parsed.continue_execution,
                             output: parsed.reason.unwrap_or_default(),
                             blocked: !parsed.continue_execution,
                         }
                     } else {
                         HookOutcome {
-                            hook_event: def.command.clone(),
+                            hook_event: command.clone(),
                             success: true,
                             output: stdout,
                             blocked: false,
@@ -417,7 +641,7 @@ impl HookManager {
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
                     HookOutcome {
-                        hook_event: def.command.clone(),
+                        hook_event: command.clone(),
                         success: false,
                         output: stderr,
                         blocked: false, // don't block on hook failure
@@ -425,13 +649,13 @@ impl HookManager {
                 }
             }
             Ok(Err(e)) => HookOutcome {
-                hook_event: def.command.clone(),
+                hook_event: command.clone(),
                 success: false,
                 output: format!("Hook execution error: {}", e),
                 blocked: false,
             },
             Err(_) => HookOutcome {
-                hook_event: def.command.clone(),
+                hook_event: command.clone(),
                 success: false,
                 output: "Hook timed out".to_string(),
                 blocked: false,
@@ -463,6 +687,8 @@ impl HookManager {
                 .unwrap_or_default(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             comet_phase: None,
+            workflow_state: None,
+            variables: HashMap::new(),
         }
     }
 
@@ -484,6 +710,8 @@ impl HookManager {
                 .unwrap_or_default(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             comet_phase: None,
+            workflow_state: None,
+            variables: HashMap::new(),
         }
     }
 
@@ -500,6 +728,8 @@ impl HookManager {
                 .unwrap_or_default(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             comet_phase: None,
+            workflow_state: None,
+            variables: HashMap::new(),
         }
     }
 
@@ -516,6 +746,8 @@ impl HookManager {
                 .unwrap_or_default(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             comet_phase: None,
+            workflow_state: None,
+            variables: HashMap::new(),
         }
     }
 
@@ -533,6 +765,8 @@ impl HookManager {
                 .unwrap_or_default(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             comet_phase: None,
+            workflow_state: None,
+            variables: HashMap::new(),
         }
     }
 }

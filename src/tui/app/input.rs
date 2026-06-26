@@ -176,6 +176,8 @@ impl App {
                         .unwrap_or_default(),
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     comet_phase,
+                    workflow_state: None,
+                    variables: Default::default(),
                 };
                 hm.fire(&crate::hooks::HookEvent::UserPromptSubmit, &ctx, None)
                     .await;
