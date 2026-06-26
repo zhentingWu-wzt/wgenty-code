@@ -137,7 +137,7 @@ git commit -m "feat(runtime): create src/runtime/ module skeleton"
 - 消费：Task 1 的 `src/runtime/mod.rs`
 - 产出：`HookEvent::SlashCommand` 变体、`HookAction` 枚举、`HookDefinition.actions` / `HookDefinition.when_state` 字段、`HookContext.workflow_state` / `HookContext.variables` 字段
 
-- [ ] **Step 1: 添加 `HookEvent::SlashCommand` 变体**
+- [x] **Step 1: 添加 `HookEvent::SlashCommand` 变体**
 
 在 `src/hooks/mod.rs` 的 `HookEvent` 枚举中添加：
 
@@ -161,7 +161,7 @@ pub enum HookEvent {
 HookEvent::SlashCommand => write!(f, "SlashCommand"),
 ```
 
-- [ ] **Step 2: 添加 `HookAction` 枚举**
+- [x] **Step 2: 添加 `HookAction` 枚举**
 
 在 `HookDefinition` 之前添加：
 
@@ -204,7 +204,7 @@ pub enum HookAction {
 }
 ```
 
-- [ ] **Step 3: 重构 `HookDefinition`**
+- [x] **Step 3: 重构 `HookDefinition`**
 
 将 `command` + `timeout_secs` + `hook_type` 替换为 `actions: Vec<HookAction>` + `when_state: Option<String>`：
 
@@ -254,7 +254,7 @@ impl<'de> Deserialize<'de> for HookDefinition {
 }
 ```
 
-- [ ] **Step 4: 更新 `HookContext`**
+- [x] **Step 4: 更新 `HookContext`**
 
 添加 `workflow_state` 和 `variables` 字段，保留 `comet_phase` 作为别名（向后兼容，内部代理到 `workflow_state`）：
 
@@ -268,13 +268,13 @@ pub struct HookContext {
 
 将原 `comet_phase: Option<String>` 替换为 `workflow_state`。更新 `with_comet_phase()` 为 `with_workflow_state()`（保留原方法作为弃用别名）。
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 ```bash
 cargo check 2>&1 | head -30
 ```
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add src/hooks/mod.rs
