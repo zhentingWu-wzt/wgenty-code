@@ -458,7 +458,7 @@ mod tests {
         };
         hm.register_workflow_hooks(vec![def]);
         let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
-        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, None).await;
+        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, None, None).await;
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].injected_content.as_deref(), Some("hello world"));
         assert!(outcomes[0].continue_execution);
@@ -480,7 +480,7 @@ mod tests {
         };
         hm.register_workflow_hooks(vec![def]);
         let ctx = HookManager::pre_tool_context("MyTool", &serde_json::json!({}), None);
-        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, None).await;
+        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, None, None).await;
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].injected_content.as_deref(), Some("Tool: MyTool"));
     }
@@ -504,7 +504,7 @@ mod tests {
         };
         hm.register_workflow_hooks(vec![def]);
         let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
-        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, None).await;
+        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, None, None).await;
         assert_eq!(outcomes.len(), 1);
         assert!(outcomes[0].user_answer.is_some());
         assert!(outcomes[0].user_answer.as_ref().unwrap().selected.is_empty());
@@ -579,7 +579,7 @@ mod tests {
         };
         hm.register_workflow_hooks(vec![def]);
         let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
-        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, Some("build")).await;
+        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, Some("build"), None).await;
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].injected_content.as_deref(), Some("matched"));
     }
@@ -600,7 +600,7 @@ mod tests {
         };
         hm.register_workflow_hooks(vec![def]);
         let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
-        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, Some("design")).await;
+        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, Some("design"), None).await;
         assert!(outcomes.is_empty());
     }
 
@@ -620,7 +620,7 @@ mod tests {
         };
         hm.register_workflow_hooks(vec![def]);
         let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
-        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, None).await;
+        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, None, None).await;
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].injected_content.as_deref(), Some("always fires"));
     }
@@ -641,7 +641,7 @@ mod tests {
         };
         hm.register_workflow_hooks(vec![def]);
         let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
-        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, Some("design")).await;
+        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, Some("design"), None).await;
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].injected_content.as_deref(), Some("pipe matched"));
     }
@@ -655,6 +655,42 @@ mod tests {
             .with_state(Some("build".to_string()));
         assert_eq!(ctx.workflow_state.as_deref(), Some("build"));
         assert_eq!(ctx.comet_phase.as_deref(), Some("build"));
+    }
+
+    // ── Notification matcher integration test ─────────────────────────
+
+    #[tokio::test]
+    async fn test_fire_notification_matcher() {
+        // RED: Notification hook with matcher should work through fire().
+        let mut hm = HookManager::default();
+        let def = HookDefinition {
+            event: HookEvent::Notification,
+            matcher: Some("test_subtype".to_string()),
+            when_state: None,
+            actions: vec![HookAction::InjectContext {
+                source: ContextSource::Inline("notification fired".to_string()),
+                priority: 10,
+                visibility: LayerVisibility::Internal,
+            }],
+        };
+        hm.register_workflow_hooks(vec![def]);
+        let ctx = HookManager::notification_context(Some("test message"), None);
+
+        // With matching notification_subtype, hook should fire
+        let outcomes = hm
+            .fire(&HookEvent::Notification, &ctx, None, Some("test_subtype"))
+            .await;
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(
+            outcomes[0].injected_content.as_deref(),
+            Some("notification fired")
+        );
+
+        // With non-matching notification_subtype, hook should not fire
+        let outcomes = hm
+            .fire(&HookEvent::Notification, &ctx, None, Some("other_subtype"))
+            .await;
+        assert!(outcomes.is_empty());
     }
 }
 
@@ -810,17 +846,19 @@ impl HookManager {
     /// Fire all hooks for an event. Returns outcomes for each hook.
     /// Hooks are filtered by matcher and optional workflow state.
     /// Pass `state: None` to skip state filtering (backward-compatible).
+    /// Pass `notification_subtype` for Notification event matcher matching.
     pub async fn fire(
         &self,
         event: &HookEvent,
         ctx: &HookContext,
         state: Option<&str>,
+        notification_subtype: Option<&str>,
     ) -> Vec<HookOutcome> {
         let defs = self.hooks.get(event).map(Vec::as_slice).unwrap_or(&[]);
         let mut outcomes = Vec::new();
         for def in defs {
             // Filter: skip hooks whose matcher doesn't match
-            if !matches_matcher(&def.matcher, event, ctx.tool_name.as_deref(), None) {
+            if !matches_matcher(&def.matcher, event, ctx.tool_name.as_deref(), notification_subtype) {
                 continue;
             }
             // Filter: when_state condition

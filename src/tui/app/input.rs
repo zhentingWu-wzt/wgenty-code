@@ -179,7 +179,7 @@ impl App {
                     workflow_state: None,
                     variables: Default::default(),
                 };
-                hm.fire(&crate::hooks::HookEvent::UserPromptSubmit, &ctx, None)
+                hm.fire(&crate::hooks::HookEvent::UserPromptSubmit, &ctx, None, None)
                     .await;
             });
         }

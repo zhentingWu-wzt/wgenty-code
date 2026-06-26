@@ -741,7 +741,7 @@ impl App {
                             workflow_state: None,
                             variables: Default::default(),
                         };
-                        hm.fire(&crate::hooks::HookEvent::Stop, &ctx, None).await;
+                        hm.fire(&crate::hooks::HookEvent::Stop, &ctx, None, None).await;
                     });
                 }
                 let snapshot = self.subagent_tree.clone();
@@ -777,7 +777,7 @@ impl App {
                             workflow_state: None,
                             variables: Default::default(),
                         };
-                        hm.fire(&crate::hooks::HookEvent::Stop, &ctx, None).await;
+                        hm.fire(&crate::hooks::HookEvent::Stop, &ctx, None, None).await;
                     });
                 }
                 self.last_abort_reason = Some(reason.clone());
