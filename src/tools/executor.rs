@@ -182,10 +182,11 @@ impl ToolExecutor {
 
         // Check if any hook blocked execution
         for outcome in &pre_outcomes {
-            if outcome.blocked {
+            if !outcome.continue_execution {
+                let reason = outcome.reason.as_deref().unwrap_or("unknown reason");
                 return ChatMessage::tool(
                     tool_call_id,
-                    format!("Tool '{}' blocked by hook: {}", tool_name, outcome.output),
+                    format!("Tool '{}' blocked by hook: {}", tool_name, reason),
                 );
             }
         }
