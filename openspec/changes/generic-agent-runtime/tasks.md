@@ -1,6 +1,6 @@
 ## 1. Runtime Foundation — Generic Primitives
 
-- [ ] 1.1 Create `src/runtime/mod.rs` with module structure, re-export `WorkflowEngine`, `ContextAssembler`, `GuardPipeline`, `StateMachine`, `SkillManager`, `InteractionService` trait, `ScriptRunner`, `EventBus`, `StateSource` trait
+- [x] 1.1 Create `src/runtime/mod.rs` with module structure, re-export `WorkflowEngine`, `ContextAssembler`, `GuardPipeline`, `StateMachine`, `SkillManager`, `InteractionService` trait, `ScriptRunner`, `EventBus`, `StateSource` trait
 - [ ] 1.2 Implement `src/runtime/state_source.rs` — `StateSource` trait (`read() -> Result<Value>`, `write(Value) -> Result<()>`), `ScriptStateSource` (runs shell script, parses stdout), `FileStateSource` (reads YAML/JSON file), `CompositeStateSource` (combines multiple sources)
 - [ ] 1.3 Implement `src/runtime/script.rs` — `ScriptRunner` struct (executes shell scripts, captures exit code + stdout + stderr), `ScriptResult` with `success`, `stdout`, `stderr`, `exit_code`, optional JSON-parsed `data` field
 - [ ] 1.4 Implement `src/runtime/event.rs` — `RuntimeEvent` enum (`ToolCall`, `StateTransition`, `GuardDecision`, `UserInteraction`, `SkillDiscovery`), `EventBus` with `emit()` and `subscribe()`, integrate with existing `HookEvent` types
