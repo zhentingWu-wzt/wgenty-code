@@ -1584,20 +1584,20 @@ git commit -m "refactor(tui): replace comet_slash_agent_prompt with CommandRoute
 - 消费：前 11 个任务的所有修改
 - 产出：`grep -r "comet\|openspec\|phase" src/runtime/` 返回零结果、编译通过
 
-- [ ] **Step 1: 删除 `src/comet/` 目录**
+- [x] **Step 1: 删除 `src/comet/` 目录**
 
 ```bash
 git rm -r src/comet/
 ```
 
-- [ ] **Step 2: 从 `src/lib.rs` 移除 `pub mod comet`**
+- [x] **Step 2: 从 `src/lib.rs` 移除 `pub mod comet`**
 
 ```bash
 grep -n "pub mod comet" src/lib.rs
 sed -i '' '/pub mod comet/d' src/lib.rs
 ```
 
-- [ ] **Step 3: 搜索并清理残留的 `use crate::comet` 引用**
+- [x] **Step 3: 搜索并清理残留的 `use crate::comet` 引用**
 
 ```bash
 grep -rn "use crate::comet" src/
@@ -1609,25 +1609,25 @@ grep -rn "crate::comet" src/
 ```
 检查是否还有其他非 use 语句的引用。
 
-- [ ] **Step 4: 搜索并清理 `CometPhase` / `CometState` / `CometGuard` 引用**
+- [x] **Step 4: 搜索并清理 `CometPhase` / `CometState` / `CometGuard` 引用**
 
 ```bash
 grep -rn "CometPhase\|CometState\|CometGuard\|comet_slash_agent_prompt" src/
 ```
 对每个出现的文件，移除或替换引用。
 
-- [ ] **Step 5: 如果 `src/runtime/mod.rs` 中存在 `pub mod comet`，也删除**
+- [x] **Step 5: 如果 `src/runtime/mod.rs` 中存在 `pub mod comet`，也删除**
 
 ```bash
 grep -rn "pub mod comet" src/runtime/
 ```
 如果存在，移除。
 
-- [ ] **Step 6: 清理 `src/knowledge/external_registry.rs` 中的废弃函数**
+- [x] **Step 6: 清理 `src/knowledge/external_registry.rs` 中的废弃函数**
 
 如果 Task 5 中只是加了弃用标记，现在可以删除 `comet_slash_agent_prompt()` 和 `route_slash_command()` 函数及其相关类型。
 
-- [ ] **Step 7: 最终验证——零 Comet 引用**
+- [x] **Step 7: 最终验证——零 Comet 引用**
 
 ```bash
 # Zero Comet/OpenSpec/phase references in runtime
@@ -1643,19 +1643,19 @@ grep "pub mod comet" src/lib.rs
 # 必须返回零行
 ```
 
-- [ ] **Step 8: 编译验证**
+- [x] **Step 8: 编译验证**
 
 ```bash
 cargo check 2>&1 | head -30
 ```
 
-- [ ] **Step 9: 运行完整测试套件**
+- [x] **Step 9: 运行完整测试套件**
 
 ```bash
 cargo test 2>&1 | tail -40
 ```
 
-- [ ] **Step 10: 提交**
+- [x] **Step 10: 提交**
 
 ```bash
 git add -A
