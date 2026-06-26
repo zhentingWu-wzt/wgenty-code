@@ -119,7 +119,10 @@ mod tests {
         assert_eq!(defs[0].event, HookEvent::Stop);
         assert_eq!(defs[0].actions.len(), 1);
         match &defs[0].actions[0] {
-            HookAction::Command { command, timeout_secs: _ } => {
+            HookAction::Command {
+                command,
+                timeout_secs: _,
+            } => {
                 assert_eq!(command, "echo 'session ended'");
             }
             _ => panic!("expected Command action"),

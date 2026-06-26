@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use wgenty_code::runtime::hooks::{HookAction, HookDefinition, HookEvent, HookManager};
 use wgenty_code::permissions::policy::ToolPermissionPolicy;
+use wgenty_code::runtime::hooks::{HookAction, HookDefinition, HookEvent, HookManager};
 use wgenty_code::tools::ToolRegistry;
 
 /// Creates a ToolExecutor with an empty ToolRegistry and default policy.
@@ -73,7 +73,12 @@ async fn test_no_state_handle_skips_hook_blocking() {
 
     // Use read-only tool to avoid touching the filesystem
     let result = executor
-        .execute_with_hooks("test-no-state", "file_read", serde_json::json!({"file_path": "/tmp/test.rs"}), None)
+        .execute_with_hooks(
+            "test-no-state",
+            "file_read",
+            serde_json::json!({"file_path": "/tmp/test.rs"}),
+            None,
+        )
         .await;
     // Without state, the file_read tool runs (though it may error on missing file — that's fine)
     let msg = content(&result);

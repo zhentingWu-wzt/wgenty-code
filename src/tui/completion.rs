@@ -424,7 +424,11 @@ mod tests {
     #[test]
     fn test_merge_from_entry_commands() {
         let mut e = test_engine();
-        let entry_cmds = vec!["comet".to_string(), "comet-open".to_string(), "clear".to_string()];
+        let entry_cmds = vec![
+            "comet".to_string(),
+            "comet-open".to_string(),
+            "clear".to_string(),
+        ];
         e.merge_from_entry_commands(&entry_cmds);
         // "clear" already exists (in test_engine commands), should not duplicate
         let matches = e.filter('/', "comet");

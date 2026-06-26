@@ -70,11 +70,7 @@ impl ContextAssembler {
         Self { layers }
     }
 
-    pub fn assemble(
-        &self,
-        state: &str,
-        variables: &HashMap<String, String>,
-    ) -> AssembledContext {
+    pub fn assemble(&self, state: &str, variables: &HashMap<String, String>) -> AssembledContext {
         let mut internal: Vec<(u8, String)> = Vec::new();
         let mut visible: Vec<(u8, String)> = Vec::new();
 
@@ -92,9 +88,7 @@ impl ContextAssembler {
 
             // Render the layer content.
             let content = match effective_source {
-                ContextSource::Template { template } => {
-                    render_template(template, state, variables)
-                }
+                ContextSource::Template { template } => render_template(template, state, variables),
                 ContextSource::File { .. } => {
                     // File reading is best-effort; skip if unavailable.
                     continue;
@@ -130,7 +124,10 @@ fn evaluate_condition(
 ) -> bool {
     match condition {
         LayerCondition::StateMatches { state: expected } => state == expected,
-        LayerCondition::VariableSet { key, value: expected_value } => variables
+        LayerCondition::VariableSet {
+            key,
+            value: expected_value,
+        } => variables
             .get(key)
             .map(|v| v == expected_value)
             .unwrap_or(false),
@@ -157,7 +154,9 @@ mod tests {
             id: "phase-instruction".to_string(),
             priority: 35,
             visibility: LayerVisibility::Internal,
-            source: ContextSource::Template { template: "当前处于 {{ state }} 阶段".to_string() },
+            source: ContextSource::Template {
+                template: "当前处于 {{ state }} 阶段".to_string(),
+            },
         };
 
         assert_eq!(layer.id, "phase-instruction");
@@ -175,7 +174,9 @@ mod tests {
             id: "secret".to_string(),
             priority: 10,
             visibility: LayerVisibility::Internal,
-            source: ContextSource::Template { template: "internal only".to_string() },
+            source: ContextSource::Template {
+                template: "internal only".to_string(),
+            },
         }];
 
         let assembler = ContextAssembler::new(layers);
@@ -192,7 +193,9 @@ mod tests {
             id: "greeting".to_string(),
             priority: 10,
             visibility: LayerVisibility::Visible,
-            source: ContextSource::Template { template: "Hello user!".to_string() },
+            source: ContextSource::Template {
+                template: "Hello user!".to_string(),
+            },
         }];
 
         let assembler = ContextAssembler::new(layers);
@@ -210,19 +213,25 @@ mod tests {
                 id: "high".to_string(),
                 priority: 50,
                 visibility: LayerVisibility::Internal,
-                source: ContextSource::Template { template: "priority 50".to_string() },
+                source: ContextSource::Template {
+                    template: "priority 50".to_string(),
+                },
             },
             ContextLayer {
                 id: "low".to_string(),
                 priority: 10,
                 visibility: LayerVisibility::Internal,
-                source: ContextSource::Template { template: "priority 10".to_string() },
+                source: ContextSource::Template {
+                    template: "priority 10".to_string(),
+                },
             },
             ContextLayer {
                 id: "mid".to_string(),
                 priority: 30,
                 visibility: LayerVisibility::Internal,
-                source: ContextSource::Template { template: "priority 30".to_string() },
+                source: ContextSource::Template {
+                    template: "priority 30".to_string(),
+                },
             },
         ];
 
@@ -266,7 +275,9 @@ mod tests {
             priority: 10,
             visibility: LayerVisibility::Internal,
             source: ContextSource::Conditional {
-                condition: LayerCondition::StateMatches { state: "design".to_string() },
+                condition: LayerCondition::StateMatches {
+                    state: "design".to_string(),
+                },
                 source: Box::new(ContextSource::Template {
                     template: "Design phase instructions".to_string(),
                 }),
@@ -287,7 +298,9 @@ mod tests {
             priority: 10,
             visibility: LayerVisibility::Internal,
             source: ContextSource::Conditional {
-                condition: LayerCondition::StateMatches { state: "design".to_string() },
+                condition: LayerCondition::StateMatches {
+                    state: "design".to_string(),
+                },
                 source: Box::new(ContextSource::Template {
                     template: "Design phase instructions".to_string(),
                 }),
@@ -369,25 +382,33 @@ mod tests {
                 id: "vis-high".to_string(),
                 priority: 40,
                 visibility: LayerVisibility::Visible,
-                source: ContextSource::Template { template: "visible high".to_string() },
+                source: ContextSource::Template {
+                    template: "visible high".to_string(),
+                },
             },
             ContextLayer {
                 id: "int-high".to_string(),
                 priority: 30,
                 visibility: LayerVisibility::Internal,
-                source: ContextSource::Template { template: "internal high".to_string() },
+                source: ContextSource::Template {
+                    template: "internal high".to_string(),
+                },
             },
             ContextLayer {
                 id: "vis-low".to_string(),
                 priority: 10,
                 visibility: LayerVisibility::Visible,
-                source: ContextSource::Template { template: "visible low".to_string() },
+                source: ContextSource::Template {
+                    template: "visible low".to_string(),
+                },
             },
             ContextLayer {
                 id: "int-low".to_string(),
                 priority: 5,
                 visibility: LayerVisibility::Internal,
-                source: ContextSource::Template { template: "internal low".to_string() },
+                source: ContextSource::Template {
+                    template: "internal low".to_string(),
+                },
             },
         ];
 
@@ -433,13 +454,17 @@ mod tests {
                 id: "first".to_string(),
                 priority: 10,
                 visibility: LayerVisibility::Internal,
-                source: ContextSource::Template { template: "first".to_string() },
+                source: ContextSource::Template {
+                    template: "first".to_string(),
+                },
             },
             ContextLayer {
                 id: "second".to_string(),
                 priority: 10,
                 visibility: LayerVisibility::Internal,
-                source: ContextSource::Template { template: "second".to_string() },
+                source: ContextSource::Template {
+                    template: "second".to_string(),
+                },
             },
         ];
 
@@ -476,7 +501,9 @@ mod tests {
             id: "from-file".to_string(),
             priority: 10,
             visibility: LayerVisibility::Internal,
-            source: ContextSource::File { path: PathBuf::from("/nonexistent/path.md") },
+            source: ContextSource::File {
+                path: PathBuf::from("/nonexistent/path.md"),
+            },
         }];
 
         let assembler = ContextAssembler::new(layers);
@@ -488,11 +515,18 @@ mod tests {
 
     #[test]
     fn test_serde_serialization_layer_condition_state_matches() {
-        let condition = LayerCondition::StateMatches { state: "build".to_string() };
+        let condition = LayerCondition::StateMatches {
+            state: "build".to_string(),
+        };
         let json = serde_json::to_string(&condition).expect("serialize");
         // Check deserialization round-trips
         let back: LayerCondition = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back, LayerCondition::StateMatches { state: "build".to_string() });
+        assert_eq!(
+            back,
+            LayerCondition::StateMatches {
+                state: "build".to_string()
+            }
+        );
     }
 
     #[test]
@@ -502,7 +536,10 @@ mod tests {
             priority: 42,
             visibility: LayerVisibility::Visible,
             source: ContextSource::Conditional {
-                condition: LayerCondition::VariableSet { key: "env".to_string(), value: "prod".to_string() },
+                condition: LayerCondition::VariableSet {
+                    key: "env".to_string(),
+                    value: "prod".to_string(),
+                },
                 source: Box::new(ContextSource::Template {
                     template: "production mode".to_string(),
                 }),

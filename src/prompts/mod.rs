@@ -62,7 +62,10 @@ impl fmt::Debug for PromptContext {
             .field("agents_md_sections", &self.agents_md_sections)
             .field("skills_inventory", &self.skills_inventory)
             .field("wgenty_md_sections", &self.wgenty_md_sections)
-            .field("context_assembler", &self.context_assembler.as_ref().map(|_| "ContextAssembler"))
+            .field(
+                "context_assembler",
+                &self.context_assembler.as_ref().map(|_| "ContextAssembler"),
+            )
             .finish()
     }
 }

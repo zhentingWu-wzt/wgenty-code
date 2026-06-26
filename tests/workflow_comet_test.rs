@@ -98,7 +98,14 @@ fn test_entry_commands_contain_comet_subcommands() {
     let raw = std::fs::read_to_string(&path).expect("read workflow.yaml");
     let wf: WorkflowYaml = serde_yaml::from_str(&raw).expect("valid YAML");
 
-    let required: &[&str] = &["comet", "comet-open", "comet-design", "comet-build", "comet-verify", "comet-archive"];
+    let required: &[&str] = &[
+        "comet",
+        "comet-open",
+        "comet-design",
+        "comet-build",
+        "comet-verify",
+        "comet-archive",
+    ];
     for cmd in required {
         assert!(
             wf.entry_commands.contains(&cmd.to_string()),
@@ -130,10 +137,10 @@ fn test_hooks_configured_for_all_guard_events() {
     );
 
     // SlashCommand must have an inject_context action referencing SKILL.md
-    let has_skill_inject = hooks.slash_command.iter().any(|a| {
-        a.action == "inject_context"
-            && a.source.as_deref() == Some("SKILL.md")
-    });
+    let has_skill_inject = hooks
+        .slash_command
+        .iter()
+        .any(|a| a.action == "inject_context" && a.source.as_deref() == Some("SKILL.md"));
     assert!(
         has_skill_inject,
         "SlashCommand hooks must include inject_context with source SKILL.md"
@@ -142,9 +149,9 @@ fn test_hooks_configured_for_all_guard_events() {
     // PreToolUse must have a phase guard script action
     let has_phase_guard = hooks.pre_tool_use.iter().any(|a| {
         a.action == "run_script"
-            && a.script
-                .as_deref()
-                .map_or(false, |s| s.contains("comet-guard") || s.contains("comet-hook-guard"))
+            && a.script.as_deref().map_or(false, |s| {
+                s.contains("comet-guard") || s.contains("comet-hook-guard")
+            })
     });
     assert!(
         has_phase_guard,
@@ -152,9 +159,10 @@ fn test_hooks_configured_for_all_guard_events() {
     );
 
     // UserPromptSubmit must have a rule injection action
-    let has_rule_injection = hooks.user_prompt_submit.iter().any(|a| {
-        a.action == "inject_rules" || a.action == "inject_context"
-    });
+    let has_rule_injection = hooks
+        .user_prompt_submit
+        .iter()
+        .any(|a| a.action == "inject_rules" || a.action == "inject_context");
     assert!(
         has_rule_injection,
         "UserPromptSubmit hooks must include an inject_rules or inject_context action"
@@ -167,7 +175,9 @@ fn test_context_layers_have_internal_visibility() {
     let raw = std::fs::read_to_string(&path).expect("read workflow.yaml");
     let wf: WorkflowYaml = serde_yaml::from_str(&raw).expect("valid YAML");
 
-    let layers = wf.context.expect("workflow.yaml must define context layers");
+    let layers = wf
+        .context
+        .expect("workflow.yaml must define context layers");
 
     assert!(
         !layers.is_empty(),
@@ -210,13 +220,11 @@ fn test_templates_have_five_phase_rules_in_chinese() {
         let rules = phase_rules
             .get(*phase)
             .unwrap_or_else(|| panic!("phase_rules must contain '{}'", phase));
-        assert!(
-            !rules.is_empty(),
-            "phase_rules.{} must not be empty",
-            phase
-        );
+        assert!(!rules.is_empty(), "phase_rules.{} must not be empty", phase);
         // Verify Chinese characters are present — at minimum some CJK range
-        let has_chinese = rules.chars().any(|c| c as u32 >= 0x4E00 && c as u32 <= 0x9FFF);
+        let has_chinese = rules
+            .chars()
+            .any(|c| c as u32 >= 0x4E00 && c as u32 <= 0x9FFF);
         assert!(
             has_chinese,
             "phase_rules.{} must contain Chinese text",
@@ -231,7 +239,9 @@ fn test_state_read_write_scripts_configured() {
     let raw = std::fs::read_to_string(&path).expect("read workflow.yaml");
     let wf: WorkflowYaml = serde_yaml::from_str(&raw).expect("valid YAML");
 
-    let state = wf.state.expect("workflow.yaml must define state configuration");
+    let state = wf
+        .state
+        .expect("workflow.yaml must define state configuration");
 
     assert!(
         !state.read.script.is_empty(),

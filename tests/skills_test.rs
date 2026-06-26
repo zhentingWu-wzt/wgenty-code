@@ -254,9 +254,7 @@ fn write_skill(root: &std::path::Path, relative: &str, content: &str) {
     fs::write(path, content).unwrap();
 }
 
-use wgenty_code::knowledge::{
-    ExternalSkillRegistry, ExternalSkillRoot,
-};
+use wgenty_code::knowledge::{ExternalSkillRegistry, ExternalSkillRoot};
 
 #[test]
 fn test_external_registry_discovers_project_skill() {

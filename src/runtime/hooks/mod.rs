@@ -303,7 +303,10 @@ mod tests {
     fn test_deserialize_hookevent_slash_command() {
         // GREEN: SlashCommand variant now exists, deserialization should succeed.
         let result: Result<HookEvent, _> = serde_json::from_str("\"SlashCommand\"");
-        assert!(result.is_ok(), "SlashCommand should deserialize as a HookEvent variant");
+        assert!(
+            result.is_ok(),
+            "SlashCommand should deserialize as a HookEvent variant"
+        );
         assert_eq!(result.unwrap(), HookEvent::SlashCommand);
     }
 
@@ -318,14 +321,18 @@ mod tests {
         let json = serde_json::to_string(&action).expect("serialize InjectContext");
         let parsed: HookAction = serde_json::from_str(&json).expect("deserialize InjectContext");
         match parsed {
-            HookAction::InjectContext { source, priority, visibility } => {
+            HookAction::InjectContext {
+                source,
+                priority,
+                visibility,
+            } => {
                 match source {
                     ContextSource::Inline(s) => assert_eq!(s, "hello"),
                     _ => panic!("expected Inline source"),
                 }
                 assert_eq!(priority, 10);
                 match visibility {
-                    LayerVisibility::Internal => {},
+                    LayerVisibility::Internal => {}
                     _ => panic!("expected Internal visibility"),
                 }
             }
@@ -345,7 +352,10 @@ mod tests {
             ]
         });
         let result: Result<HookDefinition, _> = serde_json::from_value(json);
-        assert!(result.is_ok(), "New actions format should deserialize after refactor");
+        assert!(
+            result.is_ok(),
+            "New actions format should deserialize after refactor"
+        );
         let def = result.unwrap();
         assert_eq!(def.event, HookEvent::PreToolUse);
         assert_eq!(def.matcher.as_deref(), Some("TaskCreate"));
@@ -362,12 +372,18 @@ mod tests {
             "timeout_secs": 30
         });
         let result: Result<HookDefinition, _> = serde_json::from_value(json);
-        assert!(result.is_ok(), "Old command format should deserialize into new HookDefinition");
+        assert!(
+            result.is_ok(),
+            "Old command format should deserialize into new HookDefinition"
+        );
         let def = result.unwrap();
         assert_eq!(def.event, HookEvent::PreToolUse);
         assert_eq!(def.actions.len(), 1);
         match &def.actions[0] {
-            HookAction::Command { command, timeout_secs } => {
+            HookAction::Command {
+                command,
+                timeout_secs,
+            } => {
                 assert_eq!(command, "echo hello");
                 assert_eq!(*timeout_secs, 30);
             }
@@ -409,10 +425,7 @@ mod tests {
         assert_eq!(outcome.reason.as_deref(), Some("test reason"));
         assert_eq!(outcome.injected_content.as_deref(), Some("injected text"));
         assert!(outcome.user_answer.is_some());
-        assert_eq!(
-            outcome.user_answer.as_ref().unwrap().selected,
-            vec!["a"]
-        );
+        assert_eq!(outcome.user_answer.as_ref().unwrap().selected, vec!["a"]);
         assert_eq!(outcome.def.event, HookEvent::PreToolUse);
     }
 
@@ -482,7 +495,10 @@ mod tests {
         let ctx = HookManager::pre_tool_context("MyTool", &serde_json::json!({}), None);
         let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, None, None).await;
         assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].injected_content.as_deref(), Some("Tool: MyTool"));
+        assert_eq!(
+            outcomes[0].injected_content.as_deref(),
+            Some("Tool: MyTool")
+        );
     }
 
     #[tokio::test]
@@ -507,7 +523,12 @@ mod tests {
         let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, None, None).await;
         assert_eq!(outcomes.len(), 1);
         assert!(outcomes[0].user_answer.is_some());
-        assert!(outcomes[0].user_answer.as_ref().unwrap().selected.is_empty());
+        assert!(outcomes[0]
+            .user_answer
+            .as_ref()
+            .unwrap()
+            .selected
+            .is_empty());
         assert!(outcomes[0].continue_execution);
     }
 
@@ -579,7 +600,9 @@ mod tests {
         };
         hm.register_workflow_hooks(vec![def]);
         let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
-        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, Some("build"), None).await;
+        let outcomes = hm
+            .fire(&HookEvent::PreToolUse, &ctx, Some("build"), None)
+            .await;
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].injected_content.as_deref(), Some("matched"));
     }
@@ -600,7 +623,9 @@ mod tests {
         };
         hm.register_workflow_hooks(vec![def]);
         let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
-        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, Some("design"), None).await;
+        let outcomes = hm
+            .fire(&HookEvent::PreToolUse, &ctx, Some("design"), None)
+            .await;
         assert!(outcomes.is_empty());
     }
 
@@ -622,7 +647,10 @@ mod tests {
         let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
         let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, None, None).await;
         assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].injected_content.as_deref(), Some("always fires"));
+        assert_eq!(
+            outcomes[0].injected_content.as_deref(),
+            Some("always fires")
+        );
     }
 
     #[tokio::test]
@@ -641,9 +669,14 @@ mod tests {
         };
         hm.register_workflow_hooks(vec![def]);
         let ctx = HookManager::pre_tool_context("test", &serde_json::json!({}), None);
-        let outcomes = hm.fire(&HookEvent::PreToolUse, &ctx, Some("design"), None).await;
+        let outcomes = hm
+            .fire(&HookEvent::PreToolUse, &ctx, Some("design"), None)
+            .await;
         assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].injected_content.as_deref(), Some("pipe matched"));
+        assert_eq!(
+            outcomes[0].injected_content.as_deref(),
+            Some("pipe matched")
+        );
     }
 
     // ── Step 5: with_state builder test ──────────────────────────────
@@ -858,7 +891,12 @@ impl HookManager {
         let mut outcomes = Vec::new();
         for def in defs {
             // Filter: skip hooks whose matcher doesn't match
-            if !matches_matcher(&def.matcher, event, ctx.tool_name.as_deref(), notification_subtype) {
+            if !matches_matcher(
+                &def.matcher,
+                event,
+                ctx.tool_name.as_deref(),
+                notification_subtype,
+            ) {
                 continue;
             }
             // Filter: when_state condition
@@ -887,7 +925,10 @@ impl HookManager {
         ctx: &HookContext,
     ) -> HookOutcome {
         match action {
-            HookAction::Command { command, timeout_secs } => {
+            HookAction::Command {
+                command,
+                timeout_secs,
+            } => {
                 let result = self.run_shell_command(command, *timeout_secs, ctx).await;
                 HookOutcome {
                     def: def.clone(),
@@ -897,7 +938,11 @@ impl HookManager {
                     user_answer: None,
                 }
             }
-            HookAction::InjectContext { source, priority: _, visibility: _ } => {
+            HookAction::InjectContext {
+                source,
+                priority: _,
+                visibility: _,
+            } => {
                 let content = match source {
                     ContextSource::Template(t) => Some(self.render_template(t, ctx)),
                     ContextSource::File(p) => self.read_file_content(p).await,
@@ -911,7 +956,10 @@ impl HookManager {
                     user_answer: None,
                 }
             }
-            HookAction::AskUser { question: _, options: _ } => {
+            HookAction::AskUser {
+                question: _,
+                options: _,
+            } => {
                 // Placeholder: InteractionService will integrate in Task 6
                 HookOutcome {
                     def: def.clone(),

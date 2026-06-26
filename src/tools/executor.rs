@@ -1,7 +1,7 @@
 use crate::api::ChatMessage;
+use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
 use crate::runtime::guardian::{Guardian, GuardianDecision};
 use crate::runtime::hooks::{HookEvent, HookManager};
-use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
 use crate::tools::ToolRegistry;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -174,9 +174,8 @@ impl ToolExecutor {
                 let msg = format!("Tool '{}' blocked by hook: {}", tool_name, reason);
                 // Fire Notification hook asynchronously (do not await)
                 let hook_manager = Arc::clone(&self.hook_manager);
-                let notif_ctx =
-                    HookManager::notification_context(Some(&msg), session_id)
-                        .with_state(state_val.clone());
+                let notif_ctx = HookManager::notification_context(Some(&msg), session_id)
+                    .with_state(state_val.clone());
                 let tool_name_owned = tool_name.to_string();
                 let state_owned = state_val.clone();
                 tokio::spawn(async move {
