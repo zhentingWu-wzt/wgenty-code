@@ -444,7 +444,7 @@ git commit -m "feat(hooks): extend HookManager with when_state filtering and mul
 - 消费：Task 2 的 `ContextSource`、`LayerVisibility`
 - 产出：`ContextLayer`、`ContextAssembler`、`AssembledContext`、`LayerCondition`
 
-- [ ] **Step 1: 编写 `ContextLayer` 和 `LayerCondition`**
+- [x] **Step 1: 编写 `ContextLayer` 和 `LayerCondition`**
 
 ```rust
 use std::collections::HashMap;
@@ -468,7 +468,7 @@ pub enum LayerCondition {
 }
 ```
 
-- [ ] **Step 2: 实现 `ContextAssembler`**
+- [x] **Step 2: 实现 `ContextAssembler`**
 
 ```rust
 use super::hooks::{ContextSource, LayerVisibility};
@@ -556,7 +556,7 @@ impl ContextAssembler {
 }
 ```
 
-- [ ] **Step 3: 写单元测试**
+- [x] **Step 3: 写单元测试**
 
 在文件末尾添加测试模块：
 
@@ -645,14 +645,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: 运行测试验证**
+- [x] **Step 4: 运行测试验证**
 
 ```bash
 cargo test -p wgenty-core -- context 2>&1 | tail -20
 ```
 预期输出：4 个测试全部 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/runtime/context.rs
