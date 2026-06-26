@@ -1,5 +1,5 @@
 use super::AgentLoop;
-use crate::guardian::classify_risk;
+use crate::runtime::guardian::classify_risk;
 use crate::tui::app::AppEvent;
 use crate::tui::client::DaemonClient;
 use std::time::Duration;
@@ -20,7 +20,7 @@ impl AgentLoop {
         if name == "execute_command" || name == "exec_command" {
             if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
                 let risk = classify_risk(cmd);
-                if risk >= crate::guardian::RiskLevel::Critical {
+                if risk >= crate::runtime::guardian::RiskLevel::Critical {
                     return format!(
                         r#"{{"success":false,"error":"GUARDIAN BLOCK: critical-risk command rejected. {}"}}"#,
                         cmd
@@ -98,7 +98,7 @@ impl AgentLoop {
         if name == "execute_command" || name == "exec_command" {
             if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
                 let risk = classify_risk(cmd);
-                if risk >= crate::guardian::RiskLevel::Critical {
+                if risk >= crate::runtime::guardian::RiskLevel::Critical {
                     let msg = format!("GUARDIAN BLOCK: critical-risk command rejected. {}", cmd);
                     tracing::warn!("{}", msg);
                     return format!(r#"{{"success":false,"error":"{}"}}"#, msg);
@@ -137,7 +137,7 @@ impl AgentLoop {
                     let cwd = std::env::current_dir().unwrap_or_default();
                     let comet_phase = crate::comet::CometState::read(&cwd)
                         .map(|s| format!("{:?}", s.phase).to_lowercase());
-                    let ctx = crate::hooks::HookContext {
+                    let ctx = crate::runtime::hooks::HookContext {
                         event: "PermissionRequest".to_string(),
                         tool_name: Some(hook_name),
                         tool_input: Some(hook_args),
@@ -149,7 +149,7 @@ impl AgentLoop {
                         workflow_state: None,
                         variables: Default::default(),
                     };
-                    hm.fire(&crate::hooks::HookEvent::PermissionRequest, &ctx, None, None)
+                    hm.fire(&crate::runtime::hooks::HookEvent::PermissionRequest, &ctx, None, None)
                         .await;
                 });
             }

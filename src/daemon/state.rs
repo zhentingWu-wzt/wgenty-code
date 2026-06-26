@@ -1,7 +1,7 @@
 //! DaemonState -- shared state for the HTTP API server.
 
 use crate::context::session::SessionManager;
-use crate::hooks::HookManager;
+use crate::runtime::hooks::HookManager;
 use crate::knowledge::loader::SkillLoader;
 use crate::permissions::ToolPermissionPolicy;
 use crate::state::AppState;

@@ -729,7 +729,7 @@ impl App {
                         let cwd = std::env::current_dir().unwrap_or_default();
                         let comet_phase = crate::comet::CometState::read(&cwd)
                             .map(|s| format!("{:?}", s.phase).to_lowercase());
-                        let ctx = crate::hooks::HookContext {
+                        let ctx = crate::runtime::hooks::HookContext {
                             event: "Stop".to_string(),
                             tool_name: None,
                             tool_input: None,
@@ -741,7 +741,7 @@ impl App {
                             workflow_state: None,
                             variables: Default::default(),
                         };
-                        hm.fire(&crate::hooks::HookEvent::Stop, &ctx, None, None).await;
+                        hm.fire(&crate::runtime::hooks::HookEvent::Stop, &ctx, None, None).await;
                     });
                 }
                 let snapshot = self.subagent_tree.clone();
@@ -765,7 +765,7 @@ impl App {
                         let cwd = std::env::current_dir().unwrap_or_default();
                         let comet_phase = crate::comet::CometState::read(&cwd)
                             .map(|s| format!("{:?}", s.phase).to_lowercase());
-                        let ctx = crate::hooks::HookContext {
+                        let ctx = crate::runtime::hooks::HookContext {
                             event: "Stop".to_string(),
                             tool_name: None,
                             tool_input: None,
@@ -777,7 +777,7 @@ impl App {
                             workflow_state: None,
                             variables: Default::default(),
                         };
-                        hm.fire(&crate::hooks::HookEvent::Stop, &ctx, None, None).await;
+                        hm.fire(&crate::runtime::hooks::HookEvent::Stop, &ctx, None, None).await;
                     });
                 }
                 self.last_abort_reason = Some(reason.clone());
