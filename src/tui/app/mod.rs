@@ -245,7 +245,7 @@ impl App {
                 let comet_phase = crate::comet::CometState::read(&cwd)
                     .map(|s| format!("{:?}", s.phase).to_lowercase());
                 let ctx = HookManager::session_start_context(&sid).with_comet_phase(comet_phase);
-                hm.fire(&crate::hooks::HookEvent::SessionStart, &ctx, None)
+                hm.fire(&crate::hooks::HookEvent::SessionStart, &ctx, None, None)
                     .await;
             });
         }
@@ -376,7 +376,7 @@ impl App {
                 let comet_phase = crate::comet::CometState::read(&cwd)
                     .map(|s| format!("{:?}", s.phase).to_lowercase());
                 let ctx = HookManager::session_end_context(&sid).with_comet_phase(comet_phase);
-                hm.fire(&crate::hooks::HookEvent::SessionEnd, &ctx, None)
+                hm.fire(&crate::hooks::HookEvent::SessionEnd, &ctx, None, None)
                     .await;
             });
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;

@@ -149,7 +149,7 @@ impl AgentLoop {
                         workflow_state: None,
                         variables: Default::default(),
                     };
-                    hm.fire(&crate::hooks::HookEvent::PermissionRequest, &ctx, None)
+                    hm.fire(&crate::hooks::HookEvent::PermissionRequest, &ctx, None, None)
                         .await;
                 });
             }
