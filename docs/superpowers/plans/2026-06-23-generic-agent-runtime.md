@@ -1293,7 +1293,7 @@ git commit -m "refactor(runtime): migrate hooks/ and guardian/ into runtime/ mod
 - 消费：Task 3 的 `HookManager::fire()` with `state` parameter、Task 8 的 `crate::runtime::hooks` 路径
 - 产出：`ToolExecutor` 替换 `comet_state: Option<CometState>` 为 `state_handle: Option<Arc<RwLock<str>>>`，移除 `CometGuard::check()` 调用
 
-- [ ] **Step 1: 替换 `ToolExecutor` 结构体字段**
+- [x] **Step 1: 替换 `ToolExecutor` 结构体字段**
 
 ```rust
 // Before:
@@ -1313,7 +1313,7 @@ pub struct ToolExecutor {
 }
 ```
 
-- [ ] **Step 2: 移除 `CometGuard::check()` 调用**
+- [x] **Step 2: 移除 `CometGuard::check()` 调用**
 
 找到并删除类似以下代码块：
 ```rust
@@ -1348,11 +1348,11 @@ for outcome in &pre_outcomes {
 }
 ```
 
-- [ ] **Step 3: 更新 `HookManager::pre_tool_context()` 的 `comet_phase` -> `workflow_state`**
+- [x] **Step 3: 更新 `HookManager::pre_tool_context()` 的 `comet_phase` -> `workflow_state`**
 
 在 `src/runtime/hooks/mod.rs` 中找到 `pre_tool_context()` 和 `pre_user_prompt_context()` 方法，将 `comet_phase: None` 改为 `workflow_state: None`。
 
-- [ ] **Step 4: 添加 `set_state_handle()` 方法**
+- [x] **Step 4: 添加 `set_state_handle()` 方法**
 
 ```rust
 impl ToolExecutor {
@@ -1362,19 +1362,19 @@ impl ToolExecutor {
 }
 ```
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 ```bash
 cargo check 2>&1 | head -30
 ```
 
-- [ ] **Step 6: 运行工具执行测试**
+- [x] **Step 6: 运行工具执行测试**
 
 ```bash
 cargo test -p wgenty-core -- executor 2>&1 | tail -30
 ```
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add src/tools/executor.rs src/runtime/hooks/mod.rs
