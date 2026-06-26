@@ -292,7 +292,7 @@ git commit -m "feat(hooks): add SlashCommand event, HookAction enum, when_state 
 - 消费：Task 2 的 `HookAction`、`HookDefinition.actions`、`when_state`
 - 产出：`HookManager::fire()` 接收 `state` 参数 + 返回 `HookOutcome` 向量、`register_workflow_hooks()` 方法
 
-- [ ] **Step 1: 扩展 `HookOutcome`**
+- [x] **Step 1: 扩展 `HookOutcome`**
 
 ```rust
 #[derive(Debug, Clone)]
@@ -310,7 +310,7 @@ pub struct UserAnswer {
 }
 ```
 
-- [ ] **Step 2: 修改 `fire()` 方法签名**
+- [x] **Step 2: 修改 `fire()` 方法签名**
 
 ```rust
 pub async fn fire(
@@ -341,7 +341,7 @@ pub async fn fire(
 }
 ```
 
-- [ ] **Step 3: 实现 `execute_action()` 方法**
+- [x] **Step 3: 实现 `execute_action()` 方法**
 
 ```rust
 async fn execute_action(
@@ -390,7 +390,7 @@ async fn execute_action(
 }
 ```
 
-- [ ] **Step 4: 添加 `register_workflow_hooks()` 方法**
+- [x] **Step 4: 添加 `register_workflow_hooks()` 方法**
 
 ```rust
 impl HookManager {
@@ -402,7 +402,7 @@ impl HookManager {
 }
 ```
 
-- [ ] **Step 5: 添加参数到 `fire()` 的 `with_state()` 辅助方法**
+- [x] **Step 5: 添加参数到 `fire()` 的 `with_state()` 辅助方法**
 
 在现有的 HookContext builder 方法附近添加：
 
@@ -413,20 +413,20 @@ pub fn with_state(mut self, state: Option<String>) -> Self {
 }
 ```
 
-- [ ] **Step 6: 更新所有 `fire()` 调用点（编译时发现）**
+- [x] **Step 6: 更新所有 `fire()` 调用点（编译时发现）**
 
 ```bash
 cargo check 2>&1
 ```
 修复所有因 `fire()` 签名变更导致的编译错误。
 
-- [ ] **Step 7: 编译 + 测试**
+- [x] **Step 7: 编译 + 测试**
 
 ```bash
 cargo test -p wgenty-core -- hooks 2>&1 | tail -20
 ```
 
-- [ ] **Step 8: 提交**
+- [x] **Step 8: 提交**
 
 ```bash
 git add src/hooks/mod.rs
