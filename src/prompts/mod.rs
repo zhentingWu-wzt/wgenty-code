@@ -7,8 +7,13 @@
 //!   4. environment         — cwd, shell, date, timezone
 //!   5. agents_md           — repo-level AGENTS.md conventions
 
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
+
 use crate::api::ChatMessage;
 use crate::config::Settings;
+use crate::runtime::context::ContextAssembler;
 use chrono::Local;
 
 /// Pre-compiled base instructions (embedded at compile time).
@@ -30,7 +35,7 @@ pub struct SkillEntry {
 }
 
 /// Context needed for dynamic layers (permissions + environment).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PromptContext {
     pub cwd: String,
     pub shell: String,
@@ -42,6 +47,24 @@ pub struct PromptContext {
     pub skills_inventory: Vec<SkillEntry>,
     /// Sections from the project's WGENTY.md (split by `---`). Layer 8.
     pub wgenty_md_sections: Vec<String>,
+    /// Generic runtime context assembler. Replaces hardcoded comet phase injection.
+    pub context_assembler: Option<Arc<ContextAssembler>>,
+}
+
+impl fmt::Debug for PromptContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PromptContext")
+            .field("cwd", &self.cwd)
+            .field("shell", &self.shell)
+            .field("sandbox_mode", &self.sandbox_mode)
+            .field("approval_policy", &self.approval_policy)
+            .field("collaboration_mode", &self.collaboration_mode)
+            .field("agents_md_sections", &self.agents_md_sections)
+            .field("skills_inventory", &self.skills_inventory)
+            .field("wgenty_md_sections", &self.wgenty_md_sections)
+            .field("context_assembler", &self.context_assembler.as_ref().map(|_| "ContextAssembler"))
+            .finish()
+    }
 }
 
 impl Default for PromptContext {
@@ -61,6 +84,7 @@ impl PromptContext {
             agents_md_sections: Vec::new(),
             skills_inventory: Vec::new(),
             wgenty_md_sections: Vec::new(),
+            context_assembler: None,
         }
     }
 
@@ -116,15 +140,12 @@ pub fn assemble_instructions(
     // ── Layer 1: Base Instructions ──────────────────────────────────────
     system_messages.push(ChatMessage::system(BASE_INSTRUCTIONS));
 
-    // ── Layer 1b: Comet Phase Awareness (active OpenSpec change) ────────
-    let working_dir = std::path::Path::new(&context.cwd);
-    if let Some(comet_state) = crate::comet::CometState::read(working_dir) {
-        system_messages.push(ChatMessage::system(comet_state.phase_instruction()));
-    }
-    if crate::comet::CometGuard::is_coordinator_mode(working_dir) {
-        system_messages.push(ChatMessage::system(
-            crate::comet::CometGuard::coordinator_reminder(),
-        ));
+    // ── Layer 1b: Generic Runtime Context (replaces hardcoded comet injection) ─
+    if let Some(ref assembler) = context.context_assembler {
+        let assembled = assembler.assemble("", &HashMap::new());
+        for instruction in &assembled.internal_instructions {
+            system_messages.push(ChatMessage::system(instruction));
+        }
     }
 
     // ── Layer 2: Permissions (dynamic) ──────────────────────────────────
