@@ -179,6 +179,21 @@ impl CompletionEngine {
         self.commands = commands;
     }
 
+    /// Merge slash commands from a CommandRouter's entry_commands into the completion
+    /// engine's command list. Entries that already exist (by name) are skipped.
+    pub fn merge_from_entry_commands(&mut self, entry_commands: &[String]) {
+        for cmd_name in entry_commands {
+            if !self.commands.iter().any(|c| c.name == *cmd_name) {
+                self.commands.push(CommandEntry {
+                    name: cmd_name.clone(),
+                    description: String::new(),
+                    args_hint: None,
+                    category: "Workflow".to_string(),
+                });
+            }
+        }
+    }
+
     pub fn filter(&self, prefix: char, partial: &str) -> Vec<CompletionMatch> {
         let partial_lower = partial.to_lowercase();
         match prefix {
@@ -404,5 +419,23 @@ mod tests {
         assert_eq!(matches_new.len(), 1);
         assert_eq!(matches_new[0].text, "new-cmd");
         assert_eq!(matches_new[0].args_hint, Some("<arg>".to_string()));
+    }
+
+    #[test]
+    fn test_merge_from_entry_commands() {
+        let mut e = test_engine();
+        let entry_cmds = vec!["comet".to_string(), "comet-open".to_string(), "clear".to_string()];
+        e.merge_from_entry_commands(&entry_cmds);
+        // "clear" already exists (in test_engine commands), should not duplicate
+        let matches = e.filter('/', "comet");
+        assert_eq!(matches.len(), 2); // comet, comet-open
+        assert_eq!(matches[0].text, "comet");
+        assert_eq!(matches[0].category, "Workflow");
+        assert_eq!(matches[1].text, "comet-open");
+        assert_eq!(matches[1].category, "Workflow");
+        // "clear" should still have original category "Built-in", not "Workflow"
+        let clear_matches = e.filter('/', "clear");
+        assert_eq!(clear_matches.len(), 1);
+        assert_eq!(clear_matches[0].category, "Built-in");
     }
 }

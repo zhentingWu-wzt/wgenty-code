@@ -184,84 +184,83 @@ impl App {
             });
         }
 
-        // Route unrecognized slash commands via route_slash_command (I1).
-        // This catches external skill invocations like /comet or /verify
+        // Route unrecognized slash commands via CommandRouter.
+        // This catches workflow invocations like /comet or /verify
         // that are not handled by the built-in checks above.
         let trimmed = text.trim();
         if trimmed.starts_with('/') {
-            let builtins = &["clear", "plan", "continue", "undo", "init", "help"];
-            let route = crate::knowledge::route_slash_command(
-                &text,
-                builtins,
-                self.external_skill_registry.as_ref().map(|r| r.as_ref()),
-            );
-            match route {
-                crate::knowledge::SlashRoute::ExternalSkill { skill, args } => {
-                    let agent_input = crate::knowledge::comet_slash_agent_prompt(&skill, &args)
-                        .unwrap_or_else(|| text.clone());
-                    let is_comet = agent_input != text;
-                    let msg = format!(
-                        "🔧 External skill '/{}' detected. {}",
-                        if args.is_empty() {
-                            skill
-                        } else {
-                            format!("{} {}", skill, args)
-                        },
-                        if is_comet {
-                            "Sending OpenSpec-aware Comet workflow to agent."
-                        } else {
-                            "Sending to agent for invocation."
+            if let Some(ref router) = self.command_router {
+                match router.route(&text) {
+                    crate::runtime::command::RouteResult::Workflow {
+                        name,
+                        command,
+                        args,
+                    } => {
+                        // Fire SlashCommand hooks asynchronously
+                        {
+                            let hm = self.hook_manager.clone();
+                            let sid = self.session_id.clone();
+                            let cmd = command.clone();
+                            let a = args.clone();
+                            let cwd = std::env::current_dir().unwrap_or_default();
+                            tokio::spawn(async move {
+                                let ctx = crate::runtime::hooks::HookContext {
+                                    event: "SlashCommand".to_string(),
+                                    tool_name: Some(cmd.clone()),
+                                    tool_input: Some(serde_json::json!({
+                                        "command": cmd,
+                                        "args": a,
+                                    })),
+                                    tool_result: None,
+                                    session_id: Some(sid),
+                                    working_directory: cwd.to_string_lossy().to_string(),
+                                    timestamp: chrono::Utc::now().to_rfc3339(),
+                                    comet_phase: None,
+                                    workflow_state: None,
+                                    variables: Default::default(),
+                                };
+                                hm.fire(
+                                    &crate::runtime::hooks::HookEvent::SlashCommand,
+                                    &ctx,
+                                    None,
+                                    None,
+                                )
+                                .await;
+                            });
                         }
-                    );
-                    self.committed_messages.push(UIMessage {
-                        role: MessageRole::System,
-                        content: msg,
-                        tool_name: None,
-                        content_collapsed: false,
-                        tool_collapsed: false,
-                        tool_running: false,
-                        tool_args: None,
-                        diff_data: None,
-                        tool_metadata: None,
-                    });
-                    // Queue the routed input for the agent to process.
-                    self.pending_inputs.push_back(agent_input);
-                    if self.current_turn_handle.is_none() {
-                        self.start_next_turn();
+                        // Show friendly status message
+                        self.push_system_message(format!("Starting {} workflow...", name));
+                        // Queue the original input for the agent to process.
+                        self.pending_inputs.push_back(text.clone());
+                        if self.current_turn_handle.is_none() {
+                            self.start_next_turn();
+                        }
+                        return;
                     }
-                    return;
+                    crate::runtime::command::RouteResult::Unknown {
+                        command,
+                        suggestions,
+                    } => {
+                        let msg = if suggestions.is_empty() {
+                            format!(
+                                "Unknown command: /{}. Type /help for available commands.",
+                                command
+                            )
+                        } else {
+                            format!(
+                                "Unknown command: /{}. Did you mean: /{}?",
+                                command,
+                                suggestions.join(", /")
+                            )
+                        };
+                        self.push_system_message(msg);
+                        return;
+                    }
+                    // BuiltIn — already handled above
+                    crate::runtime::command::RouteResult::BuiltIn => {}
+                    // NotSlash — can't happen here (already checked starts_with('/'))
+                    crate::runtime::command::RouteResult::NotSlash => {}
                 }
-                crate::knowledge::SlashRoute::Unknown {
-                    command,
-                    suggestions,
-                } => {
-                    let msg = if suggestions.is_empty() {
-                        format!(
-                            "Unknown command: /{}. Type /help for available commands.",
-                            command
-                        )
-                    } else {
-                        format!(
-                            "Unknown command: /{}. Did you mean: /{}?",
-                            command,
-                            suggestions.join(", /")
-                        )
-                    };
-                    self.committed_messages.push(UIMessage {
-                        role: MessageRole::System,
-                        content: msg,
-                        tool_name: None,
-                        content_collapsed: false,
-                        tool_collapsed: false,
-                        tool_running: false,
-                        tool_args: None,
-                        diff_data: None,
-                        tool_metadata: None,
-                    });
-                    return;
-                }
-                // BuiltIn — already handled above, NotSlash — can't happen here
-                _ => {}
             }
         }
         if self.mode == AgentMode::PlanMode {
