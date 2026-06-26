@@ -817,7 +817,7 @@ git commit -m "feat(runtime): implement CommandRouter with builtin/workflow rout
 - 消费：Task 2 的 `UserOption`
 - 产出：`InteractionService` trait、TUI/CLI/Headless 实现
 
-- [ ] **Step 1: 实现 `src/runtime/interaction.rs`**
+- [x] **Step 1: 实现 `src/runtime/interaction.rs`**
 
 ```rust
 use async_trait::async_trait;
@@ -854,7 +854,7 @@ pub trait InteractionService: Send + Sync {
 }
 ```
 
-- [ ] **Step 2: 实现 `src/runtime/interaction_tui.rs`**
+- [x] **Step 2: 实现 `src/runtime/interaction_tui.rs`**
 
 ```rust
 use async_trait::async_trait;
@@ -872,7 +872,7 @@ pub struct TuiInteractionService {
 
 注意：完整 TUI 集成需要引用 `AppEvent` 和 `AgentPhase` 类型（在 `src/tui/app/` 和 `src/state` 中）。此任务提供骨架实现，Task 10.4 中完成完整集成。
 
-- [ ] **Step 3: 实现 `src/runtime/interaction_cli.rs`**
+- [x] **Step 3: 实现 `src/runtime/interaction_cli.rs`**
 
 ```rust
 use async_trait::async_trait;
@@ -923,7 +923,7 @@ impl InteractionService for CliInteractionService {
 }
 ```
 
-- [ ] **Step 4: 实现 `src/runtime/interaction_headless.rs`**
+- [x] **Step 4: 实现 `src/runtime/interaction_headless.rs`**
 
 ```rust
 use async_trait::async_trait;
@@ -985,7 +985,7 @@ impl InteractionService for HeadlessInteractionService {
 }
 ```
 
-- [ ] **Step 5: 添加 `AgentPhase::WaitingForInteraction`**
+- [x] **Step 5: 添加 `AgentPhase::WaitingForInteraction`**
 
 在 `src/state/agent_phase.rs` 中：
 
@@ -996,13 +996,13 @@ pub enum AgentPhase {
 }
 ```
 
-- [ ] **Step 6: 运行测试**
+- [x] **Step 6: 运行测试**
 
 ```bash
 cargo check 2>&1 | head -20
 ```
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add src/runtime/interaction.rs src/runtime/interaction_tui.rs src/runtime/interaction_cli.rs src/runtime/interaction_headless.rs src/state/agent_phase.rs
