@@ -1669,7 +1669,7 @@ git commit -m "refactor(comet): delete src/comet/ and remove all hardcoded Comet
 **文件：**
 - 创建：`tests/generic_agent_runtime_test.rs`
 
-- [ ] **Step 1: 编写集成测试——SlashCommand 路由和 ContextAssembler 集成**
+- [x] **Step 1: 编写集成测试——SlashCommand 路由和 ContextAssembler 集成**
 
 ```rust
 use std::sync::Arc;
@@ -1708,7 +1708,7 @@ async fn test_context_assembler_integration() {
 }
 ```
 
-- [ ] **Step 2: 编写集成测试——HookManager 的 when_state 过滤**
+- [x] **Step 2: 编写集成测试——HookManager 的 when_state 过滤**
 
 ```rust
 #[tokio::test]
@@ -1734,7 +1734,7 @@ async fn test_hook_when_state_filter() {
 }
 ```
 
-- [ ] **Step 3: 编写集成测试——inject_context 生成的内部文本不出现在用户可见消息中**
+- [x] **Step 3: 编写集成测试——inject_context 生成的内部文本不出现在用户可见消息中**
 
 ```rust
 #[tokio::test]
@@ -1764,17 +1764,17 @@ async fn test_internal_not_visible() {
 }
 ```
 
-- [ ] **Step 4: 运行所有集成测试**
+- [x] **Step 4: 运行所有集成测试**
 
 ```bash
 cargo test --test generic_agent_runtime_test 2>&1 | tail -20
 ```
 
-- [ ] **Step 5: 回归测试——现有 slash 命令行为不变**
+- [x] **Step 5: 回归测试——现有 slash 命令行为不变**
 
 确保 `/clear`, `/help`, `/plan`, `/continue`, `/undo`, `/init` 在重构后行为一致。TUI 集成测试由手动验证覆盖。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add tests/generic_agent_runtime_test.rs
@@ -1785,7 +1785,7 @@ git commit -m "test(runtime): add integration tests for workflow routing, contex
 
 ### Task 14: 手动验证和最终清理
 
-- [ ] **Step 1: 验证 grep 断言**
+- [x] **Step 1: 验证 grep 断言**
 
 ```bash
 grep -r "comet\|openspec\|phase" src/runtime/
@@ -1795,7 +1795,7 @@ grep -rn "CometPhase\|CometState\|CometGuard\|comet_slash_agent_prompt" src/
 # 预期零结果
 ```
 
-- [ ] **Step 2: 验证模块结构**
+- [x] **Step 2: 验证模块结构**
 
 ```bash
 ls src/runtime/hooks/
@@ -1803,14 +1803,14 @@ ls src/runtime/guardian.rs
 ls src/comet/  # 应报错：No such file or directory
 ```
 
-- [ ] **Step 3: 运行完整测试套件**
+- [x] **Step 3: 运行完整测试套件**
 
 ```bash
 cargo test 2>&1 | tail -10
 ```
 确认所有测试通过，无回归。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add -A
