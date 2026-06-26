@@ -81,7 +81,7 @@ src/
 - 消费：无（第一个任务）
 - 产出：`src/runtime/mod.rs` 声明所有模块，`src/lib.rs` 加 `pub mod runtime`
 
-- [ ] **Step 1: 创建 `src/runtime/mod.rs`**
+- [x] **Step 1: 创建 `src/runtime/mod.rs`**
 
 ```rust
 pub mod command;
@@ -95,7 +95,7 @@ pub mod interaction_tui;
 pub mod guardian;
 ```
 
-- [ ] **Step 2: 为 6 个新文件各创建骨架文件，每个文件仅含 `// TODO: implement in Task X` 注释**
+- [x] **Step 2: 为 6 个新文件各创建骨架文件，每个文件仅含 `// TODO: implement in Task X` 注释**
 
 ```bash
 for f in context.rs interaction.rs interaction_tui.rs interaction_cli.rs interaction_headless.rs command.rs; do
@@ -103,7 +103,7 @@ for f in context.rs interaction.rs interaction_tui.rs interaction_cli.rs interac
 done
 ```
 
-- [ ] **Step 3: 在 `src/lib.rs` 中添加 `pub mod runtime;`**
+- [x] **Step 3: 在 `src/lib.rs` 中添加 `pub mod runtime;`**
 
 检查当前 `src/lib.rs` 中 `pub mod` 的声明顺序，在合适位置（如 `pub mod hooks` 附近）插入 `pub mod runtime;`
 
@@ -112,14 +112,14 @@ sed -i '' '/pub mod hooks/a\
 pub mod runtime;\' src/lib.rs
 ```
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 ```bash
 cargo check 2>&1 | head -20
 ```
 预期输出：编译通过，或仅有未使用导入警告。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/runtime/ src/lib.rs
