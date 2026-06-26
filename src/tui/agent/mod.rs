@@ -12,7 +12,7 @@ mod stream;
 mod tool_dispatch;
 
 use crate::api::ChatMessage;
-use crate::hooks::HookManager;
+use crate::runtime::hooks::HookManager;
 use crate::tui::app::AppEvent;
 use crate::tui::client::DaemonClient;
 use crate::utils::stuck_detector::StuckDetector;
