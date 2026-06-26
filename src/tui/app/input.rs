@@ -162,9 +162,6 @@ impl App {
             let input_text = text.clone();
             let sid = self.session_id.clone();
             tokio::spawn(async move {
-                let cwd = std::env::current_dir().unwrap_or_default();
-                let comet_phase = crate::comet::CometState::read(&cwd)
-                    .map(|s| format!("{:?}", s.phase).to_lowercase());
                 let ctx = crate::runtime::hooks::HookContext {
                     event: "UserPromptSubmit".to_string(),
                     tool_name: None,
@@ -175,7 +172,7 @@ impl App {
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_default(),
                     timestamp: chrono::Utc::now().to_rfc3339(),
-                    comet_phase,
+                    comet_phase: None,
                     workflow_state: None,
                     variables: Default::default(),
                 };

@@ -727,8 +727,6 @@ impl App {
                     let sid = self.session_id.clone();
                     tokio::spawn(async move {
                         let cwd = std::env::current_dir().unwrap_or_default();
-                        let comet_phase = crate::comet::CometState::read(&cwd)
-                            .map(|s| format!("{:?}", s.phase).to_lowercase());
                         let ctx = crate::runtime::hooks::HookContext {
                             event: "Stop".to_string(),
                             tool_name: None,
@@ -737,7 +735,7 @@ impl App {
                             session_id: Some(sid),
                             working_directory: cwd.to_string_lossy().to_string(),
                             timestamp: chrono::Utc::now().to_rfc3339(),
-                            comet_phase,
+                            comet_phase: None,
                             workflow_state: None,
                             variables: Default::default(),
                         };
@@ -763,8 +761,6 @@ impl App {
                     let reason_str = format!("aborted: {:?}", reason);
                     tokio::spawn(async move {
                         let cwd = std::env::current_dir().unwrap_or_default();
-                        let comet_phase = crate::comet::CometState::read(&cwd)
-                            .map(|s| format!("{:?}", s.phase).to_lowercase());
                         let ctx = crate::runtime::hooks::HookContext {
                             event: "Stop".to_string(),
                             tool_name: None,
@@ -773,7 +769,7 @@ impl App {
                             session_id: Some(sid),
                             working_directory: cwd.to_string_lossy().to_string(),
                             timestamp: chrono::Utc::now().to_rfc3339(),
-                            comet_phase,
+                            comet_phase: None,
                             workflow_state: None,
                             variables: Default::default(),
                         };

@@ -255,7 +255,7 @@ fn write_skill(root: &std::path::Path, relative: &str, content: &str) {
 }
 
 use wgenty_code::knowledge::{
-    route_slash_command, ExternalSkillRegistry, ExternalSkillRoot, SlashRoute,
+    ExternalSkillRegistry, ExternalSkillRoot,
 };
 
 #[test]
@@ -399,89 +399,6 @@ fn test_loaded_skill_context_depth_limit() {
     let context = LoadedSkillContext::default();
     assert!(context.depth_allowed(MAX_NESTED_SKILL_DEPTH));
     assert!(!context.depth_allowed(MAX_NESTED_SKILL_DEPTH + 1));
-}
-
-// ── Slash route tests ──────────────────────────────────────────────────────
-
-#[test]
-fn test_slash_route_builtin_wins() {
-    let result = route_slash_command("/help me", &["help", "clear"], None);
-    assert!(matches!(result, SlashRoute::BuiltIn { command, .. } if command == "help"));
-}
-
-#[test]
-fn test_slash_route_not_slash() {
-    let result = route_slash_command("hello world", &[], None);
-    assert_eq!(result, SlashRoute::NotSlash);
-}
-
-#[test]
-fn test_slash_route_unknown_command() {
-    let result = route_slash_command("/unknown_cmd", &["help"], None);
-    assert!(matches!(result, SlashRoute::Unknown { ref command, .. } if command == "unknown_cmd"));
-}
-
-#[test]
-fn test_slash_route_builtin_without_args() {
-    let result = route_slash_command("/clear", &["help", "clear"], None);
-    assert!(matches!(
-        result,
-        SlashRoute::BuiltIn { ref command, ref args } if command == "clear" && args.is_empty()
-    ));
-}
-
-#[test]
-fn test_slash_route_external_skill_resolved_with_registry() {
-    let repo = tempfile::TempDir::new().unwrap();
-    let root = repo.path().join(".wgenty-code/skills");
-    std::fs::create_dir_all(root.join("comet")).unwrap();
-    std::fs::write(
-        root.join("comet/SKILL.md"),
-        "---\nname: comet\ndescription: Comet\n---\n# Comet",
-    )
-    .unwrap();
-
-    let registry = ExternalSkillRegistry::discover(vec![ExternalSkillRoot::new(
-        root.clone(),
-        ExternalSkillSource::ProjectWgentyCode { root },
-    )])
-    .expect("registry should discover skills");
-
-    let result = route_slash_command("/comet hello", &["help"], Some(&registry));
-    assert!(matches!(
-        result,
-        SlashRoute::ExternalSkill { ref skill, ref args } if skill == "comet" && args == "hello"
-    ));
-}
-
-#[test]
-fn test_slash_route_unknown_with_suggestions() {
-    let repo = tempfile::TempDir::new().unwrap();
-    let root = repo.path().join(".wgenty-code/skills");
-    std::fs::create_dir_all(root.join("comet")).unwrap();
-    std::fs::write(
-        root.join("comet/SKILL.md"),
-        "---\nname: comet\ndescription: Comet\n---\n# Comet",
-    )
-    .unwrap();
-
-    let registry = ExternalSkillRegistry::discover(vec![ExternalSkillRoot::new(
-        root.clone(),
-        ExternalSkillSource::ProjectWgentyCode { root },
-    )])
-    .expect("registry should discover skills");
-
-    let result = route_slash_command("/comte hello", &["help"], Some(&registry));
-    assert!(matches!(
-        result,
-        SlashRoute::Unknown { ref command, ref suggestions, .. } if command == "comte" && !suggestions.is_empty()
-    ));
-}
-
-#[test]
-fn test_slash_route_no_registry_fallback_to_unknown() {
-    let result = route_slash_command("/comet hello", &["help"], None);
-    assert!(matches!(result, SlashRoute::Unknown { ref command, .. } if command == "comet"));
 }
 
 #[test]

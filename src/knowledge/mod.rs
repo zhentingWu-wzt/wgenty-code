@@ -108,10 +108,7 @@ pub use external::{
     ExternalSkillError, ExternalSkillSource, ParsedExternalSkillDocument, ShadowedSkillDefinition,
     SkillFrontmatter,
 };
-pub use external_registry::{
-    comet_slash_agent_prompt, route_slash_command, ExternalSkillRegistry, ExternalSkillRoot,
-    SlashRoute,
-};
+pub use external_registry::{ExternalSkillRegistry, ExternalSkillRoot};
 pub use loader::{SkillInfo, SkillLoader};
 pub use policy::{
     DefaultAllowPolicy, LoadedSkillContext, LoadedSkillRecord, NestedSkillCallEvent,
