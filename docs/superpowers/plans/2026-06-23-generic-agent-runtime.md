@@ -671,7 +671,7 @@ git commit -m "feat(runtime): implement ContextAssembler with priority, visibili
 - 消费：无
 - 产出：`CommandRouter`、`RouteResult`、`CommandInvocation`
 
-- [ ] **Step 1: 编写 CommandRouter + RouteResult**
+- [x] **Step 1: 编写 CommandRouter + RouteResult**
 
 ```rust
 use std::collections::HashMap;
@@ -742,7 +742,7 @@ impl CommandRouter {
 }
 ```
 
-- [ ] **Step 2: 写单元测试**
+- [x] **Step 2: 写单元测试**
 
 ```rust
 #[cfg(test)]
@@ -784,18 +784,18 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 在 `src/knowledge/external_registry.rs` 中标记 `route_slash_command` 和 `comet_slash_agent_prompt` 为弃用**
+- [x] **Step 3: 在 `src/knowledge/external_registry.rs` 中标记 `route_slash_command` 和 `comet_slash_agent_prompt` 为弃用**
 
 添加 `#[deprecated(note = "use CommandRouter instead")]` 注解到这两个函数。将在 Task 10 中替换所有调用点并删除。
 
-- [ ] **Step 4: 运行测试**
+- [x] **Step 4: 运行测试**
 
 ```bash
 cargo test -p wgenty-core -- command 2>&1 | tail -20
 ```
 预期输出：4 个测试 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/runtime/command.rs src/knowledge/external_registry.rs
