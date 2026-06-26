@@ -23,11 +23,11 @@ pub mod cli;
 pub mod config;
 pub mod context;
 pub mod knowledge;
-pub mod runtime;
 pub mod mcp;
 pub mod permissions;
 pub mod plugins;
 pub mod prompts;
+pub mod runtime;
 pub mod sandbox;
 pub mod services;
 pub mod state;
@@ -55,13 +55,13 @@ pub use api::{AnthropicClient, ApiClient, ChatMessage};
 pub use cli::Cli;
 pub use config::Settings;
 pub use context::MemoryManager;
-pub use runtime::guardian::{Guardian, GuardianConfig, GuardianDecision, RiskLevel};
 pub use knowledge::{
     Skill, SkillCategory, SkillContext, SkillError, SkillExecutor, SkillParams, SkillRegistry,
     SkillResult,
 };
 pub use mcp::McpManager;
 pub use plugins::PluginManager;
+pub use runtime::guardian::{Guardian, GuardianConfig, GuardianDecision, RiskLevel};
 pub use state::AppState;
 pub use tools::ToolRegistry;
 pub use voice::VoiceService;
