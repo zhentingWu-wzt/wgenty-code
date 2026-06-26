@@ -1,7 +1,7 @@
 use crate::api::ChatMessage;
 use crate::comet::{CometGuard, CometState};
-use crate::guardian::{Guardian, GuardianDecision};
-use crate::hooks::{HookEvent, HookManager};
+use crate::runtime::guardian::{Guardian, GuardianDecision};
+use crate::runtime::hooks::{HookEvent, HookManager};
 use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
 use crate::tools::ToolRegistry;
 use std::collections::HashSet;

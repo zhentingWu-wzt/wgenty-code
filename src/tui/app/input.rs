@@ -165,7 +165,7 @@ impl App {
                 let cwd = std::env::current_dir().unwrap_or_default();
                 let comet_phase = crate::comet::CometState::read(&cwd)
                     .map(|s| format!("{:?}", s.phase).to_lowercase());
-                let ctx = crate::hooks::HookContext {
+                let ctx = crate::runtime::hooks::HookContext {
                     event: "UserPromptSubmit".to_string(),
                     tool_name: None,
                     tool_input: Some(serde_json::Value::String(input_text)),
@@ -179,7 +179,7 @@ impl App {
                     workflow_state: None,
                     variables: Default::default(),
                 };
-                hm.fire(&crate::hooks::HookEvent::UserPromptSubmit, &ctx, None, None)
+                hm.fire(&crate::runtime::hooks::HookEvent::UserPromptSubmit, &ctx, None, None)
                     .await;
             });
         }

@@ -9,7 +9,7 @@ pub mod types;
 pub use types::*;
 
 use crate::api::ChatMessage;
-use crate::hooks::HookManager;
+use crate::runtime::hooks::HookManager;
 use crate::prompts::{self, PromptContext};
 use crate::state::agent_phase::{AgentPhase, TurnAbortReason, TurnId};
 use crate::tui::client::DaemonClient;
@@ -245,7 +245,7 @@ impl App {
                 let comet_phase = crate::comet::CometState::read(&cwd)
                     .map(|s| format!("{:?}", s.phase).to_lowercase());
                 let ctx = HookManager::session_start_context(&sid).with_comet_phase(comet_phase);
-                hm.fire(&crate::hooks::HookEvent::SessionStart, &ctx, None, None)
+                hm.fire(&crate::runtime::hooks::HookEvent::SessionStart, &ctx, None, None)
                     .await;
             });
         }
@@ -376,7 +376,7 @@ impl App {
                 let comet_phase = crate::comet::CometState::read(&cwd)
                     .map(|s| format!("{:?}", s.phase).to_lowercase());
                 let ctx = HookManager::session_end_context(&sid).with_comet_phase(comet_phase);
-                hm.fire(&crate::hooks::HookEvent::SessionEnd, &ctx, None, None)
+                hm.fire(&crate::runtime::hooks::HookEvent::SessionEnd, &ctx, None, None)
                     .await;
             });
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;

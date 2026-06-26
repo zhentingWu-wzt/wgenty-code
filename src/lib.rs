@@ -23,8 +23,6 @@ pub mod cli;
 pub mod comet;
 pub mod config;
 pub mod context;
-pub mod guardian;
-pub mod hooks;
 pub mod knowledge;
 pub mod runtime;
 pub mod mcp;
@@ -58,7 +56,7 @@ pub use api::{AnthropicClient, ApiClient, ChatMessage};
 pub use cli::Cli;
 pub use config::Settings;
 pub use context::MemoryManager;
-pub use guardian::{Guardian, GuardianConfig, GuardianDecision, RiskLevel};
+pub use runtime::guardian::{Guardian, GuardianConfig, GuardianDecision, RiskLevel};
 pub use knowledge::{
     Skill, SkillCategory, SkillContext, SkillError, SkillExecutor, SkillParams, SkillRegistry,
     SkillResult,

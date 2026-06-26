@@ -6,7 +6,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
-use wgenty_code::hooks::HookManager;
+use wgenty_code::runtime::hooks::HookManager;
 use wgenty_code::permissions::policy::ToolPermissionPolicy;
 use wgenty_code::tools::ToolRegistry;
 
