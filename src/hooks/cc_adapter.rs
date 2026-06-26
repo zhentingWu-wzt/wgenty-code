@@ -3,7 +3,7 @@
 //! CC format: { "PostToolUse": [[{ "type": "command", "command": "...", "matcher": "..." }]] }
 //! Internal format: HashMap<HookEvent, Vec<HookDefinition>>
 
-use super::{HookDefinition, HookEvent};
+use super::{HookAction, HookDefinition, HookEvent};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -62,10 +62,13 @@ pub fn adapt_cc_hooks(hooks_config: &serde_json::Value) -> HashMap<HookEvent, Ve
                             };
 
                             definitions.push(HookDefinition {
-                                command,
-                                timeout_secs: hook_item.timeout.unwrap_or(30),
+                                event: event.clone(),
                                 matcher: hook_item.matcher,
-                                hook_type: Some(hook_item.r#type),
+                                when_state: None,
+                                actions: vec![HookAction::Command {
+                                    command,
+                                    timeout_secs: hook_item.timeout.unwrap_or(30),
+                                }],
                             });
                         }
                     }
@@ -92,6 +95,7 @@ fn parse_hook_event(name: &str) -> Option<HookEvent> {
         "Stop" => Some(HookEvent::Stop),
         "UserPromptSubmit" => Some(HookEvent::UserPromptSubmit),
         "PermissionRequest" => Some(HookEvent::PermissionRequest),
+        "SlashCommand" => Some(HookEvent::SlashCommand),
         _ => None,
     }
 }
@@ -112,8 +116,14 @@ mod tests {
         assert!(hooks.contains_key(&HookEvent::Stop));
         let defs = &hooks[&HookEvent::Stop];
         assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].command, "echo 'session ended'");
-        assert_eq!(defs[0].hook_type.as_deref(), Some("command"));
+        assert_eq!(defs[0].event, HookEvent::Stop);
+        assert_eq!(defs[0].actions.len(), 1);
+        match &defs[0].actions[0] {
+            HookAction::Command { command, timeout_secs: _ } => {
+                assert_eq!(command, "echo 'session ended'");
+            }
+            _ => panic!("expected Command action"),
+        }
     }
 
     #[test]

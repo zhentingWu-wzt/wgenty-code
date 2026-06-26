@@ -738,6 +738,8 @@ impl App {
                             working_directory: cwd.to_string_lossy().to_string(),
                             timestamp: chrono::Utc::now().to_rfc3339(),
                             comet_phase,
+                            workflow_state: None,
+                            variables: Default::default(),
                         };
                         hm.fire(&crate::hooks::HookEvent::Stop, &ctx, None).await;
                     });
@@ -772,6 +774,8 @@ impl App {
                             working_directory: cwd.to_string_lossy().to_string(),
                             timestamp: chrono::Utc::now().to_rfc3339(),
                             comet_phase,
+                            workflow_state: None,
+                            variables: Default::default(),
                         };
                         hm.fire(&crate::hooks::HookEvent::Stop, &ctx, None).await;
                     });
