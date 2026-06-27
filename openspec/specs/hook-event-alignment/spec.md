@@ -5,17 +5,19 @@ TBD - created by archiving change cc-ecosystem-compat. Update Purpose after arch
 ## Requirements
 ### Requirement: REQ-HEA-001 — new event types
 
-`HookEvent` MUST MUST 必须新增 `Stop`、`UserPromptSubmit`、`PermissionRequest` 三种事件类型。
+The `HookEvent` enum SHALL be moved from `src/hooks/` to `src/runtime/event.rs` as part of the generic `EventBus`. The existing event types (PreToolUse, PostToolUse, SessionStart, SessionEnd, Notification, Stop, UserPromptSubmit, PermissionRequest) SHALL be preserved. New event types SHALL be added for Runtime-level events.
 
-#### Scenario: Stop event fires on session completion
-- GIVEN hooks 配置包含 "Stop" 事件
-- WHEN agent session 完成
-- THEN Stop hooks 被执行
+#### Scenario: Existing hook events preserved after migration
 
-#### Scenario: UserPromptSubmit event
-- GIVEN hooks 配置包含 "UserPromptSubmit" 事件
-- WHEN 用户提交 prompt
-- THEN UserPromptSubmit hooks 被执行
+- **WHEN** hooks are configured with any existing event type (PreToolUse, PostToolUse, etc.)
+- **AND** the hooks module has been migrated to `src/runtime/`
+- **THEN** all existing event types SHALL fire identically to before the migration
+
+#### Scenario: Runtime events added alongside hook events
+
+- **WHEN** the `EventBus` emits a `RuntimeEvent::StateTransition`
+- **THEN** the event SHALL be handled by the `EventBus` subscription system
+- **AND** existing hook event types SHALL NOT be affected
 
 ### Requirement: REQ-HEA-002 — matcher field
 
@@ -47,19 +49,23 @@ Hook 命令执行前MUST MUST 必须展开 `%tool%` 和 `%input%` 变量。
 
 ### Requirement: REQ-HEA-004 — CC hooks format compatibility
 
-`HookManager::from_settings()` MUST MUST 必须兼容 Claude Code 的 hooks 配置数组格式（含 `matcher` 和 `type` 字段的嵌套结构）。
+`HookManager::from_settings()` SHALL remain compatible with Claude Code hooks format after migration to `src/runtime/`. The `cc_adapter` module SHALL be preserved.
 
-#### Scenario: CC nested array format parsed
-- GIVEN hooks 配置为 CC 嵌套数组格式 `{"Stop": [[{"type": "command", "command": "..."}]]}`
-- WHEN `from_settings()` 被调用
-- THEN hooks 被正确解析为 `Vec<HookDefinition>`，含 matcher 和 type 字段
+#### Scenario: CC nested array format still parsed after migration
+
+- **WHEN** hooks config uses CC format `{"Stop": [[{"type": "command", "command": "..."}]]}`
+- **AND** `HookManager::from_settings()` is called from `src/runtime/`
+- **THEN** hooks SHALL be correctly parsed into `Vec<HookDefinition>` with matcher and type fields
 
 ### Requirement: REQ-HEA-005 — backward compatibility
 
-MUST 现有事件类型（PreToolUse, PostToolUse, SessionStart, SessionEnd, Notification）继续正常工作。
+All existing hook behavior SHALL be preserved after migration. The `GuardPipeline` (new) SHALL run before `PreToolUse` hooks (existing), matching the current `CometGuard`-before-`PreToolUse` ordering.
 
-#### Scenario: Legacy flat format still works
-- GIVEN hooks 配置为原有扁平格式
-- WHEN `from_settings()` 被调用
-- THEN 原有事件类型 hooks 被正确解析和执行
+#### Scenario: Guard pipeline runs, then PreToolUse hooks
+
+- **WHEN** a tool is about to execute
+- **AND** both the `GuardPipeline` and `PreToolUse` hooks are configured
+- **THEN** the `GuardPipeline` SHALL evaluate first
+- **AND** if the guard allows, `PreToolUse` hooks SHALL then execute
+- **AND** this ordering SHALL match the previous comet-guard-before-hooks behavior
 

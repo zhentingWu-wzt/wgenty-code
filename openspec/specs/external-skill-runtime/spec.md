@@ -51,48 +51,49 @@ The system SHALL resolve duplicate external skill names using a deterministic so
 - **THEN** the system reports the selected source path and any shadowed source paths for duplicate skill names
 
 ### Requirement: Available skills prompt listing
-The system SHALL inject a compact available-skills listing into model context so the model can choose valid external skills without loading every full skill body upfront.
 
-#### Scenario: Available listing contains discovered skill
-- **WHEN** external skills are discovered before a model turn
-- **THEN** the prompt context includes each canonical skill name and description
-- **AND** it instructs the model to load full instructions through the Skill runtime action when needed
+The system SHALL replace the hardcoded available-skills listing with `SkillManager::list_available()` output, which SHALL include skills discovered from all configured roots plus workflows from `workflow.yaml` `entry_commands`.
 
-#### Scenario: Full bodies are loaded on demand
-- **WHEN** an external skill is present in the available listing but has not been invoked
-- **THEN** the prompt context does not include that skill's full markdown body
+#### Scenario: Available listing contains both skills and workflow entry commands
+
+- **WHEN** `SkillManager::list_available()` is called
+- **THEN** the output SHALL include skills discovered from SKILL.md files
+- **AND** the output SHALL include workflow entry commands from `workflow.yaml` files
+- **AND** each entry SHALL include name and description
 
 ### Requirement: Slash command skill routing
-The system SHALL route slash commands that do not match built-in commands to matching external skills.
 
-#### Scenario: User invokes comet slash command
-- **WHEN** the user enters `/comet 如果把 comet 的能力融合进这个项目`
-- **THEN** the runtime resolves the `comet` external skill
-- **AND** the model turn receives the full `comet` skill instructions
-- **AND** the raw argument text is preserved as `ARGUMENTS` context
+The system SHALL replace `comet_slash_agent_prompt()` and `route_slash_command()` with the generic `CommandRouter` that matches slash commands to workflow `entry_commands` in `workflow.yaml`. The hardcoded `"This is a native Comet dispatch wrapper..."` prompt SHALL be removed.
 
-#### Scenario: Unknown slash command reports suggestions
-- **WHEN** the user enters a slash command with no built-in or external skill match
-- **THEN** the system reports that the command is unknown
-- **AND** it suggests similar external skill names when available
+#### Scenario: User invokes comet slash command via CommandRouter
+
+- **WHEN** the user enters `/comet fix the bug`
+- **AND** a workflow YAML defines `entry_commands: [comet]`
+- **THEN** `CommandRouter` SHALL route the invocation to the `WorkflowEngine` for that workflow
+- **AND** the `WorkflowEngine` SHALL run discovery, evaluate routing rules, and inject context
+- **AND** the user SHALL NOT see `"This is a native Comet dispatch wrapper..."` in their chat
+
+#### Scenario: CommandRouter handles unknown slash commands
+
+- **WHEN** the user enters a slash command with no matching built-in or workflow `entry_commands`
+- **THEN** `CommandRouter` SHALL return an unknown command result
+- **AND** the TUI SHALL display suggestions based on Levenshtein distance to known commands
+
+#### Scenario: Internal workflow context hidden from user
+
+- **WHEN** the `WorkflowEngine` injects context layers with `visibility: internal`
+- **THEN** those context layers SHALL be sent to the model as hidden system instructions
+- **AND** the user SHALL only see friendly status messages (e.g., "Starting Comet workflow...")
 
 ### Requirement: Nested Skill runtime action
-The system SHALL provide a Claude Code-compatible `skill`/`Skill` runtime action that allows the model to load another external skill by canonical name with optional arguments.
 
-#### Scenario: Comet loads child skill
-- **WHEN** the loaded `comet` skill instructs the model to invoke `comet-open`
-- **THEN** the model can call the `skill`/`Skill` runtime action with `skill = "comet-open"`
-- **AND** the runtime returns the full `comet-open` instructions as a tool-style result
+The system SHALL replace the hardcoded `skill`/`Skill` tool with a generic `SkillTool` that delegates to `SkillManager::load()` and `SkillManager::inject()`. The tool SHALL be workflow-agnostic.
 
-#### Scenario: Namespaced skill loads successfully
-- **WHEN** the model calls the `skill`/`Skill` runtime action with `skill = "superpowers:brainstorming"`
-- **THEN** the runtime resolves the namespaced skill exactly
-- **AND** returns its full instructions without treating `:` as a path separator
+#### Scenario: Model loads a skill by name
 
-#### Scenario: Nested skill depth limit is enforced
-- **WHEN** nested skill loading would exceed depth 8
-- **THEN** the runtime denies the load with an actionable maximum-depth error
-- **AND** the runtime does not inject the requested skill body
+- **WHEN** the model calls the `Skill` tool with `name: comet-open`
+- **THEN** `SkillManager::load("comet-open")` SHALL return the full SKILL.md body
+- **AND** the body SHALL be injected as a `tool_result` into the conversation
 
 ### Requirement: Loaded skill context tracking
 The system SHALL track which external skills are loaded during a session or turn so subsequent policy hooks and diagnostics can inspect the active instruction context.

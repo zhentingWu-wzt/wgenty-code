@@ -4,36 +4,38 @@
 TBD - created by archiving change comet-workflow-compat. Update Purpose after archive.
 ## Requirements
 ### Requirement: Runtime external skill registry discovers all Comet-compatible roots
-The system SHALL discover external skills from a unified set of root directories: project `.wgenty-code/skills/`, user `~/.wgenty-code/skills/`, and user `~/.claude/skills/`. Discovery SHALL be consistent across TUI app startup, daemon tool registry wiring, CLI `skills list`, and TUI completion engine.
 
-#### Scenario: Comet skills installed only in `~/.claude/skills` are discoverable
-- **WHEN** Comet skills (comet, comet-open, comet-design, comet-build, comet-verify, comet-archive, comet-hotfix, comet-tweak) are installed in `~/.claude/skills/` but not in `~/.wgenty-code/skills/`
-- **THEN** the external skill registry SHALL resolve `/comet` to the Comet skill
-- **AND** the `skill` tool SHALL list comet as an available external skill
-- **AND** the TUI slash command completion SHALL suggest `/comet` when user types `/com`
+The system SHALL move skill root discovery into the generic `SkillManager` in `src/runtime/`. The `SkillRootResolver` SHALL be replaced by `SkillManager::discover()` which reads root paths from runtime configuration. The Comet workflow SHALL NOT require special Rust-level skill path handling.
 
-#### Scenario: Same skill exists in both roots, wgenty-code wins
-- **WHEN** `comet` skill exists in both `~/.wgenty-code/skills/comet/` and `~/.claude/skills/comet/`
-- **THEN** the registry SHALL resolve to the `~/.wgenty-code/skills/` version
-- **AND** the shadowed `~/.claude/skills/` version SHALL be recorded in the shadowed definitions list
+#### Scenario: Comet skills installed in any configured root are discoverable
 
-#### Scenario: Skill root does not exist on disk
-- **WHEN** `~/.claude/skills/` does not exist on disk
-- **THEN** the discovery SHALL silently skip that root without error
-- **AND** other roots SHALL still be scanned normally
+- **WHEN** Comet skills are installed in any configured skill root directory
+- **THEN** `SkillManager::discover()` SHALL resolve them by their canonical names
+- **AND** the TUI slash command completion SHALL suggest `/comet` based on workflow `entry_commands`, not skill path
+
+#### Scenario: Skill root configuration is YAML-driven
+
+- **WHEN** skill roots need to change (add/remove/reorder)
+- **THEN** the change SHALL be made in runtime configuration (settings or workflow YAML)
+- **AND** SHALL NOT require Rust code changes
 
 ### Requirement: Unified skill root resolution accessible to all consumers
-The system SHALL provide a single `SkillRootResolver` that returns the ordered list of skill roots: project `.wgenty-code/skills/`, user `~/.wgenty-code/skills/`, user `~/.claude/skills/`.
 
-#### Scenario: All consumers see the same root list
-- **WHEN** TUI app, daemon state, completion engine, and CLI skills list each request skill roots
-- **THEN** all four consumers SHALL receive roots in the same order and count
-- **AND** no consumer SHALL hardcode its own root list
+The system SHALL replace `SkillRootResolver` with `SkillManager` as the single entry point for skill discovery. All consumers SHALL use `SkillManager::discover()` and `SkillManager::resolve()`.
+
+#### Scenario: All consumers use SkillManager
+
+- **WHEN** TUI app, daemon state, completion engine, and CLI skills list each need skill resolution
+- **THEN** all consumers SHALL call `SkillManager` methods
+- **AND** no consumer SHALL directly read skill directories or parse SKILL.md files
 
 ### Requirement: Startup logging of discovered skills
-The system SHALL log, at session startup, the total number of external skills discovered and the root directories scanned.
+
+The system SHALL move startup skill logging into `SkillManager::discover()` with structured log events.
 
 #### Scenario: Session starts with skills in multiple roots
-- **WHEN** a new TUI session starts and skills exist in `~/.wgenty-code/skills/` and `~/.claude/skills/`
-- **THEN** a trace-level log SHALL report the count of skills discovered and which roots were scanned
+
+- **WHEN** `SkillManager::discover()` scans multiple configured roots
+- **THEN** a `RuntimeEvent::SkillDiscovery` event SHALL be emitted with count per root
+- **AND** the existing trace-level log behavior SHALL be preserved
 
