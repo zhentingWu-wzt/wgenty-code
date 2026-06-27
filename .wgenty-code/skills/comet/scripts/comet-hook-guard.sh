@@ -31,13 +31,22 @@ if [ -z "$TARGET" ]; then
     INPUT=$(cat 2>/dev/null || true)
   fi
   if [ -n "$INPUT" ]; then
-    # Extract file_path value — works for both Write and Edit tool inputs
+    # Extract file_path value — works for both Write and Edit tool inputs (CC)
     TARGET=$(printf '%s' "$INPUT" \
       | grep -oE '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null \
       | head -1 \
       | sed 's/^"file_path"[[:space:]]*:[[:space:]]*"//' \
       | sed 's/"$//' \
       || true)
+    # Fallback: wgenty-code's file_write/file_edit use "path" instead of "file_path"
+    if [ -z "$TARGET" ]; then
+      TARGET=$(printf '%s' "$INPUT" \
+        | grep -oE '"path"[[:space:]]*:[[:space:]]*"[^"]*"' 2>/dev/null \
+        | head -1 \
+        | sed 's/^"path"[[:space:]]*:[[:space:]]*"//' \
+        | sed 's/"$//' \
+        || true)
+    fi
   fi
 fi
 
