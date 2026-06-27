@@ -1,5 +1,5 @@
 workflow: full
-phase: verify
+phase: archive
 context_compression: off
 build_mode: subagent-driven-development
 build_pause: plan-ready
@@ -11,11 +11,13 @@ auto_transition: true
 base_ref: 21c47a77490bc0c6d287a8b89347015fd7fee016
 design_doc: docs/superpowers/specs/2026-06-23-generic-agent-runtime-design.md
 plan: docs/superpowers/plans/2026-06-23-generic-agent-runtime.md
-verify_result: pending
-verification_report: null
+verify_result: pass
+verification_report: openspec/changes/archive/2026-06-27-generic-agent-runtime/.comet/verification-report.md
 branch_status: pending
 created_at: 2026-06-22
-verified_at: null
-archived: false
-handoff_context: openspec/changes/generic-agent-runtime/.comet/handoff/design-context.json
+verified_at: 2026-06-27T14:21:56Z
+archived: true
+archived_at: 2026-06-27T14:25:00Z
+archive_path: openspec/changes/archive/2026-06-27-generic-agent-runtime
+handoff_context: openspec/changes/archive/2026-06-27-generic-agent-runtime/.comet/handoff/design-context.json
 handoff_hash: 04e8148b483c8f88317eea5a114411f76a8f56f7072f715e224e842f59fc68b6
