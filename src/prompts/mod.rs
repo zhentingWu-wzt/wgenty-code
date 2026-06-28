@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::api::ChatMessage;
@@ -47,6 +48,9 @@ pub struct PromptContext {
     pub skills_inventory: Vec<SkillEntry>,
     /// Sections from the project's WGENTY.md (split by `---`). Layer 8.
     pub wgenty_md_sections: Vec<String>,
+    /// Absolute path to the project root; used by reminder builders to render
+    /// attribution headers (e.g. `Contents of <abs-path> (description):`).
+    pub project_root: Option<PathBuf>,
     /// Generic runtime context assembler. Replaces hardcoded comet phase injection.
     pub context_assembler: Option<Arc<ContextAssembler>>,
 }
@@ -62,6 +66,7 @@ impl fmt::Debug for PromptContext {
             .field("agents_md_sections", &self.agents_md_sections)
             .field("skills_inventory", &self.skills_inventory)
             .field("wgenty_md_sections", &self.wgenty_md_sections)
+            .field("project_root", &self.project_root)
             .field(
                 "context_assembler",
                 &self.context_assembler.as_ref().map(|_| "ContextAssembler"),
@@ -87,6 +92,7 @@ impl PromptContext {
             agents_md_sections: Vec::new(),
             skills_inventory: Vec::new(),
             wgenty_md_sections: Vec::new(),
+            project_root: None,
             context_assembler: None,
         }
     }
@@ -128,6 +134,11 @@ impl PromptContext {
 
     pub fn with_agents_md(mut self, sections: Vec<String>) -> Self {
         self.agents_md_sections = sections;
+        self
+    }
+
+    pub fn with_project_root(mut self, path: PathBuf) -> Self {
+        self.project_root = Some(path);
         self
     }
 }
@@ -285,6 +296,7 @@ pub fn get_init_prompt() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn test_assemble_base_only() {
@@ -309,6 +321,18 @@ mod tests {
 
         let instructions = assemble_instructions(&settings, &ctx);
         assert!(instructions.system_messages.len() >= 3); // base + permissions + env
+    }
+
+    #[test]
+    fn test_prompt_context_project_root_default_none() {
+        let ctx = PromptContext::new();
+        assert!(ctx.project_root.is_none());
+    }
+
+    #[test]
+    fn test_prompt_context_with_project_root_sets_field() {
+        let ctx = PromptContext::new().with_project_root(PathBuf::from("/tmp/proj"));
+        assert_eq!(ctx.project_root, Some(PathBuf::from("/tmp/proj")));
     }
 
     #[test]
