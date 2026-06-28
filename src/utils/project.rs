@@ -33,6 +33,51 @@ fn read_user_global_instructions_from(home: &Path) -> Option<(PathBuf, String)> 
     }
 }
 
+/// Read user-global rules from `~/.wgenty-code/rules/`.
+///
+/// Returns top-level `.md` files only (subdirectories and non-`.md` files are
+/// ignored), sorted alphabetically by file name. Empty files and files that
+/// fail to read are skipped. Each entry is `(absolute_path, content)`.
+///
+/// Returns an empty vec if the home directory cannot be resolved, the `rules/`
+/// directory does not exist, or `read_dir` fails.
+pub fn read_user_global_rules() -> Vec<(PathBuf, String)> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    read_user_global_rules_from(&home)
+}
+
+/// Testable variant of [`read_user_global_rules`] that accepts an explicit
+/// home directory (avoids polluting the real `HOME` env var in tests).
+fn read_user_global_rules_from(home: &Path) -> Vec<(PathBuf, String)> {
+    let rules_dir = home.join(".wgenty-code").join("rules");
+    let Ok(entries) = std::fs::read_dir(&rules_dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<std::fs::DirEntry> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let is_file = e.file_type().ok().map(|t| t.is_file()).unwrap_or(false);
+            let is_md = e.path().extension().and_then(|s| s.to_str()) == Some("md");
+            is_file && is_md
+        })
+        .collect();
+    files.sort_by_key(|e| e.file_name());
+    files
+        .into_iter()
+        .filter_map(|e| {
+            let path = e.path();
+            let content = std::fs::read_to_string(&path).ok()?;
+            if content.is_empty() {
+                None
+            } else {
+                Some((path, content))
+            }
+        })
+        .collect()
+}
+
 fn read_md_sections(root: &Path, filename: &str) -> Vec<String> {
     let path = root.join(filename);
     if !path.exists() {
@@ -151,5 +196,69 @@ mod tests {
         std::fs::write(dir.join("WGENTY.md"), "").unwrap();
 
         assert!(read_user_global_instructions_from(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn rules_missing_dir_returns_empty() {
+        let tmp = TempDir::new().unwrap();
+        assert!(read_user_global_rules_from(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn rules_empty_dir_returns_empty() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".wgenty-code").join("rules");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(read_user_global_rules_from(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn rules_alphabetical_order() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".wgenty-code").join("rules");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("b.md"), "B").unwrap();
+        std::fs::write(dir.join("a.md"), "A").unwrap();
+        std::fs::write(dir.join("c.md"), "C").unwrap();
+
+        let rules = read_user_global_rules_from(tmp.path());
+        let names: Vec<String> = rules
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["a.md", "b.md", "c.md"]);
+        let contents: Vec<&str> = rules.iter().map(|(_, c)| c.as_str()).collect();
+        assert_eq!(contents, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn rules_ignores_subdirs_and_non_md() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".wgenty-code").join("rules");
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        std::fs::write(dir.join("nested").join("x.md"), "nope").unwrap();
+        std::fs::write(dir.join("foo.txt"), "nope").unwrap();
+        std::fs::write(dir.join("valid.md"), "ok").unwrap();
+
+        let rules = read_user_global_rules_from(tmp.path());
+        assert_eq!(rules.len(), 1);
+        assert_eq!(
+            rules[0].0.file_name().unwrap().to_string_lossy(),
+            "valid.md"
+        );
+        assert_eq!(rules[0].1, "ok");
+    }
+
+    #[test]
+    fn rules_skip_empty_md_files() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".wgenty-code").join("rules");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("empty.md"), "").unwrap();
+        std::fs::write(dir.join("real.md"), "content").unwrap();
+
+        let rules = read_user_global_rules_from(tmp.path());
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].0.file_name().unwrap().to_string_lossy(), "real.md");
     }
 }
