@@ -445,7 +445,7 @@ git commit -m "feat(project): read user global rules from ~/.wgenty-code/rules"
 - `PromptContext.project_root: Option<PathBuf>`
 - `pub fn with_project_root(self, path: PathBuf) -> Self`
 
-- [ ] **Step 1: 在 `PromptContext` struct 内追加字段：**
+- [x] **Step 1: 在 `PromptContext` struct 内追加字段：**
 
 ```rust
 pub project_root: Option<PathBuf>,
@@ -453,9 +453,9 @@ pub project_root: Option<PathBuf>,
 
 并在 `use` 区补 `use std::path::PathBuf;`。
 
-- [ ] **Step 2: 更新 `Default` / `PromptContext::new()`：默认 `project_root: None`；更新 `Debug` impl 增加该字段。**
+- [x] **Step 2: 更新 `Default` / `PromptContext::new()`：默认 `project_root: None`；更新 `Debug` impl 增加该字段。**
 
-- [ ] **Step 3: 新增 builder 方法：**
+- [x] **Step 3: 新增 builder 方法：**
 
 ```rust
 impl PromptContext {
@@ -466,9 +466,9 @@ impl PromptContext {
 }
 ```
 
-- [ ] **Step 4: 运行 `cargo check`，修复字面构造（如 `PromptContext { ... }`）报错为追加 `project_root: None`。**
+- [x] **Step 4: 运行 `cargo check`，修复字面构造（如 `PromptContext { ... }`）报错为追加 `project_root: None`。**
 
-- [ ] **Step 5: 新增单测：**
+- [x] **Step 5: 新增单测：**
 
 ```rust
 #[test]
@@ -478,7 +478,7 @@ fn prompt_context_with_project_root_sets_field() {
 }
 ```
 
-- [ ] **Step 6: 运行**
+- [x] **Step 6: 运行**
 
 ```bash
 cargo test -p wgenty-code prompt_context_with_project_root_sets_field
@@ -486,7 +486,7 @@ cargo test -p wgenty-code prompt_context_with_project_root_sets_field
 
 期望: PASS。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/prompts/mod.rs
