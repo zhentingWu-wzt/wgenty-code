@@ -64,9 +64,9 @@ tests/
 - `pub fn collect_injections(outcomes: &[HookOutcome]) -> Vec<InjectedFragment>`
 - 为支持 priority/visibility 从 outcome 读取，给 `HookOutcome` 新增字段 `pub injection_priority: Option<u8>`、`pub injection_visibility: Option<LayerVisibility>`（由 `run_inject_action` 在产出 outcome 时填充，见 Task 5.1）。
 
-- [ ] **Step 1: 阅读 `src/runtime/hooks/mod.rs` 中 `HookOutcome`、`HookAction::InjectContext`、`LayerVisibility` 现有定义（约 50-110 行、780-800 行）。**
+- [x] **Step 1: 阅读 `src/runtime/hooks/mod.rs` 中 `HookOutcome`、`HookAction::InjectContext`、`LayerVisibility` 现有定义（约 50-110 行、780-800 行）。**
 
-- [ ] **Step 2: 在 `HookOutcome` 定义处新增两个可选字段：**
+- [x] **Step 2: 在 `HookOutcome` 定义处新增两个可选字段：**
 
 ```rust
 pub struct HookOutcome {
@@ -81,11 +81,11 @@ pub struct HookOutcome {
 }
 ```
 
-- [ ] **Step 3: 全仓修复 `HookOutcome` 字面构造点（编译器报错驱动），把两个新字段统一加 `None` 占位。**
+- [x] **Step 3: 全仓修复 `HookOutcome` 字面构造点（编译器报错驱动），把两个新字段统一加 `None` 占位。**
 
 运行: `cargo check 2>&1 | grep -A2 "missing.*injection"` 直到无错。
 
-- [ ] **Step 4: 在 `LayerVisibility` 后新增 `InjectedFragment`：**
+- [x] **Step 4: 在 `LayerVisibility` 后新增 `InjectedFragment`：**
 
 ```rust
 #[derive(Debug, Clone)]
@@ -97,7 +97,7 @@ pub struct InjectedFragment {
 }
 ```
 
-- [ ] **Step 5: 在同文件新增 `collect_injections`：**
+- [x] **Step 5: 在同文件新增 `collect_injections`：**
 
 ```rust
 pub fn collect_injections(outcomes: &[HookOutcome]) -> Vec<InjectedFragment> {
@@ -125,7 +125,7 @@ pub fn collect_injections(outcomes: &[HookOutcome]) -> Vec<InjectedFragment> {
 }
 ```
 
-- [ ] **Step 6: 在 `mod tests` 内追加三个单测（空、单 outcome、多 outcome 排序）：**
+- [x] **Step 6: 在 `mod tests` 内追加三个单测（空、单 outcome、多 outcome 排序）：**
 
 ```rust
 #[test]
@@ -182,7 +182,7 @@ fn collect_injections_sorts_by_priority_stable() {
 }
 ```
 
-- [ ] **Step 7: 运行单测**
+- [x] **Step 7: 运行单测**
 
 ```bash
 cargo test -p wgenty-code collect_injections
@@ -190,7 +190,7 @@ cargo test -p wgenty-code collect_injections
 
 期望: 3 个测试 PASS。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/runtime/hooks/mod.rs
