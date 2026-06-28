@@ -1,6 +1,6 @@
 ## 1. 数据结构与 readers
 
-- [ ] 1.1 在 `src/runtime/hooks/mod.rs` 新增 `InjectedFragment` 公共结构（`content`/`priority`/`visibility`/`source_label`），并新增 `collect_injections(&[HookOutcome]) -> Vec<InjectedFragment>` 辅助函数；增加单测覆盖空 outcomes、单 outcome、多 outcome 排序场景
+- [x] 1.1 在 `src/runtime/hooks/mod.rs` 新增 `InjectedFragment` 公共结构（`content`/`priority`/`visibility`/`source_label`），并新增 `collect_injections(&[HookOutcome]) -> Vec<InjectedFragment>` 辅助函数；增加单测覆盖空 outcomes、单 outcome、多 outcome 排序场景
 - [ ] 1.2 在 `src/utils/project.rs` 新增 `read_user_global_instructions() -> Option<(PathBuf, String)>` 读取 `~/.wgenty-code/WGENTY.md`，使用 `dirs::home_dir()`，无 home / 文件不存在均返回 `None`；增加单测覆盖存在、缺失、空文件三种情况
 - [ ] 1.3 在 `src/utils/project.rs` 新增 `read_user_global_rules() -> Vec<(PathBuf, String)>` 扫 `~/.wgenty-code/rules/*.md` 顶层非空 .md 文件，按字母序返回；忽略子目录与非 .md；增加单测覆盖空目录、多文件排序、子目录忽略
 - [ ] 1.4 扩展 `PromptContext` 增加 `project_root: Option<PathBuf>` 字段及 `with_project_root(path)` builder 方法；保持向后兼容（默认 `None`）
