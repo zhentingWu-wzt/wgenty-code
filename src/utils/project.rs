@@ -12,6 +12,27 @@ pub fn read_agents_md_sections(project_root: &Path) -> Vec<String> {
     read_md_sections(project_root, "AGENTS.md")
 }
 
+/// Read user-global instructions at `~/.wgenty-code/WGENTY.md`.
+///
+/// Returns `None` if the home directory cannot be resolved, the file does not
+/// exist, cannot be read, or is empty.
+pub fn read_user_global_instructions() -> Option<(PathBuf, String)> {
+    let home = dirs::home_dir()?;
+    read_user_global_instructions_from(&home)
+}
+
+/// Testable variant of [`read_user_global_instructions`] that accepts an
+/// explicit home directory (avoids polluting the real `HOME` env var in tests).
+fn read_user_global_instructions_from(home: &Path) -> Option<(PathBuf, String)> {
+    let path = home.join(".wgenty-code").join("WGENTY.md");
+    let content = std::fs::read_to_string(&path).ok()?;
+    if content.is_empty() {
+        None
+    } else {
+        Some((path, content))
+    }
+}
+
 fn read_md_sections(root: &Path, filename: &str) -> Vec<String> {
     let path = root.join(filename);
     if !path.exists() {
@@ -96,5 +117,39 @@ impl std::fmt::Display for ProjectType {
             ProjectType::Cpp => write!(f, "C/C++"),
             ProjectType::Unknown => write!(f, "Unknown"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn user_instructions_present() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".wgenty-code");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("WGENTY.md");
+        std::fs::write(&file, "hello").unwrap();
+
+        let got = read_user_global_instructions_from(tmp.path());
+        assert_eq!(got, Some((file, "hello".to_string())));
+    }
+
+    #[test]
+    fn user_instructions_missing_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        assert!(read_user_global_instructions_from(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn user_instructions_empty_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".wgenty-code");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("WGENTY.md"), "").unwrap();
+
+        assert!(read_user_global_instructions_from(tmp.path()).is_none());
     }
 }
