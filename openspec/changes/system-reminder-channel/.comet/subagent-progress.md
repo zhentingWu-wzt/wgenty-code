@@ -7,15 +7,16 @@
 
 ## Current Task
 
-- Plan task: `Task 2.1: 新增 reminder 文本常量`
+- Plan tasks: `Task 2.4-2.8 builder 单测 (U1-U8)`
 - Phase: implementing
 - Round: 1
-- Brief: .git/sdd/task-2.1-brief.md
-- Report: .git/sdd/task-2.1-report.md
+- Brief: 5 briefs (2.4, 2.5, 2.6, 2.7, 2.8) — packaged together as builder test suite
+- Report: .git/sdd/task-2.4-report.md
 
 ## History
 
-- Task 1.1: ✅ complete (888efa7, Minor matches! → Task 5.1)
-- Task 1.2: ✅ complete (9a90a06, clean)
-- Task 1.3: ✅ complete (91b6dd0, clean, 5 tests)
-- Task 1.4: ✅ complete (977174e, clean)
+- Task 1.1: ✅ 888efa7 (Minor matches! → 5.1)
+- Task 1.2: ✅ 9a90a06
+- Task 1.3: ✅ 91b6dd0 (5 tests)
+- Task 1.4: ✅ 977174e
+- Tasks 2.1+2.2+2.3: ✅ 8f06f92 (packaged, preamble bytes verified)
