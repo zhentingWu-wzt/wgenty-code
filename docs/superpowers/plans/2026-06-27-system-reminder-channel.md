@@ -506,7 +506,7 @@ git commit -m "feat(prompts): add project_root field to PromptContext"
 **Files:**
 - Modify: `src/prompts/mod.rs`（文件顶部常量段）
 
-- [ ] **Step 1: 在 `BASE_INSTRUCTIONS` 常量下追加 reminder preamble 常量（与设计文档 §3.1 完全一致；闭合 preamble 6 空格缩进精确复刻）：**
+- [x] **Step 1: 在 `BASE_INSTRUCTIONS` 常量下追加 reminder preamble 常量（与设计文档 §3.1 完全一致；闭合 preamble 6 空格缩进精确复刻）：**
 
 ```rust
 const REMINDER_PREAMBLE_OPENING: &str =
@@ -528,9 +528,9 @@ const PROJECT_AGENTS_DESC: &str = "project agent conventions, checked into the c
 const HOOK_INJECTION_DESC: &str = "dynamic hook injection";
 ```
 
-- [ ] **Step 2: `cargo check` 确保通过（常量未使用会有 dead_code warning，下一 task 消除）。**
+- [x] **Step 2: `cargo check` 确保通过（常量未使用会有 dead_code warning，下一 task 消除）。**
 
-- [ ] **Step 3: 不单独 commit，与 Task 2.2 一起提交。**
+- [x] **Step 3: 不单独 commit，与 Task 2.2 一起提交。**
 
 ---
 
@@ -547,7 +547,7 @@ const HOOK_INJECTION_DESC: &str = "dynamic hook injection";
 - `pub struct ReminderOutput { pub to_model: String, pub to_transcript: Option<String> }`
 - `pub fn build_user_turn_reminder(ctx: &PromptContext, hook_injections: &[InjectedFragment]) -> Option<ReminderOutput>`
 
-- [ ] **Step 1: 在 `src/prompts/mod.rs` 引入：**
+- [x] **Step 1: 在 `src/prompts/mod.rs` 引入：**
 
 ```rust
 use crate::runtime::hooks::{InjectedFragment, LayerVisibility};
@@ -555,7 +555,7 @@ use crate::utils::project::{read_user_global_instructions, read_user_global_rule
 use std::path::Path;
 ```
 
-- [ ] **Step 2: 新增 `ReminderOutput`：**
+- [x] **Step 2: 新增 `ReminderOutput`：**
 
 ```rust
 #[derive(Debug, Clone)]
@@ -565,7 +565,7 @@ pub struct ReminderOutput {
 }
 ```
 
-- [ ] **Step 3: 实现 builder（按 §3.3 完整逻辑）：**
+- [x] **Step 3: 实现 builder（按 §3.3 完整逻辑）：**
 
 ```rust
 pub fn build_user_turn_reminder(
@@ -669,9 +669,9 @@ pub fn build_user_turn_reminder(
 }
 ```
 
-- [ ] **Step 4: 运行 `cargo check`，修复编译错。**
+- [x] **Step 4: 运行 `cargo check`，修复编译错。**
 
-- [ ] **Step 5: Commit（与 Task 2.1 合并）**
+- [x] **Step 5: Commit（与 Task 2.1 合并）**
 
 ```bash
 git add src/prompts/mod.rs
@@ -689,7 +689,7 @@ git commit -m "feat(prompts): add build_user_turn_reminder with dual-track outpu
 **Files:**
 - Modify: `src/prompts/mod.rs`
 
-- [ ] **Step 1: 在 `build_user_turn_reminder` 上方新增：**
+- [x] **Step 1: 在 `build_user_turn_reminder` 上方新增：**
 
 ```rust
 fn render_attribution_header(absolute_path: &Path, description: &str) -> String {
@@ -697,9 +697,9 @@ fn render_attribution_header(absolute_path: &Path, description: &str) -> String 
 }
 ```
 
-- [ ] **Step 2: 已在 Task 2.2 步骤 3 内被使用。运行 `cargo check`。**
+- [x] **Step 2: 已在 Task 2.2 步骤 3 内被使用。运行 `cargo check`。**
 
-- [ ] **Step 3: 不单独 commit，并入 2.2 的 commit。**
+- [x] **Step 3: 不单独 commit，并入 2.2 的 commit。**
 
 ---
 
