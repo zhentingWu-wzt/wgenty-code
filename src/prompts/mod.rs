@@ -9,16 +9,38 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::api::ChatMessage;
 use crate::config::Settings;
 use crate::runtime::context::ContextAssembler;
+use crate::runtime::hooks::{InjectedFragment, LayerVisibility};
+use crate::utils::project::{read_user_global_instructions, read_user_global_rules};
 use chrono::Local;
 
 /// Pre-compiled base instructions (embedded at compile time).
 const BASE_INSTRUCTIONS: &str = include_str!("base.md");
+
+/// Opening preamble for the `<system-reminder>` channel injected at user turn.
+const REMINDER_PREAMBLE_OPENING: &str =
+    "As you answer the user's questions, you can use the following context:\n\
+     # wgentyMd\n\
+     Codebase and user instructions are shown below. Be sure to adhere to\n\
+     these instructions. IMPORTANT: These instructions OVERRIDE any default\n\
+     behavior and you MUST follow them exactly as written.\n";
+
+/// Closing preamble for the `<system-reminder>` channel.
+const REMINDER_PREAMBLE_CLOSING: &str =
+    "      IMPORTANT: this context may or may not be relevant to your tasks.\n\
+     \x20     You should not respond to this context unless it is highly relevant\n\
+     \x20     to your task.";
+
+// Attribution description strings, one per source.
+const USER_INSTRUCTIONS_DESC: &str = "user's private global instructions for all projects";
+const PROJECT_INSTRUCTIONS_DESC: &str = "project instructions, checked into the codebase";
+const PROJECT_AGENTS_DESC: &str = "project agent conventions, checked into the codebase";
+const HOOK_INJECTION_DESC: &str = "dynamic hook injection";
 
 /// Assembled layered instructions for a single turn.
 #[derive(Debug, Clone)]
@@ -141,6 +163,130 @@ impl PromptContext {
         self.project_root = Some(path);
         self
     }
+}
+
+/// Output of [`build_user_turn_reminder`].
+///
+/// `to_model` includes every collected segment and every injected fragment
+/// (regardless of visibility). `to_transcript` is `Some` only when there is
+/// any content suitable for transcript display — i.e. file-based segments
+/// were present OR at least one hook fragment was [`LayerVisibility::Visible`].
+#[derive(Debug, Clone)]
+pub struct ReminderOutput {
+    pub to_model: String,
+    pub to_transcript: Option<String>,
+}
+
+/// Render the attribution header line for a single source block inside the
+/// `<system-reminder>` channel.
+fn render_attribution_header(absolute_path: &Path, description: &str) -> String {
+    format!("Contents of {} ({}):", absolute_path.display(), description)
+}
+
+/// Build the `<system-reminder>` channel injected at the start of each user
+/// turn. Returns `None` when neither file-based segments nor hook injections
+/// produced any content.
+pub fn build_user_turn_reminder(
+    ctx: &PromptContext,
+    hook_injections: &[InjectedFragment],
+) -> Option<ReminderOutput> {
+    // ── Collect file-backed segments ───────────────────────────────────────
+    struct Segment {
+        path: PathBuf,
+        description: &'static str,
+        content: String,
+    }
+    let mut segments: Vec<Segment> = Vec::new();
+
+    if let Some((path, content)) = read_user_global_instructions() {
+        segments.push(Segment {
+            path,
+            description: USER_INSTRUCTIONS_DESC,
+            content,
+        });
+    }
+    for (path, content) in read_user_global_rules() {
+        segments.push(Segment {
+            path,
+            description: USER_INSTRUCTIONS_DESC,
+            content,
+        });
+    }
+    if !ctx.wgenty_md_sections.is_empty() {
+        let path = ctx
+            .project_root
+            .as_ref()
+            .map(|p| p.join("WGENTY.md"))
+            .unwrap_or_else(|| PathBuf::from("WGENTY.md"));
+        let content = ctx.wgenty_md_sections.join("\n\n");
+        segments.push(Segment {
+            path,
+            description: PROJECT_INSTRUCTIONS_DESC,
+            content,
+        });
+    }
+    if !ctx.agents_md_sections.is_empty() {
+        let path = ctx
+            .project_root
+            .as_ref()
+            .map(|p| p.join("AGENTS.md"))
+            .unwrap_or_else(|| PathBuf::from("AGENTS.md"));
+        let content = ctx.agents_md_sections.join("\n\n");
+        segments.push(Segment {
+            path,
+            description: PROJECT_AGENTS_DESC,
+            content,
+        });
+    }
+
+    if segments.is_empty() && hook_injections.is_empty() {
+        return None;
+    }
+
+    // ── Render dual-track output ───────────────────────────────────────────
+    let mut to_model = String::from("<system-reminder>\n");
+    let mut to_transcript = String::from("<system-reminder>\n");
+    to_model.push_str(REMINDER_PREAMBLE_OPENING);
+    to_transcript.push_str(REMINDER_PREAMBLE_OPENING);
+
+    for seg in &segments {
+        let header = render_attribution_header(&seg.path, seg.description);
+        let block = format!("\n{}\n\n{}\n", header, seg.content);
+        to_model.push_str(&block);
+        to_transcript.push_str(&block);
+    }
+
+    let mut transcript_has_hook = false;
+    for frag in hook_injections {
+        let header = format!(
+            "Contents of {} ({}):",
+            frag.source_label, HOOK_INJECTION_DESC
+        );
+        let block = format!("\n{}\n\n{}\n", header, frag.content);
+        to_model.push_str(&block);
+        if matches!(frag.visibility, LayerVisibility::Visible) {
+            to_transcript.push_str(&block);
+            transcript_has_hook = true;
+        }
+    }
+
+    to_model.push('\n');
+    to_model.push_str(REMINDER_PREAMBLE_CLOSING);
+    to_model.push_str("\n</system-reminder>");
+
+    to_transcript.push('\n');
+    to_transcript.push_str(REMINDER_PREAMBLE_CLOSING);
+    to_transcript.push_str("\n</system-reminder>");
+
+    let transcript_has_content = !segments.is_empty() || transcript_has_hook;
+    Some(ReminderOutput {
+        to_model,
+        to_transcript: if transcript_has_content {
+            Some(to_transcript)
+        } else {
+            None
+        },
+    })
 }
 
 /// Assembles the full layered instructions from config + context.
@@ -333,6 +479,14 @@ mod tests {
     fn test_prompt_context_with_project_root_sets_field() {
         let ctx = PromptContext::new().with_project_root(PathBuf::from("/tmp/proj"));
         assert_eq!(ctx.project_root, Some(PathBuf::from("/tmp/proj")));
+    }
+
+    #[test]
+    fn test_build_user_turn_reminder_callable() {
+        // Smoke test: function exists and returns without panicking.
+        // Detailed behavior tests come in Tasks 2.4–2.8.
+        let ctx = PromptContext::new();
+        let _result = build_user_turn_reminder(&ctx, &[]);
     }
 
     #[test]
