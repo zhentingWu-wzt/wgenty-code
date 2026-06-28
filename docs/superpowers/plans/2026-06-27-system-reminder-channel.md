@@ -211,9 +211,9 @@ git commit -m "feat(hooks): add InjectedFragment and collect_injections"
 **Interfaces produced:**
 - `pub fn read_user_global_instructions() -> Option<(PathBuf, String)>`
 
-- [ ] **Step 1: 在 `src/utils/project.rs` 顶部确认 `use std::path::PathBuf;` 存在；引入 `dirs` 依赖（已存在则跳过，否则在 `Cargo.toml` 添加 `dirs = "5"` 并 `cargo check`）。**
+- [x] **Step 1: 在 `src/utils/project.rs` 顶部确认 `use std::path::PathBuf;` 存在；引入 `dirs` 依赖（已存在则跳过，否则在 `Cargo.toml` 添加 `dirs = "5"` 并 `cargo check`）。**
 
-- [ ] **Step 2: 在 `read_md_sections` 之后追加：**
+- [x] **Step 2: 在 `read_md_sections` 之后追加：**
 
 ```rust
 /// 读取用户级全局指令：`~/.wgenty-code/WGENTY.md`。
@@ -230,7 +230,7 @@ pub fn read_user_global_instructions() -> Option<(PathBuf, String)> {
 }
 ```
 
-- [ ] **Step 3: 在文件底部 `#[cfg(test)] mod tests` 中追加（若无 tests 模块则新建）：**
+- [x] **Step 3: 在文件底部 `#[cfg(test)] mod tests` 中追加（若无 tests 模块则新建）：**
 
 ```rust
 #[cfg(test)]
@@ -284,7 +284,7 @@ mod user_instr_tests {
 
 > 备注: `dirs::home_dir()` 在 Unix 上读取 `HOME` 环境变量；测试通过临时改 `HOME` 实现 sandbox。`tempfile` 可能需要在 `Cargo.toml` `[dev-dependencies]` 添加。
 
-- [ ] **Step 4: 运行**
+- [x] **Step 4: 运行**
 
 ```bash
 cargo test -p wgenty-code user_instr_tests
@@ -292,7 +292,7 @@ cargo test -p wgenty-code user_instr_tests
 
 期望: 3 个测试 PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/utils/project.rs Cargo.toml Cargo.lock
