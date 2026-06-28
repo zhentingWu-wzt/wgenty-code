@@ -7,16 +7,15 @@
 
 ## Current Task
 
-- Plan task: `Task 1.3: 新增 read_user_global_rules`
-- OpenSpec task: `1.3 在 src/utils/project.rs 新增 read_user_global_rules()...`
+- Plan task: `Task 1.4: PromptContext 新增 project_root + builder`
 - Phase: implementing
 - Round: 1
 - Dispatched: 2026-06-28
-- Brief: .git/sdd/task-1.3-brief.md
-- Report: .git/sdd/task-1.3-report.md
-- Base commit before implementer: <pending after checkin commit>
+- Brief: .git/sdd/task-1.4-brief.md
+- Report: .git/sdd/task-1.4-report.md
 
 ## History
 
-- Task 1.1: ✅ complete (commit 888efa7, Minor matches! deferred to 5.1)
-- Task 1.2: ✅ complete (commit 9a90a06, review clean)
+- Task 1.1: ✅ complete (888efa7, Minor matches! → Task 5.1)
+- Task 1.2: ✅ complete (9a90a06, clean)
+- Task 1.3: ✅ complete (91b6dd0, clean, 5 tests)

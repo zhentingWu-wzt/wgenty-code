@@ -313,7 +313,7 @@ git commit -m "feat(project): read user global WGENTY.md from ~/.wgenty-code"
 **Interfaces produced:**
 - `pub fn read_user_global_rules() -> Vec<(PathBuf, String)>`（按 `file_name` 字母序）
 
-- [ ] **Step 1: 在 `read_user_global_instructions` 之后追加：**
+- [x] **Step 1: 在 `read_user_global_instructions` 之后追加：**
 
 ```rust
 /// 扫 `~/.wgenty-code/rules/` 顶层 `.md` 文件（忽略子目录、非 .md、空文件），
@@ -354,7 +354,7 @@ pub fn read_user_global_rules() -> Vec<(PathBuf, String)> {
 }
 ```
 
-- [ ] **Step 2: 追加单测：**
+- [x] **Step 2: 追加单测：**
 
 ```rust
 #[cfg(test)]
@@ -415,7 +415,7 @@ mod user_rules_tests {
 }
 ```
 
-- [ ] **Step 3: 运行**
+- [x] **Step 3: 运行**
 
 ```bash
 cargo test -p wgenty-code user_rules_tests
@@ -423,7 +423,7 @@ cargo test -p wgenty-code user_rules_tests
 
 期望: 3 个测试 PASS。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/utils/project.rs
