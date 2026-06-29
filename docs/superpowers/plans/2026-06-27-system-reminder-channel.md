@@ -1308,7 +1308,7 @@ git commit -m "test: integration coverage for per-turn reminder injection"
 **Files:**
 - Modify: `src/prompts/mod.rs`（约 197-213 行）
 
-- [ ] **Step 1: 删除 `assemble_instructions` 中两个块：**
+- [x] **Step 1: 删除 `assemble_instructions` 中两个块：**
 
 ```rust
 // ── Layer 7: AGENTS.md Convention ───────────────────────────────────
@@ -1318,11 +1318,11 @@ if !context.agents_md_sections.is_empty() { ... }
 if !context.wgenty_md_sections.is_empty() { ... }
 ```
 
-- [ ] **Step 2: 更新文件顶部 Layer 注释（行 3-8 的层次说明），去掉 7/8 描述，添加备注："Project & user instructions are injected via the per-turn `<system-reminder>` channel (build_user_turn_reminder), not as system messages."**
+- [x] **Step 2: 更新文件顶部 Layer 注释（行 3-8 的层次说明），去掉 7/8 描述，添加备注："Project & user instructions are injected via the per-turn `<system-reminder>` channel (build_user_turn_reminder), not as system messages."**
 
-- [ ] **Step 3: `cargo check`，处理 `agents_md_sections` / `wgenty_md_sections` 字段 dead_code 警告：保留字段（reminder 仍读取），加 `#[allow(...)]` 不必要——builder 已使用。**
+- [x] **Step 3: `cargo check`，处理 `agents_md_sections` / `wgenty_md_sections` 字段 dead_code 警告：保留字段（reminder 仍读取），加 `#[allow(...)]` 不必要——builder 已使用。**
 
-- [ ] **Step 4: 不 commit，合并 §4 全部。**
+- [x] **Step 4: 不 commit，合并 §4 全部。**
 
 ---
 
@@ -1331,7 +1331,7 @@ if !context.wgenty_md_sections.is_empty() { ... }
 **对应 tasks.md**: 4.2
 **设计依据**: §3.2 + D4
 
-- [ ] **Step 1: grep 验证字段读取链：**
+- [x] **Step 1: grep 验证字段读取链：**
 
 ```bash
 grep -n "wgenty_md_sections\|agents_md_sections" src/prompts/mod.rs
@@ -1339,7 +1339,7 @@ grep -n "wgenty_md_sections\|agents_md_sections" src/prompts/mod.rs
 
 应在 `build_user_turn_reminder` 内出现 2 次，`assemble_instructions` 内 0 次。
 
-- [ ] **Step 2: 无代码改动。进入 4.3。**
+- [x] **Step 2: 无代码改动。进入 4.3。**
 
 ---
 
@@ -1351,7 +1351,7 @@ grep -n "wgenty_md_sections\|agents_md_sections" src/prompts/mod.rs
 **Files:**
 - Modify: `src/tui/app/mod.rs`（约 277-308 行）
 
-- [ ] **Step 1: 在原 `let project_root = std::env::current_dir().unwrap_or_else(...)` 之后，把 `project_root` 透传给 `PromptContext`：**
+- [x] **Step 1: 在原 `let project_root = std::env::current_dir().unwrap_or_else(...)` 之后，把 `project_root` 透传给 `PromptContext`：**
 
 ```rust
 let mut prompt_ctx = prompt_ctx
@@ -1360,9 +1360,9 @@ let mut prompt_ctx = prompt_ctx
     .with_project_root(project_root.clone());
 ```
 
-- [ ] **Step 2: `cargo check`。**
+- [x] **Step 2: `cargo check`。**
 
-- [ ] **Step 3: 不 commit，进入 4.4。**
+- [x] **Step 3: 不 commit，进入 4.4。**
 
 ---
 
@@ -1374,7 +1374,7 @@ let mut prompt_ctx = prompt_ctx
 **Files:**
 - Modify: `src/prompts/mod.rs`（tests）
 
-- [ ] **Step 1: 在 `tests` 模块底部新增：**
+- [x] **Step 1: 在 `tests` 模块底部新增：**
 
 ```rust
 #[test]
@@ -1407,7 +1407,7 @@ fn assemble_instructions_no_layer_7_8() {
 }
 ```
 
-- [ ] **Step 2: 运行**
+- [x] **Step 2: 运行**
 
 ```bash
 cargo test -p wgenty-code assemble_instructions_no_layer_7_8
@@ -1415,7 +1415,7 @@ cargo test -p wgenty-code assemble_instructions_no_layer_7_8
 
 期望 PASS。
 
-- [ ] **Step 3: Commit（§4 合并）**
+- [x] **Step 3: Commit（§4 合并）**
 
 ```bash
 git add src/prompts/mod.rs src/tui/app/mod.rs

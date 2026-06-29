@@ -26,10 +26,10 @@
 
 ## 4. 移除旧 Layer + 适配 builder
 
-- [ ] 4.1 删除 `src/prompts/mod.rs` Layer 7（AGENTS.md）和 Layer 8（WGENTY.md）的 system message push 代码块
-- [ ] 4.2 `PromptContextBuilder::with_wgenty_md` / `with_agents_md` 保持签名不变，仅在 `assemble_instructions` 内部确保数据被 reminder builder 而不是 system message push 使用
-- [ ] 4.3 `src/tui/app/mod.rs` 在构造 PromptContext 时同时调用 `with_project_root(std::env::current_dir())`，让 reminder builder 能渲染绝对路径
-- [ ] 4.4 单测：assembled system_messages 中**不再**出现 `# AGENTS.md` 或 `# WGENTY.md — 项目规则与约定` 文本（硬切验证）
+- [x] 4.1 删除 `src/prompts/mod.rs` Layer 7（AGENTS.md）和 Layer 8（WGENTY.md）的 system message push 代码块
+- [x] 4.2 `PromptContextBuilder::with_wgenty_md` / `with_agents_md` 保持签名不变，仅在 `assemble_instructions` 内部确保数据被 reminder builder 而不是 system message push 使用
+- [x] 4.3 `src/tui/app/mod.rs` 在构造 PromptContext 时同时调用 `with_project_root(std::env::current_dir())`，让 reminder builder 能渲染绝对路径
+- [x] 4.4 单测：assembled system_messages 中**不再**出现 `# AGENTS.md` 或 `# WGENTY.md — 项目规则与约定` 文本（硬切验证）
 
 ## 5. Hook injection 接通
 
