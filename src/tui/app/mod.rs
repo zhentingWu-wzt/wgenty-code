@@ -560,21 +560,41 @@ mod tests {
 
 #[cfg(test)]
 mod token_budget_tests {
+    use std::path::Path;
+
     /// Synthesize a long string that pushes the reminder past 2000-token threshold.
     fn long_section(target_chars: usize) -> String {
         "lorem ipsum dolor sit amet ".repeat(target_chars / 27 + 1)
     }
 
+    /// Scope a fake `$HOME` so reminder readers don't pick up the developer's
+    /// real `~/.wgenty-code/` files (which would skew the estimate and could
+    /// cause flaky failures in the under-threshold test).
+    fn with_fake_home<F: FnOnce() -> R, R>(home: &Path, f: F) -> R {
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", home);
+        let result = f();
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        result
+    }
+
     #[test]
+    #[serial_test::serial]
     fn reminder_over_threshold_estimate_exceeds_2000() {
-        // ~12,000 chars / 4 chars-per-token ≈ 3000 tokens (well over threshold)
+        // ~12,000 chars / 4 chars-per-token ≈ 3000 tokens (well over threshold).
+        let tmp = tempfile::TempDir::new().unwrap();
         let huge = long_section(12_000);
 
         let preview_ctx = crate::prompts::PromptContext::new().with_wgenty_md(vec![huge]);
 
-        let reminder = crate::prompts::build_user_turn_reminder(&preview_ctx, &[])
-            .expect("Some — section present");
-        let estimated = crate::utils::estimate_tokens(&reminder.to_model);
+        let estimated = with_fake_home(tmp.path(), || {
+            let reminder = crate::prompts::build_user_turn_reminder(&preview_ctx, &[])
+                .expect("Some — section present");
+            crate::utils::estimate_tokens(&reminder.to_model)
+        });
 
         assert!(
             estimated > 2000,
@@ -584,14 +604,18 @@ mod token_budget_tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn reminder_under_threshold_estimate_stays_quiet() {
-        // Small section: well under threshold
+        // Small section in an isolated $HOME → estimate must stay well under threshold.
+        let tmp = tempfile::TempDir::new().unwrap();
         let tiny = "Short project rule.".to_string();
         let preview_ctx = crate::prompts::PromptContext::new().with_wgenty_md(vec![tiny]);
 
-        let reminder = crate::prompts::build_user_turn_reminder(&preview_ctx, &[])
-            .expect("Some");
-        let estimated = crate::utils::estimate_tokens(&reminder.to_model);
+        let estimated = with_fake_home(tmp.path(), || {
+            let reminder = crate::prompts::build_user_turn_reminder(&preview_ctx, &[])
+                .expect("Some");
+            crate::utils::estimate_tokens(&reminder.to_model)
+        });
 
         assert!(
             estimated < 2000,
