@@ -780,6 +780,60 @@ mod tests {
             vec!["high", "low2", "low1"]
         );
     }
+
+    #[tokio::test]
+    async fn multiple_inject_hooks_sort_by_priority_after_collect() {
+        // End-to-end: register two InjectContext hooks, fire(), then collect_injections().
+        // Validates Task 5.1 wiring — priority/visibility flow from action → outcome → fragment.
+        let mut hm = HookManager::default();
+        hm.register_workflow_hooks(vec![
+            HookDefinition {
+                event: HookEvent::UserPromptSubmit,
+                matcher: None,
+                when_state: None,
+                actions: vec![HookAction::InjectContext {
+                    source: ContextSource::Inline("LOW".into()),
+                    priority: 30,
+                    visibility: LayerVisibility::Visible,
+                }],
+            },
+            HookDefinition {
+                event: HookEvent::UserPromptSubmit,
+                matcher: None,
+                when_state: None,
+                actions: vec![HookAction::InjectContext {
+                    source: ContextSource::Inline("HIGH".into()),
+                    priority: 5,
+                    visibility: LayerVisibility::Visible,
+                }],
+            },
+        ]);
+
+        let ctx = HookContext {
+            event: "UserPromptSubmit".into(),
+            tool_name: None,
+            tool_input: None,
+            tool_result: None,
+            session_id: None,
+            working_directory: String::new(),
+            timestamp: String::new(),
+            comet_phase: None,
+            workflow_state: None,
+            variables: Default::default(),
+        };
+
+        let outcomes = hm
+            .fire(&HookEvent::UserPromptSubmit, &ctx, None, None)
+            .await;
+        let injections = collect_injections(&outcomes);
+
+        // After collect_injections sorts by priority asc: HIGH (5) before LOW (30).
+        assert_eq!(injections.len(), 2);
+        assert_eq!(injections[0].content, "HIGH");
+        assert_eq!(injections[0].priority, 5);
+        assert_eq!(injections[1].content, "LOW");
+        assert_eq!(injections[1].priority, 30);
+    }
 }
 
 /// Context passed to hooks via stdin (JSON)
@@ -1043,8 +1097,8 @@ impl HookManager {
             }
             HookAction::InjectContext {
                 source,
-                priority: _,
-                visibility: _,
+                priority,
+                visibility,
             } => {
                 let content = match source {
                     ContextSource::Template(t) => Some(self.render_template(t, ctx)),
@@ -1057,8 +1111,8 @@ impl HookManager {
                     reason: None,
                     injected_content: content,
                     user_answer: None,
-                    injection_priority: None,
-                    injection_visibility: None,
+                    injection_priority: Some(*priority),
+                    injection_visibility: Some(visibility.clone()),
                 }
             }
             HookAction::AskUser {
