@@ -1435,7 +1435,7 @@ git commit -m "feat(prompts): hard-cut Layer 7/8; project root flows into remind
 **Files:**
 - Modify: `src/runtime/hooks/mod.rs`（`run_inject_action` / 等价路径）
 
-- [ ] **Step 1: grep `run_inject_action\|HookAction::InjectContext.*=>` 找到当前 HookOutcome 生成点。**
+- [x] **Step 1: grep `run_inject_action\|HookAction::InjectContext.*=>` 找到当前 HookOutcome 生成点。**
 
 ```bash
 grep -n "InjectContext" src/runtime/hooks/mod.rs
@@ -1443,7 +1443,7 @@ grep -n "InjectContext" src/runtime/hooks/mod.rs
 
 预计在第 941 行附近的 match 分支。
 
-- [ ] **Step 2: 在该分支构造 HookOutcome 时填充新增字段：**
+- [x] **Step 2: 在该分支构造 HookOutcome 时填充新增字段：**
 
 ```rust
 HookAction::InjectContext {
@@ -1466,7 +1466,7 @@ HookAction::InjectContext {
 
 （具体变量名按现有代码调整。）
 
-- [ ] **Step 3: 在 mod tests 内新增 / 调整：**
+- [x] **Step 3: 在 mod tests 内新增 / 调整：**
 
 ```rust
 #[test]
@@ -1496,7 +1496,7 @@ fn inject_context_outcome_carries_priority_and_visibility() {
 
 > 注：若现有 InjectContext 单测已断言 `injected_content`，仅追加 priority/visibility 断言行即可，避免重复。
 
-- [ ] **Step 4: 运行**
+- [x] **Step 4: 运行**
 
 ```bash
 cargo test -p wgenty-code inject_context_outcome_carries_priority_and_visibility
@@ -1504,7 +1504,7 @@ cargo test -p wgenty-code inject_context_outcome_carries_priority_and_visibility
 
 期望 PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/runtime/hooks/mod.rs
@@ -1518,7 +1518,7 @@ git commit -m "feat(hooks): propagate priority and visibility from InjectContext
 **对应 tasks.md**: 5.2
 **设计依据**: D5
 
-- [ ] **Step 1: 已由 Task 1.1 `collect_injections` + Task 3.2 `await fire` 完成串通。新增一个**调用 `collect_injections` 但用真实 outcome 的轻量单测**（在 `src/runtime/hooks/mod.rs::tests`）**：
+- [x] **Step 1: 已由 Task 1.1 `collect_injections` + Task 3.2 `await fire` 完成串通。新增一个**调用 `collect_injections` 但用真实 outcome 的轻量单测**（在 `src/runtime/hooks/mod.rs::tests`）**：
 
 ```rust
 #[test]
@@ -1554,9 +1554,9 @@ fn multiple_inject_hooks_sort_by_priority_after_collect() {
 }
 ```
 
-- [ ] **Step 2: 运行测试，期望 PASS。**
+- [x] **Step 2: 运行测试，期望 PASS。**
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/runtime/hooks/mod.rs
@@ -1573,7 +1573,7 @@ git commit -m "test(hooks): verify priority sort end-to-end across multiple inje
 **Files:**
 - Modify: `tests/system_reminder.rs`
 
-- [ ] **Step 1: 追加：**
+- [x] **Step 1: 追加：**
 
 ```rust
 use wgenty_code::runtime::hooks::{
@@ -1614,7 +1614,7 @@ fn hook_inject_content_end_to_end() {
 
 > 如 `HookContext::default()` 不存在，构造完整字面量（参考 Task 3.2 步骤 3）。
 
-- [ ] **Step 2: 运行**
+- [x] **Step 2: 运行**
 
 ```bash
 cargo test -p wgenty-code --test system_reminder hook_inject_content_end_to_end
@@ -1622,7 +1622,7 @@ cargo test -p wgenty-code --test system_reminder hook_inject_content_end_to_end
 
 期望 PASS。
 
-- [ ] **Step 3: 不 commit，与 5.4 合并。**
+- [x] **Step 3: 不 commit，与 5.4 合并。**
 
 ---
 
@@ -1631,7 +1631,7 @@ cargo test -p wgenty-code --test system_reminder hook_inject_content_end_to_end
 **对应 tasks.md**: 5.4
 **设计依据**: §5.2
 
-- [ ] **Step 1: 追加：**
+- [x] **Step 1: 追加：**
 
 ```rust
 #[test]
@@ -1673,9 +1673,9 @@ fn two_hooks_render_in_priority_order_in_reminder() {
 }
 ```
 
-- [ ] **Step 2: 运行测试，期望 PASS。**
+- [x] **Step 2: 运行测试，期望 PASS。**
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/system_reminder.rs

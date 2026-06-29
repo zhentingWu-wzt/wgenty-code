@@ -33,10 +33,10 @@
 
 ## 5. Hook injection 接通
 
-- [ ] 5.1 验证 `UserPromptSubmit` hook 的 `HookOutcome` 中 `injected_content` 已经被正确填充（如未填充则在 `run_inject_action` 路径补齐）；增加单测保证 `HookAction::InjectContext` 的 outcomes 包含 `injected_content`
-- [ ] 5.2 在请求构造层把 hook 收集到的 `InjectedFragment` 与文件源一起传给 reminder builder，验证多个 hook 时优先级和顺序正确
-- [ ] 5.3 集成测：在 `settings.json` 配置 `UserPromptSubmit` hook 返回 `"injected_content": "EXTRA"`，断言下一轮 user message 中可见 `EXTRA` 字符串
-- [ ] 5.4 集成测：配置两个 hook（priority 不同），断言注入内容按 priority 排序
+- [x] 5.1 验证 `UserPromptSubmit` hook 的 `HookOutcome` 中 `injected_content` 已经被正确填充（如未填充则在 `run_inject_action` 路径补齐）；增加单测保证 `HookAction::InjectContext` 的 outcomes 包含 `injected_content`
+- [x] 5.2 在请求构造层把 hook 收集到的 `InjectedFragment` 与文件源一起传给 reminder builder，验证多个 hook 时优先级和顺序正确
+- [x] 5.3 集成测：在 `settings.json` 配置 `UserPromptSubmit` hook 返回 `"injected_content": "EXTRA"`，断言下一轮 user message 中可见 `EXTRA` 字符串
+- [x] 5.4 集成测：配置两个 hook（priority 不同），断言注入内容按 priority 排序
 
 ## 6. Token 预算警告
 
