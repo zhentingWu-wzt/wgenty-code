@@ -1195,9 +1195,9 @@ git commit -m "feat(tui): inject system reminder at user-turn boundary"
 **Files:**
 - Create: `tests/system_reminder.rs`
 
-- [ ] **Step 1: 阅读 `tests/` 目录现有集成测找 mocking 模式（grep `MockHttp` / `mock` 之类）；确认是否有现成的"启动一个 mini agent + 注入 fake HTTP"工具，若没有，复用最简单的"只验证 reminder 文本片段进入 history"的策略。**
+- [x] **Step 1: 阅读 `tests/` 目录现有集成测找 mocking 模式（grep `MockHttp` / `mock` 之类）；确认是否有现成的"启动一个 mini agent + 注入 fake HTTP"工具，若没有，复用最简单的"只验证 reminder 文本片段进入 history"的策略。**
 
-- [ ] **Step 2: 创建 `tests/system_reminder.rs`：**
+- [x] **Step 2: 创建 `tests/system_reminder.rs`：**
 
 ```rust
 //! Integration tests for the <system-reminder> injection channel.
@@ -1247,7 +1247,7 @@ fn first_turn_user_message_contains_reminder() {
 
 > 如 `wgenty_code::prompts::PromptContext` 与 `build_user_turn_reminder` 不是 `pub`，先在 `lib.rs` 暴露（保证集成测可见）。
 
-- [ ] **Step 3: 运行**
+- [x] **Step 3: 运行**
 
 ```bash
 cargo test -p wgenty-code --test system_reminder first_turn_user_message_contains_reminder
@@ -1255,7 +1255,7 @@ cargo test -p wgenty-code --test system_reminder first_turn_user_message_contain
 
 期望 PASS。
 
-- [ ] **Step 4: 暂不 commit，与 3.5 合并。**
+- [x] **Step 4: 暂不 commit，与 3.5 合并。**
 
 ---
 
@@ -1264,7 +1264,7 @@ cargo test -p wgenty-code --test system_reminder first_turn_user_message_contain
 **对应 tasks.md**: 3.5
 **设计依据**: §5.2 I2
 
-- [ ] **Step 1: 在 `tests/system_reminder.rs` 追加：**
+- [x] **Step 1: 在 `tests/system_reminder.rs` 追加：**
 
 ```rust
 #[test]
@@ -1286,9 +1286,9 @@ fn second_turn_reminder_reappears() {
 }
 ```
 
-- [ ] **Step 2: 运行测试，期望 PASS。**
+- [x] **Step 2: 运行测试，期望 PASS。**
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/system_reminder.rs src/lib.rs
