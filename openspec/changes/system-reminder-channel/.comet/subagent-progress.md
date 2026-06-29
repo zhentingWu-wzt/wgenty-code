@@ -6,14 +6,11 @@
 
 ## Current Task
 
-- Plan tasks: `Task 6.1-6.5` (Token budget warning — convert existing WGENTY+AGENTS warning to full reminder block, once-per-session, exclude hook injections)
+- Plan tasks: `Task 7.1-7.5` (Documentation & polish — WGENTY.md "Context injection channels" section, CHANGELOG BREAKING, example rule file, cargo test/clippy/fmt)
 - Phase: implementing
 - Round: 1
 
 ## History
 
-- §1: 1.1-1.4 ✅
-- §2: 2.1-2.8 ✅
-- §3: 3.1-3.5 ✅
-- §4: 4.1-4.4 ✅
-- §5: 5.1-5.4 ✅
+- §1-§6 ✅
+- Cleanup: fe90cbb (HOME isolation in token_budget_tests)

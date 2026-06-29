@@ -1698,7 +1698,7 @@ git commit -m "test: integration coverage for hook injection end-to-end"
 
 > 选址说明：D9 要求"首次构造 reminder 时一次"。最简实现：在 app 启动构造 PromptContext 完毕后，一次性调用 `build_user_turn_reminder(&ctx, &[])` 估算 token，不需要等到第一次 turn。这保留了与现有"启动期一次性警告"等价的 UX，同时把估算输入从"两文件 sections"换成"完整 reminder 文本含 preamble + 用户级源"。
 
-- [ ] **Step 1: 替换 283-303 行的 wgenty/agents 估算块为：**
+- [x] **Step 1: 替换 283-303 行的 wgenty/agents 估算块为：**
 
 ```rust
 // 估算完整 reminder（含 preamble + 4 个文件源；不含 hook 注入）
@@ -1725,9 +1725,9 @@ if reminder_token_estimate > 2000 {
 
 > Note: 阈值常量 `2000` 直接复用，按 D9 不引入新常量。
 
-- [ ] **Step 2: `cargo check`。**
+- [x] **Step 2: `cargo check`。**
 
-- [ ] **Step 3: 不 commit，合并 6.2-6.5。**
+- [x] **Step 3: 不 commit，合并 6.2-6.5。**
 
 ---
 
@@ -1736,9 +1736,9 @@ if reminder_token_estimate > 2000 {
 **对应 tasks.md**: 6.2
 **设计依据**: D9
 
-- [ ] **Step 1: 当前实现已"启动期一次"。无须 `Once` 守卫——app 构造仅一次。在改造代码上方注释明确："Fires once per session at app startup (before first turn)."**
+- [x] **Step 1: 当前实现已"启动期一次"。无须 `Once` 守卫——app 构造仅一次。在改造代码上方注释明确："Fires once per session at app startup (before first turn)."**
 
-- [ ] **Step 2: 不 commit。**
+- [x] **Step 2: 不 commit。**
 
 ---
 
@@ -1747,9 +1747,9 @@ if reminder_token_estimate > 2000 {
 **对应 tasks.md**: 6.3
 **设计依据**: D9 + T4
 
-- [ ] **Step 1: 已由 Task 6.1 `build_user_turn_reminder(&preview_ctx, &[])`（第二参数显式空 slice）满足。注释中加一行说明："Hook injections are dynamic per turn; not included in this estimate."**
+- [x] **Step 1: 已由 Task 6.1 `build_user_turn_reminder(&preview_ctx, &[])`（第二参数显式空 slice）满足。注释中加一行说明："Hook injections are dynamic per turn; not included in this estimate."**
 
-- [ ] **Step 2: 不 commit。**
+- [x] **Step 2: 不 commit。**
 
 ---
 
@@ -1760,7 +1760,7 @@ if reminder_token_estimate > 2000 {
 
 > 触发 `tracing::warn!` 在单测中验证较复杂；改为验证"预算估算函数"返回值。提取一个纯函数 `estimate_reminder_tokens(ctx) -> usize` 便于单测。
 
-- [ ] **Step 1: 在 `src/prompts/mod.rs` 公开一个辅助：**
+- [x] **Step 1: 在 `src/prompts/mod.rs` 公开一个辅助：**
 
 ```rust
 pub fn estimate_reminder_tokens(ctx: &PromptContext) -> usize {
@@ -1773,9 +1773,9 @@ pub fn estimate_reminder_tokens(ctx: &PromptContext) -> usize {
 
 > 复用 `len() / 4` 与 `utils::estimate_tokens` 等价语义（grep 验证 `estimate_tokens` 实现一致；若不同则改为 `crate::utils::estimate_tokens(&out.to_model)`）。
 
-- [ ] **Step 2: 把 Task 6.1 步骤 1 的内联估算改为 `crate::prompts::estimate_reminder_tokens(&preview_ctx)`。**
+- [x] **Step 2: 把 Task 6.1 步骤 1 的内联估算改为 `crate::prompts::estimate_reminder_tokens(&preview_ctx)`。**
 
-- [ ] **Step 3: 在 `src/prompts/mod.rs::tests` 添加：**
+- [x] **Step 3: 在 `src/prompts/mod.rs::tests` 添加：**
 
 ```rust
 #[test]
@@ -1795,9 +1795,9 @@ fn estimate_reminder_tokens_threshold() {
 
 > `with_fake_home` 已在 reminder_tests 内定义；提到 tests 模块顶层使用，或复制本测试到 `reminder_tests` 模块。
 
-- [ ] **Step 4: 运行测试，期望 PASS。**
+- [x] **Step 4: 运行测试，期望 PASS。**
 
-- [ ] **Step 5: 不 commit，合并 6.5。**
+- [x] **Step 5: 不 commit，合并 6.5。**
 
 ---
 
@@ -1806,7 +1806,7 @@ fn estimate_reminder_tokens_threshold() {
 **对应 tasks.md**: 6.5
 **设计依据**: §5.3
 
-- [ ] **Step 1: 追加：**
+- [x] **Step 1: 追加：**
 
 ```rust
 #[test]
@@ -1822,9 +1822,9 @@ fn estimate_reminder_tokens_under_threshold() {
 }
 ```
 
-- [ ] **Step 2: 运行测试，期望 PASS。**
+- [x] **Step 2: 运行测试，期望 PASS。**
 
-- [ ] **Step 3: Commit（§6 合并）**
+- [x] **Step 3: Commit（§6 合并）**
 
 ```bash
 git add src/prompts/mod.rs src/tui/app/mod.rs

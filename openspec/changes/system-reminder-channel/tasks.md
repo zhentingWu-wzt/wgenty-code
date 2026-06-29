@@ -40,11 +40,11 @@
 
 ## 6. Token 预算警告
 
-- [ ] 6.1 把 `src/tui/app/mod.rs` 现有"WGENTY+AGENTS 超阈值警告"改造为"完整 reminder 块超阈值警告"
-- [ ] 6.2 警告触发位置：首次构造 reminder 时计算（不是 session 启动时），保留"每 session 仅一次"语义
-- [ ] 6.3 hook 注入内容**不计入**预算（动态、每轮变）；只计入 4 个文件源 + preamble overhead
-- [ ] 6.4 单测：超阈值触发警告，二次构造不重复触发
-- [ ] 6.5 单测：未超阈值不发警告
+- [x] 6.1 把 `src/tui/app/mod.rs` 现有"WGENTY+AGENTS 超阈值警告"改造为"完整 reminder 块超阈值警告"
+- [x] 6.2 警告触发位置：首次构造 reminder 时计算（不是 session 启动时），保留"每 session 仅一次"语义
+- [x] 6.3 hook 注入内容**不计入**预算（动态、每轮变）；只计入 4 个文件源 + preamble overhead
+- [x] 6.4 单测：超阈值触发警告，二次构造不重复触发
+- [x] 6.5 单测：未超阈值不发警告
 
 ## 7. Documentation & polish
 
