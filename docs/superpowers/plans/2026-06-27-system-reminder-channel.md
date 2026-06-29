@@ -1843,7 +1843,7 @@ git commit -m "feat(prompts): token budget warning covers full reminder block"
 **Files:**
 - Modify: `WGENTY.md`（项目根）
 
-- [ ] **Step 1: 在文件末尾追加段落（示例文本，按需润色，但保持中文）：**
+- [x] **Step 1: 在文件末尾追加段落（示例文本，按需润色，但保持中文）：**
 
 ```markdown
 ## Context injection channels
@@ -1856,7 +1856,7 @@ wgenty-code 提供两层用户级上下文通道，自动随每轮 user message 
 加上项目根的 `WGENTY.md` / `AGENTS.md`，共 4 个静态源；UserPromptSubmit hook 的 `InjectContext` 动态注入也走同一通道。每轮内容会以 `<system-reminder>` 块拼到 user message 头部。
 ```
 
-- [ ] **Step 2: 不 commit，与 §7 其它一起。**
+- [x] **Step 2: 不 commit，与 §7 其它一起。**
 
 ---
 
@@ -1867,7 +1867,7 @@ wgenty-code 提供两层用户级上下文通道，自动随每轮 user message 
 **Files:**
 - Modify: `CHANGELOG.md`（若不存在则在最简 stub 中创建 `## Unreleased` 节）
 
-- [ ] **Step 1: 在 `## Unreleased` 下追加：**
+- [x] **Step 1: 在 `## Unreleased` 下追加：**
 
 ```markdown
 ### BREAKING
@@ -1881,7 +1881,7 @@ wgenty-code 提供两层用户级上下文通道，自动随每轮 user message 
   `# WGENTY.md — 项目规则与约定`）的下游工具需要更新。
 ```
 
-- [ ] **Step 2: 不 commit，进入 7.3。**
+- [x] **Step 2: 不 commit，进入 7.3。**
 
 ---
 
@@ -1891,7 +1891,7 @@ wgenty-code 提供两层用户级上下文通道，自动随每轮 user message 
 
 > 该文件位于用户 home，不在仓库；本 task 是 dogfood 步骤。
 
-- [ ] **Step 1: 运行**
+- [x] **Step 1: 运行**
 
 ```bash
 mkdir -p "$HOME/.wgenty-code/rules"
@@ -1901,7 +1901,7 @@ ls -la "$HOME/.wgenty-code/rules/"
 
 期望: 看到 `comet-phase-guard.md`。
 
-- [ ] **Step 2: 在 plan 之外记录此动作（无 commit）；如 source 文件不存在，跳过并在 §8 验证阶段提示用户手动放一个 stub。**
+- [x] **Step 2: 在 plan 之外记录此动作（无 commit）；如 source 文件不存在，跳过并在 §8 验证阶段提示用户手动放一个 stub。**
 
 ---
 
@@ -1909,7 +1909,7 @@ ls -la "$HOME/.wgenty-code/rules/"
 
 **对应 tasks.md**: 7.4
 
-- [ ] **Step 1: 运行**
+- [x] **Step 1: 运行**
 
 ```bash
 cargo test --workspace
@@ -1917,7 +1917,7 @@ cargo test --workspace
 
 期望: 所有测试 PASS。
 
-- [ ] **Step 2: 运行**
+- [x] **Step 2: 运行**
 
 ```bash
 cargo clippy --workspace --all-targets -- -D warnings
@@ -1925,7 +1925,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 期望: 0 warning。若 reminder 字段被 dead_code 警告，按需消除（通常加 `#[allow(dead_code)]` 或确实用上）。
 
-- [ ] **Step 3: 不 commit，进入 7.5。**
+- [x] **Step 3: 不 commit，进入 7.5。**
 
 ---
 
@@ -1933,7 +1933,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 **对应 tasks.md**: 7.5
 
-- [ ] **Step 1: 运行**
+- [x] **Step 1: 运行**
 
 ```bash
 cargo fmt -- --check
@@ -1945,7 +1945,7 @@ cargo fmt -- --check
 cargo fmt
 ```
 
-- [ ] **Step 2: Commit（§7 合并）**
+- [x] **Step 2: Commit（§7 合并）**
 
 ```bash
 git add WGENTY.md CHANGELOG.md src/ tests/ Cargo.toml Cargo.lock
