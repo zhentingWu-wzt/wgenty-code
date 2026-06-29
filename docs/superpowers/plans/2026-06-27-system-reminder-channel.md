@@ -1961,11 +1961,11 @@ git commit -m "docs(reminder): document user-level injection channels and BREAKI
 **对应 tasks.md**: 8.1
 **设计依据**: §5.3 表
 
-- [ ] **Step 1: 对照设计文档 §5.3 表逐项确认：场景 1 → I1、场景 2 → U1、...、场景 12 → 总数 19 测试。**
+- [x] **Step 1: 对照设计文档 §5.3 表逐项确认：场景 1 → I1、场景 2 → U1、...、场景 12 → 总数 19 测试。**
 
-- [ ] **Step 2: 若发现缺口，回填测试。**
+- [x] **Step 2: 若发现缺口，回填测试。**
 
-- [ ] **Step 3: 无代码改动，无 commit。**
+- [x] **Step 3: 无代码改动，无 commit。**
 
 ---
 
@@ -1973,15 +1973,15 @@ git commit -m "docs(reminder): document user-level injection channels and BREAKI
 
 **对应 tasks.md**: 8.2
 
-- [ ] **Step 1: 启动**
+- [x] **Step 1: 启动**
 
 ```bash
 cargo run --release -- repl
 ```
 
-- [ ] **Step 2: 输入任意 prompt，启用 debug toggle（grep `debug` 找命令）或查看 logs 中 history 内容；确认 user message content 头部含 `<system-reminder>`。**
+- [x] **Step 2: 输入任意 prompt，启用 debug toggle（grep `debug` 找命令）或查看 logs 中 history 内容；确认 user message content 头部含 `<system-reminder>`。**
 
-- [ ] **Step 3: 记录截图 / log 片段（非必须）。无 commit。**
+- [x] **Step 3: 记录截图 / log 片段（非必须）。无 commit。**
 
 ---
 
@@ -1989,15 +1989,15 @@ cargo run --release -- repl
 
 **对应 tasks.md**: 8.3
 
-- [ ] **Step 1: 在另一 shell**
+- [x] **Step 1: 在另一 shell**
 
 ```bash
 mv "$HOME/.wgenty-code/WGENTY.md" "$HOME/.wgenty-code/WGENTY.md.bak" 2>/dev/null || true
 ```
 
-- [ ] **Step 2: 在 repl 中再次提交 prompt；确认无报错、reminder 中无空 `Contents of` 标题。**
+- [x] **Step 2: 在 repl 中再次提交 prompt；确认无报错、reminder 中无空 `Contents of` 标题。**
 
-- [ ] **Step 3: 恢复：**
+- [x] **Step 3: 恢复：**
 
 ```bash
 mv "$HOME/.wgenty-code/WGENTY.md.bak" "$HOME/.wgenty-code/WGENTY.md" 2>/dev/null || true
@@ -2009,7 +2009,7 @@ mv "$HOME/.wgenty-code/WGENTY.md.bak" "$HOME/.wgenty-code/WGENTY.md" 2>/dev/null
 
 **对应 tasks.md**: 8.4
 
-- [ ] **Step 1: 在 `settings.json` 临时加入：**
+- [x] **Step 1: 在 `settings.json` 临时加入：**
 
 ```json
 {
@@ -2031,9 +2031,9 @@ mv "$HOME/.wgenty-code/WGENTY.md.bak" "$HOME/.wgenty-code/WGENTY.md" 2>/dev/null
 }
 ```
 
-- [ ] **Step 2: 重启 repl，提交 prompt，确认 history 中 user message 含 `VERIFY-HOOK-INJECTED`。**
+- [x] **Step 2: 重启 repl，提交 prompt，确认 history 中 user message 含 `VERIFY-HOOK-INJECTED`。**
 
-- [ ] **Step 3: 移除临时配置。**
+- [x] **Step 3: 移除临时配置。**
 
 ---
 
@@ -2041,13 +2041,13 @@ mv "$HOME/.wgenty-code/WGENTY.md.bak" "$HOME/.wgenty-code/WGENTY.md" 2>/dev/null
 
 **对应 tasks.md**: 8.5
 
-- [ ] **Step 1: 运行**
+- [x] **Step 1: 运行**
 
 ```bash
 cargo run --release -- repl --prompt "X" 2>&1 | head -50
 ```
 
-- [ ] **Step 2: 启用 trace 或临时加 `dbg!` 确认 reminder 注入。验证后清理。**
+- [x] **Step 2: 启用 trace 或临时加 `dbg!` 确认 reminder 注入。验证后清理。**
 
 ---
 
@@ -2057,17 +2057,17 @@ cargo run --release -- repl --prompt "X" 2>&1 | head -50
 
 ### Task 9.1: O1 标题决策
 
-- [ ] **Step 1: 在 `openspec/changes/system-reminder-channel/proposal.md`（或 design doc）末尾确认已记录 D1=B（`# wgentyMd`）。无代码改动。**
+- [x] **Step 1: 在 `openspec/changes/system-reminder-channel/proposal.md`（或 design doc）末尾确认已记录 D1=B（`# wgentyMd`）。无代码改动。**
 
 ### Task 9.2: O2 死锁验证
 
-- [ ] **Step 1: 设计文档 §2.7 D7 已给出死锁分析。无代码改动。**
+- [x] **Step 1: 设计文档 §2.7 D7 已给出死锁分析。无代码改动。**
 
 ### Task 9.3: O3 LayerVisibility 实现
 
-- [ ] **Step 1: 设计文档 §2.8 D8 + builder 双轨输出已实现。无代码改动。**
+- [x] **Step 1: 设计文档 §2.8 D8 + builder 双轨输出已实现。无代码改动。**
 
-- [ ] **Step 2: §9 全部 task 勾选完成；如 OpenSpec 需要状态同步，运行 comet guard：**
+- [x] **Step 2: §9 全部 task 勾选完成；如 OpenSpec 需要状态同步，运行 comet guard：**
 
 ```bash
 "$COMET_BASH" "$COMET_STATE" set system-reminder-channel verify --field current_phase

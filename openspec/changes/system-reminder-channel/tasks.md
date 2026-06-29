@@ -57,10 +57,10 @@
 ## 8. 验证
 
 - [x] 8.1 验证 12 条验收场景全部覆盖至少 1 个测试用例
-- [ ] 8.2 启动 `wgenty-code repl`，输入任意 prompt，用 logs / debug toggle 确认 user message 内容含 reminder 块
-- [ ] 8.3 删除 `~/.wgenty-code/WGENTY.md`，再次输入 prompt，确认无报错、无空标题
-- [ ] 8.4 配置 `UserPromptSubmit` hook 返回 inject content，重启 repl 验证 hook 注入端到端工作
-- [ ] 8.5 用 `cargo run -- repl --prompt "X"` 单次查询模式同样验证 reminder 注入
+- [x] 8.2 启动 `wgenty-code repl`，输入任意 prompt，用 logs / debug toggle 确认 user message 内容含 reminder 块
+- [x] 8.3 删除 `~/.wgenty-code/WGENTY.md`，再次输入 prompt，确认无报错、无空标题
+- [x] 8.4 配置 `UserPromptSubmit` hook 返回 inject content，重启 repl 验证 hook 注入端到端工作
+- [x] 8.5 用 `cargo run -- repl --prompt "X"` 单次查询模式同样验证 reminder 注入
 
 ## 9. 解决 design doc 的 Open Questions
 
