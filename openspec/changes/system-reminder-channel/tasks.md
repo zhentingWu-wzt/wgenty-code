@@ -48,15 +48,15 @@
 
 ## 7. Documentation & polish
 
-- [ ] 7.1 在 `WGENTY.md`（项目根）新增一段 "Context injection channels" 说明 `~/.wgenty-code/WGENTY.md` + `~/.wgenty-code/rules/` 用法（注意：是文档说明，不是实际放规则）
-- [ ] 7.2 CHANGELOG 标记 BREAKING："项目说明改走 system reminder 通道，不再出现在 system prompt 链路"
-- [ ] 7.3 在 `~/.wgenty-code/rules/` 新建示例文件 `comet-phase-guard.md`（从 `~/.claude/rules/comet-phase-guard.md` 拷贝），用于 dogfood 本次实现
-- [ ] 7.4 运行完整 `cargo test` 与 `cargo clippy -- -D warnings`，零 warning 通过
-- [ ] 7.5 运行 `cargo fmt -- --check`，格式合规
+- [x] 7.1 在 `WGENTY.md`（项目根）新增一段 "Context injection channels" 说明 `~/.wgenty-code/WGENTY.md` + `~/.wgenty-code/rules/` 用法（注意：是文档说明，不是实际放规则）
+- [x] 7.2 CHANGELOG 标记 BREAKING："项目说明改走 system reminder 通道，不再出现在 system prompt 链路"
+- [x] 7.3 在 `~/.wgenty-code/rules/` 新建示例文件 `comet-phase-guard.md`（从 `~/.claude/rules/comet-phase-guard.md` 拷贝），用于 dogfood 本次实现
+- [x] 7.4 运行完整 `cargo test` 与 `cargo clippy -- -D warnings`，零 warning 通过
+- [x] 7.5 运行 `cargo fmt -- --check`，格式合规
 
 ## 8. 验证
 
-- [ ] 8.1 验证 12 条验收场景全部覆盖至少 1 个测试用例
+- [x] 8.1 验证 12 条验收场景全部覆盖至少 1 个测试用例
 - [ ] 8.2 启动 `wgenty-code repl`，输入任意 prompt，用 logs / debug toggle 确认 user message 内容含 reminder 块
 - [ ] 8.3 删除 `~/.wgenty-code/WGENTY.md`，再次输入 prompt，确认无报错、无空标题
 - [ ] 8.4 配置 `UserPromptSubmit` hook 返回 inject content，重启 repl 验证 hook 注入端到端工作
@@ -64,6 +64,6 @@
 
 ## 9. 解决 design doc 的 Open Questions
 
-- [ ] 9.1 O1: 决定 `# claudeMd` 标题保留 vs 改名（design 阶段加载 brainstorming 时定）
-- [ ] 9.2 O2: 验证 `tui/app/input.rs` UserPromptSubmit fire 改 await 不引入死锁（design 阶段读 start_next_turn 并发模型）
-- [ ] 9.3 O3: 定 `LayerVisibility::Internal` 在 TUI transcript 层的具体过滤实现路径
+- [x] 9.1 O1: 决定 `# claudeMd` 标题保留 vs 改名（design 阶段加载 brainstorming 时定）
+- [x] 9.2 O2: 验证 `tui/app/input.rs` UserPromptSubmit fire 改 await 不引入死锁（design 阶段读 start_next_turn 并发模型）
+- [x] 9.3 O3: 定 `LayerVisibility::Internal` 在 TUI transcript 层的具体过滤实现路径
