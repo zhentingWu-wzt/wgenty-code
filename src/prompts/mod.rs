@@ -680,4 +680,155 @@ mod reminder_tests {
             );
         });
     }
+
+    // ============================================================
+    // U5 (Task 2.6) — Absolute paths in attribution
+    // ============================================================
+    #[test]
+    #[serial]
+    fn reminder_absolute_paths_in_attribution() {
+        let home = make_fake_home(Some("X"), &[("a.md", "Y")]);
+        let project_root = TempDir::new().unwrap();
+
+        with_fake_home(home.path(), || {
+            let ctx = PromptContext::new()
+                .with_wgenty_md(vec!["P".to_string()])
+                .with_agents_md(vec!["Q".to_string()])
+                .with_project_root(project_root.path().to_path_buf());
+
+            let result = build_user_turn_reminder(&ctx, &[]).unwrap();
+
+            // Every "Contents of <path> (...)" line must have an absolute path.
+            // On Unix this means the path starts with '/'.
+            for line in result.to_model.lines() {
+                if let Some(rest) = line.strip_prefix("Contents of ") {
+                    // Path is everything up to the last " ("
+                    let path_end = rest.rfind(" (").expect("attribution line should contain ' ('");
+                    let path = &rest[..path_end];
+                    assert!(
+                        path.starts_with('/'),
+                        "attribution path should be absolute, got: {path:?}"
+                    );
+                }
+            }
+        });
+    }
+
+    // ============================================================
+    // U4 (Task 2.7) — Rules alphabetical order
+    // ============================================================
+    #[test]
+    #[serial]
+    fn reminder_user_rules_alphabetical_order() {
+        // Insert in non-alpha order; build_user_turn_reminder must sort.
+        let home = make_fake_home(
+            None,
+            &[("b.md", "BBB"), ("a.md", "AAA"), ("c.md", "CCC")],
+        );
+
+        with_fake_home(home.path(), || {
+            let ctx = PromptContext::new();
+            let result = build_user_turn_reminder(&ctx, &[]).expect("rules present → Some");
+
+            let pos_a = result.to_model.find("AAA").unwrap();
+            let pos_b = result.to_model.find("BBB").unwrap();
+            let pos_c = result.to_model.find("CCC").unwrap();
+            assert!(pos_a < pos_b, "a.md should precede b.md");
+            assert!(pos_b < pos_c, "b.md should precede c.md");
+        });
+    }
+
+    // ============================================================
+    // U6 (Task 2.8 part 1) — Hook priority sorting
+    // ============================================================
+    #[test]
+    fn reminder_hook_priority_sorting() {
+        // Empty fs setup — but hook_injections feed directly without needing $HOME.
+        // Still mark non-serial since we don't touch HOME here.
+        let ctx = PromptContext::new().with_wgenty_md(vec!["P".to_string()]); // ensures non-None result
+
+        let frags = vec![
+            InjectedFragment {
+                content: "PRI_30".into(),
+                priority: 30,
+                visibility: LayerVisibility::Visible,
+                source_label: "hook:UserPromptSubmit:0".into(),
+            },
+            InjectedFragment {
+                content: "PRI_10".into(),
+                priority: 10,
+                visibility: LayerVisibility::Visible,
+                source_label: "hook:UserPromptSubmit:1".into(),
+            },
+            InjectedFragment {
+                content: "PRI_20".into(),
+                priority: 20,
+                visibility: LayerVisibility::Visible,
+                source_label: "hook:UserPromptSubmit:2".into(),
+            },
+        ];
+
+        // Note: builder receives fragments as-is. Caller (production path) uses
+        // collect_injections which sorts. For this test, sort fragments ourselves
+        // to verify the builder PRESERVES priority order from the input slice.
+        let mut sorted = frags.clone();
+        sorted.sort_by_key(|f| f.priority);
+
+        let result = build_user_turn_reminder(&ctx, &sorted).unwrap();
+
+        let pos_10 = result.to_model.find("PRI_10").unwrap();
+        let pos_20 = result.to_model.find("PRI_20").unwrap();
+        let pos_30 = result.to_model.find("PRI_30").unwrap();
+        assert!(pos_10 < pos_20);
+        assert!(pos_20 < pos_30);
+    }
+
+    // ============================================================
+    // U7 (Task 2.8 part 2) — Internal visibility excludes transcript
+    // ============================================================
+    #[test]
+    fn reminder_internal_visibility_excludes_transcript() {
+        let ctx = PromptContext::new().with_wgenty_md(vec!["P_CONTENT".to_string()]); // gives to_transcript a body
+
+        let frags = vec![InjectedFragment {
+            content: "INTERNAL_PAYLOAD".into(),
+            priority: 50,
+            visibility: LayerVisibility::Internal,
+            source_label: "hook:UserPromptSubmit:0".into(),
+        }];
+
+        let result = build_user_turn_reminder(&ctx, &frags).unwrap();
+
+        assert!(
+            result.to_model.contains("INTERNAL_PAYLOAD"),
+            "to_model MUST contain internal hook content"
+        );
+        let transcript = result
+            .to_transcript
+            .expect("project section → transcript Some");
+        assert!(
+            !transcript.contains("INTERNAL_PAYLOAD"),
+            "to_transcript MUST NOT contain internal hook content"
+        );
+    }
+
+    // ============================================================
+    // U8 (Task 2.8 part 3) — Visible hook in both outputs
+    // ============================================================
+    #[test]
+    fn reminder_visible_hook_in_both_outputs() {
+        let ctx = PromptContext::new().with_wgenty_md(vec!["P_CONTENT".to_string()]);
+
+        let frags = vec![InjectedFragment {
+            content: "VISIBLE_PAYLOAD".into(),
+            priority: 50,
+            visibility: LayerVisibility::Visible,
+            source_label: "hook:UserPromptSubmit:0".into(),
+        }];
+
+        let result = build_user_turn_reminder(&ctx, &frags).unwrap();
+        assert!(result.to_model.contains("VISIBLE_PAYLOAD"));
+        let transcript = result.to_transcript.expect("content → transcript Some");
+        assert!(transcript.contains("VISIBLE_PAYLOAD"));
+    }
 }
