@@ -863,7 +863,7 @@ cargo test -p wgenty-code reminder_missing_user_wgenty_no_empty_header reminder_
 **设计依据**: §5.1 U5
 **前置依赖**: 2.5
 
-- [ ] **Step 1: 追加：**
+- [x] **Step 1: 追加：**
 
 ```rust
 #[test]
@@ -883,9 +883,9 @@ fn reminder_absolute_paths_in_attribution() {
 }
 ```
 
-- [ ] **Step 2: 运行测试，期望 PASS。**
+- [x] **Step 2: 运行测试，期望 PASS。**
 
-- [ ] **Step 3: 不 commit，并入 2.8。**
+- [x] **Step 3: 不 commit，并入 2.8。**
 
 ---
 
@@ -894,7 +894,7 @@ fn reminder_absolute_paths_in_attribution() {
 **对应 tasks.md**: 2.7
 **设计依据**: §5.1 U4
 
-- [ ] **Step 1: 追加：**
+- [x] **Step 1: 追加：**
 
 ```rust
 #[test]
@@ -915,7 +915,7 @@ fn reminder_user_rules_alphabetical_order() {
 }
 ```
 
-- [ ] **Step 2: 运行测试，期望 PASS。不 commit。**
+- [x] **Step 2: 运行测试，期望 PASS。不 commit。**
 
 ---
 
@@ -924,7 +924,7 @@ fn reminder_user_rules_alphabetical_order() {
 **对应 tasks.md**: 2.8
 **设计依据**: §5.1 U6/U7/U8
 
-- [ ] **Step 1: 追加：**
+- [x] **Step 1: 追加：**
 
 ```rust
 #[test]
@@ -995,7 +995,7 @@ fn reminder_visible_hook_in_both_outputs() {
 }
 ```
 
-- [ ] **Step 2: 运行**
+- [x] **Step 2: 运行**
 
 ```bash
 cargo test -p wgenty-code reminder_
@@ -1003,7 +1003,7 @@ cargo test -p wgenty-code reminder_
 
 期望: §2 全部单测 PASS（约 9 个）。
 
-- [ ] **Step 3: Commit（§2 所有单测合并）**
+- [x] **Step 3: Commit（§2 所有单测合并）**
 
 ```bash
 git add src/prompts/mod.rs
