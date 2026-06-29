@@ -76,6 +76,7 @@ impl App {
         };
         let token_counter = self.token_counter.clone();
         let hook_manager = self.hook_manager.clone();
+        let prompt_context = self.prompt_context.clone();
         self.current_turn_handle = Some(tokio::spawn(async move {
             let mut agent = AgentLoop::new(
                 client,
@@ -88,6 +89,7 @@ impl App {
                 max_rounds,
                 token_counter,
                 hook_manager,
+                prompt_context,
             );
             let result = agent.process_input(input_text).await;
             if let Err(ref e) = result {
