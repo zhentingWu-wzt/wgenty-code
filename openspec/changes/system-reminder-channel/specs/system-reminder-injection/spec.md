@@ -46,10 +46,15 @@ The reminder block SHALL aggregate content from up to four file sources, in this
 - **WHEN** the project root `AGENTS.md` does not exist
 - **THEN** the project agent conventions section SHALL be omitted from the reminder block
 
-#### Scenario: All sources missing
-- **WHEN** none of the four file sources exist
+#### Scenario: All file sources missing AND no hook injections
+- **WHEN** none of the four file sources exist AND no hook produces `injected_content`
 - **THEN** the reminder block SHALL be omitted entirely (no preamble, no closing, no empty `<system-reminder>` tags)
 - **AND** the user message SHALL be sent as if no reminder mechanism existed
+
+#### Scenario: All file sources missing but hook injections present
+- **WHEN** none of the four file sources exist BUT at least one hook produces non-empty `injected_content`
+- **THEN** the reminder block SHALL still be emitted, wrapping the hook-injected content with the standard `<system-reminder>` tags and the opening/closing preambles
+- **AND** the hook content SHALL appear between the preambles (no orphan file-source attribution headers)
 
 ---
 
