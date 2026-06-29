@@ -231,8 +231,8 @@ async fn two_hooks_render_in_priority_order_in_reminder() {
 
     let tmp = TempDir::new().unwrap();
     let ctx = PromptContext::new();
-    let reminder = with_fake_home(tmp.path(), || build_user_turn_reminder(&ctx, &injections))
-        .expect("Some");
+    let reminder =
+        with_fake_home(tmp.path(), || build_user_turn_reminder(&ctx, &injections)).expect("Some");
 
     let pos_high = reminder
         .to_model

@@ -167,10 +167,8 @@ impl AgentLoop {
         let injections = crate::runtime::hooks::collect_injections(&outcomes);
 
         // 2. Build per-turn `<system-reminder>` block from file sources + hook injections.
-        let reminder = crate::prompts::build_user_turn_reminder(
-            self.prompt_context.as_ref(),
-            &injections,
-        );
+        let reminder =
+            crate::prompts::build_user_turn_reminder(self.prompt_context.as_ref(), &injections);
 
         // 3. Assemble user message content: reminder (if any) prepended to user input.
         let user_content = match &reminder {

@@ -612,8 +612,8 @@ mod token_budget_tests {
         let preview_ctx = crate::prompts::PromptContext::new().with_wgenty_md(vec![tiny]);
 
         let estimated = with_fake_home(tmp.path(), || {
-            let reminder = crate::prompts::build_user_turn_reminder(&preview_ctx, &[])
-                .expect("Some");
+            let reminder =
+                crate::prompts::build_user_turn_reminder(&preview_ctx, &[]).expect("Some");
             crate::utils::estimate_tokens(&reminder.to_model)
         });
 
