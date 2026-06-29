@@ -7,16 +7,25 @@
 
 ## Current Task
 
-- Plan tasks: `Task 2.4-2.8 builder 单测 (U1-U8)`
+- Plan tasks: `Task 2.6 + 2.7 + 2.8` (U5 absolute paths + U4 alphabetical + U6/U7/U8 hook priority + visibility)
 - Phase: implementing
 - Round: 1
-- Brief: 5 briefs (2.4, 2.5, 2.6, 2.7, 2.8) — packaged together as builder test suite
-- Report: .git/sdd/task-2.4-report.md
+- Brief: 3 briefs (2.6, 2.7, 2.8) — packaged
+- Report: .git/sdd/task-2.6-report.md
 
 ## History
 
-- Task 1.1: ✅ 888efa7 (Minor matches! → 5.1)
+- Task 1.1: ✅ 888efa7
 - Task 1.2: ✅ 9a90a06
-- Task 1.3: ✅ 91b6dd0 (5 tests)
+- Task 1.3: ✅ 91b6dd0
 - Task 1.4: ✅ 977174e
-- Tasks 2.1+2.2+2.3: ✅ 8f06f92 (packaged, preamble bytes verified)
+- Tasks 2.1+2.2+2.3: ✅ 8f06f92
+- Tasks 2.4+2.5: ✅ 3c10d1b + c798dbf (cleanup)
+
+## Known pre-existing issues (out of scope)
+
+- `cargo clippy --lib --tests -- -D warnings` fails in:
+  - tests/workflow_comet_test.rs:152 (map_or simplification)
+  - src/runtime/hooks/mod.rs:426 (assert_eq! with literal bool)
+  - src/tui/app/mod.rs:521 (items after test module)
+- These existed before this change. `cargo clippy --lib -- -D warnings` is clean.

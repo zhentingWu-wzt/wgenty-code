@@ -712,7 +712,7 @@ fn render_attribution_header(absolute_path: &Path, description: &str) -> String 
 **Files:**
 - Modify: `src/prompts/mod.rs`（`tests` 模块）
 
-- [ ] **Step 1: 在 `tests` 模块底部追加 helper（构造 fake HOME + project root + ctx）：**
+- [x] **Step 1: 在 `tests` 模块底部追加 helper（构造 fake HOME + project root + ctx）：**
 
 ```rust
 #[cfg(test)]
@@ -780,7 +780,7 @@ mod reminder_tests {
 
 > 注：snapshot 测以"包含关键片段 + 顺序"代替全文 byte-for-byte 比较，避免临时目录路径变化导致脆弱。
 
-- [ ] **Step 2: 运行**
+- [x] **Step 2: 运行**
 
 ```bash
 cargo test -p wgenty-code reminder_full_four_sources_snapshot
@@ -788,7 +788,7 @@ cargo test -p wgenty-code reminder_full_four_sources_snapshot
 
 期望: PASS。失败时打印 `out.to_model` 排查。
 
-- [ ] **Step 3: 暂不 commit；与 2.5–2.8 合并提交。**
+- [x] **Step 3: 暂不 commit；与 2.5–2.8 合并提交。**
 
 ---
 
@@ -798,7 +798,7 @@ cargo test -p wgenty-code reminder_full_four_sources_snapshot
 **设计依据**: §5.1 U2/U3
 **前置依赖**: 2.4
 
-- [ ] **Step 1: 在 `reminder_tests` 内追加：**
+- [x] **Step 1: 在 `reminder_tests` 内追加：**
 
 ```rust
 #[test]
@@ -845,7 +845,7 @@ fn reminder_only_hooks_no_files_yields_block() {
 }
 ```
 
-- [ ] **Step 2: 运行**
+- [x] **Step 2: 运行**
 
 ```bash
 cargo test -p wgenty-code reminder_missing_user_wgenty_no_empty_header reminder_all_missing_returns_none reminder_only_hooks_no_files_yields_block
@@ -853,7 +853,7 @@ cargo test -p wgenty-code reminder_missing_user_wgenty_no_empty_header reminder_
 
 期望: 3 PASS。
 
-- [ ] **Step 3: 暂不 commit。**
+- [x] **Step 3: 暂不 commit。**
 
 ---
 
