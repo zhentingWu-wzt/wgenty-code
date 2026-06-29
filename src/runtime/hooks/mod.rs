@@ -423,7 +423,7 @@ mod tests {
             injection_priority: None,
             injection_visibility: None,
         };
-        assert_eq!(outcome.continue_execution, true);
+        assert!(outcome.continue_execution);
         assert_eq!(outcome.reason.as_deref(), Some("test reason"));
         assert_eq!(outcome.injected_content.as_deref(), Some("injected text"));
         assert!(outcome.user_answer.is_some());

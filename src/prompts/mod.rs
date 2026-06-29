@@ -610,7 +610,9 @@ mod reminder_tests {
                 "missing # wgentyMd marker"
             );
             assert!(
-                result.to_model.contains("IMPORTANT: These instructions OVERRIDE"),
+                result
+                    .to_model
+                    .contains("IMPORTANT: These instructions OVERRIDE"),
                 "missing OVERRIDE preamble"
             );
             assert!(
@@ -678,7 +680,9 @@ mod reminder_tests {
 
             // User-global description should NOT appear (no user WGENTY, no rules)
             assert!(
-                !result.to_model.contains("user's private global instructions"),
+                !result
+                    .to_model
+                    .contains("user's private global instructions"),
                 "should not include user-global description when no user files"
             );
             // Project descriptions still present
@@ -737,7 +741,9 @@ mod reminder_tests {
             for line in result.to_model.lines() {
                 if let Some(rest) = line.strip_prefix("Contents of ") {
                     // Path is everything up to the last " ("
-                    let path_end = rest.rfind(" (").expect("attribution line should contain ' ('");
+                    let path_end = rest
+                        .rfind(" (")
+                        .expect("attribution line should contain ' ('");
                     let path = &rest[..path_end];
                     assert!(
                         path.starts_with('/'),
@@ -755,10 +761,7 @@ mod reminder_tests {
     #[serial]
     fn reminder_user_rules_alphabetical_order() {
         // Insert in non-alpha order; build_user_turn_reminder must sort.
-        let home = make_fake_home(
-            None,
-            &[("b.md", "BBB"), ("a.md", "AAA"), ("c.md", "CCC")],
-        );
+        let home = make_fake_home(None, &[("b.md", "BBB"), ("a.md", "AAA"), ("c.md", "CCC")]);
 
         with_fake_home(home.path(), || {
             let ctx = PromptContext::new();
