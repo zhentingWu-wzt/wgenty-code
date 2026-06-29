@@ -126,3 +126,126 @@ fn reminder_reflects_runtime_file_change() {
     assert!(after.to_model.contains("VERSION_TWO"));
     assert!(!after.to_model.contains("VERSION_ONE"));
 }
+
+// ── §5: Hook injection end-to-end ─────────────────────────────────────────
+
+use wgenty_code::runtime::hooks::{
+    collect_injections, ContextSource, HookAction, HookContext, HookDefinition, HookEvent,
+    HookManager, LayerVisibility,
+};
+
+/// I5.3 — hook injection flows through to reminder.to_model.
+#[tokio::test]
+#[serial_test::serial]
+async fn hook_inject_content_end_to_end() {
+    let mut hm = HookManager::default();
+    hm.register_workflow_hooks(vec![HookDefinition {
+        event: HookEvent::UserPromptSubmit,
+        matcher: None,
+        when_state: None,
+        actions: vec![HookAction::InjectContext {
+            source: ContextSource::Inline("EXTRA".into()),
+            priority: 50,
+            visibility: LayerVisibility::Visible,
+        }],
+    }]);
+
+    let hook_ctx = HookContext {
+        event: "UserPromptSubmit".into(),
+        tool_name: None,
+        tool_input: None,
+        tool_result: None,
+        session_id: None,
+        working_directory: String::new(),
+        timestamp: String::new(),
+        comet_phase: None,
+        workflow_state: None,
+        variables: Default::default(),
+    };
+
+    let outcomes = hm
+        .fire(&HookEvent::UserPromptSubmit, &hook_ctx, None, None)
+        .await;
+    let injections = collect_injections(&outcomes);
+
+    // Build reminder with the hook injections — no file sources needed.
+    let tmp = TempDir::new().unwrap();
+    let ctx = PromptContext::new();
+
+    let reminder = with_fake_home(tmp.path(), || build_user_turn_reminder(&ctx, &injections))
+        .expect("hook injection → reminder Some");
+
+    // The model-facing output must contain the injected content.
+    assert!(
+        reminder.to_model.contains("EXTRA"),
+        "to_model should include hook-injected content; got: {}",
+        reminder.to_model
+    );
+}
+
+/// I5.4 — multiple hooks rendered in priority order (lower priority first).
+#[tokio::test]
+#[serial_test::serial]
+async fn two_hooks_render_in_priority_order_in_reminder() {
+    let mut hm = HookManager::default();
+    hm.register_workflow_hooks(vec![
+        HookDefinition {
+            event: HookEvent::UserPromptSubmit,
+            matcher: None,
+            when_state: None,
+            actions: vec![HookAction::InjectContext {
+                source: ContextSource::Inline("FROM-LOW-PRIO".into()),
+                priority: 90,
+                visibility: LayerVisibility::Visible,
+            }],
+        },
+        HookDefinition {
+            event: HookEvent::UserPromptSubmit,
+            matcher: None,
+            when_state: None,
+            actions: vec![HookAction::InjectContext {
+                source: ContextSource::Inline("FROM-HIGH-PRIO".into()),
+                priority: 5,
+                visibility: LayerVisibility::Visible,
+            }],
+        },
+    ]);
+
+    let hook_ctx = HookContext {
+        event: "UserPromptSubmit".into(),
+        tool_name: None,
+        tool_input: None,
+        tool_result: None,
+        session_id: None,
+        working_directory: String::new(),
+        timestamp: String::new(),
+        comet_phase: None,
+        workflow_state: None,
+        variables: Default::default(),
+    };
+
+    let outcomes = hm
+        .fire(&HookEvent::UserPromptSubmit, &hook_ctx, None, None)
+        .await;
+    let injections = collect_injections(&outcomes);
+
+    let tmp = TempDir::new().unwrap();
+    let ctx = PromptContext::new();
+    let reminder = with_fake_home(tmp.path(), || build_user_turn_reminder(&ctx, &injections))
+        .expect("Some");
+
+    let pos_high = reminder
+        .to_model
+        .find("FROM-HIGH-PRIO")
+        .expect("high-prio present");
+    let pos_low = reminder
+        .to_model
+        .find("FROM-LOW-PRIO")
+        .expect("low-prio present");
+    assert!(
+        pos_high < pos_low,
+        "priority 5 must render before priority 90; got high={}, low={}",
+        pos_high,
+        pos_low
+    );
+}
