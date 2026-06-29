@@ -6,19 +6,16 @@
 
 ## Current Task
 
-- Plan tasks: `Task 3.4 + 3.5` (integration tests I1 + I2 — first turn reminder + per-turn)
+- Plan tasks: `Task 4.1 + 4.2 + 4.4` (Hard-cut Layer 7/8 + verify field consumption + assertion test U9)
+- Note: Task 4.3 (with_project_root in App) was done early as part of §3 plumbing (commit bec7db4); will check off here.
 - Phase: implementing
 - Round: 1
 
 ## History
 
-- §1: Tasks 1.1-1.4 ✅
-- §2: Tasks 2.1-2.8 ✅
-- §3 partial: Tasks 3.1-3.3 ✅ bec7db4
-- Task 4.3 (with_project_root) ✅ done as plumbing in bec7db4
-
-## Known pre-existing issues (out of scope)
-
-- `cargo clippy --lib --tests -- -D warnings` fails on 3 unrelated files
-- `cargo clippy --lib` is clean
-- to_transcript transcript delivery deferred — TODO(§4+) in process_input_inner
+- §1: 1.1-1.4 ✅
+- §2: 2.1-2.8 ✅
+- §3: 3.1-3.5 ✅
+  - 3.1-3.3 ✅ bec7db4
+  - 3.4-3.5 ✅ 4ba9f90
+- Task 4.3 (part of 3.1-3.3 plumbing) ✅ bec7db4
