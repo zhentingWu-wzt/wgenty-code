@@ -509,7 +509,6 @@ mod tests {
 #[cfg(test)]
 mod reminder_tests {
     use super::*;
-    use crate::runtime::hooks::{InjectedFragment, LayerVisibility};
     use serial_test::serial;
     use std::path::Path;
     use tempfile::TempDir;
@@ -552,10 +551,6 @@ mod reminder_tests {
     #[test]
     #[serial]
     fn reminder_full_four_sources_snapshot() {
-        let _ = (
-            std::marker::PhantomData::<InjectedFragment>,
-            std::marker::PhantomData::<LayerVisibility>,
-        );
         let home = make_fake_home(
             Some("USER_WGENTY_CONTENT"),
             &[("a.md", "RULE_A"), ("b.md", "RULE_B")],
@@ -660,12 +655,12 @@ mod reminder_tests {
                 .to_model
                 .contains("project agent conventions, checked into the codebase"));
 
-            // No orphan attribution header guard (informational)
-            for line in result.to_model.lines() {
-                if line.starts_with("Contents of ") {
-                    // ok — verified by content markers above
-                }
-            }
+            // No orphan attribution header — empty path + empty description
+            // would render "Contents of  ():" with double-space; must never occur.
+            assert!(
+                !result.to_model.contains("Contents of  ("),
+                "orphan attribution header with empty path detected"
+            );
         });
     }
 
