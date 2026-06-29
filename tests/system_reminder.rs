@@ -249,3 +249,95 @@ async fn two_hooks_render_in_priority_order_in_reminder() {
         pos_low
     );
 }
+
+/// Hook-only scenario: no file sources, single hook injection.
+///
+/// Per spec (both system-reminder-injection §"All file sources missing but hook
+/// injections present" and hook-lifecycle-complete §"Only hook content"):
+/// the reminder block IS emitted, wrapping the hook content between the standard
+/// preambles. No orphan file-source attribution headers.
+#[tokio::test]
+#[serial_test::serial]
+async fn hook_only_yields_wrapped_reminder() {
+    let mut hm = HookManager::default();
+    hm.register_workflow_hooks(vec![HookDefinition {
+        event: HookEvent::UserPromptSubmit,
+        matcher: None,
+        when_state: None,
+        actions: vec![HookAction::InjectContext {
+            source: ContextSource::Inline("HOOK-ONLY-PAYLOAD".into()),
+            priority: 50,
+            visibility: LayerVisibility::Visible,
+        }],
+    }]);
+
+    let hook_ctx = HookContext {
+        event: "UserPromptSubmit".into(),
+        tool_name: None,
+        tool_input: None,
+        tool_result: None,
+        session_id: None,
+        working_directory: String::new(),
+        timestamp: String::new(),
+        comet_phase: None,
+        workflow_state: None,
+        variables: Default::default(),
+    };
+
+    let outcomes = hm
+        .fire(&HookEvent::UserPromptSubmit, &hook_ctx, None, None)
+        .await;
+    let injections = collect_injections(&outcomes);
+
+    // Empty home → no user-global sources; empty ctx → no project sections.
+    let tmp = TempDir::new().unwrap();
+    let ctx = PromptContext::new();
+    let reminder = with_fake_home(tmp.path(), || build_user_turn_reminder(&ctx, &injections))
+        .expect("hook present → Some");
+
+    // Wrapped with reminder tags + preambles
+    assert!(
+        reminder.to_model.starts_with("<system-reminder>\n"),
+        "hook-only output must start with reminder opener"
+    );
+    assert!(
+        reminder.to_model.contains("# wgentyMd"),
+        "opening preamble must be present"
+    );
+    assert!(
+        reminder
+            .to_model
+            .contains("IMPORTANT: this context may or may not be relevant"),
+        "closing preamble must be present"
+    );
+    assert!(
+        reminder.to_model.trim_end().ends_with("</system-reminder>"),
+        "hook-only output must close with reminder closer"
+    );
+
+    // Hook content present
+    assert!(
+        reminder.to_model.contains("HOOK-ONLY-PAYLOAD"),
+        "hook content must appear inside the reminder block"
+    );
+
+    // No orphan file-source attribution headers (the 3 description constants)
+    assert!(
+        !reminder
+            .to_model
+            .contains("user's private global instructions for all projects"),
+        "no user-source attribution header should appear (no user files exist)"
+    );
+    assert!(
+        !reminder
+            .to_model
+            .contains("project instructions, checked into the codebase"),
+        "no project-WGENTY attribution header should appear (no sections set)"
+    );
+    assert!(
+        !reminder
+            .to_model
+            .contains("project agent conventions, checked into the codebase"),
+        "no project-AGENTS attribution header should appear (no sections set)"
+    );
+}
