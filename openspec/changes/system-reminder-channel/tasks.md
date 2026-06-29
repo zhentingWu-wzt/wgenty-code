@@ -12,9 +12,9 @@
 - [x] 2.3 实现来源标注辅助函数 `render_attribution_header(absolute_path: &Path, description: &str) -> String`，统一输出 `Contents of <absolute-path> (<description>):` 格式
 - [x] 2.4 单测：全 4 源齐全的完整 reminder 文本快照（含具体顺序、缩进、preamble）
 - [x] 2.5 单测：缺失各文件源时不出现空标题、不报错；4 源全缺且无 hook 返回 `None`
-- [ ] 2.6 单测：来源标注路径是绝对路径
-- [ ] 2.7 单测：rules/*.md 字母序
-- [ ] 2.8 单测：hook 注入按 priority asc 排序，ties 保持调用方传入顺序
+- [x] 2.6 单测：来源标注路径是绝对路径
+- [x] 2.7 单测：rules/*.md 字母序
+- [x] 2.8 单测：hook 注入按 priority asc 排序，ties 保持调用方传入顺序
 
 ## 3. 请求构造层接入
 
