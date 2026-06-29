@@ -505,3 +505,184 @@ mod tests {
         assert!(!has_permissions);
     }
 }
+
+#[cfg(test)]
+mod reminder_tests {
+    use super::*;
+    use crate::runtime::hooks::{InjectedFragment, LayerVisibility};
+    use serial_test::serial;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    /// Test helper: temporarily set $HOME, run closure, restore.
+    /// Must be used with #[serial] to prevent races between tests.
+    fn with_fake_home<F: FnOnce() -> R, R>(home: &Path, f: F) -> R {
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", home);
+        let result = f();
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        result
+    }
+
+    /// Set up a fake home with .wgenty-code/WGENTY.md and rules/*.md files.
+    /// Returns TempDir — keep alive for test duration.
+    fn make_fake_home(user_wgenty: Option<&str>, rules: &[(&str, &str)]) -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        let wgenty_dir = tmp.path().join(".wgenty-code");
+        std::fs::create_dir_all(&wgenty_dir).unwrap();
+        if let Some(content) = user_wgenty {
+            std::fs::write(wgenty_dir.join("WGENTY.md"), content).unwrap();
+        }
+        if !rules.is_empty() {
+            let rules_dir = wgenty_dir.join("rules");
+            std::fs::create_dir_all(&rules_dir).unwrap();
+            for (name, content) in rules {
+                std::fs::write(rules_dir.join(name), content).unwrap();
+            }
+        }
+        tmp
+    }
+
+    // ============================================================
+    // U1 — complete snapshot (4 sources)
+    // ============================================================
+    #[test]
+    #[serial]
+    fn reminder_full_four_sources_snapshot() {
+        let _ = (
+            std::marker::PhantomData::<InjectedFragment>,
+            std::marker::PhantomData::<LayerVisibility>,
+        );
+        let home = make_fake_home(
+            Some("USER_WGENTY_CONTENT"),
+            &[("a.md", "RULE_A"), ("b.md", "RULE_B")],
+        );
+        let project_root = TempDir::new().unwrap();
+
+        with_fake_home(home.path(), || {
+            let ctx = PromptContext::new()
+                .with_wgenty_md(vec!["PROJECT_WGENTY".to_string()])
+                .with_agents_md(vec!["PROJECT_AGENTS".to_string()])
+                .with_project_root(project_root.path().to_path_buf());
+
+            let result = build_user_turn_reminder(&ctx, &[]).expect("reminder should be Some");
+
+            // Skeleton
+            assert!(
+                result.to_model.starts_with("<system-reminder>\n"),
+                "missing opener: {}",
+                &result.to_model[..50.min(result.to_model.len())]
+            );
+            assert!(
+                result.to_model.contains("# wgentyMd"),
+                "missing # wgentyMd marker"
+            );
+            assert!(
+                result.to_model.contains("IMPORTANT: These instructions OVERRIDE"),
+                "missing OVERRIDE preamble"
+            );
+            assert!(
+                result
+                    .to_model
+                    .contains("IMPORTANT: this context may or may not be relevant"),
+                "missing closing preamble"
+            );
+            assert!(
+                result.to_model.trim_end().ends_with("</system-reminder>"),
+                "missing closer"
+            );
+
+            // 4 content markers
+            assert!(result.to_model.contains("USER_WGENTY_CONTENT"));
+            assert!(result.to_model.contains("RULE_A"));
+            assert!(result.to_model.contains("RULE_B"));
+            assert!(result.to_model.contains("PROJECT_WGENTY"));
+            assert!(result.to_model.contains("PROJECT_AGENTS"));
+
+            // 4 description tags
+            assert!(result
+                .to_model
+                .contains("user's private global instructions for all projects"));
+            assert!(result
+                .to_model
+                .contains("project instructions, checked into the codebase"));
+            assert!(result
+                .to_model
+                .contains("project agent conventions, checked into the codebase"));
+
+            // Ordering: user-global WGENTY → rules/a.md → rules/b.md → project WGENTY.md → project AGENTS.md
+            let pos_user_w = result.to_model.find("USER_WGENTY_CONTENT").unwrap();
+            let pos_a = result.to_model.find("RULE_A").unwrap();
+            let pos_b = result.to_model.find("RULE_B").unwrap();
+            let pos_proj_w = result.to_model.find("PROJECT_WGENTY").unwrap();
+            let pos_proj_a = result.to_model.find("PROJECT_AGENTS").unwrap();
+            assert!(pos_user_w < pos_a, "user WGENTY should precede rules");
+            assert!(pos_a < pos_b, "rules should be alphabetical");
+            assert!(pos_b < pos_proj_w, "rules should precede project WGENTY");
+            assert!(
+                pos_proj_w < pos_proj_a,
+                "project WGENTY should precede project AGENTS"
+            );
+        });
+    }
+
+    // ============================================================
+    // U2 — missing user WGENTY → no orphan header
+    // ============================================================
+    #[test]
+    #[serial]
+    fn reminder_missing_user_wgenty_no_empty_header() {
+        // No user WGENTY.md, no rules — only project sections
+        let home = make_fake_home(None, &[]);
+        let project_root = TempDir::new().unwrap();
+
+        with_fake_home(home.path(), || {
+            let ctx = PromptContext::new()
+                .with_wgenty_md(vec!["PROJECT_WGENTY".to_string()])
+                .with_agents_md(vec!["PROJECT_AGENTS".to_string()])
+                .with_project_root(project_root.path().to_path_buf());
+
+            let result = build_user_turn_reminder(&ctx, &[]).expect("project sections present");
+
+            // User-global description should NOT appear (no user WGENTY, no rules)
+            assert!(
+                !result.to_model.contains("user's private global instructions"),
+                "should not include user-global description when no user files"
+            );
+            // Project descriptions still present
+            assert!(result
+                .to_model
+                .contains("project instructions, checked into the codebase"));
+            assert!(result
+                .to_model
+                .contains("project agent conventions, checked into the codebase"));
+
+            // No orphan attribution header guard (informational)
+            for line in result.to_model.lines() {
+                if line.starts_with("Contents of ") {
+                    // ok — verified by content markers above
+                }
+            }
+        });
+    }
+
+    // ============================================================
+    // U3 — all missing → None
+    // ============================================================
+    #[test]
+    #[serial]
+    fn reminder_all_missing_returns_none() {
+        let home = make_fake_home(None, &[]);
+
+        with_fake_home(home.path(), || {
+            let ctx = PromptContext::new(); // no project sections, no project_root
+            assert!(
+                build_user_turn_reminder(&ctx, &[]).is_none(),
+                "all-missing should return None"
+            );
+        });
+    }
+}

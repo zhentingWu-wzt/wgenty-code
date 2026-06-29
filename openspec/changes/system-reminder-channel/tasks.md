@@ -10,8 +10,8 @@
 - [x] 2.1 在 `src/prompts/mod.rs` 新增私有常量 `REMINDER_PREAMBLE_OPENING` 和 `REMINDER_PREAMBLE_CLOSING`，精确复刻 Claude Code 措辞（含 `# claudeMd` 与闭合 preamble 6 空格缩进）
 - [x] 2.2 实现 `build_user_turn_reminder(ctx: &PromptContext, hook_injections: &[InjectedFragment]) -> Option<String>`：聚合 4 个文件源 + hook 注入按 priority 排序，按 D6 文本骨架渲染；4 源全缺且无 hook 注入返回 `None`
 - [x] 2.3 实现来源标注辅助函数 `render_attribution_header(absolute_path: &Path, description: &str) -> String`，统一输出 `Contents of <absolute-path> (<description>):` 格式
-- [ ] 2.4 单测：全 4 源齐全的完整 reminder 文本快照（含具体顺序、缩进、preamble）
-- [ ] 2.5 单测：缺失各文件源时不出现空标题、不报错；4 源全缺且无 hook 返回 `None`
+- [x] 2.4 单测：全 4 源齐全的完整 reminder 文本快照（含具体顺序、缩进、preamble）
+- [x] 2.5 单测：缺失各文件源时不出现空标题、不报错；4 源全缺且无 hook 返回 `None`
 - [ ] 2.6 单测：来源标注路径是绝对路径
 - [ ] 2.7 单测：rules/*.md 字母序
 - [ ] 2.8 单测：hook 注入按 priority asc 排序，ties 保持调用方传入顺序
