@@ -282,26 +282,27 @@ impl App {
         let wgenty_sections = crate::utils::project::read_wgenty_md_sections(&project_root);
         let agents_sections = crate::utils::project::read_agents_md_sections(&project_root);
 
-        // Warn if WGENTY.md + AGENTS.md exceed token budget (fires once per session)
-        let wgenty_tokens: usize = wgenty_sections
-            .iter()
-            .map(|s| crate::utils::estimate_tokens(s))
-            .sum();
-        let agents_tokens: usize = agents_sections
-            .iter()
-            .map(|s| crate::utils::estimate_tokens(s))
-            .sum();
-        let total_md_tokens = wgenty_tokens + agents_tokens;
-        if total_md_tokens > 2000 {
+        // Warn if the per-turn <system-reminder> block exceeds the token budget.
+        // Estimated once at session startup using a preview PromptContext (preamble
+        // + 4 file sources). Hook injections are dynamic per-turn and not counted.
+        // Fires at most once per session (effectively, because session_init is
+        // called once).
+        let reminder_token_estimate = {
+            let preview_ctx = crate::prompts::PromptContext::new()
+                .with_wgenty_md(wgenty_sections.clone())
+                .with_agents_md(agents_sections.clone())
+                .with_project_root(project_root.clone());
+            match crate::prompts::build_user_turn_reminder(&preview_ctx, &[]) {
+                Some(out) => crate::utils::estimate_tokens(&out.to_model),
+                None => 0,
+            }
+        };
+        if reminder_token_estimate > 2000 {
             tracing::warn!(
-                wgenty_tokens,
-                agents_tokens,
-                total = total_md_tokens,
-                "WGENTY.md + AGENTS.md sections estimate ~{} tokens ({} + {}). \
-                 Consider trimming to keep session startup lean.",
-                total_md_tokens,
-                wgenty_tokens,
-                agents_tokens,
+                reminder_tokens = reminder_token_estimate,
+                "<system-reminder> block estimate ~{} tokens. \
+                 Consider trimming WGENTY.md / AGENTS.md / ~/.wgenty-code/ files to keep per-turn input lean.",
+                reminder_token_estimate,
             );
         }
 
@@ -554,6 +555,49 @@ mod tests {
         let yaml = "entry_commands:\n  -   comet  \n  -  comet-open \n";
         let result = parse_yaml_list(yaml, "entry_commands:");
         assert_eq!(result, vec!["comet", "comet-open"]);
+    }
+}
+
+#[cfg(test)]
+mod token_budget_tests {
+    /// Synthesize a long string that pushes the reminder past 2000-token threshold.
+    fn long_section(target_chars: usize) -> String {
+        "lorem ipsum dolor sit amet ".repeat(target_chars / 27 + 1)
+    }
+
+    #[test]
+    fn reminder_over_threshold_estimate_exceeds_2000() {
+        // ~12,000 chars / 4 chars-per-token ≈ 3000 tokens (well over threshold)
+        let huge = long_section(12_000);
+
+        let preview_ctx = crate::prompts::PromptContext::new().with_wgenty_md(vec![huge]);
+
+        let reminder = crate::prompts::build_user_turn_reminder(&preview_ctx, &[])
+            .expect("Some — section present");
+        let estimated = crate::utils::estimate_tokens(&reminder.to_model);
+
+        assert!(
+            estimated > 2000,
+            "synthetic huge section should exceed 2000 token threshold, got {}",
+            estimated
+        );
+    }
+
+    #[test]
+    fn reminder_under_threshold_estimate_stays_quiet() {
+        // Small section: well under threshold
+        let tiny = "Short project rule.".to_string();
+        let preview_ctx = crate::prompts::PromptContext::new().with_wgenty_md(vec![tiny]);
+
+        let reminder = crate::prompts::build_user_turn_reminder(&preview_ctx, &[])
+            .expect("Some");
+        let estimated = crate::utils::estimate_tokens(&reminder.to_model);
+
+        assert!(
+            estimated < 2000,
+            "tiny section should not exceed threshold; got {}",
+            estimated
+        );
     }
 }
 
