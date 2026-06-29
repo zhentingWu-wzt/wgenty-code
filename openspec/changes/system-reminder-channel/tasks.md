@@ -18,9 +18,9 @@
 
 ## 3. 请求构造层接入
 
-- [ ] 3.1 查找 `src/tui/agent/` 下构造发送给模型的 user message 的位置（预计在 stream.rs 或 mod.rs 的请求装配处），把 reminder 注入路径插入：构造 user content 字符串时先拼 reminder，再拼原始 prompt
-- [ ] 3.2 把 `tui/app/input.rs:181` 的 `tokio::spawn(async move { hm.fire(...) })` 改为 `await` 同步执行，并把 outcomes 通过 PendingInput 或等价通道传给请求构造层
-- [ ] 3.3 在请求构造路径调用 `collect_injections(&outcomes)` 提取 `InjectedFragment`，传给 `build_user_turn_reminder`
+- [x] 3.1 查找 `src/tui/agent/` 下构造发送给模型的 user message 的位置（预计在 stream.rs 或 mod.rs 的请求装配处），把 reminder 注入路径插入：构造 user content 字符串时先拼 reminder，再拼原始 prompt
+- [x] 3.2 把 `tui/app/input.rs:181` 的 `tokio::spawn(async move { hm.fire(...) })` 改为 `await` 同步执行，并把 outcomes 通过 PendingInput 或等价通道传给请求构造层
+- [x] 3.3 在请求构造路径调用 `collect_injections(&outcomes)` 提取 `InjectedFragment`，传给 `build_user_turn_reminder`
 - [ ] 3.4 集成测：模拟 user 输入，断言第一轮 user message content 头部包含 `<system-reminder>` 块
 - [ ] 3.5 集成测：连续两轮 user 输入，第二轮 user message 再次包含 reminder（per-turn 验证）
 

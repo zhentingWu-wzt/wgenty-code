@@ -1031,11 +1031,11 @@ git commit -m "test(prompts): cover build_user_turn_reminder rendering and visib
 
 > 注：此 task 暂以"空 hook outcomes"接入，hook fire 改造在 Task 3.2 完成；这种渐进式让本 task 独立通过 cargo check + 单测。
 
-- [ ] **Step 1: 在 `AgentLoop`（`src/tui/agent/mod.rs`）的字段中确认是否已携带 `PromptContext`。若没有，从已传入字段（如 `prompt_context: PromptContext`）读取；若 AgentLoop 不持有，先看其构造点 `src/tui/app/turn.rs` 是否传 ctx——必要时把 `prompt_context` 加进 `AgentLoop` 字段。**
+- [x] **Step 1: 在 `AgentLoop`（`src/tui/agent/mod.rs`）的字段中确认是否已携带 `PromptContext`。若没有，从已传入字段（如 `prompt_context: PromptContext`）读取；若 AgentLoop 不持有，先看其构造点 `src/tui/app/turn.rs` 是否传 ctx——必要时把 `prompt_context` 加进 `AgentLoop` 字段。**
 
 阅读 `src/tui/app/turn.rs::spawn_agent_turn`（grep `AgentLoop::new` 找到构造）确认传参。最小侵入做法：把已聚合好的 `Arc<PromptContext>` 在构造时塞入。
 
-- [ ] **Step 2: 修改 `process_input_inner`：**
+- [x] **Step 2: 修改 `process_input_inner`：**
 
 ```rust
 async fn process_input_inner(&mut self, input: String) -> Result<(), String> {
@@ -1078,15 +1078,15 @@ async fn process_input_inner(&mut self, input: String) -> Result<(), String> {
 
 > 若 `AgentLoop` 没有 `push_system_message` 等价方法，复用现有把 system message 投递到 TUI transcript 的现有 API（grep `push_system_message` / `ui_tx.send` 找到）。
 
-- [ ] **Step 3: `cargo check` 修编译错（缺字段、缺 use 等）。**
+- [x] **Step 3: `cargo check` 修编译错（缺字段、缺 use 等）。**
 
-- [ ] **Step 4: 运行已有单测确认未破坏**
+- [x] **Step 4: 运行已有单测确认未破坏**
 
 ```bash
 cargo test -p wgenty-code --lib
 ```
 
-- [ ] **Step 5: 暂不 commit；与 3.2、3.3 合并。**
+- [x] **Step 5: 暂不 commit；与 3.2、3.3 合并。**
 
 ---
 
@@ -1100,11 +1100,11 @@ cargo test -p wgenty-code --lib
 - Modify: `src/tui/app/input.rs`（约 161-189 行删除 `tokio::spawn(... fire ...)`）
 - Modify: `src/tui/agent/mod.rs`（在 `process_input_inner` 内 fire + await）
 
-- [ ] **Step 1: 在 `src/tui/app/input.rs` 删除 161-189 行 fire-and-forget UserPromptSubmit 整块（保留前后的 `/help` 处理与 slash 路由）。其它 hook 事件（如 SlashCommand）的 fire-and-forget 不动。**
+- [x] **Step 1: 在 `src/tui/app/input.rs` 删除 161-189 行 fire-and-forget UserPromptSubmit 整块（保留前后的 `/help` 处理与 slash 路由）。其它 hook 事件（如 SlashCommand）的 fire-and-forget 不动。**
 
-- [ ] **Step 2: 在 `AgentLoop` 字段中确认/添加 `hook_manager: Arc<HookManager>` 与 `session_id: String`（如已存在，跳过）。**
+- [x] **Step 2: 在 `AgentLoop` 字段中确认/添加 `hook_manager: Arc<HookManager>` 与 `session_id: String`（如已存在，跳过）。**
 
-- [ ] **Step 3: 修改 `process_input_inner` 第 1 步为：**
+- [x] **Step 3: 修改 `process_input_inner` 第 1 步为：**
 
 ```rust
 // 1a. Fire UserPromptSubmit hook (await, 10s timeout)
@@ -1148,9 +1148,9 @@ let injections = crate::runtime::hooks::collect_injections(&outcomes);
 
 替换 Task 3.1 中 `let injections: Vec<_> = Vec::new();` 一行。
 
-- [ ] **Step 4: `cargo check`，修编译错。**
+- [x] **Step 4: `cargo check`，修编译错。**
 
-- [ ] **Step 5: 运行**
+- [x] **Step 5: 运行**
 
 ```bash
 cargo test -p wgenty-code --lib
@@ -1158,7 +1158,7 @@ cargo test -p wgenty-code --lib
 
 期望全 PASS。
 
-- [ ] **Step 6: 不 commit，进入 3.3。**
+- [x] **Step 6: 不 commit，进入 3.3。**
 
 ---
 
@@ -1169,7 +1169,7 @@ cargo test -p wgenty-code --lib
 
 > Task 3.2 已完成此项接入（步骤 3 的 `collect_injections(&outcomes)`）。本 task 仅做形式收敛与 commit。
 
-- [ ] **Step 1: grep 确认调用链：**
+- [x] **Step 1: grep 确认调用链：**
 
 ```bash
 grep -n "collect_injections" src/tui/agent/mod.rs
@@ -1177,7 +1177,7 @@ grep -n "collect_injections" src/tui/agent/mod.rs
 
 应有 1 处。
 
-- [ ] **Step 2: Commit（合并 3.1+3.2+3.3）**
+- [x] **Step 2: Commit（合并 3.1+3.2+3.3）**
 
 ```bash
 git add src/tui/agent/mod.rs src/tui/app/input.rs
