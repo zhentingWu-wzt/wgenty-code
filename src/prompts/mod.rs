@@ -5,7 +5,12 @@
 //!   2. permissions         — sandbox mode + approval policy (dynamic)
 //!   3. developer           — user-custom instructions (from Settings)
 //!   4. environment         — cwd, shell, date, timezone
-//!   5. agents_md           — repo-level AGENTS.md conventions
+//!
+//! Note: AGENTS.md and WGENTY.md (both user and project-level) are
+//! delivered via the per-turn <system-reminder> channel built by
+//! `build_user_turn_reminder`, NOT via this system prompt cascade.
+//! `PromptContext::wgenty_md_sections` and `agents_md_sections` are
+//! still populated for the reminder builder to consume.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -351,23 +356,10 @@ The following skills are available. Use the `load_skill` tool to read a skill's 
         )));
     }
 
-    // ── Layer 7: AGENTS.md Convention ───────────────────────────────────
-    if !context.agents_md_sections.is_empty() {
-        let agents_text = context.agents_md_sections.join("\n\n");
-        system_messages.push(ChatMessage::system(format!(
-            "# AGENTS.md\n\n{}",
-            agents_text
-        )));
-    }
-
-    // ── Layer 8: WGENTY.md 项目事实 ──────────────────────────────────
-    if !context.wgenty_md_sections.is_empty() {
-        let wgenty_text = context.wgenty_md_sections.join("\n\n");
-        system_messages.push(ChatMessage::system(format!(
-            "# WGENTY.md — 项目规则与约定\n\n{}",
-            wgenty_text
-        )));
-    }
+    // ── Layer 7/8 removed: AGENTS.md and WGENTY.md are now delivered via
+    // the per-turn <system-reminder> channel (see `build_user_turn_reminder`).
+    // PromptContext::{agents_md_sections, wgenty_md_sections} remain populated
+    // for the reminder builder to consume.
 
     AssembledInstructions { system_messages }
 }
@@ -503,6 +495,48 @@ mod tests {
                 .is_some_and(|c| c.contains("<permissions_instructions>"))
         });
         assert!(!has_permissions);
+    }
+
+    // ============================================================
+    // U9 (Task 4.4) — Hard-cut verification: Layer 7/8 removed
+    // ============================================================
+    #[test]
+    fn assemble_instructions_no_layer_7_8() {
+        // After the system-reminder-channel hard-cut, AGENTS.md and WGENTY.md
+        // sections must NOT appear as system messages — they go through the
+        // <system-reminder> channel instead.
+        let settings = Settings::default();
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_wgenty_md(vec!["wgenty body".into()])
+            .with_agents_md(vec!["agents body".into()]);
+
+        let instructions = assemble_instructions(&settings, &ctx);
+
+        for msg in &instructions.system_messages {
+            let content = msg.content.as_deref().unwrap_or_default();
+            // Match the EXACT Layer 7 header format: "# AGENTS.md\n\n<body>".
+            // Plain substring "# AGENTS.md" would false-positive on base.md's
+            // "## AGENTS.md and repository conventions" heading.
+            assert!(
+                !content.contains("# AGENTS.md\n\n"),
+                "AGENTS.md Layer 7 header should NOT appear in system messages after hard-cut"
+            );
+            assert!(
+                !content.contains("# WGENTY.md — 项目规则与约定"),
+                "WGENTY.md section header should NOT appear in system messages"
+            );
+            // Bonus: actual content strings should also be absent (the data exits via reminder, not here)
+            assert!(
+                !content.contains("wgenty body"),
+                "wgenty body content should NOT be pushed to system messages"
+            );
+            assert!(
+                !content.contains("agents body"),
+                "agents body content should NOT be pushed to system messages"
+            );
+        }
     }
 }
 
