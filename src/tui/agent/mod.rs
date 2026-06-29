@@ -47,6 +47,8 @@ pub struct AgentLoop {
     pub(super) session_id: String,
     /// Hook manager shared with the App for lifecycle event hooks.
     pub(super) hook_manager: std::sync::Arc<HookManager>,
+    /// Prompt context for building per-turn `<system-reminder>` blocks.
+    pub(super) prompt_context: std::sync::Arc<crate::prompts::PromptContext>,
 }
 
 impl AgentLoop {
@@ -62,6 +64,7 @@ impl AgentLoop {
         max_rounds: usize,
         token_counter: crate::api::token_counter::TokenCounter,
         hook_manager: std::sync::Arc<HookManager>,
+        prompt_context: std::sync::Arc<crate::prompts::PromptContext>,
     ) -> Self {
         Self {
             client,
@@ -78,6 +81,7 @@ impl AgentLoop {
             plan_mode,
             planner_client,
             hook_manager,
+            prompt_context,
         }
     }
 
@@ -121,13 +125,71 @@ impl AgentLoop {
     async fn process_input_inner(&mut self, input: String) -> Result<(), String> {
         self.inject_background_results().await;
 
+        // 1a. Fire UserPromptSubmit hook synchronously with a 10s timeout.
+        //     On timeout the turn continues with empty outcomes (graceful degradation).
+        let outcomes = {
+            let hook_ctx = crate::runtime::hooks::HookContext {
+                event: "UserPromptSubmit".to_string(),
+                tool_name: None,
+                tool_input: Some(serde_json::Value::String(input.clone())),
+                tool_result: None,
+                session_id: Some(self.session_id.clone()),
+                working_directory: std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                comet_phase: None,
+                workflow_state: None,
+                variables: Default::default(),
+            };
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                self.hook_manager.fire(
+                    &crate::runtime::hooks::HookEvent::UserPromptSubmit,
+                    &hook_ctx,
+                    None,
+                    None,
+                ),
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(_) => {
+                    tracing::warn!(
+                        "UserPromptSubmit hook timed out after 10s; proceeding with empty outcomes"
+                    );
+                    Vec::new()
+                }
+            }
+        };
+
+        // 1b. Collect injected fragments from hook outcomes.
+        let injections = crate::runtime::hooks::collect_injections(&outcomes);
+
+        // 2. Build per-turn `<system-reminder>` block from file sources + hook injections.
+        let reminder = crate::prompts::build_user_turn_reminder(
+            self.prompt_context.as_ref(),
+            &injections,
+        );
+
+        // 3. Assemble user message content: reminder (if any) prepended to user input.
+        let user_content = match &reminder {
+            Some(r) => format!("{}\n\n{}", r.to_model, input),
+            None => input.clone(),
+        };
+
+        // 4. Push to history with token estimate.
         {
             let mut history = self.conversation_history.lock().await;
-            // Estimate per-turn input tokens before pushing user message
-            let input_tokens = input.len() / 4;
+            let input_tokens = user_content.len() / 4;
             self.token_counter.add_input(input_tokens);
-            history.push(ChatMessage::user(&input));
+            history.push(ChatMessage::user(&user_content));
         }
+
+        // TODO(§4+): deliver reminder.to_transcript via a new AppEvent::SystemNotice
+        // channel so the TUI shows the user-visible portion. The model already sees
+        // the full reminder via to_model; visibility filtering already works for the
+        // model-facing path.
 
         self.run_agent_loop().await
     }

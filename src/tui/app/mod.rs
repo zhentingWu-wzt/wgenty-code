@@ -135,6 +135,8 @@ pub struct App {
     pub external_skill_registry: Option<std::sync::Arc<crate::knowledge::ExternalSkillRegistry>>,
     /// Hook manager for lifecycle event hooks (SessionStart, Stop, etc.).
     pub hook_manager: std::sync::Arc<HookManager>,
+    /// Prompt context shared with each AgentLoop for per-turn reminder construction.
+    pub prompt_context: std::sync::Arc<PromptContext>,
     /// Command router for slash command dispatch (replaces Comet-specific routing).
     pub command_router: Option<CommandRouter>,
     /// Interaction service for runtime user interaction (ask, confirm).
@@ -305,7 +307,8 @@ impl App {
 
         let mut prompt_ctx = prompt_ctx
             .with_wgenty_md(wgenty_sections)
-            .with_agents_md(agents_sections);
+            .with_agents_md(agents_sections)
+            .with_project_root(project_root.clone());
 
         // Inject context assembler from workflow config (Generic Agent Runtime)
         if let Some(assembler) = context_assembler.clone() {
@@ -315,6 +318,9 @@ impl App {
         let assembled = prompts::assemble_instructions(&settings, &prompt_ctx);
         let system_messages = assembled.system_messages;
         let conversation_history = Arc::new(TokioMutex::new(system_messages.clone()));
+        // Share the prompt context with each AgentLoop so per-turn reminders
+        // can re-read file sources (WGENTY.md, AGENTS.md, project_root, …).
+        let prompt_context = Arc::new(prompt_ctx);
 
         // Initialize hook manager from settings
         let hook_manager = {
@@ -424,6 +430,7 @@ impl App {
             },
             external_skill_registry: external_skill_registry.map(std::sync::Arc::new),
             hook_manager,
+            prompt_context,
             command_router: Some(command_router),
             interaction_service,
             workflow_state,
