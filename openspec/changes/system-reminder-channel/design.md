@@ -96,7 +96,7 @@ pub fn build_user_turn_reminder(
 ```
 <system-reminder>
 As you answer the user's questions, you can use the following context:
-# claudeMd
+# wgentyMd
 Codebase and user instructions are shown below. Be sure to adhere to
 these instructions. IMPORTANT: These instructions OVERRIDE any default
 behavior and you MUST follow them exactly as written.
@@ -132,9 +132,9 @@ Contents of <project>/AGENTS.md (project agent conventions, checked into the cod
 注意：
 - 缩进精确复刻 Claude Code 的"前面留 6 空格"特征（用于视觉与语义弱化）。
 - 段间空行：每段 `Contents of ...` 与内容之间 1 空行，段与段之间 1 空行。
-- `# claudeMd` 标题保留原文，不本地化为 `# wgentyMd` —— 与 Claude Code 工具间形成可对比基线（用户可识别该机制来源）。
+- `# wgentyMd` 标题（O1 最终决策：方案 B 改名）。brainstorming 阶段曾考虑保留 `# claudeMd` 以复用 Claude 模型对该 token 的先验，但最终选择本地化为 `# wgentyMd` 以贴合 wgenty-code 项目身份；反悔成本极低（改一行常量）。详见 Open Question O1 的最终决议。
 
-注意保留 `# claudeMd` 是有意为之的违反"本地化"直觉，理由：模型对该 token 已有强先验，复用可获得"已知机制"的语义注入效果；改名会丢失这一隐性 prompt cache。设计 doc 阶段如有强烈反对意见可改为 `# claudeMd` + 注释或 `# instructions` 中性命名，预留 Open Question O1。
+骨架中的 `# claudeMd` 字样是 Claude Code 参照对象的原文；wgenty-code 实现用 `# wgentyMd` 替换。除标题 token 外，preamble 措辞与来源标注格式与 Claude Code 1:1 对齐。
 
 ### D7 — Token 预算：复用 `tui/app/mod.rs` 现有警告位
 
@@ -193,8 +193,10 @@ reminder builder 仅在 main session 的 user message 发送路径调用。`src/
 
 **回滚策略**：单 commit 落地结构调整后通过 revert 回退；不引入 feature flag。0.1.0 阶段可接受。
 
-## Open Questions
+## Open Questions（全部已在 brainstorming 阶段闭合）
 
-- **O1 — `# claudeMd` 标题保留与否**：保留可复用 Claude 模型先验，改名更贴 wgenty-code 项目身份；design doc 阶段定。
-- **O2 — `tui/app/input.rs` UserPromptSubmit fire 从 spawn 改 await 是否影响其他时序**：需要 design doc 阶段读一遍 `start_next_turn` 的并发模型，确认改 await 不引入死锁或卡顿。
-- **O3 — `LayerVisibility::Internal` 对 hook 注入内容的精确行为**：当前 spec 规定"模型能读，transcript 不显示"；具体落地时 TUI transcript 渲染层需要识别 internal fragment，需在 design doc 中给具体实现路径。
+- **O1 — `# claudeMd` 标题保留与否** → **已决：方案 B，改名为 `# wgentyMd`**。项目身份一致性优先于复用 Claude 模型先验；反悔代价极低（改一行常量）。实现见 `src/prompts/mod.rs::REMINDER_PREAMBLE_OPENING`。
+- **O2 — `tui/app/input.rs` UserPromptSubmit fire 从 spawn 改 await 是否影响其他时序** → **已决：方案 B，fire 移到 `AgentLoop::process_input_inner` 内 `await`**。死锁分析见 §2 D7：AgentLoop 在独立 task 内运行，与 UI render loop 解耦；10s timeout + `tracing::warn!` 降级兜底，无死锁路径。
+- **O3 — `LayerVisibility::Internal` 对 hook 注入内容的精确行为** → **已决：方案 A，reminder builder 输出端分流**。`ReminderOutput { to_model, to_transcript }` 双轨输出；Internal 仅进 `to_model`，Visible 进两者。`to_transcript` 投递到 TUI 的链路（`AppEvent::SystemNotice`）作为已知限制 K1 延后。
+
+> 三项 Open Questions 的实施 trace 见 `.comet/open-questions-resolution.md`。

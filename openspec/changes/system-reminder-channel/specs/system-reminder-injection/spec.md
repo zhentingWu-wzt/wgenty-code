@@ -106,7 +106,7 @@ The reminder block SHALL open with a high-priority preamble and close with a rel
 
 #### Scenario: Opening preamble present
 - **WHEN** the reminder block is non-empty
-- **THEN** immediately after the opening `<system-reminder>` tag and before any source section, the block SHALL contain a preamble line stating: `As you answer the user's questions, you can use the following context:` followed by a `# claudeMd`-equivalent header and the statement `Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.`
+- **THEN** immediately after the opening `<system-reminder>` tag and before any source section, the block SHALL contain a preamble line stating: `As you answer the user's questions, you can use the following context:` followed by a `# wgentyMd` header and the statement `Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.`
 
 #### Scenario: Closing preamble present
 - **WHEN** the reminder block is non-empty
@@ -115,6 +115,7 @@ The reminder block SHALL open with a high-priority preamble and close with a rel
 #### Scenario: Preambles align with Claude Code wording 1:1
 - **WHEN** the reminder block is rendered
 - **THEN** the wording of both preambles SHALL match Claude Code's reference text exactly (no paraphrasing, no localization of the English preamble strings)
+- **AND** the header token SHALL be `# wgentyMd` (localized from Claude Code's `# claudeMd` per design decision O1; all other preamble wording remains verbatim from Claude Code)
 
 ---
 
