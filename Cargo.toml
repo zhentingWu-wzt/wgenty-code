@@ -126,6 +126,7 @@ tempfile = "3.10"
 mockall = "0.12"
 wasm-bindgen-test = "0.3"
 serde_yaml = "0.9"
+serial_test = "3"
 
 [features]
 default = ["gui-egui", "i18n", "daemon", "bundled-skills"]

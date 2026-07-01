@@ -157,36 +157,10 @@ impl App {
             return;
         }
 
-        // Fire UserPromptSubmit hook asynchronously (after built-in checks,
-        // before slash routing and normal input processing).
-        {
-            let hm = self.hook_manager.clone();
-            let input_text = text.clone();
-            let sid = self.session_id.clone();
-            tokio::spawn(async move {
-                let ctx = crate::runtime::hooks::HookContext {
-                    event: "UserPromptSubmit".to_string(),
-                    tool_name: None,
-                    tool_input: Some(serde_json::Value::String(input_text)),
-                    tool_result: None,
-                    session_id: Some(sid),
-                    working_directory: std::env::current_dir()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_default(),
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    comet_phase: None,
-                    workflow_state: None,
-                    variables: Default::default(),
-                };
-                hm.fire(
-                    &crate::runtime::hooks::HookEvent::UserPromptSubmit,
-                    &ctx,
-                    None,
-                    None,
-                )
-                .await;
-            });
-        }
+        // NOTE: UserPromptSubmit hook is now fired inside AgentLoop::process_input_inner
+        // (await + 10s timeout), so injected fragments can flow into the per-turn
+        // <system-reminder> block. The previous fire-and-forget tokio::spawn was
+        // removed in §3 of the system-reminder-channel change.
 
         // Route unrecognized slash commands via CommandRouter.
         // This catches workflow invocations like /comet or /verify

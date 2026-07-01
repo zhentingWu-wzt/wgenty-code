@@ -135,6 +135,8 @@ pub struct App {
     pub external_skill_registry: Option<std::sync::Arc<crate::knowledge::ExternalSkillRegistry>>,
     /// Hook manager for lifecycle event hooks (SessionStart, Stop, etc.).
     pub hook_manager: std::sync::Arc<HookManager>,
+    /// Prompt context shared with each AgentLoop for per-turn reminder construction.
+    pub prompt_context: std::sync::Arc<PromptContext>,
     /// Command router for slash command dispatch (replaces Comet-specific routing).
     pub command_router: Option<CommandRouter>,
     /// Interaction service for runtime user interaction (ask, confirm).
@@ -280,32 +282,46 @@ impl App {
         let wgenty_sections = crate::utils::project::read_wgenty_md_sections(&project_root);
         let agents_sections = crate::utils::project::read_agents_md_sections(&project_root);
 
-        // Warn if WGENTY.md + AGENTS.md exceed token budget (fires once per session)
-        let wgenty_tokens: usize = wgenty_sections
-            .iter()
-            .map(|s| crate::utils::estimate_tokens(s))
-            .sum();
-        let agents_tokens: usize = agents_sections
-            .iter()
-            .map(|s| crate::utils::estimate_tokens(s))
-            .sum();
-        let total_md_tokens = wgenty_tokens + agents_tokens;
-        if total_md_tokens > 2000 {
+        // Warn if the per-turn <system-reminder> block exceeds the token budget.
+        // Estimated once at session startup using a preview PromptContext (preamble
+        // + 4 file sources). Hook injections are dynamic per-turn and not counted.
+        // Fires at most once per session (effectively, because session_init is
+        // called once).
+        let reminder_token_estimate = {
+            let preview_ctx = crate::prompts::PromptContext::new()
+                .with_wgenty_md(wgenty_sections.clone())
+                .with_agents_md(agents_sections.clone())
+                .with_project_root(project_root.clone());
+            match crate::prompts::build_user_turn_reminder(&preview_ctx, &[]) {
+                Some(out) => crate::utils::estimate_tokens(&out.to_model),
+                None => 0,
+            }
+        };
+        // In addition to the dev-facing `tracing::warn!` below, capture a
+        // user-visible notice string here. It is pushed onto `committed_messages`
+        // after `Self` is built (the App state does not exist yet at this point
+        // in `App::new`), so the spec scenario "emit exactly one warning to the
+        // TUI status area" is satisfied on the very first render.
+        let token_budget_notice: Option<String> = if reminder_token_estimate > 2000 {
             tracing::warn!(
-                wgenty_tokens,
-                agents_tokens,
-                total = total_md_tokens,
-                "WGENTY.md + AGENTS.md sections estimate ~{} tokens ({} + {}). \
-                 Consider trimming to keep session startup lean.",
-                total_md_tokens,
-                wgenty_tokens,
-                agents_tokens,
+                reminder_tokens = reminder_token_estimate,
+                "<system-reminder> block estimate ~{} tokens. \
+                 Consider trimming WGENTY.md / AGENTS.md / ~/.wgenty-code/ files to keep per-turn input lean.",
+                reminder_token_estimate,
             );
-        }
+            Some(format!(
+                "⚠ <system-reminder> block is large (~{} tokens). Consider trimming \
+                 WGENTY.md / AGENTS.md / ~/.wgenty-code/ files to keep per-turn input lean.",
+                reminder_token_estimate
+            ))
+        } else {
+            None
+        };
 
         let mut prompt_ctx = prompt_ctx
             .with_wgenty_md(wgenty_sections)
-            .with_agents_md(agents_sections);
+            .with_agents_md(agents_sections)
+            .with_project_root(project_root.clone());
 
         // Inject context assembler from workflow config (Generic Agent Runtime)
         if let Some(assembler) = context_assembler.clone() {
@@ -315,6 +331,9 @@ impl App {
         let assembled = prompts::assemble_instructions(&settings, &prompt_ctx);
         let system_messages = assembled.system_messages;
         let conversation_history = Arc::new(TokioMutex::new(system_messages.clone()));
+        // Share the prompt context with each AgentLoop so per-turn reminders
+        // can re-read file sources (WGENTY.md, AGENTS.md, project_root, …).
+        let prompt_context = Arc::new(prompt_ctx);
 
         // Initialize hook manager from settings
         let hook_manager = {
@@ -351,7 +370,7 @@ impl App {
             });
         }
 
-        Self {
+        let mut app = Self {
             daemon_client,
             input_box: InputBox::new(),
             committed_messages: Vec::new(),
@@ -424,10 +443,28 @@ impl App {
             },
             external_skill_registry: external_skill_registry.map(std::sync::Arc::new),
             hook_manager,
+            prompt_context,
             command_router: Some(command_router),
             interaction_service,
             workflow_state,
+        };
+        // Push the startup token-budget warning (if any) as a user-visible
+        // system message. Mirrors how `AppEvent::StreamError` / "Settings
+        // reloaded" surface notices via `committed_messages`.
+        if let Some(notice) = token_budget_notice {
+            app.committed_messages.push(UIMessage {
+                role: MessageRole::System,
+                content: notice,
+                tool_name: None,
+                content_collapsed: false,
+                tool_collapsed: true,
+                tool_running: false,
+                tool_args: None,
+                diff_data: None,
+                tool_metadata: None,
+            });
         }
+        app
     }
 
     pub fn event_sender(&self) -> mpsc::UnboundedSender<AppEvent> {
@@ -547,6 +584,73 @@ mod tests {
         let yaml = "entry_commands:\n  -   comet  \n  -  comet-open \n";
         let result = parse_yaml_list(yaml, "entry_commands:");
         assert_eq!(result, vec!["comet", "comet-open"]);
+    }
+}
+
+#[cfg(test)]
+mod token_budget_tests {
+    use std::path::Path;
+
+    /// Synthesize a long string that pushes the reminder past 2000-token threshold.
+    fn long_section(target_chars: usize) -> String {
+        "lorem ipsum dolor sit amet ".repeat(target_chars / 27 + 1)
+    }
+
+    /// Scope a fake `$HOME` so reminder readers don't pick up the developer's
+    /// real `~/.wgenty-code/` files (which would skew the estimate and could
+    /// cause flaky failures in the under-threshold test).
+    fn with_fake_home<F: FnOnce() -> R, R>(home: &Path, f: F) -> R {
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", home);
+        let result = f();
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        result
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn reminder_over_threshold_estimate_exceeds_2000() {
+        // ~12,000 chars / 4 chars-per-token ≈ 3000 tokens (well over threshold).
+        let tmp = tempfile::TempDir::new().unwrap();
+        let huge = long_section(12_000);
+
+        let preview_ctx = crate::prompts::PromptContext::new().with_wgenty_md(vec![huge]);
+
+        let estimated = with_fake_home(tmp.path(), || {
+            let reminder = crate::prompts::build_user_turn_reminder(&preview_ctx, &[])
+                .expect("Some — section present");
+            crate::utils::estimate_tokens(&reminder.to_model)
+        });
+
+        assert!(
+            estimated > 2000,
+            "synthetic huge section should exceed 2000 token threshold, got {}",
+            estimated
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn reminder_under_threshold_estimate_stays_quiet() {
+        // Small section in an isolated $HOME → estimate must stay well under threshold.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tiny = "Short project rule.".to_string();
+        let preview_ctx = crate::prompts::PromptContext::new().with_wgenty_md(vec![tiny]);
+
+        let estimated = with_fake_home(tmp.path(), || {
+            let reminder =
+                crate::prompts::build_user_turn_reminder(&preview_ctx, &[]).expect("Some");
+            crate::utils::estimate_tokens(&reminder.to_model)
+        });
+
+        assert!(
+            estimated < 2000,
+            "tiny section should not exceed threshold; got {}",
+            estimated
+        );
     }
 }
 

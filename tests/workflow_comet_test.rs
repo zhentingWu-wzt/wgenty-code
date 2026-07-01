@@ -149,9 +149,9 @@ fn test_hooks_configured_for_all_guard_events() {
     // PreToolUse must have a phase guard script action
     let has_phase_guard = hooks.pre_tool_use.iter().any(|a| {
         a.action == "run_script"
-            && a.script.as_deref().map_or(false, |s| {
-                s.contains("comet-guard") || s.contains("comet-hook-guard")
-            })
+            && a.script
+                .as_deref()
+                .is_some_and(|s| s.contains("comet-guard") || s.contains("comet-hook-guard"))
     });
     assert!(
         has_phase_guard,
