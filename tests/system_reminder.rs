@@ -131,7 +131,7 @@ fn reminder_reflects_runtime_file_change() {
 
 use wgenty_code::runtime::hooks::{
     collect_injections, ContextSource, HookAction, HookContext, HookDefinition, HookEvent,
-    HookManager, LayerVisibility,
+    HookManager, HookOutcome, LayerVisibility,
 };
 
 /// I5.3 — hook injection flows through to reminder.to_model.
@@ -339,5 +339,121 @@ async fn hook_only_yields_wrapped_reminder() {
             .to_model
             .contains("project agent conventions, checked into the codebase"),
         "no project-AGENTS attribution header should appear (no sections set)"
+    );
+}
+
+/// I5.5 — a hook that blocks the turn (`continue_execution: false`) still has
+/// its `injected_content` collected for the next user turn.
+///
+/// The turn-blocking itself is pre-existing hook semantics outside this
+/// change's scope; this test verifies the INJECTION PERSISTENCE part, which
+/// `collect_injections` owns. `collect_injections` filters only on
+/// `injected_content` being `None`/empty — it does NOT consult
+/// `continue_execution` — so a blocking hook's context still produces an
+/// `InjectedFragment`.
+///
+/// Constructs a `HookOutcome` directly (no `HookManager::fire` needed, no
+/// `$HOME` access), so `#[serial]` is unnecessary.
+#[test]
+fn hook_with_continue_execution_false_still_injects() {
+    let outcome = HookOutcome {
+        def: HookDefinition {
+            event: HookEvent::UserPromptSubmit,
+            matcher: None,
+            when_state: None,
+            actions: vec![],
+        },
+        continue_execution: false,
+        reason: Some("blocked by guard".into()),
+        injected_content: Some("blocked context".into()),
+        user_answer: None,
+        injection_priority: Some(50),
+        injection_visibility: Some(LayerVisibility::Visible),
+    };
+
+    let injections = collect_injections(&[outcome]);
+
+    assert_eq!(
+        injections.len(),
+        1,
+        "continue_execution=false must NOT suppress injection collection"
+    );
+    assert_eq!(injections[0].content, "blocked context");
+    assert_eq!(injections[0].priority, 50);
+}
+
+/// I5.6 — two hooks with identical priority preserve declaration order.
+///
+/// Per spec scenario "Two hooks with identical priorities": when two hooks
+/// both inject with `priority: 5` and hook A is declared before hook B in
+/// settings.json, hook A's content renders before hook B's.
+/// `collect_injections` uses a stable sort (`sort_by_key`), so ties preserve
+/// the input (declaration) order. `register_workflow_hooks` preserves Vec
+/// order into the per-event hook list, and `fire()` iterates that list in
+/// order, so declaration order flows end-to-end through to the reminder.
+#[tokio::test]
+#[serial_test::serial]
+async fn two_hooks_identical_priority_preserve_declaration_order() {
+    let mut hm = HookManager::default();
+    hm.register_workflow_hooks(vec![
+        HookDefinition {
+            event: HookEvent::UserPromptSubmit,
+            matcher: None,
+            when_state: None,
+            actions: vec![HookAction::InjectContext {
+                source: ContextSource::Inline("FIRST_DECLARED".into()),
+                priority: 5,
+                visibility: LayerVisibility::Visible,
+            }],
+        },
+        HookDefinition {
+            event: HookEvent::UserPromptSubmit,
+            matcher: None,
+            when_state: None,
+            actions: vec![HookAction::InjectContext {
+                source: ContextSource::Inline("SECOND_DECLARED".into()),
+                priority: 5,
+                visibility: LayerVisibility::Visible,
+            }],
+        },
+    ]);
+
+    let hook_ctx = HookContext {
+        event: "UserPromptSubmit".into(),
+        tool_name: None,
+        tool_input: None,
+        tool_result: None,
+        session_id: None,
+        working_directory: String::new(),
+        timestamp: String::new(),
+        comet_phase: None,
+        workflow_state: None,
+        variables: Default::default(),
+    };
+
+    let outcomes = hm
+        .fire(&HookEvent::UserPromptSubmit, &hook_ctx, None, None)
+        .await;
+    let injections = collect_injections(&outcomes);
+
+    let tmp = TempDir::new().unwrap();
+    let ctx = PromptContext::new();
+    let reminder = with_fake_home(tmp.path(), || build_user_turn_reminder(&ctx, &injections))
+        .expect("hook injections → reminder Some");
+
+    let pos_first = reminder
+        .to_model
+        .find("FIRST_DECLARED")
+        .expect("FIRST_DECLARED present");
+    let pos_second = reminder
+        .to_model
+        .find("SECOND_DECLARED")
+        .expect("SECOND_DECLARED present");
+    assert!(
+        pos_first < pos_second,
+        "ties (priority 5) must preserve declaration order: FIRST_DECLARED should render \
+         before SECOND_DECLARED; got first={}, second={}",
+        pos_first,
+        pos_second
     );
 }

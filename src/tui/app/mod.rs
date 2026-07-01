@@ -297,14 +297,26 @@ impl App {
                 None => 0,
             }
         };
-        if reminder_token_estimate > 2000 {
+        // In addition to the dev-facing `tracing::warn!` below, capture a
+        // user-visible notice string here. It is pushed onto `committed_messages`
+        // after `Self` is built (the App state does not exist yet at this point
+        // in `App::new`), so the spec scenario "emit exactly one warning to the
+        // TUI status area" is satisfied on the very first render.
+        let token_budget_notice: Option<String> = if reminder_token_estimate > 2000 {
             tracing::warn!(
                 reminder_tokens = reminder_token_estimate,
                 "<system-reminder> block estimate ~{} tokens. \
                  Consider trimming WGENTY.md / AGENTS.md / ~/.wgenty-code/ files to keep per-turn input lean.",
                 reminder_token_estimate,
             );
-        }
+            Some(format!(
+                "⚠ <system-reminder> block is large (~{} tokens). Consider trimming \
+                 WGENTY.md / AGENTS.md / ~/.wgenty-code/ files to keep per-turn input lean.",
+                reminder_token_estimate
+            ))
+        } else {
+            None
+        };
 
         let mut prompt_ctx = prompt_ctx
             .with_wgenty_md(wgenty_sections)
@@ -358,7 +370,7 @@ impl App {
             });
         }
 
-        Self {
+        let mut app = Self {
             daemon_client,
             input_box: InputBox::new(),
             committed_messages: Vec::new(),
@@ -435,7 +447,24 @@ impl App {
             command_router: Some(command_router),
             interaction_service,
             workflow_state,
+        };
+        // Push the startup token-budget warning (if any) as a user-visible
+        // system message. Mirrors how `AppEvent::StreamError` / "Settings
+        // reloaded" surface notices via `committed_messages`.
+        if let Some(notice) = token_budget_notice {
+            app.committed_messages.push(UIMessage {
+                role: MessageRole::System,
+                content: notice,
+                tool_name: None,
+                content_collapsed: false,
+                tool_collapsed: true,
+                tool_running: false,
+                tool_args: None,
+                diff_data: None,
+                tool_metadata: None,
+            });
         }
+        app
     }
 
     pub fn event_sender(&self) -> mpsc::UnboundedSender<AppEvent> {
