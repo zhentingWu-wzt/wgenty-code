@@ -1,6 +1,6 @@
 ## MODIFIED Requirements
 
-### Requirement: UserPromptSubmit hook fires before agent turn starts
+### Requirement: UserPromptSubmit hook fires on every input submission
 
 The system SHALL fire `UserPromptSubmit` hooks inside the agent turn task and `await` their outcomes, so that injected content can be consumed by the next outgoing user message in the model request.
 
