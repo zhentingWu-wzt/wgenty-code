@@ -61,10 +61,10 @@ The system SHALL place hook-injected content in a deterministic position relativ
 - **WHEN** both a non-empty `<system-reminder>` block (from file sources) and a non-empty hook `injected_content` exist for the same user turn
 - **THEN** the user message content SHALL contain the `<system-reminder>` block first, followed by the hook-injected content, followed by the user's original prompt text
 
-#### Scenario: Only hook content (no reminder block)
+#### Scenario: Only hook content (no file sources)
 - **WHEN** all four reminder file sources are missing but a hook produces `injected_content`
-- **THEN** the user message SHALL contain only the hook-injected content followed by the user's prompt
-- **AND** no empty `<system-reminder>` tags SHALL appear
+- **THEN** the user message SHALL contain a `<system-reminder>` block wrapping the hook-injected content (between the standard opening and closing preambles), followed by the user's prompt
+- **AND** no orphan file-source attribution headers (`Contents of ...`) SHALL appear inside the block
 
 #### Scenario: Only reminder block (no hook content)
 - **WHEN** the reminder block is non-empty but no hook produces `injected_content`
