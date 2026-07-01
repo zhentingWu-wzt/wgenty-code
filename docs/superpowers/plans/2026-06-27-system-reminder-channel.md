@@ -2,6 +2,7 @@
 change: system-reminder-channel
 design-doc: docs/superpowers/specs/2026-06-27-system-reminder-channel-design.md
 base-ref: f6bbb1e23a4a840a195820bc4e4bae896530babe
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 # System Reminder Channel 实施计划
@@ -27,6 +28,7 @@ base-ref: f6bbb1e23a4a840a195820bc4e4bae896530babe
 
 设计文档锚点：决策 D1-D9 在 §2、实现细节在 §3、测试策略在 §5、Spec Patch 在 §8。
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ## 文件结构
@@ -46,6 +48,7 @@ tests/
 └── system_reminder.rs             # 新增 7 个集成测
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ## §1 数据结构与 readers
@@ -197,6 +200,7 @@ git add src/runtime/hooks/mod.rs
 git commit -m "feat(hooks): add InjectedFragment and collect_injections"
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 1.2: 新增 `read_user_global_instructions`
@@ -299,6 +303,7 @@ git add src/utils/project.rs Cargo.toml Cargo.lock
 git commit -m "feat(project): read user global WGENTY.md from ~/.wgenty-code"
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 1.3: 新增 `read_user_global_rules`
@@ -430,6 +435,7 @@ git add src/utils/project.rs
 git commit -m "feat(project): read user global rules from ~/.wgenty-code/rules"
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 1.4: `PromptContext` 新增 `project_root` + builder
@@ -493,6 +499,7 @@ git add src/prompts/mod.rs
 git commit -m "feat(prompts): add project_root field to PromptContext"
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ## §2 Reminder builder
@@ -532,6 +539,7 @@ const HOOK_INJECTION_DESC: &str = "dynamic hook injection";
 
 - [x] **Step 3: 不单独 commit，与 Task 2.2 一起提交。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 2.2: 实现 `build_user_turn_reminder` + `ReminderOutput`
@@ -678,6 +686,7 @@ git add src/prompts/mod.rs
 git commit -m "feat(prompts): add build_user_turn_reminder with dual-track output"
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 2.3: 来源标注辅助函数 `render_attribution_header`
@@ -701,6 +710,7 @@ fn render_attribution_header(absolute_path: &Path, description: &str) -> String 
 
 - [x] **Step 3: 不单独 commit，并入 2.2 的 commit。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 2.4: 单测——完整 reminder 快照
@@ -790,6 +800,7 @@ cargo test -p wgenty-code reminder_full_four_sources_snapshot
 
 - [x] **Step 3: 暂不 commit；与 2.5–2.8 合并提交。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 2.5: 单测——缺失源 + 全缺返回 None
@@ -855,6 +866,7 @@ cargo test -p wgenty-code reminder_missing_user_wgenty_no_empty_header reminder_
 
 - [x] **Step 3: 暂不 commit。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 2.6: 单测——绝对路径
@@ -887,6 +899,7 @@ fn reminder_absolute_paths_in_attribution() {
 
 - [x] **Step 3: 不 commit，并入 2.8。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 2.7: 单测——rules 字母序
@@ -917,6 +930,7 @@ fn reminder_user_rules_alphabetical_order() {
 
 - [x] **Step 2: 运行测试，期望 PASS。不 commit。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 2.8: 单测——hook 优先级排序 + visibility 分流 (U6/U7/U8)
@@ -1010,6 +1024,7 @@ git add src/prompts/mod.rs
 git commit -m "test(prompts): cover build_user_turn_reminder rendering and visibility"
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ## §3 请求构造层接入
@@ -1088,6 +1103,7 @@ cargo test -p wgenty-code --lib
 
 - [x] **Step 5: 暂不 commit；与 3.2、3.3 合并。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 3.2: 把 fire-and-forget 改为 `await`
@@ -1160,6 +1176,7 @@ cargo test -p wgenty-code --lib
 
 - [x] **Step 6: 不 commit，进入 3.3。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 3.3: `collect_injections` 串入构造路径
@@ -1184,6 +1201,7 @@ git add src/tui/agent/mod.rs src/tui/app/input.rs
 git commit -m "feat(tui): inject system reminder at user-turn boundary"
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 3.4: 集成测——首轮 user message 含 reminder
@@ -1257,6 +1275,7 @@ cargo test -p wgenty-code --test system_reminder first_turn_user_message_contain
 
 - [x] **Step 4: 暂不 commit，与 3.5 合并。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 3.5: 集成测——第二轮 reminder 再出现
@@ -1295,6 +1314,7 @@ git add tests/system_reminder.rs src/lib.rs
 git commit -m "test: integration coverage for per-turn reminder injection"
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ## §4 移除旧 Layer + 适配 builder
@@ -1324,6 +1344,7 @@ if !context.wgenty_md_sections.is_empty() { ... }
 
 - [x] **Step 4: 不 commit，合并 §4 全部。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 4.2: 确保 builder 字段被消费
@@ -1341,6 +1362,7 @@ grep -n "wgenty_md_sections\|agents_md_sections" src/prompts/mod.rs
 
 - [x] **Step 2: 无代码改动。进入 4.3。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 4.3: 在 app 构造 `PromptContext` 时调用 `with_project_root`
@@ -1364,6 +1386,7 @@ let mut prompt_ctx = prompt_ctx
 
 - [x] **Step 3: 不 commit，进入 4.4。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 4.4: 单测——硬切验证
@@ -1422,6 +1445,7 @@ git add src/prompts/mod.rs src/tui/app/mod.rs
 git commit -m "feat(prompts): hard-cut Layer 7/8; project root flows into reminder"
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ## §5 Hook injection 接通
@@ -1511,6 +1535,7 @@ git add src/runtime/hooks/mod.rs
 git commit -m "feat(hooks): propagate priority and visibility from InjectContext to HookOutcome"
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 5.2: 多 hook 优先级排序在请求构造层串通
@@ -1563,6 +1588,7 @@ git add src/runtime/hooks/mod.rs
 git commit -m "test(hooks): verify priority sort end-to-end across multiple inject hooks"
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 5.3: 集成测——hook 注入端到端
@@ -1624,6 +1650,7 @@ cargo test -p wgenty-code --test system_reminder hook_inject_content_end_to_end
 
 - [x] **Step 3: 不 commit，与 5.4 合并。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 5.4: 集成测——优先级排序端到端
@@ -1682,6 +1709,7 @@ git add tests/system_reminder.rs
 git commit -m "test: integration coverage for hook injection end-to-end"
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ## §6 Token 预算警告
@@ -1729,6 +1757,7 @@ if reminder_token_estimate > 2000 {
 
 - [x] **Step 3: 不 commit，合并 6.2-6.5。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 6.2: 警告触发位置 / once 语义
@@ -1740,6 +1769,7 @@ if reminder_token_estimate > 2000 {
 
 - [x] **Step 2: 不 commit。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 6.3: hook 注入不计入预算
@@ -1751,6 +1781,7 @@ if reminder_token_estimate > 2000 {
 
 - [x] **Step 2: 不 commit。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 6.4: 单测——超阈值触发警告
@@ -1799,6 +1830,7 @@ fn estimate_reminder_tokens_threshold() {
 
 - [x] **Step 5: 不 commit，合并 6.5。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 6.5: 单测——未超阈值不告警
@@ -1831,6 +1863,7 @@ git add src/prompts/mod.rs src/tui/app/mod.rs
 git commit -m "feat(prompts): token budget warning covers full reminder block"
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ## §7 Documentation & polish
@@ -1858,6 +1891,7 @@ wgenty-code 提供两层用户级上下文通道，自动随每轮 user message 
 
 - [x] **Step 2: 不 commit，与 §7 其它一起。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 7.2: CHANGELOG BREAKING 说明
@@ -1883,6 +1917,7 @@ wgenty-code 提供两层用户级上下文通道，自动随每轮 user message 
 
 - [x] **Step 2: 不 commit，进入 7.3。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 7.3: 示例 rule 文件
@@ -1903,6 +1938,7 @@ ls -la "$HOME/.wgenty-code/rules/"
 
 - [x] **Step 2: 在 plan 之外记录此动作（无 commit）；如 source 文件不存在，跳过并在 §8 验证阶段提示用户手动放一个 stub。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 7.4: cargo test + clippy
@@ -1927,6 +1963,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 - [x] **Step 3: 不 commit，进入 7.5。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 7.5: cargo fmt 检查
@@ -1952,6 +1989,7 @@ git add WGENTY.md CHANGELOG.md src/ tests/ Cargo.toml Cargo.lock
 git commit -m "docs(reminder): document user-level injection channels and BREAKING migration"
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ## §8 验证
@@ -1967,6 +2005,7 @@ git commit -m "docs(reminder): document user-level injection channels and BREAKI
 
 - [x] **Step 3: 无代码改动，无 commit。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 8.2: repl 手工验证
@@ -1983,6 +2022,7 @@ cargo run --release -- repl
 
 - [x] **Step 3: 记录截图 / log 片段（非必须）。无 commit。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 8.3: 缺失文件优雅降级
@@ -2003,6 +2043,7 @@ mv "$HOME/.wgenty-code/WGENTY.md" "$HOME/.wgenty-code/WGENTY.md.bak" 2>/dev/null
 mv "$HOME/.wgenty-code/WGENTY.md.bak" "$HOME/.wgenty-code/WGENTY.md" 2>/dev/null || true
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 8.4: hook 端到端验证
@@ -2035,6 +2076,7 @@ mv "$HOME/.wgenty-code/WGENTY.md.bak" "$HOME/.wgenty-code/WGENTY.md" 2>/dev/null
 
 - [x] **Step 3: 移除临时配置。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ### Task 8.5: 单次查询模式验证
@@ -2049,6 +2091,7 @@ cargo run --release -- repl --prompt "X" 2>&1 | head -50
 
 - [x] **Step 2: 启用 trace 或临时加 `dbg!` 确认 reminder 注入。验证后清理。**
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ## §9 Open Questions 收尾
@@ -2075,6 +2118,7 @@ cargo run --release -- repl --prompt "X" 2>&1 | head -50
 
 （按 comet 流程；不修改源代码。）
 
+archived-with: 2026-07-01-system-reminder-channel
 ---
 
 ## 自查（Self-Review）
