@@ -2,6 +2,8 @@
 comet_change: system-reminder-channel
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-01-system-reminder-channel
+status: final
 ---
 
 # System Reminder Injection Channel — Technical Design
@@ -46,6 +48,8 @@ Claude Code 在每轮 user message 之前注入一段 `<system-reminder>` 块，
 - 不改 `~/.wgenty-code/skills/` 同步机制（另案）。
 - 不引入新的可观测性子系统（沿用现有 `tracing` / `log`）。
 
+archived-with: 2026-07-01-system-reminder-channel
+status: final
 ---
 
 ## 2. 关键设计决策
@@ -243,6 +247,8 @@ ReminderOutput {
 - **不计入预算**：hook 注入内容（动态、每轮变；conversation_history 整体上限兜底）。
 - 阈值默认值沿用现有数（无须新引入常量）。
 
+archived-with: 2026-07-01-system-reminder-channel
+status: final
 ---
 
 ## 3. 实现拆解
@@ -498,6 +504,8 @@ pub fn build_user_turn_reminder(
 }
 ```
 
+archived-with: 2026-07-01-system-reminder-channel
+status: final
 ---
 
 ## 4. 风险与取舍
@@ -522,6 +530,8 @@ pub fn build_user_turn_reminder(
 - **T3 — 整文件 vs 分节注入**：选整文件（项目 sections 重新 join），符合"参考手册"语义。
 - **T4 — hook 内容不计入 token 预算**：动态、每轮变；用整体 conversation_history 上限兜底。
 
+archived-with: 2026-07-01-system-reminder-channel
+status: final
 ---
 
 ## 5. 测试策略
@@ -574,6 +584,8 @@ pub fn build_user_turn_reminder(
 | 11. Hook inject 端到端 | I4 |
 | 12. ≥6 个新增测试 | U1-U12 + I1-I7 = 19 |
 
+archived-with: 2026-07-01-system-reminder-channel
+status: final
 ---
 
 ## 6. 实施顺序
@@ -594,6 +606,8 @@ pub fn build_user_turn_reminder(
 
 单 commit 落地，问题严重时 `git revert`。无 feature flag。v0.1.0 阶段可接受。
 
+archived-with: 2026-07-01-system-reminder-channel
+status: final
 ---
 
 ## 7. 已知限制（KNOWN）
@@ -603,6 +617,8 @@ pub fn build_user_turn_reminder(
 - **K3**: 用户级 WGENTY.md 大文件无切片机制（全文注入）。token 预算警告兜底。
 - **K4**: `# wgentyMd` 标题失去 Claude 模型对 `# claudeMd` 的内置先验。可接受。
 
+archived-with: 2026-07-01-system-reminder-channel
+status: final
 ---
 
 ## 8. Spec Patch

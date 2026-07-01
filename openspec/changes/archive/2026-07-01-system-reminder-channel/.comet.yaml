@@ -16,6 +16,6 @@ verification_report: docs/superpowers/reports/2026-06-29-system-reminder-channel
 branch_status: handled
 created_at: 2026-06-27
 verified_at: 2026-07-01
-archived: false
+archived: true
 handoff_context: openspec/changes/system-reminder-channel/.comet/handoff/design-context.json
 handoff_hash: fb73328403d45730d7603de7b269c75d0de81a8867a9678ab682699df2f40b64
