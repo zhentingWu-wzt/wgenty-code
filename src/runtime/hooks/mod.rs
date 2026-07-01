@@ -420,8 +420,10 @@ mod tests {
             user_answer: Some(UserAnswer {
                 selected: vec!["a".to_string()],
             }),
+            injection_priority: None,
+            injection_visibility: None,
         };
-        assert_eq!(outcome.continue_execution, true);
+        assert!(outcome.continue_execution);
         assert_eq!(outcome.reason.as_deref(), Some("test reason"));
         assert_eq!(outcome.injected_content.as_deref(), Some("injected text"));
         assert!(outcome.user_answer.is_some());
@@ -725,6 +727,113 @@ mod tests {
             .await;
         assert!(outcomes.is_empty());
     }
+
+    #[test]
+    fn collect_injections_empty_outcomes_returns_empty() {
+        assert!(collect_injections(&[]).is_empty());
+    }
+
+    #[test]
+    fn collect_injections_single_outcome_extracts_fragment() {
+        let outcome = HookOutcome {
+            def: HookDefinition {
+                event: HookEvent::UserPromptSubmit,
+                matcher: None,
+                when_state: None,
+                actions: vec![],
+            },
+            continue_execution: true,
+            reason: None,
+            injected_content: Some("hello".into()),
+            user_answer: None,
+            injection_priority: Some(20),
+            injection_visibility: Some(LayerVisibility::Internal),
+        };
+        let frags = collect_injections(&[outcome]);
+        assert_eq!(frags.len(), 1);
+        assert_eq!(frags[0].content, "hello");
+        assert_eq!(frags[0].priority, 20);
+        assert_eq!(frags[0].source_label, "hook:UserPromptSubmit:0");
+        matches!(frags[0].visibility, LayerVisibility::Internal);
+    }
+
+    #[test]
+    fn collect_injections_sorts_by_priority_stable() {
+        let mk = |content: &str, prio: u8| HookOutcome {
+            def: HookDefinition {
+                event: HookEvent::UserPromptSubmit,
+                matcher: None,
+                when_state: None,
+                actions: vec![],
+            },
+            continue_execution: true,
+            reason: None,
+            injected_content: Some(content.into()),
+            user_answer: None,
+            injection_priority: Some(prio),
+            injection_visibility: Some(LayerVisibility::Visible),
+        };
+        let outcomes = vec![mk("low2", 30), mk("high", 10), mk("low1", 30)];
+        let frags = collect_injections(&outcomes);
+        assert_eq!(
+            frags.iter().map(|f| f.content.as_str()).collect::<Vec<_>>(),
+            vec!["high", "low2", "low1"]
+        );
+    }
+
+    #[tokio::test]
+    async fn multiple_inject_hooks_sort_by_priority_after_collect() {
+        // End-to-end: register two InjectContext hooks, fire(), then collect_injections().
+        // Validates Task 5.1 wiring — priority/visibility flow from action → outcome → fragment.
+        let mut hm = HookManager::default();
+        hm.register_workflow_hooks(vec![
+            HookDefinition {
+                event: HookEvent::UserPromptSubmit,
+                matcher: None,
+                when_state: None,
+                actions: vec![HookAction::InjectContext {
+                    source: ContextSource::Inline("LOW".into()),
+                    priority: 30,
+                    visibility: LayerVisibility::Visible,
+                }],
+            },
+            HookDefinition {
+                event: HookEvent::UserPromptSubmit,
+                matcher: None,
+                when_state: None,
+                actions: vec![HookAction::InjectContext {
+                    source: ContextSource::Inline("HIGH".into()),
+                    priority: 5,
+                    visibility: LayerVisibility::Visible,
+                }],
+            },
+        ]);
+
+        let ctx = HookContext {
+            event: "UserPromptSubmit".into(),
+            tool_name: None,
+            tool_input: None,
+            tool_result: None,
+            session_id: None,
+            working_directory: String::new(),
+            timestamp: String::new(),
+            comet_phase: None,
+            workflow_state: None,
+            variables: Default::default(),
+        };
+
+        let outcomes = hm
+            .fire(&HookEvent::UserPromptSubmit, &ctx, None, None)
+            .await;
+        let injections = collect_injections(&outcomes);
+
+        // After collect_injections sorts by priority asc: HIGH (5) before LOW (30).
+        assert_eq!(injections.len(), 2);
+        assert_eq!(injections[0].content, "HIGH");
+        assert_eq!(injections[0].priority, 5);
+        assert_eq!(injections[1].content, "LOW");
+        assert_eq!(injections[1].priority, 30);
+    }
 }
 
 /// Context passed to hooks via stdin (JSON)
@@ -795,6 +904,52 @@ pub struct HookOutcome {
     pub reason: Option<String>,
     pub injected_content: Option<String>,
     pub user_answer: Option<UserAnswer>,
+    // 新增：当 outcome 来自 InjectContext 时填充
+    pub injection_priority: Option<u8>,
+    pub injection_visibility: Option<LayerVisibility>,
+}
+
+/// A normalized injection fragment derived from one or more `HookOutcome`s.
+/// Consumers (e.g. the `<system-reminder>` channel) collect these via
+/// [`collect_injections`] and render them in priority order.
+#[derive(Debug, Clone)]
+pub struct InjectedFragment {
+    pub content: String,
+    pub priority: u8,
+    pub visibility: LayerVisibility,
+    pub source_label: String,
+}
+
+/// Collect `InjectedFragment`s from a slice of `HookOutcome`s.
+///
+/// - Outcomes without `injected_content` (or with empty content) are skipped.
+/// - Priority defaults to `50` and visibility to `Visible` when not provided.
+/// - Fragments are sorted by `priority` ascending. The sort is stable, so
+///   ties preserve the original outcome order.
+/// - `source_label` is `"hook:UserPromptSubmit:<idx>"` where `idx` is the
+///   zero-based index of the outcome in the input slice.
+pub fn collect_injections(outcomes: &[HookOutcome]) -> Vec<InjectedFragment> {
+    let mut out: Vec<InjectedFragment> = outcomes
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, oc)| {
+            let content = oc.injected_content.as_ref()?;
+            if content.is_empty() {
+                return None;
+            }
+            Some(InjectedFragment {
+                content: content.clone(),
+                priority: oc.injection_priority.unwrap_or(50),
+                visibility: oc
+                    .injection_visibility
+                    .clone()
+                    .unwrap_or(LayerVisibility::Visible),
+                source_label: format!("hook:UserPromptSubmit:{idx}"),
+            })
+        })
+        .collect();
+    out.sort_by_key(|f| f.priority); // stable sort: ties 保留传入顺序
+    out
 }
 
 /// Internal result from running a shell command hook.
@@ -936,12 +1091,14 @@ impl HookManager {
                     reason: result.reason,
                     injected_content: None,
                     user_answer: None,
+                    injection_priority: None,
+                    injection_visibility: None,
                 }
             }
             HookAction::InjectContext {
                 source,
-                priority: _,
-                visibility: _,
+                priority,
+                visibility,
             } => {
                 let content = match source {
                     ContextSource::Template(t) => Some(self.render_template(t, ctx)),
@@ -954,6 +1111,8 @@ impl HookManager {
                     reason: None,
                     injected_content: content,
                     user_answer: None,
+                    injection_priority: Some(*priority),
+                    injection_visibility: Some(visibility.clone()),
                 }
             }
             HookAction::AskUser {
@@ -967,6 +1126,8 @@ impl HookManager {
                     reason: None,
                     injected_content: None,
                     user_answer: Some(UserAnswer { selected: vec![] }),
+                    injection_priority: None,
+                    injection_visibility: None,
                 }
             }
         }

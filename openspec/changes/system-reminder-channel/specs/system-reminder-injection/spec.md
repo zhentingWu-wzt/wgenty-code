@@ -46,10 +46,15 @@ The reminder block SHALL aggregate content from up to four file sources, in this
 - **WHEN** the project root `AGENTS.md` does not exist
 - **THEN** the project agent conventions section SHALL be omitted from the reminder block
 
-#### Scenario: All sources missing
-- **WHEN** none of the four file sources exist
+#### Scenario: All file sources missing AND no hook injections
+- **WHEN** none of the four file sources exist AND no hook produces `injected_content`
 - **THEN** the reminder block SHALL be omitted entirely (no preamble, no closing, no empty `<system-reminder>` tags)
 - **AND** the user message SHALL be sent as if no reminder mechanism existed
+
+#### Scenario: All file sources missing but hook injections present
+- **WHEN** none of the four file sources exist BUT at least one hook produces non-empty `injected_content`
+- **THEN** the reminder block SHALL still be emitted, wrapping the hook-injected content with the standard `<system-reminder>` tags and the opening/closing preambles
+- **AND** the hook content SHALL appear between the preambles (no orphan file-source attribution headers)
 
 ---
 
@@ -101,7 +106,7 @@ The reminder block SHALL open with a high-priority preamble and close with a rel
 
 #### Scenario: Opening preamble present
 - **WHEN** the reminder block is non-empty
-- **THEN** immediately after the opening `<system-reminder>` tag and before any source section, the block SHALL contain a preamble line stating: `As you answer the user's questions, you can use the following context:` followed by a `# claudeMd`-equivalent header and the statement `Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.`
+- **THEN** immediately after the opening `<system-reminder>` tag and before any source section, the block SHALL contain a preamble line stating: `As you answer the user's questions, you can use the following context:` followed by a `# wgentyMd` header and the statement `Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.`
 
 #### Scenario: Closing preamble present
 - **WHEN** the reminder block is non-empty
@@ -110,6 +115,7 @@ The reminder block SHALL open with a high-priority preamble and close with a rel
 #### Scenario: Preambles align with Claude Code wording 1:1
 - **WHEN** the reminder block is rendered
 - **THEN** the wording of both preambles SHALL match Claude Code's reference text exactly (no paraphrasing, no localization of the English preamble strings)
+- **AND** the header token SHALL be `# wgentyMd` (localized from Claude Code's `# claudeMd` per design decision O1; all other preamble wording remains verbatim from Claude Code)
 
 ---
 
