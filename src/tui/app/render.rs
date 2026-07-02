@@ -1,5 +1,6 @@
 //! Rendering methods for the TUI application.
 
+use super::types::MessageRole;
 use super::App;
 use crate::agent::progress::SubagentStatus;
 use crate::tui::components;
@@ -65,7 +66,15 @@ impl App {
         } else {
             layout[chat_idx]
         };
-        if self.committed_messages.is_empty() && !self.streaming_active {
+        // The welcome banner shows until a real conversation turn (user,
+        // assistant, or tool) has been committed. Startup-injected `System`
+        // messages (e.g. the token-budget notice) must NOT suppress the
+        // banner — only filter on non-system roles.
+        let has_real_turn = self
+            .committed_messages
+            .iter()
+            .any(|m| !matches!(m.role, MessageRole::System));
+        if !has_real_turn && !self.streaming_active {
             components::welcome::render(f, main_area);
         } else {
             self.render_chat(f, main_area);
