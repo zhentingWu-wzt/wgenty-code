@@ -297,26 +297,19 @@ impl App {
                 None => 0,
             }
         };
-        // In addition to the dev-facing `tracing::warn!` below, capture a
-        // user-visible notice string here. It is pushed onto `committed_messages`
-        // after `Self` is built (the App state does not exist yet at this point
-        // in `App::new`), so the spec scenario "emit exactly one warning to the
-        // TUI status area" is satisfied on the very first render.
-        let token_budget_notice: Option<String> = if reminder_token_estimate > 2000 {
+        // Dev-facing only: log once at startup when the per-turn
+        // <system-reminder> block exceeds the token budget. No user-visible
+        // surface — see the `system-reminder-injection` spec (token-budget
+        // warning is dev-log-only) and `render.rs` (welcome banner must not
+        // be suppressed by the budget calculation).
+        if reminder_token_estimate > 2000 {
             tracing::warn!(
                 reminder_tokens = reminder_token_estimate,
                 "<system-reminder> block estimate ~{} tokens. \
                  Consider trimming WGENTY.md / AGENTS.md / ~/.wgenty-code/ files to keep per-turn input lean.",
                 reminder_token_estimate,
             );
-            Some(format!(
-                "⚠ <system-reminder> block is large (~{} tokens). Consider trimming \
-                 WGENTY.md / AGENTS.md / ~/.wgenty-code/ files to keep per-turn input lean.",
-                reminder_token_estimate
-            ))
-        } else {
-            None
-        };
+        }
 
         let mut prompt_ctx = prompt_ctx
             .with_wgenty_md(wgenty_sections)
@@ -370,7 +363,7 @@ impl App {
             });
         }
 
-        let mut app = Self {
+        let app = Self {
             daemon_client,
             input_box: InputBox::new(),
             committed_messages: Vec::new(),
@@ -448,22 +441,6 @@ impl App {
             interaction_service,
             workflow_state,
         };
-        // Push the startup token-budget warning (if any) as a user-visible
-        // system message. Mirrors how `AppEvent::StreamError` / "Settings
-        // reloaded" surface notices via `committed_messages`.
-        if let Some(notice) = token_budget_notice {
-            app.committed_messages.push(UIMessage {
-                role: MessageRole::System,
-                content: notice,
-                tool_name: None,
-                content_collapsed: false,
-                tool_collapsed: true,
-                tool_running: false,
-                tool_args: None,
-                diff_data: None,
-                tool_metadata: None,
-            });
-        }
         app
     }
 
@@ -650,6 +627,35 @@ mod token_budget_tests {
             estimated < 2000,
             "tiny section should not exceed threshold; got {}",
             estimated
+        );
+    }
+
+    /// Regression guard for the channel bug introduced in commit 006945f and
+    /// fixed in `fix-token-budget-warning-channel`: the over-threshold budget
+    /// warning MUST be dev-log-only — `App::new` must NOT construct a
+    /// user-visible notice to push into `committed_messages`.
+    ///
+    /// `App::new` is too heavy to construct in a unit test, so this guard
+    /// asserts a source-level invariant: the removed user-visible notice
+    /// constructor binding is absent from this module. If a future change
+    /// reintroduces a user-visible budget notice, this test fails and forces
+    /// a spec conversation — `system-reminder-injection` mandates dev-log-only.
+    #[test]
+    fn budget_warning_is_dev_log_only_no_user_visible_notice() {
+        let src = include_str!("mod.rs");
+        // Assemble the forbidden identifier from fragments so this guard's
+        // own source text does not self-match.
+        let forbidden = format!("{}_{}", "token_budget", "notice");
+        assert!(
+            !src.contains(&forbidden),
+            "user-visible budget notice binding reintroduced — spec \
+             system-reminder-injection mandates dev-log-only; do not push a \
+             notice into committed_messages"
+        );
+        // The dev-log path must still exist.
+        assert!(
+            src.contains("tracing::warn!"),
+            "dev-facing tracing::warn! for budget warning was removed"
         );
     }
 }
