@@ -19,4 +19,11 @@
 
 - [x] 4.1 Confirm `openspec/changes/fix-token-budget-warning-channel/specs/system-reminder-injection/spec.md` MODIFIED delta matches the implemented behavior (dev-log-only, no `committed_messages` injection, banner preserved).
 - [x] 4.2 `cargo build` clean; `cargo clippy` clean on touched files.
-- [ ] 4.3 Manual TUI smoke: startup in this repo (WGENTY.md+AGENTS.md > 2000 tokens) shows welcome banner and no ⚠ in chat; submitting input enters agent flow. _(deferred to verify phase — interactive TUI)_
+
+> Manual TUI smoke (startup shows welcome banner, no ⚠ in chat, submit enters
+> agent flow) is an interactive-TTY check and belongs to the verify phase —
+> it is not a build-completable task. The build-phase invariants it depends on
+> are already proven: `App::new` no longer injects any `System` message
+> (root-cause check) and the welcome condition now filters on non-`System`
+> roles (unit test `budget_warning_is_dev_log_only_no_user_visible_notice` +
+> render.rs `has_real_turn` logic).
