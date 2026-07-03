@@ -15,6 +15,11 @@ const TEXT_COLOR: Color = Color::Rgb(220, 220, 230);
 const DIM_COLOR: Color = Color::Rgb(150, 150, 165);
 const TURN_SEP_COLOR: Color = Color::Rgb(110, 110, 125);
 const SEP_COLOR: Color = Color::Rgb(85, 85, 100);
+/// Status / informational system notices (plan-mode toggles, settings reload,
+/// permission prompts, etc.).
+const SYSTEM_COLOR: Color = Color::Rgb(220, 180, 90);
+/// System messages that signal an error (those prefixed with `⚠`).
+const ERROR_COLOR: Color = Color::Rgb(220, 90, 90);
 
 /// Braille spinner animation frames (10 frames)
 const SPINNER_CHARS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -545,7 +550,24 @@ fn message_to_lines(
                 lines
             }
         }
-        MessageRole::System => Vec::new(),
+        MessageRole::System => {
+            // System messages carry user-facing notices: plan-mode toggles,
+            // settings reloads, permission prompts, subagent retries, and
+            // errors (prefixed with `⚠`). Without this branch they were
+            // silently dropped, so e.g. an upstream connection error surfaced
+            // as a bare "Stream error" phase with no explanation in the chat.
+            let mut lines = Vec::new();
+            let color = if msg.content.starts_with('\u{26A0}') {
+                ERROR_COLOR
+            } else {
+                SYSTEM_COLOR
+            };
+            for line in msg.content.lines() {
+                push_wrapped(&mut lines, line, "  ", color, color, max_w + 2);
+            }
+            lines.push(Line::raw(""));
+            lines
+        }
     }
 }
 

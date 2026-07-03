@@ -48,6 +48,44 @@ fn wrap_network_error(err: reqwest::Error, api_name: &str) -> anyhow::Error {
     }
 }
 
+/// Format an upstream API error response into a concise, human-readable message.
+///
+/// Recognises the `{"error":{"code":...,"message":...}}` shape used by
+/// OpenAI-/Volcengine-compatible endpoints (and Anthropic's
+/// `{"type":"error","error":{"type":...,"message":...}}` variant), returning
+/// `"{code}: {message}"` so a misconfigured model surfaces as e.g.
+/// `UnsupportedModel: The requested model does not support the coding plan
+/// feature.` instead of a double-escaped JSON blob. Falls back to
+/// `"API error ({status}): {body}"` when the body is not parseable, so no
+/// detail is lost on unexpected shapes.
+///
+/// The raw status + body are also emitted to the dev log (`tracing::warn!`)
+/// so the full upstream response stays available for debugging even though
+/// the user-facing surface stays clean.
+pub(crate) fn format_api_error(status: reqwest::StatusCode, body: &str) -> String {
+    tracing::warn!(status = %status, body = %body, "upstream API error");
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(err) = v.get("error") {
+            let code = err
+                .get("code")
+                .and_then(|c| c.as_str())
+                .or_else(|| err.get("type").and_then(|c| c.as_str()))
+                .filter(|s| !s.is_empty());
+            let message = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .filter(|s| !s.is_empty());
+            if let Some(message) = message {
+                if let Some(code) = code {
+                    return format!("{}: {}", code, message);
+                }
+                return message.to_string();
+            }
+        }
+    }
+    format!("API error ({}): {}", status, body)
+}
+
 use anthropic::{
     convert_anthropic_response, convert_messages_to_anthropic, convert_tools_to_anthropic,
 };
@@ -176,7 +214,7 @@ impl ApiClient {
                 .text()
                 .await
                 .unwrap_or_else(|e| format!("[failed to read error body: {}]", e));
-            return Err(anyhow::anyhow!("API error ({}): {}", status, body));
+            return Err(anyhow::anyhow!("{}", format_api_error(status, &body)));
         }
 
         let chat_response: ChatResponse = response.json().await?;
@@ -220,9 +258,8 @@ impl ApiClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(anyhow::anyhow!(
-                "Anthropic API error ({}): {}",
-                status,
-                body
+                "{}",
+                format_api_error(status, &body)
             ));
         }
 
@@ -285,7 +322,7 @@ impl ApiClient {
                 .text()
                 .await
                 .unwrap_or_else(|e| format!("[failed to read error body: {}]", e));
-            return Err(anyhow::anyhow!("API error ({}): {}", status, body));
+            return Err(anyhow::anyhow!("{}", format_api_error(status, &body)));
         }
 
         Ok(response)
@@ -334,9 +371,8 @@ impl ApiClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(anyhow::anyhow!(
-                "Anthropic API error ({}): {}",
-                status,
-                body
+                "{}",
+                format_api_error(status, &body)
             ));
         }
 
@@ -615,6 +651,37 @@ pub type AnthropicClient = ApiClient;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_api_error_parses_openai_compat_error_body() {
+        // Real Volcengine Ark reply for an unsupported model on the coding
+        // endpoint — must surface as a clean "code: message" string, not a
+        // double-escaped JSON blob.
+        let body = r#"{"error":{"code":"UnsupportedModel","message":"The requested model does not support the coding plan feature.","param":"","type":""}}"#;
+        let msg = format_api_error(reqwest::StatusCode::NOT_FOUND, body);
+        assert_eq!(
+            msg,
+            "UnsupportedModel: The requested model does not support the coding plan feature."
+        );
+    }
+
+    #[test]
+    fn format_api_error_falls_back_to_type_for_anthropic_shape() {
+        // Anthropic uses {"type":"error","error":{"type":...,"message":...}}
+        // (no `code` field) — fall back to `error.type` for the prefix.
+        let body = r#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#;
+        let msg = format_api_error(reqwest::StatusCode::UNAUTHORIZED, body);
+        assert_eq!(msg, "authentication_error: invalid x-api-key");
+    }
+
+    #[test]
+    fn format_api_error_falls_back_to_raw_when_unparseable() {
+        // Non-JSON body (e.g. an HTML 502 page) — keep status + body verbatim
+        // so no detail is lost on unexpected shapes.
+        let body = "<html>Bad Gateway</html>";
+        let msg = format_api_error(reqwest::StatusCode::BAD_GATEWAY, body);
+        assert_eq!(msg, "API error (502 Bad Gateway): <html>Bad Gateway</html>");
+    }
 
     #[test]
     fn test_chat_message_serialization() {
