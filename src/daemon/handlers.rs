@@ -95,7 +95,7 @@ pub async fn chat_stream(
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             let error_json = serde_json::json!({
-                "error": format!("API error ({}): {}", status, body)
+                "error": crate::api::format_api_error(status, &body)
             })
             .to_string();
             let _ = tx.send(Ok(Event::default().data(error_json)));
