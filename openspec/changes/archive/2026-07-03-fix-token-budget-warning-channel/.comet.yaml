@@ -16,4 +16,4 @@ verification_report: docs/superpowers/reports/2026-07-02-fix-token-budget-warnin
 branch_status: handled
 created_at: 2026-07-02
 verified_at: 2026-07-02
-archived: false
+archived: true
