@@ -15,94 +15,21 @@ use crate::config::Settings;
 use crate::teams::subagent_loop::run_subagent_loop;
 use crate::teams::subagent_mailbox::SubagentResultMailbox;
 use crate::tools::{Tool, ToolError, ToolOutput};
-use crate::transcript::{SubagentEventRecord, SubagentTranscript, TranscriptStatus};
+use crate::transcript::TranscriptStatus;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Detect whether a prompt is complex enough to warrant RLM delegation.
-///
-/// Uses structural analysis instead of naive keyword matching:
-/// 1. Multi-step structure (numbered steps, explicit sequencing)
-/// 2. File references (paths in backticks/quotes)
-/// 3. Dependency declarations ("depends on", "after X completes")
-/// 4. Length as a secondary signal (>1000 chars, not 500)
-///
-/// This avoids routing simple tasks like "create a file" through the
-/// expensive RLM pipeline.
-fn is_complex_task(prompt: &str, use_small_model: bool) -> bool {
-    if use_small_model {
-        return false; // User explicitly asked for cheap model
-    }
+mod heuristic;
+mod transcript;
 
-    let prompt = prompt.trim();
-    let len = prompt.len();
+#[cfg(test)]
+mod tests;
 
-    // ── Structural signals (primary) ────────────────────────────────────
-
-    // Numbered steps: "1. Refactor auth\n2. Update callers\n3. Add tests"
-    let numbered_steps = {
-        let mut count = 0u32;
-        for line in prompt.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with(|c: char| c.is_ascii_digit())
-                && trimmed.chars().find(|c| !c.is_ascii_digit()) == Some('.')
-            {
-                count += 1;
-            }
-        }
-        count
-    };
-    if numbered_steps >= 3 {
-        return true;
-    }
-
-    // File path references: `src/auth.rs`, "path/to/file", etc.
-    let file_refs = prompt.matches('`').count() / 2  // paired backticks
-        + prompt.matches("src/").count()
-        + prompt.matches("tests/").count()
-        + prompt.matches(".rs").count()
-        + prompt.matches(".ts").count()
-        + prompt.matches(".js").count()
-        + prompt.matches(".py").count();
-    if file_refs >= 3 {
-        return true;
-    }
-
-    // Explicit dependency/sequencing markers — phrase-based to avoid
-    // matching common words like "first" or "after" in isolation.
-    let lower = prompt.to_lowercase();
-    let dependency_signals = [
-        "depends on",
-        "must complete before",
-        "after that",
-        "then you should",
-        "before you",
-        "first you",
-        "first, ",
-        "second, ",
-        "finally, ",
-        "step by step",
-        "one by one",
-    ];
-    let dep_hits = dependency_signals
-        .iter()
-        .filter(|kw| lower.contains(*kw))
-        .count();
-    if dep_hits >= 3 {
-        return true;
-    }
-
-    // ── Length (secondary signal, raised from 500 to 1000) ──────────────
-    if len > 1000 {
-        // Only trigger if there are also structural indicators.
-        return numbered_steps > 0 || file_refs > 0 || dep_hits > 0;
-    }
-
-    false
-}
+use heuristic::is_complex_task;
+use transcript::build_transcript;
 
 pub struct TaskTool {
     settings: Settings,
@@ -157,43 +84,6 @@ impl TaskTool {
                 store.entry(sid).or_default().insert(node_id, progress);
             });
         })
-    }
-}
-
-/// Helper to build a SubagentTranscript from subagent execution metadata.
-#[allow(clippy::too_many_arguments)]
-fn build_transcript(
-    id: String,
-    session_id: &str,
-    description: &str,
-    status: TranscriptStatus,
-    system_prompt: Option<String>,
-    user_prompt: String,
-    started_at: i64,
-    total_tokens: u64,
-    actual_rounds: u32,
-    token_budget_k: Option<u64>,
-    error_message: Option<String>,
-    summary: Option<String>,
-    events: Vec<SubagentEventRecord>,
-) -> SubagentTranscript {
-    SubagentTranscript {
-        id,
-        session_id: session_id.to_string(),
-        parent_id: None,
-        label: format!("task: {}", description),
-        status,
-        system_prompt,
-        user_prompt,
-        started_at,
-        finished_at: Some(chrono::Utc::now().timestamp_millis()),
-        total_tokens,
-        max_rounds: Some(100),
-        actual_rounds,
-        token_budget_k,
-        error_message,
-        summary,
-        events,
     }
 }
 
@@ -783,175 +673,5 @@ impl Tool for TaskTool {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_simple_prompt_not_complex() {
-        assert!(!is_complex_task(
-            "create a file called config.json with default settings",
-            false
-        ));
-        assert!(!is_complex_task(
-            "read the file src/main.rs and tell me what it does",
-            false
-        ));
-        assert!(!is_complex_task(
-            "search for the authenticate function",
-            false
-        ));
-    }
-
-    #[test]
-    fn test_numbered_steps_is_complex() {
-        let prompt = "1. Refactor the auth module\n2. Update all callers\n3. Add unit tests";
-        assert!(is_complex_task(prompt, false));
-    }
-
-    #[test]
-    fn test_dependency_chain_is_complex() {
-        let prompt = "step by step: first, analyze the codebase, then you should identify \
-                      the issues, finally, write a fix that depends on the analysis results";
-        assert!(is_complex_task(prompt, false));
-    }
-
-    #[test]
-    fn test_long_but_simple_not_automatically_complex() {
-        let long_simple = "Please write a comprehensive explanation of how memory management \
-            works in modern operating systems. Cover the basic concepts including virtual \
-            memory, paging, segmentation, and how the kernel allocates and frees memory \
-            for user processes. Explain the tradeoffs between different allocation \
-            strategies such as best fit and first fit. Discuss how garbage collection \
-            works in managed languages compared to manual memory management. Include \
-            information about how modern CPUs support memory management through hardware \
-            features like TLBs and page tables. Describe the role of the MMU in protecting \
-            process memory spaces from each other. Provide examples of how these concepts \
-            apply in practice when developing applications. Make sure to explain everything \
-            clearly for someone who is new to the topic but has basic programming knowledge. \
-            The explanation should be thorough but accessible and should help the reader \
-            build a solid mental model of how memory management functions at both the \
-            hardware and operating system levels.";
-        assert!(
-            long_simple.len() > 1000,
-            "test precondition: text must be >1000 chars"
-        );
-        assert!(!is_complex_task(long_simple, false));
-    }
-
-    #[test]
-    fn test_small_model_never_complex() {
-        let prompt = "1. Refactor auth\n2. Update callers\n3. Add tests\n4. Update docs\n5. Deploy";
-        assert!(!is_complex_task(prompt, true));
-    }
-
-    // ── token_budget extraction tests ───────────────────────────────────
-
-    #[test]
-    fn test_token_budget_schema_description_is_accurate() {
-        let schema = TaskTool::new(
-            Settings::default(),
-            std::sync::Weak::new(),
-            std::sync::Arc::new(crate::tools::execution::background::BackgroundManager::new()),
-            std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            None, // transcript_store
-        )
-        .input_schema();
-        let desc = schema["properties"]["token_budget"]["description"]
-            .as_str()
-            .unwrap();
-        // Must NOT claim "0 = unlimited" since 0 → fallback to settings default.
-        assert!(
-            desc.contains("configured default"),
-            "Description should say '0 = use the configured default', got: '{}'",
-            desc
-        );
-        // Must mention how to get true unlimited.
-        assert!(
-            desc.contains("omit") || desc.contains("Omit"),
-            "Description should mention 'Omit the parameter for unlimited', got: '{}'",
-            desc
-        );
-    }
-
-    #[test]
-    fn test_token_budget_zero_is_unlimited() {
-        // token_budget=0 must produce None (unlimited), not Some(0) which
-        // immediately triggers budget exceeded in the subagent loop.
-        let default_k = 0u64;
-        let input = serde_json::json!({"token_budget": 0});
-        let result: Option<u64> = input
-            .get("token_budget")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| if v == 0 { None } else { Some(v) })
-            .or(if default_k > 0 { Some(default_k) } else { None });
-        assert_eq!(
-            result, None,
-            "token_budget=0 should produce None (unlimited)"
-        );
-    }
-
-    #[test]
-    fn test_token_budget_positive_is_preserved() {
-        let default_k = 0u64;
-        let input = serde_json::json!({"token_budget": 10});
-        let result: Option<u64> = input
-            .get("token_budget")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| if v == 0 { None } else { Some(v) })
-            .or(if default_k > 0 { Some(default_k) } else { None });
-        assert_eq!(result, Some(10), "token_budget=10 should produce Some(10)");
-    }
-
-    #[test]
-    fn test_token_budget_missing_defaults_to_none() {
-        let default_k = 0u64;
-        let input = serde_json::json!({"prompt": "hello"});
-        let result: Option<u64> = input
-            .get("token_budget")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| if v == 0 { None } else { Some(v) })
-            .or(if default_k > 0 { Some(default_k) } else { None });
-        assert_eq!(
-            result, None,
-            "missing token_budget with no default should produce None"
-        );
-    }
-
-    #[test]
-    fn test_token_budget_uses_settings_default_when_missing() {
-        let default_k = 20u64;
-        let input = serde_json::json!({"prompt": "hello"});
-        let result: Option<u64> = input
-            .get("token_budget")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| if v == 0 { None } else { Some(v) })
-            .or(if default_k > 0 { Some(default_k) } else { None });
-        assert_eq!(
-            result,
-            Some(20),
-            "missing token_budget with default=20 should produce Some(20)"
-        );
-    }
-
-    #[test]
-    fn test_token_budget_zero_with_nonzero_default_falls_back_to_default() {
-        // When token_budget=0 is explicit but settings has a non-zero default,
-        // the 0→None mapping makes or_else pick up the default.
-        let default_k = 20u64;
-        let input = serde_json::json!({"token_budget": 0});
-        let result: Option<u64> = input
-            .get("token_budget")
-            .and_then(|v| v.as_u64())
-            .and_then(|v| if v == 0 { None } else { Some(v) })
-            .or(if default_k > 0 { Some(default_k) } else { None });
-        assert_eq!(
-            result,
-            Some(20),
-            "explicit token_budget=0 with non-zero default should use the default"
-        );
     }
 }
