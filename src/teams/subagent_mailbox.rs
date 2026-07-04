@@ -491,4 +491,31 @@ mod tests {
             _ => panic!("Expected Summarized for 8001-char result (> MAX_FULL_INLINE_LEN)"),
         }
     }
+
+    #[test]
+    fn test_disk_persistence_failure_degrades_to_inline() {
+        // Use a path that cannot be created/written to simulate store() failure.
+        // On most Unix systems, writing under a non-existent root path fails.
+        let bad_mailbox = SubagentResultMailbox::new(
+            PathBuf::from("/this/path/does/not/exist/wgenty_test_bad_mailbox"),
+        );
+        let very_large = "C".repeat(9000);
+        let response = bad_mailbox.offload_if_large(
+            "general-purpose",
+            "disk fail test",
+            "session_fail",
+            &very_large,
+        );
+        match response {
+            SubagentResponse::Inline { content } => {
+                // Full content returned despite >8000 + disk failure —
+                // integrity > token control (spec R4).
+                assert_eq!(content.len(), 9000);
+                assert_eq!(content, very_large);
+            }
+            _ => panic!(
+                "Expected Inline (full content) on disk persistence failure, even for >8000"
+            ),
+        }
+    }
 }
