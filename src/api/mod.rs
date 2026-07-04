@@ -13,8 +13,8 @@ pub mod types;
 // `pub(crate)`, so they're re-exported at the same visibility — `pub` would
 // both warn (can't elevate `pub(crate)` items) and fail to expose them to
 // `crate::api::format_api_error` callers elsewhere in the crate.
-pub use types::*;
 pub(crate) use error::*;
+pub use types::*;
 
 use crate::config::Settings;
 use reqwest::Client;
@@ -197,10 +197,7 @@ impl ApiClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!(
-                "{}",
-                format_api_error(status, &body)
-            ));
+            return Err(anyhow::anyhow!("{}", format_api_error(status, &body)));
         }
 
         let anthropic_resp: anthropic::AnthropicResponse = response.json().await?;
@@ -310,10 +307,7 @@ impl ApiClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!(
-                "{}",
-                format_api_error(status, &body)
-            ));
+            return Err(anyhow::anyhow!("{}", format_api_error(status, &body)));
         }
 
         // Stream Anthropic SSE events, convert to OpenAI-compatible SSE on the fly.

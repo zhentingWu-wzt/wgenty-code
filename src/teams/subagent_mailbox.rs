@@ -389,9 +389,8 @@ mod tests {
 
     #[test]
     fn test_very_large_result_summarized() {
-        let mailbox = SubagentResultMailbox::new(
-            std::env::temp_dir().join("wgenty_test_mailbox_summarized"),
-        );
+        let mailbox =
+            SubagentResultMailbox::new(std::env::temp_dir().join("wgenty_test_mailbox_summarized"));
         let very_large = "A".repeat(9000);
         let response = mailbox.offload_if_large(
             "general-purpose",
@@ -410,7 +409,7 @@ mod tests {
                 // summary is the head 1500 chars (by chars(), not bytes)
                 assert_eq!(summary.chars().count(), 1500);
                 assert_eq!(summary.as_str(), &very_large[..1500]); // ASCII so byte==char
-                // disk copy exists for recovery
+                                                                   // disk copy exists for recovery
                 assert!(mailbox_path.exists());
             }
             _ => panic!("Expected Summarized for 9000-char result"),
@@ -465,9 +464,9 @@ mod tests {
     fn test_disk_persistence_failure_degrades_to_inline() {
         // Use a path that cannot be created/written to simulate store() failure.
         // On most Unix systems, writing under a non-existent root path fails.
-        let bad_mailbox = SubagentResultMailbox::new(
-            PathBuf::from("/this/path/does/not/exist/wgenty_test_bad_mailbox"),
-        );
+        let bad_mailbox = SubagentResultMailbox::new(PathBuf::from(
+            "/this/path/does/not/exist/wgenty_test_bad_mailbox",
+        ));
         let very_large = "C".repeat(9000);
         let response = bad_mailbox.offload_if_large(
             "general-purpose",
@@ -482,9 +481,9 @@ mod tests {
                 assert_eq!(content.len(), 9000);
                 assert_eq!(content, very_large);
             }
-            _ => panic!(
-                "Expected Inline (full content) on disk persistence failure, even for >8000"
-            ),
+            _ => {
+                panic!("Expected Inline (full content) on disk persistence failure, even for >8000")
+            }
         }
     }
 }
