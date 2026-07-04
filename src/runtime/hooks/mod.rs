@@ -655,6 +655,39 @@ mod tests {
         );
     }
 
+    // ── Step 3: Claude Code exit-code compatibility ───────────────
+
+    #[tokio::test]
+    async fn test_run_shell_command_exit_2_blocks() {
+        // CC-compat: a hook exiting with code 2 signals "block" (PreToolUse deny).
+        // stderr carries the human-readable reason. This is the protocol
+        // comet-hook-guard.sh uses; without this mapping the block is swallowed.
+        let hm = HookManager::default();
+        let ctx = HookManager::pre_tool_context(
+            "file_write",
+            &serde_json::json!({"path": "/tmp/comet-hook-test"}),
+            None,
+        );
+        let result = hm.run_shell_command("exit 2", 10, &ctx).await;
+        assert!(!result.continue_execution, "exit 2 must block");
+        assert!(result.reason.is_some(), "block reason must be populated");
+    }
+
+    #[tokio::test]
+    async fn test_run_shell_command_non_two_exit_allows() {
+        // Non-zero, non-2 exits (e.g., 1) are hook errors, not blocks:
+        // preserve original "proceed" behavior so a crashing hook can't
+        // silently hard-lock the tool call.
+        let hm = HookManager::default();
+        let ctx = HookManager::pre_tool_context(
+            "file_write",
+            &serde_json::json!({"path": "/tmp/comet-hook-test"}),
+            None,
+        );
+        let result = hm.run_shell_command("exit 1", 10, &ctx).await;
+        assert!(result.continue_execution, "exit 1 must not block");
+    }
+
     #[tokio::test]
     async fn test_fire_when_state_pipe_separated() {
         // RED → GREEN: when_state with pipe-separated values matches any.
@@ -1196,8 +1229,16 @@ impl HookManager {
                     }
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    // Claude Code compatibility: a PreToolUse hook signals "block" by
+                    // exiting with code 2 (stderr carries the human-readable reason).
+                    // CC-style hooks (e.g., comet-hook-guard.sh) use this protocol
+                    // instead of JSON stdout. Treat exit 2 as a block so those hooks
+                    // work under wgenty-code, completing the CC-compat story that
+                    // cc_adapter::adapt_cc_hooks started. Other non-zero exits remain
+                    // "hook error → proceed" so a crashing hook can't hard-lock tools.
+                    let blocked = output.status.code() == Some(2);
                     ShellCommandResult {
-                        continue_execution: true,
+                        continue_execution: !blocked,
                         reason: Some(stderr),
                     }
                 }
