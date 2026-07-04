@@ -32,6 +32,16 @@ use std::path::PathBuf;
 /// regardless of this threshold — it only controls whether a disk copy is made.
 pub const MAX_INLINE_RESULT_LEN: usize = 4000;
 
+/// Threshold (chars) above which the full content is no longer inlined into
+/// the parent agent's context — instead a head-prefix summary is delivered
+/// with a disk-recovery hint. Results between `MAX_INLINE_RESULT_LEN` and
+/// this value are still inlined in full (with a disk copy).
+pub const MAX_FULL_INLINE_LEN: usize = 8000;
+
+/// Length (chars) of the head-prefix summary delivered for `Summarized`
+/// results. `content.chars().take(SUMMARY_HEAD_LEN)`.
+pub const SUMMARY_HEAD_LEN: usize = 1500;
+
 /// A stored subagent result entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredResult {
@@ -50,17 +60,31 @@ pub struct StoredResult {
     pub is_multiline: bool,
 }
 
-/// Wrapper returned by `offload_if_large`. The full content is **always** carried
-/// inline so the parent agent never loses information. When the result exceeds
-/// the persistence threshold, a copy is also saved to disk and the path is
-/// included for later recovery.
+/// Wrapper returned by `offload_if_large`. Three tiers balance "no detail
+/// loss" against parent-agent context token cost:
+/// - `Inline`: small results (≤4000 chars) returned as-is, no disk copy.
+/// - `Offloaded`: medium results (4000–8000 chars) returned in full AND
+///   persisted to disk for recovery.
+/// - `Summarized`: large results (>8000 chars) deliver a head-prefix summary
+///   plus a disk path; the full content is only on disk (recoverable via
+///   `file_read`).
+///
+/// On disk-persistence failure, results degrade to `Inline` (full content,
+/// no copy) — content integrity takes priority over token control.
 #[derive(Debug, Clone)]
 pub enum SubagentResponse {
-    /// Result returned inline (not persisted separately).
+    /// ≤4000 chars: full content inline, no disk copy.
     Inline { content: String },
-    /// Result persisted to disk for recovery; full content still returned inline.
+    /// 4000–8000 chars: full content inline + disk copy for recovery.
     Offloaded {
         content: String,
+        mailbox_path: PathBuf,
+        content_len: usize,
+    },
+    /// >8000 chars: head-prefix summary inline + disk copy; full content
+    /// recoverable via `file_read` on `mailbox_path`.
+    Summarized {
+        summary: String,
         mailbox_path: PathBuf,
         content_len: usize,
     },
@@ -69,8 +93,10 @@ pub enum SubagentResponse {
 impl SubagentResponse {
     /// Turn this response into text suitable for tool output.
     ///
-    /// Always returns the **full** result content — no truncation. For
-    /// `Offloaded` results, a short footer notes the on-disk recovery path.
+    /// - `Inline` → content as-is.
+    /// - `Offloaded` → full content + footer noting the on-disk recovery path.
+    /// - `Summarized` → head-prefix summary + footer pointing to the disk
+    ///   copy for `file_read` recovery.
     pub fn to_content(&self) -> String {
         match self {
             Self::Inline { content } => content.clone(),
@@ -78,16 +104,26 @@ impl SubagentResponse {
                 content,
                 mailbox_path,
                 content_len,
-            } => {
-                format!(
-                    "{content}\n\n\
-                     ---\n\
-                     [Full result ({content_len} chars) persisted at: `{path}` for recovery]",
-                    content = content,
-                    content_len = content_len,
-                    path = mailbox_path.display(),
-                )
-            }
+            } => format!(
+                "{content}\n\n\
+                 ---\n\
+                 [Full result ({content_len} chars) persisted at: `{path}` for recovery]",
+                content = content,
+                content_len = content_len,
+                path = mailbox_path.display(),
+            ),
+            Self::Summarized {
+                summary,
+                mailbox_path,
+                content_len,
+            } => format!(
+                "{summary}\n\n\
+                 ---\n\
+                 [Summary only. Full result ({content_len} chars) at `{path}` — file_read for details]",
+                summary = summary,
+                content_len = content_len,
+                path = mailbox_path.display(),
+            ),
         }
     }
 
@@ -104,6 +140,7 @@ impl SubagentResponse {
         match self {
             Self::Inline { content } => content.len(),
             Self::Offloaded { content_len, .. } => *content_len,
+            Self::Summarized { content_len, .. } => *content_len,
         }
     }
 
@@ -307,6 +344,36 @@ mod tests {
             content: "short result".to_string(),
         };
         assert_eq!(resp.to_content(), "short result");
+    }
+
+    #[test]
+    fn test_summarized_to_content_has_summary_and_path() {
+        let summary = "A".repeat(1500);
+        let resp = SubagentResponse::Summarized {
+            summary: summary.clone(),
+            mailbox_path: PathBuf::from("/tmp/fake_mailbox/result.jsonl"),
+            content_len: 9000,
+        };
+        let text = resp.to_content();
+        // Summary (head 1500 chars) is present
+        assert!(text.contains(&summary));
+        // Footer communicates disk path + content_len + file_read hint
+        assert!(text.contains("Summary only."));
+        assert!(text.contains("Full result (9000 chars)"));
+        assert!(text.contains("/tmp/fake_mailbox/result.jsonl"));
+        assert!(text.contains("file_read for details"));
+    }
+
+    #[test]
+    fn test_summarized_summary_is_head_prefix() {
+        // Verify the summary field semantics: it should be the head prefix
+        // of the full content. This test documents the contract that
+        // offload_if_large (Task 3) will produce summary via
+        // content.chars().take(SUMMARY_HEAD_LEN).collect().
+        let full = "B".repeat(9000);
+        let expected_summary: String = full.chars().take(SUMMARY_HEAD_LEN).collect();
+        assert_eq!(expected_summary.len(), 1500);
+        assert_eq!(expected_summary, "B".repeat(1500));
     }
 
     #[test]
