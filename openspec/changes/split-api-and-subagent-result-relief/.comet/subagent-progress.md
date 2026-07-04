@@ -18,14 +18,14 @@
 | Task 6: 调用方无改动确认 + 最终全量验证 | 2.4 / 2.7 |
 
 ## Current Task
-- Plan task: Task 4: 磁盘持久化失败降级测试(R4) (pending dispatch)
-- OpenSpec task: 2.6 (R4 — disk persistence failure degrades to Inline)
+- Plan task: Task 5: 删除 dead code to_compact() + 其两个测试 (pending dispatch)
+- OpenSpec task: 2.3 (partial — remove to_compact dead code)
 - Stage: pending dispatch
 - Review-fix round: 0/3
-- BASE (pre-implementation): fd8c0a3 (Task 3 commit)
+- BASE (pre-implementation): 8e3a2f0 (Task 4 commit, pending checkoff commit)
 - Implementer: (not yet dispatched)
 - Implementation commit: (pending)
-- RED/GREEN evidence: (pending — Task 4 is test-only; GREEN = test_disk_persistence_failure_degrades_to_inline passes + full mailbox no regression)
+- RED/GREEN evidence: (pending — Task 5 is dead-code removal; GREEN = cargo build/test/clippy pass after removal; RED-equivalent = grep confirms no external to_compact callers)
 - Reviews passed: (none yet)
 - Open feedback: (none)
 
@@ -38,3 +38,6 @@
 - Task 3: offload_if_large() 三档分档 + 边界测试 — ✅ complete
   - Commit: fd8c0a3; Review: spec ✅ + Approved (no Important/Critical)
   - Evidence: RED (2 FAIL + 1 PASS) → GREEN (3 PASS + full mailbox 11 passed, no regression)
+- Task 4: 磁盘持久化失败降级测试(R4) — ✅ complete
+  - Commit: 8e3a2f0; Review: spec ✅ + Approved (no Important/Critical)
+  - Evidence: GREEN (target test PASS + full mailbox 12 passed); RED-equivalent (test asserts Err branch returns Inline full content)

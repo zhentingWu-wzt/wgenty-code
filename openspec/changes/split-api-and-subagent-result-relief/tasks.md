@@ -12,5 +12,5 @@
 - [ ] 2.3 按 design 定案调整 `src/teams/subagent_mailbox.rs`:`SubagentResponse` 变体、`to_content()`、`to_compact()`、`offload_if_large()`
 - [ ] 2.4 同步 `src/tools/meta/task.rs` 调用方(若 `to_content` 返回语义变化)
 - [ ] 2.5 若选 B2:扩展 `src/tui/agent/compaction.rs` 识别上下文中的大 subagent 结果并替换为磁盘引用
-- [ ] 2.6 更新/新增测试覆盖选定方案的 spec scenarios(不丢细节 + token 可控 + 磁盘恢复 + 持久化失败降级)
+- [x] 2.6 更新/新增测试覆盖选定方案的 spec scenarios(不丢细节 + token 可控 + 磁盘恢复 + 持久化失败降级)
 - [ ] 2.7 `cargo test` 验证 `subagent-result-delivery` spec 全部 scenarios 通过
