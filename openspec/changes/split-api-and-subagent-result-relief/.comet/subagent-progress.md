@@ -18,14 +18,14 @@
 | Task 6: 调用方无改动确认 + 最终全量验证 | 2.4 / 2.7 |
 
 ## Current Task
-- Plan task: Task 3: offload_if_large() 三档分档 + 边界测试 (pending dispatch)
-- OpenSpec task: 2.3 (partial — offload_if_large 3-tier + boundary tests)
+- Plan task: Task 4: 磁盘持久化失败降级测试(R4) (pending dispatch)
+- OpenSpec task: 2.6 (R4 — disk persistence failure degrades to Inline)
 - Stage: pending dispatch
 - Review-fix round: 0/3
-- BASE (pre-implementation): 1444f03e7394c188aa6832b7f3d96ce20420cbde (Task 2 commit)
+- BASE (pre-implementation): fd8c0a3 (Task 3 commit)
 - Implementer: (not yet dispatched)
 - Implementation commit: (pending)
-- RED/GREEN evidence: (pending — RED = 2 tests panic "Expected Summarized"; GREEN = 3 new tests pass + full lib no regression)
+- RED/GREEN evidence: (pending — Task 4 is test-only; GREEN = test_disk_persistence_failure_degrades_to_inline passes + full mailbox no regression)
 - Reviews passed: (none yet)
 - Open feedback: (none)
 
@@ -33,8 +33,8 @@
 - Task 1: 验证 Change A — src/api 模块拆分(纯重构) — ✅ complete
   - Commits: f2e0d06 (split) + 6191d97 (restore test) + 0ceb7a0 (checkoff)
   - Review: spec ✅ + code quality approved after fix (Important #1 fixed, Minor #1/#2 accepted)
-  - Evidence: cargo build + test --lib 458 passed + clippy clean; re-export verified via grep
 - Task 2: 新增 Summarized 变体 + 常量 + 更新 len()/to_content() — ✅ complete
-  - Commit: 1444f03 (Summarized variant + MAX_FULL_INLINE_LEN=8000 + SUMMARY_HEAD_LEN=1500 + to_content/len)
-  - Review: spec ✅ + code quality Approved (no Important/Critical; em-dash U+2014 verified; offload_if_large not pre-touched)
-  - Evidence: RED (compile fail no variant Summarized) → GREEN (2 new tests + full lib 460 passed, 458+2 no regression)
+  - Commit: 1444f03; Review: spec ✅ + Approved; Evidence: RED→GREEN, 460 passed
+- Task 3: offload_if_large() 三档分档 + 边界测试 — ✅ complete
+  - Commit: fd8c0a3; Review: spec ✅ + Approved (no Important/Critical)
+  - Evidence: RED (2 FAIL + 1 PASS) → GREEN (3 PASS + full mailbox 11 passed, no regression)

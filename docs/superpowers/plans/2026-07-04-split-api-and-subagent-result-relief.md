@@ -346,7 +346,7 @@ commit."
   - `len > 8000` + store 成功 → `Summarized { summary: content.chars().take(1500).collect(), mailbox_path, content_len }`
   - 任何 `len > 4000` + store 失败 → `Inline { content }`(全量,降级,logged)
 
-- [ ] **Step 1: 写失败测试 — very_large 产生 Summarized**
+- [x] **Step 1: 写失败测试 — very_large 产生 Summarized**
 
 在 `src/teams/subagent_mailbox.rs` 的 `#[cfg(test)] mod tests` 内新增:
 
@@ -382,7 +382,7 @@ commit."
     }
 ```
 
-- [ ] **Step 2: 写失败测试 — 边界 4000 vs 4001**
+- [x] **Step 2: 写失败测试 — 边界 4000 vs 4001**
 
 ```rust
     #[test]
@@ -408,7 +408,7 @@ commit."
     }
 ```
 
-- [ ] **Step 3: 写失败测试 — 边界 8000 vs 8001**
+- [x] **Step 3: 写失败测试 — 边界 8000 vs 8001**
 
 ```rust
     #[test]
@@ -434,7 +434,7 @@ commit."
     }
 ```
 
-- [ ] **Step 4: 运行测试确认失败**
+- [x] **Step 4: 运行测试确认失败**
 
 Run:
 ```bash
@@ -442,7 +442,7 @@ cargo test --lib subagent_mailbox::tests::test_very_large_result_summarized suba
 ```
 Expected: 3 个测试 FAIL —— `test_very_large_result_summarized` 与 `test_boundary_8000_offloaded_vs_summarized` 会 panic("Expected Summarized ..."),因为当前 `offload_if_large` 对 >4000 一律返回 `Offloaded`(无第三档)。`test_boundary_4000_inline_vs_offloaded` 应已 PASS(4000 → Inline、4001 → Offloaded 是当前行为)。
 
-- [ ] **Step 5: 改造 offload_if_large() 为三档分档**
+- [x] **Step 5: 改造 offload_if_large() 为三档分档**
 
 修改 `offload_if_large()`(替换 lines 199-238 整个方法,含 doc 注释):
 
@@ -509,7 +509,7 @@ Expected: 3 个测试 FAIL —— `test_very_large_result_summarized` 与 `test_
     }
 ```
 
-- [ ] **Step 6: 运行 3 个新测试确认通过**
+- [x] **Step 6: 运行 3 个新测试确认通过**
 
 Run:
 ```bash
@@ -517,7 +517,7 @@ cargo test --lib subagent_mailbox::tests::test_very_large_result_summarized suba
 ```
 Expected: 3 个测试 PASS。
 
-- [ ] **Step 7: 运行全量 mailbox 测试确认无回归**
+- [x] **Step 7: 运行全量 mailbox 测试确认无回归**
 
 Run:
 ```bash
@@ -535,7 +535,7 @@ Expected: 所有 mailbox 测试 PASS,包括:
 - `test_boundary_8000_offloaded_vs_summarized`(本 Task)
 - `test_to_compact_returns_full_content`、`test_offloaded_to_compact_returns_full_content`(仍存在,Task 5 删除)
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/teams/subagent_mailbox.rs
