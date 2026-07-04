@@ -127,15 +127,6 @@ impl SubagentResponse {
         }
     }
 
-    /// Return the full content without truncation.
-    ///
-    /// Previously this truncated large inline results for compaction safety.
-    /// Subagent results are considered important and must never be truncated,
-    /// so this now delegates to [`to_content`](Self::to_content).
-    pub fn to_compact(&self) -> String {
-        self.to_content()
-    }
-
     pub fn len(&self) -> usize {
         match self {
             Self::Inline { content } => content.len(),
@@ -394,28 +385,6 @@ mod tests {
         let expected_summary: String = full.chars().take(SUMMARY_HEAD_LEN).collect();
         assert_eq!(expected_summary.len(), 1500);
         assert_eq!(expected_summary, "B".repeat(1500));
-    }
-
-    #[test]
-    fn test_to_compact_returns_full_content() {
-        let large = "X".repeat(5000);
-        let resp = SubagentResponse::Inline {
-            content: large.clone(),
-        };
-        let compact = resp.to_compact();
-        // No truncation — full content preserved.
-        assert_eq!(compact, large);
-    }
-
-    #[test]
-    fn test_offloaded_to_compact_returns_full_content() {
-        let mailbox =
-            SubagentResultMailbox::new(std::env::temp_dir().join("wgenty_test_mailbox_compact"));
-        let large_content = "Y".repeat(5000);
-        let response = mailbox.offload_if_large("plan", "compact test", "session4", &large_content);
-        let compact = response.to_compact();
-        // Full content preserved, no truncation.
-        assert!(compact.contains(&large_content));
     }
 
     #[test]
