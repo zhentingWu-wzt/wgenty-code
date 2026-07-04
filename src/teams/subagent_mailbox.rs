@@ -82,7 +82,7 @@ pub enum SubagentResponse {
         content_len: usize,
     },
     /// >8000 chars: head-prefix summary inline + disk copy; full content
-    /// recoverable via `file_read` on `mailbox_path`.
+    /// > recoverable via `file_read` on `mailbox_path`.
     Summarized {
         summary: String,
         mailbox_path: PathBuf,
