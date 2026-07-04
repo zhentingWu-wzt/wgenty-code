@@ -18,17 +18,10 @@
 | Task 6: 调用方无改动确认 + 最终全量验证 | 2.4 / 2.7 |
 
 ## Current Task
-- Plan task: Task 6: 调用方无改动确认 + 最终全量验证 (pending dispatch — last task)
-- OpenSpec task: 2.4 (caller unchanged) / 2.7 (cargo test verify spec scenarios)
-- Stage: pending dispatch
-- Review-fix round: 0/3
-- BASE (pre-implementation): 2e4107b (Task 5 commit, pending checkoff commit)
-- Implementer: (not yet dispatched)
-- Implementation commit: (pending)
-- RED/GREEN evidence: (pending — Task 6 is verify-type; GREEN = cargo build/test/clippy clean + spec scenario coverage verified; clippy doc_lazy_continuation warning at line 85 to be fixed as part of Task 6)
-- Reviews passed: (none yet)
+- All 6 plan tasks complete (double-reviewed: spec ✅ + code quality Approved)
+- Stage: final-review (next — whole-branch code review)
 - Open feedback: (none)
-- Pre-existing clippy warning (to fix in Task 6): `doc_lazy_continuation` at subagent_mailbox.rs:85 (`SubagentResponse::Summarized` doc, `/// recoverable via file_read on mailbox_path.` needs `>` prefix); introduced by Task 2
+- Note: tasks.md 2.5 marked N/A (B3 not B2, no compaction extension); 2.1/2.2 done in design phase + Task 5; 2.4/2.7 done in Task 6
 
 ## Completed Tasks
 - Task 1: 验证 Change A — src/api 模块拆分(纯重构) — ✅ complete
@@ -45,3 +38,6 @@
 - Task 5: 删除 dead code to_compact() + 其两个测试 — ✅ complete
   - Commit: 2e4107b; Review: spec ✅ + Approved (no Important/Critical; clippy warning pre-existing, not Task 5)
   - Evidence: GREEN (build + test 462 passed + clippy no error); RED-equivalent (grep no external callers + no residue)
+- Task 6: 调用方无改动确认 + 最终全量验证 — ✅ complete
+  - Commit: 7e9fc97 (clippy doc_lazy_continuation fix at line 85); Review: spec ✅ + Approved (no Critical/Important; 2 Minor are brief typos)
+  - Evidence: GREEN (build + test 462 passed + clippy no warning); RED-equivalent (caller grep unchanged + compaction git diff empty + spec 6 scenarios covered)
