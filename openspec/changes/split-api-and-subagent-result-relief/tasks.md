@@ -1,9 +1,9 @@
 ## 1. src/api 模块拆分(纯重构,代码已在工作区)
 
-- [ ] 1.1 创建 `src/api/error.rs`,移动 `wrap_network_error` / `format_api_error` 及其单元测试
-- [ ] 1.2 创建 `src/api/types.rs`,移动 wire-format 类型(`ToolDefinition`/`ChatMessage`/`ChatRequest`/`ChatResponse`/`StreamChunk` 等)及其单元测试
-- [ ] 1.3 更新 `src/api/mod.rs`:`pub mod error/types` + `pub use types::*` + `pub(crate) use error::*`,保持 `crate::api::*` 旧路径
-- [ ] 1.4 `cargo build && cargo test --lib && cargo clippy --lib` 验证行为零变化、旧 `crate::api::*` 引用仍编译
+- [x] 1.1 创建 `src/api/error.rs`,移动 `wrap_network_error` / `format_api_error` 及其单元测试
+- [x] 1.2 创建 `src/api/types.rs`,移动 wire-format 类型(`ToolDefinition`/`ChatMessage`/`ChatRequest`/`ChatResponse`/`StreamChunk` 等)及其单元测试
+- [x] 1.3 更新 `src/api/mod.rs`:`pub mod error/types` + `pub use types::*` + `pub(crate) use error::*`,保持 `crate::api::*` 旧路径
+- [x] 1.4 `cargo build && cargo test --lib && cargo clippy --lib` 验证行为零变化、旧 `crate::api::*` 引用仍编译
 
 ## 2. subagent 大结果交付重新设计(行为变更)
 
