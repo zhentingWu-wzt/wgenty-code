@@ -266,4 +266,13 @@ mod tests {
         assert!(!json.contains(r#""tool_calls""#));
         assert!(!json.contains(r#""reasoning_content""#));
     }
+
+    #[test]
+    fn test_user_message_serialization() {
+        let msg = ChatMessage::user("hello");
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""content":"hello""#));
+        assert!(!json.contains(r#"tool_calls"#));
+        assert!(!json.contains(r#"tool_call_id"#));
+    }
 }
