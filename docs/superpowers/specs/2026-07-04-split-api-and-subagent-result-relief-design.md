@@ -2,6 +2,8 @@
 comet_change: split-api-and-subagent-result-relief
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-04-split-api-and-subagent-result-relief
+status: final
 ---
 
 # API Module Split & Subagent Result Delivery Relief — Design Spec

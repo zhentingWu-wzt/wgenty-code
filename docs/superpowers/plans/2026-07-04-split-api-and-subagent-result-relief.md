@@ -2,6 +2,7 @@
 change: split-api-and-subagent-result-relief
 design-doc: docs/superpowers/specs/2026-07-04-split-api-and-subagent-result-relief-design.md
 base-ref: 94fe946430da339e979f2d1fe111032cb6ac2159
+archived-with: 2026-07-04-split-api-and-subagent-result-relief
 ---
 
 # API 模块拆分 & Subagent 大结果交付缓解 Implementation Plan
@@ -27,6 +28,7 @@ base-ref: 94fe946430da339e979f2d1fe111032cb6ac2159
 - **summary 生成方式**:`content.chars().take(SUMMARY_HEAD_LEN).collect::<String>()`(按字符数取前缀,非字节)(design doc `offload_if_large` 代码块)。
 - **`content_len` 语义**:存 `content.len()`(字节长度),与现有 `Offloaded` 变体一致。
 
+archived-with: 2026-07-04-split-api-and-subagent-result-relief
 ---
 
 ## File Structure
@@ -40,6 +42,7 @@ base-ref: 94fe946430da339e979f2d1fe111032cb6ac2159
 | `src/tools/meta/task.rs` | subagent 调用方(`:558` 后台、`:704` 同步调 `offload_if_large(...).to_content()`) | B | 零改动,Task 6 仅确认 |
 | `src/tui/agent/compaction.rs` | `do_auto_compact` / `micro_compact` | — | 零改动(B3 不依赖 compaction) |
 
+archived-with: 2026-07-04-split-api-and-subagent-result-relief
 ---
 
 ## Task 1: 验证 Change A — src/api 模块拆分(纯重构)
@@ -125,6 +128,7 @@ etc.) move to types.rs. mod.rs keeps ApiClient impl + glob re-export
 continue to compile. Zero behavior change."
 ```
 
+archived-with: 2026-07-04-split-api-and-subagent-result-relief
 ---
 
 ## Task 2: 新增 Summarized 变体 + 常量 + 更新 len()/to_content()
@@ -329,6 +333,7 @@ handle the new variant. offload_if_large() 3-tier dispatch follows in next
 commit."
 ```
 
+archived-with: 2026-07-04-split-api-and-subagent-result-relief
 ---
 
 ## Task 3: offload_if_large() 三档分档 + 边界测试
@@ -547,6 +552,7 @@ Disk failure still degrades to Inline full content (integrity > token control).
 Adds boundary tests at 4000/4001 and 8000/8001."
 ```
 
+archived-with: 2026-07-04-split-api-and-subagent-result-relief
 ---
 
 ## Task 4: 磁盘持久化失败降级测试(R4)
@@ -627,6 +633,7 @@ Covers spec R4: >8000-char result + store() failure returns Inline full
 content (no truncation), integrity prioritized over token control."
 ```
 
+archived-with: 2026-07-04-split-api-and-subagent-result-relief
 ---
 
 ## Task 5: 删除 dead code to_compact() + 其两个测试
@@ -753,6 +760,7 @@ tests (test_to_compact_returns_full_content,
 test_offloaded_to_compact_returns_full_content). No functional change."
 ```
 
+archived-with: 2026-07-04-split-api-and-subagent-result-relief
 ---
 
 ## Task 6: 调用方无改动确认 + 最终全量验证
@@ -845,6 +853,7 @@ git log --oneline 94fe946430da339e979f2d1fe111032cb6ac2159..HEAD
 ```
 Expected: 5 个 commit(refactor(api) split + feat Summarized variant + feat offload_if_large 3-tier + test disk failure + refactor remove to_compact)。
 
+archived-with: 2026-07-04-split-api-and-subagent-result-relief
 ---
 
 ## Self-Review 核验
