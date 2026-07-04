@@ -55,7 +55,7 @@ base-ref: 94fe946430da339e979f2d1fe111032cb6ac2159
 
 **背景**:tasks.md 1.1–1.3(创建 error.rs/types.rs、移动代码、更新 mod.rs re-export)已在工作区完成。git status 显示 `src/api/mod.rs` 为 modified、`error.rs`/`types.rs` 为 untracked。本任务是 Change A 的实际执行步骤 —— task 1.4 验证。
 
-- [ ] **Step 1: 确认工作区拆分文件存在且 re-export 就位**
+- [x] **Step 1: 确认工作区拆分文件存在且 re-export 就位**
 
 Run:
 ```bash
@@ -74,7 +74,7 @@ pub(crate) use error::*;
 ```
 (re-export 在 lines 6、9、16、17;lines 11-17 注释说明 glob 选择理由)
 
-- [ ] **Step 2: cargo build 验证编译通过**
+- [x] **Step 2: cargo build 验证编译通过**
 
 Run:
 ```bash
@@ -82,7 +82,7 @@ cargo build 2>&1 | tail -20
 ```
 Expected: `Finished` 无错误。旧 `crate::api::*` 路径(`crate::api::ChatMessage`、`crate::api::ApiClient`、`crate::api::ToolDefinition`、`crate::api::format_api_error` 等)全部继续编译 —— glob re-export 生效。
 
-- [ ] **Step 3: cargo test --lib 验证迁移的单测全绿**
+- [x] **Step 3: cargo test --lib 验证迁移的单测全绿**
 
 Run:
 ```bash
@@ -90,7 +90,7 @@ cargo test --lib 2>&1 | tail -30
 ```
 Expected: 所有测试 PASS,包括从 `mod.rs` 迁移到 `error.rs` / `types.rs` 的单元测试。无 `FAILED`、无 panic。
 
-- [ ] **Step 4: cargo clippy --lib 验证无新警告**
+- [x] **Step 4: cargo clippy --lib 验证无新警告**
 
 Run:
 ```bash
@@ -98,7 +98,7 @@ cargo clippy --lib 2>&1 | tail -20
 ```
 Expected: 无 warning、无 error(或仅有与本次拆分无关的既有警告)。特别确认无 `pub(crate) use error::*;` glob 相关警告。
 
-- [ ] **Step 5: 确认 critical 调用点仍编译**
+- [x] **Step 5: 确认 critical 调用点仍编译**
 
 Run:
 ```bash
@@ -112,7 +112,7 @@ grep -rn "crate::api::ChatMessage\|crate::api::ApiClient\|crate::api::ToolDefini
 ```
 Expected: 命中数 ≥ 20(证明 `pub use types::*;` glob 成功再导出 wire-format 类型)。
 
-- [ ] **Step 6: Commit Change A**
+- [x] **Step 6: Commit Change A**
 
 ```bash
 git add src/api/mod.rs src/api/error.rs src/api/types.rs
