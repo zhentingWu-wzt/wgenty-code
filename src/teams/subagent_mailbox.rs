@@ -233,14 +233,20 @@ impl SubagentResultMailbox {
         Ok(entry)
     }
 
-    /// Persist a subagent result to disk if it exceeds the persistence threshold.
+    /// Persist a subagent result and return a [`SubagentResponse`] tiered by
+    /// content size:
     ///
-    /// The **full content is always returned** to the caller (never truncated).
-    /// When the content exceeds `MAX_INLINE_RESULT_LEN`, a copy is additionally
-    /// stored to disk so it can be recovered later; the returned
-    /// [`SubagentResponse::Offloaded`] variant carries both the full content and
-    /// the disk path. If disk persistence fails, the full content is still
-    /// returned inline (no data loss — just no recovery copy).
+    /// - `len <= MAX_INLINE_RESULT_LEN` (4000): `Inline` — full content, no
+    ///   disk copy.
+    /// - `MAX_INLINE_RESULT_LEN < len <= MAX_FULL_INLINE_LEN` (4000–8000):
+    ///   `Offloaded` — full content inline + disk copy for recovery.
+    /// - `len > MAX_FULL_INLINE_LEN` (>8000): `Summarized` — head-prefix
+    ///   summary (`SUMMARY_HEAD_LEN` chars) inline + disk copy; full content
+    ///   recoverable via `file_read`.
+    ///
+    /// On disk-persistence failure for any result >4000, degrades to
+    /// `Inline` with the **full** content (no truncation, no copy) — content
+    /// integrity takes priority over token control. The failure is logged.
     pub fn offload_if_large(
         &self,
         subagent_type: &str,
@@ -248,27 +254,41 @@ impl SubagentResultMailbox {
         session_id: &str,
         content: &str,
     ) -> SubagentResponse {
-        if content.len() <= MAX_INLINE_RESULT_LEN {
-            SubagentResponse::Inline {
+        let len = content.len();
+        if len <= MAX_INLINE_RESULT_LEN {
+            return SubagentResponse::Inline {
                 content: content.to_string(),
-            }
-        } else {
-            match self.store(subagent_type, description, session_id, content) {
-                Ok(path) => SubagentResponse::Offloaded {
-                    content: content.to_string(),
-                    mailbox_path: path,
-                    content_len: content.len(),
-                },
-                Err(e) => {
-                    // Fallback: return full content inline even if persistence fails.
-                    // No truncation — just no recovery copy on disk.
-                    tracing::warn!(
-                        error = %e,
-                        "Failed to persist subagent result; returning full inline (no recovery copy)"
-                    );
-                    SubagentResponse::Inline {
+            };
+        }
+        // >4000: attempt disk persistence first.
+        match self.store(subagent_type, description, session_id, content) {
+            Ok(path) => {
+                if len <= MAX_FULL_INLINE_LEN {
+                    // 4000–8000: full content inline + disk copy.
+                    SubagentResponse::Offloaded {
                         content: content.to_string(),
+                        mailbox_path: path,
+                        content_len: len,
                     }
+                } else {
+                    // >8000: head-prefix summary inline + disk copy.
+                    let summary: String = content.chars().take(SUMMARY_HEAD_LEN).collect();
+                    SubagentResponse::Summarized {
+                        summary,
+                        mailbox_path: path,
+                        content_len: len,
+                    }
+                }
+            }
+            Err(e) => {
+                // Disk failure: degrade to Inline (full content, no copy, logged).
+                // Integrity > token control — even >8000 returns full content.
+                tracing::warn!(
+                    error = %e,
+                    "Failed to persist subagent result; returning full inline (no recovery copy)"
+                );
+                SubagentResponse::Inline {
+                    content: content.to_string(),
                 }
             }
         }
@@ -396,5 +416,79 @@ mod tests {
         let compact = response.to_compact();
         // Full content preserved, no truncation.
         assert!(compact.contains(&large_content));
+    }
+
+    #[test]
+    fn test_very_large_result_summarized() {
+        let mailbox = SubagentResultMailbox::new(
+            std::env::temp_dir().join("wgenty_test_mailbox_summarized"),
+        );
+        let very_large = "A".repeat(9000);
+        let response = mailbox.offload_if_large(
+            "general-purpose",
+            "very large analysis",
+            "session_sum",
+            &very_large,
+        );
+        match response {
+            SubagentResponse::Summarized {
+                ref summary,
+                ref mailbox_path,
+                ref content_len,
+            } => {
+                // content_len is the full byte length, not summary length
+                assert_eq!(*content_len, 9000);
+                // summary is the head 1500 chars (by chars(), not bytes)
+                assert_eq!(summary.chars().count(), 1500);
+                assert_eq!(summary.as_str(), &very_large[..1500]); // ASCII so byte==char
+                // disk copy exists for recovery
+                assert!(mailbox_path.exists());
+            }
+            _ => panic!("Expected Summarized for 9000-char result"),
+        }
+    }
+
+    #[test]
+    fn test_boundary_4000_inline_vs_offloaded() {
+        let mailbox = SubagentResultMailbox::new(
+            std::env::temp_dir().join("wgenty_test_mailbox_boundary_4k"),
+        );
+        // Exactly 4000 → Inline (<= threshold)
+        let exactly_4000 = "A".repeat(4000);
+        let resp = mailbox.offload_if_large("explore", "b4k", "s1", &exactly_4000);
+        match resp {
+            SubagentResponse::Inline { content } => assert_eq!(content.len(), 4000),
+            _ => panic!("Expected Inline for 4000-char result (<= MAX_INLINE_RESULT_LEN)"),
+        }
+
+        // 4001 → Offloaded (> threshold, <= MAX_FULL_INLINE_LEN)
+        let just_over_4001 = "A".repeat(4001);
+        let resp = mailbox.offload_if_large("explore", "b4k", "s2", &just_over_4001);
+        match resp {
+            SubagentResponse::Offloaded { content_len, .. } => assert_eq!(content_len, 4001),
+            _ => panic!("Expected Offloaded for 4001-char result"),
+        }
+    }
+
+    #[test]
+    fn test_boundary_8000_offloaded_vs_summarized() {
+        let mailbox = SubagentResultMailbox::new(
+            std::env::temp_dir().join("wgenty_test_mailbox_boundary_8k"),
+        );
+        // Exactly 8000 → Offloaded (<= MAX_FULL_INLINE_LEN)
+        let exactly_8000 = "A".repeat(8000);
+        let resp = mailbox.offload_if_large("explore", "b8k", "s1", &exactly_8000);
+        match resp {
+            SubagentResponse::Offloaded { content_len, .. } => assert_eq!(content_len, 8000),
+            _ => panic!("Expected Offloaded for 8000-char result (<= MAX_FULL_INLINE_LEN)"),
+        }
+
+        // 8001 → Summarized (> MAX_FULL_INLINE_LEN)
+        let just_over_8001 = "A".repeat(8001);
+        let resp = mailbox.offload_if_large("explore", "b8k", "s2", &just_over_8001);
+        match resp {
+            SubagentResponse::Summarized { content_len, .. } => assert_eq!(content_len, 8001),
+            _ => panic!("Expected Summarized for 8001-char result (> MAX_FULL_INLINE_LEN)"),
+        }
     }
 }
