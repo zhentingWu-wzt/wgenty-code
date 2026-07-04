@@ -1,9 +1,19 @@
-//! Subagent Result Mailbox — JSONL storage for large subagent results.
+//! Subagent Result Mailbox — JSONL storage for subagent result persistence.
 //!
-//! When a subagent (task or delegate) produces a result that is too large to
-//! pass back inline in the conversation context, the full result is persisted
-//! to a JSONL mailbox file. The parent agent receives a compact reference
-//! containing a summary and the path to the full result.
+//! When a subagent (task or delegate) produces a result, the **full content is
+//! always returned to the parent agent inline — never truncated.** For results
+//! exceeding the persistence threshold, a copy is additionally stored to a
+//! JSONL mailbox file so the full result can be recovered later (e.g. after
+//! context compaction) via `file_read`.
+//!
+//! # Design rationale
+//!
+//! Subagent results represent meaningful work (code exploration, architecture
+//! analysis, multi-step research) and must not be lossy. Previously, large
+//! results were replaced with a 200-character summary, forcing the parent to
+//! manually `file_read` the full content — and often losing critical detail.
+//! The current design preserves the full result inline while keeping a disk
+//! copy as a safety net.
 //!
 //! # File layout
 //! ```text
@@ -17,11 +27,10 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Maximum inline result length (chars) before offloading to mailbox.
+/// Threshold (chars) above which a subagent result is *additionally* persisted
+/// to disk for recovery. The full content is always returned to the parent
+/// regardless of this threshold — it only controls whether a disk copy is made.
 pub const MAX_INLINE_RESULT_LEN: usize = 4000;
-
-/// The summary prefix length shown to the parent agent.
-const SUMMARY_PREFIX_LEN: usize = 200;
 
 /// A stored subagent result entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,15 +50,17 @@ pub struct StoredResult {
     pub is_multiline: bool,
 }
 
-/// Wrapper returned by `offload_if_large`. Contains either the full text or a
-/// reference + summary when the result was offloaded to disk.
+/// Wrapper returned by `offload_if_large`. The full content is **always** carried
+/// inline so the parent agent never loses information. When the result exceeds
+/// the persistence threshold, a copy is also saved to disk and the path is
+/// included for later recovery.
 #[derive(Debug, Clone)]
 pub enum SubagentResponse {
-    /// Result was small enough to return inline.
+    /// Result returned inline (not persisted separately).
     Inline { content: String },
-    /// Large result stored to disk; parent sees summary + reference.
+    /// Result persisted to disk for recovery; full content still returned inline.
     Offloaded {
-        summary: String,
+        content: String,
         mailbox_path: PathBuf,
         content_len: usize,
     },
@@ -57,55 +68,36 @@ pub enum SubagentResponse {
 
 impl SubagentResponse {
     /// Turn this response into text suitable for tool output.
+    ///
+    /// Always returns the **full** result content — no truncation. For
+    /// `Offloaded` results, a short footer notes the on-disk recovery path.
     pub fn to_content(&self) -> String {
         match self {
             Self::Inline { content } => content.clone(),
             Self::Offloaded {
-                summary,
+                content,
                 mailbox_path,
                 content_len,
             } => {
                 format!(
-                    "Subagent completed successfully.\n\n\
-                     **Full result stored at:** `{}`\n\
-                     **Result size:** {} chars\n\n\
-                     **Summary:**\n{}",
-                    mailbox_path.display(),
-                    content_len,
-                    summary,
+                    "{content}\n\n\
+                     ---\n\
+                     [Full result ({content_len} chars) persisted at: `{path}` for recovery]",
+                    content = content,
+                    content_len = content_len,
+                    path = mailbox_path.display(),
                 )
             }
         }
     }
 
-    /// Turn this response into a short inline result (for compaction safety).
-    /// Truncates Inline results to MAX_INLINE_RESULT_LEN, references path for Offloaded.
+    /// Return the full content without truncation.
+    ///
+    /// Previously this truncated large inline results for compaction safety.
+    /// Subagent results are considered important and must never be truncated,
+    /// so this now delegates to [`to_content`](Self::to_content).
     pub fn to_compact(&self) -> String {
-        match self {
-            Self::Inline { content } => {
-                if content.len() <= MAX_INLINE_RESULT_LEN {
-                    content.clone()
-                } else {
-                    format!(
-                        "{}…\n\n[truncated: {} total chars]",
-                        &content[..MAX_INLINE_RESULT_LEN],
-                        content.len()
-                    )
-                }
-            }
-            Self::Offloaded {
-                summary,
-                mailbox_path,
-                content_len,
-            } => {
-                format!(
-                    "Subagent completed. Full result ({content_len} chars) at `{path}`.\n{summary}",
-                    content_len = content_len,
-                    path = mailbox_path.display(),
-                    summary = summary,
-                )
-            }
-        }
+        self.to_content()
     }
 
     pub fn len(&self) -> usize {
@@ -204,25 +196,14 @@ impl SubagentResultMailbox {
         Ok(entry)
     }
 
-    /// Produce a summary string from the full result content.
-    /// Returns the first `SUMMARY_PREFIX_LEN` characters followed by ellipsis.
-    pub fn summarize(content: &str) -> String {
-        if content.len() <= SUMMARY_PREFIX_LEN {
-            content.to_string()
-        } else {
-            // Try to break at a natural boundary (newline or space).
-            let prefix = &content[..SUMMARY_PREFIX_LEN];
-            let break_point = prefix
-                .rfind('\n')
-                .or_else(|| prefix.rfind(' '))
-                .unwrap_or(SUMMARY_PREFIX_LEN);
-            let truncated = &prefix[..break_point];
-            format!("{}…", truncated)
-        }
-    }
-
-    /// Offload a subagent result if it exceeds the inline threshold.
-    /// Returns an `SubagentResponse` with either the full content or a reference.
+    /// Persist a subagent result to disk if it exceeds the persistence threshold.
+    ///
+    /// The **full content is always returned** to the caller (never truncated).
+    /// When the content exceeds `MAX_INLINE_RESULT_LEN`, a copy is additionally
+    /// stored to disk so it can be recovered later; the returned
+    /// [`SubagentResponse::Offloaded`] variant carries both the full content and
+    /// the disk path. If disk persistence fails, the full content is still
+    /// returned inline (no data loss — just no recovery copy).
     pub fn offload_if_large(
         &self,
         subagent_type: &str,
@@ -236,27 +217,20 @@ impl SubagentResultMailbox {
             }
         } else {
             match self.store(subagent_type, description, session_id, content) {
-                Ok(path) => {
-                    let summary = Self::summarize(content);
-                    SubagentResponse::Offloaded {
-                        summary,
-                        mailbox_path: path,
-                        content_len: content.len(),
-                    }
-                }
+                Ok(path) => SubagentResponse::Offloaded {
+                    content: content.to_string(),
+                    mailbox_path: path,
+                    content_len: content.len(),
+                },
                 Err(e) => {
-                    // Fallback: return truncated inline on I/O error.
+                    // Fallback: return full content inline even if persistence fails.
+                    // No truncation — just no recovery copy on disk.
                     tracing::warn!(
                         error = %e,
-                        "Failed to store subagent result; returning truncated inline"
+                        "Failed to persist subagent result; returning full inline (no recovery copy)"
                     );
                     SubagentResponse::Inline {
-                        content: format!(
-                            "{}…\n\n[truncated: {} total chars, storage failed: {}]",
-                            &content[..content.len().min(MAX_INLINE_RESULT_LEN)],
-                            content.len(),
-                            e
-                        ),
+                        content: content.to_string(),
                     }
                 }
             }
@@ -286,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn test_large_result_offloaded() {
+    fn test_large_result_offloaded_with_full_content() {
         let mailbox =
             SubagentResultMailbox::new(std::env::temp_dir().join("wgenty_test_mailbox_large"));
         let large_content = "A".repeat(5000);
@@ -298,60 +272,62 @@ mod tests {
         );
         match response {
             SubagentResponse::Offloaded {
-                ref summary,
+                ref content,
                 ref content_len,
-                ..
+                ref mailbox_path,
             } => {
                 assert_eq!(*content_len, 5000);
-                // '…' (U+2026) is 3 bytes in UTF-8.
-                assert!(summary.len() <= SUMMARY_PREFIX_LEN + '…'.len_utf8());
+                // Full content is preserved — not truncated to a summary.
+                assert_eq!(content.len(), 5000);
+                assert_eq!(content.as_str(), large_content.as_str());
+                // A recovery copy was stored to disk.
+                assert!(mailbox_path.exists());
             }
-            SubagentResponse::Inline { .. } => panic!("Expected Offloaded"),
+            _ => panic!("Expected Offloaded"),
         }
     }
 
     #[test]
-    fn test_summarize_short_content() {
-        let content = "Short result";
-        let summary = SubagentResultMailbox::summarize(content);
-        assert_eq!(summary, "Short result");
+    fn test_offloaded_to_content_returns_full_result() {
+        let mailbox =
+            SubagentResultMailbox::new(std::env::temp_dir().join("wgenty_test_mailbox_content"));
+        let large_content = "B".repeat(5000);
+        let response =
+            mailbox.offload_if_large("explore", "content test", "session3", &large_content);
+        let text = response.to_content();
+        // Full 5000-char content is present — not a 200-char summary.
+        assert!(text.contains(&large_content));
+        // Recovery path is mentioned in the footer.
+        assert!(text.contains("persisted"));
     }
 
     #[test]
-    fn test_summarize_long_content() {
-        let content = "A".repeat(500);
-        let summary = SubagentResultMailbox::summarize(&content);
-        assert!(summary.ends_with('…'));
-        // '…' (U+2026) is 3 bytes in UTF-8.
-        assert!(summary.len() <= SUMMARY_PREFIX_LEN + '…'.len_utf8());
-    }
-
-    #[test]
-    fn test_subagent_response_to_content() {
-        let inline = SubagentResponse::Inline {
-            content: "result".to_string(),
+    fn test_inline_to_content_unchanged() {
+        let resp = SubagentResponse::Inline {
+            content: "short result".to_string(),
         };
-        assert_eq!(inline.to_content(), "result");
-
-        let offloaded = SubagentResponse::Offloaded {
-            summary: "summary…".to_string(),
-            mailbox_path: PathBuf::from("/tmp/result.jsonl"),
-            content_len: 5000,
-        };
-        let content = offloaded.to_content();
-        assert!(content.contains("/tmp/result.jsonl"));
-        assert!(content.contains("5000"));
-        assert!(content.contains("summary…"));
+        assert_eq!(resp.to_content(), "short result");
     }
 
     #[test]
-    fn test_to_compact_truncates_large_inline() {
+    fn test_to_compact_returns_full_content() {
         let large = "X".repeat(5000);
-        let resp = SubagentResponse::Inline { content: large };
+        let resp = SubagentResponse::Inline {
+            content: large.clone(),
+        };
         let compact = resp.to_compact();
-        assert_eq!(
-            compact.len(),
-            MAX_INLINE_RESULT_LEN + "…\n\n[truncated: 5000 total chars]".len()
-        );
+        // No truncation — full content preserved.
+        assert_eq!(compact, large);
+    }
+
+    #[test]
+    fn test_offloaded_to_compact_returns_full_content() {
+        let mailbox =
+            SubagentResultMailbox::new(std::env::temp_dir().join("wgenty_test_mailbox_compact"));
+        let large_content = "Y".repeat(5000);
+        let response = mailbox.offload_if_large("plan", "compact test", "session4", &large_content);
+        let compact = response.to_compact();
+        // Full content preserved, no truncation.
+        assert!(compact.contains(&large_content));
     }
 }
