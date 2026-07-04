@@ -147,7 +147,7 @@ continue to compile. Zero behavior change."
 
 **说明**:本任务只做结构层改动(新变体 + `to_content`/`len` 处理新变体以通过编译)。`offload_if_large()` 三档分档在 Task 3 实现,所以本任务后 `Summarized` 变体仍不会被 `offload_if_large` 产生 —— 用直接构造的方式测试 `to_content()`。
 
-- [ ] **Step 1: 写失败测试 — Summarized 的 to_content 输出含 summary + footer + path**
+- [x] **Step 1: 写失败测试 — Summarized 的 to_content 输出含 summary + footer + path**
 
 在 `src/teams/subagent_mailbox.rs` 的 `#[cfg(test)] mod tests` 内(现有测试之后、`to_compact` 相关测试之前,即 line 311 之前)新增:
 
@@ -183,7 +183,7 @@ continue to compile. Zero behavior change."
     }
 ```
 
-- [ ] **Step 2: 运行测试确认失败(变体不存在,编译错误)**
+- [x] **Step 2: 运行测试确认失败(变体不存在,编译错误)**
 
 Run:
 ```bash
@@ -191,7 +191,7 @@ cargo test --lib subagent_mailbox::tests::test_summarized_to_content_has_summary
 ```
 Expected: 编译失败 —— `no variant named Summarized found for enum SubagentResponse`(变体尚未定义)。
 
-- [ ] **Step 3: 新增两个常量**
+- [x] **Step 3: 新增两个常量**
 
 在 `src/teams/subagent_mailbox.rs` line 33(`MAX_INLINE_RESULT_LEN` 定义)之后新增:
 
@@ -207,7 +207,7 @@ pub const MAX_FULL_INLINE_LEN: usize = 8000;
 pub const SUMMARY_HEAD_LEN: usize = 1500;
 ```
 
-- [ ] **Step 4: 新增 Summarized 变体**
+- [x] **Step 4: 新增 Summarized 变体**
 
 修改 `SubagentResponse` enum(替换 lines 57-67 整个 enum 定义):
 
@@ -243,7 +243,7 @@ pub enum SubagentResponse {
 }
 ```
 
-- [ ] **Step 5: 更新 to_content() 新增 Summarized 分支**
+- [x] **Step 5: 更新 to_content() 新增 Summarized 分支**
 
 修改 `to_content()`(替换 lines 74-92 整个方法):
 
@@ -287,7 +287,7 @@ pub enum SubagentResponse {
 
 注意:Summarized footer 中的 `—` 是 em-dash(U+2014),不是 ASCII `-`。path 用 backtick 包裹。
 
-- [ ] **Step 6: 更新 len() 新增 Summarized 分支**
+- [x] **Step 6: 更新 len() 新增 Summarized 分支**
 
 修改 `len()`(替换 lines 103-108 整个方法):
 
@@ -301,7 +301,7 @@ pub enum SubagentResponse {
     }
 ```
 
-- [ ] **Step 7: 运行测试确认新增测试通过**
+- [x] **Step 7: 运行测试确认新增测试通过**
 
 Run:
 ```bash
@@ -309,7 +309,7 @@ cargo test --lib subagent_mailbox::tests::test_summarized_to_content_has_summary
 ```
 Expected: 两个测试 PASS。
 
-- [ ] **Step 8: 运行全量 lib 测试确认无回归**
+- [x] **Step 8: 运行全量 lib 测试确认无回归**
 
 Run:
 ```bash
@@ -317,7 +317,7 @@ cargo test --lib 2>&1 | tail -20
 ```
 Expected: 所有测试 PASS(包括既有 4 个 mailbox 测试 + 新增 2 个)。`offload_if_large` 尚未产生 `Summarized`,但既有 Inline/Offloaded 行为不变。
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add src/teams/subagent_mailbox.rs
