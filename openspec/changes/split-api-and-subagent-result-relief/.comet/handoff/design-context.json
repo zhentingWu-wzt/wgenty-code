@@ -1,0 +1,14 @@
+{
+  "change": "split-api-and-subagent-result-relief",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "a8f509aa5b89d9a14b58c6de19afc0b3ffd859c23231f1e131cbac63337de250",
+  "files": [
+    { "path": "openspec/changes/split-api-and-subagent-result-relief/proposal.md", "sha256": "0c5c8c329194567aa45f95673b48aa92d43582e0ccdf42d178517896d0e8907a" },
+    { "path": "openspec/changes/split-api-and-subagent-result-relief/design.md", "sha256": "13a8839854bf680d6c65b475ef2481636cbd0954e7eef5710d079c77b26ca484" },
+    { "path": "openspec/changes/split-api-and-subagent-result-relief/tasks.md", "sha256": "2f78f8085fcc3030e787ea1aa1dbc7df7ff9a61b83ecd96b765d8758dbaafddc" },
+    { "path": "openspec/changes/split-api-and-subagent-result-relief/specs/subagent-result-delivery/spec.md", "sha256": "0806d011ee2e6c8b7943c2efc6727beb7ababffe3dafdae44ab89c13cbf6f7db" }
+  ]
+}
