@@ -560,7 +560,7 @@ Adds boundary tests at 4000/4001 and 8000/8001."
 
 **背景**:Task 3 的 `offload_if_large()` Err 分支已实现降级(`Inline` 全量)。本任务新增测试覆盖 `>8000` + store 失败的 spec scenario(design doc Test Strategy "新增" 第 4 项)。用不可写目录模拟 `store()` 失败。
 
-- [ ] **Step 1: 写测试 — >8000 + store 失败 → Inline 全量**
+- [x] **Step 1: 写测试 — >8000 + store 失败 → Inline 全量**
 
 在 `src/teams/subagent_mailbox.rs` 的 `#[cfg(test)] mod tests` 内新增:
 
@@ -593,7 +593,7 @@ Adds boundary tests at 4000/4001 and 8000/8001."
     }
 ```
 
-- [ ] **Step 2: 运行测试确认通过**
+- [x] **Step 2: 运行测试确认通过**
 
 Run:
 ```bash
@@ -609,7 +609,7 @@ let bad_mailbox = SubagentResultMailbox::new(existing_file);
 ```
 重新运行直到 PASS。
 
-- [ ] **Step 3: 运行全量 mailbox 测试确认无回归**
+- [x] **Step 3: 运行全量 mailbox 测试确认无回归**
 
 Run:
 ```bash
@@ -617,7 +617,7 @@ cargo test --lib subagent_mailbox 2>&1 | tail -20
 ```
 Expected: 所有 mailbox 测试 PASS。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/teams/subagent_mailbox.rs
