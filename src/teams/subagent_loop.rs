@@ -207,7 +207,7 @@ pub async fn run_subagent_loop(
                     token_budget_k,
                     cumulative_tokens: *cumulative_tokens.lock().unwrap() as u64,
                     error_details,
-                    events: Vec::new(),
+                    events: action_log.lock().unwrap().clone(),
                 });
             }
         };
@@ -284,6 +284,19 @@ pub async fn run_subagent_loop(
                         round + 1,
                         last_tool,
                     );
+                    {
+                        let mut log = action_log.lock().unwrap();
+                        log.push(SubagentEvent {
+                            event_type: SubagentEventType::Error {
+                                message: msg.clone(),
+                                error_type: ErrorType::BudgetExceeded {
+                                    limit_k: budget_k,
+                                    used: used as u64,
+                                },
+                            },
+                            elapsed_ms: start.elapsed().as_millis() as u64,
+                        });
+                    }
                     emit(
                         SubagentStatus::Failed,
                         Some(round + 1),
@@ -354,6 +367,16 @@ pub async fn run_subagent_loop(
                     elapsed_secs = elapsed.as_secs(),
                     "Subagent: completed successfully"
                 );
+                {
+                    let mut log = action_log.lock().unwrap();
+                    log.push(SubagentEvent {
+                        event_type: SubagentEventType::Completion {
+                            status: "completed".to_string(),
+                            summary: Some(choice.message.content.clone().unwrap_or_default()),
+                        },
+                        elapsed_ms: start.elapsed().as_millis() as u64,
+                    });
+                }
                 emit(SubagentStatus::Completed, Some(round + 1), None, None, None);
                 return Ok(choice.message.content.unwrap_or_default());
             }
@@ -382,6 +405,18 @@ pub async fn run_subagent_loop(
                         error = %msg,
                         "Subagent: stuck abort"
                     );
+                    {
+                        let mut log = action_log.lock().unwrap();
+                        log.push(SubagentEvent {
+                            event_type: SubagentEventType::Error {
+                                message: msg.clone(),
+                                error_type: ErrorType::Stuck {
+                                    reason: msg.clone(),
+                                },
+                            },
+                            elapsed_ms: start.elapsed().as_millis() as u64,
+                        });
+                    }
                     emit(
                         SubagentStatus::Failed,
                         Some(round + 1),
@@ -578,6 +613,16 @@ pub async fn run_subagent_loop(
             elapsed_secs = start.elapsed().as_secs(),
             "Subagent: exceeded max rounds"
         );
+        {
+            let mut log = action_log.lock().unwrap();
+            log.push(SubagentEvent {
+                event_type: SubagentEventType::Error {
+                    message: "Subagent exceeded maximum number of rounds".to_string(),
+                    error_type: ErrorType::Unknown,
+                },
+                elapsed_ms: start.elapsed().as_millis() as u64,
+            });
+        }
         emit(
             SubagentStatus::Failed,
             Some(max_rounds),
