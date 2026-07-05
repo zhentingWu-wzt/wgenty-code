@@ -162,6 +162,14 @@ impl AgentLoop {
                         "<previous_conversation_summary>\n{}\n</previous_conversation_summary>",
                         summary
                     )));
+                    // Append a user turn so the next request is valid.
+                    // OpenAI-compatible endpoints (Ark included) reject an
+                    // all-system-messages request, and the user turn also
+                    // prompts the model to continue the task from the summary
+                    // instead of stalling.
+                    new_history.push(ChatMessage::user(
+                        "Conversation history was just compacted. Continue the current task using the summary above."
+                    ));
                     *history = new_history;
                 }
             }

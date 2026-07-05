@@ -48,7 +48,8 @@ impl AgentLoop {
 
             let messages = self.micro_compact().await;
 
-            if self.needs_compaction(&messages) {
+            if self.needs_compaction(&messages) || self.compact_requested {
+                self.compact_requested = false;
                 self.do_auto_compact().await;
                 continue;
             }
@@ -175,15 +176,20 @@ impl AgentLoop {
                                     name: "compact".to_string(),
                                     args: serde_json::json!({}),
                                 });
-                                self.do_auto_compact().await;
+                                // Defer the actual compaction to the next
+                                // loop-top check so it never wipes the
+                                // in-flight assistant tool_calls message
+                                // (which would orphan this tool result and
+                                // the task results that follow).
+                                self.compact_requested = true;
                                 let _ = event_tx.send(AppEvent::ToolResult {
                                     name: "compact".to_string(),
                                     args: serde_json::json!({}),
-                                    content: "Conversation history compressed.".to_string(),
+                                    content: "Conversation will be compacted before the next step.".to_string(),
                                 });
                                 history.lock().await.push(ChatMessage::tool(
                                     &tc.id,
-                                    r#"{"success":true,"content":"Conversation compressed"}"#,
+                                    r#"{"success":true,"content":"Compaction scheduled"}"#,
                                 ));
                             }
                             _ => {} // task tools handled below
@@ -283,16 +289,20 @@ impl AgentLoop {
                                 name: "compact".to_string(),
                                 args: serde_json::json!({}),
                             });
-                            self.do_auto_compact().await;
+                            // Defer the actual compaction to the next loop-top
+                            // check so it never wipes the in-flight assistant
+                            // tool_calls message (which would orphan this tool
+                            // result and any sibling tool results in the batch).
+                            self.compact_requested = true;
                             let _ = self.event_tx.send(AppEvent::ToolResult {
                                 name: "compact".to_string(),
                                 args: serde_json::json!({}),
-                                content: "Conversation history compressed.".to_string(),
+                                content: "Conversation will be compacted before the next step.".to_string(),
                             });
                             let mut history = self.conversation_history.lock().await;
                             history.push(ChatMessage::tool(
                                 &tc.id,
-                                r#"{"success":true,"content":"Conversation compressed"}"#,
+                                r#"{"success":true,"content":"Compaction scheduled"}"#,
                             ));
                             continue;
                         }
