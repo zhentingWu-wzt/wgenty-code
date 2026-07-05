@@ -167,7 +167,8 @@ pub async fn run_subagent_loop(
                     round: Option<usize>,
                     current_tool: Option<String>,
                     error_msg: Option<String>,
-                    progress_delta: Option<f32>| {
+                    progress_delta: Option<f32>,
+                    msgs: Vec<ChatMessage>| {
             if let Some(ref cb) = on_progress_inner {
                 let elapsed = start.elapsed();
                 let is_terminal = matches!(
@@ -215,11 +216,19 @@ pub async fn run_subagent_loop(
                     cumulative_tokens: *cumulative_tokens.lock().unwrap() as u64,
                     error_details,
                     events: action_log_snapshot,
+                    messages: msgs,
                 });
             }
         };
 
-        emit(SubagentStatus::Running, Some(0), None, None, None);
+        emit(
+            SubagentStatus::Running,
+            Some(0),
+            None,
+            None,
+            None,
+            messages.clone(),
+        );
 
         for round in 0..max_rounds {
             let elapsed = start.elapsed().as_secs();
@@ -234,7 +243,14 @@ pub async fn run_subagent_loop(
                 max_rounds
             );
 
-            emit(SubagentStatus::Running, Some(round + 1), None, None, None);
+            emit(
+                SubagentStatus::Running,
+                Some(round + 1),
+                None,
+                None,
+                None,
+                messages.clone(),
+            );
 
             let response = tokio::time::timeout(
                 PER_ROUND_API_TIMEOUT,
@@ -310,6 +326,7 @@ pub async fn run_subagent_loop(
                         None,
                         Some(msg.clone()),
                         None,
+                        messages.clone(),
                     );
                     return Err(msg);
                 }
@@ -384,7 +401,14 @@ pub async fn run_subagent_loop(
                         elapsed_ms: start.elapsed().as_millis() as u64,
                     });
                 }
-                emit(SubagentStatus::Completed, Some(round + 1), None, None, None);
+                emit(
+                    SubagentStatus::Completed,
+                    Some(round + 1),
+                    None,
+                    None,
+                    None,
+                    messages.clone(),
+                );
                 return Ok(choice.message.content.unwrap_or_default());
             }
 
@@ -430,6 +454,7 @@ pub async fn run_subagent_loop(
                         None,
                         Some(msg.clone()),
                         None,
+                        messages.clone(),
                     );
                     return Err(msg);
                 }
@@ -516,6 +541,7 @@ pub async fn run_subagent_loop(
                     Some(tool_name.clone()),
                     None,
                     None,
+                    messages.clone(),
                 );
 
                 tracing::debug!(
@@ -636,6 +662,7 @@ pub async fn run_subagent_loop(
             None,
             Some("Subagent exceeded maximum number of rounds".to_string()),
             None,
+            messages.clone(),
         );
         Err("Subagent exceeded maximum number of rounds".to_string())
     };
@@ -691,6 +718,7 @@ pub async fn run_subagent_loop(
                         retryable: true,
                     }),
                     events: accumulated_events,
+                    messages: Vec::new(),
                 });
             }
             tracing::error!(
