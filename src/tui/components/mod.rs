@@ -11,6 +11,8 @@ pub mod session;
 pub mod status;
 pub mod subagent_panel;
 pub mod subagent_panel_state;
+pub mod subagent_status_bar;
+pub mod subagent_focus_view;
 pub mod subagent_tree;
 pub mod task_panel;
 pub mod welcome;

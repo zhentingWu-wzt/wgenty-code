@@ -99,6 +99,23 @@ impl SubagentTree {
         self.nodes.is_empty()
     }
 
+    /// Depth-first flattened list of all node IDs in the tree.
+    pub fn node_list(&self) -> Vec<String> {
+        let mut list = Vec::new();
+        fn walk(tree: &SubagentTree, node_id: &str, list: &mut Vec<String>) {
+            list.push(node_id.to_string());
+            if let Some(node) = tree.nodes.get(node_id) {
+                for child in &node.children {
+                    walk(tree, child, list);
+                }
+            }
+        }
+        if let Some(ref root) = self.root_id {
+            walk(self, root, &mut list);
+        }
+        list
+    }
+
     pub fn is_complete(&self) -> bool {
         self.nodes.values().all(|n| {
             matches!(
@@ -189,5 +206,32 @@ mod tests {
         assert_eq!(tree.count_by_status(SubagentStatus::Completed), 2);
         assert_eq!(tree.count_by_status(SubagentStatus::Running), 1);
         assert_eq!(tree.count_by_status(SubagentStatus::Pending), 1);
+    }
+
+    #[test]
+    fn test_node_list_flat() {
+        let mut tree = SubagentTree::default();
+        tree.upsert(make_progress("root", None, SubagentStatus::Running));
+        let list = tree.node_list();
+        assert_eq!(list, vec!["root"]);
+    }
+
+    #[test]
+    fn test_node_list_tree() {
+        let mut tree = SubagentTree::default();
+        tree.upsert(make_progress("root", None, SubagentStatus::Running));
+        tree.upsert(make_progress("a", Some("root"), SubagentStatus::Running));
+        tree.upsert(make_progress("b", Some("root"), SubagentStatus::Running));
+        // grandchild under "a"
+        tree.upsert(make_progress("a1", Some("a"), SubagentStatus::Running));
+        let list = tree.node_list();
+        // DFS: root → a → a1 → b
+        assert_eq!(list, vec!["root", "a", "a1", "b"]);
+    }
+
+    #[test]
+    fn test_node_list_empty() {
+        let tree = SubagentTree::default();
+        assert!(tree.node_list().is_empty());
     }
 }
