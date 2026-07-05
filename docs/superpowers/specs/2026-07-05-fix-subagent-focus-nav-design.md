@@ -2,6 +2,8 @@
 comet_change: fix-subagent-focus-nav
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-05-fix-subagent-focus-nav
+status: final
 ---
 
 # Subagent Focus View 导航与选择器重做 — 技术设计

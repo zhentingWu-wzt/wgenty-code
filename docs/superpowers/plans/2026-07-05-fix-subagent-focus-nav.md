@@ -2,6 +2,7 @@
 change: fix-subagent-focus-nav
 design-doc: docs/superpowers/specs/2026-07-05-fix-subagent-focus-nav-design.md
 base-ref: 7568e2974f81459a78fe8ac47931302a7b830e9d
+archived-with: 2026-07-05-fix-subagent-focus-nav
 ---
 
 # Subagent Focus View 导航与选择器重做 — 实施计划
@@ -22,6 +23,7 @@ base-ref: 7568e2974f81459a78fe8ac47931302a7b830e9d
 
 **验收 spec：** `openspec/changes/fix-subagent-focus-nav/specs/subagent-focus-view/spec.md` + `specs/subagent-status-display/spec.md`。
 
+archived-with: 2026-07-05-fix-subagent-focus-nav
 ---
 
 ## Phase 1: 移除 "task" 包装节点（D7）
@@ -78,6 +80,7 @@ base-ref: 7568e2974f81459a78fe8ac47931302a7b830e9d
   git commit -m "refactor(task): remove wrapper root node — subagent becomes tree root (D7)"
   ```
 
+archived-with: 2026-07-05-fix-subagent-focus-nav
 ---
 
 ## Phase 2: SubagentTree 分组节点过滤（D9）
@@ -252,6 +255,7 @@ base-ref: 7568e2974f81459a78fe8ac47931302a7b830e9d
   git commit -m "fix(status_bar): active_node_ids excludes grouping nodes (D9)"
   ```
 
+archived-with: 2026-07-05-fix-subagent-focus-nav
 ---
 
 ## Phase 3: App completed_at 字段 + 写入时机（D8 状态层）
@@ -370,6 +374,7 @@ base-ref: 7568e2974f81459a78fe8ac47931302a7b830e9d
   git commit -m "feat(app): track subagent completion time for focus view dim+removal (D8)"
   ```
 
+archived-with: 2026-07-05-fix-subagent-focus-nav
 ---
 
 ## Phase 4: subagent_focus_view.rs 状态与渲染重构（D1, D2, D3, D4, D6, D8 渲染层）
@@ -655,6 +660,7 @@ base-ref: 7568e2974f81459a78fe8ac47931302a7b830e9d
   git commit -m "feat(focus_view): scroll-follow selector, completion dim+removal, remove FocusArea (D1,D3,D4,D6,D8)"
   ```
 
+archived-with: 2026-07-05-fix-subagent-focus-nav
 ---
 
 ## Phase 5: event.rs focus view 键位 + 可见列表导航（D5, D8 导航层）
@@ -730,6 +736,7 @@ base-ref: 7568e2974f81459a78fe8ac47931302a7b830e9d
   Run: `cargo build 2>&1 | tail -5`
   若有改动：`git add -A && git commit -m "chore: complete D10/D11/D12 call sites"`
 
+archived-with: 2026-07-05-fix-subagent-focus-nav
 ---
 
 ## Phase 6: 测试更新与新增
@@ -795,6 +802,7 @@ base-ref: 7568e2974f81459a78fe8ac47931302a7b830e9d
   Run: `cargo test --lib task 2>&1 | tail -10`
   Expected: PASS。
 
+archived-with: 2026-07-05-fix-subagent-focus-nav
 ---
 
 ## Phase 7: 构建与验收
@@ -877,6 +885,7 @@ base-ref: 7568e2974f81459a78fe8ac47931302a7b830e9d
   Run: `bash "$COMET_GUARD" fix-subagent-focus-nav build --apply`
   Expected: ALL CHECKS PASSED，phase → verify。
 
+archived-with: 2026-07-05-fix-subagent-focus-nav
 ---
 
 ## Self-Review
