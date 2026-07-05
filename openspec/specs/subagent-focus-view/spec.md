@@ -24,23 +24,33 @@ The TUI SHALL provide a full-screen focus view that replaces the main chat layou
 - **THEN** the top of the focus view SHALL display the subagent label, status icon, elapsed time, round progress (when available), and cumulative token count
 
 ### Requirement: Focus view navigation and exit
-The focus view SHALL support keyboard navigation for scrolling the event timeline and shall return to the main chat layout when the user presses Esc. The focus view SHALL also provide a subagent selector bar at the bottom for direct switching between subagent focus views without returning to the main chat.
+The focus view SHALL use the subagent selector as the sole keyboard-interactive area: ↑↓ SHALL navigate the selector (the "main" entry plus all visible subagents) and Enter SHALL switch the displayed subagent or exit to the main chat. The event timeline SHALL be read-only, scrollable only via mouse wheel. The focus view SHALL return to the main chat layout when the user presses Esc or selects the "main" entry and presses Enter.
 
-#### Scenario: Scrolling the event timeline
-- **WHEN** the focus view is open and the event timeline exceeds the visible area
-- **AND** the focus is on the timeline area (default)
-- **THEN** ↑↓ keys SHALL scroll the timeline one line at a time, and PageUp/PageDown SHALL scroll by 10 lines
+#### Scenario: Arrow keys navigate the selector
+- **WHEN** the focus view is open
+- **THEN** ↑↓ SHALL move the selector cursor (▶) among the "main" entry and all visible subagents, wrapping at both ends
+- **AND** ↑↓ SHALL NOT scroll the event timeline
 
-#### Scenario: Tab toggles between timeline and subagent selector
-- **WHEN** the user presses Tab while in the focus view
-- **THEN** the focus SHALL toggle between the event timeline area and the subagent selector bar
-- **AND** the currently focused area SHALL be visually indicated (e.g., highlight border)
-
-#### Scenario: Switching to another subagent from within focus view
-- **WHEN** the user presses Tab to focus the subagent selector bar
-- **AND** navigates with ↑↓ to select another subagent and presses Enter
-- **THEN** the focus view SHALL switch to display the selected subagent's event timeline
+#### Scenario: Enter switches subagent or exits to main
+- **WHEN** the selector cursor is on a subagent and the user presses Enter
+- **THEN** the focus view SHALL switch to display that subagent's event timeline
 - **AND** the timeline scroll position SHALL reset to the latest event
+- **WHEN** the selector cursor is on the "main" entry and the user presses Enter
+- **THEN** the TUI SHALL close the focus view and restore the main chat layout
+
+#### Scenario: Timeline scrolls only via mouse wheel
+- **WHEN** the focus view is open and the event timeline exceeds the visible area
+- **THEN** mouse wheel SHALL scroll the timeline (ScrollUp toward older, ScrollDown toward newer)
+- **AND** PageUp/PageDown SHALL have no effect inside the focus view
+
+#### Scenario: Fold toggle is always available
+- **WHEN** the user presses `t` inside the focus view
+- **THEN** the focus view SHALL toggle fold/expand of tool calls in the timeline
+- **AND** this behavior SHALL NOT depend on any focus area
+
+#### Scenario: Tab is a no-op
+- **WHEN** the user presses Tab inside the focus view
+- **THEN** no focus toggle SHALL occur; Tab SHALL be a no-op
 
 #### Scenario: Exiting focus view returns to main chat
 - **WHEN** the user presses Esc while in the focus view
@@ -49,20 +59,60 @@ The focus view SHALL support keyboard navigation for scrolling the event timelin
 - **AND** the subagent status bar SHALL remain visible if subagents are still running
 
 ### Requirement: Focus view subagent selector bar
-The focus view SHALL include a subagent selector bar at the bottom of the screen, listing all subagents (active and completed) with their status icons and labels. The selector bar allows direct switching between subagent views without returning to the main chat.
+The focus view SHALL include a subagent selector bar at the bottom of the screen, listing a "main" entry (for returning to the main chat) followed by all real subagents (active and completed) with their status icons and labels. Placeholder/wrapper nodes that carry no execution information SHALL NOT appear in the selector — this includes both 1:1 wrapper nodes (e.g., a "task:" entry wrapping a single subagent) and 1:N grouping nodes (e.g., a "delegate:" entry that groups several sub-tasks but has no events or messages of its own). Grouping nodes SHALL be excluded from the selector, from active/total counts, and from the active-node list used by the status bar. The selector allows direct switching between subagent views without returning to the main chat. The selector SHALL be the sole keyboard-interactive area in the focus view.
 
-#### Scenario: Selector bar shows all subagents
-- **WHEN** the focus view is open and there are 3 subagents (1 running, 2 completed)
-- **THEN** the selector bar SHALL display all 3 subagents with their status icons and labels, with the currently viewed subagent highlighted
+#### Scenario: Selector shows main entry plus real subagents only
+- **WHEN** the focus view is open and there are 3 real subagents (1 running, 2 completed)
+- **THEN** the selector SHALL display a "main" entry at index 0 followed by exactly those 3 subagents with their status icons and labels
+- **AND** the selector SHALL NOT display any placeholder/wrapper node (e.g., a "task:" entry with no events)
+- **AND** the selector SHALL be at least 8 rows tall (including borders) so that the "main" entry plus several subagents are visible without scrolling
 
-#### Scenario: Selector bar wraps around
-- **WHEN** the user navigates past the last subagent in the selector bar with ↓
-- **THEN** the selection SHALL wrap around to the first subagent
-- **AND** navigating past the first subagent with ↑ SHALL wrap to the last
+#### Scenario: Grouping nodes are excluded from selector and counts
+- **WHEN** a `delegate` invocation creates a 1:N grouping node (e.g., "delegate: ...") with up to 8 child sub-task nodes, and the grouping node has no events or messages of its own
+- **THEN** the selector SHALL NOT display the grouping node
+- **AND** the selector SHALL display the child sub-task nodes as real subagents
+- **AND** the active count, total count, and active-node list used by the status bar SHALL exclude the grouping node so its stale "Running" status does not inflate counts
+- **AND** the grouping node SHALL remain in the tree as a parent for its children, only filtered from display and counts
 
-#### Scenario: Selector bar indicates current view
-- **WHEN** the focus view is displaying subagent "explore"
-- **THEN** the selector bar SHALL visually distinguish "explore" as the currently viewed subagent (e.g., reverse video or arrow marker)
+#### Scenario: Cursor aligns with current subagent on entry
+- **WHEN** the user opens the focus view for subagent "explore" from the status bar
+- **THEN** the selector cursor (▶) SHALL start on "explore" (the currently viewed subagent)
+- **AND** the current-view marker (●) SHALL also be on "explore", so ▶ and ● are aligned on entry
+
+#### Scenario: Selector scrolls to keep cursor visible
+- **WHEN** there are more subagents than visible selector rows and the user navigates the cursor past the bottom of the visible window
+- **THEN** the selector SHALL scroll so the cursor remains visible
+- **AND** the "main" entry MAY scroll out of view when the cursor is far down the list
+
+#### Scenario: Selector wraps around including main
+- **WHEN** the user navigates past the last visible subagent in the selector with ↓
+- **THEN** the selection SHALL wrap around to the "main" entry (index 0)
+- **AND** navigating past the "main" entry with ↑ SHALL wrap to the last visible subagent
+
+#### Scenario: Selector distinguishes cursor from current view
+- **WHEN** the focus view is displaying subagent "explore" and the cursor is on a different subagent
+- **THEN** the selector SHALL visually distinguish the currently viewed subagent (● marker) from the cursor position (▶ marker)
+
+#### Scenario: Selector border indicates interactive area
+- **WHEN** the focus view is open
+- **THEN** the selector border SHALL be highlighted (active color) to indicate it is the interactive area
+- **AND** the timeline border SHALL be dimmed to indicate it is read-only
+
+#### Scenario: Completed subagents are dimmed
+- **WHEN** a subagent in the selector has completed (Completed, Failed, or Cancelled) and is still within the removal window
+- **THEN** the selector SHALL render that subagent's label in a dimmed color while keeping its status icon
+- **AND** the subagent SHALL remain navigable and switchable until it is removed
+
+#### Scenario: Completed subagents are removed after a delay
+- **WHEN** a subagent completed more than N seconds ago (default 10)
+- **THEN** the selector SHALL no longer display that subagent
+- **AND** the wrap-around length SHALL reflect the reduced visible list
+- **AND** the currently viewed subagent SHALL be exempt from removal so its timeline remains accessible
+
+#### Scenario: Removal state persists across focus view sessions
+- **WHEN** a subagent completed more than N seconds ago and the user exits and re-enters the focus view
+- **THEN** that subagent SHALL still not appear in the selector
+- **AND** the completion timestamp SHALL be reset when a new turn starts (subagent tree cleared)
 
 ### Requirement: Focus view event type visual distinction
 Each event type in the focus view timeline SHALL be visually distinguishable by color and icon, so users can quickly scan the execution flow.
