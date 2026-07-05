@@ -113,6 +113,7 @@ impl Tool for RlmDelegateTool {
                     cumulative_tokens: 0,
                     error_details: None,
                     events: Vec::new(),
+                    messages: Vec::new(),
                 },
             );
         }

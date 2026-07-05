@@ -535,6 +535,7 @@ mod tests {
                 cumulative_tokens: 500,
                 error_details: None,
                 events,
+                messages: vec![],
             },
             children: vec![],
         }
