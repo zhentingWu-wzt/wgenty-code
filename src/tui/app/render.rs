@@ -17,7 +17,13 @@ impl App {
 
         // Full-screen focus view takes over the entire terminal.
         if let Some(ref focus) = self.subagent_focus {
-            components::subagent_focus_view::FocusView::render(f, area, focus, &self.subagent_tree);
+            components::subagent_focus_view::FocusView::render(
+                f,
+                area,
+                focus,
+                &self.subagent_tree,
+                self.spinner_frame,
+            );
             return;
         }
 

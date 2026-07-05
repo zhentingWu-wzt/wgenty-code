@@ -5,9 +5,10 @@
 //! bar, and pressing Enter opens this full-screen focus view with the complete
 //! event timeline.
 
-use crate::agent::progress::{SubagentEvent, SubagentEventType, SubagentStatus};
+use crate::agent::progress::SubagentStatus;
 use crate::api::ChatMessage;
 use crate::tui::app::{MessageRole, UIMessage};
+use crate::tui::components::chat::message_to_lines;
 use crate::tui::components::subagent_tree::SubagentTree;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -157,7 +158,8 @@ pub enum FocusArea {
 pub struct FocusViewState {
     pub node_id: String,
     pub label: String,
-    pub events: Vec<SubagentEvent>,
+    pub messages: Vec<ChatMessage>,
+    pub collapsed_tool_ids: HashSet<String>,
     pub status: SubagentStatus,
     pub elapsed_ms: u64,
     pub cumulative_tokens: u64,
@@ -182,7 +184,8 @@ impl FocusViewState {
         Some(Self {
             node_id: node_id.to_string(),
             label: p.label.clone(),
-            events: p.events.clone(),
+            messages: p.messages.clone(),
+            collapsed_tool_ids: HashSet::new(),
             status: p.status.clone(),
             elapsed_ms: p.elapsed_ms,
             cumulative_tokens: p.cumulative_tokens,
@@ -206,7 +209,9 @@ impl FocusViewState {
         if let Some(node) = tree.nodes.get(&self.node_id) {
             let p = &node.progress;
             self.label = p.label.clone();
-            self.events = p.events.clone();
+            self.messages = p.messages.clone();
+            // collapsed_tool_ids preserved — stale tool_call IDs from
+            // old messages are harmless (they won't match new messages)
             self.status = p.status.clone();
             self.elapsed_ms = p.elapsed_ms;
             self.cumulative_tokens = p.cumulative_tokens;
@@ -227,7 +232,13 @@ pub struct FocusView;
 
 impl FocusView {
     /// Render the focus view full-screen.
-    pub fn render(f: &mut Frame, area: Rect, state: &FocusViewState, tree: &SubagentTree) {
+    pub fn render(
+        f: &mut Frame,
+        area: Rect,
+        state: &FocusViewState,
+        tree: &SubagentTree,
+        spinner_frame: u8,
+    ) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -324,14 +335,14 @@ impl FocusView {
             inactive_border
         };
         let timeline_block = Block::default()
-            .title(" Event Timeline ")
+            .title(" Conversation ")
             .borders(Borders::ALL)
             .border_style(timeline_border)
             .style(Style::default().bg(Color::Rgb(26, 26, 46)));
         let timeline_inner = timeline_block.inner(chunks[1]);
         f.render_widget(timeline_block, chunks[1]);
 
-        let timeline_lines = build_timeline_lines(state, timeline_inner);
+        let timeline_lines = build_conversation_lines(state, timeline_inner, spinner_frame);
         f.render_widget(Paragraph::new(timeline_lines), timeline_inner);
 
         // ── Selector ──────────────────────────────────────────────────
@@ -352,7 +363,7 @@ impl FocusView {
         f.render_widget(Paragraph::new(selector_lines), selector_inner);
 
         // ── Help bar ──────────────────────────────────────────────────
-        let total = state.events.len();
+        let total = state.messages.len();
         let scroll_info = if total > 0 {
             if state.scroll_offset == 0 {
                 "(latest)".to_string()
@@ -364,7 +375,7 @@ impl FocusView {
         };
         let help_text = match state.active_area {
             FocusArea::Timeline => format!(
-                " \u{2191}\u{2193} PgUp/PgDn scroll  Tab selector  Esc back  {}",
+                " \u{2191}\u{2193} PgUp/PgDn scroll  t fold  Tab selector  Esc back  {}",
                 scroll_info
             ),
             FocusArea::Selector => {
@@ -399,131 +410,56 @@ fn timeline_start_index(len: usize, available: usize, scroll_offset: usize) -> u
     max_start.saturating_sub(scroll_offset.min(max_start))
 }
 
-fn build_timeline_lines(state: &FocusViewState, inner: Rect) -> Vec<Line<'static>> {
+fn build_conversation_lines(
+    state: &FocusViewState,
+    inner: Rect,
+    spinner_frame: u8,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
-    let available = inner.height as usize;
-    let start = timeline_start_index(state.events.len(), available, state.scroll_offset);
 
-    let visible_events: Vec<&SubagentEvent> =
-        state.events.iter().skip(start).take(available).collect();
-
-    if visible_events.is_empty() {
+    if state.messages.is_empty() {
         lines.push(Line::from(vec![Span::styled(
-            "No events recorded.",
+            "Waiting for subagent…",
             Style::default().fg(Color::Rgb(108, 112, 134)),
         )]));
         return lines;
     }
 
-    for event in &visible_events {
-        let elapsed = format!("+{:.1}s", event.elapsed_ms as f64 / 1000.0);
-        match &event.event_type {
-            SubagentEventType::Thought { text } => {
-                let max_w = inner.width.saturating_sub(12) as usize;
-                let display = truncate(text, max_w);
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!(" {:<8} ", elapsed),
-                        Style::default().fg(Color::Rgb(108, 112, 134)),
-                    ),
-                    Span::styled(
-                        " THOUGHT ",
-                        Style::default()
-                            .fg(Color::Rgb(180, 180, 200))
-                            .add_modifier(Modifier::DIM),
-                    ),
-                    Span::styled(display, Style::default().fg(Color::Rgb(180, 180, 200))),
-                ]));
-            }
-            SubagentEventType::Action {
-                tool_name,
-                params_summary,
-                ..
-            } => {
-                let action_str = if params_summary.is_empty() {
-                    tool_name.clone()
-                } else {
-                    format!("{}(\"{}\")", tool_name, params_summary)
-                };
-                let max_w = inner.width.saturating_sub(12) as usize;
-                let display = truncate(&action_str, max_w);
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!(" {:<8} ", elapsed),
-                        Style::default().fg(Color::Rgb(108, 112, 134)),
-                    ),
-                    Span::styled(" TOOL    ", Style::default().fg(Color::Rgb(137, 180, 250))),
-                    Span::styled(display, Style::default().fg(Color::Rgb(137, 180, 250))),
-                ]));
-            }
-            SubagentEventType::ToolResult {
-                tool_name,
-                success,
-                summary,
-            } => {
-                let (icon, color) = if *success {
-                    ("OK", Color::Rgb(166, 227, 161))
-                } else {
-                    ("FAIL", Color::Rgb(243, 139, 168))
-                };
-                let max_w = inner.width.saturating_sub(12) as usize;
-                let display = truncate(summary, max_w);
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!(" {:<8} ", elapsed),
-                        Style::default().fg(Color::Rgb(108, 112, 134)),
-                    ),
-                    Span::styled(format!(" {} ", icon), Style::default().fg(color)),
-                    Span::styled(
-                        format!("{}: {}", tool_name, display),
-                        Style::default().fg(Color::Rgb(148, 148, 165)),
-                    ),
-                ]));
-            }
-            SubagentEventType::Error { message, .. } => {
-                let max_w = inner.width.saturating_sub(12) as usize;
-                let display = truncate(message, max_w);
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!(" {:<8} ", elapsed),
-                        Style::default().fg(Color::Rgb(108, 112, 134)),
-                    ),
-                    Span::styled(
-                        " ERROR   ",
-                        Style::default()
-                            .fg(Color::Rgb(243, 139, 168))
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(display, Style::default().fg(Color::Rgb(243, 139, 168))),
-                ]));
-            }
-            SubagentEventType::Completion { status, summary } => {
-                let status_display_str = match status.as_str() {
-                    "completed" => "COMPLETED",
-                    "failed" => "FAILED",
-                    _ => status,
-                };
-                let color = if status == "completed" {
-                    Color::Rgb(166, 227, 161)
-                } else {
-                    Color::Rgb(243, 139, 168)
-                };
-                let sum = summary.as_deref().unwrap_or("");
-                let max_w = inner.width.saturating_sub(12) as usize;
-                let display = truncate(sum, max_w);
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!(" {:<8} ", elapsed),
-                        Style::default().fg(Color::Rgb(108, 112, 134)),
-                    ),
-                    Span::styled(
-                        format!(" {}  ", status_display_str),
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(display, Style::default().fg(color)),
-                ]));
+    let ui_messages = chat_messages_to_ui_messages(&state.messages);
+    let total = ui_messages.len();
+
+    for (idx, ui_msg) in ui_messages.iter().enumerate() {
+        let show_tool_expand_hint = idx == total - 1;
+
+        let mut msg = ui_msg.clone();
+
+        // Apply fold override from collapsed_tool_ids
+        if msg.role == MessageRole::Tool {
+            let tool_id = msg
+                .tool_metadata
+                .as_ref()
+                .and_then(|m| m.get("tool_call_id"))
+                .and_then(|v| v.as_str());
+            if let Some(tid) = tool_id {
+                // Not in set = collapsed (default); in set = expanded
+                msg.tool_collapsed = !state.collapsed_tool_ids.contains(tid);
             }
         }
+
+        lines.extend(message_to_lines(
+            &msg,
+            inner.width,
+            spinner_frame,
+            show_tool_expand_hint,
+        ));
+    }
+
+    // Scroll: use existing timeline_start_index for lines-from-bottom
+    let available = inner.height as usize;
+    let total_lines = lines.len();
+    let start = timeline_start_index(total_lines, available, state.scroll_offset);
+    if start > 0 {
+        lines = lines.into_iter().skip(start).collect();
     }
 
     lines
@@ -608,7 +544,7 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::progress::{SubagentEventType, SubagentProgress};
+    use crate::agent::progress::{SubagentEvent, SubagentEventType, SubagentProgress};
     use crate::tui::components::subagent_tree::SubagentNode;
 
     #[test]
@@ -693,7 +629,8 @@ mod tests {
         let state = FocusViewState::build("n1", &tree).expect("should build from existing node");
         assert_eq!(state.node_id, "n1");
         assert_eq!(state.label, "Node n1");
-        assert_eq!(state.events.len(), 2);
+        // messages come from SubagentProgress.messages, not from events
+        assert!(state.messages.is_empty());
         assert_eq!(state.status, SubagentStatus::Running);
         assert_eq!(state.elapsed_ms, 1500);
         assert_eq!(state.cumulative_tokens, 500);

@@ -132,7 +132,7 @@ fn add_inline_separator(lines: &mut Vec<Line<'static>>, width: u16) {
     }
 }
 
-fn message_to_lines(
+pub fn message_to_lines(
     msg: &UIMessage,
     width: u16,
     spinner_frame: u8,
