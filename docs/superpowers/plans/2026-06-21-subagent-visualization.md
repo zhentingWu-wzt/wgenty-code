@@ -2,6 +2,7 @@
 change: subagent-visualization
 design-doc: docs/superpowers/specs/2026-06-21-subagent-visualization-design.md
 base-ref: 3b60351444a8d4a0704fb9adab58a084c02aec9b
+archived-with: 2026-06-21-subagent-visualization
 ---
 
 # Subagent Visualization — Implementation Plan
