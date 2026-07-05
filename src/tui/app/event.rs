@@ -2,6 +2,7 @@
 
 use super::types::*;
 use super::App;
+use crate::agent::progress::SubagentStatus;
 use crate::prompts::{self, PromptContext};
 use crate::tui::components::subagent_focus_view::{FocusArea, FocusViewState};
 use crate::tui::components::subagent_status_bar::active_node_ids;
@@ -522,6 +523,7 @@ impl App {
             }
             AppEvent::Submit(text) => {
                 self.subagent_tree.clear();
+                self.completed_at.clear();
                 self.subagent_focus = None;
                 self.subagent_status_bar_selected = 0;
                 self.submit_input(text);
@@ -937,6 +939,29 @@ impl App {
                 });
             }
             AppEvent::SubagentUpdate(progress) => {
+                // Track completion time on transition to a terminal status
+                // (Completed/Failed/Cancelled). Used by the focus view selector
+                // to dim completed subagents and remove them after a delay.
+                let node_id = progress.node_id.clone();
+                let is_terminal = matches!(
+                    progress.status,
+                    SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
+                );
+                let was_terminal = self
+                    .subagent_tree
+                    .nodes
+                    .get(&node_id)
+                    .map(|n| {
+                        matches!(
+                            n.progress.status,
+                            SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
+                        )
+                    })
+                    .unwrap_or(false);
+                if is_terminal && !was_terminal {
+                    self.completed_at
+                        .insert(node_id.clone(), std::time::Instant::now());
+                }
                 self.subagent_tree.upsert(*progress);
                 if let Some(ref mut focus) = self.subagent_focus {
                     focus.rebuild(&self.subagent_tree);
