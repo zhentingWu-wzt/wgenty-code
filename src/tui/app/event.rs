@@ -42,14 +42,31 @@ impl App {
                             };
                             return;
                         }
+                        // Timeline scroll: scroll_offset is lines-from-bottom
+                        // (0 = newest). Up/PageUp → older (add); Down/PageDown →
+                        // newer (sub), re-engaging auto_scroll at the bottom.
                         KeyCode::Up if focus.active_area == FocusArea::Timeline => {
                             focus.auto_scroll = false;
-                            focus.scroll_offset = focus.scroll_offset.saturating_sub(1);
+                            focus.scroll_offset = focus.scroll_offset.saturating_add(1);
                             return;
                         }
                         KeyCode::Down if focus.active_area == FocusArea::Timeline => {
+                            focus.scroll_offset = focus.scroll_offset.saturating_sub(1);
+                            if focus.scroll_offset == 0 {
+                                focus.auto_scroll = true;
+                            }
+                            return;
+                        }
+                        KeyCode::PageUp if focus.active_area == FocusArea::Timeline => {
                             focus.auto_scroll = false;
-                            focus.scroll_offset = focus.scroll_offset.saturating_add(1);
+                            focus.scroll_offset = focus.scroll_offset.saturating_add(10);
+                            return;
+                        }
+                        KeyCode::PageDown if focus.active_area == FocusArea::Timeline => {
+                            focus.scroll_offset = focus.scroll_offset.saturating_sub(10);
+                            if focus.scroll_offset == 0 {
+                                focus.auto_scroll = true;
+                            }
                             return;
                         }
                         KeyCode::Up if focus.active_area == FocusArea::Selector => {
@@ -398,19 +415,22 @@ impl App {
                 }
             }
             AppEvent::MouseScrolled(delta) => {
-                // Focus view timeline: scroll_offset = skip from top (0 = oldest,
-                // higher = newer). ScrollUp → toward oldest (sub); ScrollDown →
-                // toward newer (add).
+                // Focus view timeline: scroll_offset is lines-from-bottom
+                // (0 = newest). ScrollUp → older (add); ScrollDown → newer
+                // (sub), re-engaging auto_scroll at the bottom.
                 if let Some(ref mut focus) = self.subagent_focus {
                     if focus.active_area == FocusArea::Timeline {
                         if delta > 0 {
                             focus.scroll_offset =
-                                focus.scroll_offset.saturating_sub(delta as usize);
+                                focus.scroll_offset.saturating_add(delta as usize);
+                            focus.auto_scroll = false;
                         } else {
                             focus.scroll_offset =
-                                focus.scroll_offset.saturating_add((-delta) as usize);
+                                focus.scroll_offset.saturating_sub((-delta) as usize);
+                            if focus.scroll_offset == 0 {
+                                focus.auto_scroll = true;
+                            }
                         }
-                        focus.auto_scroll = false;
                     }
                     return;
                 }

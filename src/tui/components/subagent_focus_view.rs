@@ -222,13 +222,17 @@ impl FocusView {
         // ── Help bar ──────────────────────────────────────────────────
         let total = state.events.len();
         let scroll_info = if total > 0 {
-            format!("({}/{})", state.scroll_offset + 1, total)
+            if state.scroll_offset == 0 {
+                "(latest)".to_string()
+            } else {
+                format!("({}\u{2191})", state.scroll_offset)
+            }
         } else {
             "(no events)".to_string()
         };
         let help_text = match state.active_area {
             FocusArea::Timeline => format!(
-                " \u{2191}\u{2193} scroll  Tab selector  Esc back  {}",
+                " \u{2191}\u{2193} PgUp/PgDn scroll  Tab selector  Esc back  {}",
                 scroll_info
             ),
             FocusArea::Selector => {
@@ -255,13 +259,21 @@ fn status_display(status: &SubagentStatus) -> (&'static str, Color) {
     }
 }
 
+/// Compute the start index for displaying `available` events from `len` total,
+/// where `scroll_offset` is lines-from-bottom (0 = newest, higher = older).
+/// Clamps so the window never runs past the oldest event.
+fn timeline_start_index(len: usize, available: usize, scroll_offset: usize) -> usize {
+    let max_start = len.saturating_sub(available);
+    max_start.saturating_sub(scroll_offset.min(max_start))
+}
+
 fn build_timeline_lines(state: &FocusViewState, inner: Rect) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
     let available = inner.height as usize;
-    let scroll = state.scroll_offset;
+    let start = timeline_start_index(state.events.len(), available, state.scroll_offset);
 
     let visible_events: Vec<&SubagentEvent> =
-        state.events.iter().skip(scroll).take(available).collect();
+        state.events.iter().skip(start).take(available).collect();
 
     if visible_events.is_empty() {
         lines.push(Line::from(vec![Span::styled(
@@ -466,6 +478,41 @@ mod tests {
     use super::*;
     use crate::agent::progress::{SubagentEventType, SubagentProgress};
     use crate::tui::components::subagent_tree::SubagentNode;
+
+    #[test]
+    fn test_timeline_start_index_newest() {
+        // 10 events, 5 visible, scroll=0 → start at 5 (show events[5..10], newest 5)
+        assert_eq!(timeline_start_index(10, 5, 0), 5);
+    }
+
+    #[test]
+    fn test_timeline_start_index_scrolled_to_older() {
+        // scroll=3 (lines from bottom) → start at 2 (show events[2..7])
+        assert_eq!(timeline_start_index(10, 5, 3), 2);
+    }
+
+    #[test]
+    fn test_timeline_start_index_oldest() {
+        // scroll=5 = max_start → start at 0 (oldest 5)
+        assert_eq!(timeline_start_index(10, 5, 5), 0);
+    }
+
+    #[test]
+    fn test_timeline_start_index_clamps_overscroll() {
+        // scroll beyond max_start clamps to oldest (start=0)
+        assert_eq!(timeline_start_index(10, 5, 100), 0);
+    }
+
+    #[test]
+    fn test_timeline_start_index_fewer_events_than_viewport() {
+        // len < available → start at 0 (show all)
+        assert_eq!(timeline_start_index(3, 5, 0), 0);
+    }
+
+    #[test]
+    fn test_timeline_start_index_empty() {
+        assert_eq!(timeline_start_index(0, 5, 0), 0);
+    }
 
     fn make_node(node_id: &str, events: Vec<SubagentEvent>) -> SubagentNode {
         SubagentNode {
