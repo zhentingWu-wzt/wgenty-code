@@ -2,6 +2,8 @@
 comet_change: subagent-visualization
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-06-21-subagent-visualization
+status: final
 ---
 
 # Subagent Visualization — Technical Design
