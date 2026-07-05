@@ -53,13 +53,15 @@ The TUI SHALL display the model's text responses alongside tool calls so users c
 - **THEN** the full text SHALL be recorded in the SQLite transcript; the TUI text snapshot MAY truncate for inline display but the detail view SHALL show the complete text
 
 ### Requirement: Inline subagent card shows current action with context
-The inline subagent card rendered in the chat area SHALL show the current tool call with parameters and the most recent model text, so users can see what the subagent is doing without opening the overlay panel.
+The inline subagent card SHALL NOT be rendered in the main chat area. Instead, the current tool call with parameters and the most recent model text SHALL be displayed in the subagent status bar (below the input area) and the full execution timeline SHALL be available in the focus view.
 
-#### Scenario: Inline card during active subagent
+#### Scenario: Chat area remains clean during subagent execution
 - **WHEN** a subagent is Running with text snapshot "Analyzing the auth module structure…" and current tool `file_read("src/auth.rs")`
-- **THEN** the inline card SHALL display the tool call with params and a dimmed preview of the model's text
+- **THEN** the main chat area SHALL NOT display any inline subagent card or tree structure
+- **AND** the subagent status bar SHALL display the current tool and a compact label for the subagent
 
-#### Scenario: Inline card when subagent has no text yet
+#### Scenario: No inline card when subagent has no text yet
 - **WHEN** a subagent is Running but has no text snapshot yet (first round, still streaming)
-- **THEN** the inline card SHALL display "thinking…" and no text preview
+- **THEN** the main chat area SHALL NOT display any inline subagent card
+- **AND** the subagent status bar SHALL display the subagent label with a "thinking…" indicator
 

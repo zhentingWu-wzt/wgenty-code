@@ -2,6 +2,8 @@
 comet_change: subagent-focus-view
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-05-subagent-focus-view
+status: final
 ---
 
 # Design Doc: Subagent Focus View

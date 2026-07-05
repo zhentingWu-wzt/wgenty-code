@@ -2,6 +2,7 @@
 change: subagent-focus-view
 design-doc: docs/superpowers/specs/2026-07-05-subagent-focus-view-design.md
 base-ref: 1a7825b080586921f998a3f033437d5ec53eedd6
+archived-with: 2026-07-05-subagent-focus-view
 ---
 
 # Implementation Plan: Subagent Focus View
@@ -27,6 +28,7 @@ base-ref: 1a7825b080586921f998a3f033437d5ec53eedd6
 
 采用**先加后删**策略：先创建新组件并接入，确认编译通过后再删除旧组件。每个 Task 产出可编译、可提交的状态。
 
+archived-with: 2026-07-05-subagent-focus-view
 ---
 
 ## Task 1: SubagentTree::node_list() 方法
@@ -65,6 +67,7 @@ impl SubagentTree {
 
 **验收:** `cargo test subagent_tree` 通过。
 
+archived-with: 2026-07-05-subagent-focus-view
 ---
 
 ## Task 2: FocusViewState 与 FocusArea 类型
@@ -160,6 +163,7 @@ impl FocusViewState {
 
 **验收:** `cargo test subagent_focus_view` 通过（需要先在 mod.rs 注册模块）。
 
+archived-with: 2026-07-05-subagent-focus-view
 ---
 
 ## Task 3: FocusView 渲染组件
@@ -196,6 +200,7 @@ impl FocusView {
 
 **验收:** 编译通过，渲染逻辑通过手动验证。
 
+archived-with: 2026-07-05-subagent-focus-view
 ---
 
 ## Task 4: SubagentStatusBar 渲染组件
@@ -234,6 +239,7 @@ pub fn render(
 
 **验收:** 编译通过，状态条在有活跃子代理时显示。
 
+archived-with: 2026-07-05-subagent-focus-view
 ---
 
 ## Task 5: App struct 与模块注册
@@ -259,6 +265,7 @@ pub subagent_status_bar_selected: usize,
 
 **验收:** `cargo check` 通过。
 
+archived-with: 2026-07-05-subagent-focus-view
 ---
 
 ## Task 6: render.rs 布局变更
@@ -298,6 +305,7 @@ if has_status_bar {
 
 **验收:** `cargo check` 通过。
 
+archived-with: 2026-07-05-subagent-focus-view
 ---
 
 ## Task 7: event.rs — 状态条键盘路由
@@ -343,6 +351,7 @@ if active_count > 0 && self.subagent_focus.is_none() {
 
 **验收:** `cargo check` 通过。
 
+archived-with: 2026-07-05-subagent-focus-view
 ---
 
 ## Task 8: event.rs — 焦点视图键盘路由 + SubagentUpdate 重建
@@ -403,6 +412,7 @@ AppEvent::SubagentUpdate => {
 
 **验收:** `cargo check` 通过。
 
+archived-with: 2026-07-05-subagent-focus-view
 ---
 
 ## Task 9: 移除旧组件
@@ -423,6 +433,7 @@ AppEvent::SubagentUpdate => {
 
 **验收:** `cargo check` 通过，无残留引用。
 
+archived-with: 2026-07-05-subagent-focus-view
 ---
 
 ## Task 10: 验证
