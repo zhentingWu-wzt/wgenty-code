@@ -31,3 +31,4 @@ settings.json
 .superpowers/
 # CodeGraph index
 .codegraph/
+.claude/worktrees/
