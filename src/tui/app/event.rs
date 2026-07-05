@@ -92,25 +92,29 @@ impl App {
                             return;
                         }
                         KeyCode::Up if focus.active_area == FocusArea::Selector => {
-                            let len = self.subagent_tree.node_list().len();
+                            let len = self.subagent_tree.node_list().len() + 1;
                             focus.selector_index = wrap_prev(focus.selector_index, len);
                             return;
                         }
                         KeyCode::Down if focus.active_area == FocusArea::Selector => {
-                            let len = self.subagent_tree.node_list().len();
+                            let len = self.subagent_tree.node_list().len() + 1;
                             focus.selector_index = wrap_next(focus.selector_index, len);
                             return;
                         }
                         KeyCode::Enter if focus.active_area == FocusArea::Selector => {
-                            let new_state = {
-                                let list = self.subagent_tree.node_list();
-                                list.get(focus.selector_index)
-                                    .and_then(|id| FocusViewState::build(id, &self.subagent_tree))
-                            };
-                            if let Some(state) = new_state {
-                                *focus = state;
+                            if focus.selector_index == 0 {
+                                exit_focus = true;
+                            } else {
+                                let new_state = {
+                                    let list = self.subagent_tree.node_list();
+                                    list.get(focus.selector_index - 1)
+                                        .and_then(|id| FocusViewState::build(id, &self.subagent_tree))
+                                };
+                                if let Some(state) = new_state {
+                                    *focus = state;
+                                }
+                                return;
                             }
-                            return;
                         }
                         KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             // pass through to global Ctrl+P handler
@@ -229,6 +233,7 @@ impl App {
                                         // Both @ and / completion insert /name to input
                                         let insert = format!("/{} ", m.text);
                                         self.input_box.textarea.insert_str(&insert);
+                                        self.input_box.update_style();
                                     }
                                 }
                             }
@@ -303,17 +308,14 @@ impl App {
                     }
                     return;
                 }
-                // Subagent status bar: Tab toggles focus between main input and
-                // the status bar. When focused, ↑↓ navigate and Enter opens the
-                // focus view. When unfocused (default), ↑↓ scroll chat and
-                // Enter submits — normal input behaviour.
+                // Subagent status bar: ↑↓ auto-focus and navigate, Enter opens
+                // the focus view, Esc unfocuses. No Tab — auto-focus on arrow keys.
                 if self.subagent_focus.is_none() {
                     let active = active_node_ids(&self.subagent_tree);
                     if !active.is_empty() {
-                        // Tab toggles focus between main input and the status bar
-                        if key.code == KeyCode::Tab {
-                            self.subagent_status_bar_focused = !self.subagent_status_bar_focused;
-                            return;
+                        // Auto-activate on ↑↓
+                        if key.code == KeyCode::Up || key.code == KeyCode::Down {
+                            self.subagent_status_bar_focused = true;
                         }
                         if self.subagent_status_bar_focused {
                             match key.code {
@@ -352,25 +354,9 @@ impl App {
                         }
                     }
                 }
-                // Scroll handling (when no popup is active)
-                // scroll_offset = lines scrolled UP from bottom:
-                //   0 = at bottom (newest), higher values = further up (older)
+                // Scroll handling: PageUp/PageDown only. ↑↓ reserved for
+                // status bar navigation. Scroll by mouse wheel instead.
                 match key.code {
-                    KeyCode::Up => {
-                        // Scroll UP → see OLDER content → more lines from bottom
-                        self.scroll_offset = self.scroll_offset.saturating_add(1);
-                        self.user_scrolled = true;
-                        return;
-                    }
-                    KeyCode::Down => {
-                        // Scroll DOWN → see NEWER content → fewer lines from bottom
-                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                        // If scrolled back to bottom, resume auto-scroll for future content
-                        if self.scroll_offset == 0 {
-                            self.user_scrolled = false;
-                        }
-                        return;
-                    }
                     KeyCode::PageUp => {
                         self.scroll_offset = self.scroll_offset.saturating_add(10);
                         self.user_scrolled = true;
@@ -400,6 +386,7 @@ impl App {
                     if key.modifiers.contains(KeyModifiers::SHIFT) {
                         // Shift+Enter → newline
                         self.input_box.textarea.insert_char('\n');
+                        self.input_box.update_style();
                     } else if !self.input_box.is_empty() {
                         let text = self.input_box.take_text();
                         let _ = self.event_tx.send(AppEvent::Submit(text));
@@ -429,6 +416,7 @@ impl App {
                 // Feed to tui-textarea for CJK/IME input.
                 // Returns true if tui-textarea consumed the key.
                 let handled = self.input_box.textarea.input(*key);
+                self.input_box.update_style();
                 if !handled && key.code == KeyCode::Esc {
                     self.should_quit = true;
                 }
@@ -458,6 +446,7 @@ impl App {
                 for c in text.chars() {
                     self.input_box.textarea.insert_char(c);
                 }
+                self.input_box.update_style();
             }
             AppEvent::MouseScrolled(delta) => {
                 // Focus view timeline: scroll_offset is lines-from-bottom

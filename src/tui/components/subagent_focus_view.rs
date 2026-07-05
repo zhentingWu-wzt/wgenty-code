@@ -470,18 +470,30 @@ fn build_selector_lines(
     tree: &SubagentTree,
     inner: Rect,
 ) -> Vec<Line<'static>> {
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
     let node_ids = tree.node_list();
     let available = inner.height as usize;
-    let scroll = 0usize; // selector scrolls are simple for now
+    let scroll = 0usize;
 
-    node_ids
-        .iter()
-        .skip(scroll)
-        .take(available)
-        .enumerate()
-        .map(|(i, node_id)| {
+    // "main" entry (index 0) for returning to main window
+    if available > 0 {
+        let is_main_selected = state.selector_index == 0;
+        let selector = if is_main_selected { "> " } else { "  " };
+        let label_color = if is_main_selected {
+            Color::Rgb(249, 226, 175)
+        } else {
+            Color::Rgb(180, 180, 200)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(selector, Style::default().fg(Color::Rgb(249, 226, 175))),
+            Span::styled("main", Style::default().fg(label_color).add_modifier(Modifier::BOLD)),
+        ]));
+    }
+
+    for (i, node_id) in node_ids.iter().skip(scroll).take(available).enumerate() {
             let is_current = node_id == &state.node_id;
-            let is_selected = i + scroll == state.selector_index;
+            let is_selected = i + scroll + 1 == state.selector_index;
             let node = tree.nodes.get(node_id);
             let (icon, icon_color) = if let Some(n) = node {
                 selector_status_icon(&n.progress.status)
@@ -504,22 +516,23 @@ fn build_selector_lines(
             let max_w = inner.width.saturating_sub(8) as usize;
             let display = truncate(&label, max_w);
 
-            Line::from(vec![
-                Span::styled(selector, Style::default().fg(Color::Rgb(249, 226, 175))),
-                Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
-                Span::styled(
-                    display,
-                    Style::default()
-                        .fg(label_color)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    current_marker,
-                    Style::default().fg(Color::Rgb(249, 226, 175)),
-                ),
-            ])
-        })
-        .collect()
+        lines.push(Line::from(vec![
+            Span::styled(selector, Style::default().fg(Color::Rgb(249, 226, 175))),
+            Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
+            Span::styled(
+                display,
+                Style::default()
+                    .fg(label_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                current_marker,
+                Style::default().fg(Color::Rgb(249, 226, 175)),
+            ),
+        ]));
+    }
+
+    lines
 }
 
 fn selector_status_icon(status: &SubagentStatus) -> (&'static str, Color) {
