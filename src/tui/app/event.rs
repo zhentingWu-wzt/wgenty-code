@@ -112,6 +112,12 @@ impl App {
                             }
                             return;
                         }
+                        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            // pass through to global Ctrl+P handler
+                        }
+                        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            // pass through to global Ctrl+L handler
+                        }
                         _ => return,
                     }
                 }
@@ -297,35 +303,52 @@ impl App {
                     }
                     return;
                 }
-                // Subagent status bar: when active subagents exist and the focus
-                // view is closed, ↑↓ navigate the bar and Enter opens the focus
-                // view. Other keys fall through to the input box.
+                // Subagent status bar: Tab toggles focus between main input and
+                // the status bar. When focused, ↑↓ navigate and Enter opens the
+                // focus view. When unfocused (default), ↑↓ scroll chat and
+                // Enter submits — normal input behaviour.
                 if self.subagent_focus.is_none() {
                     let active = active_node_ids(&self.subagent_tree);
                     if !active.is_empty() {
-                        match key.code {
-                            KeyCode::Up => {
-                                self.subagent_status_bar_selected =
-                                    wrap_prev(self.subagent_status_bar_selected, active.len());
-                                return;
-                            }
-                            KeyCode::Down => {
-                                self.subagent_status_bar_selected =
-                                    wrap_next(self.subagent_status_bar_selected, active.len());
-                                return;
-                            }
-                            KeyCode::Enter => {
-                                if let Some(node_id) = active.get(self.subagent_status_bar_selected)
-                                {
-                                    if let Some(state) =
-                                        FocusViewState::build(node_id, &self.subagent_tree)
-                                    {
-                                        self.subagent_focus = Some(state);
-                                    }
+                        // Tab toggles focus between main input and the status bar
+                        if key.code == KeyCode::Tab {
+                            self.subagent_status_bar_focused = !self.subagent_status_bar_focused;
+                            return;
+                        }
+                        if self.subagent_status_bar_focused {
+                            match key.code {
+                                KeyCode::Up => {
+                                    self.subagent_status_bar_selected =
+                                        wrap_prev(self.subagent_status_bar_selected, active.len());
+                                    return;
                                 }
-                                return;
+                                KeyCode::Down => {
+                                    self.subagent_status_bar_selected =
+                                        wrap_next(self.subagent_status_bar_selected, active.len());
+                                    return;
+                                }
+                                KeyCode::Enter => {
+                                    if let Some(node_id) =
+                                        active.get(self.subagent_status_bar_selected)
+                                    {
+                                        if let Some(state) =
+                                            FocusViewState::build(node_id, &self.subagent_tree)
+                                        {
+                                            self.subagent_focus = Some(state);
+                                        }
+                                    }
+                                    return;
+                                }
+                                KeyCode::Esc => {
+                                    self.subagent_status_bar_focused = false;
+                                    return;
+                                }
+                                _ => {
+                                    // Any other key disengages focus and passes
+                                    // through to the input box
+                                    self.subagent_status_bar_focused = false;
+                                }
                             }
-                            _ => {}
                         }
                     }
                 }
@@ -586,7 +609,13 @@ impl App {
                         && last.tool_running
                         && last.tool_name.as_deref() == Some(&name)
                     {
-                        last.content = format_tool_result(&name, &args, &content);
+                        // task/delegate tools: keep the entry compact — the
+                        // subagent's full output lives in the focus view now.
+                        last.content = if name == "task" || name == "delegate" {
+                            "→ focus view for details".to_string()
+                        } else {
+                            format_tool_result(&name, &args, &content)
+                        };
                         last.tool_collapsed = true;
                         last.tool_running = false;
                         last.diff_data = diff_data;

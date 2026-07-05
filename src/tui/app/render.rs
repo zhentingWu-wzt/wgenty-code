@@ -111,6 +111,7 @@ impl App {
                 layout[status_bar_idx],
                 &self.subagent_tree,
                 self.subagent_status_bar_selected,
+                self.subagent_status_bar_focused,
             );
         }
         if has_pending {
