@@ -743,8 +743,7 @@ mod tests {
     #[test]
     fn test_rebuild_preserves_collapsed_tool_ids() {
         let mut tree = SubagentTree::default();
-        tree.nodes
-            .insert("n1".to_string(), make_node("n1", vec![]));
+        tree.nodes.insert("n1".to_string(), make_node("n1", vec![]));
         tree.root_id = Some("n1".to_string());
 
         let mut state = FocusViewState::build("n1", &tree).unwrap();
