@@ -115,10 +115,12 @@ fn truncate_str(s: &str, max: usize) -> String {
     }
 }
 
-/// Collect active (Running + Pending) node IDs in the order they appear in
-/// the tree's node_list. Used by event handling for status bar navigation.
+/// Collect active (Running + Pending) REAL node IDs in the order they appear
+/// in the tree. Grouping/wrapper nodes (e.g., a `delegate` 1:N wrapper stuck
+/// in Running) are excluded so they don't inflate the active list. Used by
+/// event handling for status bar navigation.
 pub fn active_node_ids(tree: &SubagentTree) -> Vec<String> {
-    let node_ids = tree.node_list();
+    let node_ids = tree.real_node_list();
     node_ids
         .into_iter()
         .filter(|id| {

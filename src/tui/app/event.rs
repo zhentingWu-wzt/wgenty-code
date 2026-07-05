@@ -2,8 +2,9 @@
 
 use super::types::*;
 use super::App;
+use crate::agent::progress::SubagentStatus;
 use crate::prompts::{self, PromptContext};
-use crate::tui::components::subagent_focus_view::{FocusArea, FocusViewState};
+use crate::tui::components::subagent_focus_view::{visible_node_ids, FocusViewState};
 use crate::tui::components::subagent_status_bar::active_node_ids;
 use crate::tui::traits::Component;
 use crate::tui::util::{
@@ -29,50 +30,67 @@ impl App {
         match event {
             AppEvent::KeyEvent(key) => {
                 // Full-screen subagent focus view: while open it swallows all keys
-                // (Esc exits; Tab toggles area; ↑↓ scroll timeline / navigate the
-                // selector; Enter switches focus to the selected subagent).
+                // (Esc exits; ↑↓ navigate the selector; Enter switches to the
+                // selected subagent or exits on "main"; 't' folds tool calls;
+                // mouse wheel scrolls the read-only timeline).
                 let mut exit_focus = false;
                 if let Some(ref mut focus) = self.subagent_focus {
                     match key.code {
                         KeyCode::Esc => exit_focus = true,
-                        KeyCode::Tab => {
-                            focus.active_area = match focus.active_area {
-                                FocusArea::Timeline => FocusArea::Selector,
-                                FocusArea::Selector => FocusArea::Timeline,
-                            };
+                        // ↑↓ navigate the selector (main + visible subagents), wrap.
+                        // The selector is the sole keyboard-interactive area; the
+                        // timeline is read-only (mouse-wheel scroll only).
+                        KeyCode::Up => {
+                            let now = std::time::Instant::now();
+                            let visible = visible_node_ids(
+                                &self.subagent_tree,
+                                &self.completed_at,
+                                now,
+                                &focus.node_id,
+                            );
+                            let len = visible.len() + 1; // +1 for "main"
+                            focus.selector_index = wrap_prev(focus.selector_index, len);
                             return;
                         }
-                        // Timeline scroll: scroll_offset is lines-from-bottom
-                        // (0 = newest). Up/PageUp → older (add); Down/PageDown →
-                        // newer (sub), re-engaging auto_scroll at the bottom.
-                        KeyCode::Up if focus.active_area == FocusArea::Timeline => {
-                            focus.auto_scroll = false;
-                            focus.scroll_offset = focus.scroll_offset.saturating_add(1);
+                        KeyCode::Down => {
+                            let now = std::time::Instant::now();
+                            let visible = visible_node_ids(
+                                &self.subagent_tree,
+                                &self.completed_at,
+                                now,
+                                &focus.node_id,
+                            );
+                            let len = visible.len() + 1;
+                            focus.selector_index = wrap_next(focus.selector_index, len);
                             return;
                         }
-                        KeyCode::Down if focus.active_area == FocusArea::Timeline => {
-                            focus.scroll_offset = focus.scroll_offset.saturating_sub(1);
-                            if focus.scroll_offset == 0 {
-                                focus.auto_scroll = true;
+                        KeyCode::Enter => {
+                            if focus.selector_index == 0 {
+                                // "main" selected → exit focus view
+                                exit_focus = true;
+                            } else {
+                                let now = std::time::Instant::now();
+                                let visible = visible_node_ids(
+                                    &self.subagent_tree,
+                                    &self.completed_at,
+                                    now,
+                                    &focus.node_id,
+                                );
+                                let new_state = visible
+                                    .get(focus.selector_index - 1)
+                                    .and_then(|id| {
+                                        FocusViewState::build(id, &self.subagent_tree)
+                                    });
+                                if let Some(state) = new_state {
+                                    *focus = state;
+                                }
+                                return;
                             }
-                            return;
                         }
-                        KeyCode::PageUp if focus.active_area == FocusArea::Timeline => {
-                            focus.auto_scroll = false;
-                            focus.scroll_offset = focus.scroll_offset.saturating_add(10);
-                            return;
-                        }
-                        KeyCode::PageDown if focus.active_area == FocusArea::Timeline => {
-                            focus.scroll_offset = focus.scroll_offset.saturating_sub(10);
-                            if focus.scroll_offset == 0 {
-                                focus.auto_scroll = true;
-                            }
-                            return;
-                        }
-                        KeyCode::Char('t') if focus.active_area == FocusArea::Timeline => {
-                            // Toggle fold: if any tools are expanded, collapse all;
-                            // otherwise expand all. Uses the conversion shared with
-                            // build_conversation_lines to find tool_call_ids.
+                        // Toggle fold: if any tools are expanded, collapse all;
+                        // otherwise expand all. Uses the conversion shared with
+                        // build_conversation_lines to find tool_call_ids.
+                        KeyCode::Char('t') => {
                             let ui_msgs = crate::tui::components::subagent_focus_view::chat_messages_to_ui_messages(&focus.messages);
                             if focus.collapsed_tool_ids.is_empty() {
                                 for msg in &ui_msgs {
@@ -88,27 +106,6 @@ impl App {
                                 }
                             } else {
                                 focus.collapsed_tool_ids.clear();
-                            }
-                            return;
-                        }
-                        KeyCode::Up if focus.active_area == FocusArea::Selector => {
-                            let len = self.subagent_tree.node_list().len();
-                            focus.selector_index = wrap_prev(focus.selector_index, len);
-                            return;
-                        }
-                        KeyCode::Down if focus.active_area == FocusArea::Selector => {
-                            let len = self.subagent_tree.node_list().len();
-                            focus.selector_index = wrap_next(focus.selector_index, len);
-                            return;
-                        }
-                        KeyCode::Enter if focus.active_area == FocusArea::Selector => {
-                            let new_state = {
-                                let list = self.subagent_tree.node_list();
-                                list.get(focus.selector_index)
-                                    .and_then(|id| FocusViewState::build(id, &self.subagent_tree))
-                            };
-                            if let Some(state) = new_state {
-                                *focus = state;
                             }
                             return;
                         }
@@ -229,6 +226,7 @@ impl App {
                                         // Both @ and / completion insert /name to input
                                         let insert = format!("/{} ", m.text);
                                         self.input_box.textarea.insert_str(&insert);
+                                        self.input_box.update_style();
                                     }
                                 }
                             }
@@ -303,17 +301,14 @@ impl App {
                     }
                     return;
                 }
-                // Subagent status bar: Tab toggles focus between main input and
-                // the status bar. When focused, ↑↓ navigate and Enter opens the
-                // focus view. When unfocused (default), ↑↓ scroll chat and
-                // Enter submits — normal input behaviour.
+                // Subagent status bar: ↑↓ auto-focus and navigate, Enter opens
+                // the focus view, Esc unfocuses. No Tab — auto-focus on arrow keys.
                 if self.subagent_focus.is_none() {
                     let active = active_node_ids(&self.subagent_tree);
                     if !active.is_empty() {
-                        // Tab toggles focus between main input and the status bar
-                        if key.code == KeyCode::Tab {
-                            self.subagent_status_bar_focused = !self.subagent_status_bar_focused;
-                            return;
+                        // Auto-activate on ↑↓
+                        if key.code == KeyCode::Up || key.code == KeyCode::Down {
+                            self.subagent_status_bar_focused = true;
                         }
                         if self.subagent_status_bar_focused {
                             match key.code {
@@ -343,6 +338,12 @@ impl App {
                                     self.subagent_status_bar_focused = false;
                                     return;
                                 }
+                                KeyCode::Tab => {
+                                    // Tab has no effect on status bar focus (per
+                                    // spec): it neither toggles into nor out of
+                                    // the status bar. Consume without state change.
+                                    return;
+                                }
                                 _ => {
                                     // Any other key disengages focus and passes
                                     // through to the input box
@@ -352,25 +353,9 @@ impl App {
                         }
                     }
                 }
-                // Scroll handling (when no popup is active)
-                // scroll_offset = lines scrolled UP from bottom:
-                //   0 = at bottom (newest), higher values = further up (older)
+                // Scroll handling: PageUp/PageDown only. ↑↓ reserved for
+                // status bar navigation. Scroll by mouse wheel instead.
                 match key.code {
-                    KeyCode::Up => {
-                        // Scroll UP → see OLDER content → more lines from bottom
-                        self.scroll_offset = self.scroll_offset.saturating_add(1);
-                        self.user_scrolled = true;
-                        return;
-                    }
-                    KeyCode::Down => {
-                        // Scroll DOWN → see NEWER content → fewer lines from bottom
-                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                        // If scrolled back to bottom, resume auto-scroll for future content
-                        if self.scroll_offset == 0 {
-                            self.user_scrolled = false;
-                        }
-                        return;
-                    }
                     KeyCode::PageUp => {
                         self.scroll_offset = self.scroll_offset.saturating_add(10);
                         self.user_scrolled = true;
@@ -400,6 +385,7 @@ impl App {
                     if key.modifiers.contains(KeyModifiers::SHIFT) {
                         // Shift+Enter → newline
                         self.input_box.textarea.insert_char('\n');
+                        self.input_box.update_style();
                     } else if !self.input_box.is_empty() {
                         let text = self.input_box.take_text();
                         let _ = self.event_tx.send(AppEvent::Submit(text));
@@ -429,6 +415,7 @@ impl App {
                 // Feed to tui-textarea for CJK/IME input.
                 // Returns true if tui-textarea consumed the key.
                 let handled = self.input_box.textarea.input(*key);
+                self.input_box.update_style();
                 if !handled && key.code == KeyCode::Esc {
                     self.should_quit = true;
                 }
@@ -458,23 +445,23 @@ impl App {
                 for c in text.chars() {
                     self.input_box.textarea.insert_char(c);
                 }
+                self.input_box.update_style();
             }
             AppEvent::MouseScrolled(delta) => {
                 // Focus view timeline: scroll_offset is lines-from-bottom
                 // (0 = newest). ScrollUp → older (add); ScrollDown → newer
-                // (sub), re-engaging auto_scroll at the bottom.
+                // (sub), re-engaging auto_scroll at the bottom. Mouse wheel
+                // is the only way to scroll the timeline (read-only area).
                 if let Some(ref mut focus) = self.subagent_focus {
-                    if focus.active_area == FocusArea::Timeline {
-                        if delta > 0 {
-                            focus.scroll_offset =
-                                focus.scroll_offset.saturating_add(delta as usize);
-                            focus.auto_scroll = false;
-                        } else {
-                            focus.scroll_offset =
-                                focus.scroll_offset.saturating_sub((-delta) as usize);
-                            if focus.scroll_offset == 0 {
-                                focus.auto_scroll = true;
-                            }
+                    if delta > 0 {
+                        focus.scroll_offset =
+                            focus.scroll_offset.saturating_add(delta as usize);
+                        focus.auto_scroll = false;
+                    } else {
+                        focus.scroll_offset =
+                            focus.scroll_offset.saturating_sub((-delta) as usize);
+                        if focus.scroll_offset == 0 {
+                            focus.auto_scroll = true;
                         }
                     }
                     return;
@@ -533,6 +520,7 @@ impl App {
             }
             AppEvent::Submit(text) => {
                 self.subagent_tree.clear();
+                self.completed_at.clear();
                 self.subagent_focus = None;
                 self.subagent_status_bar_selected = 0;
                 self.submit_input(text);
@@ -948,6 +936,29 @@ impl App {
                 });
             }
             AppEvent::SubagentUpdate(progress) => {
+                // Track completion time on transition to a terminal status
+                // (Completed/Failed/Cancelled). Used by the focus view selector
+                // to dim completed subagents and remove them after a delay.
+                let node_id = progress.node_id.clone();
+                let is_terminal = matches!(
+                    progress.status,
+                    SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
+                );
+                let was_terminal = self
+                    .subagent_tree
+                    .nodes
+                    .get(&node_id)
+                    .map(|n| {
+                        matches!(
+                            n.progress.status,
+                            SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
+                        )
+                    })
+                    .unwrap_or(false);
+                if is_terminal && !was_terminal {
+                    self.completed_at
+                        .insert(node_id.clone(), std::time::Instant::now());
+                }
                 self.subagent_tree.upsert(*progress);
                 if let Some(ref mut focus) = self.subagent_focus {
                     focus.rebuild(&self.subagent_tree);

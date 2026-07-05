@@ -124,6 +124,10 @@ pub struct App {
     pub spinner_frame: u8,
     /// When the current turn started (for elapsed-time display).
     turn_started_at: Option<std::time::Instant>,
+    /// Completion timestamps for subagent nodes — used by the focus view
+    /// selector to dim completed subagents and remove them after a delay.
+    /// Cleared on a new turn (Submit).
+    pub completed_at: HashMap<String, std::time::Instant>,
     /// Cancellation flag for blocking input reader task
     shutdown_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
 
@@ -412,6 +416,7 @@ impl App {
             has_running_tool: false,
             spinner_frame: 0,
             turn_started_at: None,
+            completed_at: HashMap::new(),
             shutdown_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
 
             settings_lock,
