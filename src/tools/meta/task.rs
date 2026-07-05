@@ -223,36 +223,6 @@ impl Tool for TaskTool {
             "TaskTool: executing subagent"
         );
 
-        // Register root node in progress store.
-        let root_node_id = uuid::Uuid::new_v4().to_string();
-        {
-            let mut store = self.progress_store.write().await;
-            store.entry(session_id.clone()).or_default().insert(
-                root_node_id.clone(),
-                SubagentProgress {
-                    node_id: root_node_id.clone(),
-                    parent_id: None,
-                    label: format!("task: {}", description),
-                    status: SubagentStatus::Running,
-                    round: None,
-                    max_rounds: None,
-                    current_tool: None,
-                    current_params: None,
-                    action_log: Vec::new(),
-                    text_snapshot: None,
-                    started_at: chrono::Utc::now().timestamp_millis(),
-                    elapsed_ms: 0,
-                    metadata: None,
-                    progress_delta: None,
-                    token_budget_k: None,
-                    cumulative_tokens: 0,
-                    error_details: None,
-                    events: Vec::new(),
-                    messages: Vec::new(),
-                },
-            );
-        }
-
         // Upgrade the Weak reference to the tool registry.
         let tool_registry = self.tool_registry.upgrade().ok_or_else(|| ToolError {
             message: "Tool registry is no longer available".to_string(),
@@ -401,7 +371,7 @@ impl Tool for TaskTool {
                     subagent_node_id.clone(),
                     SubagentProgress {
                         node_id: subagent_node_id.clone(),
-                        parent_id: Some(root_node_id.clone()),
+                        parent_id: None,
                         label: format!("subagent: {}", desc),
                         status: SubagentStatus::Pending,
                         round: None,
@@ -426,7 +396,7 @@ impl Tool for TaskTool {
                 self.progress_store.clone(),
                 session_id.clone(),
                 subagent_node_id.clone(),
-                Some(root_node_id.clone()),
+                None,
                 format!("subagent: {}", desc),
             );
 
@@ -529,7 +499,7 @@ impl Tool for TaskTool {
                     subagent_node_id.clone(),
                     SubagentProgress {
                         node_id: subagent_node_id.clone(),
-                        parent_id: Some(root_node_id.clone()),
+                        parent_id: None,
                         label: format!("subagent: {}", description),
                         status: SubagentStatus::Pending,
                         round: None,
@@ -554,7 +524,7 @@ impl Tool for TaskTool {
                 self.progress_store.clone(),
                 session_id.clone(),
                 subagent_node_id.clone(),
-                Some(root_node_id.clone()),
+                None,
                 format!("subagent: {}", description),
             );
 
