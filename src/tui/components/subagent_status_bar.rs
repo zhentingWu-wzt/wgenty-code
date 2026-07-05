@@ -160,17 +160,24 @@ mod tests {
     fn test_active_node_ids_filters_active() {
         let mut tree = SubagentTree::default();
         // Build a proper tree: root → [a, b, c, d]
-        tree.nodes.insert("root".to_string(), make_node("root", SubagentStatus::Completed));
+        tree.nodes.insert(
+            "root".to_string(),
+            make_node("root", SubagentStatus::Completed),
+        );
         tree.nodes.get_mut("root").unwrap().children = vec![
             "a".to_string(),
             "b".to_string(),
             "c".to_string(),
             "d".to_string(),
         ];
-        tree.nodes.insert("a".to_string(), make_node("a", SubagentStatus::Running));
-        tree.nodes.insert("b".to_string(), make_node("b", SubagentStatus::Pending));
-        tree.nodes.insert("c".to_string(), make_node("c", SubagentStatus::Completed));
-        tree.nodes.insert("d".to_string(), make_node("d", SubagentStatus::Failed));
+        tree.nodes
+            .insert("a".to_string(), make_node("a", SubagentStatus::Running));
+        tree.nodes
+            .insert("b".to_string(), make_node("b", SubagentStatus::Pending));
+        tree.nodes
+            .insert("c".to_string(), make_node("c", SubagentStatus::Completed));
+        tree.nodes
+            .insert("d".to_string(), make_node("d", SubagentStatus::Failed));
         tree.root_id = Some("root".to_string());
 
         let active = active_node_ids(&tree);

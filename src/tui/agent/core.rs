@@ -185,7 +185,8 @@ impl AgentLoop {
                                 let _ = event_tx.send(AppEvent::ToolResult {
                                     name: "compact".to_string(),
                                     args: serde_json::json!({}),
-                                    content: "Conversation will be compacted before the next step.".to_string(),
+                                    content: "Conversation will be compacted before the next step."
+                                        .to_string(),
                                 });
                                 history.lock().await.push(ChatMessage::tool(
                                     &tc.id,
@@ -297,7 +298,8 @@ impl AgentLoop {
                             let _ = self.event_tx.send(AppEvent::ToolResult {
                                 name: "compact".to_string(),
                                 args: serde_json::json!({}),
-                                content: "Conversation will be compacted before the next step.".to_string(),
+                                content: "Conversation will be compacted before the next step."
+                                    .to_string(),
                             });
                             let mut history = self.conversation_history.lock().await;
                             history.push(ChatMessage::tool(
