@@ -13,11 +13,11 @@
 
 ## 2. SubagentTree 分组节点过滤 + status bar（D9）
 
-- [ ] 2.1 `src/tui/components/subagent_tree.rs`：新增 `is_grouping_node(id) = !children.is_empty() && events.is_empty() && messages.is_empty()`
-- [ ] 2.2 新增 `real_node_list()` = `node_list()` 过滤掉 `is_grouping_node` 的节点
-- [ ] 2.3 `active_count()`、`count_by_status()`、`active_node_ids()`、`total_count()` 改用 `real_node_list()` 或遍历时跳过分组节点
-- [ ] 2.4 `src/tui/components/subagent_status_bar.rs`：`active_node_ids` 走 `real_node_list`，修正 delegate 包装节点 stale "Running" 导致的计数虚高
-- [ ] 2.5 验证 delegate（rlm）1:N 分组：包装节点排除、sub-task 保留；`task` 残留包装节点也被兜底过滤
+- [x] 2.1 `src/tui/components/subagent_tree.rs`：新增 `is_grouping_node(id) = !children.is_empty() && events.is_empty() && messages.is_empty()`
+- [x] 2.2 新增 `real_node_list()` = `node_list()` 过滤掉 `is_grouping_node` 的节点
+- [x] 2.3 `active_count()`、`count_by_status()`、`active_node_ids()`、`total_count()` 改用 `real_node_list()` 或遍历时跳过分组节点
+- [x] 2.4 `src/tui/components/subagent_status_bar.rs`：`active_node_ids` 走 `real_node_list`，修正 delegate 包装节点 stale "Running" 导致的计数虚高
+- [x] 2.5 验证 delegate（rlm）1:N 分组：包装节点排除、sub-task 保留；`task` 残留包装节点也被兜底过滤
 
 ## 3. subagent_focus_view.rs 状态与渲染重构（D1–D6, D8）
 

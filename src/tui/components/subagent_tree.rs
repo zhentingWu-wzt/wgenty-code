@@ -49,8 +49,9 @@ impl SubagentTree {
     }
 
     pub fn count_by_status(&self, status: SubagentStatus) -> usize {
-        self.nodes
-            .values()
+        self.real_node_list()
+            .iter()
+            .filter_map(|id| self.nodes.get(id))
             .filter(|n| n.progress.status == status)
             .count()
     }
@@ -89,9 +90,9 @@ impl SubagentTree {
             .max()
     }
 
-    /// Total number of nodes in the tree.
+    /// Total number of real nodes in the tree (grouping nodes excluded).
     pub fn total_count(&self) -> usize {
-        self.nodes.len()
+        self.real_node_list().len()
     }
 
     /// Whether the tree has any nodes at all.
@@ -116,13 +117,39 @@ impl SubagentTree {
         list
     }
 
+    /// Whether a node is a grouping/wrapper node with no execution info of its own.
+    /// Grouping nodes have children but no events or messages (e.g., a `delegate`
+    /// 1:N wrapper that is never updated). Real subagents — even Pending leaves
+    /// with no events yet — are never grouping nodes (they have no children).
+    pub fn is_grouping_node(&self, node_id: &str) -> bool {
+        match self.nodes.get(node_id) {
+            Some(n) => {
+                !n.children.is_empty()
+                    && n.progress.events.is_empty()
+                    && n.progress.messages.is_empty()
+            }
+            None => false,
+        }
+    }
+
+    /// Depth-first list of all REAL node IDs (grouping nodes excluded).
+    pub fn real_node_list(&self) -> Vec<String> {
+        self.node_list()
+            .into_iter()
+            .filter(|id| !self.is_grouping_node(id))
+            .collect()
+    }
+
     pub fn is_complete(&self) -> bool {
-        self.nodes.values().all(|n| {
-            matches!(
-                n.progress.status,
-                SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
-            )
-        })
+        self.real_node_list()
+            .iter()
+            .filter_map(|id| self.nodes.get(id))
+            .all(|n| {
+                matches!(
+                    n.progress.status,
+                    SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
+                )
+            })
     }
 
     pub fn clear(&mut self) {
@@ -200,13 +227,17 @@ mod tests {
     #[test]
     fn test_count_by_status() {
         let mut tree = SubagentTree::default();
+        // root has children + no events → grouping node, excluded from counts (D9)
         tree.upsert(make_progress("root", None, SubagentStatus::Completed));
         tree.upsert(make_progress("a", Some("root"), SubagentStatus::Completed));
         tree.upsert(make_progress("b", Some("root"), SubagentStatus::Running));
         tree.upsert(make_progress("c", Some("root"), SubagentStatus::Pending));
-        assert_eq!(tree.count_by_status(SubagentStatus::Completed), 2);
-        assert_eq!(tree.count_by_status(SubagentStatus::Running), 1);
-        assert_eq!(tree.count_by_status(SubagentStatus::Pending), 1);
+        // root (Completed) excluded as a grouping node; only real children counted
+        assert_eq!(tree.count_by_status(SubagentStatus::Completed), 1); // a
+        assert_eq!(tree.count_by_status(SubagentStatus::Running), 1); // b
+        assert_eq!(tree.count_by_status(SubagentStatus::Pending), 1); // c
+        // total_count also excludes the grouping root
+        assert_eq!(tree.total_count(), 3);
     }
 
     #[test]
@@ -234,5 +265,62 @@ mod tests {
     fn test_node_list_empty() {
         let tree = SubagentTree::default();
         assert!(tree.node_list().is_empty());
+    }
+
+    #[test]
+    fn test_is_grouping_node_and_real_node_list() {
+        let mut tree = SubagentTree::default();
+        // delegate wrapper: has children, no events/messages
+        tree.upsert(make_progress("delegate-root", None, SubagentStatus::Running));
+        tree.upsert(make_progress("sub1", Some("delegate-root"), SubagentStatus::Running));
+        tree.upsert(make_progress("sub2", Some("delegate-root"), SubagentStatus::Completed));
+
+        // wrapper is a grouping node (has children, no events/messages)
+        assert!(tree.is_grouping_node("delegate-root"));
+        // real subagents are not grouping nodes (no children)
+        assert!(!tree.is_grouping_node("sub1"));
+        assert!(!tree.is_grouping_node("sub2"));
+
+        // real_node_list excludes grouping nodes
+        let real = tree.real_node_list();
+        assert_eq!(real.len(), 2);
+        assert!(real.contains(&"sub1".to_string()));
+        assert!(real.contains(&"sub2".to_string()));
+        assert!(!real.contains(&"delegate-root".to_string()));
+
+        // a lone root with no children is NOT a grouping node (real subagent)
+        let mut tree2 = SubagentTree::default();
+        tree2.upsert(make_progress("solo-root", None, SubagentStatus::Running));
+        assert!(!tree2.is_grouping_node("solo-root"));
+        assert_eq!(tree2.real_node_list(), vec!["solo-root".to_string()]);
+    }
+
+    #[test]
+    fn test_active_count_excludes_grouping_nodes() {
+        let mut tree = SubagentTree::default();
+        // wrapper stuck in Running (never updated) + 2 real children
+        tree.upsert(make_progress("delegate-root", None, SubagentStatus::Running));
+        tree.upsert(make_progress("sub1", Some("delegate-root"), SubagentStatus::Running));
+        tree.upsert(make_progress("sub2", Some("delegate-root"), SubagentStatus::Completed));
+        // Without filtering, wrapper would inflate active_count to 2 (wrapper + sub1).
+        // With filtering, active_count = 1 (only sub1; sub2 completed).
+        assert_eq!(tree.active_count(), 1);
+        // total_count excludes wrapper: 2 real nodes, not 3
+        assert_eq!(tree.total_count(), 2);
+        // count_by_status also excludes wrapper
+        assert_eq!(tree.count_by_status(SubagentStatus::Running), 1); // sub1 only
+        assert_eq!(tree.count_by_status(SubagentStatus::Completed), 1); // sub2
+    }
+
+    #[test]
+    fn test_is_complete_excludes_grouping_nodes() {
+        let mut tree = SubagentTree::default();
+        // wrapper stuck Running + all real children completed
+        tree.upsert(make_progress("delegate-root", None, SubagentStatus::Running));
+        tree.upsert(make_progress("sub1", Some("delegate-root"), SubagentStatus::Completed));
+        tree.upsert(make_progress("sub2", Some("delegate-root"), SubagentStatus::Completed));
+        // Without filtering, wrapper's Running would make is_complete false.
+        // With filtering, all real nodes completed → is_complete true.
+        assert!(tree.is_complete());
     }
 }
