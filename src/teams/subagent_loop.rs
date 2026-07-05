@@ -192,6 +192,10 @@ pub async fn run_subagent_loop(
                     round: round.unwrap_or(0) as u32,
                     retryable: true,
                 });
+                // Lock action_log ONCE — std::sync::Mutex is not reentrant, so
+                // locking it twice in the same struct literal (action_log field
+                // + events field) deadlocks. Snapshot to a local first.
+                let action_log_snapshot = action_log.lock().unwrap().clone();
                 cb(SubagentProgress {
                     node_id: trace_id.to_string(),
                     parent_id: None,
@@ -201,7 +205,7 @@ pub async fn run_subagent_loop(
                     max_rounds: Some(max_rounds),
                     current_tool,
                     current_params: current_params_val.lock().unwrap().clone(),
-                    action_log: action_log.lock().unwrap().clone(),
+                    action_log: action_log_snapshot.clone(),
                     text_snapshot: if is_terminal { None } else { snapshot },
                     started_at: started_at_ms,
                     elapsed_ms: elapsed.as_millis() as u64,
@@ -210,7 +214,7 @@ pub async fn run_subagent_loop(
                     token_budget_k,
                     cumulative_tokens: *cumulative_tokens.lock().unwrap() as u64,
                     error_details,
-                    events: action_log.lock().unwrap().clone(),
+                    events: action_log_snapshot,
                 });
             }
         };
