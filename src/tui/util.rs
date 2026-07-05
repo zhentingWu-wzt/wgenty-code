@@ -442,9 +442,7 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::TodosUpdated(_)
         | AppEvent::TurnStarted { .. }
         | AppEvent::ConfigChanged(_)
-        | AppEvent::SubagentUpdate(_)
-        | AppEvent::ToggleSubagentPanel
-        | AppEvent::RetrySubagent(_) => None,
+        | AppEvent::SubagentUpdate(_) => None,
     }
 }
 
@@ -456,6 +454,27 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let x = (area.width - popup_width) / 2;
     let y = (area.height - popup_height) / 2;
     Rect::new(x, y, popup_width, popup_height)
+}
+
+/// Next index with wrap-around over `count` items. Returns 0 when `count` is 0
+/// (no items to navigate). Used by subagent status bar and focus-view selector
+/// keyboard navigation (↓).
+pub fn wrap_next(current: usize, count: usize) -> usize {
+    if count == 0 {
+        0
+    } else {
+        (current + 1) % count
+    }
+}
+
+/// Previous index with wrap-around over `count` items. Returns 0 when `count`
+/// is 0. Used by subagent status bar and focus-view selector navigation (↑).
+pub fn wrap_prev(current: usize, count: usize) -> usize {
+    if count == 0 {
+        0
+    } else {
+        (current + count - 1) % count
+    }
 }
 
 #[cfg(test)]
@@ -544,5 +563,32 @@ mod tests {
         assert!(AgentPhase::StreamingResponse.is_busy());
         assert!(AgentPhase::ExecutingTool { name: "x".into() }.is_busy());
         assert!(!AgentPhase::Errored("e".into()).is_busy());
+    }
+
+    #[test]
+    fn test_wrap_next_advances_and_wraps() {
+        assert_eq!(wrap_next(0, 3), 1);
+        assert_eq!(wrap_next(1, 3), 2);
+        assert_eq!(wrap_next(2, 3), 0); // wraps around to start
+    }
+
+    #[test]
+    fn test_wrap_prev_decrements_and_wraps() {
+        assert_eq!(wrap_prev(0, 3), 2); // wraps around to end
+        assert_eq!(wrap_prev(1, 3), 0);
+        assert_eq!(wrap_prev(2, 3), 1);
+    }
+
+    #[test]
+    fn test_wrap_zero_count_returns_zero() {
+        // No items → no movement, no panic (guard against div-by-zero).
+        assert_eq!(wrap_next(5, 0), 0);
+        assert_eq!(wrap_prev(5, 0), 0);
+    }
+
+    #[test]
+    fn test_wrap_single_element_stays_at_zero() {
+        assert_eq!(wrap_next(0, 1), 0);
+        assert_eq!(wrap_prev(0, 1), 0);
     }
 }

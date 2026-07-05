@@ -1,7 +1,5 @@
-use crate::agent::progress::SubagentStatus;
 use crate::tui::app::{MessageRole, UIMessage};
 use crate::tui::components::diff;
-use crate::tui::components::subagent_tree::SubagentTree;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -23,214 +21,6 @@ const ERROR_COLOR: Color = Color::Rgb(220, 90, 90);
 
 /// Braille spinner animation frames (10 frames)
 const SPINNER_CHARS: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
-/// Status indicator icon.
-fn status_icon(status: &SubagentStatus) -> &'static str {
-    match status {
-        SubagentStatus::Pending => "⏳",
-        SubagentStatus::Running => "🔄",
-        SubagentStatus::Completed => "✅",
-        SubagentStatus::Failed => "❌",
-        SubagentStatus::Cancelled => "🚫",
-    }
-}
-
-/// Render subagent tree as lines. Shared between inline card and panel.
-pub fn render_subagent_card(
-    lines: &mut Vec<Line>,
-    tree: &SubagentTree,
-    _width: u16,
-    is_executing: bool,
-    spinner_frame: u8,
-) {
-    if tree.nodes.is_empty() {
-        return;
-    }
-    let done = tree.count_by_status(SubagentStatus::Completed);
-    let total = tree.nodes.len();
-    let indent = 4u16;
-
-    let spinner = if is_executing {
-        SPINNER_CHARS[(spinner_frame as usize) % SPINNER_CHARS.len()]
-    } else {
-        ' '
-    };
-
-    // Header
-    lines.push(Line::from(vec![
-        Span::styled(
-            "  🌳 Subagent Tree",
-            Style::default()
-                .fg(Color::Rgb(203, 166, 247))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("  {} {}/{} done", spinner, done, total),
-            Style::default().fg(DIM_COLOR),
-        ),
-    ]));
-
-    if is_executing {
-        render_tree_nodes(lines, tree, tree.root_id.as_deref(), 0, indent);
-    } else {
-        let failed = tree.count_by_status(SubagentStatus::Failed);
-        let icon = if failed > 0 { "⚠️" } else { "✅" };
-        lines.push(Line::from(vec![Span::styled(
-            format!("    {} task · {}/{} done", icon, done, total),
-            Style::default().fg(DIM_COLOR),
-        )]));
-    }
-}
-
-/// Recursively render tree nodes.
-fn render_tree_nodes(
-    lines: &mut Vec<Line>,
-    tree: &SubagentTree,
-    node_id: Option<&str>,
-    depth: u16,
-    base_indent: u16,
-) {
-    let Some(nid) = node_id else { return };
-    let Some(node) = tree.nodes.get(nid) else {
-        return;
-    };
-    let indent = base_indent + depth * 2;
-    let prefix = if depth == 0 { "┌─" } else { "├─" };
-    let indent_str = " ".repeat(indent as usize);
-    let icon = status_icon(&node.progress.status);
-
-    let color = match node.progress.status {
-        SubagentStatus::Running => Color::Rgb(249, 226, 175),
-        SubagentStatus::Completed => Color::Rgb(166, 227, 161),
-        SubagentStatus::Failed | SubagentStatus::Cancelled => Color::Rgb(243, 139, 168),
-        SubagentStatus::Pending => Color::Rgb(108, 112, 134),
-    };
-
-    // ── Build status line with timing ────────────────────────────────────
-    let elapsed_secs = node.progress.elapsed_ms as f64 / 1000.0;
-    let status_detail = match node.progress.status {
-        SubagentStatus::Running => match (node.progress.round, node.progress.max_rounds) {
-            (Some(r), Some(mr)) => format!("round {}/{} · {:.1}s", r, mr, elapsed_secs),
-            _ => format!("{:.1}s", elapsed_secs),
-        },
-        SubagentStatus::Completed => {
-            let mut s = node
-                .progress
-                .round
-                .map(|r| format!("{} rounds", r))
-                .unwrap_or_default();
-            if !s.is_empty() {
-                s.push_str(" · ");
-            }
-            s.push_str(&format!("{:.1}s", elapsed_secs));
-            // Token count
-            if let Some(ref meta) = node.progress.metadata {
-                if let Some(tc) = meta.token_count {
-                    if tc >= 1000 {
-                        s.push_str(&format!(" · {:.1}k tokens", tc as f64 / 1000.0));
-                    } else {
-                        s.push_str(&format!(" · {} tokens", tc));
-                    }
-                }
-            }
-            s
-        }
-        _ => String::new(),
-    };
-
-    let detail = if status_detail.is_empty() {
-        format!(" {}", node.progress.label)
-    } else {
-        format!(" {} — {}", node.progress.label, status_detail)
-    };
-
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!("{}{} ", indent_str, prefix),
-            Style::default().fg(DIM_COLOR),
-        ),
-        Span::styled(icon, Style::default().fg(color)),
-        Span::styled(format!(" {}", detail), Style::default().fg(color)),
-    ]));
-
-    // ── Running node: show current tool with params ──────────────────────
-    if node.progress.status == SubagentStatus::Running {
-        let tool_indent = " ".repeat((indent + 4) as usize);
-        if let Some(ref tool) = node.progress.current_tool {
-            let tool_label = if let Some(ref params) = node.progress.current_params {
-                if params.is_empty() {
-                    format!("executing: {}", tool)
-                } else {
-                    format!("executing: {}(\"{}\")", tool, params)
-                }
-            } else {
-                format!("executing: {}", tool)
-            };
-            lines.push(Line::from(vec![Span::styled(
-                format!("{}└─ 🛠 {}", tool_indent, tool_label),
-                Style::default().fg(Color::Rgb(137, 180, 250)),
-            )]));
-        }
-
-        // ── Text snapshot: model's "thinking" ────────────────────────────
-        let snapshot_indent = " ".repeat((indent + 4) as usize);
-        if let Some(ref snapshot) = node.progress.text_snapshot {
-            let preview: String = snapshot.chars().take(100).collect();
-            let display = if snapshot.len() > 100 {
-                format!("{}…", preview)
-            } else {
-                preview
-            };
-            lines.push(Line::from(vec![Span::styled(
-                format!("{}   💬 {}", snapshot_indent, display),
-                Style::default().fg(DIM_COLOR),
-            )]));
-        } else {
-            lines.push(Line::from(vec![Span::styled(
-                format!("{}   💭 thinking…", snapshot_indent),
-                Style::default().fg(DIM_COLOR),
-            )]));
-        }
-
-        // ── Recent action log (collapsed: last 3 Action events) ────────────
-        let recent: Vec<_> = node
-            .progress
-            .action_log
-            .iter()
-            .filter(|e| {
-                matches!(
-                    e.event_type,
-                    crate::agent::progress::SubagentEventType::Action { .. }
-                )
-            })
-            .rev()
-            .take(3)
-            .collect();
-        if !recent.is_empty() {
-            for event in recent.iter().rev() {
-                if let crate::agent::progress::SubagentEventType::Action {
-                    tool_name,
-                    params_summary,
-                } = &event.event_type
-                {
-                    let action_str = if params_summary.is_empty() {
-                        tool_name.to_string()
-                    } else {
-                        format!("{}(\"{}\")", tool_name, params_summary)
-                    };
-                    lines.push(Line::from(vec![Span::styled(
-                        format!("{}   ▸ {}", snapshot_indent, action_str),
-                        Style::default().fg(Color::Rgb(108, 112, 134)),
-                    )]));
-                }
-            }
-        }
-    }
-
-    for child_id in &node.children {
-        render_tree_nodes(lines, tree, Some(child_id), depth + 1, base_indent);
-    }
-}
 
 /// Return animated ellipsis dots based on frame
 fn running_suffix(frame: u8) -> &'static str {
@@ -256,8 +46,6 @@ pub fn render(
     scroll_offset: u16,
     user_scrolled: bool,
     spinner_frame: u8,
-    subagent_tree: Option<&SubagentTree>,
-    subagent_is_executing: bool,
 ) {
     let mut lines: Vec<Line> = Vec::new();
 
@@ -276,22 +64,6 @@ pub fn render(
             spinner_frame,
             show_tool_expand_hint,
         ));
-        if msg.role == MessageRole::Tool {
-            let tool_name = msg.tool_name.as_deref().unwrap_or("");
-            if tool_name == "task" || tool_name == "delegate" {
-                if let Some(tree) = subagent_tree {
-                    if !tree.nodes.is_empty() {
-                        render_subagent_card(
-                            &mut lines,
-                            tree,
-                            area.width,
-                            subagent_is_executing,
-                            spinner_frame,
-                        );
-                    }
-                }
-            }
-        }
         if msg.role == MessageRole::User {
             add_inline_separator(&mut lines, area.width);
         }

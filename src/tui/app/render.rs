@@ -2,7 +2,6 @@
 
 use super::types::MessageRole;
 use super::App;
-use crate::agent::progress::SubagentStatus;
 use crate::tui::components;
 use crate::tui::theme;
 use crate::tui::util::centered_rect;
@@ -15,7 +14,14 @@ use ratatui::Frame;
 impl App {
     pub(super) fn render(&mut self, f: &mut Frame) {
         let area = f.area();
-        // Layout: chat | [panel] | status | pending | input
+
+        // Full-screen focus view takes over the entire terminal.
+        if let Some(ref focus) = self.subagent_focus {
+            components::subagent_focus_view::FocusView::render(f, area, focus, &self.subagent_tree);
+            return;
+        }
+
+        // Layout: chat | [panel] | status | [subagent_status_bar] | pending | input
         let has_question = self.question_state.visible;
         let has_permission = self.permission_state.visible;
         let has_plan = self.plan_panel_state.visible;
@@ -31,11 +37,14 @@ impl App {
         };
         let pending_height = self.pending_count().min(5) as u16;
         let has_pending = pending_height > 0;
+        let status_bar_height = self.subagent_tree.active_count().min(5) as u16;
+        let has_status_bar = status_bar_height > 0;
         let constraints: Vec<Constraint> = if show_panel {
             vec![
                 Constraint::Min(3),
                 Constraint::Length(panel_height),
                 Constraint::Length(1),
+                Constraint::Length(if has_status_bar { status_bar_height } else { 0 }),
                 Constraint::Length(if has_pending { pending_height } else { 0 }),
                 Constraint::Length((self.input_box.textarea.lines().len() + 3).clamp(6, 16) as u16),
             ]
@@ -43,6 +52,7 @@ impl App {
             vec![
                 Constraint::Min(3),
                 Constraint::Length(1),
+                Constraint::Length(if has_status_bar { status_bar_height } else { 0 }),
                 Constraint::Length(if has_pending { pending_height } else { 0 }),
                 Constraint::Length((self.input_box.textarea.lines().len() + 3).clamp(6, 16) as u16),
             ]
@@ -54,8 +64,9 @@ impl App {
         let chat_idx = 0;
         let panel_idx = if show_panel { 1 } else { 0 };
         let status_idx = if show_panel { 2 } else { 1 };
-        let pending_idx = if show_panel { 3 } else { 2 };
-        let input_idx = if show_panel { 4 } else { 3 };
+        let status_bar_idx = if show_panel { 3 } else { 2 };
+        let pending_idx = if show_panel { 4 } else { 3 };
+        let input_idx = if show_panel { 5 } else { 4 };
         let main_area = if self.task_panel.visible {
             let split = Layout::default()
                 .direction(Direction::Horizontal)
@@ -88,6 +99,14 @@ impl App {
             components::plan_panel::render(f, &self.plan_panel_state, layout[panel_idx]);
         }
         self.render_status(f, layout[status_idx]);
+        if has_status_bar {
+            components::subagent_status_bar::render(
+                f,
+                layout[status_bar_idx],
+                &self.subagent_tree,
+                self.subagent_status_bar_selected,
+            );
+        }
         if has_pending {
             self.render_pending_inputs(f, layout[pending_idx]);
         }
@@ -104,24 +123,6 @@ impl App {
         }
         // Session is still a popup overlay
         components::session::render(f, &self.session_state, centered_rect);
-        // Subagent monitor panel (overlay, below session to render on top)
-        if self.subagent_panel_visible {
-            let panel_area = crate::tui::util::centered_rect(60, 70, f.area());
-            let is_executing = self.subagent_tree.count_by_status(SubagentStatus::Running) > 0;
-            components::subagent_panel::render(
-                f,
-                panel_area,
-                &self.subagent_tree,
-                &self.subagent_panel_state,
-                is_executing,
-            );
-        }
-        // Detail view (full-screen, highest z-order)
-        if let Some(detail) = self.subagent_panel_state.detail_view.as_ref() {
-            if !detail.loading {
-                components::detail_view::DetailView::render(f, f.area(), detail);
-            }
-        }
     }
 
     fn render_chat(&self, f: &mut Frame, area: Rect) {
@@ -134,8 +135,6 @@ impl App {
             self.scroll_offset,
             self.user_scrolled,
             self.spinner_frame,
-            Some(&self.subagent_tree),
-            self.subagent_tree.count_by_status(SubagentStatus::Running) > 0,
         );
     }
 

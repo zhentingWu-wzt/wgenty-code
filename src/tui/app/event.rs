@@ -2,12 +2,13 @@
 
 use super::types::*;
 use super::App;
-use crate::agent::progress::SubagentEventType;
 use crate::prompts::{self, PromptContext};
+use crate::tui::components::subagent_focus_view::{FocusArea, FocusViewState};
+use crate::tui::components::subagent_status_bar::active_node_ids;
 use crate::tui::traits::Component;
 use crate::tui::util::{
     agent_phase_from_event, compute_collapse_state, extract_diff_data, extract_tool_metadata,
-    format_tool_result, tool_label,
+    format_tool_result, tool_label, wrap_next, wrap_prev,
 };
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::collections::HashMap;
@@ -27,6 +28,58 @@ impl App {
         }
         match event {
             AppEvent::KeyEvent(key) => {
+                // Full-screen subagent focus view: while open it swallows all keys
+                // (Esc exits; Tab toggles area; ↑↓ scroll timeline / navigate the
+                // selector; Enter switches focus to the selected subagent).
+                let mut exit_focus = false;
+                if let Some(ref mut focus) = self.subagent_focus {
+                    match key.code {
+                        KeyCode::Esc => exit_focus = true,
+                        KeyCode::Tab => {
+                            focus.active_area = match focus.active_area {
+                                FocusArea::Timeline => FocusArea::Selector,
+                                FocusArea::Selector => FocusArea::Timeline,
+                            };
+                            return;
+                        }
+                        KeyCode::Up if focus.active_area == FocusArea::Timeline => {
+                            focus.auto_scroll = false;
+                            focus.scroll_offset = focus.scroll_offset.saturating_sub(1);
+                            return;
+                        }
+                        KeyCode::Down if focus.active_area == FocusArea::Timeline => {
+                            focus.auto_scroll = false;
+                            focus.scroll_offset = focus.scroll_offset.saturating_add(1);
+                            return;
+                        }
+                        KeyCode::Up if focus.active_area == FocusArea::Selector => {
+                            let len = self.subagent_tree.node_list().len();
+                            focus.selector_index = wrap_prev(focus.selector_index, len);
+                            return;
+                        }
+                        KeyCode::Down if focus.active_area == FocusArea::Selector => {
+                            let len = self.subagent_tree.node_list().len();
+                            focus.selector_index = wrap_next(focus.selector_index, len);
+                            return;
+                        }
+                        KeyCode::Enter if focus.active_area == FocusArea::Selector => {
+                            let new_state = {
+                                let list = self.subagent_tree.node_list();
+                                list.get(focus.selector_index)
+                                    .and_then(|id| FocusViewState::build(id, &self.subagent_tree))
+                            };
+                            if let Some(state) = new_state {
+                                *focus = state;
+                            }
+                            return;
+                        }
+                        _ => return,
+                    }
+                }
+                if exit_focus {
+                    self.subagent_focus = None;
+                    return;
+                }
                 // Permission panel handling (inline, not popup)
                 // Shift+Tab: cycle agent mode (but not when completion panel is active)
                 if key.code == KeyCode::BackTab
@@ -66,14 +119,6 @@ impl App {
                         diff_data: None,
                         tool_metadata: None,
                     });
-                    return;
-                }
-                // Ctrl+Shift+T toggles subagent monitor panel
-                if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && key.modifiers.contains(KeyModifiers::SHIFT)
-                    && (key.code == KeyCode::Char('T') || key.code == KeyCode::Char('t'))
-                {
-                    let _ = self.event_tx.send(AppEvent::ToggleSubagentPanel);
                     return;
                 }
                 // If completion panel is visible, route keys to it
@@ -148,139 +193,6 @@ impl App {
                         _ => {}
                     }
                 }
-                // If detail view is active, route keys to it (highest priority)
-                if self.subagent_panel_visible {
-                    if let Some(ref mut detail) = self.subagent_panel_state.detail_view {
-                        match key.code {
-                            KeyCode::Esc => {
-                                self.subagent_panel_state.reset_detail();
-                                return;
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                detail.scroll_offset = detail.scroll_offset.saturating_sub(1);
-                                return;
-                            }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                detail.scroll_offset = detail.scroll_offset.saturating_add(1);
-                                return;
-                            }
-                            KeyCode::PageUp => {
-                                detail.scroll_offset = detail.scroll_offset.saturating_sub(10);
-                                return;
-                            }
-                            KeyCode::PageDown => {
-                                detail.scroll_offset = detail.scroll_offset.saturating_add(10);
-                                return;
-                            }
-                            KeyCode::Char('g') => {
-                                detail.scroll_offset = 0;
-                                return;
-                            }
-                            KeyCode::Char('G') => {
-                                detail.scroll_offset = detail.events.len().saturating_sub(1);
-                                return;
-                            }
-                            KeyCode::Char('f') => {
-                                // Jump to first Error event
-                                if let Some(pos) = detail.events.iter().position(|e| {
-                                    matches!(e.event_type, SubagentEventType::Error { .. })
-                                }) {
-                                    detail.scroll_offset = pos;
-                                }
-                                return;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                // If subagent panel is visible, route keys to it
-                if self.subagent_panel_visible {
-                    match key.code {
-                        KeyCode::Esc => {
-                            self.subagent_panel_visible = false;
-                            return;
-                        }
-                        KeyCode::Char('j') | KeyCode::Down => {
-                            self.subagent_panel_state.move_down(&self.subagent_tree);
-                            return;
-                        }
-                        KeyCode::Char('k') | KeyCode::Up => {
-                            self.subagent_panel_state.move_up(&self.subagent_tree);
-                            return;
-                        }
-                        KeyCode::Enter => {
-                            // Completed/Failed/Cancelled: open detail view
-                            // Running/Pending: toggle expand
-                            let is_terminal = self
-                                .subagent_panel_state
-                                .selected_node_id(&self.subagent_tree)
-                                .and_then(|node_id| {
-                                    self.subagent_tree.nodes.get(&node_id).map(|node| {
-                                        matches!(
-                                            node.progress.status,
-                                            crate::agent::progress::SubagentStatus::Completed
-                                                | crate::agent::progress::SubagentStatus::Failed
-                                                | crate::agent::progress::SubagentStatus::Cancelled
-                                        )
-                                    })
-                                })
-                                .unwrap_or(false);
-                            if is_terminal {
-                                if let Some(detail) = self
-                                    .subagent_panel_state
-                                    .build_detail_view(&self.subagent_tree)
-                                {
-                                    self.subagent_panel_state.detail_view = Some(detail);
-                                }
-                            } else {
-                                self.subagent_panel_state.toggle_expand(&self.subagent_tree);
-                            }
-                            return;
-                        }
-                        KeyCode::Char('g') => {
-                            self.subagent_panel_state.move_first(&self.subagent_tree);
-                            return;
-                        }
-                        KeyCode::Char('G') => {
-                            self.subagent_panel_state.move_last(&self.subagent_tree);
-                            return;
-                        }
-                        KeyCode::Char('d') => {
-                            if let Some(detail) = self
-                                .subagent_panel_state
-                                .build_detail_view(&self.subagent_tree)
-                            {
-                                self.subagent_panel_state.detail_view = Some(detail);
-                            }
-                            return;
-                        }
-                        KeyCode::Char('r') => {
-                            // Retry selected failed/cancelled node (defensive guard)
-                            if let Some(node_id) = self
-                                .subagent_panel_state
-                                .selected_node_id(&self.subagent_tree)
-                            {
-                                let is_retryable = self
-                                    .subagent_tree
-                                    .nodes
-                                    .get(&node_id)
-                                    .map(|node| {
-                                        matches!(
-                                            node.progress.status,
-                                            crate::agent::progress::SubagentStatus::Failed
-                                                | crate::agent::progress::SubagentStatus::Cancelled
-                                        )
-                                    })
-                                    .unwrap_or(false);
-                                if is_retryable {
-                                    let _ = self.event_tx.send(AppEvent::RetrySubagent(node_id));
-                                }
-                            }
-                            return;
-                        }
-                        _ => {} // pass through
-                    }
-                }
                 // Permission panel key handling — delegated to Component
                 if self.permission_state.handle_key(&key) {
                     return;
@@ -345,6 +257,39 @@ impl App {
                         _ => {}
                     }
                     return;
+                }
+                // Subagent status bar: when active subagents exist and the focus
+                // view is closed, ↑↓ navigate the bar and Enter opens the focus
+                // view. Other keys fall through to the input box.
+                if self.subagent_focus.is_none() {
+                    let active = active_node_ids(&self.subagent_tree);
+                    if !active.is_empty() {
+                        match key.code {
+                            KeyCode::Up => {
+                                self.subagent_status_bar_selected =
+                                    wrap_prev(self.subagent_status_bar_selected, active.len());
+                                return;
+                            }
+                            KeyCode::Down => {
+                                self.subagent_status_bar_selected =
+                                    wrap_next(self.subagent_status_bar_selected, active.len());
+                                return;
+                            }
+                            KeyCode::Enter => {
+                                if let Some(node_id) =
+                                    active.get(self.subagent_status_bar_selected)
+                                {
+                                    if let Some(state) =
+                                        FocusViewState::build(node_id, &self.subagent_tree)
+                                    {
+                                        self.subagent_focus = Some(state);
+                                    }
+                                }
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 // Scroll handling (when no popup is active)
                 // scroll_offset = lines scrolled UP from bottom:
@@ -454,23 +399,24 @@ impl App {
                 }
             }
             AppEvent::MouseScrolled(delta) => {
-                // When a popup or detail view is active, route scroll appropriately
-                // instead of scrolling the main chat behind it.
-                if self.subagent_panel_state.detail_view.is_some() {
-                    // Detail view: scroll the event timeline (0=top, higher=older)
-                    if let Some(ref mut detail) = self.subagent_panel_state.detail_view {
+                // Focus view timeline: scroll_offset = skip from top (0 = oldest,
+                // higher = newer). ScrollUp → toward oldest (sub); ScrollDown →
+                // toward newer (add).
+                if let Some(ref mut focus) = self.subagent_focus {
+                    if focus.active_area == FocusArea::Timeline {
                         if delta > 0 {
-                            detail.scroll_offset =
-                                detail.scroll_offset.saturating_sub(delta as usize);
+                            focus.scroll_offset =
+                                focus.scroll_offset.saturating_sub(delta as usize);
                         } else {
-                            detail.scroll_offset =
-                                detail.scroll_offset.saturating_add((-delta) as usize);
+                            focus.scroll_offset =
+                                focus.scroll_offset.saturating_add((-delta) as usize);
                         }
+                        focus.auto_scroll = false;
                     }
                     return;
                 }
-                if self.subagent_panel_visible || self.session_state.visible {
-                    // Subagent panel / session list: keyboard navigation only, ignore mouse scroll
+                if self.session_state.visible {
+                    // Session list: keyboard navigation only, ignore mouse scroll
                     return;
                 }
                 // Main chat scroll: 0 = bottom (newest), larger = further up (older)
@@ -523,7 +469,8 @@ impl App {
             }
             AppEvent::Submit(text) => {
                 self.subagent_tree.clear();
-                self.subagent_panel_state.reset();
+                self.subagent_focus = None;
+                self.subagent_status_bar_selected = 0;
                 self.submit_input(text);
             }
             AppEvent::PreparingTools if self.streaming_content.is_empty() => {
@@ -932,9 +879,9 @@ impl App {
             }
             AppEvent::SubagentUpdate(progress) => {
                 self.subagent_tree.upsert(*progress);
-            }
-            AppEvent::ToggleSubagentPanel => {
-                self.subagent_panel_visible = !self.subagent_panel_visible;
+                if let Some(ref mut focus) = self.subagent_focus {
+                    focus.rebuild(&self.subagent_tree);
+                }
             }
             AppEvent::SaveSession => {
                 let id = self.session_id.clone();
@@ -976,22 +923,6 @@ impl App {
             }
             AppEvent::TodosUpdated(items) => {
                 self.task_panel.update(items);
-            }
-            AppEvent::RetrySubagent(node_id) => {
-                // Close the panel and submit a retry request
-                self.subagent_panel_visible = false;
-                self.subagent_panel_state.reset();
-                self.committed_messages.push(UIMessage {
-                    role: MessageRole::System,
-                    content: format!("🔄 Retrying subagent `{}`...", node_id),
-                    tool_name: None,
-                    content_collapsed: false,
-                    tool_collapsed: true,
-                    tool_running: false,
-                    tool_args: None,
-                    diff_data: None,
-                    tool_metadata: None,
-                });
             }
             _ => {}
         }
