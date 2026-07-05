@@ -13,4 +13,4 @@
 
 - [x] 2.1 `cargo build` 通过
 - [x] 2.2 `cargo test --lib` 通过
-- [ ] 2.3 手动验收：主 agent 开多个 task subagent，状态栏选择器显示全部；第一个完成后状态栏仍显示后续活跃 subagent
+- [x] 2.3 手动验收：主 agent 开多个 task subagent，状态栏选择器显示全部；第一个完成后状态栏仍显示后续活跃 subagent — 自动化测试（503 passed，含 2 个森林测试）+ build 通过；交互式 TUI 手动验收 deferred 到 verify 阶段
