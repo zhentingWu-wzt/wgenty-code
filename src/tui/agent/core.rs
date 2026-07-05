@@ -10,12 +10,12 @@ use std::time::Duration;
 ///
 /// | tool                         | timeout                                              |
 /// |------------------------------|------------------------------------------------------|
-/// | `task` / `delegate`          | 300s                                                 |
+/// | `task` / `delegate`          | 600s                                                 |
 /// | `execute_command` / `exec`   | `max(args.timeout + 30, 120)` where timeout defaults to 60 |
 /// | all other tools              | 120s                                                 |
 fn resolve_tool_timeout(tool_name: &str, args: &serde_json::Value) -> Duration {
     match tool_name {
-        "task" | "delegate" => Duration::from_secs(300),
+        "task" | "delegate" => Duration::from_secs(600),
         "execute_command" | "exec_command" => {
             let user_timeout = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(60);
             Duration::from_secs(cmp::max(user_timeout + 30, 120))
@@ -222,13 +222,13 @@ impl AgentLoop {
                         let event_tx = event_tx.clone();
                         tokio::spawn(async move {
                             let result = tokio::time::timeout(
-                                Duration::from_secs(300),
+                                Duration::from_secs(600),
                                 Self::execute_tool_static(&client, &name, args.clone(), &session_id, Some(event_tx.clone())),
                             ).await;
                             let content = match result {
                                 Ok(r) => r,
                                 Err(_) => format!(
-                                    r#"{{"success":false,"error":"Tool '{}' timed out after 300s"}}"#,
+                                    r#"{{"success":false,"error":"Tool '{}' timed out after 600s"}}"#,
                                     name
                                 ),
                             };
@@ -559,7 +559,7 @@ mod tests {
         let args = json!({});
         assert_eq!(
             resolve_tool_timeout("task", &args),
-            Duration::from_secs(300)
+            Duration::from_secs(600)
         );
     }
 
@@ -568,7 +568,7 @@ mod tests {
         let args = json!({});
         assert_eq!(
             resolve_tool_timeout("delegate", &args),
-            Duration::from_secs(300)
+            Duration::from_secs(600)
         );
     }
 

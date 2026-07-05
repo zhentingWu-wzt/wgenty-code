@@ -14,6 +14,11 @@ pub struct DaemonClient {
     /// Separate client for short-lived tool/API requests, avoiding connection-pool
     /// conflicts with the long-lived SSE streaming connection.
     http_tools: reqwest::Client,
+    /// Client for long-running tools (`task`/`delegate`) whose subagents can run
+    /// for many minutes. No timeout — the tool-level and subagent-level timeouts
+    /// are the real ceilings, not the HTTP client (a 300s client timeout was
+    /// killing legitimate subagent runs mid-flight).
+    http_long: reqwest::Client,
     base_url: String,
 }
 
@@ -33,14 +38,20 @@ impl DaemonClient {
             .build()
             .expect("reqwest client build");
         let http_tools = reqwest::Client::builder()
-            .default_headers(default_headers)
+            .default_headers(default_headers.clone())
             .timeout(std::time::Duration::from_secs(300))
             .pool_max_idle_per_host(0) // don't keep idle connections — always fresh
             .build()
             .expect("reqwest tools client build");
+        let http_long = reqwest::Client::builder()
+            .default_headers(default_headers)
+            .pool_max_idle_per_host(0)
+            .build()
+            .expect("reqwest long client build");
         Self {
             http,
             http_tools,
+            http_long,
             base_url: base_url.trim_end_matches('/').to_string(),
         }
     }
@@ -115,8 +126,15 @@ impl DaemonClient {
             arguments,
             session_id: Some(session_id.to_string()),
         };
-        let resp = self
-            .http_tools
+        // task/delegate run subagents that can take many minutes. Use the
+        // no-timeout client so the HTTP request isn't killed at 300s while
+        // the subagent is still running on the daemon.
+        let client = if tool_name == "task" || tool_name == "delegate" {
+            &self.http_long
+        } else {
+            &self.http_tools
+        };
+        let resp = client
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&body)
