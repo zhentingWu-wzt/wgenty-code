@@ -276,8 +276,7 @@ impl App {
                                 return;
                             }
                             KeyCode::Enter => {
-                                if let Some(node_id) =
-                                    active.get(self.subagent_status_bar_selected)
+                                if let Some(node_id) = active.get(self.subagent_status_bar_selected)
                                 {
                                     if let Some(state) =
                                         FocusViewState::build(node_id, &self.subagent_tree)

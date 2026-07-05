@@ -144,7 +144,9 @@ impl FocusView {
                 Span::styled(" Status:  ", Style::default().fg(Color::Rgb(108, 112, 134))),
                 Span::styled(
                     status_label,
-                    Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(status_color)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
                 Span::styled(
@@ -181,10 +183,7 @@ impl FocusView {
             ]));
         }
 
-        f.render_widget(
-            Paragraph::new(header_lines),
-            header_inner,
-        );
+        f.render_widget(Paragraph::new(header_lines), header_inner);
 
         // ── Timeline ──────────────────────────────────────────────────
         let timeline_border = if state.active_area == FocusArea::Timeline {
@@ -232,7 +231,9 @@ impl FocusView {
                 " \u{2191}\u{2193} scroll  Tab selector  Esc back  {}",
                 scroll_info
             ),
-            FocusArea::Selector => " \u{2191}\u{2193} navigate  Enter switch  Tab timeline  Esc back".to_string(),
+            FocusArea::Selector => {
+                " \u{2191}\u{2193} navigate  Enter switch  Tab timeline  Esc back".to_string()
+            }
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
@@ -384,7 +385,11 @@ fn build_timeline_lines(state: &FocusViewState, inner: Rect) -> Vec<Line<'static
     lines
 }
 
-fn build_selector_lines(state: &FocusViewState, tree: &SubagentTree, inner: Rect) -> Vec<Line<'static>> {
+fn build_selector_lines(
+    state: &FocusViewState,
+    tree: &SubagentTree,
+    inner: Rect,
+) -> Vec<Line<'static>> {
     let node_ids = tree.node_list();
     let available = inner.height as usize;
     let scroll = 0usize; // selector scrolls are simple for now
@@ -424,9 +429,14 @@ fn build_selector_lines(state: &FocusViewState, tree: &SubagentTree, inner: Rect
                 Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
                 Span::styled(
                     display,
-                    Style::default().fg(label_color).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(label_color)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(current_marker, Style::default().fg(Color::Rgb(249, 226, 175))),
+                Span::styled(
+                    current_marker,
+                    Style::default().fg(Color::Rgb(249, 226, 175)),
+                ),
             ])
         })
         .collect()
@@ -610,9 +620,6 @@ mod tests {
 
         let state = FocusViewState::build("n1", &tree).unwrap();
         assert_eq!(state.status, SubagentStatus::Failed);
-        assert_eq!(
-            state.error_message.as_deref(),
-            Some("timed out after 30s")
-        );
+        assert_eq!(state.error_message.as_deref(), Some("timed out after 30s"));
     }
 }
