@@ -485,6 +485,12 @@ pub async fn run_subagent_loop(
                 let tool_timeout = if tool_name == "exec_command" || tool_name == "execute_command"
                 {
                     Duration::from_secs(120)
+                } else if tool_name == "task" || tool_name == "delegate" {
+                    // Subagents have their own 240s loop timeout; this is a
+                    // backstop above that so we don't preempt a legitimate
+                    // long subagent run (the old 90s was killing inner
+                    // subagents that routinely take 100s+).
+                    Duration::from_secs(300)
                 } else {
                     Duration::from_secs(90)
                 };
@@ -624,7 +630,9 @@ pub async fn run_subagent_loop(
             tracing::error!(
                 trace_id = trace_id,
                 timeout_secs = timeout_duration.as_secs(),
-                "Subagent: timed out"
+                elapsed_secs = start.elapsed().as_secs(),
+                delay_secs = start.elapsed().as_secs().saturating_sub(timeout_duration.as_secs()),
+                "Subagent: timed out (delay = elapsed - timeout; a large delay indicates runtime starvation — the timer woke but the task wasn't polled promptly)"
             );
             Err(format!(
                 "Subagent timed out after {} seconds",
