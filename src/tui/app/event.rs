@@ -69,6 +69,28 @@ impl App {
                             }
                             return;
                         }
+                        KeyCode::Char('t') if focus.active_area == FocusArea::Timeline => {
+                            // Toggle fold: if any tools are expanded, collapse all;
+                            // otherwise expand all. Uses the conversion shared with
+                            // build_conversation_lines to find tool_call_ids.
+                            let ui_msgs = crate::tui::components::subagent_focus_view::chat_messages_to_ui_messages(&focus.messages);
+                            if focus.collapsed_tool_ids.is_empty() {
+                                for msg in &ui_msgs {
+                                    if msg.role == MessageRole::Tool {
+                                        if let Some(ref meta) = msg.tool_metadata {
+                                            if let Some(tid) =
+                                                meta.get("tool_call_id").and_then(|v| v.as_str())
+                                            {
+                                                focus.collapsed_tool_ids.insert(tid.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                focus.collapsed_tool_ids.clear();
+                            }
+                            return;
+                        }
                         KeyCode::Up if focus.active_area == FocusArea::Selector => {
                             let len = self.subagent_tree.node_list().len();
                             focus.selector_index = wrap_prev(focus.selector_index, len);
