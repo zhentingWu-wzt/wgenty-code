@@ -32,9 +32,9 @@
 
 ## 4. app/mod.rs + event.rs 状态与 focus view 键位（D5, D8）
 
-- [ ] 4.1 `app/mod.rs`：App 新增 `completed_at: HashMap<String, std::time::Instant>` 字段，初始化为空
-- [ ] 4.2 `event.rs` `AppEvent::SubagentUpdate`：若 `progress.status` 为完成态且之前非完成态（transition 时刻），写入 `completed_at`
-- [ ] 4.3 `event.rs` `AppEvent::Submit`（`subagent_tree.clear()` 处）：清空 `completed_at`
+- [x] 4.1 `app/mod.rs`：App 新增 `completed_at: HashMap<String, std::time::Instant>` 字段，初始化为空
+- [x] 4.2 `event.rs` `AppEvent::SubagentUpdate`：若 `progress.status` 为完成态且之前非完成态（transition 时刻），写入 `completed_at`
+- [x] 4.3 `event.rs` `AppEvent::Submit`（`subagent_tree.clear()` 处）：清空 `completed_at`
 - [ ] 4.4 `event.rs` focus view 键位：移除 `FocusArea` 导入与所有 `active_area ==` 守卫
 - [ ] 4.5 ↑↓ 改为导航选择器：基于可见列表 `wrap_prev`/`wrap_next`（含 main）
 - [ ] 4.6 Enter：`selector_index == 0` 退出 focus view；否则 `FocusViewState::build(visible_list[idx-1])` 切换
