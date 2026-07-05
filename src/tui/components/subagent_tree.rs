@@ -1,7 +1,7 @@
 //! SubagentTree — in-memory tree state for subagent execution progress.
 
 use crate::agent::progress::{SubagentProgress, SubagentStatus};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Default)]
 pub struct SubagentTree {
@@ -101,18 +101,52 @@ impl SubagentTree {
     }
 
     /// Depth-first flattened list of all node IDs in the tree.
+    ///
+    /// Supports a forest of independent roots: walks `root_id` (the first
+    /// top-level node) first, then any other `parent_id: None` nodes not yet
+    /// visited. This ensures every top-level subagent (e.g., multiple `task`
+    /// subagents after D7 removed the wrapper root) is reachable — without it,
+    /// subsequent top-level subagents would be orphans and never appear in the
+    /// status bar / selector. A visited set prevents duplicates (test fixtures
+    /// and any re-linked node are only walked once).
     pub fn node_list(&self) -> Vec<String> {
         let mut list = Vec::new();
-        fn walk(tree: &SubagentTree, node_id: &str, list: &mut Vec<String>) {
+        let mut visited: HashSet<String> = HashSet::new();
+        fn walk(
+            tree: &SubagentTree,
+            node_id: &str,
+            list: &mut Vec<String>,
+            visited: &mut HashSet<String>,
+        ) {
+            if !visited.insert(node_id.to_string()) {
+                return;
+            }
             list.push(node_id.to_string());
             if let Some(node) = tree.nodes.get(node_id) {
                 for child in &node.children {
-                    walk(tree, child, list);
+                    walk(tree, child, list, visited);
                 }
             }
         }
+        // Walk the primary root first (back-compat: preserves DFS start + order).
         if let Some(ref root) = self.root_id {
-            walk(self, root, &mut list);
+            walk(self, root, &mut list, &mut visited);
+        }
+        // Forest: walk any other top-level nodes (parent_id None) not yet visited.
+        // Deterministic order by started_at, then node_id.
+        let mut extra: Vec<String> = self
+            .nodes
+            .iter()
+            .filter(|(id, n)| n.progress.parent_id.is_none() && !visited.contains(id.as_str()))
+            .map(|(id, _)| id.clone())
+            .collect();
+        extra.sort_by(|a, b| {
+            let sa = self.nodes.get(a).map(|n| n.progress.started_at).unwrap_or(0);
+            let sb = self.nodes.get(b).map(|n| n.progress.started_at).unwrap_or(0);
+            sa.cmp(&sb).then_with(|| a.cmp(b))
+        });
+        for root in &extra {
+            walk(self, root, &mut list, &mut visited);
         }
         list
     }
@@ -322,5 +356,43 @@ mod tests {
         // Without filtering, wrapper's Running would make is_complete false.
         // With filtering, all real nodes completed → is_complete true.
         assert!(tree.is_complete());
+    }
+
+    #[test]
+    fn test_node_list_multiple_top_level_roots() {
+        let mut tree = SubagentTree::default();
+        // Three independent top-level subagents (parent_id None) — e.g., multiple
+        // `task` subagents after D7 removed the wrapper root.
+        tree.upsert(make_progress("sub1", None, SubagentStatus::Running));
+        tree.upsert(make_progress("sub2", None, SubagentStatus::Running));
+        tree.upsert(make_progress("sub3", None, SubagentStatus::Pending));
+        // All three must appear in node_list (forest), not just the first.
+        let list = tree.node_list();
+        assert!(list.contains(&"sub1".to_string()));
+        assert!(list.contains(&"sub2".to_string()));
+        assert!(list.contains(&"sub3".to_string()));
+        assert_eq!(list.len(), 3, "all top-level roots must be reachable");
+        // active_count covers all roots (none are grouping nodes — all leaves)
+        assert_eq!(tree.active_count(), 3);
+    }
+
+    #[test]
+    fn test_node_list_delegate_plus_independent_task() {
+        let mut tree = SubagentTree::default();
+        // delegate wrapper (first root) + its sub-tasks
+        tree.upsert(make_progress("delegate", None, SubagentStatus::Running));
+        tree.upsert(make_progress("dt1", Some("delegate"), SubagentStatus::Running));
+        tree.upsert(make_progress("dt2", Some("delegate"), SubagentStatus::Running));
+        // independent task subagent (separate top-level root, parent_id None)
+        tree.upsert(make_progress("task-sub", None, SubagentStatus::Running));
+        // node_list must reach ALL roots: delegate + dt1 + dt2 + task-sub
+        let list = tree.node_list();
+        assert!(list.contains(&"delegate".to_string()));
+        assert!(list.contains(&"dt1".to_string()));
+        assert!(list.contains(&"dt2".to_string()));
+        assert!(list.contains(&"task-sub".to_string()));
+        assert_eq!(list.len(), 4, "independent task-sub must not be orphaned");
+        // active_count excludes the delegate grouping node: dt1 + dt2 + task-sub
+        assert_eq!(tree.active_count(), 3);
     }
 }
