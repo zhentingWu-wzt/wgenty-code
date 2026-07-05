@@ -241,6 +241,7 @@ impl Tool for TaskTool {
                     cumulative_tokens: 0,
                     error_details: None,
                     events: Vec::new(),
+                    messages: Vec::new(),
                 },
             );
         }
@@ -396,6 +397,7 @@ impl Tool for TaskTool {
                         cumulative_tokens: 0,
                         error_details: None,
                         events: Vec::new(),
+                        messages: Vec::new(),
                     },
                 );
             }
@@ -523,6 +525,7 @@ impl Tool for TaskTool {
                         cumulative_tokens: 0,
                         error_details: None,
                         events: Vec::new(),
+                        messages: Vec::new(),
                     },
                 );
             }

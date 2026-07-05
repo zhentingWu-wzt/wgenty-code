@@ -5,6 +5,7 @@
 //! `ProgressCallback`. The daemon stores them in a shared store; the TUI polls
 //! the store and converts updates into `AppEvent::SubagentUpdate` for rendering.
 
+use crate::api::ChatMessage;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -99,6 +100,9 @@ pub struct SubagentProgress {
     pub error_details: Option<ErrorInfo>,
     /// Full event stream (replaces old action_log for new code, kept for compat).
     pub events: Vec<SubagentEvent>,
+    /// Full conversation messages from the subagent's loop,
+    /// for rendering the focus view as a chat history.
+    pub messages: Vec<ChatMessage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -421,6 +425,7 @@ mod tests {
             cumulative_tokens: 5000,
             error_details: None,
             events: vec![],
+            messages: vec![],
         };
         let json = serde_json::to_string(&progress).unwrap();
         assert!(json.contains("progress_delta"));
@@ -461,6 +466,7 @@ mod tests {
             cumulative_tokens: 0,
             error_details: None,
             events: vec![],
+            messages: vec![],
         };
         let json = serde_json::to_string(&progress).unwrap();
         let deserialized: SubagentProgress = serde_json::from_str(&json).unwrap();

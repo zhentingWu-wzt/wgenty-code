@@ -151,6 +151,7 @@ mod tests {
                 cumulative_tokens: 0,
                 error_details: None,
                 events: vec![],
+                messages: vec![],
             },
             children: vec![],
         }
