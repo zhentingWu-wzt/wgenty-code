@@ -16,4 +16,4 @@ verification_report: docs/superpowers/reports/2026-07-05-fix-subagent-tree-multi
 branch_status: handled
 created_at: 2026-07-05
 verified_at: 2026-07-05
-archived: false
+archived: true
