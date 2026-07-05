@@ -136,6 +136,15 @@ pub async fn run_subagent_loop(
     let started_at_ms = chrono::Utc::now().timestamp_millis();
     let on_progress_inner = on_progress.clone();
 
+    // Stateful progress fields — mutated across rounds via Mutex. Defined
+    // outside loop_future so they survive a timeout cancellation: the Err
+    // branch can read the accumulated events/snapshot/tokens to report the
+    // final state instead of an empty one.
+    let action_log: Mutex<Vec<SubagentEvent>> = Mutex::new(Vec::new());
+    let text_snapshot: Mutex<Option<String>> = Mutex::new(None);
+    let current_params_val: Mutex<Option<String>> = Mutex::new(None);
+    let cumulative_tokens: Mutex<usize> = Mutex::new(0);
+
     let loop_future = async {
         let mut messages: Vec<ChatMessage> = vec![
             ChatMessage::system(system_prompt),
@@ -153,12 +162,6 @@ pub async fn run_subagent_loop(
         let has_tools = !tool_defs.is_empty();
         let mut stuck_detector = StuckDetector::new();
         let mut consecutive_parse_errors: usize = 0;
-
-        // Stateful progress fields — mutated across rounds via Mutex (must be Send+Sync for tokio::spawn).
-        let action_log: Mutex<Vec<SubagentEvent>> = Mutex::new(Vec::new());
-        let text_snapshot: Mutex<Option<String>> = Mutex::new(None);
-        let current_params_val: Mutex<Option<String>> = Mutex::new(None);
-        let cumulative_tokens: Mutex<usize> = Mutex::new(0);
 
         let emit = |status: SubagentStatus,
                     round: Option<usize>,
@@ -636,6 +639,20 @@ pub async fn run_subagent_loop(
     match tokio::time::timeout(timeout_duration, loop_future).await {
         Ok(result) => result,
         Err(_elapsed) => {
+            // Push a terminal Error event so the focus-view timeline shows the
+            // timeout instead of ending abruptly, then snapshot the accumulated
+            // state. The Mutexes survive because they live outside loop_future.
+            {
+                let mut log = action_log.lock().unwrap();
+                log.push(SubagentEvent {
+                    event_type: SubagentEventType::Error {
+                        message: format!("Timed out after {} seconds", timeout_duration.as_secs()),
+                        error_type: ErrorType::Timeout,
+                    },
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                });
+            }
+            let accumulated_events = action_log.lock().unwrap().clone();
             if let Some(ref cb) = on_progress {
                 cb(SubagentProgress {
                     node_id: trace_id.to_string(),
@@ -645,9 +662,9 @@ pub async fn run_subagent_loop(
                     round: None,
                     max_rounds: Some(max_rounds),
                     current_tool: None,
-                    current_params: None,
-                    action_log: Vec::new(),
-                    text_snapshot: None,
+                    current_params: current_params_val.lock().unwrap().clone(),
+                    action_log: accumulated_events.clone(),
+                    text_snapshot: text_snapshot.lock().unwrap().clone(),
                     started_at: started_at_ms,
                     elapsed_ms: start.elapsed().as_millis() as u64,
                     metadata: Some(SubagentMetadata {
@@ -660,7 +677,7 @@ pub async fn run_subagent_loop(
                     }),
                     progress_delta: None,
                     token_budget_k: None,
-                    cumulative_tokens: 0,
+                    cumulative_tokens: *cumulative_tokens.lock().unwrap() as u64,
                     error_details: Some(ErrorInfo {
                         error_type: ErrorType::Timeout,
                         message: format!("Timed out after {} seconds", timeout_duration.as_secs()),
@@ -669,7 +686,7 @@ pub async fn run_subagent_loop(
                         round: 0,
                         retryable: true,
                     }),
-                    events: Vec::new(),
+                    events: accumulated_events,
                 });
             }
             tracing::error!(
