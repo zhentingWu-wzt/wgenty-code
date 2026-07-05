@@ -986,4 +986,38 @@ mod tests {
             lines.len()
         );
     }
+
+    #[test]
+    fn test_build_selector_lines_keeps_cursor_visible() {
+        use std::time::Instant;
+        // 10 real subagents, available height 4, cursor on the LAST one.
+        // The sliding window must keep the cursor (▶) visible.
+        let mut tree = SubagentTree::default();
+        let mut root = make_node("root", vec![make_event("r")]);
+        root.children = (0..10).map(|i| format!("s{}", i)).collect();
+        tree.nodes.insert("root".to_string(), root);
+        for i in 0..10 {
+            tree.nodes
+                .insert(format!("s{}", i), make_node(&format!("s{}", i), vec![]));
+        }
+        tree.root_id = Some("root".to_string());
+        // real_node_list = [root, s0..s9]; opening "s9" (pos 10) → selector_index 11
+        let mut state = FocusViewState::build("s9", &tree).unwrap();
+        // Force cursor onto the last entry (main + 11 real = 12 entries, index 11)
+        state.selector_index = 11;
+        let inner = Rect::new(0, 0, 80, 4);
+        let now = Instant::now();
+        let completed_at = HashMap::new();
+        let lines = build_selector_lines(&state, &tree, &completed_at, now, inner);
+        // The cursor marker ▶ must appear in the rendered window (cursor visible)
+        let cursor_visible = lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|span| span.content.as_ref().starts_with("▶"))
+        });
+        assert!(
+            cursor_visible,
+            "cursor (▶) must be visible when selector_index is at the end"
+        );
+    }
 }

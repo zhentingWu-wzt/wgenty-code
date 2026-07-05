@@ -55,16 +55,16 @@
 
 ## 6. 测试更新与新增
 
-- [ ] 6.1 更新 `test_build_from_node`：`selector_index` 期望值改为 `pos+1`，移除 `active_area` 断言
-- [ ] 6.2 更新 `test_rebuild_preserves_ui_state` 等涉及 `active_area`/`selector_index` 的断言
-- [ ] 6.3 新增单测：`build` 时光标对齐当前 node（多 node tree，打开非根 node 验证 `selector_index`）
-- [ ] 6.4 新增单测：选择器滚动跟随（cursor 接近底部时 `scroll_start` 跟随，cursor 始终在窗口内）
-- [ ] 6.5 新增单测：`build_selector_lines` 不越界（main + N subagent，available 较小时总数 ≤ available）
-- [ ] 6.6 新增单测：完成态灰显与延迟移除过滤（超时 node 被排除，当前 node 例外）
-- [ ] 6.7 新增单测：`is_grouping_node` 过滤（delegate 包装排除、sub-task 保留；`active_count`/`active_node_ids` 不含分组节点）
-- [ ] 6.8 新增/更新 `task.rs` 测试：确认不再创建包装节点，subagent 为 root
-- [ ] 6.9 新增单测：状态栏 ↑↓ 自动激活焦点（无 Tab 前置），Esc 取消焦点
-- [ ] 6.10 新增单测：主聊天 ↑↓ 不滚动（PageUp/PageDn 仍可滚）
+- [x] 6.1 更新 `test_build_from_node`：`selector_index` 期望值改为 `pos+1`，移除 `active_area` 断言
+- [x] 6.2 更新 `test_rebuild_preserves_ui_state` 等涉及 `active_area`/`selector_index` 的断言
+- [x] 6.3 新增单测：`build` 时光标对齐当前 node（多 node tree，打开非根 node 验证 `selector_index`）
+- [x] 6.4 新增单测：选择器滚动跟随（cursor 接近底部时 `scroll_start` 跟随，cursor 始终在窗口内）
+- [x] 6.5 新增单测：`build_selector_lines` 不越界（main + N subagent，available 较小时总数 ≤ available）
+- [x] 6.6 新增单测：完成态灰显与延迟移除过滤（超时 node 被排除，当前 node 例外）
+- [x] 6.7 新增单测：`is_grouping_node` 过滤（delegate 包装排除、sub-task 保留；`active_count`/`active_node_ids` 不含分组节点）
+- [x] 6.8 新增/更新 `task.rs` 测试：确认不再创建包装节点，subagent 为 root
+- [x] 6.9 新增单测：状态栏 ↑↓ 自动激活焦点（无 Tab 前置），Esc 取消焦点
+- [x] 6.10 新增单测：主聊天 ↑↓ 不滚动（PageUp/PageDn 仍可滚）
 
 ## 7. 构建与验收
 
