@@ -1,0 +1,13 @@
+{
+  "change": "subagent-focus-conversation",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "8e2f8ddc92b6dfc74ad581a7eb2a42e98ed376e4c38957d00fab9378ca59cba5",
+  "files": [
+    { "path": "openspec/changes/subagent-focus-conversation/proposal.md", "sha256": "6073260c621896e9c6b00b9d074f3889c581e93f245a17d3cbda069a48c5c3a8" },
+    { "path": "openspec/changes/subagent-focus-conversation/design.md", "sha256": "cf6c8aed65960d586730fdf005acaf2618a118181db5e03fa2f64863fae4dc37" },
+    { "path": "openspec/changes/subagent-focus-conversation/tasks.md", "sha256": "0c7fee575a5b57844de98a22ad38e55c527955ddccd97ec9cb66b5f51b446c23" }
+  ]
+}
