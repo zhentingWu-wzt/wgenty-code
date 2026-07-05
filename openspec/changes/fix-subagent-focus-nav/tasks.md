@@ -21,37 +21,37 @@
 
 ## 3. subagent_focus_view.rs 状态与渲染重构（D1–D6, D8）
 
-- [ ] 3.1 移除 `FocusArea` enum 与 `FocusViewState::active_area` 字段（同步 `build`/`rebuild` 与所有引用）
-- [ ] 3.2 `FocusViewState::build`：`selector_index` 初始化为当前 `node_id` 在 `real_node_list` 中的索引 +1（main 偏移）；找不到回退 0
-- [ ] 3.3 重构 `build_selector_lines`：统一列表 `["main", ...visible_node_ids]` + 滑动窗口 `skip(scroll_start).take(available)`，`scroll_start` 由 `selector_index` 推导（D3 算法）；`visible_node_ids` 基于 `real_node_list` 再套完成态过滤；修掉 `take(available)` 越界
-- [ ] 3.4 选择器布局高度 `Constraint::Length(6)` → `Constraint::Length(8)`
-- [ ] 3.5 边框：selector 恒为 `active_border`，timeline 恒为 `inactive_border`（移除条件分支）
-- [ ] 3.6 help bar 文案更新为单焦点版本（`↑↓ navigate · Enter switch/exit · t fold · Esc back · wheel scroll timeline`）
-- [ ] 3.7 完成态灰显：Completed/Failed/Cancelled 的 subagent label 渲染为灰色，保留状态图标
-- [ ] 3.8 延迟移除过滤：渲染时排除 `completed_at[node]` 超过 `COMPLETED_REMOVE_DELAY_SECS`（10s）的 node；当前 `node_id` 例外
+- [x] 3.1 移除 `FocusArea` enum 与 `FocusViewState::active_area` 字段（同步 `build`/`rebuild` 与所有引用）
+- [x] 3.2 `FocusViewState::build`：`selector_index` 初始化为当前 `node_id` 在 `real_node_list` 中的索引 +1（main 偏移）；找不到回退 0
+- [x] 3.3 重构 `build_selector_lines`：统一列表 `["main", ...visible_node_ids]` + 滑动窗口 `skip(scroll_start).take(available)`，`scroll_start` 由 `selector_index` 推导（D3 算法）；`visible_node_ids` 基于 `real_node_list` 再套完成态过滤；修掉 `take(available)` 越界
+- [x] 3.4 选择器布局高度 `Constraint::Length(6)` → `Constraint::Length(8)`
+- [x] 3.5 边框：selector 恒为 `active_border`，timeline 恒为 `inactive_border`（移除条件分支）
+- [x] 3.6 help bar 文案更新为单焦点版本（`↑↓ navigate · Enter switch/exit · t fold · Esc back · wheel scroll timeline`）
+- [x] 3.7 完成态灰显：Completed/Failed/Cancelled 的 subagent label 渲染为灰色，保留状态图标
+- [x] 3.8 延迟移除过滤：渲染时排除 `completed_at[node]` 超过 `COMPLETED_REMOVE_DELAY_SECS`（10s）的 node；当前 `node_id` 例外
 
 ## 4. app/mod.rs + event.rs 状态与 focus view 键位（D5, D8）
 
 - [x] 4.1 `app/mod.rs`：App 新增 `completed_at: HashMap<String, std::time::Instant>` 字段，初始化为空
 - [x] 4.2 `event.rs` `AppEvent::SubagentUpdate`：若 `progress.status` 为完成态且之前非完成态（transition 时刻），写入 `completed_at`
 - [x] 4.3 `event.rs` `AppEvent::Submit`（`subagent_tree.clear()` 处）：清空 `completed_at`
-- [ ] 4.4 `event.rs` focus view 键位：移除 `FocusArea` 导入与所有 `active_area ==` 守卫
-- [ ] 4.5 ↑↓ 改为导航选择器：基于可见列表 `wrap_prev`/`wrap_next`（含 main）
-- [ ] 4.6 Enter：`selector_index == 0` 退出 focus view；否则 `FocusViewState::build(visible_list[idx-1])` 切换
-- [ ] 4.7 `'t'` 折叠：移除 `active_area` 守卫，始终可用
-- [ ] 4.8 Tab 删除显式分支（`_ => return` 兜底为 no-op）
-- [ ] 4.9 鼠标滚轮：移除 `active_area == Timeline` 守卫，始终滚 timeline
-- [ ] 4.10 移除 focus view 内 PageUp/PageDown 的 timeline 滚动分支
+- [x] 4.4 `event.rs` focus view 键位：移除 `FocusArea` 导入与所有 `active_area ==` 守卫
+- [x] 4.5 ↑↓ 改为导航选择器：基于可见列表 `wrap_prev`/`wrap_next`（含 main）
+- [x] 4.6 Enter：`selector_index == 0` 退出 focus view；否则 `FocusViewState::build(visible_list[idx-1])` 切换
+- [x] 4.7 `'t'` 折叠：移除 `active_area` 守卫，始终可用
+- [x] 4.8 Tab 删除显式分支（`_ => return` 兜底为 no-op）
+- [x] 4.9 鼠标滚轮：移除 `active_area == Timeline` 守卫，始终滚 timeline
+- [x] 4.10 移除 focus view 内 PageUp/PageDown 的 timeline 滚动分支
 
 ## 5. 状态栏 + 主聊天键位 + 输入框样式（D10–D12）
 
 > 工作区已有这部分的部分实现，需核对完整性并补全。
 
-- [ ] 5.1 `event.rs` 状态栏：核对移除 Tab 切换、↑↓ 自动激活 `subagent_status_bar_focused`（D10）；Esc 取消焦点；Enter 打开 focus view 保留
-- [ ] 5.2 `event.rs` 主聊天：核对移除 ↑↓ 单行滚动分支（D11）；保留 PageUp/PageDn + 鼠标滚轮；无活跃 subagent 时 ↑↓ 不响应
-- [ ] 5.3 `input.rs`：核对 `update_style()` 抽出完整（`render()` 不再设 slash-command 样式，只设边框）
-- [ ] 5.4 `event.rs`：核对所有文本变更点调用 `update_style()`（按键输入 `textarea.input`、补全 `insert_str`、粘贴 `insert_char`、`take_text`、Shift+Enter）
-- [ ] 5.5 help bar / 状态栏提示文案：反映 ↑↓ 自动激活、PageUp/PageDn 滚动（如适用）
+- [x] 5.1 `event.rs` 状态栏：核对移除 Tab 切换、↑↓ 自动激活 `subagent_status_bar_focused`（D10）；Esc 取消焦点；Enter 打开 focus view 保留
+- [x] 5.2 `event.rs` 主聊天：核对移除 ↑↓ 单行滚动分支（D11）；保留 PageUp/PageDn + 鼠标滚轮；无活跃 subagent 时 ↑↓ 不响应
+- [x] 5.3 `input.rs`：核对 `update_style()` 抽出完整（`render()` 不再设 slash-command 样式，只设边框）
+- [x] 5.4 `event.rs`：核对所有文本变更点调用 `update_style()`（按键输入 `textarea.input`、补全 `insert_str`、粘贴 `insert_char`、`take_text`、Shift+Enter）
+- [x] 5.5 help bar / 状态栏提示文案：反映 ↑↓ 自动激活、PageUp/PageDn 滚动（如适用）
 
 ## 6. 测试更新与新增
 

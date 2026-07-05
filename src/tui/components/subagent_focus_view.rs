@@ -16,6 +16,34 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
+
+/// Completed subagents are removed from the selector after this delay (seconds).
+pub const COMPLETED_REMOVE_DELAY_SECS: u64 = 10;
+
+/// Real subagent node IDs visible in the selector: grouping nodes are excluded
+/// (via `real_node_list`), and completed nodes past the removal delay are
+/// excluded — except the currently-viewed node, which is always kept so its
+/// timeline remains accessible.
+pub fn visible_node_ids(
+    tree: &SubagentTree,
+    completed_at: &HashMap<String, Instant>,
+    now: Instant,
+    current_node_id: &str,
+) -> Vec<String> {
+    tree.real_node_list()
+        .into_iter()
+        .filter(|id| {
+            if id == current_node_id {
+                return true;
+            }
+            match completed_at.get(id) {
+                Some(t) => now.duration_since(*t).as_secs() < COMPLETED_REMOVE_DELAY_SECS,
+                None => true,
+            }
+        })
+        .collect()
+}
 
 /// Convert a sequence of `ChatMessage`s into `UIMessage`s for conversation-style
 /// rendering in the subagent focus view.
@@ -146,13 +174,6 @@ pub fn chat_messages_to_ui_messages(messages: &[ChatMessage]) -> Vec<UIMessage> 
     ui_messages
 }
 
-/// Which area of the focus view is currently focused (for keyboard input).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FocusArea {
-    Timeline,
-    Selector,
-}
-
 /// State for the full-screen subagent focus view.
 #[derive(Debug, Clone)]
 pub struct FocusViewState {
@@ -171,16 +192,19 @@ pub struct FocusViewState {
     pub current_params: Option<String>,
     pub scroll_offset: usize,
     pub auto_scroll: bool,
-    pub active_area: FocusArea,
     pub selector_index: usize,
 }
 
 impl FocusViewState {
     /// Build a `FocusViewState` from a node in the tree.
-    /// Returns `None` if the node doesn't exist.
+    /// Returns `None` if the node doesn't exist. The selector cursor is
+    /// initialized to align with `node_id` (D2): `real_node_list` position +1
+    /// (the +1 accounts for the "main" entry at index 0).
     pub fn build(node_id: &str, tree: &SubagentTree) -> Option<Self> {
         let node = tree.nodes.get(node_id)?;
         let p = &node.progress;
+        let pos = tree.real_node_list().iter().position(|id| id == node_id);
+        let selector_index = pos.map(|i| i + 1).unwrap_or(0);
         Some(Self {
             node_id: node_id.to_string(),
             label: p.label.clone(),
@@ -197,8 +221,7 @@ impl FocusViewState {
             current_params: p.current_params.clone(),
             scroll_offset: 0,
             auto_scroll: true,
-            active_area: FocusArea::Timeline,
-            selector_index: 0,
+            selector_index,
         })
     }
 
@@ -237,6 +260,8 @@ impl FocusView {
         area: Rect,
         state: &FocusViewState,
         tree: &SubagentTree,
+        completed_at: &HashMap<String, Instant>,
+        now: Instant,
         spinner_frame: u8,
     ) {
         let chunks = Layout::default()
@@ -244,7 +269,7 @@ impl FocusView {
             .constraints([
                 Constraint::Length(8), // header
                 Constraint::Min(5),    // timeline
-                Constraint::Length(6), // selector
+                Constraint::Length(8), // selector
                 Constraint::Length(1), // help
             ])
             .split(area);
@@ -253,11 +278,7 @@ impl FocusView {
         let inactive_border = Style::default().fg(Color::Rgb(80, 80, 100));
 
         // ── Header ────────────────────────────────────────────────────
-        let header_border = if state.active_area == FocusArea::Timeline {
-            active_border
-        } else {
-            inactive_border
-        };
+        let header_border = inactive_border;
         let header_block = Block::default()
             .title(" Subagent Focus ")
             .borders(Borders::ALL)
@@ -329,11 +350,7 @@ impl FocusView {
         f.render_widget(Paragraph::new(header_lines), header_inner);
 
         // ── Timeline ──────────────────────────────────────────────────
-        let timeline_border = if state.active_area == FocusArea::Timeline {
-            active_border
-        } else {
-            inactive_border
-        };
+        let timeline_border = inactive_border;
         let timeline_block = Block::default()
             .title(" Conversation ")
             .borders(Borders::ALL)
@@ -346,11 +363,7 @@ impl FocusView {
         f.render_widget(Paragraph::new(timeline_lines), timeline_inner);
 
         // ── Selector ──────────────────────────────────────────────────
-        let selector_border = if state.active_area == FocusArea::Selector {
-            active_border
-        } else {
-            inactive_border
-        };
+        let selector_border = active_border;
         let selector_block = Block::default()
             .title(" Subagents ")
             .borders(Borders::ALL)
@@ -359,7 +372,8 @@ impl FocusView {
         let selector_inner = selector_block.inner(chunks[2]);
         f.render_widget(selector_block, chunks[2]);
 
-        let selector_lines = build_selector_lines(state, tree, selector_inner);
+        let selector_lines =
+            build_selector_lines(state, tree, completed_at, now, selector_inner);
         f.render_widget(Paragraph::new(selector_lines), selector_inner);
 
         // ── Help bar ──────────────────────────────────────────────────
@@ -373,15 +387,10 @@ impl FocusView {
         } else {
             "(no events)".to_string()
         };
-        let help_text = match state.active_area {
-            FocusArea::Timeline => format!(
-                " \u{2191}\u{2193} PgUp/PgDn scroll  t fold  Tab selector  Esc back  {}",
-                scroll_info
-            ),
-            FocusArea::Selector => {
-                " \u{2191}\u{2193} navigate  Enter switch  Tab timeline  Esc back".to_string()
-            }
-        };
+        let help_text = format!(
+            " \u{2191}\u{2193} navigate  Enter switch/exit  t fold  Esc back  wheel scroll timeline  {}",
+            scroll_info
+        );
         f.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
                 help_text,
@@ -468,67 +477,96 @@ fn build_conversation_lines(
 fn build_selector_lines(
     state: &FocusViewState,
     tree: &SubagentTree,
+    completed_at: &HashMap<String, Instant>,
+    now: Instant,
     inner: Rect,
 ) -> Vec<Line<'static>> {
+    let visible = visible_node_ids(tree, completed_at, now, &state.node_id);
+    // Unified list: ["main", ...visible]. selector_index 0 = main, i+1 = visible[i].
+    let total_len = 1 + visible.len();
+    let available = inner.height as usize;
+    let avail = available.min(total_len);
+
+    // Sliding window: keep selector_index visible. Pure function of
+    // selector_index + list length + avail; not stored in state.
+    let mut scroll_start = 0usize;
+    if state.selector_index < scroll_start {
+        scroll_start = state.selector_index;
+    }
+    if state.selector_index >= scroll_start + avail && avail > 0 {
+        scroll_start = state.selector_index.saturating_sub(avail) + 1;
+    }
+    let max_start = total_len.saturating_sub(avail);
+    if scroll_start > max_start {
+        scroll_start = max_start;
+    }
 
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let node_ids = tree.node_list();
-    let available = inner.height as usize;
-    let scroll = 0usize;
+    let cursor_color = Color::Rgb(249, 226, 175);
 
-    // "main" entry (index 0) for returning to main window
-    if available > 0 {
+    // "main" entry at absolute index 0 — only render when inside the window.
+    if avail > 0 && scroll_start == 0 {
         let is_main_selected = state.selector_index == 0;
-        let selector = if is_main_selected { "> " } else { "  " };
-        let label_color = if is_main_selected {
-            Color::Rgb(249, 226, 175)
-        } else {
-            Color::Rgb(180, 180, 200)
-        };
+        let selector = if is_main_selected { "▶ " } else { "  " };
         lines.push(Line::from(vec![
-            Span::styled(selector, Style::default().fg(Color::Rgb(249, 226, 175))),
-            Span::styled("main", Style::default().fg(label_color).add_modifier(Modifier::BOLD)),
+            Span::styled(selector, Style::default().fg(cursor_color)),
+            Span::styled(
+                "main",
+                Style::default()
+                    .fg(Color::Rgb(180, 180, 200))
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
     }
 
-    for (i, node_id) in node_ids.iter().skip(scroll).take(available).enumerate() {
-            let is_current = node_id == &state.node_id;
-            let is_selected = i + scroll + 1 == state.selector_index;
-            let node = tree.nodes.get(node_id);
-            let (icon, icon_color) = if let Some(n) = node {
-                selector_status_icon(&n.progress.status)
-            } else {
-                ("?", Color::Rgb(108, 112, 134))
-            };
-            let label = node
-                .map(|n| n.progress.label.clone())
-                .unwrap_or_else(|| node_id.clone());
+    // Subagent entries: absolute index = i + 1 (visible[i]).
+    for (i, node_id) in visible.iter().enumerate() {
+        let abs_index = i + 1;
+        if abs_index < scroll_start || abs_index >= scroll_start + avail {
+            continue;
+        }
+        let is_current = node_id == &state.node_id;
+        let is_selected = abs_index == state.selector_index;
+        let node = tree.nodes.get(node_id);
+        let (icon, icon_color) = if let Some(n) = node {
+            selector_status_icon(&n.progress.status)
+        } else {
+            ("?", Color::Rgb(108, 112, 134))
+        };
+        let label = node
+            .map(|n| n.progress.label.clone())
+            .unwrap_or_else(|| node_id.clone());
 
-            let selector = if is_selected { "▶ " } else { "  " };
-            let current_marker = if is_current { " ●" } else { "  " };
-            let label_color = if is_current {
-                Color::Rgb(249, 226, 175)
-            } else if is_selected {
-                Color::Rgb(137, 180, 250)
-            } else {
-                Color::Rgb(180, 180, 200)
-            };
-            let max_w = inner.width.saturating_sub(8) as usize;
-            let display = truncate(&label, max_w);
+        let selector = if is_selected { "▶ " } else { "  " };
+        let current_marker = if is_current { " ●" } else { "" };
+
+        // Dim completed-but-not-yet-removed nodes; highlight current/selected.
+        let is_completed = node
+            .map(|n| {
+                matches!(
+                    n.progress.status,
+                    SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
+                )
+            })
+            .unwrap_or(false);
+        let label_color = if is_current {
+            Color::Rgb(249, 226, 175)
+        } else if is_selected {
+            Color::Rgb(137, 180, 250)
+        } else if is_completed {
+            Color::Rgb(90, 90, 110) // dim gray for completed
+        } else {
+            Color::Rgb(180, 180, 200)
+        };
+
+        let max_w = inner.width.saturating_sub(8) as usize;
+        let display = truncate(&label, max_w);
 
         lines.push(Line::from(vec![
-            Span::styled(selector, Style::default().fg(Color::Rgb(249, 226, 175))),
+            Span::styled(selector, Style::default().fg(cursor_color)),
             Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
-            Span::styled(
-                display,
-                Style::default()
-                    .fg(label_color)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                current_marker,
-                Style::default().fg(Color::Rgb(249, 226, 175)),
-            ),
+            Span::styled(display, Style::default().fg(label_color).add_modifier(Modifier::BOLD)),
+            Span::styled(current_marker, Style::default().fg(cursor_color)),
         ]));
     }
 
@@ -655,8 +693,8 @@ mod tests {
         assert!(state.error_message.is_none());
         assert_eq!(state.scroll_offset, 0);
         assert!(state.auto_scroll);
-        assert_eq!(state.active_area, FocusArea::Timeline);
-        assert_eq!(state.selector_index, 0);
+        // n1 is the only real node (pos 0) → selector_index 1 (main is index 0)
+        assert_eq!(state.selector_index, 1);
     }
 
     #[test]
@@ -673,10 +711,9 @@ mod tests {
         tree.root_id = Some("n1".to_string());
 
         let mut state = FocusViewState::build("n1", &tree).unwrap();
-        // Simulate user interaction: scrolled and switched to selector
+        // Simulate user interaction: scrolled and moved the selector cursor
         state.auto_scroll = false;
         state.scroll_offset = 3;
-        state.active_area = FocusArea::Selector;
         state.selector_index = 1;
 
         // Update tree data
@@ -690,7 +727,6 @@ mod tests {
         assert_eq!(state.cumulative_tokens, 999);
         // UI state preserved when auto_scroll is false
         assert_eq!(state.scroll_offset, 3);
-        assert_eq!(state.active_area, FocusArea::Selector);
         assert_eq!(state.selector_index, 1);
     }
 
@@ -883,5 +919,71 @@ mod tests {
         let messages = vec![ChatMessage::system("prompt")];
         let result = chat_messages_to_ui_messages(&messages);
         assert_eq!(result.len(), 0, "system messages should be skipped");
+    }
+
+    fn make_real_tree() -> SubagentTree {
+        // root "a" has events (so it's NOT a grouping node) + children b, c
+        let mut tree = SubagentTree::default();
+        let mut node_a = make_node("a", vec![make_event("a-event")]);
+        node_a.children = vec!["b".to_string(), "c".to_string()];
+        tree.nodes.insert("a".to_string(), node_a);
+        tree.nodes.insert("b".to_string(), make_node("b", vec![]));
+        tree.nodes.insert("c".to_string(), make_node("c", vec![]));
+        tree.root_id = Some("a".to_string());
+        tree
+    }
+
+    #[test]
+    fn test_build_selector_index_aligns_with_current_node() {
+        let tree = make_real_tree();
+        // real_node_list = [a, b, c]; opening "c" (pos 2) → selector_index 3
+        let state_c = FocusViewState::build("c", &tree).unwrap();
+        assert_eq!(state_c.selector_index, 3);
+        // opening "a" (pos 0) → selector_index 1 (main is index 0)
+        let state_a = FocusViewState::build("a", &tree).unwrap();
+        assert_eq!(state_a.selector_index, 1);
+    }
+
+    #[test]
+    fn test_visible_node_ids_filters_completed_after_delay() {
+        use std::time::{Duration, Instant};
+        let tree = make_real_tree();
+        let now = Instant::now();
+        let mut completed_at = HashMap::new();
+        // b completed 20s ago — past the 10s removal delay
+        completed_at.insert("b".to_string(), now - Duration::from_secs(20));
+        // current node = a → b removed
+        let visible = visible_node_ids(&tree, &completed_at, now, "a");
+        assert!(visible.contains(&"a".to_string()));
+        assert!(!visible.contains(&"b".to_string()));
+        assert!(visible.contains(&"c".to_string()));
+        // current node is exempt even if completed+past delay
+        let visible_cur = visible_node_ids(&tree, &completed_at, now, "b");
+        assert!(visible_cur.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn test_build_selector_lines_no_overflow() {
+        use std::time::Instant;
+        // 10 real subagents, available height 4 → lines must not exceed 4
+        let mut tree = SubagentTree::default();
+        let mut root = make_node("root", vec![make_event("r")]);
+        root.children = (0..10).map(|i| format!("s{}", i)).collect();
+        tree.nodes.insert("root".to_string(), root);
+        for i in 0..10 {
+            tree.nodes
+                .insert(format!("s{}", i), make_node(&format!("s{}", i), vec![]));
+        }
+        tree.root_id = Some("root".to_string());
+        let state = FocusViewState::build("s0", &tree).unwrap();
+        let inner = Rect::new(0, 0, 80, 4);
+        let now = Instant::now();
+        let completed_at = HashMap::new();
+        let lines = build_selector_lines(&state, &tree, &completed_at, now, inner);
+        assert!(
+            lines.len() <= 4,
+            "lines ({}) must not exceed available height (4)",
+            lines.len()
+        );
     }
 }
