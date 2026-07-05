@@ -36,6 +36,12 @@ pub struct AgentLoop {
     pub(super) assembled_system_messages: Vec<ChatMessage>,
     pub(super) rounds_since_todo: usize,
     pub(super) compacted_summary: String,
+    /// Set by the `compact` tool to request compaction at the next loop-top
+    /// check. Compaction runs at the loop top (not mid-tool-batch) so it never
+    /// wipes the in-flight assistant tool_calls message — which would orphan
+    /// the subsequent tool results and make Ark reject the next request with
+    /// `InvalidParameter`.
+    pub(super) compact_requested: bool,
     pub(super) preparing_tools_fired: bool,
     pub(super) max_rounds: usize,
     pub(super) stuck_detector: StuckDetector,
@@ -73,6 +79,7 @@ impl AgentLoop {
             assembled_system_messages: system_messages,
             rounds_since_todo: 0,
             compacted_summary: String::new(),
+            compact_requested: false,
             preparing_tools_fired: false,
             max_rounds,
             stuck_detector: StuckDetector::new(),
