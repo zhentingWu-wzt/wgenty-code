@@ -6,12 +6,144 @@
 //! event timeline.
 
 use crate::agent::progress::{SubagentEvent, SubagentEventType, SubagentStatus};
+use crate::api::ChatMessage;
+use crate::tui::app::{MessageRole, UIMessage};
 use crate::tui::components::subagent_tree::SubagentTree;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
+use std::collections::{HashMap, HashSet};
+
+/// Convert a sequence of `ChatMessage`s into `UIMessage`s for conversation-style
+/// rendering in the subagent focus view.
+///
+/// The conversion follows a two-step algorithm:
+///
+/// **Step A — Build result map**: Scan messages and collect tool results keyed
+/// by `tool_call_id`.
+///
+/// **Step B — Iterate and convert**: Scan messages again, generating `UIMessage`s.
+/// Tool results that have been merged into an assistant's tool call are consumed
+/// so they don't produce duplicate entries.
+pub fn chat_messages_to_ui_messages(messages: &[ChatMessage]) -> Vec<UIMessage> {
+    // Step A: build result map
+    let mut result_map: HashMap<&str, &ChatMessage> = HashMap::new();
+    for msg in messages {
+        if msg.role == "tool" {
+            if let Some(ref tcid) = msg.tool_call_id {
+                result_map.insert(tcid.as_str(), msg);
+            }
+        }
+    }
+
+    // Step B: iterate and convert
+    let mut consumed: HashSet<String> = HashSet::new();
+    let mut ui_messages: Vec<UIMessage> = Vec::new();
+
+    let empty_defaults = || UIMessage {
+        role: MessageRole::User,
+        content: String::new(),
+        tool_name: None,
+        tool_args: None,
+        tool_collapsed: false,
+        content_collapsed: false,
+        tool_running: false,
+        diff_data: None,
+        tool_metadata: None,
+    };
+
+    for msg in messages {
+        match msg.role.as_str() {
+            "system" => {} // skip
+            "user" => {
+                ui_messages.push(UIMessage {
+                    role: MessageRole::User,
+                    content: msg.content.clone().unwrap_or_default(),
+                    ..empty_defaults()
+                });
+            }
+            "assistant" => {
+                if let Some(ref content) = msg.content {
+                    if !content.is_empty() {
+                        ui_messages.push(UIMessage {
+                            role: MessageRole::Assistant,
+                            content: content.clone(),
+                            ..empty_defaults()
+                        });
+                    }
+                }
+
+                if let Some(ref tool_calls) = msg.tool_calls {
+                    for tc in tool_calls {
+                        let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
+                            .unwrap_or(serde_json::Value::Null);
+
+                        let tool_metadata =
+                            Some(serde_json::json!({"tool_call_id": tc.id.clone()}));
+
+                        if let Some(result_msg) = result_map.get(tc.id.as_str()) {
+                            let result_content = result_msg.content.clone().unwrap_or_default();
+                            let diff_data = crate::tui::util::extract_diff_data(
+                                &tc.function.name,
+                                &args,
+                                &result_content,
+                            );
+
+                            consumed.insert(tc.id.clone());
+
+                            ui_messages.push(UIMessage {
+                                role: MessageRole::Tool,
+                                content: result_content,
+                                tool_name: Some(tc.function.name.clone()),
+                                tool_args: Some(args),
+                                tool_collapsed: true,
+                                content_collapsed: false,
+                                tool_running: false,
+                                diff_data,
+                                tool_metadata,
+                            });
+                        } else {
+                            ui_messages.push(UIMessage {
+                                role: MessageRole::Tool,
+                                content: String::new(),
+                                tool_name: Some(tc.function.name.clone()),
+                                tool_args: Some(args),
+                                tool_collapsed: false,
+                                content_collapsed: false,
+                                tool_running: true,
+                                diff_data: None,
+                                tool_metadata,
+                            });
+                        }
+                    }
+                }
+            }
+            "tool" => {
+                if let Some(ref tcid) = msg.tool_call_id {
+                    if !consumed.contains(tcid.as_str()) {
+                        consumed.insert(tcid.clone());
+                        ui_messages.push(UIMessage {
+                            role: MessageRole::Tool,
+                            content: msg.content.clone().unwrap_or_default(),
+                            tool_name: Some(tcid.clone()),
+                            tool_args: None,
+                            tool_collapsed: true,
+                            content_collapsed: false,
+                            tool_running: false,
+                            diff_data: None,
+                            tool_metadata: None,
+                        });
+                    }
+                }
+            }
+            _ => {} // unknown roles skipped
+        }
+    }
+
+    ui_messages
+}
 
 /// Which area of the focus view is currently focused (for keyboard input).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -669,5 +801,123 @@ mod tests {
         let state = FocusViewState::build("n1", &tree).unwrap();
         assert_eq!(state.status, SubagentStatus::Failed);
         assert_eq!(state.error_message.as_deref(), Some("timed out after 30s"));
+    }
+
+    // ── chat_messages_to_ui_messages tests ──────────────────────────
+    use crate::api::{ToolCall, ToolCallFunction};
+
+    #[test]
+    fn test_convert_user_message() {
+        let messages = vec![ChatMessage::user("hello")];
+        let result = chat_messages_to_ui_messages(&messages);
+        assert_eq!(result.len(), 1);
+        let ui = &result[0];
+        assert!(matches!(ui.role, MessageRole::User));
+        assert_eq!(ui.content, "hello");
+        assert!(ui.tool_name.is_none());
+        assert!(!ui.tool_collapsed);
+        assert!(!ui.tool_running);
+    }
+
+    #[test]
+    fn test_convert_assistant_text() {
+        let messages = vec![ChatMessage::assistant("thinking")];
+        let result = chat_messages_to_ui_messages(&messages);
+        assert_eq!(result.len(), 1);
+        let ui = &result[0];
+        assert!(matches!(ui.role, MessageRole::Assistant));
+        assert_eq!(ui.content, "thinking");
+        assert!(ui.tool_name.is_none());
+        assert!(!ui.tool_running);
+    }
+
+    #[test]
+    fn test_convert_assistant_with_tool_calls_merged() {
+        let tc = ToolCall {
+            id: "1".to_string(),
+            r#type: "function".to_string(),
+            function: ToolCallFunction {
+                name: "grep".to_string(),
+                arguments: r#"{"pattern":"x"}"#.to_string(),
+            },
+        };
+        let assistant_msg = ChatMessage {
+            role: "assistant".to_string(),
+            content: None,
+            reasoning_content: None,
+            tool_calls: Some(vec![tc]),
+            tool_call_id: None,
+        };
+        let tool_result_msg = ChatMessage::tool("1", "Found 3 matches");
+        let messages = vec![assistant_msg, tool_result_msg];
+        let result = chat_messages_to_ui_messages(&messages);
+        assert_eq!(
+            result.len(),
+            1,
+            "should produce exactly 1 merged Tool UIMessage"
+        );
+        let ui = &result[0];
+        assert!(matches!(ui.role, MessageRole::Tool));
+        assert_eq!(ui.tool_name.as_deref(), Some("grep"));
+        assert_eq!(ui.content, "Found 3 matches");
+        assert!(!ui.tool_running);
+        assert!(ui.tool_collapsed);
+        assert!(ui.tool_args.is_some());
+        let args = ui.tool_args.as_ref().unwrap();
+        assert_eq!(args["pattern"], "x");
+    }
+
+    #[test]
+    fn test_convert_tool_call_without_result() {
+        let tc = ToolCall {
+            id: "1".to_string(),
+            r#type: "function".to_string(),
+            function: ToolCallFunction {
+                name: "grep".to_string(),
+                arguments: r#"{"pattern":"x"}"#.to_string(),
+            },
+        };
+        let assistant_msg = ChatMessage {
+            role: "assistant".to_string(),
+            content: None,
+            reasoning_content: None,
+            tool_calls: Some(vec![tc]),
+            tool_call_id: None,
+        };
+        // No matching tool result message.
+        let messages = vec![assistant_msg];
+        let result = chat_messages_to_ui_messages(&messages);
+        assert_eq!(result.len(), 1, "should produce 1 running Tool UIMessage");
+        let ui = &result[0];
+        assert!(matches!(ui.role, MessageRole::Tool));
+        assert_eq!(ui.tool_name.as_deref(), Some("grep"));
+        assert!(ui.tool_running);
+        assert!(!ui.tool_collapsed);
+        assert_eq!(ui.content, "");
+        assert!(ui.diff_data.is_none());
+        // tool_metadata should contain tool_call_id for fold tracking.
+        let meta = ui.tool_metadata.as_ref().unwrap();
+        assert_eq!(meta["tool_call_id"], "1");
+    }
+
+    #[test]
+    fn test_convert_orphan_tool_result() {
+        let tool_msg = ChatMessage::tool("orphan", "result content");
+        let messages = vec![tool_msg];
+        let result = chat_messages_to_ui_messages(&messages);
+        assert_eq!(result.len(), 1);
+        let ui = &result[0];
+        assert!(matches!(ui.role, MessageRole::Tool));
+        assert_eq!(ui.tool_name.as_deref(), Some("orphan"));
+        assert_eq!(ui.content, "result content");
+        assert!(ui.tool_collapsed);
+        assert!(!ui.tool_running);
+    }
+
+    #[test]
+    fn test_skip_system_message() {
+        let messages = vec![ChatMessage::system("prompt")];
+        let result = chat_messages_to_ui_messages(&messages);
+        assert_eq!(result.len(), 0, "system messages should be skipped");
     }
 }
