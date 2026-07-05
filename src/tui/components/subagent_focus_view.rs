@@ -740,6 +740,21 @@ mod tests {
         assert_eq!(state.error_message.as_deref(), Some("timed out after 30s"));
     }
 
+    #[test]
+    fn test_rebuild_preserves_collapsed_tool_ids() {
+        let mut tree = SubagentTree::default();
+        tree.nodes
+            .insert("n1".to_string(), make_node("n1", vec![]));
+        tree.root_id = Some("n1".to_string());
+
+        let mut state = FocusViewState::build("n1", &tree).unwrap();
+        state.collapsed_tool_ids.insert("tc-xyz".to_string());
+
+        // Rebuild — collapse state preserved
+        state.rebuild(&tree);
+        assert!(state.collapsed_tool_ids.contains("tc-xyz"));
+    }
+
     // ── chat_messages_to_ui_messages tests ──────────────────────────
     use crate::api::{ToolCall, ToolCallFunction};
 
