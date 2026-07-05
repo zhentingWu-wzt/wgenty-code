@@ -23,7 +23,7 @@ use crate::tui::components::permission::PermissionState;
 use crate::tui::components::plan_panel::PlanPanelState;
 use crate::tui::components::question::QuestionState;
 use crate::tui::components::session::SessionState;
-use crate::tui::components::subagent_panel_state::SubagentPanelState;
+use crate::tui::components::subagent_focus_view::FocusViewState;
 use crate::tui::components::subagent_tree::SubagentTree;
 use crate::tui::components::task_panel::TaskPanelState;
 use crossterm::event::EnableBracketedPaste;
@@ -107,10 +107,10 @@ pub struct App {
     subagent_tree: SubagentTree,
     /// Subagent tree snapshots for completed turns, keyed by turn_id string.
     subagent_history: HashMap<String, SubagentTree>,
-    /// Whether the subagent monitor panel is visible.
-    subagent_panel_visible: bool,
-    /// Interactive state for the subagent monitor panel.
-    pub subagent_panel_state: SubagentPanelState,
+    /// Full-screen subagent focus view state (None = not active).
+    pub subagent_focus: Option<FocusViewState>,
+    /// Selected index in the subagent status bar.
+    pub subagent_status_bar_selected: usize,
     /// Shared settings handle — updated by the config watcher on file change.
     pub settings_lock: crate::config::watcher::SettingsHandle,
 
@@ -402,8 +402,8 @@ impl App {
             plan_panel_state: PlanPanelState::new(),
             subagent_tree: SubagentTree::default(),
             subagent_history: HashMap::new(),
-            subagent_panel_visible: false,
-            subagent_panel_state: SubagentPanelState::default(),
+            subagent_focus: None,
+            subagent_status_bar_selected: 0,
 
             last_ctrl_c: None,
             has_running_tool: false,

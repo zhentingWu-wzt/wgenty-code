@@ -159,10 +159,6 @@ pub enum AppEvent {
     ConfigChanged(Box<crate::config::Settings>),
     /// A subagent progress update from daemon polling.
     SubagentUpdate(Box<SubagentProgress>),
-    /// Toggle the subagent monitor panel.
-    ToggleSubagentPanel,
-    /// Retry a failed/cancelled subagent by node_id.
-    RetrySubagent(String),
 }
 
 /// UI state for a single message in the chat view.
