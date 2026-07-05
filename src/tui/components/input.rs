@@ -38,17 +38,13 @@ impl InputBox {
         }
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect, border_color: Option<Color>) {
-        // Update border color to reflect current agent mode
-        let border_fg = border_color.unwrap_or(ACCENT);
-        self.textarea.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(border_fg))
-                .border_type(BorderType::Rounded)
-                .title(" Input (Enter 提交 · Shift+Enter 换行) "),
-        );
-
+    /// Update slash-command text styling after content changes.
+    /// Must be called after any text mutation (key input, paste, completion
+    /// insert, `take_text`) so that the textarea is correctly styled *before*
+    /// the next render — this keeps `render()` pure and prevents visual
+    /// glitches (e.g. input box disappearing mid-typing when subagent status
+    /// bar updates trigger frequent re-renders).
+    pub fn update_style(&mut self) {
         let first_line = self
             .textarea
             .lines()
@@ -116,6 +112,18 @@ impl InputBox {
         } else {
             self.textarea.set_style(Style::default().fg(Color::White));
         }
+    }
+
+    pub fn render(&mut self, f: &mut Frame, area: Rect, border_color: Option<Color>) {
+        // Update border color to reflect current agent mode.
+        let border_fg = border_color.unwrap_or(ACCENT);
+        self.textarea.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_fg))
+                .border_type(BorderType::Rounded)
+                .title(" Input (Enter 提交 · Shift+Enter 换行) "),
+        );
 
         f.render_widget(&self.textarea, area);
     }
@@ -132,6 +140,7 @@ impl InputBox {
         self.textarea.select_all();
         self.textarea.cut();
         self.last_boundary = None;
+        // Sync style for next input (white, no slash command)
         self.textarea.set_style(Style::default().fg(Color::White));
         text
     }

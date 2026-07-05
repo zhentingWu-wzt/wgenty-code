@@ -22,6 +22,8 @@ impl App {
                 area,
                 focus,
                 &self.subagent_tree,
+                &self.completed_at,
+                std::time::Instant::now(),
                 self.spinner_frame,
             );
             return;
