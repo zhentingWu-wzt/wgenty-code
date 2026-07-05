@@ -15,7 +15,13 @@ use ratatui::Frame;
 /// Render the subagent status bar.
 ///
 /// `selected_index` is the index into the active (Running + Pending) node list.
-pub fn render(f: &mut Frame, area: Rect, tree: &SubagentTree, selected_index: usize) {
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    tree: &SubagentTree,
+    selected_index: usize,
+    focused: bool,
+) {
     let active: Vec<&SubagentNode> = tree
         .nodes
         .values()
@@ -31,9 +37,14 @@ pub fn render(f: &mut Frame, area: Rect, tree: &SubagentTree, selected_index: us
         return;
     }
 
+    let border_color = if focused {
+        Color::Rgb(249, 226, 175)
+    } else {
+        Color::Rgb(80, 80, 100)
+    };
     let block = Block::default()
         .borders(Borders::TOP)
-        .border_style(Style::default().fg(Color::Rgb(80, 80, 100)));
+        .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
