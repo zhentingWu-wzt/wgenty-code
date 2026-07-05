@@ -2,6 +2,8 @@
 comet_change: subagent-focus-conversation
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-05-subagent-focus-conversation
+status: final
 ---
 
 # Design Doc: Subagent Focus Conversation View

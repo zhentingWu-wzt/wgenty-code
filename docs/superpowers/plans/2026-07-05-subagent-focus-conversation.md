@@ -2,6 +2,7 @@
 change: subagent-focus-conversation
 design-doc: docs/superpowers/specs/2026-07-05-subagent-focus-conversation-design.md
 base-ref: e9bf59db48dd5769fa27abef280fffe6c8958d22
+archived-with: 2026-07-05-subagent-focus-conversation
 ---
 
 # Implementation Plan: Subagent Focus Conversation View
@@ -19,6 +20,7 @@ base-ref: e9bf59db48dd5769fa27abef280fffe6c8958d22
 - `chat::message_to_lines` (`src/tui/components/chat.rs`): `pub fn`，吃 `UIMessage`，返回 `Vec<Line>`。处理 User/Assistant/Tool/System 四种角色，支持折叠、spinner、diff。
 - `UIMessage` (`src/tui/app/mod.rs` 或 `types.rs`): role, content, tool_name, tool_args, tool_collapsed, tool_running, diff_data, tool_metadata, content_collapsed。
 
+archived-with: 2026-07-05-subagent-focus-conversation
 ---
 
 ## Task 1: SubagentProgress.messages 字段
@@ -49,6 +51,7 @@ cb(SubagentProgress {
 
 **验证:** `cargo check` 编译通过。`cargo test --lib` 通过（无需新测试——字段是自动 serde，emit 闭包已有其他 clone 逻辑作为先例）。
 
+archived-with: 2026-07-05-subagent-focus-conversation
 ---
 
 ## Task 2: ChatMessage → UIMessage 转换 + 合并
@@ -194,6 +197,7 @@ pub fn chat_messages_to_ui_messages(
 
 **验收:** `cargo test subagent_focus_view` 通过。
 
+archived-with: 2026-07-05-subagent-focus-conversation
 ---
 
 ## Task 3: FocusViewState 变更
@@ -233,6 +237,7 @@ self.messages = p.messages.clone();
 - `test_rebuild_preserves_ui_state`: 验证 `collapsed_tool_ids` 保留
 - `test_rebuild_missing_node_noop`: messages 不变
 
+archived-with: 2026-07-05-subagent-focus-conversation
 ---
 
 ## Task 4: build_conversation_lines + FocusView::render 对话化
@@ -337,6 +342,7 @@ KeyCode::Char('t') if focus.active_area == FocusArea::Timeline => {
 
 **验证:** `cargo check` 编译通过。Tool result 的 diff 出现在展开块内。
 
+archived-with: 2026-07-05-subagent-focus-conversation
 ---
 
 ## Task 5: 移除 events 残留引用
@@ -353,6 +359,7 @@ KeyCode::Char('t') if focus.active_area == FocusArea::Timeline => {
 
 **验证:** `cargo check` 编译通过。grep `events` 和 `SubagentEvent` 在 `subagent_focus_view.rs` 中仅保留合法的（`rebuild` 不再 touch `events`，`build` 不再 clone `events`）。
 
+archived-with: 2026-07-05-subagent-focus-conversation
 ---
 
 ## Task 6: 验证
