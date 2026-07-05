@@ -338,6 +338,12 @@ impl App {
                                     self.subagent_status_bar_focused = false;
                                     return;
                                 }
+                                KeyCode::Tab => {
+                                    // Tab has no effect on status bar focus (per
+                                    // spec): it neither toggles into nor out of
+                                    // the status bar. Consume without state change.
+                                    return;
+                                }
                                 _ => {
                                     // Any other key disengages focus and passes
                                     // through to the input box
