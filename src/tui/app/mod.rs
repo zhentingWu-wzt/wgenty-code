@@ -111,6 +111,8 @@ pub struct App {
     pub subagent_focus: Option<FocusViewState>,
     /// Selected index in the subagent status bar.
     pub subagent_status_bar_selected: usize,
+    /// Whether the status bar has keyboard focus (Tab toggles).
+    pub subagent_status_bar_focused: bool,
     /// Shared settings handle — updated by the config watcher on file change.
     pub settings_lock: crate::config::watcher::SettingsHandle,
 
@@ -404,6 +406,7 @@ impl App {
             subagent_history: HashMap::new(),
             subagent_focus: None,
             subagent_status_bar_selected: 0,
+            subagent_status_bar_focused: false,
 
             last_ctrl_c: None,
             has_running_tool: false,
