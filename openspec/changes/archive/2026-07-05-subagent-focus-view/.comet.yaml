@@ -16,6 +16,6 @@ verification_report: docs/superpowers/reports/2026-07-05-subagent-focus-view-ver
 branch_status: handled
 created_at: 2026-07-04
 verified_at: 2026-07-05
-archived: false
+archived: true
 handoff_context: openspec/changes/subagent-focus-view/.comet/handoff/design-context.json
 handoff_hash: da124a38eedb5e21455cf3c58f9f7cef6d3fb6ce203837a931180a1d416a4dcf
