@@ -154,6 +154,12 @@ impl ApiClient {
                 .text()
                 .await
                 .unwrap_or_else(|e| format!("[failed to read error body: {}]", e));
+            // Diagnostic: Ark returns an empty `param` on InvalidParameter, so
+            // the request body is the only way to identify the rejected field.
+            tracing::warn!(
+                "upstream rejected request — request body for diagnosis:\n{}",
+                serde_json::to_string_pretty(&request).unwrap_or_default()
+            );
             return Err(anyhow::anyhow!("{}", format_api_error(status, &body)));
         }
 
@@ -259,6 +265,12 @@ impl ApiClient {
                 .text()
                 .await
                 .unwrap_or_else(|e| format!("[failed to read error body: {}]", e));
+            // Diagnostic: Ark returns an empty `param` on InvalidParameter, so
+            // the request body is the only way to identify the rejected field.
+            tracing::warn!(
+                "upstream rejected request — request body for diagnosis:\n{}",
+                serde_json::to_string_pretty(&request).unwrap_or_default()
+            );
             return Err(anyhow::anyhow!("{}", format_api_error(status, &body)));
         }
 
