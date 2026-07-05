@@ -1,0 +1,16 @@
+{
+  "change": "subagent-focus-view",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "da124a38eedb5e21455cf3c58f9f7cef6d3fb6ce203837a931180a1d416a4dcf",
+  "files": [
+    { "path": "openspec/changes/subagent-focus-view/proposal.md", "sha256": "a42580a9657d9f7eeb079eec5252e72ec25eb50eac37c6bfda95d54ae61aaf5f" },
+    { "path": "openspec/changes/subagent-focus-view/design.md", "sha256": "50d8f43d3d9f7468d97d801ce94c7aff732bb8b8d755893d14d80deacecf5cb6" },
+    { "path": "openspec/changes/subagent-focus-view/tasks.md", "sha256": "e02b3e4e364703454838978af8676c6c968b52ccbdd1e84fb3aac142afe20721" },
+    { "path": "openspec/changes/subagent-focus-view/specs/subagent-action-visibility/spec.md", "sha256": "53da1abf4330144d1c530241f7e101ae199a7257f46c44af884ef380d0c93fe5" },
+    { "path": "openspec/changes/subagent-focus-view/specs/subagent-focus-view/spec.md", "sha256": "418716a6e710270bd39407c5c6f5c66d6bc940e23ba7f9e861413902e270965b" },
+    { "path": "openspec/changes/subagent-focus-view/specs/subagent-status-display/spec.md", "sha256": "259a2933b5cd68eab86aa93c791cb9b26bcd9abb60e84119e6274f022907a171" }
+  ]
+}
