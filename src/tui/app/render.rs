@@ -240,7 +240,8 @@ fn status_bar_layout_height(active_count: usize) -> u16 {
     if active_count == 0 {
         return 0;
     }
-    (active_count.min(5) + 1) as u16
+    // +1 border, +1 for "main" placeholder row, then capped subagent rows.
+    (active_count.min(5) + 2) as u16
 }
 
 #[cfg(test)]
@@ -253,31 +254,31 @@ mod tests {
     }
 
     #[test]
-    fn test_status_bar_height_one_active_fits_border_plus_item() {
-        // 1 active subagent: 1 item + 1 border = 2 rows (was 1 → 0 visible)
-        assert_eq!(status_bar_layout_height(1), 2);
+    fn test_status_bar_height_one_active_fits_border_plus_main_plus_item() {
+        // 1 active subagent: main + 1 item + 1 border = 3 rows
+        assert_eq!(status_bar_layout_height(1), 3);
     }
 
     #[test]
     fn test_status_bar_height_three_active_shows_all() {
-        // 3 active: 3 items + 1 border = 4 rows — all visible
-        assert_eq!(status_bar_layout_height(3), 4);
+        // 3 active: main + 3 items + 1 border = 5 rows — all visible
+        assert_eq!(status_bar_layout_height(3), 5);
     }
 
     #[test]
     fn test_status_bar_height_five_active_at_cap() {
-        // 5 active: 5 items + 1 border = 6 rows — all visible at the cap
-        assert_eq!(status_bar_layout_height(5), 6);
+        // 5 active: main + 5 items + 1 border = 7 rows — all visible at the cap
+        assert_eq!(status_bar_layout_height(5), 7);
     }
 
     #[test]
     fn test_status_bar_height_six_active_clipped_to_cap() {
-        // 6 active: capped at 5 visible items + 1 border = 6 rows (6th clipped)
-        assert_eq!(status_bar_layout_height(6), 6);
+        // 6 active: main + 5 capped items + 1 border = 7 rows (6th clipped)
+        assert_eq!(status_bar_layout_height(6), 7);
     }
 
     #[test]
     fn test_status_bar_height_many_active_still_capped() {
-        assert_eq!(status_bar_layout_height(50), 6);
+        assert_eq!(status_bar_layout_height(50), 7);
     }
 }
