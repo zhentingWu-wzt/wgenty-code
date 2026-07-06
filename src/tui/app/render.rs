@@ -45,8 +45,15 @@ impl App {
         };
         let pending_height = self.pending_count().min(5) as u16;
         let has_pending = pending_height > 0;
-        let status_bar_height = self.subagent_tree.active_count().min(5) as u16;
-        let has_status_bar = status_bar_height > 0;
+        // Status bar height must account for the Block's TOP border (1 row):
+        // active_count lines of content + 1 border line. Without the +1 the
+        // border consumes the only allocated row and 1 active subagent renders
+        // 0 visible lines (the last item is always clipped). See spec
+        // subagent-status-display: "minimum height needed to display all active
+        // subagents (capped at 5 lines)".
+        let active_count = self.subagent_tree.active_count();
+        let has_status_bar = active_count > 0;
+        let status_bar_height = status_bar_layout_height(active_count);
         let constraints: Vec<Constraint> = if show_panel {
             vec![
                 Constraint::Min(3),
@@ -219,5 +226,58 @@ impl App {
             Paragraph::new(Span::styled(text, Style::default().fg(theme::DIM))),
             area,
         );
+    }
+}
+
+/// Layout height (terminal rows) for the subagent status bar.
+///
+/// The status bar renders N active subagents as N content lines inside a
+/// `Block` with `Borders::TOP`, so the block's inner area is `height - 1`.
+/// To display all N items the allocated height must be `N + 1` (items + the
+/// top border). Visible items are capped at 5; returns 0 when nothing is
+/// active so the bar is hidden entirely.
+fn status_bar_layout_height(active_count: usize) -> u16 {
+    if active_count == 0 {
+        return 0;
+    }
+    (active_count.min(5) + 1) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_status_bar_height_zero_when_no_active() {
+        assert_eq!(status_bar_layout_height(0), 0);
+    }
+
+    #[test]
+    fn test_status_bar_height_one_active_fits_border_plus_item() {
+        // 1 active subagent: 1 item + 1 border = 2 rows (was 1 → 0 visible)
+        assert_eq!(status_bar_layout_height(1), 2);
+    }
+
+    #[test]
+    fn test_status_bar_height_three_active_shows_all() {
+        // 3 active: 3 items + 1 border = 4 rows — all visible
+        assert_eq!(status_bar_layout_height(3), 4);
+    }
+
+    #[test]
+    fn test_status_bar_height_five_active_at_cap() {
+        // 5 active: 5 items + 1 border = 6 rows — all visible at the cap
+        assert_eq!(status_bar_layout_height(5), 6);
+    }
+
+    #[test]
+    fn test_status_bar_height_six_active_clipped_to_cap() {
+        // 6 active: capped at 5 visible items + 1 border = 6 rows (6th clipped)
+        assert_eq!(status_bar_layout_height(6), 6);
+    }
+
+    #[test]
+    fn test_status_bar_height_many_active_still_capped() {
+        assert_eq!(status_bar_layout_height(50), 6);
     }
 }
