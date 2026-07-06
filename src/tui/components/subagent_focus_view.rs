@@ -248,6 +248,47 @@ impl FocusViewState {
             }
         }
     }
+
+    /// Toggle fold/expand of all tool calls in the timeline.
+    /// If all are collapsed (empty set), expand all; otherwise collapse all.
+    /// Shared by the `t` key and `Ctrl+E` while the focus view is open.
+    pub fn toggle_fold_all(&mut self) {
+        let ui_msgs = chat_messages_to_ui_messages(&self.messages);
+        if self.collapsed_tool_ids.is_empty() {
+            for msg in &ui_msgs {
+                if msg.role == MessageRole::Tool {
+                    if let Some(ref meta) = msg.tool_metadata {
+                        if let Some(tid) = meta.get("tool_call_id").and_then(|v| v.as_str()) {
+                            self.collapsed_tool_ids.insert(tid.to_string());
+                        }
+                    }
+                }
+            }
+        } else {
+            self.collapsed_tool_ids.clear();
+        }
+    }
+
+    /// Toggle fold/expand of the last tool call in the timeline.
+    /// Bound to `Ctrl+O` while the focus view is open.
+    pub fn toggle_fold_latest(&mut self) {
+        let ui_msgs = chat_messages_to_ui_messages(&self.messages);
+        for msg in ui_msgs.iter().rev() {
+            if msg.role == MessageRole::Tool {
+                if let Some(ref meta) = msg.tool_metadata {
+                    if let Some(tid) = meta.get("tool_call_id").and_then(|v| v.as_str()) {
+                        let tid = tid.to_string();
+                        if self.collapsed_tool_ids.contains(&tid) {
+                            self.collapsed_tool_ids.remove(&tid);
+                        } else {
+                            self.collapsed_tool_ids.insert(tid);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Full-screen focus view renderer.
@@ -803,8 +844,81 @@ mod tests {
         assert!(state.collapsed_tool_ids.contains("tc-xyz"));
     }
 
-    // ── chat_messages_to_ui_messages tests ──────────────────────────
+    // ── toggle_fold_all / toggle_fold_latest tests ─────────────────
     use crate::api::{ToolCall, ToolCallFunction};
+
+    fn make_messages_with_two_tool_calls() -> Vec<ChatMessage> {
+        let tc1 = ToolCall {
+            id: "1".to_string(),
+            r#type: "function".to_string(),
+            function: ToolCallFunction {
+                name: "grep".to_string(),
+                arguments: "{}".to_string(),
+            },
+        };
+        let tc2 = ToolCall {
+            id: "2".to_string(),
+            r#type: "function".to_string(),
+            function: ToolCallFunction {
+                name: "ls".to_string(),
+                arguments: "{}".to_string(),
+            },
+        };
+        vec![
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: None,
+                reasoning_content: None,
+                tool_calls: Some(vec![tc1, tc2]),
+                tool_call_id: None,
+            },
+            ChatMessage::tool("1", "r1"),
+            ChatMessage::tool("2", "r2"),
+        ]
+    }
+
+    fn build_state_for_fold_tests() -> FocusViewState {
+        let mut tree = SubagentTree::default();
+        tree.nodes.insert("n1".to_string(), make_node("n1", vec![]));
+        tree.root_id = Some("n1".to_string());
+        let mut state = FocusViewState::build("n1", &tree).unwrap();
+        state.messages = make_messages_with_two_tool_calls();
+        state
+    }
+
+    #[test]
+    fn test_toggle_fold_all_expands_then_collapses() {
+        let mut state = build_state_for_fold_tests();
+
+        // Empty set = all collapsed. toggle_fold_all expands all (Ctrl+E / 't').
+        assert!(state.collapsed_tool_ids.is_empty());
+        state.toggle_fold_all();
+        assert_eq!(state.collapsed_tool_ids.len(), 2);
+        assert!(state.collapsed_tool_ids.contains("1"));
+        assert!(state.collapsed_tool_ids.contains("2"));
+
+        // Non-empty = some expanded. toggle_fold_all collapses all.
+        state.toggle_fold_all();
+        assert!(state.collapsed_tool_ids.is_empty());
+    }
+
+    #[test]
+    fn test_toggle_fold_latest_flips_only_last_tool_call() {
+        let mut state = build_state_for_fold_tests();
+
+        // toggle_fold_latest (Ctrl+O) flips only the last tool call ("2").
+        assert!(state.collapsed_tool_ids.is_empty());
+        state.toggle_fold_latest();
+        assert_eq!(state.collapsed_tool_ids.len(), 1);
+        assert!(state.collapsed_tool_ids.contains("2"));
+        assert!(!state.collapsed_tool_ids.contains("1"));
+
+        // Flipping again collapses "2" back; "1" never touched.
+        state.toggle_fold_latest();
+        assert!(state.collapsed_tool_ids.is_empty());
+    }
+
+    // ── chat_messages_to_ui_messages tests ──────────────────────────
 
     #[test]
     fn test_convert_user_message() {
