@@ -17,7 +17,6 @@ use crate::tui::app::AppEvent;
 use crate::tui::client::DaemonClient;
 use crate::utils::stuck_detector::StuckDetector;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 pub(super) const MAX_RETRIES: u32 = 2;
@@ -93,21 +92,10 @@ impl AgentLoop {
     }
 
     /// Process a single user input. Handles the full agent loop (SSE + tools).
-    /// Returns Ok(()) on normal completion, Err if cancelled or timed out.
+    /// Returns Ok(()) on normal completion, Err if cancelled or on error.
     pub async fn process_input(&mut self, input: String) -> Result<(), String> {
         self.token_counter.reset_turn();
-        const AGENT_LOOP_TIMEOUT: Duration = Duration::from_secs(3600);
-
-        match tokio::time::timeout(AGENT_LOOP_TIMEOUT, self.process_input_inner(input)).await {
-            Ok(result) => result,
-            Err(_elapsed) => {
-                let _ = self.event_tx.send(AppEvent::StreamError(format!(
-                    "Agent loop timed out after {} minutes",
-                    AGENT_LOOP_TIMEOUT.as_secs() / 60
-                )));
-                Err("Agent loop timed out".to_string())
-            }
-        }
+        self.process_input_inner(input).await
     }
 
     /// Generate a plan using a dedicated planner model (non-streaming).
