@@ -2,6 +2,8 @@
 comet_change: fix-subagent-timeout-default
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-06-fix-subagent-timeout-default
+status: final
 ---
 
 # Subagent Structured Errors & Partial Result Delivery — Technical Design
