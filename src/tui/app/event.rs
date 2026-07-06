@@ -746,14 +746,16 @@ impl App {
                 });
             }
             AppEvent::TurnStarted { .. } => {
-                // Fresh turn: clear the previous turn's subagent tree,
-                // completion timestamps, focus view, and selection. Doing this
-                // here (not on Submit) keeps running subagents visible while a
-                // queued prompt waits for the current turn to finish.
-                self.subagent_tree.clear();
-                self.completed_at.clear();
-                self.subagent_focus = None;
-                self.subagent_status_bar_selected = 0;
+                // Fresh turn. Only clear the previous turn's subagent state
+                // when no subagents are still active — background subagents
+                // (task tool `background` mode) outlive the main turn and must
+                // stay visible/selectable. Clearing them would hide the status
+                // bar and block entering their focus view.
+                if self.subagent_tree.clear_if_idle() {
+                    self.completed_at.clear();
+                    self.subagent_focus = None;
+                    self.subagent_status_bar_selected = 0;
+                }
                 self.turn_started_at = Some(std::time::Instant::now());
             }
             AppEvent::TurnComplete => {
