@@ -302,10 +302,13 @@ impl App {
                     return;
                 }
                 // Subagent status bar: ↑↓ auto-focus and navigate, Enter opens
-                // the focus view, Esc unfocuses. No Tab — auto-focus on arrow keys.
+                // the focus view (or dismisses focus on "main"), Esc unfocuses.
+                // No Tab — auto-focus on arrow keys.
                 if self.subagent_focus.is_none() {
                     let active = active_node_ids(&self.subagent_tree);
                     if !active.is_empty() {
+                        // Unified list: ["main", ...active]. wrap len = N+1.
+                        let len = active.len() + 1;
                         // Auto-activate on ↑↓
                         if key.code == KeyCode::Up || key.code == KeyCode::Down {
                             self.subagent_status_bar_focused = true;
@@ -314,17 +317,22 @@ impl App {
                             match key.code {
                                 KeyCode::Up => {
                                     self.subagent_status_bar_selected =
-                                        wrap_prev(self.subagent_status_bar_selected, active.len());
+                                        wrap_prev(self.subagent_status_bar_selected, len);
                                     return;
                                 }
                                 KeyCode::Down => {
                                     self.subagent_status_bar_selected =
-                                        wrap_next(self.subagent_status_bar_selected, active.len());
+                                        wrap_next(self.subagent_status_bar_selected, len);
                                     return;
                                 }
                                 KeyCode::Enter => {
-                                    if let Some(node_id) =
-                                        active.get(self.subagent_status_bar_selected)
+                                    if self.subagent_status_bar_selected == 0 {
+                                        // "main" selected — dismiss status bar
+                                        // focus (consistent with focus view's
+                                        // "main" exit semantics).
+                                        self.subagent_status_bar_focused = false;
+                                    } else if let Some(node_id) = active
+                                        .get(self.subagent_status_bar_selected - 1)
                                     {
                                         if let Some(state) =
                                             FocusViewState::build(node_id, &self.subagent_tree)
@@ -519,10 +527,12 @@ impl App {
                 }
             }
             AppEvent::Submit(text) => {
-                self.subagent_tree.clear();
-                self.completed_at.clear();
-                self.subagent_focus = None;
-                self.subagent_status_bar_selected = 0;
+                // NOTE: do NOT clear the subagent tree here. A prompt submitted
+                // while a turn is still running is only queued (see submit_input),
+                // and clearing the tree would hide the running subagents and
+                // block entering the focus view. The tree is cleared at the
+                // start of the next turn (TurnStarted) and on abort
+                // (TurnAborted, covering /clear and turn failures).
                 self.submit_input(text);
             }
             AppEvent::PreparingTools if self.streaming_content.is_empty() => {
@@ -731,6 +741,14 @@ impl App {
                 });
             }
             AppEvent::TurnStarted { .. } => {
+                // Fresh turn: clear the previous turn's subagent tree,
+                // completion timestamps, focus view, and selection. Doing this
+                // here (not on Submit) keeps running subagents visible while a
+                // queued prompt waits for the current turn to finish.
+                self.subagent_tree.clear();
+                self.completed_at.clear();
+                self.subagent_focus = None;
+                self.subagent_status_bar_selected = 0;
                 self.turn_started_at = Some(std::time::Instant::now());
             }
             AppEvent::TurnComplete => {
@@ -792,6 +810,15 @@ impl App {
                     });
                 }
                 self.last_abort_reason = Some(reason.clone());
+                // Aborted turn (e.g. /clear via cancel_current_turn, or a turn
+                // failure): clear the subagent tree so stale subagents don't
+                // linger in the status bar. cancel_current_turn does not emit
+                // Cancelled updates for running subagents, so without this the
+                // bar would keep showing them as Running.
+                self.subagent_tree.clear();
+                self.completed_at.clear();
+                self.subagent_focus = None;
+                self.subagent_status_bar_selected = 0;
                 self.turn_started_at = None;
             }
             AppEvent::PermissionRequired {
