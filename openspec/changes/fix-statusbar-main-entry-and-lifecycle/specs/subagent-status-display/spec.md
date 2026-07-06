@@ -46,6 +46,8 @@ The TUI SHALL display a compact status bar between the main status line and the 
 - **THEN** the characters SHALL go to the input box as normal
 - **AND** typing any non-navigation character SHALL deactivate status bar focus (if active) and return focus to the input box
 
+## ADDED Requirements
+
 ### Requirement: Subagent tree lifecycle across submitted prompts
 The subagent tree (and status bar) SHALL persist across prompt submissions while a turn is still running. Clearing the tree SHALL occur at the start of a new turn (TurnStarted) and on turn abort (TurnAborted, covering /clear and turn failures), NOT at prompt submission time. This ensures that submitting a new prompt while subagents are running does not hide the running subagents or block entering the focus view.
 
