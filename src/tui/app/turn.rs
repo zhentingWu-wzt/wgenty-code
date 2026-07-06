@@ -72,7 +72,11 @@ impl App {
             } else {
                 None
             };
-            (planner, s.agent.max_rounds.unwrap_or(100), s.agent.subagent.timeout_secs)
+            (
+                planner,
+                s.agent.max_rounds.unwrap_or(100),
+                s.agent.subagent.timeout_secs,
+            )
         };
         let token_counter = self.token_counter.clone();
         let hook_manager = self.hook_manager.clone();

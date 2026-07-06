@@ -124,9 +124,8 @@ impl DaemonState {
             registry.register(Box::new(task_tool));
 
             // Register subagent trace tool (read-only visualization for subagent transcripts)
-            let trace_tool = crate::tools::meta::subagent_trace::SubagentTraceTool::new(
-                transcript_store,
-            );
+            let trace_tool =
+                crate::tools::meta::subagent_trace::SubagentTraceTool::new(transcript_store);
             registry.register(Box::new(trace_tool));
 
             if app_state.settings.agent.rlm.enabled && app_state.settings.agent.rlm.delegate_tool {

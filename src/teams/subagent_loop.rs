@@ -165,7 +165,11 @@ impl From<String> for SubagentError {
 /// Helper: build a `SubagentError` with the current text snapshot as partial
 /// result. Used by terminal error paths (budget, timeout, stuck, max-rounds)
 /// so the main agent receives whatever work the subagent already completed.
-fn subagent_error(message: String, error_type: ErrorType, snapshot: &Mutex<Option<String>>) -> SubagentError {
+fn subagent_error(
+    message: String,
+    error_type: ErrorType,
+    snapshot: &Mutex<Option<String>>,
+) -> SubagentError {
     SubagentError {
         message,
         error_type,

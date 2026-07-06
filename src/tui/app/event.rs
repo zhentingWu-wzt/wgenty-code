@@ -78,9 +78,7 @@ impl App {
                                 );
                                 let new_state = visible
                                     .get(focus.selector_index - 1)
-                                    .and_then(|id| {
-                                        FocusViewState::build(id, &self.subagent_tree)
-                                    });
+                                    .and_then(|id| FocusViewState::build(id, &self.subagent_tree));
                                 if let Some(state) = new_state {
                                     *focus = state;
                                 }
@@ -377,17 +375,10 @@ impl App {
                     self.user_scrolled = false;
                     return;
                 }
-                // Handle Enter/Shift+Enter BEFORE tui-textarea consumes them.
-                // tui-textarea's default binding inserts newline on Enter.
-                if key.code == KeyCode::Enter {
-                    if key.modifiers.contains(KeyModifiers::SHIFT) {
-                        // Shift+Enter → newline
-                        self.input_box.textarea.insert_char('\n');
-                        self.input_box.update_style();
-                    } else if !self.input_box.is_empty() {
-                        let text = self.input_box.take_text();
-                        let _ = self.event_tx.send(AppEvent::Submit(text));
-                    }
+                // Handle Enter BEFORE tui-textarea consumes it (it would insert newline).
+                if key.code == KeyCode::Enter && !self.input_box.is_empty() {
+                    let text = self.input_box.take_text();
+                    let _ = self.event_tx.send(AppEvent::Submit(text));
                     return;
                 }
                 // Detect @ and / completion triggers BEFORE feeding to textarea
@@ -452,12 +443,10 @@ impl App {
                 // is the only way to scroll the timeline (read-only area).
                 if let Some(ref mut focus) = self.subagent_focus {
                     if delta > 0 {
-                        focus.scroll_offset =
-                            focus.scroll_offset.saturating_add(delta as usize);
+                        focus.scroll_offset = focus.scroll_offset.saturating_add(delta as usize);
                         focus.auto_scroll = false;
                     } else {
-                        focus.scroll_offset =
-                            focus.scroll_offset.saturating_sub((-delta) as usize);
+                        focus.scroll_offset = focus.scroll_offset.saturating_sub((-delta) as usize);
                         if focus.scroll_offset == 0 {
                             focus.auto_scroll = true;
                         }
@@ -984,7 +973,9 @@ impl App {
                     .map(|n| {
                         matches!(
                             n.progress.status,
-                            SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
+                            SubagentStatus::Completed
+                                | SubagentStatus::Failed
+                                | SubagentStatus::Cancelled
                         )
                     })
                     .unwrap_or(false);

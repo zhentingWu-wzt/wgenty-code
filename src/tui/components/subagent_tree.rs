@@ -141,8 +141,16 @@ impl SubagentTree {
             .map(|(id, _)| id.clone())
             .collect();
         extra.sort_by(|a, b| {
-            let sa = self.nodes.get(a).map(|n| n.progress.started_at).unwrap_or(0);
-            let sb = self.nodes.get(b).map(|n| n.progress.started_at).unwrap_or(0);
+            let sa = self
+                .nodes
+                .get(a)
+                .map(|n| n.progress.started_at)
+                .unwrap_or(0);
+            let sb = self
+                .nodes
+                .get(b)
+                .map(|n| n.progress.started_at)
+                .unwrap_or(0);
             sa.cmp(&sb).then_with(|| a.cmp(b))
         });
         for root in &extra {
@@ -288,7 +296,7 @@ mod tests {
         assert_eq!(tree.count_by_status(SubagentStatus::Completed), 1); // a
         assert_eq!(tree.count_by_status(SubagentStatus::Running), 1); // b
         assert_eq!(tree.count_by_status(SubagentStatus::Pending), 1); // c
-        // total_count also excludes the grouping root
+                                                                      // total_count also excludes the grouping root
         assert_eq!(tree.total_count(), 3);
     }
 
@@ -323,9 +331,21 @@ mod tests {
     fn test_is_grouping_node_and_real_node_list() {
         let mut tree = SubagentTree::default();
         // delegate wrapper: has children, no events/messages
-        tree.upsert(make_progress("delegate-root", None, SubagentStatus::Running));
-        tree.upsert(make_progress("sub1", Some("delegate-root"), SubagentStatus::Running));
-        tree.upsert(make_progress("sub2", Some("delegate-root"), SubagentStatus::Completed));
+        tree.upsert(make_progress(
+            "delegate-root",
+            None,
+            SubagentStatus::Running,
+        ));
+        tree.upsert(make_progress(
+            "sub1",
+            Some("delegate-root"),
+            SubagentStatus::Running,
+        ));
+        tree.upsert(make_progress(
+            "sub2",
+            Some("delegate-root"),
+            SubagentStatus::Completed,
+        ));
 
         // wrapper is a grouping node (has children, no events/messages)
         assert!(tree.is_grouping_node("delegate-root"));
@@ -351,9 +371,21 @@ mod tests {
     fn test_active_count_excludes_grouping_nodes() {
         let mut tree = SubagentTree::default();
         // wrapper stuck in Running (never updated) + 2 real children
-        tree.upsert(make_progress("delegate-root", None, SubagentStatus::Running));
-        tree.upsert(make_progress("sub1", Some("delegate-root"), SubagentStatus::Running));
-        tree.upsert(make_progress("sub2", Some("delegate-root"), SubagentStatus::Completed));
+        tree.upsert(make_progress(
+            "delegate-root",
+            None,
+            SubagentStatus::Running,
+        ));
+        tree.upsert(make_progress(
+            "sub1",
+            Some("delegate-root"),
+            SubagentStatus::Running,
+        ));
+        tree.upsert(make_progress(
+            "sub2",
+            Some("delegate-root"),
+            SubagentStatus::Completed,
+        ));
         // Without filtering, wrapper would inflate active_count to 2 (wrapper + sub1).
         // With filtering, active_count = 1 (only sub1; sub2 completed).
         assert_eq!(tree.active_count(), 1);
@@ -368,9 +400,21 @@ mod tests {
     fn test_is_complete_excludes_grouping_nodes() {
         let mut tree = SubagentTree::default();
         // wrapper stuck Running + all real children completed
-        tree.upsert(make_progress("delegate-root", None, SubagentStatus::Running));
-        tree.upsert(make_progress("sub1", Some("delegate-root"), SubagentStatus::Completed));
-        tree.upsert(make_progress("sub2", Some("delegate-root"), SubagentStatus::Completed));
+        tree.upsert(make_progress(
+            "delegate-root",
+            None,
+            SubagentStatus::Running,
+        ));
+        tree.upsert(make_progress(
+            "sub1",
+            Some("delegate-root"),
+            SubagentStatus::Completed,
+        ));
+        tree.upsert(make_progress(
+            "sub2",
+            Some("delegate-root"),
+            SubagentStatus::Completed,
+        ));
         // Without filtering, wrapper's Running would make is_complete false.
         // With filtering, all real nodes completed → is_complete true.
         assert!(tree.is_complete());
@@ -399,8 +443,16 @@ mod tests {
         let mut tree = SubagentTree::default();
         // delegate wrapper (first root) + its sub-tasks
         tree.upsert(make_progress("delegate", None, SubagentStatus::Running));
-        tree.upsert(make_progress("dt1", Some("delegate"), SubagentStatus::Running));
-        tree.upsert(make_progress("dt2", Some("delegate"), SubagentStatus::Running));
+        tree.upsert(make_progress(
+            "dt1",
+            Some("delegate"),
+            SubagentStatus::Running,
+        ));
+        tree.upsert(make_progress(
+            "dt2",
+            Some("delegate"),
+            SubagentStatus::Running,
+        ));
         // independent task subagent (separate top-level root, parent_id None)
         tree.upsert(make_progress("task-sub", None, SubagentStatus::Running));
         // node_list must reach ALL roots: delegate + dt1 + dt2 + task-sub
@@ -420,8 +472,14 @@ mod tests {
         let mut tree = SubagentTree::default();
         tree.upsert(make_progress("bg", None, SubagentStatus::Running));
         tree.root_id = Some("bg".to_string());
-        assert!(!tree.clear_if_idle(), "must not clear while a subagent is active");
-        assert!(tree.nodes.contains_key("bg"), "background subagent must be preserved");
+        assert!(
+            !tree.clear_if_idle(),
+            "must not clear while a subagent is active"
+        );
+        assert!(
+            tree.nodes.contains_key("bg"),
+            "background subagent must be preserved"
+        );
         assert_eq!(tree.active_count(), 1);
     }
 
@@ -432,7 +490,10 @@ mod tests {
         tree.upsert(make_progress("done", None, SubagentStatus::Completed));
         tree.upsert(make_progress("failed", None, SubagentStatus::Failed));
         tree.root_id = Some("done".to_string());
-        assert!(tree.clear_if_idle(), "must clear when no active subagents remain");
+        assert!(
+            tree.clear_if_idle(),
+            "must clear when no active subagents remain"
+        );
         assert!(tree.nodes.is_empty(), "terminal nodes must be cleared");
         assert!(tree.root_id.is_none());
     }
@@ -452,8 +513,17 @@ mod tests {
         tree.upsert(make_progress("done", None, SubagentStatus::Completed));
         tree.upsert(make_progress("bg", None, SubagentStatus::Running));
         tree.root_id = Some("done".to_string());
-        assert!(!tree.clear_if_idle(), "must not clear while bg subagent is active");
-        assert!(tree.nodes.contains_key("bg"), "background subagent preserved");
-        assert!(tree.nodes.contains_key("done"), "completed node also retained (no partial clear)");
+        assert!(
+            !tree.clear_if_idle(),
+            "must not clear while bg subagent is active"
+        );
+        assert!(
+            tree.nodes.contains_key("bg"),
+            "background subagent preserved"
+        );
+        assert!(
+            tree.nodes.contains_key("done"),
+            "completed node also retained (no partial clear)"
+        );
     }
 }

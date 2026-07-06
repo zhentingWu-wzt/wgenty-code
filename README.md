@@ -103,13 +103,11 @@ Built with [ratatui](https://ratatui.rs/), the terminal interface includes:
 
 ### 📦 Feature-Gated Modularity
 
-The project compiles to **three separate binaries** from a single codebase, each with its own feature gate:
+The project compiles to a single binary with feature gates controlling optional capabilities:
 
 | Binary | Features | Purpose |
 |:-------|:---------|:--------|
-| `wgenty-code` | `default` (gui-egui, i18n, daemon) | Full-featured CLI with TUI |
-| `wgenty-code-gui` | `gui-egui` | Desktop GUI via egui |
-| `wgenty-code-web` | `web` | Web interface via Askama + Axum |
+| `wgenty-code` | `default` (i18n, daemon, bundled-skills) | Full-featured CLI with TUI |
 
 Build without any features (`--no-default-features`) and you get a pure CLI binary under 5 MB — ideal for CI pipelines, Docker containers, or embedding into other tools. Add features on demand: WASM compilation for browser targets, i18n for 10-language Fluent localization, daemon mode for long-running server processes.
 

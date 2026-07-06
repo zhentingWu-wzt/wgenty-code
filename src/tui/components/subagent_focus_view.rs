@@ -413,8 +413,7 @@ impl FocusView {
         let selector_inner = selector_block.inner(chunks[2]);
         f.render_widget(selector_block, chunks[2]);
 
-        let selector_lines =
-            build_selector_lines(state, tree, completed_at, now, selector_inner);
+        let selector_lines = build_selector_lines(state, tree, completed_at, now, selector_inner);
         f.render_widget(Paragraph::new(selector_lines), selector_inner);
 
         // ── Help bar ──────────────────────────────────────────────────
@@ -606,7 +605,12 @@ fn build_selector_lines(
         lines.push(Line::from(vec![
             Span::styled(selector, Style::default().fg(cursor_color)),
             Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
-            Span::styled(display, Style::default().fg(label_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                display,
+                Style::default()
+                    .fg(label_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(current_marker, Style::default().fg(cursor_color)),
         ]));
     }
