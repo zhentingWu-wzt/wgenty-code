@@ -217,14 +217,16 @@ impl AgentLoop {
                         tasks.push((tc.id.clone(), "task".to_string(), args));
                     }
 
+                    let s_timeout = self.subagent_timeout_secs;
                     let handles: Vec<_> = tasks.into_iter().map(|(id, name, args)| {
                         let client = client.clone();
                         let session_id = session_id.clone();
                         let event_tx = event_tx.clone();
+                        let poll_timeout = Duration::from_secs(s_timeout);
                         tokio::spawn(async move {
                             let result = tokio::time::timeout(
                                 Duration::from_secs(600),
-                                Self::execute_tool_static(&client, &name, args.clone(), &session_id, Some(event_tx.clone())),
+                                Self::execute_tool_static(&client, &name, args.clone(), &session_id, Some(event_tx.clone()), poll_timeout),
                             ).await;
                             let content = match result {
                                 Ok(r) => r,
@@ -326,9 +328,10 @@ impl AgentLoop {
                             let tx = self.event_tx.clone();
                             let client = self.client.clone();
                             let session_id = self.session_id.clone();
+                            let s_timeout = self.subagent_timeout_secs;
                             Some(tokio::spawn(async move {
                                 let start = tokio::time::Instant::now();
-                                let max_duration = Duration::from_secs(120);
+                                let max_duration = Duration::from_secs(s_timeout);
                                 loop {
                                     if start.elapsed() > max_duration {
                                         break;
@@ -380,7 +383,7 @@ impl AgentLoop {
                             }
                         };
 
-                        // Drop poll handle (poller self-terminates after 120s max)
+                        // Drop poll handle (poller self-terminates based on configured subagent timeout)
                         drop(poll_handle);
 
                         let _ = self.event_tx.send(AppEvent::ToolResult {

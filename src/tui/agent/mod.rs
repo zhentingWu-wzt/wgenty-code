@@ -54,6 +54,8 @@ pub struct AgentLoop {
     pub(super) hook_manager: std::sync::Arc<HookManager>,
     /// Prompt context for building per-turn `<system-reminder>` blocks.
     pub(super) prompt_context: std::sync::Arc<crate::prompts::PromptContext>,
+    /// Subagent timeout from settings.agent.subagent.timeout_secs (default 1800).
+    pub(super) subagent_timeout_secs: u64,
 }
 
 impl AgentLoop {
@@ -70,6 +72,7 @@ impl AgentLoop {
         token_counter: crate::api::token_counter::TokenCounter,
         hook_manager: std::sync::Arc<HookManager>,
         prompt_context: std::sync::Arc<crate::prompts::PromptContext>,
+        subagent_timeout_secs: u64,
     ) -> Self {
         Self {
             client,
@@ -88,6 +91,7 @@ impl AgentLoop {
             planner_client,
             hook_manager,
             prompt_context,
+            subagent_timeout_secs,
         }
     }
 

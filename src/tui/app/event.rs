@@ -91,22 +91,7 @@ impl App {
                         // otherwise expand all. Uses the conversion shared with
                         // build_conversation_lines to find tool_call_ids.
                         KeyCode::Char('t') => {
-                            let ui_msgs = crate::tui::components::subagent_focus_view::chat_messages_to_ui_messages(&focus.messages);
-                            if focus.collapsed_tool_ids.is_empty() {
-                                for msg in &ui_msgs {
-                                    if msg.role == MessageRole::Tool {
-                                        if let Some(ref meta) = msg.tool_metadata {
-                                            if let Some(tid) =
-                                                meta.get("tool_call_id").and_then(|v| v.as_str())
-                                            {
-                                                focus.collapsed_tool_ids.insert(tid.to_string());
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                focus.collapsed_tool_ids.clear();
-                            }
+                            focus.toggle_fold_all();
                             return;
                         }
                         KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -499,35 +484,49 @@ impl App {
                 self.user_scrolled = true;
             }
             AppEvent::ToggleCollapseAll => {
-                // Real toggle: if anything is currently expanded, collapse everything;
-                // otherwise expand everything. We only flip the field that's relevant
-                // for each message's role to avoid no-op toggles on user/system rows.
-                let any_expanded = self.committed_messages.iter().any(|m| match m.role {
-                    MessageRole::Assistant => !m.content_collapsed,
-                    MessageRole::Tool => !m.tool_collapsed,
-                    _ => false,
-                });
-                let collapse = any_expanded;
-                for m in &mut self.committed_messages {
-                    match m.role {
-                        MessageRole::Assistant => m.content_collapsed = collapse,
-                        MessageRole::Tool => m.tool_collapsed = collapse,
-                        _ => {}
+                // While the subagent focus view is open, Ctrl+E toggles fold of
+                // all tool calls in the focus timeline (same as `t`) and must
+                // not touch the main chat's collapse state.
+                if let Some(ref mut focus) = self.subagent_focus {
+                    focus.toggle_fold_all();
+                } else {
+                    // Real toggle: if anything is currently expanded, collapse everything;
+                    // otherwise expand everything. We only flip the field that's relevant
+                    // for each message's role to avoid no-op toggles on user/system rows.
+                    let any_expanded = self.committed_messages.iter().any(|m| match m.role {
+                        MessageRole::Assistant => !m.content_collapsed,
+                        MessageRole::Tool => !m.tool_collapsed,
+                        _ => false,
+                    });
+                    let collapse = any_expanded;
+                    for m in &mut self.committed_messages {
+                        match m.role {
+                            MessageRole::Assistant => m.content_collapsed = collapse,
+                            MessageRole::Tool => m.tool_collapsed = collapse,
+                            _ => {}
+                        }
                     }
                 }
             }
             AppEvent::ToggleCollapseLatest => {
-                // Real toggle for the last message: flip only the field that
-                // controls visibility for its role.
-                if let Some(last) = self.committed_messages.last_mut() {
-                    match last.role {
-                        MessageRole::Assistant => {
-                            last.content_collapsed = !last.content_collapsed;
+                // While the subagent focus view is open, Ctrl+O toggles fold of
+                // the last tool call in the focus timeline and must not touch
+                // the main chat's collapse state.
+                if let Some(ref mut focus) = self.subagent_focus {
+                    focus.toggle_fold_latest();
+                } else {
+                    // Real toggle for the last message: flip only the field that
+                    // controls visibility for its role.
+                    if let Some(last) = self.committed_messages.last_mut() {
+                        match last.role {
+                            MessageRole::Assistant => {
+                                last.content_collapsed = !last.content_collapsed;
+                            }
+                            MessageRole::Tool => {
+                                last.tool_collapsed = !last.tool_collapsed;
+                            }
+                            _ => {}
                         }
-                        MessageRole::Tool => {
-                            last.tool_collapsed = !last.tool_collapsed;
-                        }
-                        _ => {}
                     }
                 }
             }

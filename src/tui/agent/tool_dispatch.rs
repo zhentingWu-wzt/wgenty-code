@@ -15,6 +15,7 @@ impl AgentLoop {
         args: serde_json::Value,
         session_id: &str,
         event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
+        max_poll_duration: Duration,
     ) -> String {
         // Guardian: inline safety check (no UI interaction in parallel path)
         if name == "execute_command" || name == "exec_command" {
@@ -38,7 +39,6 @@ impl AgentLoop {
             let sid = session_id.to_string();
             Some(tokio::spawn(async move {
                 let start = tokio::time::Instant::now();
-                let max_poll_duration = Duration::from_secs(120);
                 loop {
                     if start.elapsed() > max_poll_duration {
                         break;
@@ -83,7 +83,8 @@ impl AgentLoop {
         };
 
         // Poller continues in background for async subagents (task tool with background=true).
-        // It self-terminates after 120s max. Drop the handle — tokio::spawn keeps it alive.
+        // It self-terminates based on the configured subagent timeout.
+        // Drop the handle — tokio::spawn keeps it alive.
         drop(poll_handle);
 
         result
