@@ -121,6 +121,7 @@ impl Cli {
         use crate::tui::app::{self, App};
         use crate::tui::client::DaemonClient;
         use crossterm::{
+            event::{DisableMouseCapture, EnableMouseCapture},
             execute,
             terminal::{
                 disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -139,6 +140,11 @@ impl Cli {
         // Set up terminal
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
+        // Enable mouse capture so crossterm delivers ScrollUp/ScrollDown events
+        // for the chat area and the focus view timeline. Without this the
+        // input reader never sees Event::Mouse and mouse-wheel scrolling is
+        // dead. See spec subagent-focus-view: "scrollable only via mouse wheel".
+        execute!(stdout, EnableMouseCapture)?;
 
         // Install panic hook to restore terminal on crash.
         // Without this, a panic leaves the terminal in raw mode with
@@ -146,6 +152,7 @@ impl Cli {
         let default_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), DisableMouseCapture);
             let _ = execute!(io::stdout(), LeaveAlternateScreen);
             default_hook(info);
         }));
@@ -202,6 +209,7 @@ impl Cli {
 
         // Restore terminal
         disable_raw_mode()?;
+        execute!(io::stdout(), DisableMouseCapture)?;
         execute!(io::stdout(), LeaveAlternateScreen)?;
         // Restore default panic hook
         let _ = std::panic::take_hook();
