@@ -8,9 +8,9 @@
 
 ## 修复 2：启用鼠标捕获（问题 3）
 
-- [ ] 2.1 `src/cli/args.rs`：在 `EnterAlternateScreen` 后添加 `execute!(stdout, EnableMouseCapture)`，导入 `crossterm::event::{EnableMouseCapture, DisableMouseCapture}`。
-- [ ] 2.2 正常退出路径：在 `LeaveAlternateScreen` 前添加 `execute!(io::stdout(), DisableMouseCapture)`。
-- [ ] 2.3 panic hook：在 `LeaveAlternateScreen` 前添加 `DisableMouseCapture`，保证崩溃恢复终端。
+- [x] 2.1 `src/cli/args.rs`：在 `EnterAlternateScreen` 后添加 `execute!(stdout, EnableMouseCapture)`，导入 `crossterm::event::{EnableMouseCapture, DisableMouseCapture}`。
+- [x] 2.2 正常退出路径：在 `LeaveAlternateScreen` 前添加 `execute!(io::stdout(), DisableMouseCapture)`。
+- [x] 2.3 panic hook：在 `LeaveAlternateScreen` 前添加 `DisableMouseCapture`，保证崩溃恢复终端。
 
 ## 收尾
 
