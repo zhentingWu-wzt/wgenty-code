@@ -326,14 +326,19 @@ impl App {
                                     return;
                                 }
                                 KeyCode::Enter => {
-                                    if self.subagent_status_bar_selected == 0 {
+                                    // Use the modded index (matches render's
+                                    // `selected % (N+1)`) so Enter stays
+                                    // consistent with the displayed selection
+                                    // even if the active set shrank between
+                                    // navigation and Enter (e.g. a subagent
+                                    // completed mid-interaction).
+                                    let cur = self.subagent_status_bar_selected % len;
+                                    if cur == 0 {
                                         // "main" selected — dismiss status bar
                                         // focus (consistent with focus view's
                                         // "main" exit semantics).
                                         self.subagent_status_bar_focused = false;
-                                    } else if let Some(node_id) = active
-                                        .get(self.subagent_status_bar_selected - 1)
-                                    {
+                                    } else if let Some(node_id) = active.get(cur - 1) {
                                         if let Some(state) =
                                             FocusViewState::build(node_id, &self.subagent_tree)
                                         {
