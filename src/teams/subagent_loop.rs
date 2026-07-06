@@ -78,7 +78,11 @@ fn extract_params_summary(tool_name: &str, args: &serde_json::Value) -> String {
                     other => other.to_string(),
                 };
                 if s.len() > MAX_PARAMS_SUMMARY_LEN {
-                    format!("{}…", &s[..MAX_PARAMS_SUMMARY_LEN])
+                    // Floor to the largest char boundary ≤ MAX_PARAMS_SUMMARY_LEN so that
+                    // slicing never lands inside a multi-byte UTF-8 codepoint (which would
+                    // panic). Preserves the byte-budget semantics (≤ 80 bytes of content).
+                    let end = s.floor_char_boundary(MAX_PARAMS_SUMMARY_LEN);
+                    format!("{}…", &s[..end])
                 } else {
                     s
                 }
@@ -838,5 +842,41 @@ pub async fn run_subagent_loop(
                 &text_snapshot,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_params_summary_truncates_multibyte_at_char_boundary() {
+        // 79 ASCII bytes + '构' (bytes 79..82) + suffix → byte 80 falls inside '构'.
+        // Without char-boundary handling, &s[..80] panics:
+        //   "end byte index 80 is not a char boundary; it is inside '构'".
+        let description = format!("{}构suffix", "a".repeat(79));
+        let args = serde_json::json!({ "description": description });
+        let summary = extract_params_summary("task", &args);
+
+        // Must not panic; truncated at a char boundary ≤ MAX_PARAMS_SUMMARY_LEN.
+        assert!(
+            summary.ends_with('…'),
+            "truncated summary should end with ellipsis, got: {summary:?}"
+        );
+        // '构' starts at byte 79 and occupies 79..82, so it cannot fit within the
+        // 80-byte budget — it must be excluded rather than split mid-character.
+        assert!(!summary.contains('构'));
+        assert!(
+            !summary.contains('\u{FFFD}'),
+            "no replacement char from a split codepoint"
+        );
+    }
+
+    #[test]
+    fn extract_params_summary_preserves_short_multibyte_value() {
+        // A multi-byte value under the limit is returned verbatim (no truncation).
+        let args = serde_json::json!({ "description": "短任务" });
+        let summary = extract_params_summary("task", &args);
+        assert_eq!(summary, "短任务");
     }
 }
