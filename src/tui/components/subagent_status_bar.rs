@@ -14,7 +14,8 @@ use ratatui::Frame;
 
 /// Render the subagent status bar.
 ///
-/// `selected_index` is the index into the active (Running + Pending) node list.
+/// `selected_index` indexes the unified list ["main", ...active] where
+/// index 0 is the "main" placeholder and 1..N are active subagents.
 pub fn render(
     f: &mut Frame,
     area: Rect,
@@ -49,48 +50,80 @@ pub fn render(
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let lines: Vec<Line> = active
-        .iter()
-        .enumerate()
-        .map(|(i, node)| {
-            let (icon, icon_color) = status_icon(&node.progress.status);
-            let label = &node.progress.label;
-            let detail = match (&node.progress.current_tool, &node.progress.current_params) {
-                (Some(tool), Some(params)) => format!("{}(\"{}\")", tool, params),
-                (Some(tool), None) => tool.clone(),
-                _ => "thinking...".to_string(),
-            };
+    // Unified list: ["main", ...active]. wrap_len = N+1 (main + subagents).
+    let wrap_len = active.len() + 1;
+    let sel = selected_index % wrap_len;
 
-            let is_selected = i == selected_index % active.len().max(1);
-            let selector = if is_selected { "▶ " } else { "  " };
-            let selector_style = if is_selected {
+    let mut lines: Vec<Line> = Vec::with_capacity(wrap_len);
+
+    // "main" entry at absolute index 0.
+    {
+        let is_selected = sel == 0;
+        let selector = if is_selected { "▶ " } else { "  " };
+        let selector_style = if is_selected {
+            Style::default()
+                .fg(Color::Rgb(249, 226, 175))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(108, 112, 134))
+        };
+        lines.push(Line::from(vec![
+            Span::styled(selector, selector_style),
+            // Spacer to align label with subagent rows (icon + space).
+            Span::raw("  "),
+            Span::styled(
+                format!("{:<20} ", "main"),
                 Style::default()
-                    .fg(Color::Rgb(249, 226, 175))
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Rgb(108, 112, 134))
-            };
+                    .fg(if is_selected {
+                        Color::Rgb(249, 226, 175)
+                    } else {
+                        Color::Rgb(180, 180, 200)
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
 
-            Line::from(vec![
-                Span::styled(selector, selector_style),
-                Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
-                Span::styled(
-                    format!("{:<20} ", truncate_str(label, 20)),
-                    Style::default()
-                        .fg(if is_selected {
-                            Color::Rgb(249, 226, 175)
-                        } else {
-                            Color::Rgb(180, 180, 200)
-                        })
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    truncate_str(&detail, inner.width.saturating_sub(28) as usize),
-                    Style::default().fg(Color::Rgb(148, 148, 165)),
-                ),
-            ])
-        })
-        .collect();
+    // Subagent entries: absolute index = i + 1.
+    for (i, node) in active.iter().enumerate() {
+        let abs_index = i + 1;
+        let (icon, icon_color) = status_icon(&node.progress.status);
+        let label = &node.progress.label;
+        let detail = match (&node.progress.current_tool, &node.progress.current_params) {
+            (Some(tool), Some(params)) => format!("{}(\"{}\")", tool, params),
+            (Some(tool), None) => tool.clone(),
+            _ => "thinking...".to_string(),
+        };
+
+        let is_selected = sel == abs_index;
+        let selector = if is_selected { "▶ " } else { "  " };
+        let selector_style = if is_selected {
+            Style::default()
+                .fg(Color::Rgb(249, 226, 175))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(108, 112, 134))
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(selector, selector_style),
+            Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
+            Span::styled(
+                format!("{:<20} ", truncate_str(label, 20)),
+                Style::default()
+                    .fg(if is_selected {
+                        Color::Rgb(249, 226, 175)
+                    } else {
+                        Color::Rgb(180, 180, 200)
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                truncate_str(&detail, inner.width.saturating_sub(28) as usize),
+                Style::default().fg(Color::Rgb(148, 148, 165)),
+            ),
+        ]));
+    }
 
     let paragraph = Paragraph::new(lines).style(Style::default().bg(Color::Rgb(26, 26, 46)));
     f.render_widget(paragraph, inner);
