@@ -5,7 +5,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 /// Render the wgenty welcome banner with gradient ASCII art logo.
-pub fn render(f: &mut Frame, area: Rect) {
+pub fn render(f: &mut Frame, area: Rect, model_name: &str) {
     let logo_lines = [
         "  ▄   ▄   ▄▄▄   ▄▄▄▄▄  ▄   ▄  ▄▄▄▄▄  ▄   ▄",
         "  █   █   ███   █████  █   █  █████  █   █",
@@ -57,11 +57,15 @@ pub fn render(f: &mut Frame, area: Rect) {
         "           高性能 AI 编码助手",
         Style::default().fg(Color::Rgb(147, 112, 219)),
     )));
+    lines.push(Line::from(Span::styled(
+        format!("           Model: {}", model_name),
+        Style::default().fg(Color::Rgb(140, 140, 160)),
+    )));
     lines.push(Line::raw(""));
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(10), Constraint::Min(0)])
+        .constraints([Constraint::Length(11), Constraint::Min(0)])
         .split(area);
 
     let para = Paragraph::new(Text::from(lines)).alignment(Alignment::Center);
