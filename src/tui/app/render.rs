@@ -101,7 +101,11 @@ impl App {
             .iter()
             .any(|m| !matches!(m.role, MessageRole::System));
         if !has_real_turn && !self.streaming_active {
-            components::welcome::render(f, main_area);
+            let model_name = {
+                let s = self.settings_lock.read().unwrap();
+                crate::config::ApiConfig::default().get_model_id(&s.models.main.name)
+            };
+            components::welcome::render(f, main_area, &model_name);
         } else {
             self.render_chat(f, main_area);
         }
