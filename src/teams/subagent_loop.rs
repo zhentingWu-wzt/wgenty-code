@@ -89,6 +89,86 @@ fn extract_params_summary(tool_name: &str, args: &serde_json::Value) -> String {
     parts.join(", ")
 }
 
+/// Structured error returned by [`run_subagent_loop`] when a subagent fails.
+///
+/// Carries enough information for the caller (typically the `task` tool) to
+/// report a **specific** error code to the main agent and, crucially, to
+/// forward any **partial results** the subagent accumulated before failing.
+///
+/// This is what makes budget exhaustion perceptible to the orchestrating
+/// agent: instead of a bare error string, the main agent receives the
+/// subagent's last text snapshot and a structured error type so it can
+/// decide whether to re-dispatch with a larger budget, continue the work
+/// itself, or report failure.
+#[derive(Debug, Clone)]
+pub struct SubagentError {
+    /// Human-readable error message (safe to show to the LLM).
+    pub message: String,
+    /// Categorized error type — `BudgetExceeded`, `Timeout`, etc.
+    pub error_type: ErrorType,
+    /// The subagent's last text snapshot before failure, if any.
+    /// Contains useful partial work that the main agent can salvage.
+    pub partial_result: Option<String>,
+}
+
+impl SubagentError {
+    /// Return the full message, appending partial results if available.
+    /// This is what should be shown to the main agent.
+    pub fn full_message(&self) -> String {
+        match &self.partial_result {
+            Some(partial) if !partial.trim().is_empty() => {
+                format!(
+                    "{}\n\n--- Partial results (before failure) ---\n{}",
+                    self.message, partial
+                )
+            }
+            _ => self.message.clone(),
+        }
+    }
+
+    /// A short error code string suitable for `ToolError::code`.
+    pub fn code(&self) -> &'static str {
+        match &self.error_type {
+            ErrorType::BudgetExceeded { .. } => "budget_exceeded",
+            ErrorType::Timeout => "subagent_timeout",
+            ErrorType::Stuck { .. } => "subagent_stuck",
+            ErrorType::ToolError { .. } => "subagent_tool_error",
+            ErrorType::ParseError { .. } => "subagent_parse_error",
+            ErrorType::Unknown => "subagent_error",
+        }
+    }
+}
+
+impl std::fmt::Display for SubagentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.full_message())
+    }
+}
+
+/// Convenience: bare strings become `Unknown` errors with no partial result.
+/// Used by minor error paths (API failures, parse errors) where structured
+/// error metadata is not critical.
+impl From<String> for SubagentError {
+    fn from(msg: String) -> Self {
+        SubagentError {
+            message: msg,
+            error_type: ErrorType::Unknown,
+            partial_result: None,
+        }
+    }
+}
+
+/// Helper: build a `SubagentError` with the current text snapshot as partial
+/// result. Used by terminal error paths (budget, timeout, stuck, max-rounds)
+/// so the main agent receives whatever work the subagent already completed.
+fn subagent_error(message: String, error_type: ErrorType, snapshot: &Mutex<Option<String>>) -> SubagentError {
+    SubagentError {
+        message,
+        error_type,
+        partial_result: snapshot.lock().unwrap().clone(),
+    }
+}
+
 /// Run a subagent with an isolated agent loop.
 ///
 /// The subagent starts with a clean `[system, user]` message list and iterates
@@ -107,7 +187,7 @@ fn extract_params_summary(tool_name: &str, args: &serde_json::Value) -> String {
 ///
 /// # Returns
 /// * `Ok(String)` — The final assistant content (text response).
-/// * `Err(String)` — An error description if the loop fails or times out.
+/// * `Err(SubagentError)` — Structured error with type, message, and partial results.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_subagent_loop(
     api_client: &ApiClient,
@@ -119,7 +199,7 @@ pub async fn run_subagent_loop(
     timeout_secs: u64,
     on_progress: Option<ProgressCallback>,
     token_budget_k: Option<u64>,
-) -> Result<String, String> {
+) -> Result<String, SubagentError> {
     let timeout_duration = Duration::from_secs(timeout_secs);
     tracing::info!(
         prompt_len = user_prompt.len(),
@@ -328,7 +408,14 @@ pub async fn run_subagent_loop(
                         None,
                         messages.clone(),
                     );
-                    return Err(msg);
+                    return Err(SubagentError {
+                        message: msg,
+                        error_type: ErrorType::BudgetExceeded {
+                            limit_k: budget_k,
+                            used: used as u64,
+                        },
+                        partial_result: text_snapshot.lock().unwrap().clone(),
+                    });
                 }
             }
 
@@ -456,7 +543,11 @@ pub async fn run_subagent_loop(
                         None,
                         messages.clone(),
                     );
-                    return Err(msg);
+                    return Err(SubagentError {
+                        message: msg.clone(),
+                        error_type: ErrorType::Stuck { reason: msg },
+                        partial_result: text_snapshot.lock().unwrap().clone(),
+                    });
                 }
                 StuckStatus::Ok => {}
             }
@@ -517,7 +608,11 @@ pub async fn run_subagent_loop(
                         consecutive_parse_errors
                     );
                     tracing::error!( trace_id = trace_id, error = %msg);
-                    return Err(msg);
+                    return Err(SubagentError {
+                        message: msg.clone(),
+                        error_type: ErrorType::ParseError { message: msg },
+                        partial_result: text_snapshot.lock().unwrap().clone(),
+                    });
                 }
 
                 // ── Extract params summary & update action log ──────────────
@@ -664,7 +759,13 @@ pub async fn run_subagent_loop(
             None,
             messages.clone(),
         );
-        Err("Subagent exceeded maximum number of rounds".to_string())
+        Err(subagent_error(
+            "Subagent exceeded maximum number of rounds".to_string(),
+            ErrorType::Stuck {
+                reason: "exceeded maximum rounds".to_string(),
+            },
+            &text_snapshot,
+        ))
     };
 
     match tokio::time::timeout(timeout_duration, loop_future).await {
@@ -728,9 +829,13 @@ pub async fn run_subagent_loop(
                 delay_secs = start.elapsed().as_secs().saturating_sub(timeout_duration.as_secs()),
                 "Subagent: timed out (delay = elapsed - timeout; a large delay indicates runtime starvation — the timer woke but the task wasn't polled promptly)"
             );
-            Err(format!(
-                "Subagent timed out after {} seconds",
-                timeout_duration.as_secs()
+            Err(subagent_error(
+                format!(
+                    "Subagent timed out after {} seconds",
+                    timeout_duration.as_secs()
+                ),
+                ErrorType::Timeout,
+                &text_snapshot,
             ))
         }
     }

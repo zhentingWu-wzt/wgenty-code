@@ -73,7 +73,7 @@ impl Default for SubagentLimits {
         Self {
             max_depth: 3,
             max_concurrent: 5,
-            timeout_secs: 240,
+            timeout_secs: 1800,
             token_budget_k: None,
             max_rounds: None,
             plan_mode: None,

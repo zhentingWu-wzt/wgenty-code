@@ -265,7 +265,7 @@ Return summary with files changed and remaining occurrences of "process_transact
         }
         Err(e) => {
             println!("❌ FAILED: {}", e);
-            let lower = e.to_lowercase();
+            let lower = e.message.to_lowercase();
             if lower.contains("stuck") {
                 println!("   Cause: STUCK DETECTION — would have been false positive with old 3-repeat threshold");
             } else if lower.contains("max") && lower.contains("round") {

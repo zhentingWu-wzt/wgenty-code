@@ -12,7 +12,7 @@
 use crate::agent::progress::{ProgressCallback, SubagentProgress, SubagentStatus};
 use crate::api::ApiClient;
 use crate::config::Settings;
-use crate::teams::subagent_loop::run_subagent_loop;
+use crate::teams::subagent_loop::{run_subagent_loop, SubagentError};
 use crate::teams::subagent_mailbox::SubagentResultMailbox;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use crate::transcript::TranscriptStatus;
@@ -553,7 +553,8 @@ impl Tool for TaskTool {
                     token_budget,
                 )
                 .await
-                .map(|r| r.aggregated);
+                .map(|r| r.aggregated)
+                .map_err(SubagentError::from);
                 (result, reason)
             } else {
                 let reason = "direct subagent: simple task".to_string();
@@ -653,7 +654,7 @@ impl Tool for TaskTool {
                             0,
                             0,
                             token_budget,
-                            Some(e.clone()),
+                            Some(e.full_message()),
                             None,
                             vec![],
                         );
@@ -661,8 +662,8 @@ impl Tool for TaskTool {
                     }
 
                     Err(ToolError {
-                        message: e,
-                        code: Some("subagent_error".to_string()),
+                        message: e.full_message(),
+                        code: Some(e.code().to_string()),
                     })
                 }
             }
