@@ -190,6 +190,24 @@ impl SubagentTree {
         self.root_id = None;
         self.nodes.clear();
     }
+
+    /// Clear the tree only when no subagents are still active (Running/Pending).
+    ///
+    /// Background subagents (task tool `background` mode) outlive the main
+    /// turn — they are spawned via `tokio::spawn` and the main turn returns
+    /// immediately. When the next turn starts, unconditionally clearing the
+    /// tree would wipe these still-running background subagents, hiding the
+    /// status bar and blocking entry to their focus view. This method
+    /// preserves active subagents across the turn boundary. Returns `true`
+    /// if the tree was cleared.
+    pub fn clear_if_idle(&mut self) -> bool {
+        if self.active_count() == 0 {
+            self.clear();
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -394,5 +412,48 @@ mod tests {
         assert_eq!(list.len(), 4, "independent task-sub must not be orphaned");
         // active_count excludes the delegate grouping node: dt1 + dt2 + task-sub
         assert_eq!(tree.active_count(), 3);
+    }
+
+    #[test]
+    fn test_clear_if_idle_preserves_active_subagent() {
+        // A background subagent is still Running when the next turn starts.
+        let mut tree = SubagentTree::default();
+        tree.upsert(make_progress("bg", None, SubagentStatus::Running));
+        tree.root_id = Some("bg".to_string());
+        assert!(!tree.clear_if_idle(), "must not clear while a subagent is active");
+        assert!(tree.nodes.contains_key("bg"), "background subagent must be preserved");
+        assert_eq!(tree.active_count(), 1);
+    }
+
+    #[test]
+    fn test_clear_if_idle_clears_when_only_terminal_remain() {
+        // Previous turn's foreground subagents are Completed; no active remain.
+        let mut tree = SubagentTree::default();
+        tree.upsert(make_progress("done", None, SubagentStatus::Completed));
+        tree.upsert(make_progress("failed", None, SubagentStatus::Failed));
+        tree.root_id = Some("done".to_string());
+        assert!(tree.clear_if_idle(), "must clear when no active subagents remain");
+        assert!(tree.nodes.is_empty(), "terminal nodes must be cleared");
+        assert!(tree.root_id.is_none());
+    }
+
+    #[test]
+    fn test_clear_if_idle_clears_empty_tree() {
+        let mut tree = SubagentTree::default();
+        assert!(tree.clear_if_idle(), "empty tree should report cleared");
+        assert!(tree.nodes.is_empty());
+    }
+
+    #[test]
+    fn test_clear_if_idle_preserves_running_amid_terminal() {
+        // Mixed: one Completed (previous turn) + one Running (background).
+        // clear_if_idle must preserve the Running one.
+        let mut tree = SubagentTree::default();
+        tree.upsert(make_progress("done", None, SubagentStatus::Completed));
+        tree.upsert(make_progress("bg", None, SubagentStatus::Running));
+        tree.root_id = Some("done".to_string());
+        assert!(!tree.clear_if_idle(), "must not clear while bg subagent is active");
+        assert!(tree.nodes.contains_key("bg"), "background subagent preserved");
+        assert!(tree.nodes.contains_key("done"), "completed node also retained (no partial clear)");
     }
 }
