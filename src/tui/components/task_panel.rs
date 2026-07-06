@@ -58,10 +58,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &TaskPanelState) {
                     meta.subagent_type, meta.rounds, dur_str, tokens_str
                 );
                 ListItem::new(Line::from(vec![
-                    Span::styled(
-                        "\u{1f916} ",
-                        Style::default().fg(theme::INFO),
-                    ),
+                    Span::styled("\u{1f916} ", Style::default().fg(theme::INFO)),
                     Span::styled(stats, Style::default().fg(theme::DIM)),
                     Span::raw("  "),
                     Span::raw(&item.content),

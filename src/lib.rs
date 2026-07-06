@@ -42,14 +42,10 @@ pub mod voice;
 // Feature-gated modules
 #[cfg(feature = "daemon")]
 pub mod daemon;
-#[cfg(feature = "gui-egui")]
-pub mod gui;
 #[cfg(feature = "i18n")]
 pub mod i18n;
 #[cfg(feature = "wasm")]
 pub mod wasm;
-#[cfg(feature = "web")]
-pub mod web;
 
 pub use api::{AnthropicClient, ApiClient, ChatMessage};
 pub use cli::Cli;
@@ -67,11 +63,7 @@ pub use tools::ToolRegistry;
 pub use voice::VoiceService;
 
 // Feature-gated re-exports
-#[cfg(feature = "gui-egui")]
-pub use gui::WgentyCodeApp;
 #[cfg(feature = "i18n")]
 pub use i18n::Translator;
 #[cfg(feature = "wasm")]
 pub use wasm::WgentyCodeWasm;
-#[cfg(feature = "web")]
-pub use web::WebServer;

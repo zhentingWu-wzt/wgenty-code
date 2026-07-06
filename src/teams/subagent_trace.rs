@@ -88,17 +88,17 @@ impl SubagentTraceReporter {
     // ─── Tree builder ──────────────────────────────────────────────────────
 
     /// Build the full trace tree for a session from the transcript store.
-    fn build_trace_tree(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<TraceNode>, String> {
+    fn build_trace_tree(&self, session_id: &str) -> Result<Vec<TraceNode>, String> {
         let headers = self
             .store
             .list_by_session(session_id)
             .map_err(|e| format!("Failed to list transcripts: {}", e))?;
 
         if headers.is_empty() {
-            return Err(format!("No subagent data found for session '{}'", session_id));
+            return Err(format!(
+                "No subagent data found for session '{}'",
+                session_id
+            ));
         }
 
         // Load full transcripts with events
@@ -120,17 +120,21 @@ impl SubagentTraceReporter {
                     total_tokens: t.total_tokens,
                     actual_rounds: t.actual_rounds,
                     summary: t.summary,
-                    events: t.events.iter().map(|e| TraceEvent {
-                        round: e.round,
-                        event_type: e.event_type.clone(),
-                        tool_name: e.tool_name.clone(),
-                        tool_params: e.tool_params.as_ref().map(|v| {
-                            let s = v.to_string();
-                            safe_truncate(&s, 60)
-                        }),
-                        elapsed_ms: e.elapsed_ms,
-                        data: e.data.clone(),
-                    }).collect(),
+                    events: t
+                        .events
+                        .iter()
+                        .map(|e| TraceEvent {
+                            round: e.round,
+                            event_type: e.event_type.clone(),
+                            tool_name: e.tool_name.clone(),
+                            tool_params: e.tool_params.as_ref().map(|v| {
+                                let s = v.to_string();
+                                safe_truncate(&s, 60)
+                            }),
+                            elapsed_ms: e.elapsed_ms,
+                            data: e.data.clone(),
+                        })
+                        .collect(),
                     children: Vec::new(),
                 });
             }
@@ -181,131 +185,138 @@ impl SubagentTraceReporter {
         Ok(roots)
     }
 
-// ─── ASCII Call Tree + Waterfall renderer ───────────────────────────────
+    // ─── ASCII Call Tree + Waterfall renderer ───────────────────────────────
 
-/// Render a session's subagent trace as an ASCII call tree with waterfall bars.
-pub fn render_call_tree(&self, session_id: &str) -> Result<String, String> {
-    let roots = self.build_trace_tree(session_id)?;
-    if roots.is_empty() {
-        return Ok("No subagent activity recorded for this session.".to_string());
-    }
-
-    // Compute global time bounds for the waterfall
-    let min_ts = roots.iter().map(min_start_ts).min().unwrap_or(0);
-    let max_ts = roots.iter().map(max_end_ts).max().unwrap_or(0);
-    let total_span_ms = (max_ts - min_ts).max(1) as u64;
-    let bar_width = 50usize;
-
-    let mut buf = String::new();
-    let session_start = format_time(min_ts);
-    let session_end = format_time(max_ts);
-    buf.push_str(&format!(
-        "\nSUBAGENT TRACE  (session: {} → {})\n\n",
-        session_start, session_end
-    ));
-
-    let mut is_first = true;
-    for root in &roots {
-        if !is_first {
-            buf.push('\n');
+    /// Render a session's subagent trace as an ASCII call tree with waterfall bars.
+    pub fn render_call_tree(&self, session_id: &str) -> Result<String, String> {
+        let roots = self.build_trace_tree(session_id)?;
+        if roots.is_empty() {
+            return Ok("No subagent activity recorded for this session.".to_string());
         }
-        is_first = false;
-        self.render_node(&mut buf, root, "", true, min_ts, total_span_ms, bar_width);
-    }
 
-    buf.push_str(
-        "\n─ Legend ──────────────────────────────────────────────\n\
-         ✅ completed   ❌ failed   🚫 cancelled   ⏳ running\n\
-         ├─ tool_name(params) = tool call in waterfall\n"
-    );
-    Ok(buf)
-}
+        // Compute global time bounds for the waterfall
+        let min_ts = roots.iter().map(min_start_ts).min().unwrap_or(0);
+        let max_ts = roots.iter().map(max_end_ts).max().unwrap_or(0);
+        let total_span_ms = (max_ts - min_ts).max(1) as u64;
+        let bar_width = 50usize;
 
-#[allow(clippy::too_many_arguments)]
-fn render_node(
-    &self,
-    buf: &mut String,
-    node: &TraceNode,
-    prefix: &str,
-    is_last: bool,
-    min_ts: i64,
-    total_span_ms: u64,
-    bar_width: usize,
-) {
-    let connector = if is_last { "└─ " } else { "├─ " };
-    let child_prefix = if is_last { "   " } else { "│  " };
-
-    // Status icon + label + duration
-    let duration_ms = node.duration_ms();
-    let dur_str = format_duration(duration_ms);
-    let icon = node.status_icon();
-
-    // Waterfall bar
-    let bar = waterfall_bar(node.started_at, node.finished_at, min_ts, total_span_ms, bar_width);
-
-    buf.push_str(&format!(
-        "{}[{}] {} {} {}\n",
-        prefix, icon, node.label, bar, dur_str
-    ));
-
-    // Error info
-    if let Some(ref err) = node.error_message {
-        let short_err = safe_truncate(err, 100);
+        let mut buf = String::new();
+        let session_start = format_time(min_ts);
+        let session_end = format_time(max_ts);
         buf.push_str(&format!(
-            "{} {}{}{} Error: {}\n",
-            prefix, child_prefix, connector, if is_last { "  " } else { "│ " }, short_err
+            "\nSUBAGENT TRACE  (session: {} → {})\n\n",
+            session_start, session_end
         ));
-    }
 
-    // Render tool calls as sub-items (only the most significant ones)
-    let tool_events: Vec<&TraceEvent> = node
-        .events
-        .iter()
-        .filter(|e| e.event_type == "tool_result" || e.event_type == "action")
-        .collect();
-
-    for (i, event) in tool_events.iter().enumerate() {
-        let is_last_tool = i == tool_events.len() - 1 && node.children.is_empty();
-        let tool_connector = if is_last_tool { "└─ " } else { "├─ " };
-        let tool_dur = format_duration(event.elapsed_ms);
-        let tool_name = event.tool_name.as_deref().unwrap_or("unknown");
-        let params = event.tool_params.as_deref().unwrap_or("");
-        let tool_icon = if event.event_type == "tool_result" {
-            if event.data.contains("Error") || event.data.contains("error") || event.data.contains("fail") {
-                "❌"
-            } else {
-                "│ "
+        let mut is_first = true;
+        for root in &roots {
+            if !is_first {
+                buf.push('\n');
             }
-        } else {
-            "│ "
-        };
+            is_first = false;
+            self.render_node(&mut buf, root, "", true, min_ts, total_span_ms, bar_width);
+        }
 
-        buf.push_str(&format!(
-            "{} {}{} {} {}({}) — {}\n",
-            prefix,
-            child_prefix,
-            tool_connector,
-            tool_icon,
-            tool_name,
-            params,
-            tool_dur
-        ));
+        buf.push_str(
+            "\n─ Legend ──────────────────────────────────────────────\n\
+         ✅ completed   ❌ failed   🚫 cancelled   ⏳ running\n\
+         ├─ tool_name(params) = tool call in waterfall\n",
+        );
+        Ok(buf)
     }
 
-    // Render children
-    for (i, child) in node.children.iter().enumerate() {
-        let child_is_last = i == node.children.len() - 1;
-        self.render_node(
-            buf,
-            child,
-            &format!("{}{}", prefix, child_prefix),
-            child_is_last,
+    #[allow(clippy::too_many_arguments)]
+    fn render_node(
+        &self,
+        buf: &mut String,
+        node: &TraceNode,
+        prefix: &str,
+        is_last: bool,
+        min_ts: i64,
+        total_span_ms: u64,
+        bar_width: usize,
+    ) {
+        let connector = if is_last { "└─ " } else { "├─ " };
+        let child_prefix = if is_last { "   " } else { "│  " };
+
+        // Status icon + label + duration
+        let duration_ms = node.duration_ms();
+        let dur_str = format_duration(duration_ms);
+        let icon = node.status_icon();
+
+        // Waterfall bar
+        let bar = waterfall_bar(
+            node.started_at,
+            node.finished_at,
             min_ts,
             total_span_ms,
             bar_width,
         );
+
+        buf.push_str(&format!(
+            "{}[{}] {} {} {}\n",
+            prefix, icon, node.label, bar, dur_str
+        ));
+
+        // Error info
+        if let Some(ref err) = node.error_message {
+            let short_err = safe_truncate(err, 100);
+            buf.push_str(&format!(
+                "{} {}{}{} Error: {}\n",
+                prefix,
+                child_prefix,
+                connector,
+                if is_last { "  " } else { "│ " },
+                short_err
+            ));
+        }
+
+        // Render tool calls as sub-items (only the most significant ones)
+        let tool_events: Vec<&TraceEvent> = node
+            .events
+            .iter()
+            .filter(|e| e.event_type == "tool_result" || e.event_type == "action")
+            .collect();
+
+        for (i, event) in tool_events.iter().enumerate() {
+            let is_last_tool = i == tool_events.len() - 1 && node.children.is_empty();
+            let tool_connector = if is_last_tool { "└─ " } else { "├─ " };
+            let tool_dur = format_duration(event.elapsed_ms);
+            let tool_name = event.tool_name.as_deref().unwrap_or("unknown");
+            let params = event.tool_params.as_deref().unwrap_or("");
+            let tool_icon = if event.event_type == "tool_result" {
+                if event.data.contains("Error")
+                    || event.data.contains("error")
+                    || event.data.contains("fail")
+                {
+                    "❌"
+                } else {
+                    "│ "
+                }
+            } else {
+                "│ "
+            };
+
+            buf.push_str(&format!(
+                "{} {}{} {} {}({}) — {}\n",
+                prefix, child_prefix, tool_connector, tool_icon, tool_name, params, tool_dur
+            ));
+        }
+
+        // Render children
+        for (i, child) in node.children.iter().enumerate() {
+            let child_is_last = i == node.children.len() - 1;
+            self.render_node(
+                buf,
+                child,
+                &format!("{}{}", prefix, child_prefix),
+                child_is_last,
+                min_ts,
+                total_span_ms,
+                bar_width,
+            );
+        }
     }
-}
 
     // ─── Error timeline renderer ──────────────────────────────────────────
 
@@ -376,7 +387,11 @@ fn render_node(
                 buf.push_str("\n┌─ Error Details ──────────────────────────────────────────────\n");
                 for h in failures {
                     let time = format_time(h.started_at);
-                    let status_icon = if h.status == "cancelled" { "🚫" } else { "❌" };
+                    let status_icon = if h.status == "cancelled" {
+                        "🚫"
+                    } else {
+                        "❌"
+                    };
                     let err_msg = h.error_message.as_deref().unwrap_or("(no details)");
                     let err_short = safe_truncate(err_msg, 80);
                     buf.push_str(&format!(
@@ -595,10 +610,9 @@ fn waterfall_bar(
     let offset_ms = (started_at - min_ts).max(0) as u64;
     let duration_ms = (end_ts - started_at).max(0) as u64;
 
-    let start_pos =
-        ((offset_ms as f64 / total_span_ms.max(1) as f64) * bar_width as f64) as usize;
-    let bar_len = ((duration_ms as f64 / total_span_ms.max(1) as f64) * bar_width as f64)
-        .max(1.0) as usize;
+    let start_pos = ((offset_ms as f64 / total_span_ms.max(1) as f64) * bar_width as f64) as usize;
+    let bar_len =
+        ((duration_ms as f64 / total_span_ms.max(1) as f64) * bar_width as f64).max(1.0) as usize;
 
     let mut bar = String::with_capacity(bar_width + 2);
     for i in 0..bar_width {
@@ -627,7 +641,9 @@ fn min_start_ts(node: &TraceNode) -> i64 {
 
 /// Get the latest end time in a tree
 fn max_end_ts(node: &TraceNode) -> i64 {
-    let mut max = node.finished_at.unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+    let mut max = node
+        .finished_at
+        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
     for child in &node.children {
         let child_max = max_end_ts(child);
         if child_max > max {
@@ -683,10 +699,8 @@ fn build_html_report(
     health_json: &serde_json::Value,
     session_id: &str,
 ) -> String {
-    let tree_str =
-        serde_json::to_string(tree_json).unwrap_or_else(|_| "[]".to_string());
-    let health_str =
-        serde_json::to_string(health_json).unwrap_or_else(|_| "{}".to_string());
+    let tree_str = serde_json::to_string(tree_json).unwrap_or_else(|_| "[]".to_string());
+    let health_str = serde_json::to_string(health_json).unwrap_or_else(|_| "{}".to_string());
 
     format!(
         r##"<!DOCTYPE html>
@@ -1289,4 +1303,3 @@ mod tests {
         assert!(html.contains("95"));
     }
 }
-

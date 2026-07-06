@@ -25,7 +25,7 @@ impl InputBox {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(ACCENT))
                 .border_type(BorderType::Rounded)
-                .title(" Input (Enter 提交 · Shift+Enter 换行) "),
+                .title(" Input (Enter 提交) "),
         );
 
         textarea.set_style(Style::default().fg(Color::White));
@@ -122,7 +122,7 @@ impl InputBox {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_fg))
                 .border_type(BorderType::Rounded)
-                .title(" Input (Enter 提交 · Shift+Enter 换行) "),
+                .title(" Input (Enter 提交) "),
         );
 
         f.render_widget(&self.textarea, area);
@@ -143,11 +143,6 @@ impl InputBox {
         // Sync style for next input (white, no slash command)
         self.textarea.set_style(Style::default().fg(Color::White));
         text
-    }
-
-    /// Insert a single character (used for Shift+Enter → newline).
-    pub fn insert_char(&mut self, c: char) {
-        self.textarea.insert_char(c);
     }
 
     /// Get current text without resetting.

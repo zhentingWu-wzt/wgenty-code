@@ -100,20 +100,13 @@ wasm-bindgen-futures = { version = "0.4", optional = true }
 js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", optional = true }
 
-# GUI (egui)
-eframe = { version = "0.31.1", optional = true }
-egui = { version = "0.31.1", optional = true }
-egui_extras = { version = "0.31.1", optional = true }
 
-# Note: iced is disabled due to web-sys version conflicts with eframe
-# GUI (iced) - alternative (disabled)
-# iced = { version = "0.12", optional = true, features = ["tokio"] }
+
 
 # Web server for plugin marketplace + daemon API
 axum = { version = "0.7", optional = true }
 tower = { version = "0.4", optional = true }
 tower-http = { version = "0.5", optional = true, features = ["fs", "cors"] }
-askama = { version = "0.12", optional = true }
 
 # Internationalization (i18n)
 fluent = { version = "0.16", optional = true }
@@ -129,26 +122,13 @@ serde_yaml = "0.9"
 serial_test = "3"
 
 [features]
-default = ["gui-egui", "i18n", "daemon", "bundled-skills"]
+default = ["i18n", "daemon", "bundled-skills"]
 wasm = ["wasm-bindgen", "wasm-bindgen-futures", "js-sys", "web-sys"]
-gui-egui = ["eframe", "egui", "egui_extras"]
-# gui-iced = ["iced"]
 daemon = ["axum", "tower", "tower-http", "tokio-stream"]
-web = ["axum", "tower", "tower-http", "askama"]
 i18n = ["fluent", "fluent-bundle", "unic-langid", "rust-embed"]
 bundled-skills = ["rust-embed"]
-full = ["wasm", "gui-egui", "web", "i18n", "daemon", "bundled-skills"]
+full = ["wasm", "i18n", "daemon", "bundled-skills"]
 
 [[bin]]
 name = "wgenty-code"
 path = "src/main.rs"
-
-[[bin]]
-name = "wgenty-code-gui"
-path = "src/gui/main.rs"
-required-features = ["gui-egui"]
-
-[[bin]]
-name = "wgenty-code-web"
-path = "src/web/main.rs"
-required-features = ["web"]
