@@ -59,7 +59,8 @@ impl Tool for SubagentTraceTool {
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let store = self.store.as_ref().ok_or_else(|| ToolError {
-            message: "Subagent transcript store is not available (persistence disabled).".to_string(),
+            message: "Subagent transcript store is not available (persistence disabled)."
+                .to_string(),
             code: Some("store_unavailable".to_string()),
         })?;
 
@@ -77,10 +78,12 @@ impl Tool for SubagentTraceTool {
 
         match format {
             "chrome_trace" => {
-                let json = reporter.export_chrome_trace(session_id).map_err(|e| ToolError {
-                    message: e,
-                    code: Some("trace_export_failed".to_string()),
-                })?;
+                let json = reporter
+                    .export_chrome_trace(session_id)
+                    .map_err(|e| ToolError {
+                        message: e,
+                        code: Some("trace_export_failed".to_string()),
+                    })?;
                 Ok(ToolOutput {
                     output_type: "json".to_string(),
                     content: serde_json::to_string_pretty(&json).unwrap_or_default(),
@@ -92,7 +95,10 @@ impl Tool for SubagentTraceTool {
             }
             "error_timeline" => {
                 let output = reporter
-                    .render_error_timeline(Some(session_id), crate::teams::subagent_health::HealthPeriod::Last24h)
+                    .render_error_timeline(
+                        Some(session_id),
+                        crate::teams::subagent_health::HealthPeriod::Last24h,
+                    )
                     .map_err(|e| ToolError {
                         message: e,
                         code: Some("trace_error_timeline_failed".to_string()),
@@ -107,10 +113,12 @@ impl Tool for SubagentTraceTool {
                 })
             }
             "html" => {
-                let output = reporter.render_html_report(session_id).map_err(|e| ToolError {
-                    message: e,
-                    code: Some("trace_html_report_failed".to_string()),
-                })?;
+                let output = reporter
+                    .render_html_report(session_id)
+                    .map_err(|e| ToolError {
+                        message: e,
+                        code: Some("trace_html_report_failed".to_string()),
+                    })?;
                 Ok(ToolOutput {
                     output_type: "html".to_string(),
                     content: output,
@@ -122,10 +130,12 @@ impl Tool for SubagentTraceTool {
             }
             _ => {
                 // Default: call_tree
-                let output = reporter.render_call_tree(session_id).map_err(|e| ToolError {
-                    message: e,
-                    code: Some("trace_render_failed".to_string()),
-                })?;
+                let output = reporter
+                    .render_call_tree(session_id)
+                    .map_err(|e| ToolError {
+                        message: e,
+                        code: Some("trace_render_failed".to_string()),
+                    })?;
                 Ok(ToolOutput {
                     output_type: "text".to_string(),
                     content: output,
