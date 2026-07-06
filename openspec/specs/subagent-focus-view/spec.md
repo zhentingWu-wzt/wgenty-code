@@ -24,7 +24,7 @@ The TUI SHALL provide a full-screen focus view that replaces the main chat layou
 - **THEN** the top of the focus view SHALL display the subagent label, status icon, elapsed time, round progress (when available), and cumulative token count
 
 ### Requirement: Focus view navigation and exit
-The focus view SHALL use the subagent selector as the sole keyboard-interactive area: ↑↓ SHALL navigate the selector (the "main" entry plus all visible subagents) and Enter SHALL switch the displayed subagent or exit to the main chat. The event timeline SHALL be read-only, scrollable only via mouse wheel. The focus view SHALL return to the main chat layout when the user presses Esc or selects the "main" entry and presses Enter.
+The focus view SHALL use the subagent selector as the sole keyboard-interactive area for navigation: ↑↓ SHALL navigate the selector (the "main" entry plus all visible subagents) and Enter SHALL switch the displayed subagent or exit to the main chat. The event timeline SHALL be read-only, scrollable only via mouse wheel. Fold shortcuts (`t`, `Ctrl+O`, `Ctrl+E`) SHALL be always available and SHALL NOT depend on any focus area; while the focus view is open they SHALL operate on the focus view's timeline and SHALL NOT affect the main chat's message collapse state. The focus view SHALL return to the main chat layout when the user presses Esc or selects the "main" entry and presses Enter.
 
 #### Scenario: Arrow keys navigate the selector
 - **WHEN** the focus view is open
@@ -45,8 +45,18 @@ The focus view SHALL use the subagent selector as the sole keyboard-interactive 
 
 #### Scenario: Fold toggle is always available
 - **WHEN** the user presses `t` inside the focus view
-- **THEN** the focus view SHALL toggle fold/expand of tool calls in the timeline
+- **THEN** the focus view SHALL toggle fold/expand of all tool calls in the timeline
 - **AND** this behavior SHALL NOT depend on any focus area
+
+#### Scenario: Ctrl+E toggles fold of all tool calls in focus view
+- **WHEN** the focus view is open and the user presses Ctrl+E
+- **THEN** the focus view SHALL toggle fold/expand of all tool calls in the timeline (same as `t`)
+- **AND** SHALL NOT affect the main chat's message collapse state
+
+#### Scenario: Ctrl+O toggles fold of the last tool call in focus view
+- **WHEN** the focus view is open and the user presses Ctrl+O
+- **THEN** the focus view SHALL toggle fold/expand of the last tool call in the timeline
+- **AND** SHALL NOT affect the main chat's message collapse state
 
 #### Scenario: Tab is a no-op
 - **WHEN** the user presses Tab inside the focus view
