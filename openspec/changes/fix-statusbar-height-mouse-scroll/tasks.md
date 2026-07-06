@@ -14,6 +14,6 @@
 
 ## 收尾
 
-- [ ] 3.1 `cargo build` 全量编译通过。
-- [ ] 3.2 `cargo test` 全量测试通过。
-- [ ] 3.3 根因消除检查：确认 `render.rs` 不再有未计入边框的高度计算；确认 `args.rs` 含成对 `EnableMouseCapture` / `DisableMouseCapture`（含 panic hook）。
+- [x] 3.1 `cargo build` 全量编译通过。
+- [x] 3.2 `cargo test` 全量测试通过。
+- [x] 3.3 根因消除检查：确认 `render.rs` 不再有未计入边框的高度计算；确认 `args.rs` 含成对 `EnableMouseCapture` / `DisableMouseCapture`（含 panic hook）。
