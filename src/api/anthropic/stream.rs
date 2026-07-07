@@ -268,6 +268,51 @@ mod tests {
     }
 
     #[test]
+    fn test_convert_multiple_system_messages_concatenated() {
+        // Regression for Bug 4: multiple system messages (e.g. assembled
+        // instructions + a post-compaction summary) must be concatenated into
+        // Anthropic's single `system` field, not overwritten by the last one.
+        // Previously the original system prompt was silently dropped whenever a
+        // second system message (the compaction summary) followed it.
+        let msgs = vec![
+            ChatMessage::system("You are a coding agent."),
+            ChatMessage::system(
+                "<previous_conversation_summary>\nDid X.\n</previous_conversation_summary>",
+            ),
+            ChatMessage::user("continue"),
+        ];
+        let (anthropic_msgs, system) = convert_messages_to_anthropic(&msgs);
+        assert_eq!(
+            system,
+            Some(
+                "You are a coding agent.\n\n\
+                 <previous_conversation_summary>\nDid X.\n</previous_conversation_summary>"
+                    .to_string()
+            )
+        );
+        // Only the non-system messages survive into anthropic_msgs.
+        assert_eq!(anthropic_msgs.len(), 1);
+        assert_eq!(anthropic_msgs[0].role, "user");
+    }
+
+    #[test]
+    fn test_convert_empty_system_messages_skipped() {
+        // Empty system messages must not produce a leading/trailing blank in
+        // the joined system prompt, and an all-empty set yields None.
+        let msgs = vec![
+            ChatMessage::system(""),
+            ChatMessage::system("Only this."),
+            ChatMessage::user("hi"),
+        ];
+        let (_anthropic_msgs, system) = convert_messages_to_anthropic(&msgs);
+        assert_eq!(system, Some("Only this.".to_string()));
+
+        let msgs_all_empty = vec![ChatMessage::system(""), ChatMessage::user("hi")];
+        let (_anthropic_msgs, system) = convert_messages_to_anthropic(&msgs_all_empty);
+        assert_eq!(system, None);
+    }
+
+    #[test]
     fn test_convert_tool_result() {
         let msgs = vec![ChatMessage::tool("call_123", "result text")];
         let (anthropic_msgs, _) = convert_messages_to_anthropic(&msgs);

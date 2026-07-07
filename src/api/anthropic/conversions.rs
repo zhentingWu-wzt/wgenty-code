@@ -12,11 +12,19 @@ pub fn convert_messages_to_anthropic(
     messages: &[ChatMessage],
 ) -> (Vec<AnthropicMessage>, Option<String>) {
     let mut anthropic_msgs = Vec::new();
-    let mut system_prompt = None;
+    // Anthropic's `system` is a single top-level string, but our message list
+    // can carry several system messages (assembled instructions + a
+    // post-compaction summary, etc.). Concatenate them instead of letting each
+    // one overwrite the last — otherwise compaction's summary would silently
+    // erase the original system prompt on the Anthropic path.
+    let mut system_parts: Vec<String> = Vec::new();
 
     for msg in messages {
         if msg.role == "system" {
-            system_prompt = Some(msg.content.clone().unwrap_or_default());
+            let content = msg.content.clone().unwrap_or_default();
+            if !content.is_empty() {
+                system_parts.push(content);
+            }
             continue;
         }
 
@@ -77,6 +85,11 @@ pub fn convert_messages_to_anthropic(
         }
     }
 
+    let system_prompt = if system_parts.is_empty() {
+        None
+    } else {
+        Some(system_parts.join("\n\n"))
+    };
     (anthropic_msgs, system_prompt)
 }
 
