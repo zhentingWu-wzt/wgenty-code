@@ -113,6 +113,8 @@ pub struct App {
     pub subagent_status_bar_selected: usize,
     /// Whether the status bar has keyboard focus (Tab toggles).
     pub subagent_status_bar_focused: bool,
+    pub mouse_capture_enabled: bool,
+    pub mouse_capture_toggle: Option<bool>,
     /// Shared settings handle — updated by the config watcher on file change.
     pub settings_lock: crate::config::watcher::SettingsHandle,
 
@@ -411,6 +413,8 @@ impl App {
             subagent_focus: None,
             subagent_status_bar_selected: 0,
             subagent_status_bar_focused: false,
+            mouse_capture_enabled: true,
+            mouse_capture_toggle: None,
 
             last_ctrl_c: None,
             has_running_tool: false,
@@ -488,6 +492,13 @@ impl App {
                     break;
                 }
             }
+            if let Some(enable) = self.mouse_capture_toggle.take() {
+                use crossterm::execute;
+                use crossterm::event::{EnableMouseCapture, DisableMouseCapture};
+                let mut stdout = std::io::stdout();
+                let _ = if enable { execute!(stdout, EnableMouseCapture) } else { execute!(stdout, DisableMouseCapture) };
+            }
+
             terminal.draw(|f| self.render(f))?;
             // Block until next event (prevents busy-waiting)
             if let Some(event) = self.event_rx.recv().await {

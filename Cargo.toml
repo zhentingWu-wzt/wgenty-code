@@ -38,6 +38,7 @@ notify = "6.1"
 
 # Terminal UI — ratatui-based frontend (replaces TypeScript/React frontend)
 crossterm = "0.28"
+arboard = "3"
 ratatui = "0.29"
 textwrap = "0.16"
 tui-textarea = "0.7"
