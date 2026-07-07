@@ -3,7 +3,7 @@
 use super::types::*;
 use super::App;
 use crate::state::agent_phase::{AgentPhase, TurnAbortReason, TurnId};
-use crate::tui::agent::AgentLoop;
+use crate::tui::agent::{AgentError, AgentLoop};
 use crate::tui::util::truncate_session_name;
 
 impl App {
@@ -98,18 +98,62 @@ impl App {
             );
             let result = agent.process_input(input_text).await;
             if let Err(ref e) = result {
-                let reason = if e.contains("timed out") {
-                    TurnAbortReason::TimedOut
-                } else if e.contains("max rounds")
-                    || e.contains("LLM rounds")
-                    || e.contains("Token budget exhausted")
-                {
-                    TurnAbortReason::MaxRoundsExceeded
-                } else {
-                    TurnAbortReason::StreamError
+                let reason = match e {
+                    AgentError::StreamTimeout(_) => TurnAbortReason::TimedOut,
+                    AgentError::MaxRoundsExceeded { .. }
+                    | AgentError::TokenBudgetExhausted { .. } => TurnAbortReason::MaxRoundsExceeded,
+                    AgentError::StreamError(_)
+                    | AgentError::PlannerError(_)
+                    | AgentError::EmptyResponse => TurnAbortReason::StreamError,
                 };
                 let _ = event_tx.send(AppEvent::TurnAborted { reason });
             }
+            let _ = event_tx.send(AppEvent::TurnComplete);
+        }));
+    }
+
+    /// Spawn a compaction-only turn (user pressed `/compact`). Archives the
+    /// transcript and replaces history with a summary, without generating an
+    /// LLM response. Reuses the same `AgentLoop` construction as
+    /// `spawn_agent_turn` but calls `compact_only` instead of `process_input`.
+    pub(super) fn spawn_compact_turn(&mut self) {
+        self.phase = AgentPhase::Compacting;
+        let turn_id = TurnId::new();
+        self.current_turn_id = Some(turn_id.clone());
+        let _ = self.event_tx.send(AppEvent::TurnStarted {
+            turn_id: turn_id.clone(),
+        });
+        let history = self.conversation_history.clone();
+        let client = self.daemon_client.clone();
+        let event_tx = self.event_tx.clone();
+        let session_id = self.session_id.clone();
+        let sys_msgs = self.assembled_system_messages.clone();
+        let (max_rounds, subagent_timeout_secs) = {
+            let s = self.settings_lock.read().unwrap();
+            (
+                s.agent.max_rounds.unwrap_or(100),
+                s.agent.subagent.timeout_secs,
+            )
+        };
+        let token_counter = self.token_counter.clone();
+        let hook_manager = self.hook_manager.clone();
+        let prompt_context = self.prompt_context.clone();
+        self.current_turn_handle = Some(tokio::spawn(async move {
+            let mut agent = AgentLoop::new(
+                client,
+                event_tx.clone(),
+                session_id,
+                history,
+                sys_msgs,
+                false,
+                None,
+                max_rounds,
+                token_counter,
+                hook_manager,
+                prompt_context,
+                subagent_timeout_secs,
+            );
+            let _ = agent.compact_only().await;
             let _ = event_tx.send(AppEvent::TurnComplete);
         }));
     }

@@ -416,6 +416,7 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
             question: question.clone(),
         }),
         AppEvent::StreamError(_) => Some(AgentPhase::Errored("Stream error".to_string())),
+        AppEvent::CompactionStarted => Some(AgentPhase::Compacting),
         AppEvent::TurnComplete => Some(AgentPhase::Idle),
         AppEvent::TurnAborted { reason } => match reason {
             TurnAbortReason::TimedOut => {
@@ -522,6 +523,10 @@ mod tests {
             Some(AgentPhase::Errored("Stream error".into()))
         );
         assert_eq!(
+            agent_phase_from_event(&AppEvent::CompactionStarted),
+            Some(AgentPhase::Compacting)
+        );
+        assert_eq!(
             agent_phase_from_event(&AppEvent::TurnComplete),
             Some(AgentPhase::Idle)
         );
@@ -563,6 +568,7 @@ mod tests {
         assert!(AgentPhase::Thinking.is_busy());
         assert!(AgentPhase::StreamingResponse.is_busy());
         assert!(AgentPhase::ExecutingTool { name: "x".into() }.is_busy());
+        assert!(AgentPhase::Compacting.is_busy());
         assert!(!AgentPhase::Errored("e".into()).is_busy());
     }
 

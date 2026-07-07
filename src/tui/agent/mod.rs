@@ -20,8 +20,34 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub(super) const MAX_RETRIES: u32 = 2;
-pub(super) const MAX_ESTIMATED_TOKENS: usize = 50_000;
+pub(super) const MAX_ESTIMATED_TOKENS: usize = 800_000;
 // MAX_LLM_ROUNDS (100 default, configurable via settings.json) defined inside run_agent_loop as safety valve.
+
+/// Structured error returned by the agent loop.
+///
+/// Replaces bare `String` errors so callers match on variants instead of
+/// fragile substring checks (e.g. `e.contains("timed out")`).
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum AgentError {
+    /// Agent exceeded the configured max LLM rounds.
+    #[error("Exceeded {max_rounds} LLM rounds")]
+    MaxRoundsExceeded { max_rounds: usize },
+    /// Token budget for this session was exhausted.
+    #[error("Token budget exhausted ({budget_k}k). Type /continue to resume or increase token_budget_k in settings.json.")]
+    TokenBudgetExhausted { budget_k: usize },
+    /// Stream timed out (connection timeout or idle stall).
+    #[error("{0}")]
+    StreamTimeout(String),
+    /// Unrecoverable stream / API error.
+    #[error("{0}")]
+    StreamError(String),
+    /// Dedicated planner model call failed.
+    #[error("Planner model call failed: {0}")]
+    PlannerError(String),
+    /// API returned a completely empty response.
+    #[error("Empty response from API")]
+    EmptyResponse,
+}
 
 pub struct AgentLoop {
     pub(super) client: DaemonClient,
@@ -103,12 +129,35 @@ impl AgentLoop {
 
     /// Process a single user input. Handles the full agent loop (SSE + tools).
     /// Returns Ok(()) on normal completion, Err if cancelled or on error.
-    pub async fn process_input(&mut self, input: String) -> Result<(), String> {
+    pub async fn process_input(&mut self, input: String) -> Result<(), AgentError> {
         self.token_counter.reset_turn();
         // Each turn gets a fresh compaction attempt — a prior failure may have
         // been transient (network blip, reasoning model quirks).
         self.compaction_failed = false;
         self.process_input_inner(input).await
+    }
+
+    /// Run a single compaction pass without generating an LLM response.
+    /// Used by the `/compact` slash command for user-initiated compaction:
+    /// archives the transcript and replaces history with a summary. The
+    /// `CompactionStarted` / `ContextCompacted` events fired inside
+    /// `do_auto_compact` drive the UI status bar.
+    pub async fn compact_only(&mut self) -> Result<(), AgentError> {
+        self.token_counter.reset_turn();
+        self.compaction_failed = false;
+        // Guard: nothing meaningful to summarize (only system messages).
+        let has_content = {
+            let history = self.conversation_history.lock().await;
+            history.iter().any(|m| m.role != "system")
+        };
+        if !has_content {
+            let _ = self.event_tx.send(AppEvent::StreamError(
+                "Nothing to compact — the conversation is empty.".to_string(),
+            ));
+            return Ok(());
+        }
+        let _ = self.do_auto_compact().await;
+        Ok(())
     }
 
     /// Generate a plan using a dedicated planner model (non-streaming).
@@ -130,7 +179,7 @@ impl AgentLoop {
     }
 
     /// Inner implementation of the agent loop.
-    async fn process_input_inner(&mut self, input: String) -> Result<(), String> {
+    async fn process_input_inner(&mut self, input: String) -> Result<(), AgentError> {
         self.inject_background_results().await;
 
         // 1a. Fire UserPromptSubmit hook synchronously with a 10s timeout.
