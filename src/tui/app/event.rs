@@ -645,6 +645,25 @@ impl App {
                 });
                 self.streaming_active = false;
             }
+            AppEvent::ContextCompacted { summary_chars } => {
+                // Compaction succeeded — surface it so the user can see the
+                // context window was compressed (and how much survived as a
+                // summary). Collapsed by default to avoid cluttering the chat.
+                self.committed_messages.push(UIMessage {
+                    role: MessageRole::System,
+                    content: format!(
+                        "Conversation compacted — earlier history replaced with a {}-char summary; recent results kept inline.",
+                        summary_chars
+                    ),
+                    tool_name: None,
+                    content_collapsed: true,
+                    tool_collapsed: true,
+                    tool_running: false,
+                    tool_args: None,
+                    diff_data: None,
+                    tool_metadata: None,
+                });
+            }
             AppEvent::Tick if self.has_running_tool => {
                 self.spinner_frame = self.spinner_frame.wrapping_add(1);
             }
