@@ -1,6 +1,7 @@
 use super::{AgentLoop, MAX_ESTIMATED_TOKENS};
-use crate::agent::StreamProcessor;
+use crate::agent::{StreamEvent, StreamProcessor};
 use crate::api::ChatMessage;
+use crate::tui::app::AppEvent;
 use std::path::PathBuf;
 
 impl AgentLoop {
@@ -104,7 +105,16 @@ impl AgentLoop {
         total_chars / 4 > MAX_ESTIMATED_TOKENS
     }
 
-    pub(super) async fn do_auto_compact(&mut self) {
+    /// Run conversation compaction: archive the transcript, ask the model for a
+    /// summary, and replace `conversation_history` with
+    /// `[system_messages, system(summary), user(continue)]`.
+    ///
+    /// Returns `true` on success. Returns `false` (and leaves history intact)
+    /// on any failure — stream error, empty summary, etc. The caller must not
+    /// retry unbounded on `false`: a failed compaction means the next request
+    /// proceeds with the micro-compacted history, surfacing a real upstream
+    /// error if the context is still too large, instead of spinning here.
+    pub(super) async fn do_auto_compact(&mut self) -> bool {
         // Save transcript to disk
         let transcript_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -140,39 +150,96 @@ impl AgentLoop {
             )),
         ];
 
-        if let Ok(response) = self.client.chat_stream(summary_messages, None).await {
-            let mut processor = StreamProcessor::new();
-            let mut stream = response.bytes_stream();
-            use futures::StreamExt;
-            while let Some(chunk) = stream.next().await {
-                if let Ok(bytes) = chunk {
-                    processor.feed_bytes(&bytes);
-                }
+        // plan_mode = Some(true) makes the daemon omit tool definitions from
+        // the summarization request. Without this the model is offered the
+        // full tool set and may answer with a tool_call, leaving `content`
+        // empty — a silent compaction failure (the system prompt asks for no
+        // tools, but they were still being offered).
+        let response = match self
+            .client
+            .chat_stream_with_plan(summary_messages, None, Some(true))
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "compaction summary request failed");
+                let _ = self.event_tx.send(AppEvent::StreamError(
+                    "Compaction failed; continuing with full history.".to_string(),
+                ));
+                return false;
             }
-            let result = processor.finish();
-            let summary = result.content;
+        };
 
-            if !summary.is_empty() {
-                self.compacted_summary = summary.clone();
-
-                {
-                    let mut history = self.conversation_history.lock().await;
-                    let mut new_history = self.assembled_system_messages.clone();
-                    new_history.push(ChatMessage::system(format!(
-                        "<previous_conversation_summary>\n{}\n</previous_conversation_summary>",
-                        summary
-                    )));
-                    // Append a user turn so the next request is valid.
-                    // OpenAI-compatible endpoints (Ark included) reject an
-                    // all-system-messages request, and the user turn also
-                    // prompts the model to continue the task from the summary
-                    // instead of stalling.
-                    new_history.push(ChatMessage::user(
-                        "Conversation history was just compacted. Continue the current task using the summary above."
-                    ));
-                    *history = new_history;
+        let mut processor = StreamProcessor::new();
+        let mut stream = response.bytes_stream();
+        use futures::StreamExt;
+        let mut stream_error: Option<String> = None;
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(bytes) => {
+                    for ev in processor.feed_bytes(&bytes) {
+                        if let StreamEvent::StreamError(msg) = ev {
+                            stream_error = Some(msg);
+                        }
+                    }
+                }
+                Err(e) => {
+                    stream_error = Some(format!("summary stream read error: {e}"));
+                    break;
                 }
             }
         }
+        // Drain any trailing partial line so its content is accumulated.
+        for ev in processor.flush() {
+            if let StreamEvent::StreamError(msg) = ev {
+                stream_error = Some(msg);
+            }
+        }
+        if let Some(reason) = stream_error {
+            tracing::warn!(reason = %reason, "compaction summary stream errored");
+            let _ = self.event_tx.send(AppEvent::StreamError(
+                "Compaction failed; continuing with full history.".to_string(),
+            ));
+            return false;
+        }
+
+        let result = processor.finish();
+        // Reasoning models may emit the summary as `reasoning_content` only,
+        // leaving `content` empty — fall back so a valid summary isn't
+        // discarded (which would otherwise look like an empty summary and
+        // cause the loop to spin).
+        let summary = if !result.content.is_empty() {
+            result.content
+        } else {
+            result.reasoning_content
+        };
+
+        if summary.trim().is_empty() {
+            tracing::warn!("compaction produced an empty summary; leaving history intact");
+            let _ = self.event_tx.send(AppEvent::StreamError(
+                "Compaction produced an empty summary; continuing with full history.".to_string(),
+            ));
+            return false;
+        }
+
+        self.compacted_summary = summary.clone();
+        {
+            let mut history = self.conversation_history.lock().await;
+            let mut new_history = self.assembled_system_messages.clone();
+            new_history.push(ChatMessage::system(format!(
+                "<previous_conversation_summary>\n{}\n</previous_conversation_summary>",
+                summary
+            )));
+            // Append a user turn so the next request is valid.
+            // OpenAI-compatible endpoints (Ark included) reject an
+            // all-system-messages request, and the user turn also
+            // prompts the model to continue the task from the summary
+            // instead of stalling.
+            new_history.push(ChatMessage::user(
+                "Conversation history was just compacted. Continue the current task using the summary above."
+            ));
+            *history = new_history;
+        }
+        true
     }
 }

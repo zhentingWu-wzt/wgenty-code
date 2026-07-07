@@ -48,10 +48,20 @@ impl AgentLoop {
 
             let messages = self.micro_compact().await;
 
-            if self.needs_compaction(&messages) || self.compact_requested {
-                self.compact_requested = false;
-                self.do_auto_compact().await;
-                continue;
+            // Compaction runs at the loop top (not mid-tool-batch) so it never
+            // wipes the in-flight assistant tool_calls message. If a compaction
+            // attempt already failed this turn, don't retry — fall through and
+            // let the request proceed with the micro-compacted history; a real
+            // upstream error surfaces if it's still too large, instead of the
+            // unbounded retry loop that would otherwise result from
+            // `needs_compaction` staying true.
+            let want_compact = self.compact_requested || self.needs_compaction(&messages);
+            self.compact_requested = false;
+            if want_compact && !self.compaction_failed {
+                if self.do_auto_compact().await {
+                    continue;
+                }
+                self.compaction_failed = true;
             }
 
             // Check token budget before each LLM call

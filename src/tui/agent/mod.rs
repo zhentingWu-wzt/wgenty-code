@@ -41,6 +41,11 @@ pub struct AgentLoop {
     /// the subsequent tool results and make Ark reject the next request with
     /// `InvalidParameter`.
     pub(super) compact_requested: bool,
+    /// Set when a compaction attempt failed during this turn. Prevents
+    /// unbounded retries: `do_auto_compact` returns false on failure, and the
+    /// loop falls through to a normal request instead of spinning. Reset at
+    /// the start of each turn.
+    pub(super) compaction_failed: bool,
     pub(super) preparing_tools_fired: bool,
     pub(super) max_rounds: usize,
     pub(super) stuck_detector: StuckDetector,
@@ -82,6 +87,7 @@ impl AgentLoop {
             rounds_since_todo: 0,
             compacted_summary: String::new(),
             compact_requested: false,
+            compaction_failed: false,
             preparing_tools_fired: false,
             max_rounds,
             stuck_detector: StuckDetector::new(),
@@ -99,6 +105,9 @@ impl AgentLoop {
     /// Returns Ok(()) on normal completion, Err if cancelled or on error.
     pub async fn process_input(&mut self, input: String) -> Result<(), String> {
         self.token_counter.reset_turn();
+        // Each turn gets a fresh compaction attempt — a prior failure may have
+        // been transient (network blip, reasoning model quirks).
+        self.compaction_failed = false;
         self.process_input_inner(input).await
     }
 
