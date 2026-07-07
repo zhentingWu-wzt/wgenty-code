@@ -133,10 +133,41 @@ impl AgentLoop {
         let json = serde_json::to_string_pretty(&history_snapshot).unwrap_or_default();
         tokio::fs::write(&transcript_path, json).await.ok();
 
-        // Build plain-text transcript for summarization
+        // Build plain-text transcript for summarization. Include tool_calls
+        // and (truncated) reasoning_content — a transcript that only carries
+        // `content` loses what tools the assistant invoked and what it was
+        // planning, so the summary can't faithfully represent the work done.
         let transcript_text: String = history_snapshot
             .iter()
-            .map(|m| format!("[{}]: {}", m.role, m.content.as_deref().unwrap_or("")))
+            .map(|m| {
+                let mut parts: Vec<String> = vec![format!("[{}]", m.role)];
+                if let Some(rc) = m.reasoning_content.as_ref().filter(|s| !s.is_empty()) {
+                    // Reasoning can be very long; cap per-message (by chars,
+                    // char-boundary safe) so the summary request itself
+                    // doesn't blow the context window.
+                    const RC_CAP: usize = 1000;
+                    let mut chars = rc.chars();
+                    let snippet: String = chars.by_ref().take(RC_CAP).collect();
+                    let truncated = chars.next().is_some();
+                    parts.push(format!(
+                        "reasoning: {}{}",
+                        snippet,
+                        if truncated { "…(truncated)" } else { "" }
+                    ));
+                }
+                if let Some(c) = m.content.as_ref().filter(|s| !s.is_empty()) {
+                    parts.push(c.clone());
+                }
+                if let Some(tcs) = m.tool_calls.as_ref() {
+                    for tc in tcs {
+                        parts.push(format!(
+                            "tool_call: {}({})",
+                            tc.function.name, tc.function.arguments
+                        ));
+                    }
+                }
+                parts.join("\n")
+            })
             .collect::<Vec<_>>()
             .join("\n\n");
 
