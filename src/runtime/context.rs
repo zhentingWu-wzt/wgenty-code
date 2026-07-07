@@ -89,9 +89,23 @@ impl ContextAssembler {
             // Render the layer content.
             let content = match effective_source {
                 ContextSource::Template { template } => render_template(template, state, variables),
-                ContextSource::File { .. } => {
-                    // File reading is best-effort; skip if unavailable.
-                    continue;
+                ContextSource::File { path } => {
+                    // Read file content, then apply template rendering so file
+                    // layers support the same `{{ var }}` substitution. Failures
+                    // are logged and the layer is skipped (best-effort), matching
+                    // the original intent — but no longer silently dropped.
+                    match std::fs::read_to_string(path) {
+                        Ok(raw) => render_template(&raw, state, variables),
+                        Err(e) => {
+                            tracing::warn!(
+                                layer = %layer.id,
+                                path = %path.display(),
+                                error = %e,
+                                "Failed to read context layer file; skipping layer"
+                            );
+                            continue;
+                        }
+                    }
                 }
                 ContextSource::Conditional { .. } => {
                     // Already unwrapped above — unreachable.

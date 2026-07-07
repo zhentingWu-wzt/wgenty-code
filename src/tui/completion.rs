@@ -65,6 +65,12 @@ impl CompletionEngine {
                 category: "Built-in".to_string(),
             },
             CommandEntry {
+                name: "compact".to_string(),
+                description: "Archive and summarize conversation history".to_string(),
+                args_hint: None,
+                category: "Built-in".to_string(),
+            },
+            CommandEntry {
                 name: "help".to_string(),
                 description: "Show available commands".to_string(),
                 args_hint: None,
@@ -373,7 +379,9 @@ mod tests {
             .map(|command| command.name.as_str())
             .collect();
 
-        for expected in ["clear", "plan", "continue", "undo", "init", "help"] {
+        for expected in [
+            "clear", "plan", "continue", "undo", "init", "compact", "help",
+        ] {
             assert!(
                 command_names.contains(&expected),
                 "missing builtin command: {expected}"

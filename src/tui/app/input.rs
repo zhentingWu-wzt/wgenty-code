@@ -147,6 +147,17 @@ impl App {
             }
             return;
         }
+        if text.trim() == "/compact" {
+            if self.current_turn_handle.is_some() {
+                self.push_system_message(
+                    "⏳ Please wait for the current task to finish before compacting.",
+                );
+                return;
+            }
+            self.push_system_message("🔄 Compacting conversation history...");
+            self.spawn_compact_turn();
+            return;
+        }
         if text.trim() == "/help" {
             let commands = crate::tui::completion::CompletionEngine::default_builtin_commands()
                 .into_iter()

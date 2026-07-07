@@ -1,4 +1,4 @@
-use super::AgentLoop;
+use super::{AgentError, AgentLoop};
 use crate::agent::StreamProcessor;
 use crate::api::ChatMessage;
 use crate::tui::app::AppEvent;
@@ -26,17 +26,15 @@ fn resolve_tool_timeout(tool_name: &str, args: &serde_json::Value) -> Duration {
 
 impl AgentLoop {
     /// Core LLM loop: stream, handle tools, compaction, etc.
-    pub(super) async fn run_agent_loop(&mut self) -> Result<(), String> {
+    pub(super) async fn run_agent_loop(&mut self) -> Result<(), AgentError> {
         let mut llm_rounds = 0;
         let max_rounds = self.max_rounds;
         let warn_rounds = max_rounds * 8 / 10;
         loop {
             if llm_rounds >= max_rounds {
-                let _ = self.event_tx.send(AppEvent::StreamError(format!(
-                    "Agent exceeded {} LLM rounds",
-                    max_rounds
-                )));
-                return Err(format!("Exceeded {} LLM rounds", max_rounds));
+                let err = AgentError::MaxRoundsExceeded { max_rounds };
+                let _ = self.event_tx.send(AppEvent::StreamError(err.to_string()));
+                return Err(err);
             }
             if llm_rounds == warn_rounds {
                 tracing::warn!(
@@ -66,20 +64,31 @@ impl AgentLoop {
 
             // Check token budget before each LLM call
             if self.token_counter.is_exhausted() {
-                let msg = format!(
-                    "Token budget exhausted ({}k). Type /continue to resume or increase token_budget_k in settings.json.",
-                    self.token_counter.budget_tokens() / 1000
-                );
-                let _ = self.event_tx.send(AppEvent::StreamError(msg.clone()));
-                return Err(msg);
+                let budget_k = self.token_counter.budget_tokens() / 1000;
+                let err = AgentError::TokenBudgetExhausted { budget_k };
+                let _ = self.event_tx.send(AppEvent::StreamError(err.to_string()));
+                return Err(err);
             }
 
             self.preparing_tools_fired = false;
             let result = match self.stream_with_retry(&messages).await {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = self.event_tx.send(AppEvent::StreamError(e.to_string()));
-                    return Err(e.to_string());
+                    let msg = e.to_string();
+                    // `stream_with_retry` flattens the underlying error to a
+                    // string, so timeout is detected heuristically. This keeps
+                    // the fragile check localised here instead of leaking into
+                    // the caller (turn.rs).
+                    let is_timeout = msg.contains("timed out")
+                        || msg.contains("Stream stalled")
+                        || msg.contains("timeout");
+                    let err = if is_timeout {
+                        AgentError::StreamTimeout(msg)
+                    } else {
+                        AgentError::StreamError(msg)
+                    };
+                    let _ = self.event_tx.send(AppEvent::StreamError(err.to_string()));
+                    return Err(err);
                 }
             };
 
@@ -112,12 +121,10 @@ impl AgentLoop {
 
             // Check budget after accounting
             if self.token_counter.is_exhausted() {
-                let msg = format!(
-                    "Token budget exhausted ({}k). Type /continue to resume or increase token_budget_k in settings.json.",
-                    self.token_counter.budget_tokens() / 1000
-                );
-                let _ = self.event_tx.send(AppEvent::StreamError(msg.clone()));
-                return Err(msg);
+                let budget_k = self.token_counter.budget_tokens() / 1000;
+                let err = AgentError::TokenBudgetExhausted { budget_k };
+                let _ = self.event_tx.send(AppEvent::StreamError(err.to_string()));
+                return Err(err);
             }
 
             if result.has_tool_calls && !result.tool_calls.is_empty() {
@@ -441,7 +448,7 @@ impl AgentLoop {
                     }
                     StuckStatus::Abort(msg) => {
                         let _ = self.event_tx.send(AppEvent::StreamError(msg.clone()));
-                        return Err(msg);
+                        return Err(AgentError::StreamError(msg));
                     }
                     StuckStatus::Ok => {}
                 }
@@ -498,7 +505,7 @@ impl AgentLoop {
                             }
                             Err(e) => {
                                 let _ = self.event_tx.send(AppEvent::StreamError(e.clone()));
-                                return Err(e);
+                                return Err(AgentError::PlannerError(e));
                             }
                         }
                     } else {
@@ -534,7 +541,7 @@ impl AgentLoop {
                 let _ = self.event_tx.send(AppEvent::StreamError(
                     "Received empty response from API. Please check your API key, model name, and network connectivity.".to_string()
                 ));
-                return Err("Empty response from API".to_string());
+                return Err(AgentError::EmptyResponse);
             }
 
             if !result.content.is_empty() {

@@ -21,6 +21,37 @@ fn split_for_compaction(history: &[ChatMessage]) -> (Vec<ChatMessage>, Vec<ChatM
     }
 }
 
+/// Assemble the post-compaction history from the base system messages, a
+/// compaction summary, and the in-flight tail.
+///
+/// The first non-system message in the result is always a `user` turn — this
+/// is required by OpenAI-compatible endpoints (Ark included), which reject a
+/// request whose first non-system message is an `assistant`.
+fn assemble_post_compaction_history(
+    system_messages: &[ChatMessage],
+    summary: &str,
+    tail: &[ChatMessage],
+) -> Vec<ChatMessage> {
+    let mut new_history = system_messages.to_vec();
+    new_history.push(ChatMessage::system(format!(
+        "<previous_conversation_summary>\n{}\n</previous_conversation_summary>",
+        summary
+    )));
+    // Always insert a synthetic user turn between the summary and the tail.
+    // The tail starts with an assistant message (by split_for_compaction), and
+    // OpenAI-compatible endpoints (Ark included) reject a request whose first
+    // non-system message is an assistant — there must be a preceding user
+    // turn. Without this, every post-compaction request fails with
+    // InvalidParameter.
+    new_history.push(ChatMessage::user(
+        "Conversation history was just compacted. Continue the current task using the summary above."
+    ));
+    // Preserve the in-flight tail (last assistant tool_calls + its tool
+    // results) so fresh, unseen results aren't summarized away.
+    new_history.extend(tail.iter().cloned());
+    new_history
+}
+
 impl AgentLoop {
     pub(super) async fn inject_background_results(&mut self) {
         match self.client.get_background_results().await {
@@ -135,6 +166,12 @@ impl AgentLoop {
     /// proceeds with the micro-compacted history, surfacing a real upstream
     /// error if the context is still too large, instead of spinning here.
     pub(super) async fn do_auto_compact(&mut self) -> bool {
+        // Surface compaction start to the UI immediately so the status bar
+        // shows "compacting..." while the summarization stream runs (which can
+        // take several seconds). `ContextCompacted` / the next `Connecting`
+        // event will transition the phase away once done.
+        let _ = self.event_tx.send(AppEvent::CompactionStarted);
+
         // Save transcript to disk
         let transcript_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -280,26 +317,8 @@ impl AgentLoop {
         self.compacted_summary = summary.clone();
         {
             let mut history = self.conversation_history.lock().await;
-            let mut new_history = self.assembled_system_messages.clone();
-            new_history.push(ChatMessage::system(format!(
-                "<previous_conversation_summary>\n{}\n</previous_conversation_summary>",
-                summary
-            )));
-            // Preserve the in-flight tail (last assistant tool_calls + its
-            // tool results) so fresh, unseen results aren't summarized away.
-            new_history.extend(tail.iter().cloned());
-            // With no tail, append a user turn so the next request is valid —
-            // OpenAI-compatible endpoints (Ark included) reject an all-system-
-            // messages request, and the user turn prompts the model to
-            // continue from the summary. With a tail the request already ends
-            // in tool results (which prompt continuation), so no synthetic
-            // user turn is needed.
-            if tail.is_empty() {
-                new_history.push(ChatMessage::user(
-                    "Conversation history was just compacted. Continue the current task using the summary above."
-                ));
-            }
-            *history = new_history;
+            *history =
+                assemble_post_compaction_history(&self.assembled_system_messages, &summary, &tail);
         }
         // Surface compaction to the UI so it isn't silent. Reads
         // `compacted_summary` (otherwise a write-only field) to report the
@@ -369,5 +388,44 @@ mod tests {
         assert_eq!(tail.len(), 1);
         assert_eq!(tail[0].role, "assistant");
         assert_eq!(to_summarize.len(), 2);
+    }
+
+    #[test]
+    fn test_assemble_first_non_system_is_user_with_tail() {
+        // Regression: after compaction the first non-system message must be a
+        // user turn, even when the tail is non-empty (starts with assistant).
+        // OpenAI-compatible endpoints (Ark) reject a request whose first
+        // non-system message is an assistant — InvalidParameter.
+        let sys = vec![ChatMessage::system("base instructions")];
+        let tail = vec![
+            ChatMessage::assistant_with_tools(vec![]),
+            ChatMessage::tool("call_1", "fresh result"),
+        ];
+        let result = assemble_post_compaction_history(&sys, "summary text", &tail);
+        // [system(base), system(summary), user(continue), assistant, tool]
+        assert_eq!(result.len(), 5);
+        // First two are system, third must be user (NOT assistant).
+        assert_eq!(result[0].role, "system");
+        assert_eq!(result[1].role, "system");
+        assert_eq!(
+            result[2].role, "user",
+            "first non-system must be user, not assistant"
+        );
+        assert_eq!(result[3].role, "assistant");
+        assert_eq!(result[4].role, "tool");
+        // Tail content preserved.
+        assert_eq!(result[4].content.as_deref(), Some("fresh result"));
+    }
+
+    #[test]
+    fn test_assemble_first_non_system_is_user_without_tail() {
+        // Empty-tail path: the synthetic user turn is still present.
+        let sys = vec![ChatMessage::system("base instructions")];
+        let result = assemble_post_compaction_history(&sys, "summary text", &[]);
+        // [system(base), system(summary), user(continue)]
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].role, "system");
+        assert_eq!(result[1].role, "system");
+        assert_eq!(result[2].role, "user");
     }
 }

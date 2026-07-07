@@ -105,7 +105,13 @@ impl MemoryManager {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let memory_path = home.join(".wgenty-code").join("memory");
 
-        std::fs::create_dir_all(&memory_path).ok();
+        if let Err(e) = std::fs::create_dir_all(&memory_path) {
+            tracing::warn!(
+                path = %memory_path.display(),
+                error = %e,
+                "Failed to create memory directory; storage operations may fail later"
+            );
+        }
 
         Self {
             sessions: Arc::new(MemorySessionManager::new()),
