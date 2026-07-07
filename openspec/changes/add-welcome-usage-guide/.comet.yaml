@@ -1,5 +1,5 @@
 workflow: tweak
-phase: verify
+phase: archive
 context_compression: off
 build_mode: direct
 build_pause: null
@@ -12,7 +12,7 @@ base_ref: 575cfb94899b40a2cfe3bcb7812903f2f986a97b
 design_doc: null
 plan: null
 verify_result: pass
-verified_at: null
+verified_at: 2026-07-07
 archived: false
 created_at: 2026-07-07
 verification_report: docs/superpowers/reports/2026-07-07-add-welcome-usage-guide-verify.md
