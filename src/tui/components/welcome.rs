@@ -63,9 +63,27 @@ pub fn render(f: &mut Frame, area: Rect, model_name: &str) {
     )));
     lines.push(Line::raw(""));
 
+    // Comet workflow feature highlight
+    lines.push(Line::from(Span::styled(
+        "Comet spec-driven workflow · open → design → build → verify → archive",
+        Style::default().fg(Color::Rgb(160, 140, 200)),
+    )));
+    lines.push(Line::raw(""));
+
+    // Usage guide
+    lines.push(Line::from(Span::styled(
+        "Type your message and press Enter to start.",
+        Style::default().fg(Color::Rgb(120, 120, 140)),
+    )));
+    lines.push(Line::from(Span::styled(
+        "/help · commands  ·  /plan · plan mode  ·  /clear · reset  ·  /compact · compress",
+        Style::default().fg(Color::Rgb(120, 120, 140)),
+    )));
+    lines.push(Line::raw(""));
+
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(11), Constraint::Min(0)])
+        .constraints([Constraint::Length(16), Constraint::Min(0)])
         .split(area);
 
     let para = Paragraph::new(Text::from(lines)).alignment(Alignment::Center);
