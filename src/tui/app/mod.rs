@@ -493,10 +493,14 @@ impl App {
                 }
             }
             if let Some(enable) = self.mouse_capture_toggle.take() {
+                use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
                 use crossterm::execute;
-                use crossterm::event::{EnableMouseCapture, DisableMouseCapture};
                 let mut stdout = std::io::stdout();
-                let _ = if enable { execute!(stdout, EnableMouseCapture) } else { execute!(stdout, DisableMouseCapture) };
+                let _ = if enable {
+                    execute!(stdout, EnableMouseCapture)
+                } else {
+                    execute!(stdout, DisableMouseCapture)
+                };
             }
 
             terminal.draw(|f| self.render(f))?;
