@@ -80,25 +80,19 @@ pick_install_dir() {
 # ── download release binary ──────────────────────────────────────────────────
 
 download_release() {
-    local url tag asset="$ASSET"
+    local url asset="$ASSET"
     if [[ "$VERSION" == "latest" ]]; then
-        info "Resolving latest release..."
-        tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-            | grep '"tag_name"' | head -1 | cut -d'"' -f4) || true
-        if [[ -z "$tag" ]]; then
-            warn "No GitHub release found"
-            return 1
-        fi
+        url="https://github.com/${REPO}/releases/latest/download/${asset}"
+        info "Downloading latest release..."
     else
-        tag="$VERSION"
+        url="https://github.com/${REPO}/releases/download/${VERSION}/${asset}"
+        info "Downloading ${VERSION}..."
     fi
 
-    url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
-    info "Downloading ${url} ..."
     mkdir -p "$INSTALL_DIR"
-    if curl -fsSL -o "${INSTALL_DIR}/${BINARY}" "$url"; then
+    if curl -fsSL -L -o "${INSTALL_DIR}/${BINARY}" "$url"; then
         chmod +x "${INSTALL_DIR}/${BINARY}"
-        ok "Downloaded ${tag}"
+        ok "Downloaded"
         return 0
     else
         warn "Download failed (${url})"
