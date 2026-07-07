@@ -112,6 +112,9 @@ pub enum AppEvent {
     },
     /// A stream error occurred
     StreamError(String),
+    /// Conversation was compacted: earlier history replaced with a model-
+    /// generated summary. `summary_chars` is the char length of the summary.
+    ContextCompacted { summary_chars: usize },
     /// Connecting to the LLM API (attempt N of M)
     Connecting {
         attempt: usize,
