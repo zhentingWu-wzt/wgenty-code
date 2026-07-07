@@ -4,6 +4,23 @@ use crate::api::ChatMessage;
 use crate::tui::app::AppEvent;
 use std::path::PathBuf;
 
+/// Split `history` into `(to_summarize, tail)` for compaction.
+///
+/// The tail is the last assistant message and every tool result after it — the
+/// in-flight exchange whose results the model has NOT seen yet (they were
+/// produced after its last response). The tail is preserved inline after the
+/// summary so fresh results aren't summarized away. Everything before the last
+/// assistant is returned in `to_summarize` for the summarizer.
+///
+/// If there is no assistant message, the whole history is summarized and the
+/// tail is empty (the caller then appends a synthetic `user(continue)` turn).
+fn split_for_compaction(history: &[ChatMessage]) -> (Vec<ChatMessage>, Vec<ChatMessage>) {
+    match history.iter().rposition(|m| m.role == "assistant") {
+        Some(idx) => (history[..idx].to_vec(), history[idx..].to_vec()),
+        None => (history.to_vec(), Vec::new()),
+    }
+}
+
 impl AgentLoop {
     pub(super) async fn inject_background_results(&mut self) {
         match self.client.get_background_results().await {
@@ -107,7 +124,10 @@ impl AgentLoop {
 
     /// Run conversation compaction: archive the transcript, ask the model for a
     /// summary, and replace `conversation_history` with
-    /// `[system_messages, system(summary), user(continue)]`.
+    /// `[system_messages, system(summary), ...tail]`, where `tail` is the last
+    /// assistant tool_calls + its tool results (fresh, unseen results preserved
+    /// raw so they aren't summarized away). If there is no tail, a
+    /// `user(continue)` turn is appended instead.
     ///
     /// Returns `true` on success. Returns `false` (and leaves history intact)
     /// on any failure — stream error, empty summary, etc. The caller must not
@@ -133,11 +153,15 @@ impl AgentLoop {
         let json = serde_json::to_string_pretty(&history_snapshot).unwrap_or_default();
         tokio::fs::write(&transcript_path, json).await.ok();
 
+        let (to_summarize, tail) = split_for_compaction(&history_snapshot);
+
         // Build plain-text transcript for summarization. Include tool_calls
         // and (truncated) reasoning_content — a transcript that only carries
         // `content` loses what tools the assistant invoked and what it was
         // planning, so the summary can't faithfully represent the work done.
-        let transcript_text: String = history_snapshot
+        // Only the already-seen part (`to_summarize`) is summarized; the tail
+        // is preserved inline below.
+        let transcript_text: String = to_summarize
             .iter()
             .map(|m| {
                 let mut parts: Vec<String> = vec![format!("[{}]", m.role)];
@@ -261,16 +285,89 @@ impl AgentLoop {
                 "<previous_conversation_summary>\n{}\n</previous_conversation_summary>",
                 summary
             )));
-            // Append a user turn so the next request is valid.
-            // OpenAI-compatible endpoints (Ark included) reject an
-            // all-system-messages request, and the user turn also
-            // prompts the model to continue the task from the summary
-            // instead of stalling.
-            new_history.push(ChatMessage::user(
-                "Conversation history was just compacted. Continue the current task using the summary above."
-            ));
+            // Preserve the in-flight tail (last assistant tool_calls + its
+            // tool results) so fresh, unseen results aren't summarized away.
+            new_history.extend(tail.iter().cloned());
+            // With no tail, append a user turn so the next request is valid —
+            // OpenAI-compatible endpoints (Ark included) reject an all-system-
+            // messages request, and the user turn prompts the model to
+            // continue from the summary. With a tail the request already ends
+            // in tool results (which prompt continuation), so no synthetic
+            // user turn is needed.
+            if tail.is_empty() {
+                new_history.push(ChatMessage::user(
+                    "Conversation history was just compacted. Continue the current task using the summary above."
+                ));
+            }
             *history = new_history;
         }
+        // Surface compaction to the UI so it isn't silent. Reads
+        // `compacted_summary` (otherwise a write-only field) to report the
+        // summary size.
+        let summary_chars = self.compacted_summary.chars().count();
+        let _ = self
+            .event_tx
+            .send(AppEvent::ContextCompacted { summary_chars });
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_tail_keeps_last_assistant_and_tool_results() {
+        // Regression for Bug 7: the in-flight tail (last assistant + its tool
+        // results) must be split off so it's preserved inline, not summarized.
+        let history = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("do thing"),
+            ChatMessage::assistant("working"),
+            ChatMessage::tool("call_1", "result 1"),
+            ChatMessage::assistant_with_tools(vec![]),
+            ChatMessage::tool("call_2", "fresh result 2"),
+            ChatMessage::tool("call_3", "fresh result 3"),
+        ];
+        let (to_summarize, tail) = split_for_compaction(&history);
+        // tail = last assistant + the two tool results after it.
+        assert_eq!(tail.len(), 3);
+        assert_eq!(tail[0].role, "assistant");
+        assert_eq!(tail[1].role, "tool");
+        assert_eq!(tail[2].role, "tool");
+        assert_eq!(tail[2].content.as_deref(), Some("fresh result 3"));
+        // to_summarize = everything before the last assistant (sys, user, asst, tool).
+        assert_eq!(to_summarize.len(), 4);
+        assert_eq!(to_summarize[0].role, "system");
+        assert_eq!(to_summarize[3].role, "tool");
+    }
+
+    #[test]
+    fn test_split_no_assistant_yields_empty_tail() {
+        // No assistant message yet → summarize everything, empty tail (caller
+        // appends a synthetic user(continue) turn).
+        let history = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("first message"),
+        ];
+        let (to_summarize, tail) = split_for_compaction(&history);
+        assert!(tail.is_empty());
+        assert_eq!(to_summarize.len(), 2);
+    }
+
+    #[test]
+    fn test_split_assistant_with_no_following_tools_still_in_tail() {
+        // Last message is an assistant with no tool results after it — it still
+        // forms the tail (edge case; in practice loop-top compaction runs after
+        // tool results were pushed, but the split must not panic or mis-split).
+        let history = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("hi"),
+            ChatMessage::assistant("hello"),
+        ];
+        let (to_summarize, tail) = split_for_compaction(&history);
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].role, "assistant");
+        assert_eq!(to_summarize.len(), 2);
     }
 }

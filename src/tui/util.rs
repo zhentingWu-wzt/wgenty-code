@@ -442,6 +442,7 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::TodosUpdated(_)
         | AppEvent::TurnStarted { .. }
         | AppEvent::ConfigChanged(_)
+        | AppEvent::ContextCompacted { .. }
         | AppEvent::SubagentUpdate(_) => None,
     }
 }
