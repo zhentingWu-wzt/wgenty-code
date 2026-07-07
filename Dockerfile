@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxcb-xfixes0-dev \
     libxkbcommon-dev \
     libwayland-dev \
+    pkg-config \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制依赖文件
@@ -23,7 +25,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
 # 构建优化版本（完整功能）
-RUN cargo build --release
+RUN cargo build --release --bin wgenty-code
 
 # ==========================================
 # 阶段 2: 运行时阶段（最小镜像）
