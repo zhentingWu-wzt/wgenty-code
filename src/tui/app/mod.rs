@@ -147,6 +147,8 @@ pub struct App {
     pub prompt_context: std::sync::Arc<PromptContext>,
     /// Memory manager for cross-session memory (extraction, storage, recall, consolidation).
     pub memory_manager: std::sync::Arc<crate::context::MemoryManager>,
+    /// Memories recalled at session startup; injected into each turn's PromptContext.
+    pub startup_memories: Vec<String>,
     /// Command router for slash command dispatch (replaces Comet-specific routing).
     pub command_router: Option<CommandRouter>,
     /// Interaction service for runtime user interaction (ask, confirm).
@@ -449,6 +451,7 @@ impl App {
             hook_manager,
             prompt_context,
             memory_manager: Arc::new(crate::context::MemoryManager::new()),
+            startup_memories: Vec::new(),
             command_router: Some(command_router),
             interaction_service,
             workflow_state,
@@ -483,6 +486,59 @@ impl App {
                 }
             }
         });
+
+        // ── Session startup: recall cross-session memories ─────────────────
+        {
+            let mm = self.memory_manager.clone();
+            if let Err(e) = mm.load().await {
+                tracing::warn!(error = %e, "failed to load memories at session startup; recall skipped");
+            } else {
+                // Get current project name from cwd
+                let cwd = std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let project_name = cwd
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                // Search memories by project name (keyword match)
+                let matched = mm.search_memories(&project_name).await;
+
+                // Filter by importance >= 0.5
+                let important: Vec<_> = matched
+                    .into_iter()
+                    .filter(|m| m.importance >= 0.5)
+                    .collect();
+
+                // Sort by importance descending, take top N (default 5)
+                let mut sorted = important;
+                sorted.sort_by(|a, b| {
+                    b.importance
+                        .partial_cmp(&a.importance)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let top_n = 5;
+                let top: Vec<_> = sorted.into_iter().take(top_n).collect();
+
+                // Format as system message lines
+                if !top.is_empty() {
+                    let lines: Vec<String> = top
+                        .iter()
+                        .map(|m| {
+                            format!(
+                                "- [{}] {} (importance: {:.1})",
+                                format_memory_type(&m.memory_type),
+                                m.content,
+                                m.importance
+                            )
+                        })
+                        .collect();
+                    tracing::info!(count = lines.len(), "recalled cross-session memories at startup");
+                    self.startup_memories = lines;
+                }
+            }
+        }
+
         // Main loop
         while !self.should_quit {
             // Process pending events
@@ -557,6 +613,19 @@ fn parse_yaml_list(text: &str, key: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_memory_type_returns_human_readable_labels() {
+        use crate::context::MemoryType;
+        assert_eq!(format_memory_type(&MemoryType::Decision), "decision");
+        assert_eq!(format_memory_type(&MemoryType::Error), "error");
+        assert_eq!(format_memory_type(&MemoryType::Preference), "preference");
+        assert_eq!(format_memory_type(&MemoryType::Insight), "insight");
+        assert_eq!(format_memory_type(&MemoryType::Knowledge), "knowledge");
+        assert_eq!(format_memory_type(&MemoryType::Task), "task");
+        assert_eq!(format_memory_type(&MemoryType::Session), "session");
+        assert_eq!(format_memory_type(&MemoryType::Conversation), "conversation");
+    }
 
     #[test]
     fn test_parse_yaml_list_basic() {
@@ -694,3 +763,17 @@ pub use super::util::start_daemon;
 pub use super::util::tool_label;
 /// Truncate a user message to a short session name (max ~50 chars, no newlines).
 pub use super::util::truncate_session_name;
+
+/// Format a MemoryType variant as a short human-readable string.
+fn format_memory_type(mt: &crate::context::MemoryType) -> &'static str {
+    match mt {
+        crate::context::MemoryType::Decision => "decision",
+        crate::context::MemoryType::Error => "error",
+        crate::context::MemoryType::Preference => "preference",
+        crate::context::MemoryType::Insight => "insight",
+        crate::context::MemoryType::Knowledge => "knowledge",
+        crate::context::MemoryType::Task => "task",
+        crate::context::MemoryType::Session => "session",
+        crate::context::MemoryType::Conversation => "conversation",
+    }
+}
