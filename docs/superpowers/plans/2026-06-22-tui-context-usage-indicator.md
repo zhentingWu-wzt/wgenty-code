@@ -85,12 +85,12 @@ base-ref: 8c47a27c1eabcc1d2c7ccd809414e992b797dfbf
 
 ### 步骤
 
-- [ ] 4.1 新建 `src/tui/components/context_bar.rs`，实现 `pub fn spans(used: usize, max: usize) -> Vec<Span<'static>>`
-- [ ] 4.2 渲染 8 格进度条：`▓`（填充）+ `░`（空），计算 `filled = (ratio * 8).round()`
-- [ ] 4.3 百分比文字：`format!(" {} {}%", bar, pct)`
-- [ ] 4.4 实现 `fn color_for_ratio(ratio: f64) -> Color`：绿 <0.5，黄 0.5-0.8，红 ≥0.8
-- [ ] 4.5 在 `src/tui/components/mod.rs` 添加 `pub mod context_bar;`
-- [ ] 4.6 添加测试：颜色阈值边界（ratio 0.49->green, 0.50->yellow, 0.79->yellow, 0.80->red），0% 显示
+- [x] 4.1 新建 `src/tui/components/context_bar.rs`，实现 `pub fn spans(used: usize, max: usize) -> Vec<Span<'static>>`
+- [x] 4.2 渲染 8 格进度条：`▓`（填充）+ `░`（空），计算 `filled = (ratio * 8).round()`
+- [x] 4.3 百分比文字：`format!(" {} {}%", bar, pct)`
+- [x] 4.4 实现 `fn color_for_ratio(ratio: f64) -> Color`：绿 <0.5，黄 0.5-0.8，红 ≥0.8
+- [x] 4.5 在 `src/tui/components/mod.rs` 添加 `pub mod context_bar;`
+- [x] 4.6 添加测试：颜色阈值边界（ratio 0.49->green, 0.50->yellow, 0.79->yellow, 0.80->red），0% 显示
 
 ### 验收标准
 
