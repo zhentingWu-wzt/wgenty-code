@@ -22,12 +22,12 @@
 
 ## 5. 模式标签栏集成
 
-- [ ] 5.1 修改 `render_mode_label`，在模式标签右侧渲染上下文进度条
-- [ ] 5.2 从 `App` 传入 `token_counter.last_prompt_tokens()` 和 `settings.models.context_window`
-- [ ] 5.3 窄终端（宽度 <40）自动隐藏进度条
+- [x] 5.1 修改 `render_mode_label`，在模式标签右侧渲染上下文进度条
+- [x] 5.2 从 `App` 传入 `token_counter.last_prompt_tokens()` 和 `settings.models.context_window`
+- [x] 5.3 窄终端（宽度 <40）自动隐藏进度条
 
 ## 6. 测试
 
-- [ ] 6.1 `TokenCounter` 的 `set_prompt_tokens`/`last_prompt_tokens` 单元测试
-- [ ] 6.2 进度条颜色阈值边界测试（49%/50%/80%/81%）
-- [ ] 6.3 `context_window` 配置默认值与自定义值测试
+- [x] 6.1 `TokenCounter` 的 `set_prompt_tokens`/`last_prompt_tokens` 单元测试
+- [x] 6.2 进度条颜色阈值边界测试（49%/50%/80%/81%）
+- [x] 6.3 `context_window` 配置默认值与自定义值测试
