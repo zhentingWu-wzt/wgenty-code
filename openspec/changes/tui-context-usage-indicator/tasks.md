@@ -15,10 +15,10 @@
 
 ## 4. 进度条组件
 
-- [ ] 4.1 新建 `src/tui/components/context_bar.rs`，实现 `render(f, area, used, max)` 函数
-- [ ] 4.2 渲染 Unicode 进度条（8 格 `▓`/`░`）+ 百分比文字
-- [ ] 4.3 实现颜色阈值逻辑：绿 <50%，黄 50-80%，红 >80%
-- [ ] 4.4 在 `src/tui/components/mod.rs` 注册 `context_bar` 模块
+- [x] 4.1 新建 `src/tui/components/context_bar.rs`，实现 `render(f, area, used, max)` 函数
+- [x] 4.2 渲染 Unicode 进度条（8 格 `▓`/`░`）+ 百分比文字
+- [x] 4.3 实现颜色阈值逻辑：绿 <50%，黄 50-80%，红 >80%
+- [x] 4.4 在 `src/tui/components/mod.rs` 注册 `context_bar` 模块
 
 ## 5. 模式标签栏集成
 
