@@ -100,8 +100,7 @@ impl App {
             if let Err(ref e) = result {
                 let reason = match e {
                     AgentError::StreamTimeout(_) => TurnAbortReason::TimedOut,
-                    AgentError::MaxRoundsExceeded { .. }
-                    | AgentError::TokenBudgetExhausted { .. } => TurnAbortReason::MaxRoundsExceeded,
+                    AgentError::MaxRoundsExceeded { .. } => TurnAbortReason::MaxRoundsExceeded,
                     AgentError::StreamError(_)
                     | AgentError::PlannerError(_)
                     | AgentError::EmptyResponse => TurnAbortReason::StreamError,

@@ -32,9 +32,6 @@ pub enum AgentError {
     /// Agent exceeded the configured max LLM rounds.
     #[error("Exceeded {max_rounds} LLM rounds")]
     MaxRoundsExceeded { max_rounds: usize },
-    /// Token budget for this session was exhausted.
-    #[error("Token budget exhausted ({budget_k}k). Type /continue to resume or increase token_budget_k in settings.json.")]
-    TokenBudgetExhausted { budget_k: usize },
     /// Stream timed out (connection timeout or idle stall).
     #[error("{0}")]
     StreamTimeout(String),
@@ -59,7 +56,7 @@ pub struct AgentLoop {
     /// Pre-assembled system messages (layered instructions from PromptAssembler).
     /// Used when initializing or resetting the conversation history.
     pub(super) assembled_system_messages: Vec<ChatMessage>,
-    pub(super) rounds_since_todo: usize,
+    pub(super) rounds_since_plan: usize,
     pub(super) compacted_summary: String,
     /// Set by the `compact` tool to request compaction at the next loop-top
     /// check. Compaction runs at the loop top (not mid-tool-batch) so it never
@@ -110,7 +107,7 @@ impl AgentLoop {
             event_tx,
             conversation_history,
             assembled_system_messages: system_messages,
-            rounds_since_todo: 0,
+            rounds_since_plan: 0,
             compacted_summary: String::new(),
             compact_requested: false,
             compaction_failed: false,

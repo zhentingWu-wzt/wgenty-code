@@ -69,14 +69,6 @@ impl AgentLoop {
                 self.compaction_failed = true;
             }
 
-            // Check token budget before each LLM call
-            if self.token_counter.is_exhausted() {
-                let budget_k = self.token_counter.budget_tokens() / 1000;
-                let err = AgentError::TokenBudgetExhausted { budget_k };
-                let _ = self.event_tx.send(AppEvent::StreamError(err.to_string()));
-                return Err(err);
-            }
-
             self.preparing_tools_fired = false;
             let result = match self.stream_with_retry(&messages).await {
                 Ok(r) => r,
@@ -126,14 +118,6 @@ impl AgentLoop {
                 self.token_counter.add_output(output_est);
             }
 
-            // Check budget after accounting
-            if self.token_counter.is_exhausted() {
-                let budget_k = self.token_counter.budget_tokens() / 1000;
-                let err = AgentError::TokenBudgetExhausted { budget_k };
-                let _ = self.event_tx.send(AppEvent::StreamError(err.to_string()));
-                return Err(err);
-            }
-
             if result.has_tool_calls && !result.tool_calls.is_empty() {
                 let assistant_msg = StreamProcessor::build_assistant_message(
                     result.content,
@@ -145,13 +129,13 @@ impl AgentLoop {
                     history.push(assistant_msg);
                 }
 
-                let mut used_todo = false;
+                let mut used_plan = false;
 
                 // Fire all task tools in parallel when every executable tool is a task.
                 let all_task = result.tool_calls.iter().all(|tc| {
                     matches!(
                         tc.function.name.as_str(),
-                        "task" | "TodoWrite" | "ask_user_question" | "update_plan" | "compact"
+                        "task" | "ask_user_question" | "update_plan" | "compact"
                     )
                 }) && result
                     .tool_calls
@@ -174,7 +158,6 @@ impl AgentLoop {
                     // Handle non-task tools first (ask, plan, compact, todo)
                     for tc in &result.tool_calls {
                         match tc.function.name.as_str() {
-                            "TodoWrite" => used_todo = true,
                             "ask_user_question" => {
                                 let (args, _) = crate::utils::lenient_json::parse_tool_args_lenient(
                                     &tc.function.arguments,
@@ -184,6 +167,7 @@ impl AgentLoop {
                                 history.lock().await.push(ChatMessage::tool(&tc.id, result));
                             }
                             "update_plan" => {
+                                used_plan = true;
                                 let (args, _) = crate::utils::lenient_json::parse_tool_args_lenient(
                                     &tc.function.arguments,
                                     &tc.function.name,
@@ -302,6 +286,7 @@ impl AgentLoop {
                         }
 
                         if tc.function.name == "update_plan" {
+                            used_plan = true;
                             let _ = self.event_tx.send(AppEvent::PlanUpdate(args.clone()));
                             {
                                 let mut history = self.conversation_history.lock().await;
@@ -336,10 +321,6 @@ impl AgentLoop {
                                 r#"{"success":true,"content":"Compaction scheduled"}"#,
                             ));
                             continue;
-                        }
-
-                        if tc.function.name == "TodoWrite" {
-                            used_todo = true;
                         }
 
                         let _ = self.event_tx.send(AppEvent::ToolStart {
@@ -430,18 +411,18 @@ impl AgentLoop {
                     }
                 }
 
-                self.rounds_since_todo = if used_todo {
+                self.rounds_since_plan = if used_plan {
                     0
                 } else {
-                    self.rounds_since_todo + 1
+                    self.rounds_since_plan + 1
                 };
-                if self.rounds_since_todo >= 3 {
+                if self.rounds_since_plan >= 3 {
                     let mut history = self.conversation_history.lock().await;
                     if let Some(last) = history.last_mut() {
                         if last.role == "tool" {
                             if let Some(ref mut content) = last.content {
                                 content.push_str(
-                                    "\n<reminder>Update your todos with TodoWrite.</reminder>",
+                                    "\n<reminder>Update your plan with update_plan.</reminder>",
                                 );
                             }
                         }

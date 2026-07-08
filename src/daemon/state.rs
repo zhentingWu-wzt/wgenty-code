@@ -5,7 +5,7 @@ use crate::knowledge::loader::SkillLoader;
 use crate::permissions::ToolPermissionPolicy;
 use crate::runtime::hooks::HookManager;
 use crate::state::AppState;
-use crate::tasks::{TaskManagementTool, TodoState, TodoWriteTool};
+use crate::tasks::{TaskManagementTool, TodoState};
 use crate::teams::mailbox::TeamManager;
 use crate::tools::execution::background::{BackgroundManager, BackgroundTool};
 use crate::tools::meta::team_message::TeamMessageTool;
@@ -52,8 +52,7 @@ pub struct DaemonState {
 impl DaemonState {
     pub fn new(app_state: AppState) -> Self {
         let task_manager = Arc::new(TaskManagementTool::new());
-        let todo_write = TodoWriteTool::new();
-        let todo_state = todo_write.todo_state();
+        let todo_state = Arc::new(RwLock::new(TodoState::default()));
         let policy = ToolPermissionPolicy::from_settings(&app_state.settings);
 
         // Initialize background manager
@@ -85,7 +84,6 @@ impl DaemonState {
         // gets dropped (which would leave a dangling weak reference).
         let tool_registry = Arc::new_cyclic(|weak_reg| {
             let mut registry = ToolRegistry::new().with_settings(&app_state.settings);
-            registry.register(Box::new(todo_write));
             registry.register(Box::new(BackgroundTool::new(bg_manager.clone())));
 
             // Register team message tool if team is configured

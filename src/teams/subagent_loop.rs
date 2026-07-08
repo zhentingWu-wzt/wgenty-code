@@ -375,56 +375,9 @@ pub async fn run_subagent_loop(
                 .map(|c| !c.is_empty())
                 .unwrap_or(false);
 
-            // ── Accumulate token usage & budget enforcement ───────────────
+            // ── Accumulate token usage ───────────────────────────────────
             if let Some(ref usage) = response.usage {
                 *cumulative_tokens.lock().unwrap() += usage.total_tokens;
-            }
-            // ── Token budget enforcement ─────────────────────────────────────
-            if let Some(budget_k) = token_budget_k {
-                let used = *cumulative_tokens.lock().unwrap();
-                if used > (budget_k as usize) * 1000 {
-                    let last_tool = current_params_val
-                        .lock()
-                        .unwrap()
-                        .clone()
-                        .unwrap_or_else(|| "none".to_string());
-                    let msg = format!(
-                        "Token budget exceeded: limit {}k, used {}k tokens after {} rounds (last tool: {})",
-                        budget_k,
-                        used / 1000,
-                        round + 1,
-                        last_tool,
-                    );
-                    {
-                        let mut log = action_log.lock().unwrap();
-                        log.push(SubagentEvent {
-                            event_type: SubagentEventType::Error {
-                                message: msg.clone(),
-                                error_type: ErrorType::BudgetExceeded {
-                                    limit_k: budget_k,
-                                    used: used as u64,
-                                },
-                            },
-                            elapsed_ms: start.elapsed().as_millis() as u64,
-                        });
-                    }
-                    emit(
-                        SubagentStatus::Failed,
-                        Some(round + 1),
-                        None,
-                        Some(msg.clone()),
-                        None,
-                        messages.clone(),
-                    );
-                    return Err(SubagentError {
-                        message: msg,
-                        error_type: ErrorType::BudgetExceeded {
-                            limit_k: budget_k,
-                            used: used as u64,
-                        },
-                        partial_result: text_snapshot.lock().unwrap().clone(),
-                    });
-                }
             }
 
             // ── Capture text snapshot (full text, no truncation) ────────────
