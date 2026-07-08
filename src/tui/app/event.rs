@@ -375,10 +375,36 @@ impl App {
                     self.user_scrolled = false;
                     return;
                 }
-                // Handle Enter BEFORE tui-textarea consumes it (it would insert newline).
-                if key.code == KeyCode::Enter && !self.input_box.is_empty() {
-                    let text = self.input_box.take_text();
-                    let _ = self.event_tx.send(AppEvent::Submit(text));
+                // Handle Enter/Shift+Enter/Ctrl+J BEFORE tui-textarea consumes
+                // them. tui-textarea's default binding inserts a newline on
+                // Enter, so we intercept:
+                //   - Shift+Enter -> newline. Needs the kitty keyboard protocol
+                //     enabled in args.rs; terminals without it report a bare
+                //     Enter with no SHIFT bit, so Shift+Enter acts as submit.
+                //   - Ctrl+J -> newline. Universal fallback that works in ANY
+                //     terminal, including ones without kitty support (macOS
+                //     Terminal.app). In raw mode crossterm decodes Ctrl+J's
+                //     0x0A byte as Char('j')+CONTROL (crossterm only maps \n
+                //     to Enter outside raw mode), so it never reaches this
+                //     Enter branch and is safe to claim here.
+                //   - unmodified Enter -> submit.
+                // Other Enter modifier combos (Ctrl/Alt+Enter) fall through to
+                // submit, matching prior behaviour.
+                if key.code == KeyCode::Enter {
+                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        self.input_box.textarea.insert_char('\n');
+                        self.input_box.update_style();
+                    } else if !self.input_box.is_empty() {
+                        let text = self.input_box.take_text();
+                        let _ = self.event_tx.send(AppEvent::Submit(text));
+                    }
+                    return;
+                }
+                if key.code == KeyCode::Char('j')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    self.input_box.textarea.insert_char('\n');
+                    self.input_box.update_style();
                     return;
                 }
                 // Detect @ and / completion triggers BEFORE feeding to textarea

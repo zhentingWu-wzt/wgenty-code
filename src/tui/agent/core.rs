@@ -64,6 +64,40 @@ impl AgentLoop {
             self.compact_requested = false;
             if want_compact && !self.compaction_failed {
                 if self.do_auto_compact().await {
+                    // Stalled-compaction guard. `do_auto_compact` returns true
+                    // on success, but "success" only means a summary was
+                    // produced - the post-compaction history
+                    // (`[system, system(summary), user(continue), ...tail]`)
+                    // can still exceed the threshold when the preserved tail
+                    // (last assistant + its tool results, possibly tens of
+                    // thousands of chars of reasoning_content) or the layered
+                    // system prompts alone are too large. `split_for_compaction`
+                    // keeps that same tail every pass, so a second compaction
+                    // would re-summarize only the tiny
+                    // `[system, old_summary, user(continue)]` slice and change
+                    // nothing - an infinite loop. Worse, this `continue` skips
+                    // `llm_rounds += 1`, so the max_rounds safety valve never
+                    // fires. Mirror the loop-top check: if the compacted
+                    // history still wants compaction, stop retrying and fall
+                    // through to a normal request (a real upstream error
+                    // surfaces if the context is genuinely too large) instead
+                    // of spinning here forever.
+                    let compacted = self.micro_compact().await;
+                    if self.needs_compaction(&compacted) {
+                        tracing::warn!(
+                            "compaction succeeded but history still exceeds \
+                             the threshold; stopping retries to avoid an \
+                             infinite compaction loop"
+                        );
+                        let _ = self.event_tx.send(AppEvent::StreamError(
+                            "Compaction ran but couldn't shrink the context \
+                             below the threshold (the last exchange or system \
+                             prompts are too large); sending the request \
+                             anyway - it may fail if still too large."
+                                .to_string(),
+                        ));
+                        self.compaction_failed = true;
+                    }
                     continue;
                 }
                 self.compaction_failed = true;

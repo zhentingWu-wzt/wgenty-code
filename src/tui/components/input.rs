@@ -25,7 +25,7 @@ impl InputBox {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(ACCENT))
                 .border_type(BorderType::Rounded)
-                .title(" Input (Enter 提交) "),
+                .title(" Input (Enter 提交 · Shift+Enter/Ctrl+J 换行) "),
         );
 
         textarea.set_style(Style::default().fg(Color::White));
@@ -122,7 +122,7 @@ impl InputBox {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(border_fg))
                 .border_type(BorderType::Rounded)
-                .title(" Input (Enter 提交) "),
+                .title(" Input (Enter 提交 · Shift+Enter/Ctrl+J 换行) "),
         );
 
         f.render_widget(&self.textarea, area);
