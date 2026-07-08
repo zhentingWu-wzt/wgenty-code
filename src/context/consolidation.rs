@@ -197,6 +197,7 @@ impl ConsolidationEngine {
                         MemoryType::Task => "task",
                         MemoryType::Error => "error",
                         MemoryType::Insight => "insight",
+                        MemoryType::Decision => "decision",
                     }
                 );
 

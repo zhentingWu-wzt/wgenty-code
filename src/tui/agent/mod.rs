@@ -20,16 +20,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub(super) const MAX_RETRIES: u32 = 2;
-// Compaction trigger threshold (estimated tokens). Sized for the main model's
-// real context window (glm-latest via Ark coding ≈128K tokens): when
-// request_size_chars (content + reasoning_content + tool_calls.args) / 4
-// exceeds this (~320K chars ≈95K real tokens of message body), compaction
-// fires. The nominal margin to 128K is ~30K, reduced by uncounted tool-
-// definition + serialization overhead - but needs_compaction runs at the
-// loop top before each request is sent, so an oversized history is compacted
-// before transmission. The old 800_000 was far above any model window, so
-// compaction never fired (see change fix-compaction-ignores-reasoning).
-pub(super) const MAX_ESTIMATED_TOKENS: usize = 80_000;
 // MAX_LLM_ROUNDS (100 default, configurable via settings.json) defined inside run_agent_loop as safety valve.
 
 /// Structured error returned by the agent loop.
@@ -93,6 +83,11 @@ pub struct AgentLoop {
     pub(super) prompt_context: std::sync::Arc<crate::prompts::PromptContext>,
     /// Subagent timeout from settings.agent.subagent.timeout_secs (default 1800).
     pub(super) subagent_timeout_secs: u64,
+    /// Model context window from settings.models.context_window (default 200_000).
+    /// Compaction fires at 80 % of this value (context_window * 4 / 5).
+    pub(super) context_window: usize,
+    /// Memory manager for cross-session memory extraction and recall.
+    pub(super) memory_manager: Arc<crate::context::MemoryManager>,
 }
 
 impl AgentLoop {
@@ -110,6 +105,8 @@ impl AgentLoop {
         hook_manager: std::sync::Arc<HookManager>,
         prompt_context: std::sync::Arc<crate::prompts::PromptContext>,
         subagent_timeout_secs: u64,
+        context_window: usize,
+        memory_manager: Arc<crate::context::MemoryManager>,
     ) -> Self {
         Self {
             client,
@@ -130,6 +127,8 @@ impl AgentLoop {
             hook_manager,
             prompt_context,
             subagent_timeout_secs,
+            context_window,
+            memory_manager,
         }
     }
 
@@ -273,3 +272,43 @@ impl AgentLoop {
 }
 
 // System prompt is now assembled via crate::prompts::assemble_instructions()
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::MemoryManager;
+    use std::sync::Arc;
+
+    /// Verify that AgentLoop can be constructed with a memory_manager field.
+    /// This is a compile-time and structural test: if the field or constructor
+    /// parameter is missing, the call to AgentLoop::new below will fail to
+    /// compile, and the field access at the end will also fail.
+    #[test]
+    fn agent_loop_accepts_memory_manager() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let client = DaemonClient::new("http://localhost:8080".to_string());
+        let mm = Arc::new(MemoryManager::new());
+
+        // Construct AgentLoop with memory_manager — must compile.
+        let loop_instance = AgentLoop::new(
+            client,
+            tx,
+            "test-session".into(),
+            Arc::new(tokio::sync::Mutex::new(vec![])),
+            vec![],
+            false,
+            None,
+            100,
+            crate::api::token_counter::TokenCounter::new(),
+            std::sync::Arc::new(HookManager::default()),
+            std::sync::Arc::new(crate::prompts::PromptContext::new()),
+            1800,
+            200_000,
+            mm.clone(),
+        );
+
+        // Verify the field is accessible and is of the correct type.
+        let _field: &Arc<MemoryManager> = &loop_instance.memory_manager;
+        assert!(Arc::ptr_eq(&mm, &loop_instance.memory_manager));
+    }
+}

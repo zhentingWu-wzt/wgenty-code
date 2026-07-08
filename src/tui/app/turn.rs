@@ -57,7 +57,7 @@ impl App {
         let sys_msgs = self.assembled_system_messages.clone();
         let plan_mode = self.mode == AgentMode::PlanMode;
         // Read agent config from settings
-        let (planner_client, max_rounds, subagent_timeout_secs) = {
+        let (planner_client, max_rounds, subagent_timeout_secs, context_window) = {
             let s = self.settings_lock.read().unwrap();
             let planner = if let Some(ref pm) = s.models.planner {
                 let mut planner_settings = s.clone();
@@ -76,11 +76,13 @@ impl App {
                 planner,
                 s.agent.max_rounds.unwrap_or(100),
                 s.agent.subagent.timeout_secs,
+                s.models.context_window,
             )
         };
         let token_counter = self.token_counter.clone();
         let hook_manager = self.hook_manager.clone();
         let prompt_context = self.prompt_context.clone();
+        let memory_manager = self.memory_manager.clone();
         self.current_turn_handle = Some(tokio::spawn(async move {
             let mut agent = AgentLoop::new(
                 client,
@@ -95,6 +97,8 @@ impl App {
                 hook_manager,
                 prompt_context,
                 subagent_timeout_secs,
+                context_window,
+                memory_manager,
             );
             let result = agent.process_input(input_text).await;
             if let Err(ref e) = result {
@@ -127,16 +131,18 @@ impl App {
         let event_tx = self.event_tx.clone();
         let session_id = self.session_id.clone();
         let sys_msgs = self.assembled_system_messages.clone();
-        let (max_rounds, subagent_timeout_secs) = {
+        let (max_rounds, subagent_timeout_secs, context_window) = {
             let s = self.settings_lock.read().unwrap();
             (
                 s.agent.max_rounds.unwrap_or(100),
                 s.agent.subagent.timeout_secs,
+                s.models.context_window,
             )
         };
         let token_counter = self.token_counter.clone();
         let hook_manager = self.hook_manager.clone();
         let prompt_context = self.prompt_context.clone();
+        let memory_manager = self.memory_manager.clone();
         self.current_turn_handle = Some(tokio::spawn(async move {
             let mut agent = AgentLoop::new(
                 client,
@@ -151,6 +157,8 @@ impl App {
                 hook_manager,
                 prompt_context,
                 subagent_timeout_secs,
+                context_window,
+                memory_manager,
             );
             let _ = agent.compact_only().await;
             let _ = event_tx.send(AppEvent::TurnComplete);
