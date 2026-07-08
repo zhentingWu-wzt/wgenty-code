@@ -5,7 +5,6 @@
 //! persistence, and memory consolidation.
 
 pub mod consolidation;
-pub mod context_window;
 pub mod history;
 pub mod memory_session;
 pub mod session;
@@ -19,7 +18,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 pub use consolidation::{ConsolidationConfig, ConsolidationEngine};
-pub use context_window::{ContextEntry, ContextManager, ContextWindow};
 pub use history::{HistoryEntry, HistoryFilter, HistoryManager};
 pub use memory_session::{
     Session as MemorySession, SessionInfo as MemorySessionInfo,
@@ -95,7 +93,6 @@ pub struct MemoryStatus {
 pub struct MemoryManager {
     sessions: Arc<MemorySessionManager>,
     history: Arc<HistoryManager>,
-    context: Arc<ContextManager>,
     storage: Arc<Storage>,
     consolidation: Arc<ConsolidationEngine>,
     memories: Arc<RwLock<Vec<MemoryEntry>>>,
@@ -117,7 +114,6 @@ impl MemoryManager {
         Self {
             sessions: Arc::new(MemorySessionManager::new()),
             history: Arc::new(HistoryManager::new()),
-            context: Arc::new(ContextManager::new()),
             storage: Arc::new(Storage::new(memory_path)),
             consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
             memories: Arc::new(RwLock::new(Vec::new())),
@@ -244,9 +240,6 @@ impl MemoryManager {
     }
     pub fn history(&self) -> Arc<HistoryManager> {
         self.history.clone()
-    }
-    pub fn context(&self) -> Arc<ContextManager> {
-        self.context.clone()
     }
     pub fn storage(&self) -> Arc<Storage> {
         self.storage.clone()
