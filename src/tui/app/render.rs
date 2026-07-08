@@ -7,7 +7,7 @@ use crate::tui::theme;
 use crate::tui::util::centered_rect;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
@@ -189,8 +189,21 @@ impl App {
     fn render_mode_label(&self, f: &mut Frame, area: Rect) {
         let color = self.mode.color();
         let label = format!(" {} ", self.mode.label());
-        let paragraph = Paragraph::new(label)
-            .style(Style::default().fg(color))
+
+        let mode_span = Span::styled(label, Style::default().fg(color));
+
+        let mut spans: Vec<Span<'_>> = vec![mode_span];
+
+        // Only show context bar when the terminal is wide enough
+        if area.width >= 40 {
+            let used = self.token_counter.last_prompt_tokens();
+            let max = self.settings_lock.read().unwrap().models.context_window;
+            spans.push(Span::raw(" "));
+            spans.extend(components::context_bar::spans(used, max));
+        }
+
+        let line = Line::from(spans);
+        let paragraph = Paragraph::new(line)
             .alignment(ratatui::layout::Alignment::Left);
         f.render_widget(paragraph, area);
     }
