@@ -22,7 +22,7 @@
 ## 3. P2 — Consolidation: AutoDream Gate Trigger
 
 - [x] 3.1 Wire `AutoDreamService::check_and_run()` call into App session startup (before recall, so recall sees consolidated memories)
-- [ ] 3.2 Simplify `AutoDreamService::run_consolidation()` to delegate to `MemoryManager::consolidate()` instead of `analyze_and_consolidate()`
+- [x] 3.2 Simplify `AutoDreamService::run_consolidation()` to delegate to `MemoryManager::consolidate()` instead of `analyze_and_consolidate()`
 - [ ] 3.3 Remove `AutoDreamService::load_memories()` and `save_consolidated_memories()` — replaced by MemoryManager
 - [ ] 3.4 Remove `services::auto_dream::MemoryEntry` type — use `context::MemoryEntry` throughout
 - [ ] 3.5 Clean up AutoDream's legacy file usage: remove writes to `memory.json` and `consolidated_memories.json`
