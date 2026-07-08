@@ -148,7 +148,7 @@ pub struct App {
     /// Memory manager for cross-session memory (extraction, storage, recall, consolidation).
     pub memory_manager: std::sync::Arc<crate::context::MemoryManager>,
     /// Memories recalled at session startup; injected into each turn's PromptContext.
-    pub startup_memories: Vec<String>,
+    pub(crate) startup_memories: Vec<String>,
     /// Command router for slash command dispatch (replaces Comet-specific routing).
     pub command_router: Option<CommandRouter>,
     /// Interaction service for runtime user interaction (ask, confirm).
@@ -585,6 +585,19 @@ impl App {
 
         Ok(())
     }
+}
+
+/// Inject recalled startup memories into the per-turn PromptContext.
+pub(crate) fn inject_startup_memories(
+    prompt_context: std::sync::Arc<PromptContext>,
+    startup_memories: &[String],
+) -> std::sync::Arc<PromptContext> {
+    if startup_memories.is_empty() {
+        return prompt_context;
+    }
+    let mut ctx = (*prompt_context).clone();
+    ctx.memories = startup_memories.to_vec();
+    std::sync::Arc::new(ctx)
 }
 
 /// Parse a simple YAML list from text.
