@@ -721,7 +721,7 @@ git commit -m "feat(P1): implement session startup memory recall"
 
 ---
 
-### Task 5: P2 — 在会话启动时接入 AutoDream check_and_run
+### Task 5: P2 — 在会话启动时接入 AutoDream check_and_run ✅
 
 **Files:**
 - Modify: `src/tui/app/mod.rs` (App struct + App::new + session startup)
