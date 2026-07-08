@@ -380,7 +380,7 @@ impl App {
         // ── AutoDream service for time-gated memory consolidation ────────
         let auto_dream = {
             let state = Arc::new(tokio::sync::RwLock::new(crate::state::AppState::default()));
-            crate::services::AutoDreamService::new(state, None)
+            crate::services::AutoDreamService::new(state, None, None)
         };
 
         let app = Self {

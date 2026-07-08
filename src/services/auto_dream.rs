@@ -64,18 +64,29 @@ impl Default for ConsolidationState {
 pub struct AutoDreamService {
     config: AutoDreamConfig,
     consolidation_state: Arc<RwLock<ConsolidationState>>,
+    memory_manager: Option<Arc<crate::context::MemoryManager>>,
 }
 
 impl AutoDreamService {
-    pub fn new(_state: Arc<RwLock<AppState>>, config: Option<AutoDreamConfig>) -> Self {
+    pub fn new(
+        _state: Arc<RwLock<AppState>>,
+        config: Option<AutoDreamConfig>,
+        memory_manager: Option<Arc<crate::context::MemoryManager>>,
+    ) -> Self {
         Self {
             config: config.unwrap_or_default(),
             consolidation_state: Arc::new(RwLock::new(ConsolidationState::default())),
+            memory_manager,
         }
     }
 
     pub fn with_config(mut self, config: AutoDreamConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    pub fn with_memory_manager(mut self, mm: Arc<crate::context::MemoryManager>) -> Self {
+        self.memory_manager = Some(mm);
         self
     }
 
@@ -183,23 +194,35 @@ impl AutoDreamService {
     }
 
     async fn run_consolidation(&self) -> anyhow::Result<()> {
-        println!("🌙 AutoDream: Starting memory consolidation...");
+        tracing::info!("AutoDream: Starting memory consolidation...");
 
-        let memories = self.load_memories().await?;
+        let Some(ref mm) = self.memory_manager else {
+            tracing::warn!("AutoDream: no MemoryManager configured; consolidation skipped");
+            return Ok(());
+        };
 
-        if memories.is_empty() {
-            println!("🌙 AutoDream: No memories to consolidate");
+        // Load memories from disk (if not already loaded)
+        mm.load().await?;
+
+        // Get count before consolidation
+        let status = mm.status().await?;
+        let before = status.total_memories;
+        if before == 0 {
+            tracing::info!("AutoDream: No memories to consolidate");
             return Ok(());
         }
 
-        let consolidated = self.analyze_and_consolidate(&memories).await?;
+        // Delegate to MemoryManager::consolidate() which uses ConsolidationEngine
+        mm.consolidate().await?;
 
-        self.save_consolidated_memories(&consolidated).await?;
+        // Persist consolidated memories
+        mm.save().await?;
 
-        println!(
-            "🌙 AutoDream: Consolidated {} memories into {} insights",
-            memories.len(),
-            consolidated.len()
+        let status = mm.status().await?;
+        tracing::info!(
+            before = before,
+            after = status.total_memories,
+            "AutoDream: Consolidation complete"
         );
 
         Ok(())
@@ -348,4 +371,39 @@ pub struct AutoDreamStatus {
     pub hours_since_last: i64,
     pub sessions_accumulated: usize,
     pub next_consolidation_in: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_autodream_delegates_to_memory_manager() {
+        use crate::context::MemoryManager;
+        let mm = std::sync::Arc::new(MemoryManager::new());
+        // Add some test memories
+        mm.add_memory(
+            crate::context::MemoryEntry::new(
+                crate::context::MemoryType::Knowledge,
+                "test memory",
+            )
+            .with_importance(0.8),
+        )
+        .await
+        .unwrap();
+
+        let state = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::state::AppState::default(),
+        ));
+        let config = AutoDreamConfig {
+            min_hours: 0,
+            min_sessions: 0,
+            enabled: true,
+        };
+        let service = AutoDreamService::new(state, Some(config), Some(mm.clone()));
+
+        // Force consolidation (bypasses gate)
+        let result = service.force_consolidation().await;
+        assert!(result.is_ok());
+    }
 }
