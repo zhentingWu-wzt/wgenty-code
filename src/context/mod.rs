@@ -79,6 +79,7 @@ pub enum MemoryType {
     Task,
     Error,
     Insight,
+    Decision,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,5 +259,20 @@ impl MemoryManager {
 impl Default for MemoryManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_type_has_decision_variant() {
+        // Decision variant is required by the memory system unify plan.
+        // This test verifies the variant exists and can be constructed.
+        match MemoryType::Decision {
+            MemoryType::Decision => {},
+            _ => panic!("MemoryType::Decision variant pattern mismatch"),
+        }
     }
 }

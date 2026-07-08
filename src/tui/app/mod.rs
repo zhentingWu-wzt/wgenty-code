@@ -145,6 +145,8 @@ pub struct App {
     pub hook_manager: std::sync::Arc<HookManager>,
     /// Prompt context shared with each AgentLoop for per-turn reminder construction.
     pub prompt_context: std::sync::Arc<PromptContext>,
+    /// Memory manager for cross-session memory (extraction, storage, recall, consolidation).
+    pub memory_manager: std::sync::Arc<crate::context::MemoryManager>,
     /// Command router for slash command dispatch (replaces Comet-specific routing).
     pub command_router: Option<CommandRouter>,
     /// Interaction service for runtime user interaction (ask, confirm).
@@ -446,6 +448,7 @@ impl App {
             external_skill_registry: external_skill_registry.map(std::sync::Arc::new),
             hook_manager,
             prompt_context,
+            memory_manager: Arc::new(crate::context::MemoryManager::new()),
             command_router: Some(command_router),
             interaction_service,
             workflow_state,
