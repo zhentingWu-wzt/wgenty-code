@@ -5,11 +5,11 @@
 
 ## 2. 下调 MAX_ESTIMATED_TOKENS 阈值
 
-- [ ] 2.1 在 `src/tui/agent/mod.rs` 将 `pub(super) const MAX_ESTIMATED_TOKENS: usize = 800_000;` 改为 `80_000`，并更新行内注释说明取值依据（≈128K 窗口、留 ~33K 余量、计入 reasoning+tool_calls）。
+- [x] 2.1 在 `src/tui/agent/mod.rs` 将 `pub(super) const MAX_ESTIMATED_TOKENS: usize = 800_000;` 改为 `80_000`，并更新行内注释说明取值依据（≈128K 窗口、留 ~33K 余量、计入 reasoning+tool_calls）。
 
 ## 3. 验证
 
-- [ ] 3.1 `cargo fmt` 无 diff。
-- [ ] 3.2 `cargo clippy -D warnings` 无警告。
-- [ ] 3.3 `cargo test` compaction 相关测试通过。
-- [ ] 3.4 `cargo build --release` 成功。
+- [x] 3.1 `cargo fmt` 无 diff。
+- [x] 3.2 `cargo clippy -D warnings` 无警告。
+- [x] 3.3 `cargo test` compaction 相关测试通过。
+- [x] 3.4 `cargo build --release` 成功。
