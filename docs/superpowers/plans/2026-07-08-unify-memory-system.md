@@ -536,7 +536,7 @@ git commit -m "feat(P1): add memories field to PromptContext and inject between 
 
 ---
 
-### Task 4: P1 — 实现会话启动记忆召回
+### Task 4: P1 — 实现会话启动记忆召回 ✅
 
 **Files:**
 - Modify: `src/tui/app/mod.rs` (App::run 主循环之前)
