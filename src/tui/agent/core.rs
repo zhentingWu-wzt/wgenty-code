@@ -132,6 +132,7 @@ impl AgentLoop {
                 self.token_counter.add(usage.total_tokens);
                 // Per-turn output tracking (display only, not budget)
                 self.token_counter.add_output(usage.completion_tokens);
+                self.token_counter.set_prompt_tokens(usage.prompt_tokens);
             } else {
                 // Fallback: estimate from character count (~4 chars per token for English,
                 // conservative so we don't undercount).
