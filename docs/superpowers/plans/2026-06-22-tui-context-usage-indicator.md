@@ -2,6 +2,7 @@
 change: tui-context-usage-indicator
 design-doc: docs/superpowers/specs/2026-06-22-tui-context-usage-indicator-design.md
 base-ref: 8c47a27c1eabcc1d2c7ccd809414e992b797dfbf
+archived-with: 2026-07-08-tui-context-usage-indicator
 ---
 
 # 实施计划：TUI 上下文用量指示器
@@ -14,6 +15,7 @@ base-ref: 8c47a27c1eabcc1d2c7ccd809414e992b797dfbf
 
 **任务边界**: `openspec/changes/tui-context-usage-indicator/tasks.md`
 
+archived-with: 2026-07-08-tui-context-usage-indicator
 ---
 
 ## 任务 1：TokenCounter 扩展
@@ -35,6 +37,7 @@ base-ref: 8c47a27c1eabcc1d2c7ccd809414e992b797dfbf
 - `cargo clippy -- -D warnings` 零 warning
 - 现有 `used`/`turn_input`/`turn_output` 字段和方法不受影响
 
+archived-with: 2026-07-08-tui-context-usage-indicator
 ---
 
 ## 任务 2：API 用量记录
@@ -54,6 +57,7 @@ base-ref: 8c47a27c1eabcc1d2c7ccd809414e992b797dfbf
 - `cargo clippy -- -D warnings` 零 warning
 - 现有 `add(usage.total_tokens)` 和 `add_output(usage.completion_tokens)` 调用不变
 
+archived-with: 2026-07-08-tui-context-usage-indicator
 ---
 
 ## 任务 3：上下文窗口配置
@@ -75,6 +79,7 @@ base-ref: 8c47a27c1eabcc1d2c7ccd809414e992b797dfbf
 - `cargo clippy -- -D warnings` 零 warning
 - 现有 settings.json 反序列化兼容（缺失 context_window 字段时使用默认值）
 
+archived-with: 2026-07-08-tui-context-usage-indicator
 ---
 
 ## 任务 4：进度条组件
@@ -98,6 +103,7 @@ base-ref: 8c47a27c1eabcc1d2c7ccd809414e992b797dfbf
 - `cargo clippy -- -D warnings` 零 warning
 - 进度条宽度固定 8 格，不随窗口大小变化
 
+archived-with: 2026-07-08-tui-context-usage-indicator
 ---
 
 ## 任务 5：模式标签栏集成
@@ -121,6 +127,7 @@ base-ref: 8c47a27c1eabcc1d2c7ccd809414e992b797dfbf
 - `cargo run -- repl` 启动后模式标签栏显示进度条
 - 窄终端时进度条自动隐藏
 
+archived-with: 2026-07-08-tui-context-usage-indicator
 ---
 
 ## 任务 6：集成测试与验证
