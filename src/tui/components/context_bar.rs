@@ -14,7 +14,11 @@ const BAR_WIDTH: usize = 8;
 /// - Yellow (50–80%)
 /// - Red    (> 80%)
 pub fn spans(used: usize, max: usize) -> Vec<Span<'static>> {
-    let ratio = if max == 0 { 0.0 } else { used as f64 / max as f64 };
+    let ratio = if max == 0 {
+        0.0
+    } else {
+        used as f64 / max as f64
+    };
     let clamped = ratio.clamp(0.0, 1.0);
     let pct = (clamped * 100.0).round() as usize;
     let filled = (clamped * BAR_WIDTH as f64).round() as usize;
@@ -25,7 +29,10 @@ pub fn spans(used: usize, max: usize) -> Vec<Span<'static>> {
     let bar: String = "▓".repeat(filled) + "░".repeat(empty).as_str();
     let label = format!(" {} {}%", bar, pct);
 
-    vec![Span::styled(label, ratatui::style::Style::default().fg(color))]
+    vec![Span::styled(
+        label,
+        ratatui::style::Style::default().fg(color),
+    )]
 }
 
 fn color_for_ratio(ratio: f64) -> Color {
