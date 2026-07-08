@@ -166,6 +166,7 @@ impl StressTestRunner {
                 min_sessions: 5,
                 enabled: true,
             }),
+            None,
         );
 
         let start = Instant::now();
