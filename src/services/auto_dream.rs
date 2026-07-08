@@ -10,7 +10,6 @@
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -228,82 +227,6 @@ impl AutoDreamService {
         Ok(())
     }
 
-    async fn load_memories(&self) -> anyhow::Result<Vec<MemoryEntry>> {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let memory_path = home.join(".wgenty-code").join("memory.json");
-
-        if !memory_path.exists() {
-            return Ok(Vec::new());
-        }
-
-        let content = std::fs::read_to_string(&memory_path)?;
-        let memories: Vec<MemoryEntry> = serde_json::from_str(&content)?;
-        Ok(memories)
-    }
-
-    async fn analyze_and_consolidate(
-        &self,
-        memories: &[MemoryEntry],
-    ) -> anyhow::Result<Vec<ConsolidatedInsight>> {
-        let mut insights: Vec<ConsolidatedInsight> = Vec::new();
-
-        let mut topic_groups: HashMap<String, Vec<&MemoryEntry>> = HashMap::new();
-
-        for memory in memories {
-            let topic = self.extract_topic(&memory.content);
-            topic_groups.entry(topic).or_default().push(memory);
-        }
-
-        for (topic, group) in topic_groups {
-            if group.len() >= 2 {
-                let summary = self.summarize_topic(&topic, &group);
-                insights.push(ConsolidatedInsight {
-                    topic: topic.clone(),
-                    summary,
-                    memory_count: group.len(),
-                    last_updated: Utc::now(),
-                });
-            }
-        }
-
-        Ok(insights)
-    }
-
-    fn extract_topic(&self, content: &str) -> String {
-        let words: Vec<&str> = content.split_whitespace().take(5).collect();
-        words.join("_").to_lowercase()
-    }
-
-    fn summarize_topic(&self, topic: &str, memories: &[&MemoryEntry]) -> String {
-        format!(
-            "Consolidated {} memories about '{}': Key patterns identified across sessions.",
-            memories.len(),
-            topic
-        )
-    }
-
-    async fn save_consolidated_memories(
-        &self,
-        insights: &[ConsolidatedInsight],
-    ) -> anyhow::Result<()> {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let consolidated_path = home.join(".wgenty-code").join("consolidated_memories.json");
-
-        let existing = if consolidated_path.exists() {
-            let content = std::fs::read_to_string(&consolidated_path)?;
-            serde_json::from_str::<Vec<ConsolidatedInsight>>(&content)?
-        } else {
-            Vec::new()
-        };
-
-        let mut all_insights = existing;
-        all_insights.extend(insights.to_vec());
-
-        let content = serde_json::to_string_pretty(&all_insights)?;
-        std::fs::write(&consolidated_path, content)?;
-
-        Ok(())
-    }
 
     async fn save_state(&self, state: &ConsolidationState) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -344,23 +267,6 @@ impl AutoDreamService {
 
         Ok(())
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MemoryEntry {
-    pub id: String,
-    pub memory_type: String,
-    pub content: String,
-    pub timestamp: DateTime<Utc>,
-    pub metadata: HashMap<String, serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConsolidatedInsight {
-    pub topic: String,
-    pub summary: String,
-    pub memory_count: usize,
-    pub last_updated: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize)]
