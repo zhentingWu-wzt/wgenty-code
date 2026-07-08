@@ -6,7 +6,7 @@ base-ref: 361005e04c6d294ae95eeb32392e0fdbf566cbd6
 
 # Agent Memory System 统一实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (\`- \\[ \\]\`) syntax for tracking.
 
 **Goal:** 实现端到端的跨会话记忆系统：在 compaction 期间提取记忆、持久化存储、会话启动时召回、以及基于时间门控的 consolidation。
 
@@ -59,7 +59,7 @@ base-ref: 361005e04c6d294ae95eeb32392e0fdbf566cbd6
 - Consumes: `crate::context::MemoryManager`（已存在）
 - Produces: `AgentLoop` 新增字段 `memory_manager: Arc<MemoryManager>`；`AgentLoop::new()` 新增参数 `memory_manager: Arc<MemoryManager>`
 
-- [ ] **Step 1: 在 AgentLoop struct 中添加 `memory_manager` 字段**
+- [x] **Step 1: 在 AgentLoop struct 中添加 `memory_manager` 字段**
 
 在 `src/tui/agent/mod.rs` 的 `AgentLoop` struct 末尾（`context_window` 字段之后）添加：
 
@@ -68,7 +68,7 @@ base-ref: 361005e04c6d294ae95eeb32392e0fdbf566cbd6
 pub(super) memory_manager: Arc<crate::context::MemoryManager>,
 ```
 
-- [ ] **Step 2: 在 AgentLoop::new() 中添加参数**
+- [x] **Step 2: 在 AgentLoop::new() 中添加参数**
 
 在 `AgentLoop::new()` 的参数列表末尾（`context_window: usize,` 之后）添加：
 
@@ -82,7 +82,7 @@ memory_manager: Arc<crate::context::MemoryManager>,
 memory_manager,
 ```
 
-- [ ] **Step 3: 在 App struct 中添加 `memory_manager` 字段**
+- [x] **Step 3: 在 App struct 中添加 `memory_manager` 字段**
 
 在 `src/tui/app/mod.rs` 的 `App` struct 中（`prompt_context` 字段附近）添加：
 
@@ -91,7 +91,7 @@ memory_manager,
 pub memory_manager: Arc<crate::context::MemoryManager>,
 ```
 
-- [ ] **Step 4: 在 App::new() 中创建 MemoryManager**
+- [x] **Step 4: 在 App::new() 中创建 MemoryManager**
 
 在 `src/tui/app/mod.rs` 的 `App::new()` 函数中，`Self {` 初始化块内添加：
 
@@ -101,7 +101,7 @@ memory_manager: Arc::new(crate::context::MemoryManager::new()),
 
 注意：`use` 声明不需要修改，因为 `crate::context::MemoryManager` 已经可通过 `crate::context::MemoryManager` 路径访问。
 
-- [ ] **Step 5: 在 spawn_agent_turn 中传入 memory_manager**
+- [x] **Step 5: 在 spawn_agent_turn 中传入 memory_manager**
 
 在 `src/tui/app/turn.rs` 的 `spawn_agent_turn()` 中，在 `let prompt_context = self.prompt_context.clone();` 之后添加：
 
@@ -115,7 +115,7 @@ let memory_manager = self.memory_manager.clone();
 memory_manager,
 ```
 
-- [ ] **Step 6: 在 spawn_compact_turn 中同样传入 memory_manager**
+- [x] **Step 6: 在 spawn_compact_turn 中同样传入 memory_manager**
 
 在 `src/tui/app/turn.rs` 的 `spawn_compact_turn()` 中，在 `let prompt_context = self.prompt_context.clone();` 之后添加：
 
@@ -129,7 +129,7 @@ let memory_manager = self.memory_manager.clone();
 memory_manager,
 ```
 
-- [ ] **Step 7: 验证编译**
+- [x] **Step 7: 验证编译**
 
 ```bash
 cargo check 2>&1
@@ -137,7 +137,7 @@ cargo check 2>&1
 
 预期：编译通过，无新增错误。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/tui/agent/mod.rs src/tui/app/turn.rs src/tui/app/mod.rs
@@ -155,7 +155,7 @@ git commit -m "feat(P0): inject MemoryManager into AgentLoop and App"
 - Consumes: `self.memory_manager: Arc<MemoryManager>`（Task 1 产物）
 - Produces: 增强后的 compaction prompt 请求 JSON 格式 `{summary, memories}`；响应解析为 summary + MemoryEntry 序列
 
-- [ ] **Step 1: 在 compaction.rs 顶部添加 use 声明**
+- [x] **Step 1: 在 compaction.rs 顶部添加 use 声明**
 
 在 `src/tui/agent/compaction.rs` 的现有 use 块之后添加：
 
@@ -163,7 +163,7 @@ git commit -m "feat(P0): inject MemoryManager into AgentLoop and App"
 use crate::context::{MemoryEntry, MemoryType};
 ```
 
-- [ ] **Step 2: 编写增强后的 system prompt**
+- [x] **Step 2: 编写增强后的 system prompt**
 
 在 `do_auto_compact()` 中，将现有的 `summary_messages` 构建（约第 261-269 行）替换为增强版本：
 
@@ -197,13 +197,13 @@ let summary_messages = vec![
 ];
 ```
 
-- [ ] **Step 3: 将 compaction 调用改为非流式**
+- [x] **Step 3: 将 compaction 调用改为非流式**
 
 将现有的 `self.client.chat_stream_with_plan(...)` 调用（约第 276-289 行）替换为非流式调用。由于 `DaemonClient` 没有非流式 `chat()` 方法，改用已有的流式调用但确保完整读取——当前代码已完整读取流，无需修改传输层。但需将 `plan_mode` 保持为 `Some(true)` 以避免 tool definitions。
 
 保持现有代码不变（流式读取已完整累积响应），只修改后续的响应处理逻辑。
 
-- [ ] **Step 4: 解析 JSON 响应，提取 summary 和 memories**
+- [x] **Step 4: 解析 JSON 响应，提取 summary 和 memories**
 
 在获取 `result` 后（`let result = processor.finish();` 之后，约第 324 行），替换现有的 summary 提取逻辑（第 329-341 行）：
 
@@ -269,7 +269,7 @@ if summary.trim().is_empty() {
 }
 ```
 
-- [ ] **Step 5: 持久化提取的记忆**
+- [x] **Step 5: 持久化提取的记忆**
 
 在 summary 非空检查之后、`self.compacted_summary = summary.clone();` 之前，添加记忆持久化逻辑：
 
@@ -285,11 +285,11 @@ if !extracted_memories.is_empty() {
 }
 ```
 
-- [ ] **Step 6: 使用 `summary` 变量替换后续的 `summary` 引用**
+- [x] **Step 6: 使用 `summary` 变量替换后续的 `summary` 引用**
 
 将第 343 行的 `self.compacted_summary = summary.clone();` 保持不变（变量名仍为 `summary`），确保 `assemble_post_compaction_history` 使用 `&summary`。
 
-- [ ] **Step 7: 检查 MemoryType 是否有 Decision 变体**
+- [x] **Step 7: 检查 MemoryType 是否有 Decision 变体**
 
 运行以下命令检查 `MemoryType` 枚举：
 
@@ -299,7 +299,7 @@ grep -n "enum MemoryType" src/context/mod.rs
 
 预期：`MemoryType` 应包含 `Decision` 变体。如果没有，需要在 `src/context/mod.rs` 的 `MemoryType` 枚举中添加 `Decision`。
 
-- [ ] **Step 8: 验证编译**
+- [x] **Step 8: 验证编译**
 
 ```bash
 cargo check 2>&1
@@ -307,7 +307,7 @@ cargo check 2>&1
 
 预期：编译通过。
 
-- [ ] **Step 9: 编写单元测试 — 验证增强 prompt 包含 JSON 格式指令**
+- [x] **Step 9: 编写单元测试 — 验证增强 prompt 包含 JSON 格式指令**
 
 在 `src/tui/agent/compaction.rs` 的 `#[cfg(test)] mod tests` 块末尾添加：
 
@@ -335,7 +335,7 @@ fn test_compaction_prompt_includes_json_format() {
 }
 ```
 
-- [ ] **Step 10: 编写单元测试 — 验证 JSON 解析成功路径**
+- [x] **Step 10: 编写单元测试 — 验证 JSON 解析成功路径**
 
 ```rust
 #[test]
@@ -358,7 +358,7 @@ fn test_parse_compaction_json_success() {
 }
 ```
 
-- [ ] **Step 11: 编写单元测试 — 验证 JSON 解析失败优雅降级**
+- [x] **Step 11: 编写单元测试 — 验证 JSON 解析失败优雅降级**
 
 ```rust
 #[test]
@@ -374,7 +374,7 @@ fn test_parse_compaction_json_failure_graceful() {
 }
 ```
 
-- [ ] **Step 12: 运行测试验证**
+- [x] **Step 12: 运行测试验证**
 
 ```bash
 cargo test --lib compaction::tests 2>&1
@@ -382,7 +382,7 @@ cargo test --lib compaction::tests 2>&1
 
 预期：所有新增测试通过。
 
-- [ ] **Step 13: Commit**
+- [x] **Step 13: Commit**
 
 ```bash
 git add src/tui/agent/compaction.rs
@@ -400,7 +400,7 @@ git commit -m "feat(P0): enhance compaction to extract memories as JSON from sum
 - Consumes: `PromptContext`（已存在）
 - Produces: `PromptContext::memories: Vec<String>`、`PromptContext::with_memories()`、`assemble_instructions()` Layer 5-6 之间的注入
 
-- [ ] **Step 1: 在 PromptContext struct 中添加 `memories` 字段**
+- [x] **Step 1: 在 PromptContext struct 中添加 `memories` 字段**
 
 在 `src/prompts/mod.rs` 的 `PromptContext` struct 中，在现有字段末尾（`context_assembler` 之后）添加：
 
@@ -416,7 +416,7 @@ pub memories: Vec<String>,
 .field("memories", &self.memories)
 ```
 
-- [ ] **Step 2: 在 PromptContext::new() 中初始化 `memories`**
+- [x] **Step 2: 在 PromptContext::new() 中初始化 `memories`**
 
 在 `PromptContext::new()` 的 `Self { ... }` 初始化块末尾添加：
 
@@ -424,7 +424,7 @@ pub memories: Vec<String>,
 memories: Vec::new(),
 ```
 
-- [ ] **Step 3: 添加 builder 方法 `with_memories()`**
+- [x] **Step 3: 添加 builder 方法 `with_memories()`**
 
 在 `PromptContext` 的 `impl` 块中（`with_project_root` 方法之后）添加：
 
@@ -435,7 +435,7 @@ pub fn with_memories(mut self, memories: Vec<String>) -> Self {
 }
 ```
 
-- [ ] **Step 4: 在 `assemble_instructions()` 中 Layer 5 (Environment) 和 Layer 6 (Skills) 之间注入 memories**
+- [x] **Step 4: 在 `assemble_instructions()` 中 Layer 5 (Environment) 和 Layer 6 (Skills) 之间注入 memories**
 
 在 `src/prompts/mod.rs` 的 `assemble_instructions()` 函数中，找到 Layer 5（Environment，约第 339-340 行 `let env_text = ...` 和 `system_messages.push(...)`）之后、Layer 6（Skills，约第 343 行 `if settings.prompt.include.skills ...`）之前，插入：
 
@@ -450,7 +450,7 @@ if !context.memories.is_empty() {
 }
 ```
 
-- [ ] **Step 5: 编写单元测试 — 空 memories 不注入额外 system message**
+- [x] **Step 5: 编写单元测试 — 空 memories 不注入额外 system message**
 
 在 `src/prompts/mod.rs` 的 `#[cfg(test)] mod tests` 块中（`test_assemble_base_only` 之后）添加：
 
@@ -473,7 +473,7 @@ fn test_assemble_with_empty_memories_no_injection() {
 }
 ```
 
-- [ ] **Step 6: 编写单元测试 — 非空 memories 在 Layer 5 之后、Layer 6 之前出现**
+- [x] **Step 6: 编写单元测试 — 非空 memories 在 Layer 5 之后、Layer 6 之前出现**
 
 ```rust
 #[test]
@@ -519,7 +519,7 @@ fn test_assemble_with_memories_between_layer_5_and_6() {
 }
 ```
 
-- [ ] **Step 7: 运行测试验证**
+- [x] **Step 7: 运行测试验证**
 
 ```bash
 cargo test --lib prompts::tests 2>&1
@@ -527,7 +527,7 @@ cargo test --lib prompts::tests 2>&1
 
 预期：所有测试通过。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/prompts/mod.rs
@@ -545,7 +545,7 @@ git commit -m "feat(P1): add memories field to PromptContext and inject between 
 - Consumes: `self.memory_manager: Arc<MemoryManager>`（Task 1）、`self.prompt_context: Arc<PromptContext>`（已有）
 - Produces: 会话启动时加载记忆、按项目名搜索、过滤 importance >= 0.5、格式化后注入 PromptContext
 
-- [ ] **Step 1: 实现会话启动召回逻辑**
+- [x] **Step 1: 实现会话启动召回逻辑**
 
 在 `src/tui/app/mod.rs` 的 `App::run()` 方法中，在 `// Main loop` 注释之前、ticker spawn 之后（约第 483-484 行之间），插入 session startup 逻辑：
 
@@ -616,7 +616,7 @@ git commit -m "feat(P1): add memories field to PromptContext and inject between 
 }
 ```
 
-- [ ] **Step 2: 在 App struct 中添加 `startup_memories` 字段**
+- [x] **Step 2: 在 App struct 中添加 `startup_memories` 字段**
 
 在 `src/tui/app/mod.rs` 的 `App` struct 中（`prompt_context` 字段附近）添加：
 
@@ -631,7 +631,7 @@ pub startup_memories: Vec<String>,
 startup_memories: Vec::new(),
 ```
 
-- [ ] **Step 3: 完善 Step 1 中的召回逻辑，将结果存入 `startup_memories`**
+- [x] **Step 3: 完善 Step 1 中的召回逻辑，将结果存入 `startup_memories`**
 
 修改 Step 1 中的 `if !top.is_empty()` 块，将 `lines` 存入 `self.startup_memories` 而不是试图修改 `prompt_context`：
 
@@ -653,7 +653,7 @@ if !top.is_empty() {
 }
 ```
 
-- [ ] **Step 4: 在 `spawn_agent_turn` 和 `spawn_compact_turn` 中注入 startup_memories**
+- [x] **Step 4: 在 `spawn_agent_turn` 和 `spawn_compact_turn` 中注入 startup_memories**
 
 在 `src/tui/app/turn.rs` 中，`spawn_agent_turn()` 和 `spawn_compact_turn()` 的 `AgentLoop::new()` 调用之前，将 `startup_memories` 注入 `prompt_context`。由于 `PromptContext` 是 `Arc` 且没有内部可变性，采用以下方式：
 
@@ -672,7 +672,7 @@ let prompt_context = if !self.startup_memories.is_empty() {
 
 注意：这需要 `PromptContext` 实现 `Clone`（已有 `#[derive(Clone)]`）。
 
-- [ ] **Step 5: 添加 `format_memory_type` 辅助函数**
+- [x] **Step 5: 添加 `format_memory_type` 辅助函数**
 
 在 `src/tui/app/mod.rs` 的 `impl App` 块之外（文件级别或模块内）添加：
 
@@ -692,7 +692,7 @@ fn format_memory_type(mt: &crate::context::MemoryType) -> &'static str {
 }
 ```
 
-- [ ] **Step 6: 检查 `MemoryType` 是否需要添加 `Decision` 变体**
+- [x] **Step 6: 检查 `MemoryType` 是否需要添加 `Decision` 变体**
 
 ```bash
 grep -n "enum MemoryType" src/context/mod.rs
@@ -704,7 +704,7 @@ grep -n "enum MemoryType" src/context/mod.rs
 Decision,
 ```
 
-- [ ] **Step 7: 验证编译**
+- [x] **Step 7: 验证编译**
 
 ```bash
 cargo check 2>&1
@@ -712,7 +712,7 @@ cargo check 2>&1
 
 预期：编译通过。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/tui/app/mod.rs src/tui/app/turn.rs
@@ -731,7 +731,7 @@ git commit -m "feat(P1): implement session startup memory recall"
 - Consumes: `AutoDreamService`（已存在）、`MemoryManager::consolidate()`（已存在）
 - Produces: 会话启动时在召回之前执行 consolidation（如有需要）
 
-- [ ] **Step 1: 在 App struct 中添加 `auto_dream_service` 字段**
+- [x] **Step 1: 在 App struct 中添加 `auto_dream_service` 字段**
 
 在 `src/tui/app/mod.rs` 的 `App` struct 中（`memory_manager` 字段附近）添加：
 
@@ -740,7 +740,7 @@ git commit -m "feat(P1): implement session startup memory recall"
 pub auto_dream_service: Option<Arc<crate::services::AutoDreamService>>,
 ```
 
-- [ ] **Step 2: 在 App::new() 中创建 AutoDreamService**
+- [x] **Step 2: 在 App::new() 中创建 AutoDreamService**
 
 在 `src/tui/app/mod.rs` 的 `App::new()` 中，在创建 `memory_manager` 之后：
 
@@ -757,7 +757,7 @@ let auto_dream = {
 auto_dream_service: Some(Arc::new(auto_dream)),
 ```
 
-- [ ] **Step 3: 在 session startup 中，召回之前先调用 check_and_run**
+- [x] **Step 3: 在 session startup 中，召回之前先调用 check_and_run**
 
 在 `src/tui/app/mod.rs` 的 `App::run()` 中，Task 4 的 session startup 代码之前，插入：
 
@@ -772,7 +772,7 @@ if let Some(ref ads) = self.auto_dream_service {
 }
 ```
 
-- [ ] **Step 4: 检查 AppState 的 Default 实现**
+- [x] **Step 4: 检查 AppState 的 Default 实现**
 
 ```bash
 grep -n "impl Default for AppState\|fn default" src/state/mod.rs 2>/dev/null || grep -rn "struct AppState" src/state/ --include="*.rs"
@@ -784,7 +784,7 @@ grep -n "impl Default for AppState\|fn default" src/state/mod.rs 2>/dev/null || 
 
 查看 `auto_dream.rs`：`AutoDreamService` 的 `state` 字段未被直接使用（只在构造时存储）。可以传入一个空的 `AppState::default()`。
 
-- [ ] **Step 5: 验证编译**
+- [x] **Step 5: 验证编译**
 
 ```bash
 cargo check 2>&1
@@ -792,7 +792,7 @@ cargo check 2>&1
 
 预期：编译通过。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/tui/app/mod.rs src/services/auto_dream.rs
@@ -810,7 +810,7 @@ git commit -m "feat(P2): wire AutoDream check_and_run into session startup"
 - Consumes: `MemoryManager::consolidate()`（通过 Arc 注入）
 - Produces: `run_consolidation()` 委托给 `MemoryManager::consolidate()`
 
-- [ ] **Step 1: 在 AutoDreamService 中添加 `memory_manager` 字段**
+- [x] **Step 1: 在 AutoDreamService 中添加 `memory_manager` 字段**
 
 在 `src/services/auto_dream.rs` 的 `AutoDreamService` struct 中添加：
 
@@ -818,7 +818,7 @@ git commit -m "feat(P2): wire AutoDream check_and_run into session startup"
 memory_manager: Option<Arc<crate::context::MemoryManager>>,
 ```
 
-- [ ] **Step 2: 修改 AutoDreamService::new() 接受 MemoryManager**
+- [x] **Step 2: 修改 AutoDreamService::new() 接受 MemoryManager**
 
 ```rust
 pub fn new(
@@ -834,7 +834,7 @@ pub fn new(
 }
 ```
 
-- [ ] **Step 3: 简化 run_consolidation() 委托给 MemoryManager**
+- [x] **Step 3: 简化 run_consolidation() 委托给 MemoryManager**
 
 将 `run_consolidation()` 方法（第 185-206 行）替换为：
 
@@ -875,7 +875,7 @@ async fn run_consolidation(&self) -> anyhow::Result<()> {
 }
 ```
 
-- [ ] **Step 4: 更新 ServiceManager::initialize() 中 AutoDreamService 的构造**
+- [x] **Step 4: 更新 ServiceManager::initialize() 中 AutoDreamService 的构造**
 
 在 `src/services/mod.rs` 的 `ServiceManager::initialize()` 中（第 49 行）：
 
@@ -907,7 +907,7 @@ pub fn with_memory_manager(mut self, mm: Arc<crate::context::MemoryManager>) -> 
 }
 ```
 
-- [ ] **Step 5: 验证编译**
+- [x] **Step 5: 验证编译**
 
 ```bash
 cargo check 2>&1
@@ -915,7 +915,7 @@ cargo check 2>&1
 
 预期：编译通过。
 
-- [ ] **Step 6: 编写单元测试 — AutoDream gate 通过时调用 consolidate**
+- [x] **Step 6: 编写单元测试 — AutoDream gate 通过时调用 consolidate**
 
 在 `src/services/auto_dream.rs` 的 `#[cfg(test)]` 块中添加：
 
@@ -946,7 +946,7 @@ async fn test_autodream_delegates_to_memory_manager() {
 }
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/services/auto_dream.rs src/services/mod.rs
@@ -965,33 +965,33 @@ git commit -m "feat(P2): simplify AutoDreamService to delegate consolidation to 
 - Consumes: `AutoDreamService`（Task 6 修改后）
 - Produces: 删除 `services::auto_dream::MemoryEntry`、`load_memories()`、`save_consolidated_memories()`、`analyze_and_consolidate()`
 
-- [ ] **Step 1: 删除 auto_dream.rs 中的 legacy MemoryEntry 类型**
+- [x] **Step 1: 删除 auto_dream.rs 中的 legacy MemoryEntry 类型**
 
 删除 `src/services/auto_dream.rs` 中的 `MemoryEntry` struct（第 327-333 行）和 `ConsolidatedInsight` struct（第 335-341 行，如果不再使用）。
 
 检查 `ConsolidatedInsight` 是否在文件内其他地方被引用。如果是 `load_memories()`/`save_consolidated_memories()`/`analyze_and_consolidate()` 的返回值类型，则一并删除。
 
-- [ ] **Step 2: 删除 `load_memories()` 方法**
+- [x] **Step 2: 删除 `load_memories()` 方法**
 
 删除第 208-219 行的 `load_memories()` 方法。
 
-- [ ] **Step 3: 删除 `analyze_and_consolidate()` 方法**
+- [x] **Step 3: 删除 `analyze_and_consolidate()` 方法**
 
 删除第 221-246 行的 `analyze_and_consolidate()` 方法。
 
-- [ ] **Step 4: 删除 `save_consolidated_memories()` 方法**
+- [x] **Step 4: 删除 `save_consolidated_memories()` 方法**
 
 删除第 262-283 行的 `save_consolidated_memories()` 方法。
 
-- [ ] **Step 5: 删除 `extract_topic()` 和 `summarize_topic()` 辅助方法**
+- [x] **Step 5: 删除 `extract_topic()` 和 `summarize_topic()` 辅助方法**
 
 删除第 249-260 行的 `extract_topic()` 和 `summarize_topic()` 方法。
 
-- [ ] **Step 6: 清理未使用的 use 声明**
+- [x] **Step 6: 清理未使用的 use 声明**
 
 删除 `auto_dream.rs` 顶部不再需要的 `use std::collections::HashMap;`。
 
-- [ ] **Step 7: 检查 services/mod.rs 中是否 re-export 了 legacy 类型**
+- [x] **Step 7: 检查 services/mod.rs 中是否 re-export 了 legacy 类型**
 
 ```bash
 grep -n "MemoryEntry\|ConsolidatedInsight" src/services/mod.rs
@@ -999,7 +999,7 @@ grep -n "MemoryEntry\|ConsolidatedInsight" src/services/mod.rs
 
 预期：`mod.rs` 不应 re-export `MemoryEntry` 或 `ConsolidatedInsight`。如果有，删除相应的 re-export 行。
 
-- [ ] **Step 8: 验证编译**
+- [x] **Step 8: 验证编译**
 
 ```bash
 cargo check 2>&1
@@ -1007,7 +1007,7 @@ cargo check 2>&1
 
 预期：编译通过，无引用 legacy 类型的错误。
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add src/services/auto_dream.rs src/services/mod.rs
@@ -1026,13 +1026,13 @@ git commit -m "chore(P2): remove legacy AutoDream types and methods"
 - Consumes: `context::context_window` 模块（仅在 `context/` 内部使用）
 - Produces: 模块完全删除，相关 re-exports 移除
 
-- [ ] **Step 1: 删除 context_window.rs 文件**
+- [x] **Step 1: 删除 context_window.rs 文件**
 
 ```bash
 rm src/context/context_window.rs
 ```
 
-- [ ] **Step 2: 在 context/mod.rs 中删除 `pub mod context_window`**
+- [x] **Step 2: 在 context/mod.rs 中删除 `pub mod context_window`**
 
 在 `src/context/mod.rs` 中删除第 8 行：
 
@@ -1040,7 +1040,7 @@ rm src/context/context_window.rs
 pub mod context_window;
 ```
 
-- [ ] **Step 3: 删除 context_window 相关的 re-exports**
+- [x] **Step 3: 删除 context_window 相关的 re-exports**
 
 在 `src/context/mod.rs` 中删除第 22 行（或相应的 re-export 行）：
 
@@ -1048,7 +1048,7 @@ pub mod context_window;
 pub use context_window::{ContextEntry, ContextManager, ContextWindow};
 ```
 
-- [ ] **Step 4: 检查 MemoryManager 中对 ContextManager 的引用**
+- [x] **Step 4: 检查 MemoryManager 中对 ContextManager 的引用**
 
 `MemoryManager` 有字段 `context: Arc<ContextManager>`（第 101 行），以及 `context()` 方法（第 247 行）返回 `Arc<ContextManager>`。
 
@@ -1064,11 +1064,11 @@ grep -rn "\.context()\|memory_manager.*context" src/ --include="*.rs" | grep -v 
 
 预期：没有外部调用者。如果有，需要一并处理。
 
-- [ ] **Step 5: 在 context/mod.rs 中删除 ContextManager 相关的 use 声明**
+- [x] **Step 5: 在 context/mod.rs 中删除 ContextManager 相关的 use 声明**
 
 删除 `use std::sync::Arc;` 和 `use tokio::sync::RwLock;`（如果它们仅用于 `ContextManager` 的字段类型）。注意：`MemoryManager` 本身也使用 `Arc` 和 `RwLock`，所以这些 use 声明应该保留。
 
-- [ ] **Step 6: 验证编译**
+- [x] **Step 6: 验证编译**
 
 ```bash
 cargo check 2>&1
@@ -1076,7 +1076,7 @@ cargo check 2>&1
 
 预期：编译通过，无引用 `context_window`、`ContextWindow`、`ContextManager`、`ContextEntry` 的错误。
 
-- [ ] **Step 7: 全局搜索残留引用**
+- [x] **Step 7: 全局搜索残留引用**
 
 ```bash
 grep -rn "ContextWindow\|ContextManager\|ContextEntry\|ContextPriority\|ContextSource\|ContextSummary\|ContextStats" src/ --include="*.rs" | grep -v "^Binary\|\.tmp\|target/"
@@ -1084,7 +1084,7 @@ grep -rn "ContextWindow\|ContextManager\|ContextEntry\|ContextPriority\|ContextS
 
 预期：仅在 `runtime/context.rs` 中有同名的 `ContextSource`（不同模块，不同用途），其余应无匹配。如果有匹配，清理或确认其正确性。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git rm src/context/context_window.rs
@@ -1101,7 +1101,7 @@ git commit -m "chore(cleanup): remove context_window module (ContextWindow, Cont
 
 **Description:** 全面的集成验证，确保所有变更正确编译、测试通过、无 clippy 警告。
 
-- [ ] **Step 1: 完整编译检查**
+- [x] **Step 1: 完整编译检查**
 
 ```bash
 cargo check 2>&1
@@ -1109,7 +1109,7 @@ cargo check 2>&1
 
 预期：编译通过，0 errors。
 
-- [ ] **Step 2: 运行全量单元测试**
+- [x] **Step 2: 运行全量单元测试**
 
 ```bash
 cargo test --lib 2>&1
@@ -1117,7 +1117,7 @@ cargo test --lib 2>&1
 
 预期：所有测试通过。如有关联测试失败，分析失败原因并修复。
 
-- [ ] **Step 3: 运行 clippy 检查**
+- [x] **Step 3: 运行 clippy 检查**
 
 ```bash
 cargo clippy --all-targets 2>&1
@@ -1125,13 +1125,13 @@ cargo clippy --all-targets 2>&1
 
 预期：无新增 warning。如有 warning，修复。
 
-- [ ] **Step 4: 验证 memory 存储目录**
+- [x] **Step 4: 验证 memory 存储目录**
 
 ```bash
 ls -la ~/.wgenty-code/memory/ 2>/dev/null || echo "directory does not exist yet (expected before first compaction)"
 ```
 
-- [ ] **Step 5: 验证 legacy 文件不再被引用**
+- [x] **Step 5: 验证 legacy 文件不再被引用**
 
 ```bash
 grep -rn "memory.json\|consolidated_memories.json" src/ --include="*.rs" | grep -v "^Binary\|\.tmp\|target/"
@@ -1139,7 +1139,7 @@ grep -rn "memory.json\|consolidated_memories.json" src/ --include="*.rs" | grep 
 
 预期：仅在 `auto_dream.rs` 中且已被删除（Task 7 产物），或完全不匹配。
 
-- [ ] **Step 6: 验证 context_window 引用已清理**
+- [x] **Step 6: 验证 context_window 引用已清理**
 
 ```bash
 grep -rn "context_window\|ContextWindow\|ContextManager\|ContextEntry" src/ --include="*.rs" | grep -v "^Binary\|\.tmp\|target/" | grep -v "runtime/context.rs"
@@ -1147,7 +1147,7 @@ grep -rn "context_window\|ContextWindow\|ContextManager\|ContextEntry" src/ --in
 
 预期：无匹配。
 
-- [ ] **Step 7: 手动冒烟测试**
+- [x] **Step 7: 手动冒烟测试**
 
 ```bash
 # 启动应用，进行一次对话触发 compaction，然后检查 ~/.wgenty-code/memory/ 目录中是否有提取的记忆文件
@@ -1156,7 +1156,7 @@ cargo run -- ... # (根据项目的运行方式进行)
 
 预期：`~/.wgenty-code/memory/` 目录中有新的 JSON 文件，包含提取的记忆。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A

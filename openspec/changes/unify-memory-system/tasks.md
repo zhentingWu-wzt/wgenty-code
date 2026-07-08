@@ -5,9 +5,9 @@
 - [x] 1.3 Parse JSON response after receiving summary — extract `memories` array and persist each via `memory_manager.add_memory()`
 - [x] 1.4 Implement graceful degradation: on JSON parse failure, use full response as summary only, log warning, skip memory extraction
 - [x] 1.5 Update `App::spawn_agent_turn()` and `App::spawn_compact_turn()` to pass `Arc<MemoryManager>` to `AgentLoop::new()`
-- [ ] 1.6 Add unit test: verify enhanced prompt includes JSON output format instruction
-- [ ] 1.7 Add unit test: verify JSON parse success path calls `add_memory`
-- [ ] 1.8 Add unit test: verify JSON parse failure falls back gracefully
+- [x] 1.6 Add unit test: verify enhanced prompt includes JSON output format instruction
+- [x] 1.7 Add unit test: verify JSON parse success path calls `add_memory`
+- [x] 1.8 Add unit test: verify JSON parse failure falls back gracefully
 
 ## 2. P1 — Consumer: Memory Recall at Session Start
 
@@ -16,8 +16,8 @@
 - [x] 2.3 Inject recalled memories as a system message between Layer 5 (Environment) and Layer 6 (Skills) in `assemble_instructions()`
 - [x] 2.4 Implement session startup recall: `MemoryManager::load()` → `search_memories(cwd)` → `get_important_memories(0.5)` → take top N → populate `PromptContext.memories`
 - [x] 2.5 Wire startup recall into the App initialization path (before first turn is spawned)
-- [ ] 2.6 Add unit test: empty memories → no extra system message injected
-- [ ] 2.7 Add unit test: non-empty memories → system message appears between Layer 5 and Layer 6
+- [x] 2.6 Add unit test: empty memories → no extra system message injected
+- [x] 2.7 Add unit test: non-empty memories → system message appears between Layer 5 and Layer 6
 
 ## 3. P2 — Consolidation: AutoDream Gate Trigger
 
@@ -26,8 +26,8 @@
 - [x] 3.3 Remove `AutoDreamService::load_memories()` and `save_consolidated_memories()` — replaced by MemoryManager
 - [x] 3.4 Remove `services::auto_dream::MemoryEntry` type — use `context::MemoryEntry` throughout
 - [x] 3.5 Clean up AutoDream's legacy file usage: remove writes to `memory.json` and `consolidated_memories.json`
-- [ ] 3.6 Add unit test: AutoDream gate passes → `MemoryManager::consolidate()` is called
-- [ ] 3.7 Add unit test: AutoDream gate fails (time) → no consolidation
+- [x] 3.6 Add unit test: AutoDream gate passes → `MemoryManager::consolidate()` is called
+- [x] 3.7 Add unit test: AutoDream gate fails (time) → no consolidation
 
 ## 4. Dead Code Removal
 
