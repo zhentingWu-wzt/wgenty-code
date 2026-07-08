@@ -39,8 +39,8 @@
 
 ## 5. Integration Verification
 
-- [ ] 5.1 End-to-end test: spawn agent, trigger compaction, verify memory files appear in `~/.wgenty-code/memory/`
-- [ ] 5.2 End-to-end test: session restart with project path, verify recalled memories appear in prompt
-- [ ] 5.3 Verify `cargo test` passes for all touched modules
-- [ ] 5.4 Verify `cargo clippy` passes with no new warnings
-- [ ] 5.5 Manual smoke test: real conversation → compaction → check `~/.wgenty-code/memory/` for extracted memories
+- [x] 5.1 End-to-end test: spawn agent, trigger compaction, verify memory files appear in `~/.wgenty-code/memory/`
+- [x] 5.2 End-to-end test: session restart with project path, verify recalled memories appear in prompt
+- [x] 5.3 Verify `cargo test` passes for all touched modules (550 passed, 0 failed)
+- [x] 5.4 Verify `cargo clippy` passes with no new warnings (1 pre-existing)
+- [x] 5.5 Manual smoke test: real conversation → compaction → check `~/.wgenty-code/memory/` for extracted memories
