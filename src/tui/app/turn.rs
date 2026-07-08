@@ -82,6 +82,14 @@ impl App {
         let token_counter = self.token_counter.clone();
         let hook_manager = self.hook_manager.clone();
         let prompt_context = self.prompt_context.clone();
+        // Inject startup memories into the per-turn prompt context
+        let prompt_context = if !self.startup_memories.is_empty() {
+            let mut ctx = (*prompt_context).clone();
+            ctx.memories = self.startup_memories.clone();
+            std::sync::Arc::new(ctx)
+        } else {
+            prompt_context
+        };
         let memory_manager = self.memory_manager.clone();
         self.current_turn_handle = Some(tokio::spawn(async move {
             let mut agent = AgentLoop::new(
@@ -142,6 +150,14 @@ impl App {
         let token_counter = self.token_counter.clone();
         let hook_manager = self.hook_manager.clone();
         let prompt_context = self.prompt_context.clone();
+        // Inject startup memories into the per-turn prompt context
+        let prompt_context = if !self.startup_memories.is_empty() {
+            let mut ctx = (*prompt_context).clone();
+            ctx.memories = self.startup_memories.clone();
+            std::sync::Arc::new(ctx)
+        } else {
+            prompt_context
+        };
         let memory_manager = self.memory_manager.clone();
         self.current_turn_handle = Some(tokio::spawn(async move {
             let mut agent = AgentLoop::new(
