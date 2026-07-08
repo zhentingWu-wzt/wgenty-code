@@ -70,14 +70,14 @@ pub fn render(f: &mut Frame, area: Rect, model_name: &str) {
     )));
     lines.push(Line::raw(""));
 
-    // Usage guide
+    // Comet workflow onboarding
     lines.push(Line::from(Span::styled(
-        "Type your message and press Enter to start.",
-        Style::default().fg(Color::Rgb(120, 120, 140)),
+        "Type /comet to start a spec-driven workflow, or just begin typing.",
+        Style::default().fg(Color::Rgb(150, 140, 185)),
     )));
     lines.push(Line::from(Span::styled(
-        "/help · commands  ·  /plan · plan mode  ·  /clear · reset  ·  /compact · compress",
-        Style::default().fg(Color::Rgb(120, 120, 140)),
+        "/comet-tweak · small change   /comet-hotfix · urgent fix   /help · commands",
+        Style::default().fg(Color::Rgb(150, 140, 185)),
     )));
     lines.push(Line::raw(""));
 
