@@ -121,7 +121,10 @@ impl Cli {
         use crate::tui::app::{self, App};
         use crate::tui::client::DaemonClient;
         use crossterm::{
-            event::{DisableMouseCapture, EnableMouseCapture},
+            event::{
+                DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags,
+                PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+            },
             execute,
             terminal::{
                 disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -152,12 +155,27 @@ impl Cli {
         let default_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
             let _ = execute!(io::stdout(), DisableMouseCapture);
             let _ = execute!(io::stdout(), LeaveAlternateScreen);
             default_hook(info);
         }));
 
         enable_raw_mode()?;
+        // Enable the kitty keyboard protocol so crossterm receives modifier
+        // flags for otherwise-ambiguous keys. Without this, Shift+Enter is
+        // reported as a bare Enter (most terminals send a plain \r with no
+        // modifier bits), making multi-line input via Shift+Enter impossible.
+        // DISAMBIGUATE_ESCAPE_CODES is the required flag: it makes the
+        // terminal send CSI 'u' sequences carrying the modifier mask, so
+        // Shift+Enter arrives as Enter-with-SHIFT. Terminals that don't
+        // support the protocol (e.g. macOS Terminal.app) ignore the push and
+        // degrade gracefully - Shift+Enter keeps behaving as Enter. Popped on
+        // clean exit and in the panic hook so terminal state never leaks.
+        execute!(
+            io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
         let backend = CrosstermBackend::new(stdout);
 
         // Create client and app
@@ -209,6 +227,7 @@ impl Cli {
 
         // Restore terminal
         disable_raw_mode()?;
+        execute!(io::stdout(), PopKeyboardEnhancementFlags)?;
         execute!(io::stdout(), DisableMouseCapture)?;
         execute!(io::stdout(), LeaveAlternateScreen)?;
         // Restore default panic hook
