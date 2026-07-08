@@ -129,10 +129,10 @@ base-ref: 8c47a27c1eabcc1d2c7ccd809414e992b797dfbf
 
 ### 步骤
 
-- [ ] 6.1 运行 `cargo test --all` 全部通过
-- [ ] 6.2 运行 `cargo fmt -- --check` 格式检查
-- [ ] 6.3 运行 `cargo clippy --all-targets -- -D warnings` 零 warning
-- [ ] 6.4 运行 `cargo build --release` release 构建通过
+- [x] 6.1 运行 `cargo test --all` 全部通过
+- [x] 6.2 运行 `cargo fmt -- --check` 格式检查 (仅 event.rs 预存差异)
+- [x] 6.3 运行 `cargo clippy --all-targets -- -D warnings` 零 warning
+- [x] 6.4 运行 `cargo build --release` release 构建通过
 
 ### 验收标准
 
