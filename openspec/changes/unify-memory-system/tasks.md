@@ -11,9 +11,9 @@
 
 ## 2. P1 — Consumer: Memory Recall at Session Start
 
-- [ ] 2.1 Add `memories: Vec<String>` field to `PromptContext`
-- [ ] 2.2 Add builder method `PromptContext::with_memories()`
-- [ ] 2.3 Inject recalled memories as a system message between Layer 5 (Environment) and Layer 6 (Skills) in `assemble_instructions()`
+- [x] 2.1 Add `memories: Vec<String>` field to `PromptContext`
+- [x] 2.2 Add builder method `PromptContext::with_memories()`
+- [x] 2.3 Inject recalled memories as a system message between Layer 5 (Environment) and Layer 6 (Skills) in `assemble_instructions()`
 - [ ] 2.4 Implement session startup recall: `MemoryManager::load()` → `search_memories(cwd)` → `get_important_memories(0.5)` → take top N → populate `PromptContext.memories`
 - [ ] 2.5 Wire startup recall into the App initialization path (before first turn is spawned)
 - [ ] 2.6 Add unit test: empty memories → no extra system message injected

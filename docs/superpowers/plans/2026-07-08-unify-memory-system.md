@@ -391,7 +391,7 @@ git commit -m "feat(P0): enhance compaction to extract memories as JSON from sum
 
 ---
 
-### Task 3: P1 — PromptContext 添加 memories 字段并注入 assemble_instructions
+### Task 3: P1 — PromptContext 添加 memories 字段并注入 assemble_instructions ✅
 
 **Files:**
 - Modify: `src/prompts/mod.rs`
