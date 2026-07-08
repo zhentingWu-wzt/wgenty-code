@@ -12,8 +12,8 @@ base_ref: 9bde37b3fa92ca8595365d6dda32f5a32acd571e
 design_doc: null
 plan: null
 verify_result: pending
-verification_report: null
-branch_status: pending
+verification_report: docs/superpowers/reports/2026-07-08-fix-compaction-ignores-reasoning-verify.md
+branch_status: handled
 created_at: 2026-07-08
 verified_at: null
 archived: false
