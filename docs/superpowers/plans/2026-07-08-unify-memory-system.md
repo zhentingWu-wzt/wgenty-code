@@ -801,7 +801,7 @@ git commit -m "feat(P2): wire AutoDream check_and_run into session startup"
 
 ---
 
-### Task 6: P2 — 简化 AutoDreamService 委托 MemoryManager
+### Task 6: P2 — 简化 AutoDreamService 委托 MemoryManager ✅
 
 **Files:**
 - Modify: `src/services/auto_dream.rs`
