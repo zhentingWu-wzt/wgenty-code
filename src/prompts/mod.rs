@@ -80,6 +80,9 @@ pub struct PromptContext {
     pub project_root: Option<PathBuf>,
     /// Generic runtime context assembler. Replaces hardcoded comet phase injection.
     pub context_assembler: Option<Arc<ContextAssembler>>,
+    /// Pre-formatted memory lines for cross-session recall.
+    /// Each entry is a single system-message line (e.g. "- [decision] Use Jaccard for dedup").
+    pub memories: Vec<String>,
 }
 
 impl fmt::Debug for PromptContext {
@@ -98,6 +101,7 @@ impl fmt::Debug for PromptContext {
                 "context_assembler",
                 &self.context_assembler.as_ref().map(|_| "ContextAssembler"),
             )
+            .field("memories", &self.memories)
             .finish()
     }
 }
@@ -121,6 +125,7 @@ impl PromptContext {
             wgenty_md_sections: Vec::new(),
             project_root: None,
             context_assembler: None,
+            memories: Vec::new(),
         }
     }
 
@@ -166,6 +171,11 @@ impl PromptContext {
 
     pub fn with_project_root(mut self, path: PathBuf) -> Self {
         self.project_root = Some(path);
+        self
+    }
+
+    pub fn with_memories(mut self, memories: Vec<String>) -> Self {
+        self.memories = memories;
         self
     }
 }
@@ -339,6 +349,15 @@ pub fn assemble_instructions(
     let env_text = build_environment_layer(context);
     system_messages.push(ChatMessage::system(env_text));
 
+    // ── Layer 5b: Recalled Cross-Session Memories ──────────────────────
+    if !context.memories.is_empty() {
+        let memory_lines = context.memories.join("\n");
+        system_messages.push(ChatMessage::system(format!(
+            "<relevant_memories>\n{}\n</relevant_memories>",
+            memory_lines
+        )));
+    }
+
     // ── Layer 6: Skills (discoverable + on-demand via load_skill tool) ──
     if settings.prompt.include.skills && !context.skills_inventory.is_empty() {
         let mut skills_lines = Vec::new();
@@ -446,6 +465,65 @@ mod tests {
         assert!(instructions.system_messages.len() >= 2); // base + env
                                                           // First message is the base instructions
         assert_eq!(instructions.system_messages[0].role, "system");
+    }
+
+    #[test]
+    fn test_assemble_with_empty_memories_no_injection() {
+        let settings = Settings::default();
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_memories(Vec::new());
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let has_memories = instructions.system_messages.iter().any(|m| {
+            m.content
+                .as_deref()
+                .is_some_and(|c| c.contains("<relevant_memories>"))
+        });
+        assert!(!has_memories, "empty memories should not inject extra system message");
+    }
+
+    #[test]
+    fn test_assemble_with_memories_between_layer_5_and_6() {
+        let mut settings = Settings::default();
+        settings.prompt.include.skills = true; // ensure Layer 6 exists
+
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_skills(vec![SkillEntry {
+                name: "test-skill".into(),
+                description: "A test skill".into(),
+            }])
+            .with_memories(vec![
+                "- [decision] Use Jaccard for dedup".to_string(),
+                "- [knowledge] Project uses Rust".to_string(),
+            ]);
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let messages = &instructions.system_messages;
+
+        // Find positions of environment marker, memories marker, and skills marker
+        let env_pos = messages.iter().position(|m| {
+            m.content.as_deref().is_some_and(|c| c.contains("<environment_context>"))
+        }).expect("Layer 5 (Environment) should be present");
+
+        let mem_pos = messages.iter().position(|m| {
+            m.content.as_deref().is_some_and(|c| c.contains("<relevant_memories>"))
+        }).expect("Memories should be present when non-empty");
+
+        let skills_pos = messages.iter().position(|m| {
+            m.content.as_deref().is_some_and(|c| c.contains("Available skills"))
+        }).expect("Layer 6 (Skills) should be present when skills enabled");
+
+        assert!(env_pos < mem_pos, "Memories should come after Environment (Layer 5)");
+        assert!(mem_pos < skills_pos, "Memories should come before Skills (Layer 6)");
+
+        // Verify content
+        let mem_content = messages[mem_pos].content.as_deref().unwrap();
+        assert!(mem_content.contains("Use Jaccard for dedup"));
+        assert!(mem_content.contains("Project uses Rust"));
     }
 
     #[test]
