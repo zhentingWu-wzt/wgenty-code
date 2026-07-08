@@ -146,7 +146,7 @@ git commit -m "feat(P0): inject MemoryManager into AgentLoop and App"
 
 ---
 
-### Task 2: P0 — 增强 compaction prompt 以提取记忆
+### Task 2: P0 — 增强 compaction prompt 以提取记忆 ✅
 
 **Files:**
 - Modify: `src/tui/agent/compaction.rs` (`do_auto_compact()`)
