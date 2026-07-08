@@ -377,10 +377,7 @@ impl App {
             committed_messages: Vec::new(),
             streaming_content: String::new(),
             streaming_active: false,
-            token_counter: {
-                let s = settings_lock.read().unwrap();
-                crate::api::token_counter::TokenCounter::new(s.agent.token_budget.main_k)
-            },
+            token_counter: crate::api::token_counter::TokenCounter::new(),
             phase: AgentPhase::Idle,
             session_id,
             session_name: "New Session".to_string(),

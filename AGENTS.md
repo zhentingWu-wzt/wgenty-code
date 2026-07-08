@@ -133,7 +133,7 @@ ls -lh ./target/release/wgenty_code
 - **安全敏感变更**：涉及 `guardian/`、`sandbox/`、`permissions/` 的变更需额外审慎，说明安全影响。
 - **跨平台兼容**：代码需在 linux/macos/windows 三平台均可编译运行，避免平台特定假设。
 - **国际化**：面向用户的字符串应通过 `i18n/` 模块管理（使用 Fluent 格式），避免硬编码。
-- **计划同步**：使用 `TodoWrite` 更新任务状态后，同步调用 `update_plan` 更新 UI 面板，保持两端状态一致。
+- **计划同步**：使用 `update_plan` 更新 UI 面板中的任务状态，保持状态一致。
 
 ---
 
