@@ -1,9 +1,9 @@
 ## 1. P0 — Producer: Memory Extraction in Compaction
 
 - [x] 1.1 Add `memory_manager: Arc<MemoryManager>` field to `AgentLoop` struct and `AgentLoop::new()`
-- [ ] 1.2 Enhance compaction system prompt in `do_auto_compact()` to request dual output (summary + memories) in JSON format
-- [ ] 1.3 Parse JSON response after receiving summary — extract `memories` array and persist each via `memory_manager.add_memory()`
-- [ ] 1.4 Implement graceful degradation: on JSON parse failure, use full response as summary only, log warning, skip memory extraction
+- [x] 1.2 Enhance compaction system prompt in `do_auto_compact()` to request dual output (summary + memories) in JSON format
+- [x] 1.3 Parse JSON response after receiving summary — extract `memories` array and persist each via `memory_manager.add_memory()`
+- [x] 1.4 Implement graceful degradation: on JSON parse failure, use full response as summary only, log warning, skip memory extraction
 - [x] 1.5 Update `App::spawn_agent_turn()` and `App::spawn_compact_turn()` to pass `Arc<MemoryManager>` to `AgentLoop::new()`
 - [ ] 1.6 Add unit test: verify enhanced prompt includes JSON output format instruction
 - [ ] 1.7 Add unit test: verify JSON parse success path calls `add_memory`
