@@ -16,6 +16,9 @@ pub struct TokenCounter {
     // ── Per-turn counters (reset on each user input) ──
     turn_input: Arc<AtomicUsize>,
     turn_output: Arc<AtomicUsize>,
+
+    /// Tokens used in the most recent prompt (set by caller before each send).
+    last_prompt_tokens: Arc<AtomicUsize>,
 }
 
 impl TokenCounter {
@@ -25,6 +28,7 @@ impl TokenCounter {
             used: Arc::new(AtomicUsize::new(0)),
             turn_input: Arc::new(AtomicUsize::new(0)),
             turn_output: Arc::new(AtomicUsize::new(0)),
+            last_prompt_tokens: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -67,6 +71,16 @@ impl TokenCounter {
     /// Current turn's output tokens.
     pub fn turn_output_tokens(&self) -> usize {
         self.turn_output.load(Ordering::Relaxed)
+    }
+
+    /// Set the number of tokens used in the most recent prompt.
+    pub fn set_prompt_tokens(&self, tokens: usize) {
+        self.last_prompt_tokens.store(tokens, Ordering::Relaxed);
+    }
+
+    /// Number of tokens used in the most recent prompt.
+    pub fn last_prompt_tokens(&self) -> usize {
+        self.last_prompt_tokens.load(Ordering::Relaxed)
     }
 }
 
@@ -131,5 +145,28 @@ mod tests {
         assert_eq!(counter.used_tokens(), 500);
         assert!(counter.add(300));
         assert_eq!(counter.used_tokens(), 800);
+    }
+
+    // ── last_prompt_tokens tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_last_prompt_tokens_starts_at_zero() {
+        let counter = TokenCounter::new();
+        assert_eq!(counter.last_prompt_tokens(), 0);
+    }
+
+    #[test]
+    fn test_set_prompt_tokens_stores_value() {
+        let counter = TokenCounter::new();
+        counter.set_prompt_tokens(500);
+        assert_eq!(counter.last_prompt_tokens(), 500);
+    }
+
+    #[test]
+    fn test_set_prompt_tokens_overwrites() {
+        let counter = TokenCounter::new();
+        counter.set_prompt_tokens(100);
+        counter.set_prompt_tokens(200);
+        assert_eq!(counter.last_prompt_tokens(), 200);
     }
 }
