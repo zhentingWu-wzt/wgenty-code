@@ -23,9 +23,12 @@ pub(super) const MAX_RETRIES: u32 = 2;
 // Compaction trigger threshold (estimated tokens). Sized for the main model's
 // real context window (glm-latest via Ark coding ≈128K tokens): when
 // request_size_chars (content + reasoning_content + tool_calls.args) / 4
-// exceeds this (~320K chars ≈95K real tokens), compaction fires - leaving
-// ~33K margin below the window. The old 800_000 was far above any model
-// window, so compaction never fired (see change fix-compaction-ignores-reasoning).
+// exceeds this (~320K chars ≈95K real tokens of message body), compaction
+// fires. The nominal margin to 128K is ~30K, reduced by uncounted tool-
+// definition + serialization overhead - but needs_compaction runs at the
+// loop top before each request is sent, so an oversized history is compacted
+// before transmission. The old 800_000 was far above any model window, so
+// compaction never fired (see change fix-compaction-ignores-reasoning).
 pub(super) const MAX_ESTIMATED_TOKENS: usize = 80_000;
 // MAX_LLM_ROUNDS (100 default, configurable via settings.json) defined inside run_agent_loop as safety valve.
 
