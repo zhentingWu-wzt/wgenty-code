@@ -108,11 +108,11 @@ base-ref: 8c47a27c1eabcc1d2c7ccd809414e992b797dfbf
 
 ### 步骤
 
-- [ ] 5.1 修改 `render_mode_label`：从单个 `Paragraph` 改为 `Line::from(vec![Span...])`
-- [ ] 5.2 构建 spans：`[mode_label_span, spacer_span, context_bar::spans(used, max)...]`
-- [ ] 5.3 从 `self.token_counter.last_prompt_tokens()` 获取 used
-- [ ] 5.4 从 `self.settings_lock.read().unwrap().models.context_window` 获取 max
-- [ ] 5.5 窄终端（`area.width < 40`）时仅渲染模式标签，跳过进度条
+- [x] 5.1 修改 `render_mode_label`：从单个 `Paragraph` 改为 `Line::from(vec![Span...])`
+- [x] 5.2 构建 spans：`[mode_label_span, spacer_span, context_bar::spans(used, max)...]`
+- [x] 5.3 从 `self.token_counter.last_prompt_tokens()` 获取 used
+- [x] 5.4 从 `self.settings_lock.read().unwrap().models.context_window` 获取 max
+- [x] 5.5 窄终端（`area.width < 40`）时仅渲染模式标签，跳过进度条
 
 ### 验收标准
 
