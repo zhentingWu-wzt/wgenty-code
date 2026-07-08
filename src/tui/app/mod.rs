@@ -377,10 +377,13 @@ impl App {
             });
         }
 
+        // ── Memory manager (created first so AutoDream can hold a ref) ────
+        let mm = Arc::new(crate::context::MemoryManager::new());
+
         // ── AutoDream service for time-gated memory consolidation ────────
         let auto_dream = {
             let state = Arc::new(tokio::sync::RwLock::new(crate::state::AppState::default()));
-            crate::services::AutoDreamService::new(state, None, None)
+            crate::services::AutoDreamService::new(state, None, Some(mm.clone()))
         };
 
         let app = Self {
@@ -458,7 +461,7 @@ impl App {
             external_skill_registry: external_skill_registry.map(std::sync::Arc::new),
             hook_manager,
             prompt_context,
-            memory_manager: Arc::new(crate::context::MemoryManager::new()),
+            memory_manager: mm,
             startup_memories: Vec::new(),
             auto_dream_service: Some(Arc::new(auto_dream)),
             command_router: Some(command_router),
