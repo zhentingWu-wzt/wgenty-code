@@ -45,8 +45,8 @@ base-ref: 8c47a27c1eabcc1d2c7ccd809414e992b797dfbf
 
 ### 步骤
 
-- [ ] 2.1 在 `core.rs:131-134` 的 `if let Some(ref usage) = result.usage` 块内，新增 `self.token_counter.set_prompt_tokens(usage.prompt_tokens);`
-- [ ] 2.2 确认 fallback 路径（无 usage 时）不设置 prompt_tokens，保持上次值或 0
+- [x] 2.1 在 `core.rs:131-134` 的 `if let Some(ref usage) = result.usage` 块内，新增 `self.token_counter.set_prompt_tokens(usage.prompt_tokens);`
+- [x] 2.2 确认 fallback 路径（无 usage 时）不设置 prompt_tokens，保持上次值或 0
 
 ### 验收标准
 

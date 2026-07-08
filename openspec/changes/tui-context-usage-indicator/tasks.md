@@ -6,7 +6,7 @@
 
 ## 2. API 用量记录
 
-- [ ] 2.1 在 `AgentLoop::run_agent_loop` 的 token accounting 处，将 `usage.prompt_tokens` 存入 `token_counter.set_prompt_tokens()`
+- [x] 2.1 在 `AgentLoop::run_agent_loop` 的 token accounting 处，将 `usage.prompt_tokens` 存入 `token_counter.set_prompt_tokens()`
 
 ## 3. 上下文窗口配置
 
