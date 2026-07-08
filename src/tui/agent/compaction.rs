@@ -52,6 +52,32 @@ fn assemble_post_compaction_history(
     new_history
 }
 
+/// Approximate the request's token cost by summing characters across the
+/// message fields that dominate it: `content`, `reasoning_content` (the
+/// largest cost for thinking models), and each tool_call's
+/// `function.arguments`.
+///
+/// Tool *definitions* (sent every request but constant per session) are
+/// excluded - they're a fixed overhead the compaction threshold leaves
+/// margin for. The previous content-only sum missed ~68% of the payload
+/// (reasoning + tool_calls), so compaction never fired before the context
+/// window overflowed - see change `fix-compaction-ignores-reasoning`.
+fn request_size_chars(messages: &[ChatMessage]) -> usize {
+    messages
+        .iter()
+        .map(|m| {
+            let content = m.content.as_deref().map(str::len).unwrap_or(0);
+            let reasoning = m.reasoning_content.as_deref().map(str::len).unwrap_or(0);
+            let tool_call_args: usize = m
+                .tool_calls
+                .as_ref()
+                .map(|tcs| tcs.iter().map(|tc| tc.function.arguments.len()).sum())
+                .unwrap_or(0);
+            content + reasoning + tool_call_args
+        })
+        .sum()
+}
+
 impl AgentLoop {
     pub(super) async fn inject_background_results(&mut self) {
         match self.client.get_background_results().await {
@@ -146,11 +172,11 @@ impl AgentLoop {
     }
 
     pub(super) fn needs_compaction(&self, messages: &[ChatMessage]) -> bool {
-        let total_chars: usize = messages
-            .iter()
-            .map(|m| m.content.as_deref().unwrap_or("").len())
-            .sum();
-        total_chars / 4 > MAX_ESTIMATED_TOKENS
+        // `request_size_chars` counts content + reasoning_content +
+        // tool_calls.arguments (the fields that dominate request token cost);
+        // dividing by 4 gives a rough token estimate. Compaction fires when
+        // the estimate exceeds MAX_ESTIMATED_TOKENS.
+        request_size_chars(messages) / 4 > MAX_ESTIMATED_TOKENS
     }
 
     /// Run conversation compaction: archive the transcript, ask the model for a
@@ -427,5 +453,54 @@ mod tests {
         assert_eq!(result[0].role, "system");
         assert_eq!(result[1].role, "system");
         assert_eq!(result[2].role, "user");
+    }
+
+    #[test]
+    fn test_request_size_chars_counts_reasoning_and_tool_calls() {
+        // Regression: needs_compaction previously counted only `content`,
+        // missing reasoning_content (the dominant cost for thinking models)
+        // and tool_calls.arguments. request_size_chars must include all three.
+        use crate::api::{ToolCall, ToolCallFunction};
+        let user_content = "hello";
+        let asst_content = "ok";
+        let reasoning = "thinking about the next step";
+        let args = r#"{"path":"src/main.rs"}"#;
+        let msgs = vec![
+            ChatMessage::user(user_content),
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: Some(asst_content.to_string()),
+                reasoning_content: Some(reasoning.to_string()),
+                tool_calls: Some(vec![ToolCall {
+                    id: "call_1".to_string(),
+                    r#type: "function".to_string(),
+                    function: ToolCallFunction {
+                        name: "file_read".to_string(),
+                        arguments: args.to_string(),
+                    },
+                }]),
+                tool_call_id: None,
+            },
+        ];
+        let expected = user_content.len() + asst_content.len() + reasoning.len() + args.len();
+        assert_eq!(
+            request_size_chars(&msgs),
+            expected,
+            "must count content + reasoning_content + tool_calls.arguments"
+        );
+        // And it must be strictly larger than content-only - the bug was that
+        // reasoning + tool_calls were invisible.
+        let content_only = user_content.len() + asst_content.len();
+        assert!(expected > content_only);
+    }
+
+    #[test]
+    fn test_request_size_chars_handles_none_and_empty() {
+        // None content/reasoning and empty tool_calls contribute 0.
+        let msgs = vec![
+            ChatMessage::system("sys"),                // content: 3
+            ChatMessage::assistant_with_tools(vec![]), // all None/empty -> 0
+        ];
+        assert_eq!(request_size_chars(&msgs), 3);
     }
 }
