@@ -4,48 +4,72 @@ End-to-end cross-session memory for the agent loop: extraction during compaction
 
 ## ADDED Requirements
 
-### Requirements
+### Requirement: Memory extraction during compaction
 
-### Memory Extraction (Producer)
+During `do_auto_compact()`, the LLM summarization prompt SHALL be enhanced to request both a conversation summary and extracted memory entries in a single response. The enhanced prompt SHALL request output in JSON format: `{summary: string, memories: [{type: "decision"|"error"|"preference"|"insight"|"knowledge"|"task", content: string, importance: float}]}`. Memory extraction SHALL NOT add an additional LLM call — it reuses the existing compaction LLM call.
 
-- **REQ-AM-001**: During `do_auto_compact()`, the LLM summarization prompt SHALL be enhanced to request both a conversation summary and extracted memory entries in a single response.
-- **REQ-AM-002**: The enhanced prompt SHALL request output in JSON format: `{summary: string, memories: [{type: "decision"|"error"|"preference"|"insight"|"knowledge"|"task", content: string, importance: float}]}`.
-- **REQ-AM-003**: On successful JSON parse, extracted memories SHALL be persisted via `MemoryManager::add_memory()`.
-- **REQ-AM-004**: On JSON parse failure, the system SHALL fall back gracefully to using the full response as summary only (existing behavior), log a warning, and skip memory extraction for this compaction cycle.
-- **REQ-AM-005**: Memory extraction SHALL NOT add an additional LLM call — it reuses the existing compaction LLM call.
+#### Scenario: Successful JSON extraction
 
-### Memory Storage
+- **WHEN** compaction fires and the LLM returns valid JSON with `{summary, memories}`
+- **THEN** the summary is used to replace conversation history and each memory entry is persisted via `MemoryManager::add_memory()`
 
-- **REQ-AM-006**: All memories SHALL be stored exclusively via `MemoryManager`, using its per-file Storage backend (`~/.wgenty-code/memory/<id>.json`).
-- **REQ-AM-007**: Each memory SHALL use the `context::MemoryEntry` type with fields: id, memory_type, content, timestamp, importance, tags, metadata, embedding.
-- **REQ-AM-008**: The legacy `services::auto_dream::MemoryEntry` type SHALL be removed.
-- **REQ-AM-009**: The legacy `~/.wgenty-code/memory.json` and `~/.wgenty-code/consolidated_memories.json` files SHALL no longer be written.
+#### Scenario: JSON parse failure graceful degradation
 
-### Memory Recall (Consumer)
+- **WHEN** compaction fires and the LLM returns malformed JSON or plain text
+- **THEN** the full response is used as summary only (existing behavior), a warning is logged, and no memories are extracted for this compaction cycle
 
-- **REQ-AM-010**: At session startup, `MemoryManager::load()` SHALL load all memories from disk.
-- **REQ-AM-011**: At session startup, `MemoryManager::search_memories(cwd_project_name)` SHALL retrieve memories matching the current project.
-- **REQ-AM-012**: Memories below importance threshold 0.5 SHALL be filtered out before injection.
-- **REQ-AM-013**: Recalled memories SHALL be injected into the prompt as a system message between Layer 5 (Environment) and Layer 6 (Skills).
-- **REQ-AM-014**: Memory recall SHALL NOT add latency from LLM calls — it is keyword-based only.
+### Requirement: Memory storage via MemoryManager
 
-### Memory Consolidation
+All memories SHALL be stored exclusively via `MemoryManager`, using its per-file Storage backend (`~/.wgenty-code/memory/<id>.json`). Each memory SHALL use the `context::MemoryEntry` type with fields: id, memory_type, content, timestamp, importance, tags, metadata, embedding.
 
-- **REQ-AM-015**: `AutoDreamService::check_and_run()` SHALL be called at session startup.
-- **REQ-AM-016**: The three-gate check (24h since last consolidation, >= 5 new sessions, no active lock) SHALL remain unchanged.
-- **REQ-AM-017**: When gates pass, consolidation SHALL delegate to `MemoryManager::consolidate()`, which uses `ConsolidationEngine` for deduplication and filtering.
-- **REQ-AM-018**: Consolidation SHALL use ConsolidationEngine's Jaccard similarity (>0.8 threshold) for duplicate detection, importance threshold (0.3) for filtering, and merge logic for similar memories.
+#### Scenario: Memory persisted to disk
 
-### Dead Code Removal
+- **WHEN** `MemoryManager::add_memory()` is called with a valid MemoryEntry
+- **THEN** the entry is saved as `~/.wgenty-code/memory/<id>.json` and loaded on next session startup
 
-- **REQ-AM-019**: `context::ContextWindow` and `context::ContextManager` SHALL be removed — redundant with `conversation_history: Vec<ChatMessage>`.
-- **REQ-AM-020**: `services::auto_dream::MemoryEntry` SHALL be removed — replaced by `context::MemoryEntry`.
-- **REQ-AM-021**: `AutoDreamService::load_memories()` and `save_consolidated_memories()` SHALL delegate to `MemoryManager` instead of reading/writing custom files.
+#### Scenario: Legacy types removed
 
-## Acceptance Scenarios
+- **WHEN** the codebase is inspected after this change
+- **THEN** `services::auto_dream::MemoryEntry` type no longer exists and `~/.wgenty-code/memory.json` and `consolidated_memories.json` are no longer written
 
-1. **Producer**: After a long conversation triggers compaction, `~/.wgenty-code/memory/` contains new JSON files with extracted memories containing correct type, content, and importance.
-2. **Recall**: On next session start in the same project, the injected prompt contains a system message with relevant memories from prior sessions.
-3. **Consolidation**: After 24h and 5+ sessions, AutoDream triggers and similar memories are merged; memory count decreases.
-4. **Graceful degradation**: If the LLM returns malformed JSON during compaction, the summary still works, no memories are extracted, and no crash occurs.
-5. **Dead code gone**: `context::ContextWindow`, `auto_dream::MemoryEntry`, `memory.json`, and `consolidated_memories.json` no longer exist in the codebase or are written to disk.
+### Requirement: Memory recall at session startup
+
+At session startup, `MemoryManager::load()` SHALL load all memories from disk. `MemoryManager::search_memories(cwd_project_name)` SHALL retrieve memories matching the current project using keyword matching. Memories below importance threshold 0.5 SHALL be filtered out before injection. Recalled memories SHALL be injected into the prompt as a system message between Layer 5 (Environment) and Layer 6 (Skills). Memory recall SHALL NOT add latency from LLM calls — it is keyword-based only.
+
+#### Scenario: Relevant memories recalled
+
+- **WHEN** a session starts in a project that had previous conversations
+- **THEN** memories matching the project name with importance >= 0.5 appear in the system prompt between Environment and Skills layers
+
+#### Scenario: No memories for new project
+
+- **WHEN** a session starts in a project with no prior memories
+- **THEN** no `<relevant_memories>` block is injected into the system prompt
+
+### Requirement: Time-gated memory consolidation
+
+`AutoDreamService::check_and_run()` SHALL be called at session startup before recall. The three-gate check (24h since last consolidation, >= 5 new sessions, no active lock) SHALL remain unchanged. When gates pass, consolidation SHALL delegate to `MemoryManager::consolidate()`, which uses `ConsolidationEngine` for deduplication and filtering. Consolidation SHALL use ConsolidationEngine's Jaccard similarity (>0.8 threshold) for duplicate detection, importance threshold (0.3) for filtering, and merge logic for similar memories.
+
+#### Scenario: Consolidation gate passes
+
+- **WHEN** session starts and 24h have passed with >= 5 new sessions and no active lock
+- **THEN** `MemoryManager::consolidate()` is called, deduplicating and merging similar memories
+
+#### Scenario: Consolidation gate fails
+
+- **WHEN** session starts but the time or session count gate has not been met
+- **THEN** consolidation is skipped and the session continues with existing memories
+
+### Requirement: Dead code removal
+
+`context::ContextWindow` and `context::ContextManager` SHALL be removed as they are redundant with `conversation_history: Vec<ChatMessage>`. `services::auto_dream::MemoryEntry` SHALL be removed and replaced by `context::MemoryEntry`. `AutoDreamService::load_memories()` and `save_consolidated_memories()` SHALL be removed — their functionality is now delegated to `MemoryManager`.
+
+#### Scenario: ContextWindow module removed
+
+- **WHEN** the codebase is compiled after this change
+- **THEN** `context::context_window` module no longer exists and no references to `ContextWindow` or `ContextManager` remain
+
+#### Scenario: AutoDream types cleaned up
+
+- **WHEN** `AutoDreamService` is inspected after this change
+- **THEN** `load_memories()`, `save_consolidated_memories()`, `analyze_and_consolidate()`, and the local `MemoryEntry` type are all removed
