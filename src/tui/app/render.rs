@@ -203,8 +203,7 @@ impl App {
         }
 
         let line = Line::from(spans);
-        let paragraph = Paragraph::new(line)
-            .alignment(ratatui::layout::Alignment::Left);
+        let paragraph = Paragraph::new(line).alignment(ratatui::layout::Alignment::Left);
         f.render_widget(paragraph, area);
     }
 
