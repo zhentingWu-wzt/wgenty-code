@@ -64,10 +64,10 @@ base-ref: 8c47a27c1eabcc1d2c7ccd809414e992b797dfbf
 
 ### 步骤
 
-- [ ] 3.1 在 `ModelsConfig` struct 新增 `#[serde(default = "default_context_window")] pub context_window: usize` 字段
-- [ ] 3.2 添加 `fn default_context_window() -> usize { 200_000 }` 函数
-- [ ] 3.3 在 `Default for ModelsConfig` impl 中设置 `context_window: 200_000`
-- [ ] 3.4 添加测试：`ModelsConfig::default().context_window == 200_000`，反序列化缺失字段时使用默认值
+- [x] 3.1 在 `ModelsConfig` struct 新增 `#[serde(default = "default_context_window")] pub context_window: usize` 字段
+- [x] 3.2 添加 `fn default_context_window() -> usize { 200_000 }` 函数
+- [x] 3.3 在 `Default for ModelsConfig` impl 中设置 `context_window: 200_000`
+- [x] 3.4 添加测试：`ModelsConfig::default().context_window == 200_000`，反序列化缺失字段时使用默认值
 
 ### 验收标准
 
