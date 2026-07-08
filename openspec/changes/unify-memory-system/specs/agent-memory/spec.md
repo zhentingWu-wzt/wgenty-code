@@ -2,7 +2,7 @@
 
 End-to-end cross-session memory for the agent loop: extraction during compaction, persistent storage, recall at session start, and time-gated consolidation.
 
-## ADDED
+## ADDED Requirements
 
 ### Requirements
 
