@@ -2,6 +2,7 @@
 change: unify-memory-system
 design-doc: docs/superpowers/specs/2026-07-08-unify-memory-system-design.md
 base-ref: 361005e04c6d294ae95eeb32392e0fdbf566cbd6
+archived-with: 2026-07-08-unify-memory-system
 ---
 
 # Agent Memory System 统一实现计划
@@ -24,6 +25,7 @@ base-ref: 361005e04c6d294ae95eeb32392e0fdbf566cbd6
 - AutoDream 三门控检查（24h + 5 sessions + lock）保持不变（REQ-AM-016）
 - 删除 `context::ContextWindow` 和 `context::ContextManager`（REQ-AM-019）
 
+archived-with: 2026-07-08-unify-memory-system
 ---
 
 ## 文件结构
@@ -46,6 +48,7 @@ base-ref: 361005e04c6d294ae95eeb32392e0fdbf566cbd6
 - `PromptContext` 新增字段：`memories: Vec<String>` 和方法 `with_memories()`
 - `assemble_instructions()` 在 Layer 5 (Environment) 之后、Layer 6 (Skills) 之前注入 memories
 
+archived-with: 2026-07-08-unify-memory-system
 ---
 
 ### Task 1: P0 — 将 MemoryManager 注入 AgentLoop ✅
@@ -144,6 +147,7 @@ git add src/tui/agent/mod.rs src/tui/app/turn.rs src/tui/app/mod.rs
 git commit -m "feat(P0): inject MemoryManager into AgentLoop and App"
 ```
 
+archived-with: 2026-07-08-unify-memory-system
 ---
 
 ### Task 2: P0 — 增强 compaction prompt 以提取记忆 ✅
@@ -389,6 +393,7 @@ git add src/tui/agent/compaction.rs
 git commit -m "feat(P0): enhance compaction to extract memories as JSON from summary"
 ```
 
+archived-with: 2026-07-08-unify-memory-system
 ---
 
 ### Task 3: P1 — PromptContext 添加 memories 字段并注入 assemble_instructions ✅
@@ -534,6 +539,7 @@ git add src/prompts/mod.rs
 git commit -m "feat(P1): add memories field to PromptContext and inject between Layer 5 and Layer 6"
 ```
 
+archived-with: 2026-07-08-unify-memory-system
 ---
 
 ### Task 4: P1 — 实现会话启动记忆召回 ✅
@@ -719,6 +725,7 @@ git add src/tui/app/mod.rs src/tui/app/turn.rs
 git commit -m "feat(P1): implement session startup memory recall"
 ```
 
+archived-with: 2026-07-08-unify-memory-system
 ---
 
 ### Task 5: P2 — 在会话启动时接入 AutoDream check_and_run ✅
@@ -799,6 +806,7 @@ git add src/tui/app/mod.rs src/services/auto_dream.rs
 git commit -m "feat(P2): wire AutoDream check_and_run into session startup"
 ```
 
+archived-with: 2026-07-08-unify-memory-system
 ---
 
 ### Task 6: P2 — 简化 AutoDreamService 委托 MemoryManager ✅
@@ -953,6 +961,7 @@ git add src/services/auto_dream.rs src/services/mod.rs
 git commit -m "feat(P2): simplify AutoDreamService to delegate consolidation to MemoryManager"
 ```
 
+archived-with: 2026-07-08-unify-memory-system
 ---
 
 ### Task 7: Dead Code Removal — 删除 legacy AutoDream 类型和方法 ✅
@@ -1014,6 +1023,7 @@ git add src/services/auto_dream.rs src/services/mod.rs
 git commit -m "chore(P2): remove legacy AutoDream types and methods"
 ```
 
+archived-with: 2026-07-08-unify-memory-system
 ---
 
 ### Task 8: Dead Code Removal — 删除 context::context_window 模块 ✅
@@ -1092,6 +1102,7 @@ git add src/context/mod.rs
 git commit -m "chore(cleanup): remove context_window module (ContextWindow, ContextManager, ContextEntry)"
 ```
 
+archived-with: 2026-07-08-unify-memory-system
 ---
 
 ### Task 9: Integration Verification ✅
@@ -1163,6 +1174,7 @@ git add -A
 git commit -m "chore: integration verification — cargo test + cargo clippy pass"
 ```
 
+archived-with: 2026-07-08-unify-memory-system
 ---
 
 ## Self-Review 检查结果
