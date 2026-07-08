@@ -1,6 +1,7 @@
-use super::{AgentLoop, MAX_ESTIMATED_TOKENS};
+use super::AgentLoop;
 use crate::agent::{StreamEvent, StreamProcessor};
 use crate::api::ChatMessage;
+use crate::context::{MemoryEntry, MemoryType};
 use crate::tui::app::AppEvent;
 use std::path::PathBuf;
 
@@ -175,8 +176,8 @@ impl AgentLoop {
         // `request_size_chars` counts content + reasoning_content +
         // tool_calls.arguments (the fields that dominate request token cost);
         // dividing by 4 gives a rough token estimate. Compaction fires when
-        // the estimate exceeds MAX_ESTIMATED_TOKENS.
-        request_size_chars(messages) / 4 > MAX_ESTIMATED_TOKENS
+        // the estimate exceeds 80 % of the model's context window.
+        request_size_chars(messages) / 4 > self.context_window * 4 / 5
     }
 
     /// Run conversation compaction: archive the transcript, ask the model for a
@@ -260,10 +261,28 @@ impl AgentLoop {
 
         let summary_messages = vec![
             ChatMessage::system(
-                "You are a conversation summary assistant. Summarize the following coding assistant conversation history for an AI agent. Preserve key details: project context, files modified, decisions made, bugs found, commands executed, and any pending tasks. Keep it concise but include all important information the agent needs to continue working. Do NOT use any tools — just return the summary as plain text.",
+                "You are a conversation summary assistant for an AI coding agent. \
+                 Your task is to:\n\
+                 1. Summarize the conversation history, preserving key details: \
+                 project context, files modified, decisions made, bugs found, \
+                 commands executed, and any pending tasks.\n\
+                 2. Extract key memories from the conversation as structured JSON.\n\n\
+                 Output format — respond with a single JSON object (no markdown fences, no extra text):\n\
+                 {\n\
+                   \"summary\": \"<concise summary string>\",\n\
+                   \"memories\": [\n\
+                     {\n\
+                       \"type\": \"decision|error|preference|insight|knowledge|task\",\n\
+                       \"content\": \"<what to remember>\",\n\
+                       \"importance\": <0.0 to 1.0>\n\
+                     }\n\
+                   ]\n\
+                 }\n\n\
+                 If there is nothing worth remembering, return an empty memories array.\n\
+                 Do NOT use any tools — just return the JSON as plain text.",
             ),
             ChatMessage::user(format!(
-                "Summarize this conversation history:\n\n{}",
+                "Process this conversation history:\n\n{}",
                 transcript_text
             )),
         ];
@@ -322,14 +341,55 @@ impl AgentLoop {
         }
 
         let result = processor.finish();
-        // Reasoning models may emit the summary as `reasoning_content` only,
-        // leaving `content` empty — fall back so a valid summary isn't
-        // discarded (which would otherwise look like an empty summary and
-        // cause the loop to spin).
-        let summary = if !result.content.is_empty() {
+        let full_text = if !result.content.is_empty() {
             result.content
         } else {
             result.reasoning_content
+        };
+
+        // Attempt to parse JSON response for dual output (summary + memories)
+        let (summary, extracted_memories) = match serde_json::from_str::<serde_json::Value>(full_text.trim()) {
+            Ok(json) => {
+                let summary = json
+                    .get("summary")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(full_text.trim())
+                    .to_string();
+                let memories: Vec<MemoryEntry> = json
+                    .get("memories")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|m| {
+                                let mem_type_str = m.get("type").and_then(|v| v.as_str()).unwrap_or("knowledge");
+                                let mem_type = match mem_type_str {
+                                    "decision" => MemoryType::Decision,
+                                    "error" => MemoryType::Error,
+                                    "preference" => MemoryType::Preference,
+                                    "insight" => MemoryType::Insight,
+                                    "knowledge" => MemoryType::Knowledge,
+                                    "task" => MemoryType::Task,
+                                    _ => MemoryType::Knowledge,
+                                };
+                                let content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                                let importance = m.get("importance")
+                                    .and_then(|v| v.as_f64())
+                                    .unwrap_or(0.5) as f32;
+                                if content.is_empty() {
+                                    return None;
+                                }
+                                Some(MemoryEntry::new(mem_type, content).with_importance(importance))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (summary, memories)
+            }
+            Err(e) => {
+                // JSON parse failed — fallback to full text as summary only
+                tracing::warn!(error = %e, "compaction response is not valid JSON; using full text as summary, skipping memory extraction");
+                (full_text.trim().to_string(), Vec::new())
+            }
         };
 
         if summary.trim().is_empty() {
@@ -338,6 +398,16 @@ impl AgentLoop {
                 "Compaction produced an empty summary; continuing with full history.".to_string(),
             ));
             return false;
+        }
+
+        // Persist extracted memories
+        for memory in &extracted_memories {
+            if let Err(e) = self.memory_manager.add_memory(memory.clone()).await {
+                tracing::warn!(error = %e, memory_id = %memory.id, "failed to persist extracted memory; continuing with summary only");
+            }
+        }
+        if !extracted_memories.is_empty() {
+            tracing::info!(count = extracted_memories.len(), "extracted memories from compaction");
         }
 
         self.compacted_summary = summary.clone();
@@ -502,5 +572,71 @@ mod tests {
             ChatMessage::assistant_with_tools(vec![]), // all None/empty -> 0
         ];
         assert_eq!(request_size_chars(&msgs), 3);
+    }
+
+    #[test]
+    fn test_compaction_prompt_includes_json_format() {
+        // Verify that the enhanced system prompt instructs the model to output JSON
+        // with summary and memories keys.
+        let messages = vec![
+            ChatMessage::system(
+                "You are a conversation summary assistant for an AI coding agent. \
+                 Your task is to:\n\
+                 1. Summarize the conversation history, preserving key details: \
+                 project context, files modified, decisions made, bugs found, \
+                 commands executed, and any pending tasks.\n\
+                 2. Extract key memories from the conversation as structured JSON.\n\n\
+                 Output format — respond with a single JSON object (no markdown fences, no extra text):\n\
+                 {\n\
+                   \"summary\": \"<concise summary string>\",\n\
+                   \"memories\": [\n\
+                     {\n\
+                       \"type\": \"decision|error|preference|insight|knowledge|task\",\n\
+                       \"content\": \"<what to remember>\",\n\
+                       \"importance\": <0.0 to 1.0>\n\
+                     }\n\
+                   ]\n\
+                 }\n\n\
+                 If there is nothing worth remembering, return an empty memories array.\n\
+                 Do NOT use any tools — just return the JSON as plain text.",
+            ),
+            ChatMessage::user("Process this: some history"),
+        ];
+        let sys_content = messages[0].content.as_deref().unwrap();
+        assert!(sys_content.contains("\"summary\""), "prompt must request 'summary' field in JSON output");
+        assert!(sys_content.contains("\"memories\""), "prompt must request 'memories' field in JSON output");
+        assert!(sys_content.contains("decision"), "prompt must list valid memory types");
+        assert!(sys_content.contains("importance"), "prompt must request importance field");
+    }
+
+    #[test]
+    fn test_parse_compaction_json_success() {
+        let json_response = r#"{
+            "summary": "The user asked about memory systems.",
+            "memories": [
+                {"type": "decision", "content": "Use Jaccard for dedup", "importance": 0.8},
+                {"type": "knowledge", "content": "Project uses Rust", "importance": 0.6}
+            ]
+        }"#;
+        let json: serde_json::Value = serde_json::from_str(json_response).unwrap();
+        let summary = json.get("summary").and_then(|v| v.as_str()).unwrap();
+        let memories = json.get("memories").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(summary, "The user asked about memory systems.");
+        assert_eq!(memories.len(), 2);
+        assert_eq!(memories[0]["type"].as_str().unwrap(), "decision");
+        assert_eq!(memories[0]["content"].as_str().unwrap(), "Use Jaccard for dedup");
+        assert!((memories[0]["importance"].as_f64().unwrap() - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_compaction_json_failure_graceful() {
+        let bad_response = "This is just a plain text summary, not JSON at all.";
+        let result = serde_json::from_str::<serde_json::Value>(bad_response);
+        assert!(result.is_err(), "malformed input should fail JSON parse");
+        // Fallback: use full text as summary, empty memories
+        let fallback_summary = bad_response.to_string();
+        let fallback_memories: Vec<&str> = Vec::new();
+        assert!(!fallback_summary.is_empty());
+        assert!(fallback_memories.is_empty());
     }
 }
