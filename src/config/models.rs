@@ -53,6 +53,10 @@ impl Default for TransportConfig {
     }
 }
 
+fn default_context_window() -> usize {
+    200_000
+}
+
 /// All model endpoints + shared transport.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsConfig {
@@ -63,6 +67,10 @@ pub struct ModelsConfig {
     pub small: Option<ModelEndpoint>,
     #[serde(default)]
     pub planner: Option<ModelEndpoint>,
+    /// Maximum context window size in tokens. Used by the TUI to display
+    /// context usage percentage. Default: 200_000 (200k tokens).
+    #[serde(default = "default_context_window")]
+    pub context_window: usize,
 }
 
 impl Default for ModelsConfig {
@@ -80,6 +88,7 @@ impl Default for ModelsConfig {
             },
             small: None,
             planner: None,
+            context_window: 200_000,
         }
     }
 }
@@ -91,4 +100,21 @@ pub struct TokenBudget {
     pub main_k: usize,
     #[serde(default)]
     pub subagent_default_k: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_context_window() {
+        assert_eq!(ModelsConfig::default().context_window, 200_000);
+    }
+
+    #[test]
+    fn test_context_window_deserialize_default() {
+        let json = r#"{"main":{"name":"test"}}"#;
+        let cfg: ModelsConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.context_window, 200_000);
+    }
 }
