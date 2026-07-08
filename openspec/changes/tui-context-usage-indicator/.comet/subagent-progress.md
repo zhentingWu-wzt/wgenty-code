@@ -2,16 +2,17 @@
 
 ## Current Task
 
-- **Plan task**: 任务 2：API 用量记录
-- **OpenSpec task**: 2.1 记录 `usage.prompt_tokens` (tasks.md §2)
+- **Plan task**: 任务 3：上下文窗口配置
+- **OpenSpec task**: 3.1-3.2 context_window (tasks.md §3)
 - **Stage**: spec-review
-- **BASE**: d17b26657a1e6bd0586d1bd018beb0135d9a218c
+- **BASE**: 5b36cb500705a45731ed7deee84b5814302e27e0
 - **Round**: 1/3
-- **Commit**: 8c3272d
-- **Files changed**: src/tui/agent/core.rs
-- **RED**: N/A (单行修改，由编译验证)
-- **GREEN**: cargo build pass, clippy clean
+- **Commit**: a56d745
+- **Files changed**: src/config/models.rs
+- **RED**: compile error — 2 errors (no field context_window)
+- **GREEN**: 4 passed, clippy clean
 - **Review status**: spec-review pending, quality-review pending
 
 ## Completed Tasks
 - Task 1: ✅ (669c8e6, review clean)
+- Task 2: ✅ (8c3272d, review clean)

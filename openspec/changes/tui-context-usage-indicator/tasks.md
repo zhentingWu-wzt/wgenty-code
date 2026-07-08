@@ -10,8 +10,8 @@
 
 ## 3. 上下文窗口配置
 
-- [ ] 3.1 在 `Settings`/`ModelConfig` 中新增 `context_window: usize` 字段，默认 200000
-- [ ] 3.2 确保 `settings.json` 序列化/反序列化兼容（可选字段，缺失时用默认值）
+- [x] 3.1 在 `Settings`/`ModelConfig` 中新增 `context_window: usize` 字段，默认 200000
+- [x] 3.2 确保 `settings.json` 序列化/反序列化兼容（可选字段，缺失时用默认值）
 
 ## 4. 进度条组件
 
