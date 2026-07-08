@@ -496,7 +496,7 @@ impl Cli {
             }
             super::MemoryCommands::AutoDream => {
                 let state = Arc::new(RwLock::new(crate::state::AppState::default()));
-                let service = crate::services::AutoDreamService::new(state, None, None);
+                let service = crate::services::AutoDreamService::new(state, None, Some(Arc::new(manager)));
                 println!("Forcing AutoDream consolidation...");
                 service.force_consolidation().await?;
                 println!("AutoDream consolidation completed");
