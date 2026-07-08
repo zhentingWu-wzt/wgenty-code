@@ -31,11 +31,11 @@
 
 ## 4. Dead Code Removal
 
-- [ ] 4.1 Remove `context::context_window` module (ContextWindow, ContextManager, ContextEntry, ContextPriority, ContextSource, ContextSummary, ContextStats)
-- [ ] 4.2 Remove `pub mod context_window` from `context/mod.rs`
-- [ ] 4.3 Remove `pub use context_window::*` re-exports from `context/mod.rs`
-- [ ] 4.4 Verify compilation: `cargo check` passes after all removals
-- [ ] 4.5 Verify no remaining references: grep for `ContextWindow`, `ContextManager`, `ContextEntry` across codebase
+- [x] 4.1 Remove `context::context_window` module (ContextWindow, ContextManager, ContextEntry, ContextPriority, ContextSource, ContextSummary, ContextStats)
+- [x] 4.2 Remove `pub mod context_window` from `context/mod.rs`
+- [x] 4.3 Remove `pub use context_window::*` re-exports from `context/mod.rs`
+- [x] 4.4 Verify compilation: `cargo check` passes after all removals
+- [x] 4.5 Verify no remaining references: grep for `ContextWindow`, `ContextManager`, `ContextEntry` across codebase
 
 ## 5. Integration Verification
 
