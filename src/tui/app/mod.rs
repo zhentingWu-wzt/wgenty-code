@@ -149,6 +149,8 @@ pub struct App {
     pub memory_manager: std::sync::Arc<crate::context::MemoryManager>,
     /// Memories recalled at session startup; injected into each turn's PromptContext.
     pub(crate) startup_memories: Vec<String>,
+    /// AutoDream service for time-gated memory consolidation.
+    pub auto_dream_service: Option<Arc<crate::services::AutoDreamService>>,
     /// Command router for slash command dispatch (replaces Comet-specific routing).
     pub command_router: Option<CommandRouter>,
     /// Interaction service for runtime user interaction (ask, confirm).
@@ -375,6 +377,12 @@ impl App {
             });
         }
 
+        // ── AutoDream service for time-gated memory consolidation ────────
+        let auto_dream = {
+            let state = Arc::new(tokio::sync::RwLock::new(crate::state::AppState::default()));
+            crate::services::AutoDreamService::new(state, None)
+        };
+
         let app = Self {
             daemon_client,
             input_box: InputBox::new(),
@@ -452,6 +460,7 @@ impl App {
             prompt_context,
             memory_manager: Arc::new(crate::context::MemoryManager::new()),
             startup_memories: Vec::new(),
+            auto_dream_service: Some(Arc::new(auto_dream)),
             command_router: Some(command_router),
             interaction_service,
             workflow_state,
@@ -486,6 +495,15 @@ impl App {
                 }
             }
         });
+
+        // ── Session startup: run AutoDream consolidation before recall ─────
+        if let Some(ref ads) = self.auto_dream_service {
+            match ads.check_and_run().await {
+                Ok(true) => tracing::info!("AutoDream consolidation completed at session startup"),
+                Ok(false) => tracing::debug!("AutoDream gate not passed; consolidation skipped"),
+                Err(e) => tracing::warn!(error = %e, "AutoDream consolidation failed; continuing with existing memories"),
+            }
+        }
 
         // ── Session startup: recall cross-session memories ─────────────────
         {
@@ -666,6 +684,18 @@ mod tests {
         let yaml = "entry_commands:\n  -   comet  \n  -  comet-open \n";
         let result = parse_yaml_list(yaml, "entry_commands:");
         assert_eq!(result, vec!["comet", "comet-open"]);
+    }
+
+    #[tokio::test]
+    async fn auto_dream_service_is_initialized_on_app_creation() {
+        let client = DaemonClient::new("http://localhost:0".to_string());
+        let settings_handle: crate::config::watcher::SettingsHandle =
+            std::sync::Arc::new(std::sync::RwLock::new(crate::config::Settings::default()));
+        let app = App::new(client, "test-session-5".to_string(), settings_handle);
+        assert!(
+            app.auto_dream_service.is_some(),
+            "auto_dream_service should be Some after App::new()"
+        );
     }
 }
 
