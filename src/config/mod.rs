@@ -98,6 +98,9 @@ impl Settings {
             if let Some(ak) = &small.appkey {
                 s.models.main.api_key = Some(ak.clone());
             }
+            if let Some(p) = &small.provider {
+                s.models.main.provider = Some(p.clone());
+            }
         }
         s
     }
