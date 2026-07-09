@@ -4337,6 +4337,7 @@ dependencies = [
  "crossterm",
  "dashmap",
  "dirs",
+ "flate2",
  "fluent",
  "fluent-bundle",
  "fs_extra",

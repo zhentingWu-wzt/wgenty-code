@@ -9,6 +9,7 @@
 //! - search: Search notes by content or tags
 //! - get: Get note details and content
 
+use crate::tools::meta::note_store::NoteStore;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,7 @@ pub enum NoteFormat {
 
 pub struct NoteEditTool {
     notes: Arc<RwLock<HashMap<String, Note>>>,
+    store: Option<NoteStore>,
 }
 
 impl Default for NoteEditTool {
@@ -50,7 +52,28 @@ impl NoteEditTool {
     pub fn new() -> Self {
         Self {
             notes: Arc::new(RwLock::new(HashMap::new())),
+            store: None,
         }
+    }
+
+    pub fn new_with_store(store: NoteStore) -> Self {
+        Self {
+            notes: Arc::new(RwLock::new(HashMap::new())),
+            store: Some(store),
+        }
+    }
+
+    /// Load all notes from the persistent store into the in-memory cache.
+    /// Called after construction when a store is present.
+    pub async fn load_from_store(&self) -> anyhow::Result<()> {
+        if let Some(ref store) = self.store {
+            let notes = store.load_all().await?;
+            let mut cache = self.notes.write().await;
+            for note in notes {
+                cache.insert(note.id.clone(), note);
+            }
+        }
+        Ok(())
     }
 
     fn generate_id(&self) -> String {
@@ -266,6 +289,14 @@ impl NoteEditTool {
         let note = self.create_note(&input).await?;
         let note_id = note.id.clone();
 
+        // Persist to disk if store is present
+        if let Some(ref store) = self.store {
+            store.save(&note).await.map_err(|e| ToolError {
+                message: format!("Failed to save note: {}", e),
+                code: Some("store_error".to_string()),
+            })?;
+        }
+
         let mut notes = self.notes.write().await;
         notes.insert(note_id.clone(), note);
 
@@ -289,6 +320,14 @@ impl NoteEditTool {
 
         let note = self.update_note(note_id, &input).await?;
 
+        // Persist to disk if store is present
+        if let Some(ref store) = self.store {
+            store.save(&note).await.map_err(|e| ToolError {
+                message: format!("Failed to save note: {}", e),
+                code: Some("store_error".to_string()),
+            })?;
+        }
+
         Ok(ToolOutput {
             output_type: "json".to_string(),
             content: serde_json::json!({
@@ -311,6 +350,11 @@ impl NoteEditTool {
         let removed = notes.remove(note_id);
 
         if removed.is_some() {
+            // Delete from disk if store is present
+            if let Some(ref store) = self.store {
+                let _ = store.delete(note_id).await;
+            }
+
             Ok(ToolOutput {
                 output_type: "json".to_string(),
                 content: serde_json::json!({

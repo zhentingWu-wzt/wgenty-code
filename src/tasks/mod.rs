@@ -6,6 +6,7 @@
 //! - `TaskManagement` (s07): persistent CRUD tasks with dependency graph.
 
 pub mod management;
+pub mod store;
 pub mod todo_write;
 pub mod types;
 
