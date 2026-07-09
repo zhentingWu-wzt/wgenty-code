@@ -1,8 +1,8 @@
 //! Turn lifecycle — starting, spawning, and cancelling agent turns.
 
-use super::inject_startup_memories;
 use super::types::*;
 use super::App;
+use crate::context::inject::MemoryContextInjector;
 use crate::state::agent_phase::{AgentPhase, TurnAbortReason, TurnId};
 use crate::tui::agent::{AgentError, AgentLoop};
 use crate::tui::util::truncate_session_name;
@@ -88,31 +88,40 @@ impl App {
         let input_agent = input_text.clone();
 
         // Per-turn smart memory recall — runs inside the tokio task.
-        let startup = self.startup_memories.clone();
         let recall_top_n = {
             let s = self.settings_lock.read().unwrap();
             s.storage.memory.recall_top_n
         };
-        let recall_threshold = {
-            let s = self.settings_lock.read().unwrap();
-            s.storage.memory.recall_similarity_threshold
-        };
-        let mut prev_kw = self.prev_keywords.clone();
 
         self.current_turn_handle = Some(tokio::spawn(async move {
-            // Per-turn recall: extract keywords from user message, detect
-            // topic change, and retrieve relevant cross-session memories.
-            let recalled = super::recall_memories(
+            // Per-turn recall: use MemoryContextInjector for keyword extraction
+            // and TF-IDF search over cross-session memories.
+            let recalled_text = MemoryContextInjector::recall(
                 &input_agent,
-                &mut prev_kw,
-                &startup,
                 &memory_manager,
                 recall_top_n,
-                recall_threshold,
+                // Use the importance threshold from settings for filtering.
+                0.5,
             )
             .await;
 
-            let prompt_context = inject_startup_memories(prompt_context, &recalled);
+            // Set memories on PromptContext (extract lines from the
+            // <memory-context> block for the prompt builder).
+            let prompt_context = {
+                let mut ctx = (*prompt_context).clone();
+                if !recalled_text.is_empty() {
+                    ctx.memories = recalled_text
+                        .lines()
+                        .filter(|l| {
+                            !l.trim().is_empty()
+                                && !l.contains("<memory-context>")
+                                && !l.contains("</memory-context>")
+                        })
+                        .map(|l| l.to_string())
+                        .collect();
+                }
+                std::sync::Arc::new(ctx)
+            };
             let mut agent = AgentLoop::new(
                 client,
                 event_tx.clone(),
@@ -173,7 +182,17 @@ impl App {
         let token_counter = self.token_counter.clone();
         let hook_manager = self.hook_manager.clone();
         let prompt_context = self.prompt_context.clone();
-        let prompt_context = inject_startup_memories(prompt_context, &self.startup_memories);
+        // Inject startup memories into PromptContext.
+        let prompt_context = {
+            let startup = &self.startup_memories;
+            if startup.is_empty() {
+                prompt_context
+            } else {
+                let mut ctx = (*prompt_context).clone();
+                ctx.memories = startup.clone();
+                std::sync::Arc::new(ctx)
+            }
+        };
         let memory_manager = self.memory_manager.clone();
         self.current_turn_handle = Some(tokio::spawn(async move {
             let mut agent = AgentLoop::new(

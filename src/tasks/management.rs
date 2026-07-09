@@ -11,6 +11,7 @@
 //! - get: Get task details
 
 // Re-export types for backward compatibility (e.g., daemon/handlers.rs imports from this module)
+use super::store::TaskStore;
 pub use super::types::{Task, TaskPriority, TaskStatus};
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
@@ -32,6 +33,7 @@ fn debug_log(msg: &str) {
 
 pub struct TaskManagementTool {
     tasks: Arc<RwLock<HashMap<String, Task>>>,
+    store: Option<TaskStore>,
 }
 
 impl Default for TaskManagementTool {
@@ -44,12 +46,33 @@ impl TaskManagementTool {
     pub fn new() -> Self {
         Self {
             tasks: Arc::new(RwLock::new(HashMap::new())),
+            store: None,
         }
+    }
+
+    pub fn new_with_store(store: TaskStore) -> Self {
+        Self {
+            tasks: Arc::new(RwLock::new(HashMap::new())),
+            store: Some(store),
+        }
+    }
+
+    /// Load all tasks from the persistent store into the in-memory cache.
+    /// Called after construction when a store is present.
+    pub async fn load_from_store(&self) -> anyhow::Result<()> {
+        if let Some(ref store) = self.store {
+            let tasks = store.load_all().await?;
+            let mut cache = self.tasks.write().await;
+            for task in tasks {
+                cache.insert(task.id.clone(), task);
+            }
+        }
+        Ok(())
     }
 
     /// Create a TaskManagementTool that shares the same task store as an existing Arc.
     pub fn from_arc(tasks: Arc<RwLock<HashMap<String, Task>>>) -> Self {
-        Self { tasks }
+        Self { tasks, store: None }
     }
 
     /// Return the underlying task store so it can be shared.
@@ -338,6 +361,14 @@ impl TaskManagementTool {
         let task = self.create_task(&input).await?;
         let task_id = task.id.clone();
 
+        // Persist to disk if store is present
+        if let Some(ref store) = self.store {
+            store.save(&task).await.map_err(|e| ToolError {
+                message: format!("Failed to save task: {}", e),
+                code: Some("store_error".to_string()),
+            })?;
+        }
+
         let mut tasks = self.tasks.write().await;
         tasks.insert(task_id.clone(), task);
         let total = tasks.len();
@@ -384,6 +415,14 @@ impl TaskManagementTool {
 
         let task = self.update_task(task_id, &input).await?;
 
+        // Persist to disk if store is present
+        if let Some(ref store) = self.store {
+            store.save(&task).await.map_err(|e| ToolError {
+                message: format!("Failed to save task: {}", e),
+                code: Some("store_error".to_string()),
+            })?;
+        }
+
         Ok(ToolOutput {
             output_type: "json".to_string(),
             content: serde_json::json!({
@@ -406,6 +445,11 @@ impl TaskManagementTool {
         let removed = tasks.remove(task_id);
 
         if removed.is_some() {
+            // Delete from disk if store is present
+            if let Some(ref store) = self.store {
+                let _ = store.delete(task_id).await;
+            }
+
             Ok(ToolOutput {
                 output_type: "json".to_string(),
                 content: serde_json::json!({
@@ -506,6 +550,11 @@ impl TaskManagementTool {
         task.status = TaskStatus::Completed;
         task.updated_at = chrono::Utc::now();
 
+        // Persist to disk if store is present
+        if let Some(ref store) = self.store {
+            let _ = store.save(task).await;
+        }
+
         Ok(ToolOutput {
             output_type: "json".to_string(),
             content: serde_json::json!({
@@ -583,6 +632,11 @@ impl TaskManagementTool {
         let task = tasks.get_mut(task_id).unwrap();
         task.blocked_by = blocked_by;
         task.updated_at = chrono::Utc::now();
+
+        // Persist to disk if store is present
+        if let Some(ref store) = self.store {
+            let _ = store.save(task).await;
+        }
 
         Ok(ToolOutput {
             output_type: "json".to_string(),
