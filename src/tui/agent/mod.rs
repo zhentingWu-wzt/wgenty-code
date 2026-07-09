@@ -84,8 +84,12 @@ pub struct AgentLoop {
     /// Subagent timeout from settings.agent.subagent.timeout_secs (default 1800).
     pub(super) subagent_timeout_secs: u64,
     /// Model context window from settings.models.context_window (default 200_000).
-    /// Compaction fires at 80 % of this value (context_window * 4 / 5).
     pub(super) context_window: usize,
+    /// Max output tokens from settings.models.transport.max_tokens. Compaction
+    /// reserves this much of the context window for the model's output before
+    /// applying the 80 % threshold, so input + max_tokens never overflows the
+    /// window (which would trigger InvalidParameter on the input side).
+    pub(super) max_tokens: usize,
     /// Memory manager for cross-session memory extraction and recall.
     pub(super) memory_manager: Arc<crate::context::MemoryManager>,
 }
@@ -106,6 +110,7 @@ impl AgentLoop {
         prompt_context: std::sync::Arc<crate::prompts::PromptContext>,
         subagent_timeout_secs: u64,
         context_window: usize,
+        max_tokens: usize,
         memory_manager: Arc<crate::context::MemoryManager>,
     ) -> Self {
         Self {
@@ -128,6 +133,7 @@ impl AgentLoop {
             prompt_context,
             subagent_timeout_secs,
             context_window,
+            max_tokens,
             memory_manager,
         }
     }
@@ -304,6 +310,7 @@ mod tests {
             std::sync::Arc::new(crate::prompts::PromptContext::new()),
             1800,
             200_000,
+            65536,
             mm.clone(),
         );
 

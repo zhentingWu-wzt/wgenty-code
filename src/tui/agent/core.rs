@@ -249,10 +249,34 @@ impl AgentLoop {
 
                     let mut tasks: Vec<(String, String, serde_json::Value)> = Vec::new();
                     for tc in &task_calls {
-                        let (args, _) = crate::utils::lenient_json::parse_tool_args_lenient(
+                        let (args, parse_err) = crate::utils::lenient_json::parse_tool_args_lenient(
                             &tc.function.arguments,
                             &tc.function.name,
                         );
+                        if let Some(ref e) = parse_err {
+                            // Unrecoverable truncated args - don't spawn a subagent with
+                            // garbage. Surface the real cause (replay safety on the next
+                            // request is handled by `sanitize_tool_call_args_for_replay`).
+                            tracing::warn!(
+                                tool = "task",
+                                error = %e,
+                                "task tool call arguments parse issue (truncated?)"
+                            );
+                            let msg = serde_json::json!({
+                                "success": false,
+                                "error": format!(
+                                    "task tool call arguments are invalid JSON (likely truncated by max_tokens): {e}. Please re-issue the tool call."
+                                ),
+                            })
+                            .to_string();
+                            let _ = event_tx.send(AppEvent::ToolResult {
+                                name: "task".to_string(),
+                                args: args.clone(),
+                                content: msg.clone(),
+                            });
+                            history.lock().await.push(ChatMessage::tool(&tc.id, msg));
+                            continue;
+                        }
                         let _ = event_tx.send(AppEvent::ToolStart {
                             name: "task".to_string(),
                             args: args.clone(),
@@ -309,6 +333,31 @@ impl AgentLoop {
                                 args_len = tc.function.arguments.len(),
                                 "Tool call arguments parse issue (lenient recovery attempted)"
                             );
+                            // Arguments are unrecoverable invalid JSON (truncated by
+                            // max_tokens or stream interruption). Don't execute with
+                            // partial/garbage args - that yields misleading errors like
+                            // "path is required" (the real cause is the truncated JSON,
+                            // not a missing field). Surface the real cause so the model
+                            // re-issues the call. Replay safety on the *next* request is
+                            // handled by `sanitize_tool_call_args_for_replay` at the API
+                            // layer; this improves the current turn's tool result.
+                            let msg = serde_json::json!({
+                                "success": false,
+                                "error": format!(
+                                    "tool call arguments are invalid JSON (likely truncated by max_tokens): {e}. Please re-issue the tool call."
+                                ),
+                            })
+                            .to_string();
+                            let _ = self.event_tx.send(AppEvent::ToolResult {
+                                name: tc.function.name.clone(),
+                                args: args.clone(),
+                                content: msg.clone(),
+                            });
+                            {
+                                let mut history = self.conversation_history.lock().await;
+                                history.push(ChatMessage::tool(&tc.id, msg));
+                            }
+                            continue;
                         }
 
                         if tc.function.name == "ask_user_question" {

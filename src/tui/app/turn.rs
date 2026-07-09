@@ -58,7 +58,7 @@ impl App {
         let sys_msgs = self.assembled_system_messages.clone();
         let plan_mode = self.mode == AgentMode::PlanMode;
         // Read agent config from settings
-        let (planner_client, max_rounds, subagent_timeout_secs, context_window) = {
+        let (planner_client, max_rounds, subagent_timeout_secs, context_window, max_tokens) = {
             let s = self.settings_lock.read().unwrap();
             let planner = if let Some(ref pm) = s.models.planner {
                 let mut planner_settings = s.clone();
@@ -78,6 +78,7 @@ impl App {
                 s.agent.max_rounds.unwrap_or(100),
                 s.agent.subagent.timeout_secs,
                 s.models.context_window,
+                s.models.transport.max_tokens,
             )
         };
         let token_counter = self.token_counter.clone();
@@ -100,6 +101,7 @@ impl App {
                 prompt_context,
                 subagent_timeout_secs,
                 context_window,
+                max_tokens,
                 memory_manager,
             );
             let result = agent.process_input(input_text).await;
@@ -133,12 +135,13 @@ impl App {
         let event_tx = self.event_tx.clone();
         let session_id = self.session_id.clone();
         let sys_msgs = self.assembled_system_messages.clone();
-        let (max_rounds, subagent_timeout_secs, context_window) = {
+        let (max_rounds, subagent_timeout_secs, context_window, max_tokens) = {
             let s = self.settings_lock.read().unwrap();
             (
                 s.agent.max_rounds.unwrap_or(100),
                 s.agent.subagent.timeout_secs,
                 s.models.context_window,
+                s.models.transport.max_tokens,
             )
         };
         let token_counter = self.token_counter.clone();
@@ -161,6 +164,7 @@ impl App {
                 prompt_context,
                 subagent_timeout_secs,
                 context_window,
+                max_tokens,
                 memory_manager,
             );
             let _ = agent.compact_only().await;

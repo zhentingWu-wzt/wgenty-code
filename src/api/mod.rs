@@ -31,6 +31,57 @@ use anthropic::{
 // `crate::api::format_api_error` call site in `daemon/handlers.rs`.
 use provider::Provider;
 
+/// Sanitize tool-call arguments before replaying a conversation to the API.
+///
+/// When the model generates a tool call with very long arguments (e.g. a large
+/// `file_write`), the response can be truncated by `max_tokens` or a stream
+/// interruption, leaving `tool_calls[].function.arguments` as invalid JSON.
+/// Replaying that assistant message verbatim makes the provider reject every
+/// subsequent request with `InvalidParameter: Invalid request body`.
+///
+/// This walks the messages and, for any assistant tool_call whose `arguments`
+/// is not valid JSON, replaces it with a valid JSON object (lenient-extracted
+/// partial fields, stripped of `_parse_error`/`_raw_arguments` meta keys,
+/// falling back to `{}`). The `tool_call.id` is preserved so paired `tool`
+/// response messages stay linked - dropping the tool_call would orphan its
+/// tool response and trigger a *different* `InvalidParameter`.
+fn sanitize_tool_call_args_for_replay(messages: &mut [ChatMessage]) {
+    for msg in messages.iter_mut() {
+        if msg.role != "assistant" {
+            continue;
+        }
+        let Some(tool_calls) = msg.tool_calls.as_mut() else {
+            continue;
+        };
+        for tc in tool_calls.iter_mut() {
+            if serde_json::from_str::<serde_json::Value>(&tc.function.arguments).is_ok() {
+                continue;
+            }
+            // Arguments are invalid JSON (truncated). Replace with a valid
+            // object built from whatever fields the lenient parser recovered.
+            let (partial, err) = crate::utils::lenient_json::parse_tool_args_lenient(
+                &tc.function.arguments,
+                &tc.function.name,
+            );
+            let cleaned = match partial {
+                serde_json::Value::Object(mut map) => {
+                    map.remove("_parse_error");
+                    map.remove("_raw_arguments");
+                    serde_json::Value::Object(map)
+                }
+                _ => serde_json::Value::Object(serde_json::Map::new()),
+            };
+            tracing::warn!(
+                tool = %tc.function.name,
+                error = %err.unwrap_or_default(),
+                "replay: replaced truncated/invalid tool_call arguments with valid JSON \
+                 to avoid InvalidParameter on subsequent requests"
+            );
+            tc.function.arguments = cleaned.to_string();
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ApiClient {
     settings: Settings,
@@ -98,15 +149,70 @@ impl ApiClient {
         }
     }
 
+    /// POST `body` to `url` with retry on transient network errors.
+    ///
+    /// Retries the send on connection failures, timeouts, and DNS errors — the
+    /// flakiness that benefits from retry — with exponential backoff (2s, 4s,
+    /// 8s, 16s; 5 total attempts). HTTP status errors (4xx/5xx) are NOT retried
+    /// here; the caller inspects the returned `Response` status.
+    ///
+    /// Lives at the ApiClient layer so EVERY caller (main loop, subagents,
+    /// planner, RLM, daemon, voice, MCP, knowledge) retries uniformly —
+    /// previously only the main agent loop retried via `stream_with_retry`.
+    async fn send_with_retry(
+        &self,
+        endpoint: &str,
+        url: &str,
+        headers: &[(&str, String)],
+        body: &impl serde::Serialize,
+    ) -> anyhow::Result<reqwest::Response> {
+        const API_MAX_RETRIES: u32 = 4; // 5 total attempts
+        let mut delay = 2u64;
+        for attempt in 0..=API_MAX_RETRIES {
+            let mut req = self.http_client.post(url);
+            for (k, v) in headers {
+                req = req.header(*k, v.as_str());
+            }
+            req = req.header("Content-Type", "application/json").json(body);
+            match req.send().await {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    let msg = e.to_string().to_lowercase();
+                    let transient = e.is_connect()
+                        || e.is_timeout()
+                        || msg.contains("dns")
+                        || msg.contains("resolve")
+                        || msg.contains("name or service");
+                    if !transient || attempt == API_MAX_RETRIES {
+                        return Err(wrap_network_error(e, self.provider.name()));
+                    }
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_attempts = API_MAX_RETRIES + 1,
+                        endpoint = %endpoint,
+                        retry_in_secs = delay,
+                        error = %e,
+                        "transient network error contacting {} API, retrying",
+                        self.provider.name()
+                    );
+                    tokio::time::sleep(Duration::from_secs(delay)).await;
+                    delay = delay.saturating_mul(2);
+                }
+            }
+        }
+        unreachable!()
+    }
+
     pub fn get_model(&self) -> &str {
         &self.settings.models.main.name
     }
 
     pub async fn chat(
         &self,
-        messages: Vec<ChatMessage>,
+        mut messages: Vec<ChatMessage>,
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<ChatResponse> {
+        sanitize_tool_call_args_for_replay(&mut messages);
         let api_key = self
             .get_api_key()
             .ok_or_else(|| anyhow::anyhow!("API key not configured"))?;
@@ -139,14 +245,13 @@ impl ApiClient {
         let url = self.build_endpoint("chat/completions");
 
         let response = self
-            .http_client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| wrap_network_error(e, self.provider.name()))?;
+            .send_with_retry(
+                "chat/completions",
+                &url,
+                &[("Authorization", format!("Bearer {}", api_key))],
+                &request,
+            )
+            .await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -190,15 +295,16 @@ impl ApiClient {
         let url = self.build_endpoint("messages");
 
         let response = self
-            .http_client
-            .post(&url)
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| wrap_network_error(e, self.provider.name()))?;
+            .send_with_retry(
+                "messages",
+                &url,
+                &[
+                    ("x-api-key", api_key.to_string()),
+                    ("anthropic-version", "2023-06-01".to_string()),
+                ],
+                &request,
+            )
+            .await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -212,9 +318,10 @@ impl ApiClient {
 
     pub async fn chat_stream(
         &self,
-        messages: Vec<ChatMessage>,
+        mut messages: Vec<ChatMessage>,
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<reqwest::Response> {
+        sanitize_tool_call_args_for_replay(&mut messages);
         let api_key = self
             .get_api_key()
             .ok_or_else(|| anyhow::anyhow!("API key not configured"))?;
@@ -250,14 +357,13 @@ impl ApiClient {
         let url = self.build_endpoint("chat/completions");
 
         let response = self
-            .http_client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| wrap_network_error(e, self.provider.name()))?;
+            .send_with_retry(
+                "chat/completions",
+                &url,
+                &[("Authorization", format!("Bearer {}", api_key))],
+                &request,
+            )
+            .await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -306,15 +412,16 @@ impl ApiClient {
         let url = self.build_endpoint("messages");
 
         let response = self
-            .http_client
-            .post(&url)
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| wrap_network_error(e, self.provider.name()))?;
+            .send_with_retry(
+                "messages",
+                &url,
+                &[
+                    ("x-api-key", api_key.to_string()),
+                    ("anthropic-version", "2023-06-01".to_string()),
+                ],
+                &request,
+            )
+            .await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -385,3 +492,88 @@ impl ApiClient {
 }
 
 pub type AnthropicClient = ApiClient;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn asst_with_args(id: &str, name: &str, args: &str) -> ChatMessage {
+        ChatMessage {
+            role: "assistant".to_string(),
+            content: None,
+            reasoning_content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: id.to_string(),
+                r#type: "function".to_string(),
+                function: ToolCallFunction {
+                    name: name.to_string(),
+                    arguments: args.to_string(),
+                },
+            }]),
+            tool_call_id: None,
+        }
+    }
+
+    #[test]
+    fn sanitize_replay_leaves_valid_args() {
+        let mut msgs = vec![asst_with_args(
+            "call_1",
+            "file_write",
+            r#"{"path":"a.txt","content":"hi"}"#,
+        )];
+        sanitize_tool_call_args_for_replay(&mut msgs);
+        let args = &msgs[0].tool_calls.as_ref().unwrap()[0].function.arguments;
+        let v: serde_json::Value = serde_json::from_str(args).unwrap();
+        assert_eq!(v["path"], "a.txt");
+        assert_eq!(v["content"], "hi");
+    }
+
+    #[test]
+    fn sanitize_replay_replaces_truncated_args_and_keeps_linkage() {
+        // Truncated mid-content: arguments is invalid JSON (no closing quote,
+        // no `path` key). Before the fix this would be replayed verbatim and
+        // make the provider reject every subsequent request.
+        let truncated = r##"{"content":"# audit report\n\nvery long content cut"##;
+        let mut msgs = vec![
+            asst_with_args("call_x", "file_write", truncated),
+            ChatMessage::tool("call_x", r#"{"success":false,"error":"path is required"}"#),
+        ];
+        sanitize_tool_call_args_for_replay(&mut msgs);
+
+        // assistant args are now valid JSON...
+        let args = &msgs[0].tool_calls.as_ref().unwrap()[0].function.arguments;
+        let v: serde_json::Value = serde_json::from_str(args).unwrap();
+        assert!(v.is_object());
+        // ...id preserved, so the paired tool response is still linked (not orphaned)
+        assert_eq!(msgs[0].tool_calls.as_ref().unwrap()[0].id, "call_x");
+        assert_eq!(msgs[1].tool_call_id.as_deref(), Some("call_x"));
+    }
+
+    #[test]
+    fn sanitize_replay_empty_when_unextractable() {
+        // Mid-string truncation with no closing quote -> lenient extracts
+        // nothing -> degrade to `{}` (still valid JSON).
+        let truncated = r#"{"content":"unfinished"#;
+        let mut msgs = vec![asst_with_args("call_y", "file_write", truncated)];
+        sanitize_tool_call_args_for_replay(&mut msgs);
+        let args = &msgs[0].tool_calls.as_ref().unwrap()[0].function.arguments;
+        let v: serde_json::Value = serde_json::from_str(args).unwrap();
+        assert!(
+            v.as_object().unwrap().is_empty(),
+            "expected {{}} when nothing extractable, got {args}"
+        );
+    }
+
+    #[test]
+    fn sanitize_replay_skips_non_assistant_messages() {
+        // Only assistant tool_calls are sanitized; tool/user/system untouched.
+        let mut msgs = vec![
+            ChatMessage::user(r#"{"not":"json but user role"}"#),
+            ChatMessage::system("sys"),
+            ChatMessage::tool("call_z", r#"{"success":true}"#),
+        ];
+        sanitize_tool_call_args_for_replay(&mut msgs);
+        assert_eq!(msgs[0].content.as_deref(), Some(r#"{"not":"json but user role"}"#));
+        assert_eq!(msgs[2].content.as_deref(), Some(r#"{"success":true}"#));
+    }
+}
