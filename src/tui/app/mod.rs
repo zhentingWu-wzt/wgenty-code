@@ -147,11 +147,8 @@ pub struct App {
     pub prompt_context: std::sync::Arc<PromptContext>,
     /// Memory manager for cross-session memory (extraction, storage, recall, consolidation).
     pub memory_manager: std::sync::Arc<crate::context::MemoryManager>,
-    /// Memories recalled at session startup; injected into each turn's PromptContext.
+    /// Memories recalled at session startup; injected into compact turns' PromptContext.
     pub(crate) startup_memories: Vec<String>,
-    /// Keywords from the previous user message, used for topic-change detection
-    /// during per-turn smart recall.
-    pub(crate) prev_keywords: Vec<String>,
     /// AutoDream service for time-gated memory consolidation.
     pub auto_dream_service: Option<Arc<crate::services::AutoDreamService>>,
     /// Command router for slash command dispatch (replaces Comet-specific routing).
@@ -468,7 +465,6 @@ impl App {
             prompt_context,
             memory_manager: mm,
             startup_memories: Vec::new(),
-            prev_keywords: Vec::new(),
             auto_dream_service: Some(Arc::new(auto_dream)),
             command_router: Some(command_router),
             interaction_service,
@@ -616,127 +612,6 @@ impl App {
 
         Ok(())
     }
-}
-
-/// Inject recalled memories into the per-turn PromptContext (used by per-turn
-/// recall). Renamed from `inject_startup_memories` — behavior is unchanged.
-pub(crate) fn inject_startup_memories(
-    prompt_context: std::sync::Arc<PromptContext>,
-    memories: &[String],
-) -> std::sync::Arc<PromptContext> {
-    if memories.is_empty() {
-        return prompt_context;
-    }
-    let mut ctx = (*prompt_context).clone();
-    ctx.memories = memories.to_vec();
-    std::sync::Arc::new(ctx)
-}
-
-/// Per-turn smart recall: extract keywords from user message, detect topic
-/// change, and re-retrieve relevant cross-session memories if needed.
-pub(crate) async fn recall_memories(
-    msg: &str,
-    prev_keywords: &mut Vec<String>,
-    startup: &[String],
-    mm: &std::sync::Arc<crate::context::MemoryManager>,
-    top_n: usize,
-    threshold: f32,
-) -> Vec<String> {
-    let keywords = extract_keywords(msg);
-    let mut result = startup.to_vec();
-
-    // Don't trigger on very short / empty messages.
-    if keywords.len() < 2 {
-        *prev_keywords = keywords;
-        return result;
-    }
-
-    // Check topic overlap with previous turn.
-    let prev_set: std::collections::HashSet<_> = prev_keywords.iter().collect();
-    if !prev_set.is_empty() {
-        let curr_set: std::collections::HashSet<_> = keywords.iter().collect();
-        let jaccard = topic_jaccard(&curr_set, &prev_set);
-        if jaccard >= threshold {
-            // Same topic — reuse previous recall results.
-            *prev_keywords = keywords;
-            return result;
-        }
-    }
-
-    // Topic changed — perform new search.
-    let query = keywords.join(" ");
-    let matched = mm.search_memories(&query).await;
-
-    // Filter by importance >= 0.5, sort descending, take top N.
-    let mut sorted: Vec<_> = matched
-        .into_iter()
-        .filter(|m| m.importance >= 0.5)
-        .collect();
-    sorted.sort_by(|a, b| {
-        b.importance
-            .partial_cmp(&a.importance)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let top: Vec<_> = sorted.into_iter().take(top_n).collect();
-
-    if !top.is_empty() {
-        let lines: Vec<String> = top
-            .iter()
-            .map(|m| {
-                format!(
-                    "- [{}] {} (importance: {:.1})",
-                    format_memory_type(&m.memory_type),
-                    m.content,
-                    m.importance
-                )
-            })
-            .collect();
-        tracing::info!(count = lines.len(), "per-turn recall triggered");
-        // Merge: startup memories + per-turn recall (per-turn first, startup as fallback).
-        let mut merged = lines;
-        if !result.is_empty() {
-            merged.extend(result);
-        }
-        result = merged;
-    }
-
-    *prev_keywords = keywords;
-    result
-}
-
-/// Extract meaningful keywords from a user message for memory retrieval.
-/// Filters stop words and short tokens (reusing the consolidation engine's
-/// filter), then sorts by token length descending (longer = more specific).
-pub(crate) fn extract_keywords(msg: &str) -> Vec<String> {
-    use crate::context::ConsolidationEngine;
-    let mut keywords: Vec<String> = msg
-        .split_whitespace()
-        .filter(|w| ConsolidationEngine::is_meaningful_token(w))
-        .map(|w| w.to_lowercase())
-        .collect();
-    // Sort by length descending: longer words are more specific.
-    keywords.sort_by_key(|b| std::cmp::Reverse(b.len()));
-    keywords.dedup();
-    // Keep top-N keywords to avoid query noise.
-    const MAX_KEYWORDS: usize = 6;
-    keywords.truncate(MAX_KEYWORDS);
-    keywords
-}
-
-/// Jaccard similarity between two keyword sets.
-pub(crate) fn topic_jaccard(
-    a: &std::collections::HashSet<&String>,
-    b: &std::collections::HashSet<&String>,
-) -> f32 {
-    if a.is_empty() || b.is_empty() {
-        return 0.0;
-    }
-    let intersection = a.intersection(b).count();
-    let union = a.len() + b.len() - intersection;
-    if union == 0 {
-        return 0.0;
-    }
-    intersection as f32 / union as f32
 }
 
 /// Parse a simple YAML list from text.
