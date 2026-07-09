@@ -65,6 +65,9 @@ impl Default for StorageConfig {
                 path: config_dir.join("memory.json"),
                 consolidation_interval: 24,
                 max_memories: 1000,
+                importance_threshold: default_importance_threshold(),
+                age_threshold_hours: default_age_threshold_hours(),
+                enable_auto_consolidation: default_enable_auto_consolidation(),
             },
             transcript: TranscriptConfig::default(),
         }
@@ -95,6 +98,26 @@ pub struct MemorySettings {
     pub consolidation_interval: u64,
     /// Maximum memories to keep
     pub max_memories: usize,
+    /// Minimum importance for a memory to survive consolidation (0.0–1.0).
+    #[serde(default = "default_importance_threshold")]
+    pub importance_threshold: f32,
+    /// Memories older than this (in hours) and below the importance threshold
+    /// are eligible for removal during consolidation.
+    #[serde(default = "default_age_threshold_hours")]
+    pub age_threshold_hours: u64,
+    /// Whether auto-consolidation is enabled.
+    #[serde(default = "default_enable_auto_consolidation")]
+    pub enable_auto_consolidation: bool,
+}
+
+fn default_importance_threshold() -> f32 {
+    0.3
+}
+fn default_age_threshold_hours() -> u64 {
+    24
+}
+fn default_enable_auto_consolidation() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
