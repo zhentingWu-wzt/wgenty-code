@@ -3,6 +3,7 @@ pub mod compact;
 pub mod load_skill;
 pub mod lsp;
 pub mod note_edit;
+pub mod note_store;
 pub mod skill;
 pub mod task;
 pub mod team_message;
