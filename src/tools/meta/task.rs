@@ -127,7 +127,7 @@ impl Tool for TaskTool {
                 },
                 "background": {
                     "type": "boolean",
-                    "description": "Run subagent in background. Returns task_id immediately; result delivered later. Default: false"
+                    "description": "Run subagent in background. Returns task_id immediately; result delivered later. Default: true"
                 },
                 "use_small_model": {
                     "type": "boolean",
@@ -164,7 +164,7 @@ impl Tool for TaskTool {
         let _subagent_type = input["subagent_type"].as_str().unwrap_or("general-purpose");
         let description = input["description"].as_str().unwrap_or("Subagent task");
         let prompt = input["prompt"].as_str().unwrap_or("");
-        let background = input["background"].as_bool().unwrap_or(false);
+        let background = input["background"].as_bool().unwrap_or(true);
 
         // Token budget: 4-level fallback per spec §3.3a.
         // 1. explicit input.token_budget (caller-explicit; 0 = unlimited stays None)
@@ -361,7 +361,11 @@ impl Tool for TaskTool {
             let active = self.active_count.clone();
             let reg = tool_registry.clone();
             let tools = allowed_tools.clone();
-            let api_client_bg = ApiClient::new(self.settings.clone());
+            let api_client_bg = if use_small && self.settings.models.small.is_some() {
+                ApiClient::new(self.settings.small_model_settings())
+            } else {
+                ApiClient::new(self.settings.clone())
+            };
             let timeout_secs = self.settings.agent.subagent.timeout_secs;
 
             let subagent_node_id = uuid::Uuid::new_v4().to_string();
