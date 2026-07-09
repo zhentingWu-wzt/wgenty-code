@@ -68,6 +68,8 @@ impl Default for StorageConfig {
                 importance_threshold: default_importance_threshold(),
                 age_threshold_hours: default_age_threshold_hours(),
                 enable_auto_consolidation: default_enable_auto_consolidation(),
+                recall_top_n: default_recall_top_n(),
+                recall_similarity_threshold: default_recall_similarity_threshold(),
             },
             transcript: TranscriptConfig::default(),
         }
@@ -108,6 +110,13 @@ pub struct MemorySettings {
     /// Whether auto-consolidation is enabled.
     #[serde(default = "default_enable_auto_consolidation")]
     pub enable_auto_consolidation: bool,
+    /// Top-N memories to inject per recall (default 5).
+    #[serde(default = "default_recall_top_n")]
+    pub recall_top_n: usize,
+    /// Topic overlap threshold (Jaccard) for triggering re-retrieval
+    /// during per-turn smart recall. Range 0.0–1.0, default 0.3.
+    #[serde(default = "default_recall_similarity_threshold")]
+    pub recall_similarity_threshold: f32,
 }
 
 fn default_importance_threshold() -> f32 {
@@ -118,6 +127,12 @@ fn default_age_threshold_hours() -> u64 {
 }
 fn default_enable_auto_consolidation() -> bool {
     true
+}
+fn default_recall_top_n() -> usize {
+    5
+}
+fn default_recall_similarity_threshold() -> f32 {
+    0.3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
