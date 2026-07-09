@@ -90,7 +90,12 @@ impl AgentLoop {
                         let result_type = r["result_type"].as_str().unwrap_or("command");
                         if result_type == "subagent" {
                             let result = r["stdout"].as_str().unwrap_or("");
-                            format!("[Subagent {} completed]\n{}", task_id, result)
+                            let success = r["success"].as_bool().unwrap_or(false);
+                            let status = if success { "SUCCESS" } else { "FAILED" };
+                            format!(
+                                "📦 Subagent completed [{}]: {}\n{}",
+                                status, task_id, result
+                            )
                         } else {
                             let success = r["success"].as_bool().unwrap_or(false);
                             format!(
@@ -104,8 +109,15 @@ impl AgentLoop {
                     .join("\n\n");
                 {
                     let mut history = self.conversation_history.lock().await;
-                    history.push(ChatMessage::user(notification));
+                    history.push(ChatMessage::user(notification.clone()));
                 }
+                // Also send a UI notification so the user sees the result
+                // in the chat without waiting for the LLM to mention it.
+                let _ = self
+                    .event_tx
+                    .send(crate::tui::app::types::AppEvent::BackgroundTaskResult(
+                        notification,
+                    ));
             }
             _ => {}
         }

@@ -255,8 +255,8 @@ impl ApiClient {
             )
             .await?;
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let status = response.status();
+        if !status.is_success() {
             let body = response
                 .text()
                 .await
@@ -270,7 +270,24 @@ impl ApiClient {
             return Err(anyhow::anyhow!("{}", format_api_error(status, &body)));
         }
 
-        let chat_response: ChatResponse = response.json().await?;
+        // Read body as text first so we can include it in decode errors.
+        let body_text = response
+            .text()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
+        let chat_response: ChatResponse = serde_json::from_str(&body_text).map_err(|e| {
+            let preview: String = body_text.chars().take(800).collect();
+            tracing::error!(
+                ?e,
+                body_preview = %preview,
+                "Failed to deserialize response body as ChatResponse"
+            );
+            anyhow::anyhow!(
+                "error decoding response body: {}\n--- response body (first 800 chars) ---\n{}",
+                e,
+                preview
+            )
+        })?;
         Ok(chat_response)
     }
 
@@ -308,13 +325,30 @@ impl ApiClient {
             )
             .await?;
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let status = response.status();
+        if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(anyhow::anyhow!("{}", format_api_error(status, &body)));
         }
 
-        let anthropic_resp: anthropic::AnthropicResponse = response.json().await?;
+        let body_text = response
+            .text()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to read Anthropic response body: {}", e))?;
+        let anthropic_resp: anthropic::AnthropicResponse =
+            serde_json::from_str(&body_text).map_err(|e| {
+                let preview: String = body_text.chars().take(800).collect();
+                tracing::error!(
+                    ?e,
+                    body_preview = %preview,
+                    "Failed to deserialize Anthropic response body"
+                );
+                anyhow::anyhow!(
+                    "error decoding Anthropic response body: {}\n--- response body (first 800 chars) ---\n{}",
+                    e,
+                    preview
+                )
+            })?;
         Ok(convert_anthropic_response(&anthropic_resp))
     }
 

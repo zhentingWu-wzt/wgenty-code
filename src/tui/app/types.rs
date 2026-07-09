@@ -167,6 +167,8 @@ pub enum AppEvent {
     ConfigChanged(Box<crate::config::Settings>),
     /// A subagent progress update from daemon polling.
     SubagentUpdate(Box<SubagentProgress>),
+    /// Background task/subagent result notification for display in chat.
+    BackgroundTaskResult(String),
 }
 
 /// UI state for a single message in the chat view.
