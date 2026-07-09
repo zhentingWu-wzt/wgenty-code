@@ -163,6 +163,28 @@ pub fn detect_provider(base_url: &str) -> std::sync::Arc<dyn Provider> {
     provider.into()
 }
 
+/// Resolve the provider, honoring an explicit override from settings before
+/// falling back to base-url auto-detection. Override values: `"anthropic"`,
+/// `"openai"` (or `"openai-compat"`), `"deepseek"`. Lets a user point at a
+/// relay whose URL doesn't reveal its format (e.g. packyapi — Anthropic-native
+/// but no "anthropic" in the URL) and force the correct path.
+pub fn resolve_provider(
+    base_url: &str,
+    provider_override: Option<&str>,
+) -> std::sync::Arc<dyn Provider> {
+    if let Some(p) = provider_override {
+        match p.to_lowercase().as_str() {
+            "anthropic" => return std::sync::Arc::new(AnthropicProvider),
+            "openai" | "openai-compat" | "openai_compatible" => {
+                return std::sync::Arc::new(OpenAIProvider)
+            }
+            "deepseek" => return std::sync::Arc::new(DeepSeekProvider),
+            _ => {}
+        }
+    }
+    detect_provider(base_url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +206,42 @@ mod tests {
     fn test_detect_openai() {
         let provider = detect_provider("https://api.openai.com");
         assert_eq!(provider.name(), "openai");
+    }
+
+    #[test]
+    fn test_resolve_provider_override_anthropic() {
+        // packyapi URL has no "anthropic" — auto-detect would pick OpenAI and
+        // hit the flaky /v1/chat/completions compat layer. The override forces
+        // the stable /v1/messages Anthropic path (matches Claude Code).
+        let provider = resolve_provider("https://api-slb.packyapi.com", Some("anthropic"));
+        assert_eq!(provider.name(), "anthropic");
+        assert!(!provider.is_openai_compat());
+    }
+
+    #[test]
+    fn test_resolve_provider_override_openai() {
+        let provider = resolve_provider("https://api.anthropic.com", Some("openai"));
+        assert_eq!(provider.name(), "openai");
+        assert!(provider.is_openai_compat());
+    }
+
+    #[test]
+    fn test_resolve_provider_override_case_insensitive() {
+        let provider = resolve_provider("https://example.com", Some("Anthropic"));
+        assert_eq!(provider.name(), "anthropic");
+    }
+
+    #[test]
+    fn test_resolve_provider_unknown_override_falls_back() {
+        // Unknown override value → fall back to base-url auto-detection.
+        let provider = resolve_provider("https://api.deepseek.com", Some("nonsense"));
+        assert_eq!(provider.name(), "deepseek");
+    }
+
+    #[test]
+    fn test_resolve_provider_no_override_uses_detect() {
+        let provider = resolve_provider("https://api.anthropic.com", None);
+        assert_eq!(provider.name(), "anthropic");
     }
 
     #[test]

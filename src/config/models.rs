@@ -11,6 +11,13 @@ pub struct ModelEndpoint {
     pub api_key: Option<String>,
     #[serde(default)]
     pub appkey: Option<String>,
+    /// Force the API format regardless of base_url auto-detection.
+    /// `"anthropic"` → `/v1/messages` (Anthropic format); `"openai"` →
+    /// `/v1/chat/completions`. Needed for relays like packyapi that speak
+    /// Anthropic natively but whose URL lacks "anthropic" (auto-detect would
+    /// wrongly pick OpenAI and hit a flaky compat layer).
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 impl ModelEndpoint {
@@ -85,6 +92,7 @@ impl Default for ModelsConfig {
                     .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok())
                     .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok()),
                 appkey: None,
+                provider: None,
             },
             small: None,
             planner: None,
