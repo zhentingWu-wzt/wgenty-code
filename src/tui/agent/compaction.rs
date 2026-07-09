@@ -175,9 +175,13 @@ impl AgentLoop {
     pub(super) fn needs_compaction(&self, messages: &[ChatMessage]) -> bool {
         // `request_size_chars` counts content + reasoning_content +
         // tool_calls.arguments (the fields that dominate request token cost);
-        // dividing by 4 gives a rough token estimate. Compaction fires when
-        // the estimate exceeds 80 % of the model's context window.
-        request_size_chars(messages) / 4 > self.context_window * 4 / 5
+        // dividing by 4 gives a rough token estimate. Compaction fires when the
+        // estimate exceeds 80 % of the context window, *minus* `max_tokens`
+        // reserved for the model's output. Without reserving, a large max_tokens
+        // (e.g. 65536 for GLM-5.2) lets input grow until input + max_tokens
+        // overflows the window -> InvalidParameter on the input side.
+        let threshold = (self.context_window * 4 / 5).saturating_sub(self.max_tokens);
+        request_size_chars(messages) / 4 > threshold
     }
 
     /// Run conversation compaction: archive the transcript, ask the model for a
