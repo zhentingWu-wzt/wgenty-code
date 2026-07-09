@@ -94,12 +94,134 @@ pub struct MemoryStatus {
     pub storage_size_bytes: u64,
 }
 
+// ── MemoryIndex: TF-IDF inverted index for memory retrieval ──────────
+
+/// In-memory inverted index with TF-IDF weighting for keyword search
+/// over the memory corpus. Built lazily on `load()` and kept in sync
+/// with `add_memory()` / `consolidate()`.
+struct MemoryIndex {
+    /// word → [(entry_index, normalized_tf)]
+    inverted: HashMap<String, Vec<(usize, f32)>>,
+    /// word → inverse document frequency
+    idf: HashMap<String, f32>,
+    /// total number of indexed entries
+    doc_count: usize,
+}
+
+impl MemoryIndex {
+    fn new() -> Self {
+        Self {
+            inverted: HashMap::new(),
+            idf: HashMap::new(),
+            doc_count: 0,
+        }
+    }
+
+    /// Rebuild the entire index from a slice of MemoryEntry.
+    fn rebuild(&mut self, entries: &[MemoryEntry]) {
+        self.inverted.clear();
+        self.idf.clear();
+        self.doc_count = entries.len();
+
+        if entries.is_empty() {
+            return;
+        }
+
+        // Phase 1: count term frequencies per document.
+        for (i, entry) in entries.iter().enumerate() {
+            let mut tf_counts: HashMap<String, u32> = HashMap::new();
+            for word in entry.content.split_whitespace() {
+                if crate::context::ConsolidationEngine::is_meaningful_token(word) {
+                    let lower = word.to_lowercase();
+                    *tf_counts.entry(lower).or_insert(0) += 1;
+                }
+            }
+            for (word, tf) in tf_counts {
+                // Sub-linear TF scaling: 1 + log(tf)
+                let tf_norm = 1.0 + (tf as f32).ln();
+                self.inverted.entry(word).or_default().push((i, tf_norm));
+            }
+        }
+
+        // Phase 2: compute IDF = log(N / df).
+        let n = self.doc_count as f32;
+        for (word, postings) in &self.inverted {
+            let df = postings.len() as f32;
+            if df > 0.0 {
+                self.idf.insert(word.clone(), (n / df).ln());
+            }
+        }
+    }
+
+    /// Search the index for entries matching `query` (whitespace-split,
+    /// stop-word filtered). Returns a list of `(entry_index, score)`
+    /// sorted by descending TF-IDF score, limited to `top_n`.
+    fn search(&self, query: &str, top_n: usize) -> Vec<(usize, f32)> {
+        // Tokenize and filter query terms.
+        let terms: Vec<String> = query
+            .split_whitespace()
+            .filter(|w| crate::context::ConsolidationEngine::is_meaningful_token(w))
+            .map(|w| w.to_lowercase())
+            .collect();
+
+        if terms.is_empty() || self.inverted.is_empty() {
+            return Vec::new();
+        }
+
+        // Accumulate TF-IDF scores per entry.
+        let mut scores: HashMap<usize, f32> = HashMap::new();
+        for term in &terms {
+            if let Some(postings) = self.inverted.get(term.as_str()) {
+                let idf = self.idf.get(term.as_str()).copied().unwrap_or(0.0);
+                for &(idx, tf) in postings {
+                    *scores.entry(idx).or_insert(0.0) += tf * idf;
+                }
+            }
+        }
+
+        // Sort by score descending, return top N.
+        let mut ranked: Vec<(usize, f32)> = scores.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        ranked.truncate(top_n);
+        ranked
+    }
+
+    /// Add a single entry to the index incrementally.
+    fn add_entry(&mut self, entry: &MemoryEntry, idx: usize) {
+        self.doc_count += 1;
+
+        let mut tf_counts: HashMap<String, u32> = HashMap::new();
+        for word in entry.content.split_whitespace() {
+            if crate::context::ConsolidationEngine::is_meaningful_token(word) {
+                *tf_counts.entry(word.to_lowercase()).or_insert(0) += 1;
+            }
+        }
+
+        for (word, tf) in tf_counts {
+            let tf_norm = 1.0 + (tf as f32).ln();
+            self.inverted
+                .entry(word.clone())
+                .or_default()
+                .push((idx, tf_norm));
+            // Recompute IDF for this word (doc_count changed).
+            if let Some(postings) = self.inverted.get(&word) {
+                let df = postings.len() as f32;
+                let n = self.doc_count as f32;
+                self.idf.insert(word, (n / df).ln());
+            }
+        }
+    }
+}
+
+// ── MemoryManager ────────────────────────────────────────────────────
+
 pub struct MemoryManager {
     sessions: Arc<MemorySessionManager>,
     history: Arc<HistoryManager>,
     storage: Arc<Storage>,
     consolidation: Arc<ConsolidationEngine>,
     memories: Arc<RwLock<Vec<MemoryEntry>>>,
+    index: Arc<RwLock<MemoryIndex>>,
 }
 
 impl MemoryManager {
@@ -121,6 +243,7 @@ impl MemoryManager {
             storage: Arc::new(Storage::new(memory_path)),
             consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
             memories: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(RwLock::new(MemoryIndex::new())),
         }
     }
 
@@ -151,6 +274,7 @@ impl MemoryManager {
             storage: Arc::new(Storage::new(memory_path)),
             consolidation: Arc::new(ConsolidationEngine::new(consolidation_config)),
             memories: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(RwLock::new(MemoryIndex::new())),
         }
     }
 
@@ -179,8 +303,11 @@ impl MemoryManager {
 
     pub async fn add_memory(&self, entry: MemoryEntry) -> anyhow::Result<()> {
         let mut memories = self.memories.write().await;
+        let idx = memories.len();
         memories.push(entry.clone());
         self.storage.save_memory(&entry).await?;
+        // Incrementally update the index for the new entry.
+        self.index.write().await.add_entry(&entry, idx);
         Ok(())
     }
 
@@ -190,18 +317,31 @@ impl MemoryManager {
     }
 
     pub async fn search_memories(&self, query: &str) -> Vec<MemoryEntry> {
-        let query_lower = query.to_lowercase();
+        // Try TF-IDF index first. Falls back to substring scan if the index
+        // is empty (e.g., before load() was called).
+        let index = self.index.read().await;
+        let ranked = index.search(query, 10);
+
         let memories = self.memories.read().await;
-        memories
-            .iter()
-            .filter(|m| {
-                m.content.to_lowercase().contains(&query_lower)
-                    || m.tags
-                        .iter()
-                        .any(|t| t.to_lowercase().contains(&query_lower))
-            })
-            .cloned()
-            .collect()
+        if !ranked.is_empty() {
+            ranked
+                .into_iter()
+                .filter_map(|(idx, _score)| memories.get(idx).cloned())
+                .collect()
+        } else {
+            // Graceful degradation: substring fallback when index is cold.
+            let query_lower = query.to_lowercase();
+            memories
+                .iter()
+                .filter(|m| {
+                    m.content.to_lowercase().contains(&query_lower)
+                        || m.tags
+                            .iter()
+                            .any(|t| t.to_lowercase().contains(&query_lower))
+                })
+                .cloned()
+                .collect()
+        }
     }
 
     pub async fn get_memories_by_type(&self, memory_type: MemoryType) -> Vec<MemoryEntry> {
@@ -288,6 +428,9 @@ impl MemoryManager {
 
     pub async fn load(&self) -> anyhow::Result<()> {
         let memories = self.storage.load_all().await?;
+        // Rebuild the TF-IDF index from the loaded entries so that
+        // search_memories() can use it immediately.
+        self.index.write().await.rebuild(&memories);
         let mut mem = self.memories.write().await;
         *mem = memories;
         Ok(())
@@ -488,6 +631,7 @@ mod tests {
             storage: storage.clone(),
             consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
             memories: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(RwLock::new(MemoryIndex::new())),
         };
 
         // Pre-populate with one memory.
@@ -525,6 +669,7 @@ mod tests {
             storage: storage.clone(),
             consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
             memories: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(RwLock::new(MemoryIndex::new())),
         };
 
         // Before consolidation, last_consolidation should be None.
