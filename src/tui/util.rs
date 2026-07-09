@@ -444,7 +444,8 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::TurnStarted { .. }
         | AppEvent::ConfigChanged(_)
         | AppEvent::ContextCompacted { .. }
-        | AppEvent::SubagentUpdate(_) => None,
+        | AppEvent::SubagentUpdate(_)
+        | AppEvent::BackgroundTaskResult(_) => None,
     }
 }
 

@@ -1031,6 +1031,22 @@ impl App {
                     focus.rebuild(&self.subagent_tree);
                 }
             }
+            AppEvent::BackgroundTaskResult(notification) => {
+                // Push a system-level notification message to the chat so the
+                // user sees subagent/background-task results without waiting for
+                // the LLM to mention them in its response.
+                self.committed_messages.push(UIMessage {
+                    role: MessageRole::System,
+                    content: notification,
+                    tool_name: None,
+                    tool_args: None,
+                    content_collapsed: false,
+                    tool_collapsed: false,
+                    tool_running: false,
+                    diff_data: None,
+                    tool_metadata: None,
+                });
+            }
             AppEvent::SaveSession => {
                 let id = self.session_id.clone();
                 let name = self.session_name.clone();
