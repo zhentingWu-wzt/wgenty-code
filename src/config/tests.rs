@@ -119,6 +119,7 @@ fn test_small_model_settings_uses_small_overrides() {
         base_url: None, // inherits main
         api_key: Some("small-key".to_string()),
         appkey: None,
+        provider: None,
     });
     let small_s = s.small_model_settings();
     assert_eq!(small_s.models.main.name, "haiku");
