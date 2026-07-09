@@ -724,6 +724,8 @@ mod tests {
             importance_threshold: 0.7,
             age_threshold_hours: 12,
             enable_auto_consolidation: false,
+            recall_top_n: 5,
+            recall_similarity_threshold: 0.3,
         };
 
         let mm = MemoryManager::with_settings(&settings);

@@ -1,7 +1,7 @@
 //! Turn lifecycle — starting, spawning, and cancelling agent turns.
 
-use super::types::*;
 use super::inject_startup_memories;
+use super::types::*;
 use super::App;
 use crate::state::agent_phase::{AgentPhase, TurnAbortReason, TurnId};
 use crate::tui::agent::{AgentError, AgentLoop};
@@ -84,9 +84,35 @@ impl App {
         let token_counter = self.token_counter.clone();
         let hook_manager = self.hook_manager.clone();
         let prompt_context = self.prompt_context.clone();
-        let prompt_context = inject_startup_memories(prompt_context, &self.startup_memories);
         let memory_manager = self.memory_manager.clone();
+        let input_agent = input_text.clone();
+
+        // Per-turn smart memory recall — runs inside the tokio task.
+        let startup = self.startup_memories.clone();
+        let recall_top_n = {
+            let s = self.settings_lock.read().unwrap();
+            s.storage.memory.recall_top_n
+        };
+        let recall_threshold = {
+            let s = self.settings_lock.read().unwrap();
+            s.storage.memory.recall_similarity_threshold
+        };
+        let mut prev_kw = self.prev_keywords.clone();
+
         self.current_turn_handle = Some(tokio::spawn(async move {
+            // Per-turn recall: extract keywords from user message, detect
+            // topic change, and retrieve relevant cross-session memories.
+            let recalled = super::recall_memories(
+                &input_agent,
+                &mut prev_kw,
+                &startup,
+                &memory_manager,
+                recall_top_n,
+                recall_threshold,
+            )
+            .await;
+
+            let prompt_context = inject_startup_memories(prompt_context, &recalled);
             let mut agent = AgentLoop::new(
                 client,
                 event_tx.clone(),
@@ -104,7 +130,7 @@ impl App {
                 max_tokens,
                 memory_manager,
             );
-            let result = agent.process_input(input_text).await;
+            let result = agent.process_input(input_agent).await;
             if let Err(ref e) = result {
                 let reason = match e {
                     AgentError::StreamTimeout(_) => TurnAbortReason::TimedOut,
