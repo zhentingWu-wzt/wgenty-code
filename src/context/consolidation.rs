@@ -204,7 +204,7 @@ impl ConsolidationEngine {
     /// characters. Previously every token (including "the", "a", "is")
     /// contributed equally to the Jaccard index, inflating similarity
     /// between unrelated memories that happen to share high-frequency words.
-    fn is_meaningful_token(token: &str) -> bool {
+    pub(crate) fn is_meaningful_token(token: &str) -> bool {
         const STOP_WORDS: &[&str] = &[
             "the", "a", "an", "and", "or", "but", "is", "are", "was", "were", "be", "been",
             "being", "to", "of", "in", "on", "at", "by", "for", "with", "from", "as", "into",
