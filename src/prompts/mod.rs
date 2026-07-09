@@ -481,7 +481,10 @@ mod tests {
                 .as_deref()
                 .is_some_and(|c| c.contains("<relevant_memories>"))
         });
-        assert!(!has_memories, "empty memories should not inject extra system message");
+        assert!(
+            !has_memories,
+            "empty memories should not inject extra system message"
+        );
     }
 
     #[test]
@@ -505,20 +508,41 @@ mod tests {
         let messages = &instructions.system_messages;
 
         // Find positions of environment marker, memories marker, and skills marker
-        let env_pos = messages.iter().position(|m| {
-            m.content.as_deref().is_some_and(|c| c.contains("<environment_context>"))
-        }).expect("Layer 5 (Environment) should be present");
+        let env_pos = messages
+            .iter()
+            .position(|m| {
+                m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("<environment_context>"))
+            })
+            .expect("Layer 5 (Environment) should be present");
 
-        let mem_pos = messages.iter().position(|m| {
-            m.content.as_deref().is_some_and(|c| c.contains("<relevant_memories>"))
-        }).expect("Memories should be present when non-empty");
+        let mem_pos = messages
+            .iter()
+            .position(|m| {
+                m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("<relevant_memories>"))
+            })
+            .expect("Memories should be present when non-empty");
 
-        let skills_pos = messages.iter().position(|m| {
-            m.content.as_deref().is_some_and(|c| c.contains("Available skills"))
-        }).expect("Layer 6 (Skills) should be present when skills enabled");
+        let skills_pos = messages
+            .iter()
+            .position(|m| {
+                m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("Available skills"))
+            })
+            .expect("Layer 6 (Skills) should be present when skills enabled");
 
-        assert!(env_pos < mem_pos, "Memories should come after Environment (Layer 5)");
-        assert!(mem_pos < skills_pos, "Memories should come before Skills (Layer 6)");
+        assert!(
+            env_pos < mem_pos,
+            "Memories should come after Environment (Layer 5)"
+        );
+        assert!(
+            mem_pos < skills_pos,
+            "Memories should come before Skills (Layer 6)"
+        );
 
         // Verify content
         let mem_content = messages[mem_pos].content.as_deref().unwrap();

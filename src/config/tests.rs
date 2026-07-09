@@ -128,9 +128,12 @@ fn test_small_model_settings_uses_small_overrides() {
         Some("https://api.main.example".to_string())
     ); // unchanged
     assert_eq!(small_s.models.main.api_key, Some("small-key".to_string())); // overridden
-    // transport.max_tokens is inherited from the shared config (no longer
-    // forced to 2048), so small uses the same output budget as the main model.
-    assert_eq!(small_s.models.transport.max_tokens, s.models.transport.max_tokens);
+                                                                            // transport.max_tokens is inherited from the shared config (no longer
+                                                                            // forced to 2048), so small uses the same output budget as the main model.
+    assert_eq!(
+        small_s.models.transport.max_tokens,
+        s.models.transport.max_tokens
+    );
 }
 
 #[test]

@@ -575,7 +575,10 @@ mod tests {
             ChatMessage::tool("call_z", r#"{"success":true}"#),
         ];
         sanitize_tool_call_args_for_replay(&mut msgs);
-        assert_eq!(msgs[0].content.as_deref(), Some(r#"{"not":"json but user role"}"#));
+        assert_eq!(
+            msgs[0].content.as_deref(),
+            Some(r#"{"not":"json but user role"}"#)
+        );
         assert_eq!(msgs[2].content.as_deref(), Some(r#"{"success":true}"#));
     }
 }

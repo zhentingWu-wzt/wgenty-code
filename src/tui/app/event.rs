@@ -400,9 +400,7 @@ impl App {
                     }
                     return;
                 }
-                if key.code == KeyCode::Char('j')
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                {
+                if key.code == KeyCode::Char('j') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     self.input_box.textarea.insert_char('\n');
                     self.input_box.update_style();
                     return;

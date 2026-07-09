@@ -1,0 +1,16 @@
+workflow: full
+phase: archive
+design_doc: openspec/changes/memory-tfidf-recall/design.md
+plan: null
+build_mode: executing-plans
+build_pause: null
+isolation: branch
+tdd_mode: direct
+verify_mode: full
+verify_result: pass
+verified_at: 2026-07-09
+archived: true
+branch_status: handled
+handoff_context: openspec/changes/memory-tfidf-recall/.comet/handoff
+handoff_hash: 8081942cca9cdde9f80e15bf80a458403ff7ff8d5780156c765b789fa2e20355
+verification_report: openspec/changes/memory-tfidf-recall/.comet/verification_report.md

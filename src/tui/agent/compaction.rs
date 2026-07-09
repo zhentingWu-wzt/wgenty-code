@@ -352,7 +352,9 @@ impl AgentLoop {
         };
 
         // Attempt to parse JSON response for dual output (summary + memories)
-        let (summary, extracted_memories) = match serde_json::from_str::<serde_json::Value>(full_text.trim()) {
+        let (summary, extracted_memories) = match serde_json::from_str::<serde_json::Value>(
+            full_text.trim(),
+        ) {
             Ok(json) => {
                 let summary = json
                     .get("summary")
@@ -365,7 +367,10 @@ impl AgentLoop {
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|m| {
-                                let mem_type_str = m.get("type").and_then(|v| v.as_str()).unwrap_or("knowledge");
+                                let mem_type_str = m
+                                    .get("type")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("knowledge");
                                 let mem_type = match mem_type_str {
                                     "decision" => MemoryType::Decision,
                                     "error" => MemoryType::Error,
@@ -375,14 +380,17 @@ impl AgentLoop {
                                     "task" => MemoryType::Task,
                                     _ => MemoryType::Knowledge,
                                 };
-                                let content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                                let importance = m.get("importance")
-                                    .and_then(|v| v.as_f64())
-                                    .unwrap_or(0.5) as f32;
+                                let content =
+                                    m.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                                let importance =
+                                    m.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5)
+                                        as f32;
                                 if content.is_empty() {
                                     return None;
                                 }
-                                Some(MemoryEntry::new(mem_type, content).with_importance(importance))
+                                Some(
+                                    MemoryEntry::new(mem_type, content).with_importance(importance),
+                                )
                             })
                             .collect()
                     })
@@ -411,7 +419,10 @@ impl AgentLoop {
             }
         }
         if !extracted_memories.is_empty() {
-            tracing::info!(count = extracted_memories.len(), "extracted memories from compaction");
+            tracing::info!(
+                count = extracted_memories.len(),
+                "extracted memories from compaction"
+            );
         }
 
         self.compacted_summary = summary.clone();
@@ -607,10 +618,22 @@ mod tests {
             ChatMessage::user("Process this: some history"),
         ];
         let sys_content = messages[0].content.as_deref().unwrap();
-        assert!(sys_content.contains("\"summary\""), "prompt must request 'summary' field in JSON output");
-        assert!(sys_content.contains("\"memories\""), "prompt must request 'memories' field in JSON output");
-        assert!(sys_content.contains("decision"), "prompt must list valid memory types");
-        assert!(sys_content.contains("importance"), "prompt must request importance field");
+        assert!(
+            sys_content.contains("\"summary\""),
+            "prompt must request 'summary' field in JSON output"
+        );
+        assert!(
+            sys_content.contains("\"memories\""),
+            "prompt must request 'memories' field in JSON output"
+        );
+        assert!(
+            sys_content.contains("decision"),
+            "prompt must list valid memory types"
+        );
+        assert!(
+            sys_content.contains("importance"),
+            "prompt must request importance field"
+        );
     }
 
     #[test]
@@ -628,7 +651,10 @@ mod tests {
         assert_eq!(summary, "The user asked about memory systems.");
         assert_eq!(memories.len(), 2);
         assert_eq!(memories[0]["type"].as_str().unwrap(), "decision");
-        assert_eq!(memories[0]["content"].as_str().unwrap(), "Use Jaccard for dedup");
+        assert_eq!(
+            memories[0]["content"].as_str().unwrap(),
+            "Use Jaccard for dedup"
+        );
         assert!((memories[0]["importance"].as_f64().unwrap() - 0.8).abs() < 0.001);
     }
 
