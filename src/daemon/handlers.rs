@@ -418,7 +418,10 @@ pub async fn list_mcp_servers(
 pub async fn list_sessions(
     State(state): State<Arc<DaemonState>>,
 ) -> Result<Json<Vec<SessionInfoResponse>>, StatusCode> {
-    let sessions = state.session_manager.list().await
+    let sessions = state
+        .session_manager
+        .list()
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(
@@ -441,7 +444,10 @@ pub async fn create_session(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<CreateSessionRequest>,
 ) -> Result<Json<SessionResponse>, StatusCode> {
-    let session = state.session_manager.create(body.name.as_deref()).await
+    let session = state
+        .session_manager
+        .create(body.name.as_deref())
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(SessionResponse {
@@ -457,7 +463,10 @@ pub async fn get_session(
     State(state): State<Arc<DaemonState>>,
     Path(id): Path<String>,
 ) -> Result<Json<SessionResponse>, StatusCode> {
-    let session = state.session_manager.load(&id).await
+    let session = state
+        .session_manager
+        .load(&id)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
@@ -475,7 +484,10 @@ pub async fn update_session(
     Path(id): Path<String>,
     Json(body): Json<UpdateSessionRequest>,
 ) -> Result<Json<SessionResponse>, StatusCode> {
-    let mut session = state.session_manager.load(&id).await
+    let mut session = state
+        .session_manager
+        .load(&id)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .unwrap_or_else(|| crate::context::memory_session::Session::new(Some(&id)));
 
@@ -487,7 +499,10 @@ pub async fn update_session(
     }
     session.updated_at = chrono::Utc::now();
 
-    state.session_manager.save(&session).await
+    state
+        .session_manager
+        .save(&session)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(SessionResponse {
