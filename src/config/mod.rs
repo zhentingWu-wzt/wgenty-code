@@ -80,7 +80,10 @@ impl Settings {
     /// Build a Settings clone configured for the small model.
     /// If `models.small` is None, returns a clone of self (no-op).
     /// If `models.small` is Some, overrides `models.main` name/base_url/api_key/appkey
-    /// from the small endpoint where present, and forces transport.max_tokens = 2048.
+    /// from the small endpoint where present. `transport.max_tokens` is inherited
+    /// from the shared transport config (no longer forced to 2048), so subagents
+    /// get the same output budget as the main model - a small max_tokens would
+    /// truncate large tool-call arguments just like the main-model bug.
     /// (`appkey` if present overrides `api_key` — preserves prior behavior.)
     pub fn small_model_settings(&self) -> Self {
         let mut s = self.clone();
@@ -95,7 +98,6 @@ impl Settings {
             if let Some(ak) = &small.appkey {
                 s.models.main.api_key = Some(ak.clone());
             }
-            s.models.transport.max_tokens = 2048;
         }
         s
     }

@@ -5,7 +5,13 @@ use crate::tui::app::AppEvent;
 use std::time::Duration;
 
 impl AgentLoop {
-    /// Stream with retry logic. Retries up to MAX_RETRIES on network/stream errors.
+    /// Stream with retry logic for mid-stream failures only.
+    ///
+    /// Connection-level network errors are retried at the ApiClient layer
+    /// (`send_with_retry`), so this layer only retries: (1) a stream that
+    /// started but errored mid-way, and (2) a stream that ended before tool
+    /// calls completed (no `finish_reason`). Both need a `StreamResult` to
+    /// detect, which only this layer has. Retries up to MAX_RETRIES.
     pub(super) async fn stream_with_retry(
         &mut self,
         messages: &[ChatMessage],
@@ -54,20 +60,12 @@ impl AgentLoop {
                     }
                 },
                 Err(e) => {
-                    last_error = e.to_string();
-                    if attempt < MAX_RETRIES {
-                        let _ = self.event_tx.send(AppEvent::StreamError(format!(
-                            "⚠️  Connection failed (attempt {}/{}), retrying... ({})",
-                            attempt + 1,
-                            MAX_RETRIES + 1,
-                            e
-                        )));
-                        tokio::time::sleep(tokio::time::Duration::from_secs(
-                            (attempt + 1) as u64 * 2,
-                        ))
-                        .await;
-                        continue;
-                    }
+                    // Connection-level errors are already retried inside
+                    // ApiClient::send_with_retry (5 attempts, exponential
+                    // backoff). An Err here means retries are exhausted or it's
+                    // an HTTP status error (4xx/5xx) that won't improve by
+                    // retrying at this layer — surface it immediately.
+                    return Err(e);
                 }
             }
             break;
