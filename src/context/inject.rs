@@ -4,7 +4,7 @@
 //! Used by both TUI turn spawning and CLI `run_query` / `run_agent` paths.
 
 use crate::api::ChatMessage;
-use crate::context::{MemoryEntry, MemoryManager, MemoryType};
+use crate::context::{MemoryManager, MemoryType};
 
 /// Stateless injector that searches cross-session memories and prepends
 /// relevant context to a user message.
@@ -67,7 +67,7 @@ impl MemoryContextInjector {
     /// to the first user message in `messages`. If no memories are found,
     /// `messages` is left unchanged.
     pub async fn inject(
-        messages: &mut Vec<ChatMessage>,
+        messages: &mut [ChatMessage],
         manager: &MemoryManager,
         user_input: &str,
         top_n: usize,
@@ -204,8 +204,7 @@ mod tests {
         let mm = make_manager(&tmp);
         mm.load().await.unwrap();
 
-        let result =
-            MemoryContextInjector::recall("completely unrelated query", &mm, 5, 0.5).await;
+        let result = MemoryContextInjector::recall("completely unrelated query", &mm, 5, 0.5).await;
         assert!(
             result.is_empty(),
             "query with no matches should produce empty recall"
@@ -293,8 +292,7 @@ mod tests {
         let (mm, _tmp) = setup_manager_with_memories().await;
 
         // With threshold 0.85, only the 0.9 importance entry should pass
-        let result =
-            MemoryContextInjector::recall("rust async programming", &mm, 5, 0.85).await;
+        let result = MemoryContextInjector::recall("rust async programming", &mm, 5, 0.85).await;
         assert!(result.contains("Rust async programming patterns"));
         assert!(
             !result.contains("Use tokio"),
