@@ -1,6 +1,6 @@
 //! DaemonState -- shared state for the HTTP API server.
 
-use crate::context::session::SessionManager;
+use crate::context::memory_session::SessionManager as MemorySessionManager;
 use crate::knowledge::loader::SkillLoader;
 use crate::permissions::ToolPermissionPolicy;
 use crate::runtime::hooks::HookManager;
@@ -40,7 +40,7 @@ pub struct DaemonState {
     pub skill_loader: Arc<SkillLoader>,
     pub background_manager: Arc<BackgroundManager>,
     pub team_manager: Option<Arc<TeamManager>>,
-    pub session_manager: SessionManager,
+    pub session_manager: MemorySessionManager,
     sessions: Arc<RwLock<std::collections::HashMap<String, SessionRules>>>,
     /// Subagent progress store, scoped by session_id → node_id.
     pub subagent_progress:
@@ -168,7 +168,7 @@ impl DaemonState {
             .cloned()
             .unwrap_or(serde_json::Value::Null);
         let hook_manager = Arc::new(HookManager::from_settings(&hooks_config));
-        let session_manager = SessionManager::new();
+        let session_manager = MemorySessionManager::new();
 
         Self {
             app_state,
