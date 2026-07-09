@@ -11,8 +11,8 @@
 //! - get: Get task details
 
 // Re-export types for backward compatibility (e.g., daemon/handlers.rs imports from this module)
-pub use super::types::{Task, TaskPriority, TaskStatus};
 use super::store::TaskStore;
+pub use super::types::{Task, TaskPriority, TaskStatus};
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use serde_json;
@@ -72,10 +72,7 @@ impl TaskManagementTool {
 
     /// Create a TaskManagementTool that shares the same task store as an existing Arc.
     pub fn from_arc(tasks: Arc<RwLock<HashMap<String, Task>>>) -> Self {
-        Self {
-            tasks,
-            store: None,
-        }
+        Self { tasks, store: None }
     }
 
     /// Return the underlying task store so it can be shared.
