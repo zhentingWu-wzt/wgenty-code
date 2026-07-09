@@ -17,6 +17,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use anyhow::Context as _;
+
 pub use consolidation::{ConsolidationConfig, ConsolidationEngine};
 pub use history::{HistoryEntry, HistoryFilter, HistoryManager};
 pub use memory_session::{
@@ -35,7 +37,10 @@ pub struct MemoryEntry {
     pub importance: f32,
     pub tags: Vec<String>,
     pub metadata: HashMap<String, serde_json::Value>,
-    pub embedding: Option<Vec<f32>>,
+    // Note: the `embedding` field was removed — it was never populated
+    // anywhere and inflated every serialized JSON file. Old JSON files
+    // containing `"embedding": null` still deserialize correctly because
+    // serde ignores unknown fields by default.
 }
 
 impl MemoryEntry {
@@ -48,7 +53,6 @@ impl MemoryEntry {
             importance: 0.5,
             tags: Vec::new(),
             metadata: HashMap::new(),
-            embedding: None,
         }
     }
 
@@ -120,6 +124,36 @@ impl MemoryManager {
         }
     }
 
+    /// Create a MemoryManager configured from user settings.
+    ///
+    /// The consolidation thresholds (`max_memories`, `importance_threshold`,
+    /// `age_threshold_hours`, etc.) are read from the `storage.memory` section
+    /// of `settings.json`. Previously these were hardcoded in
+    /// `ConsolidationConfig::default()` and could not be tuned by users.
+    pub fn with_settings(settings: &crate::config::Settings) -> Self {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let memory_path = home.join(".wgenty-code").join("memory");
+
+        if let Err(e) = std::fs::create_dir_all(&memory_path) {
+            tracing::warn!(
+                path = %memory_path.display(),
+                error = %e,
+                "Failed to create memory directory; storage operations may fail later"
+            );
+        }
+
+        let consolidation_config =
+            ConsolidationConfig::from_memory_settings(&settings.storage.memory);
+
+        Self {
+            sessions: Arc::new(MemorySessionManager::new()),
+            history: Arc::new(HistoryManager::new()),
+            storage: Arc::new(Storage::new(memory_path)),
+            consolidation: Arc::new(ConsolidationEngine::new(consolidation_config)),
+            memories: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
     pub async fn status(&self) -> anyhow::Result<MemoryStatus> {
         let memories = self.memories.read().await;
         let storage_size = self.storage.size().await.unwrap_or(0);
@@ -138,7 +172,7 @@ impl MemoryManager {
                 .iter()
                 .filter(|m| m.memory_type == MemoryType::Knowledge)
                 .count(),
-            last_consolidation: None,
+            last_consolidation: self.consolidation.last_consolidation().await,
             storage_size_bytes: storage_size,
         })
     }
@@ -205,20 +239,49 @@ impl MemoryManager {
     pub async fn import(&self, input: &PathBuf) -> anyhow::Result<()> {
         let content = tokio::fs::read_to_string(input).await?;
         let imported: Vec<MemoryEntry> = serde_json::from_str(&content)?;
+
         let mut memories = self.memories.write().await;
+
+        // Build a set of existing IDs so we can skip duplicates. Previously
+        // importing the same file twice would insert duplicate entries into
+        // the Vec (and silently overwrite on disk via save_memory by ID).
+        let existing_ids: std::collections::HashSet<String> =
+            memories.iter().map(|m| m.id.clone()).collect();
+
         for entry in &imported {
+            if existing_ids.contains(&entry.id) {
+                tracing::debug!(id = %entry.id, "skipping duplicate memory during import");
+                continue;
+            }
             self.storage.save_memory(entry).await?;
+            memories.push(entry.clone());
         }
-        memories.extend(imported);
+
         Ok(())
     }
 
     pub async fn consolidate(&self) -> anyhow::Result<()> {
+        // Acquire a cross-process advisory lock so that two concurrent
+        // `wgenty-code memory dream` invocations (each with its own
+        // MemoryManager instance) do not race on the same memory directory.
+        // The in-process RwLock only protects within a single process.
+        let _guard = ConsolidationFileLock::acquire(&self.storage)
+            .await
+            .context("failed to acquire consolidation lock")?;
+
         // Hold the write lock for the entire operation to prevent
         // concurrent add_memory() calls from inserting entries that
         // would be overwritten by the stale consolidated result.
         let mut memories = self.memories.write().await;
         let consolidated = self.consolidation.consolidate(&memories).await?;
+
+        // P0 fix: persist the consolidated result AND remove orphaned
+        // on-disk files in one atomic-ish step. Previously only the
+        // in-memory Vec was replaced and `save()` (via `save_all()`)
+        // wrote new files without deleting the old ones — causing
+        // "consolidated away" memories to be resurrected on the next
+        // `load_all()`.
+        self.storage.reconcile(&consolidated).await?;
         *memories = consolidated;
         Ok(())
     }
@@ -255,6 +318,150 @@ impl Default for MemoryManager {
     }
 }
 
+/// Cross-process advisory lock for memory consolidation.
+///
+/// `MemoryManager::consolidate()` holds an in-process `RwLock`, but that does
+/// not protect against two separate `wgenty-code memory dream` processes
+/// running concurrently against the same `~/.wgenty-code/memory` directory.
+/// This lock uses a lock-file with a PID + timestamp to serialize
+/// consolidation across processes.
+///
+/// Stale locks (older than `STALE_AFTER` or whose PID is no longer alive) are
+/// reclaimed so a crashed process does not permanently block consolidation.
+struct ConsolidationFileLock {
+    lock_path: PathBuf,
+}
+
+/// A lock is considered stale after this duration and can be reclaimed.
+const LOCK_STALE_AFTER_SECS: i64 = 30 * 60;
+
+impl ConsolidationFileLock {
+    async fn acquire(storage: &Storage) -> anyhow::Result<Self> {
+        use tokio::io::AsyncWriteExt;
+
+        let lock_path = storage.path().join(".consolidation.lock");
+
+        // Ensure the directory exists.
+        if let Some(parent) = lock_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        loop {
+            // Atomically create the lock file with create_new(true) so that
+            // only one process can hold it at a time.
+            let create_result = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+                .await;
+
+            match create_result {
+                Ok(mut file) => {
+                    // We created the file — write our PID + timestamp.
+                    let pid = std::process::id();
+                    let ts = chrono::Utc::now().to_rfc3339();
+                    let content = format!("{}\n{}\n", pid, ts);
+                    file.write_all(content.as_bytes())
+                        .await
+                        .context("failed to write consolidation lock file")?;
+                    drop(file);
+                    return Ok(Self { lock_path });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Lock exists — check if it's stale.
+                    if Self::is_stale(&lock_path).await {
+                        tracing::warn!("consolidation lock is stale; reclaiming");
+                        // Best-effort removal; race is acceptable (worst case
+                        // both processes remove then one wins create_new).
+                        let _ = tokio::fs::remove_file(&lock_path).await;
+                        continue;
+                    }
+                    // Wait and retry.
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
+                Err(e) => {
+                    return Err(e).context("failed to create consolidation lock file");
+                }
+            }
+        }
+    }
+
+    async fn is_stale(lock_path: &std::path::Path) -> bool {
+        let content = match tokio::fs::read_to_string(lock_path).await {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let mut lines = content.lines();
+        let pid_str = lines.next().and_then(|s| s.trim().parse::<u32>().ok());
+        let ts_str = lines.next().map(|s| s.trim());
+
+        // If we can read the PID, check liveness portably without pulling in
+        // a `libc` dependency: spawn the platform-native `kill -0` (Unix) or
+        // `tasklist` filter (Windows). If the check itself fails (e.g. the
+        // helper binary is missing), fall through to the timestamp guard so
+        // we never block consolidation forever.
+        if let Some(pid) = pid_str {
+            if Self::pid_alive(pid) {
+                return false;
+            }
+        }
+
+        // PID is dead or unparseable — check timestamp as a secondary guard.
+        if let Some(ts) = ts_str {
+            if let Ok(lock_time) = chrono::DateTime::parse_from_rfc3339(ts) {
+                let lock_time: chrono::DateTime<chrono::Utc> =
+                    lock_time.with_timezone(&chrono::Utc);
+                let age = (chrono::Utc::now() - lock_time).num_seconds();
+                return age > LOCK_STALE_AFTER_SECS;
+            }
+        }
+
+        // Can't parse anything — treat as stale so we don't block forever.
+        true
+    }
+
+    /// Check whether a process is alive, portably, without a `libc` dependency.
+    ///
+    /// Uses the platform-native helper (`kill -0` on Unix, `tasklist` on
+    /// Windows). If the helper is unavailable or errors, returns `false` so
+    /// the caller falls back to the timestamp-based staleness guard.
+    fn pid_alive(pid: u32) -> bool {
+        #[cfg(unix)]
+        {
+            std::process::Command::new("kill")
+                .arg("-0")
+                .arg(pid.to_string())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+        #[cfg(not(unix))]
+        {
+            // On Windows, `tasklist /FI "PID eq <pid>"` lists the process if
+            // it is running. This is heavier than Unix `kill -0` but avoids
+            // a Win32 API dependency.
+            std::process::Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+                .unwrap_or(false)
+        }
+    }
+}
+
+impl Drop for ConsolidationFileLock {
+    fn drop(&mut self) {
+        // Best-effort lock removal on drop. Synchronous removal is fine here
+        // because this runs at the end of `consolidate()` and must not be
+        // skipped even if the async runtime is shutting down.
+        let _ = std::fs::remove_file(&self.lock_path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,8 +471,124 @@ mod tests {
         // Decision variant is required by the memory system unify plan.
         // This test verifies the variant exists and can be constructed.
         match MemoryType::Decision {
-            MemoryType::Decision => {},
+            MemoryType::Decision => {}
             _ => panic!("MemoryType::Decision variant pattern mismatch"),
         }
+    }
+
+    #[tokio::test]
+    async fn import_skips_duplicate_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
+        let storage = Arc::new(crate::context::Storage::new(memory_dir));
+        let mm = MemoryManager {
+            sessions: Arc::new(MemorySessionManager::new()),
+            history: Arc::new(HistoryManager::new()),
+            storage: storage.clone(),
+            consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
+            memories: Arc::new(RwLock::new(Vec::new())),
+        };
+
+        // Pre-populate with one memory.
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "existing");
+        let existing_id = existing.id.clone();
+        mm.add_memory(existing).await.unwrap();
+
+        // Import file contains the same ID + one new entry.
+        let new_entry = MemoryEntry::new(MemoryType::Knowledge, "new");
+        let mut dup = MemoryEntry::new(MemoryType::Knowledge, "existing");
+        dup.id = existing_id.clone();
+        let import_data = serde_json::to_string_pretty(&vec![dup, new_entry]).unwrap();
+
+        let import_path = tmp.path().join("import.json");
+        tokio::fs::write(&import_path, &import_data).await.unwrap();
+
+        mm.import(&import_path).await.unwrap();
+
+        let memories = mm.memories.read().await;
+        // Should have 2 entries total (existing + new), not 3.
+        assert_eq!(memories.len(), 2, "duplicate ID should be skipped");
+        // Only one entry with the existing ID.
+        assert_eq!(memories.iter().filter(|m| m.id == existing_id).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn status_reports_last_consolidation_after_consolidate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
+        let storage = Arc::new(crate::context::Storage::new(memory_dir));
+        let mm = MemoryManager {
+            sessions: Arc::new(MemorySessionManager::new()),
+            history: Arc::new(HistoryManager::new()),
+            storage: storage.clone(),
+            consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
+            memories: Arc::new(RwLock::new(Vec::new())),
+        };
+
+        // Before consolidation, last_consolidation should be None.
+        let status = mm.status().await.unwrap();
+        assert!(status.last_consolidation.is_none());
+
+        // Add a memory and consolidate.
+        mm.add_memory(MemoryEntry::new(MemoryType::Knowledge, "test").with_importance(0.8))
+            .await
+            .unwrap();
+        mm.consolidate().await.unwrap();
+
+        // After consolidation, last_consolidation should be Some.
+        let status = mm.status().await.unwrap();
+        assert!(
+            status.last_consolidation.is_some(),
+            "last_consolidation should be set after consolidate()"
+        );
+    }
+
+    #[tokio::test]
+    async fn old_json_with_embedding_field_still_deserializes() {
+        // After removing the `embedding` field, old memory JSON files that
+        // contain `"embedding": null` must still deserialize correctly
+        // (serde ignores unknown fields by default).
+        let old_json = r#"{
+            "id": "legacy-1",
+            "memory_type": "Knowledge",
+            "content": "legacy memory with embedding field",
+            "timestamp": "2024-01-01T00:00:00Z",
+            "importance": 0.5,
+            "tags": [],
+            "metadata": {},
+            "embedding": null
+        }"#;
+
+        let entry: MemoryEntry = serde_json::from_str(old_json).unwrap();
+        assert_eq!(entry.id, "legacy-1");
+        assert_eq!(entry.content, "legacy memory with embedding field");
+    }
+
+    #[tokio::test]
+    async fn with_settings_reads_consolidation_thresholds() {
+        use crate::config::{MemorySettings, Settings};
+
+        let mut settings = Settings::default();
+        settings.storage.memory = MemorySettings {
+            enabled: true,
+            path: std::path::PathBuf::from("/tmp/memory.json"),
+            consolidation_interval: 48,
+            max_memories: 5000,
+            importance_threshold: 0.7,
+            age_threshold_hours: 12,
+            enable_auto_consolidation: false,
+        };
+
+        let mm = MemoryManager::with_settings(&settings);
+        let engine = mm.consolidation();
+        let config = engine.config();
+
+        assert_eq!(config.max_memories, 5000);
+        assert!((config.importance_threshold - 0.7).abs() < f32::EPSILON);
+        assert_eq!(config.age_threshold_hours, 12);
+        assert_eq!(config.consolidation_interval_hours, 48);
+        assert!(!config.enable_auto_consolidation);
     }
 }

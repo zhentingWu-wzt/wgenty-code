@@ -125,6 +125,47 @@ impl SessionManager {
         Ok(Some(session))
     }
 
+    /// Scan the sessions directory and load all persisted sessions into the
+    /// in-memory HashMap.
+    ///
+    /// Previously `list()` only returned sessions already in the HashMap,
+    /// which starts empty on every app restart — making all historical
+    /// sessions invisible unless their IDs were known and individually
+    /// `load(id)`'d. This method makes previously-saved sessions visible
+    /// after a restart.
+    pub async fn load_all(&self) -> anyhow::Result<usize> {
+        if !self.sessions_dir.exists() {
+            return Ok(0);
+        }
+
+        let mut loaded = 0usize;
+        let mut dir = tokio::fs::read_dir(&self.sessions_dir).await?;
+
+        while let Some(entry) = dir.next_entry().await? {
+            let path = entry.path();
+            if path.extension().map(|e| e == "json").unwrap_or(false) {
+                if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                    if let Ok(session) = serde_json::from_str::<Session>(&content) {
+                        let mut sessions = self.sessions.write().await;
+                        sessions.entry(session.id.clone()).or_insert(session);
+                        loaded += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(loaded)
+    }
+
+    /// Create a SessionManager with a custom sessions directory (for testing).
+    pub fn with_dir(sessions_dir: PathBuf) -> Self {
+        Self {
+            sessions_dir,
+            active_session: Arc::new(RwLock::new(None)),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
     pub async fn save(&self, session: &Session) -> anyhow::Result<()> {
         tokio::fs::create_dir_all(&self.sessions_dir).await?;
 
@@ -230,5 +271,51 @@ impl SessionManager {
 impl Default for SessionManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn load_all_recovers_persisted_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::with_dir(tmp.path().to_path_buf());
+
+        // Create and save two sessions.
+        let s1 = mgr.create(Some("session-one")).await.unwrap();
+        let s2 = mgr.create(Some("session-two")).await.unwrap();
+
+        // Simulate a restart: new manager with the same dir, empty HashMap.
+        let restarted = SessionManager::with_dir(tmp.path().to_path_buf());
+        let list_before = restarted.list().await.unwrap();
+        assert!(
+            list_before.is_empty(),
+            "fresh manager should have no sessions in memory"
+        );
+
+        // load_all should scan the directory and recover both sessions.
+        let loaded = restarted.load_all().await.unwrap();
+        assert_eq!(loaded, 2);
+
+        let list_after = restarted.list().await.unwrap();
+        assert_eq!(list_after.len(), 2);
+        let names: Vec<&str> = list_after.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"session-one"));
+        assert!(names.contains(&"session-two"));
+
+        // The recovered IDs should match the originals.
+        let ids: Vec<&str> = list_after.iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains(&s1.id.as_str()));
+        assert!(ids.contains(&s2.id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn load_all_on_nonexistent_dir_returns_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::with_dir(tmp.path().join("does-not-exist"));
+        let loaded = mgr.load_all().await.unwrap();
+        assert_eq!(loaded, 0);
     }
 }

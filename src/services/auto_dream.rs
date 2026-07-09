@@ -211,11 +211,10 @@ impl AutoDreamService {
             return Ok(());
         }
 
-        // Delegate to MemoryManager::consolidate() which uses ConsolidationEngine
+        // Delegate to MemoryManager::consolidate() which uses ConsolidationEngine.
+        // consolidate() now persists results and removes orphaned files via
+        // Storage::reconcile(), so a separate save() is no longer needed.
         mm.consolidate().await?;
-
-        // Persist consolidated memories
-        mm.save().await?;
 
         let status = mm.status().await?;
         tracing::info!(
@@ -226,7 +225,6 @@ impl AutoDreamService {
 
         Ok(())
     }
-
 
     async fn save_state(&self, state: &ConsolidationState) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -289,18 +287,14 @@ mod tests {
         let mm = std::sync::Arc::new(MemoryManager::new());
         // Add some test memories
         mm.add_memory(
-            crate::context::MemoryEntry::new(
-                crate::context::MemoryType::Knowledge,
-                "test memory",
-            )
-            .with_importance(0.8),
+            crate::context::MemoryEntry::new(crate::context::MemoryType::Knowledge, "test memory")
+                .with_importance(0.8),
         )
         .await
         .unwrap();
 
-        let state = std::sync::Arc::new(tokio::sync::RwLock::new(
-            crate::state::AppState::default(),
-        ));
+        let state =
+            std::sync::Arc::new(tokio::sync::RwLock::new(crate::state::AppState::default()));
         let config = AutoDreamConfig {
             min_hours: 0,
             min_sessions: 0,

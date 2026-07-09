@@ -91,7 +91,7 @@ pub struct HistoryManager {
 impl HistoryManager {
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let history_path = home.join(".wgenty-code").join("history.json");
+        let history_path = home.join(".wgenty-code").join("history.jsonl");
 
         Self {
             entries: Arc::new(RwLock::new(VecDeque::new())),
@@ -100,11 +100,21 @@ impl HistoryManager {
         }
     }
 
+    /// Create a HistoryManager with a custom file path (for testing).
+    pub fn with_path(history_path: PathBuf) -> Self {
+        Self {
+            entries: Arc::new(RwLock::new(VecDeque::new())),
+            history_path,
+            max_entries: 10000,
+        }
+    }
+
     pub async fn add(&self, entry: HistoryEntry) -> anyhow::Result<()> {
-        // Snapshot the serialized data while holding the write lock,
-        // then release the lock before doing the expensive disk I/O.
-        // This prevents readers from being blocked during the file write.
-        let serialized = {
+        // Serialize only the single new entry (append-only) rather than the
+        // entire history. This is O(1) per add() instead of O(n).
+        let serialized = serde_json::to_string(&entry)?;
+
+        {
             let mut entries = self.entries.write().await;
 
             if entries.len() >= self.max_entries {
@@ -112,10 +122,9 @@ impl HistoryManager {
             }
 
             entries.push_back(entry);
-            serde_json::to_string_pretty(&*entries)?
-        }; // write lock released
+        } // write lock released
 
-        self.save_raw(&serialized).await?;
+        self.append_line(&serialized).await?;
         Ok(())
     }
 
@@ -197,7 +206,11 @@ impl HistoryManager {
     pub async fn clear(&self) -> anyhow::Result<()> {
         let mut entries = self.entries.write().await;
         entries.clear();
-        self.save(&entries).await
+        // Truncate the JSONL file on disk.
+        if self.history_path.exists() {
+            tokio::fs::write(&self.history_path, "").await?;
+        }
+        Ok(())
     }
 
     pub async fn stats(&self) -> HistoryStats {
@@ -234,17 +247,22 @@ impl HistoryManager {
         }
     }
 
-    async fn save(&self, entries: &VecDeque<HistoryEntry>) -> anyhow::Result<()> {
-        let content = serde_json::to_string_pretty(entries)?;
-        self.save_raw(&content).await
-    }
-
-    /// Write pre-serialized content to disk without holding any lock.
-    async fn save_raw(&self, content: &str) -> anyhow::Result<()> {
+    /// Append a single serialized JSON line to the history file.
+    /// This is O(1) per call — the previous implementation rewrote the
+    /// entire history file (up to `max_entries` entries) on every `add()`.
+    async fn append_line(&self, line: &str) -> anyhow::Result<()> {
         if let Some(parent) = self.history_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        tokio::fs::write(&self.history_path, content).await?;
+
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.history_path)
+            .await?;
+        file.write_all(line.as_bytes()).await?;
+        file.write_all(b"\n").await?;
         Ok(())
     }
 
@@ -254,7 +272,20 @@ impl HistoryManager {
         }
 
         let content = tokio::fs::read_to_string(&self.history_path).await?;
-        let loaded: VecDeque<HistoryEntry> = serde_json::from_str(&content)?;
+
+        // Support both the new JSONL format (one JSON object per line) and
+        // the legacy single-JSON-array format for backward compatibility.
+        let loaded: VecDeque<HistoryEntry> = if content.trim_start().starts_with('[') {
+            // Legacy format: a single JSON array.
+            serde_json::from_str(&content)?
+        } else {
+            // JSONL format: one JSON object per line.
+            content
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(serde_json::from_str::<HistoryEntry>)
+                .collect::<Result<VecDeque<_>, _>>()?
+        };
 
         let mut entries = self.entries.write().await;
         *entries = loaded;
@@ -276,5 +307,114 @@ pub struct HistoryStats {
 impl Default for HistoryManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn add_appends_single_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("history.jsonl");
+        let mgr = HistoryManager::with_path(path.clone());
+
+        mgr.add(HistoryEntry::new(HistoryType::Command, "cmd-1"))
+            .await
+            .unwrap();
+        mgr.add(HistoryEntry::new(HistoryType::Command, "cmd-2"))
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 2, "each add() should append exactly one line");
+
+        // Each line must be a valid standalone JSON object.
+        for line in &lines {
+            let _: HistoryEntry = serde_json::from_str(line).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn load_reads_jsonl_format() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("history.jsonl");
+
+        // Write two JSONL lines directly.
+        let e1 = HistoryEntry::new(HistoryType::Command, "first");
+        let e2 = HistoryEntry::new(HistoryType::Query, "second");
+        let content = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&e1).unwrap(),
+            serde_json::to_string(&e2).unwrap()
+        );
+        tokio::fs::write(&path, &content).await.unwrap();
+
+        let mgr = HistoryManager::with_path(path);
+        mgr.load().await.unwrap();
+
+        let recent = mgr.get_recent(10).await;
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].content, "second"); // most recent first
+        assert_eq!(recent[1].content, "first");
+    }
+
+    #[tokio::test]
+    async fn load_reads_legacy_json_array() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Use the old .json extension to simulate a legacy file.
+        let path = tmp.path().join("history.json");
+
+        let e1 = HistoryEntry::new(HistoryType::Command, "legacy-1");
+        let e2 = HistoryEntry::new(HistoryType::Query, "legacy-2");
+        let legacy = serde_json::to_string_pretty(&vec![e1, e2]).unwrap();
+        tokio::fs::write(&path, &legacy).await.unwrap();
+
+        let mgr = HistoryManager::with_path(path);
+        mgr.load().await.unwrap();
+
+        let recent = mgr.get_recent(10).await;
+        assert_eq!(recent.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn clear_empties_file_and_memory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("history.jsonl");
+        let mgr = HistoryManager::with_path(path.clone());
+
+        mgr.add(HistoryEntry::new(HistoryType::Command, "cmd"))
+            .await
+            .unwrap();
+        assert!(path.exists());
+
+        mgr.clear().await.unwrap();
+
+        let recent = mgr.get_recent(10).await;
+        assert!(recent.is_empty());
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn max_entries_eviction() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("history.jsonl");
+        let mut mgr = HistoryManager::with_path(path);
+        mgr.max_entries = 3;
+
+        for i in 0..5 {
+            mgr.add(HistoryEntry::new(HistoryType::Command, &format!("cmd-{i}")))
+                .await
+                .unwrap();
+        }
+
+        let recent = mgr.get_recent(10).await;
+        assert_eq!(recent.len(), 3, "should evict oldest beyond max_entries");
+        // The oldest two (cmd-0, cmd-1) should have been evicted.
+        assert!(recent.iter().all(|e| !e.content.contains("cmd-0")));
+        assert!(recent.iter().all(|e| !e.content.contains("cmd-1")));
     }
 }

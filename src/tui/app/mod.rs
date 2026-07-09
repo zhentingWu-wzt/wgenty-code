@@ -378,7 +378,9 @@ impl App {
         }
 
         // ── Memory manager (created first so AutoDream can hold a ref) ────
-        let mm = Arc::new(crate::context::MemoryManager::new());
+        // Configured from settings so consolidation thresholds are tunable
+        // via `storage.memory` in settings.json.
+        let mm = Arc::new(crate::context::MemoryManager::with_settings(&settings));
 
         // ── AutoDream service for time-gated memory consolidation ────────
         let auto_dream = {
@@ -504,7 +506,9 @@ impl App {
             match ads.check_and_run().await {
                 Ok(true) => tracing::info!("AutoDream consolidation completed at session startup"),
                 Ok(false) => tracing::debug!("AutoDream gate not passed; consolidation skipped"),
-                Err(e) => tracing::warn!(error = %e, "AutoDream consolidation failed; continuing with existing memories"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "AutoDream consolidation failed; continuing with existing memories")
+                }
             }
         }
 
@@ -515,8 +519,7 @@ impl App {
                 tracing::warn!(error = %e, "failed to load memories at session startup; recall skipped");
             } else {
                 // Get current project name from cwd
-                let cwd = std::env::current_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let project_name = cwd
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -554,7 +557,10 @@ impl App {
                             )
                         })
                         .collect();
-                    tracing::info!(count = lines.len(), "recalled cross-session memories at startup");
+                    tracing::info!(
+                        count = lines.len(),
+                        "recalled cross-session memories at startup"
+                    );
                     self.startup_memories = lines;
                 }
             }
@@ -658,7 +664,10 @@ mod tests {
         assert_eq!(format_memory_type(&MemoryType::Knowledge), "knowledge");
         assert_eq!(format_memory_type(&MemoryType::Task), "task");
         assert_eq!(format_memory_type(&MemoryType::Session), "session");
-        assert_eq!(format_memory_type(&MemoryType::Conversation), "conversation");
+        assert_eq!(
+            format_memory_type(&MemoryType::Conversation),
+            "conversation"
+        );
     }
 
     #[test]
