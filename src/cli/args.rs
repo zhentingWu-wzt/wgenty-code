@@ -272,7 +272,7 @@ impl Cli {
 
         // Cross-session memory recall for headless query path
         {
-            let mut manager = crate::context::MemoryManager::new();
+            let manager = crate::context::MemoryManager::new();
             if manager.load().await.is_ok() {
                 let recall_top_n = state.settings.storage.memory.recall_top_n;
                 let recall_threshold = state.settings.storage.memory.recall_similarity_threshold;
@@ -282,7 +282,8 @@ impl Cli {
                     &prompt,
                     recall_top_n,
                     recall_threshold as f64,
-                ).await;
+                )
+                .await;
             }
         }
 

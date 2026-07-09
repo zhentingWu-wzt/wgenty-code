@@ -1,4 +1,7 @@
-//! Session Module - Session management
+//! Session Module - Session management (DEPRECATED: use memory_session.rs)
+
+#![allow(dead_code)] // Deprecated module, kept for backward compatibility
+#![allow(unused_imports)]
 
 use crate::api::ChatMessage;
 use chrono::{DateTime, Utc};

@@ -593,8 +593,7 @@ mod tests {
     fn test_compaction_prompt_includes_json_format() {
         // Verify that the enhanced system prompt instructs the model to output JSON
         // with summary and memories keys.
-        let messages = vec![
-            ChatMessage::system(
+        let messages = [ChatMessage::system(
                 "You are a conversation summary assistant for an AI coding agent. \
                  Your task is to:\n\
                  1. Summarize the conversation history, preserving key details: \
@@ -615,8 +614,7 @@ mod tests {
                  If there is nothing worth remembering, return an empty memories array.\n\
                  Do NOT use any tools — just return the JSON as plain text.",
             ),
-            ChatMessage::user("Process this: some history"),
-        ];
+            ChatMessage::user("Process this: some history")];
         let sys_content = messages[0].content.as_deref().unwrap();
         assert!(
             sys_content.contains("\"summary\""),
