@@ -1,6 +1,7 @@
 //! API request/response models for the daemon HTTP API.
 
 use crate::api::ChatMessage;
+use crate::context::memory_session::SessionMessage;
 use serde::{Deserialize, Serialize};
 
 // ── Health ───────────────────────────────────────────────────────────────────
@@ -155,11 +156,11 @@ pub struct GetTodosResponse {
 pub struct SessionInfoResponse {
     pub id: String,
     pub name: String,
+    pub project_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub message_count: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub summary: Option<String>,
+    pub status: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -168,7 +169,7 @@ pub struct SessionResponse {
     pub name: String,
     pub created_at: String,
     pub updated_at: String,
-    pub messages: Vec<crate::api::ChatMessage>,
+    pub messages: Vec<SessionMessage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -182,7 +183,7 @@ pub struct UpdateSessionRequest {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
-    pub messages: Option<Vec<crate::api::ChatMessage>>,
+    pub messages: Option<Vec<SessionMessage>>,
 }
 
 #[derive(Debug, Deserialize)]

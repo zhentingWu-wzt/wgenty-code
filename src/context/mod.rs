@@ -7,7 +7,7 @@
 pub mod consolidation;
 pub mod history;
 pub mod memory_session;
-pub mod session;
+mod session;
 pub mod storage;
 
 use chrono::{DateTime, Utc};
@@ -25,7 +25,6 @@ pub use memory_session::{
     Session as MemorySession, SessionInfo as MemorySessionInfo,
     SessionManager as MemorySessionManager,
 };
-pub use session::{Session, SessionInfo, SessionManager};
 pub use storage::{Storage, StorageBackend};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
