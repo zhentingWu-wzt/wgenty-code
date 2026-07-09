@@ -268,7 +268,25 @@ impl Cli {
             }
         };
 
-        let messages = vec![crate::api::ChatMessage::user(&prompt)];
+        let mut messages = vec![crate::api::ChatMessage::user(&prompt)];
+
+        // Cross-session memory recall for headless query path
+        {
+            let manager = crate::context::MemoryManager::new();
+            if manager.load().await.is_ok() {
+                let recall_top_n = state.settings.storage.memory.recall_top_n;
+                let recall_threshold = state.settings.storage.memory.recall_similarity_threshold;
+                crate::context::inject::MemoryContextInjector::inject(
+                    &mut messages,
+                    &manager,
+                    &prompt,
+                    recall_top_n,
+                    recall_threshold as f64,
+                )
+                .await;
+            }
+        }
+
         let base_url = client.get_base_url().to_string();
         let model = client.get_model().to_string();
         let max_tokens = state.settings.models.transport.max_tokens;

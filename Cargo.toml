@@ -95,6 +95,9 @@ syntect = { version = "5.2", default-features = false, features = ["default-them
 fs_extra = "1.3"
 image = "0.25"
 
+# Compression
+flate2 = "1.0"
+
 # WebAssembly
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
