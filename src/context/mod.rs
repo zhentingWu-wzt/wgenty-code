@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -221,6 +222,9 @@ pub struct MemoryManager {
     consolidation: Arc<ConsolidationEngine>,
     memories: Arc<RwLock<Vec<MemoryEntry>>>,
     index: Arc<RwLock<MemoryIndex>>,
+    /// Guards `consolidate()` so concurrent `add_memory()` calls wait
+    /// until consolidation completes before proceeding.
+    consolidating: Arc<AtomicBool>,
 }
 
 impl MemoryManager {
@@ -243,6 +247,7 @@ impl MemoryManager {
             consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
             memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
+            consolidating: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -274,6 +279,7 @@ impl MemoryManager {
             consolidation: Arc::new(ConsolidationEngine::new(consolidation_config)),
             memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
+            consolidating: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -301,6 +307,13 @@ impl MemoryManager {
     }
 
     pub async fn add_memory(&self, entry: MemoryEntry) -> anyhow::Result<()> {
+        // Wait if consolidation is in progress to avoid reading
+        // transitional state. Use tokio::time::sleep polling so the
+        // tokio runtime is not blocked.
+        while self.consolidating.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
         let mut memories = self.memories.write().await;
         let idx = memories.len();
         memories.push(entry.clone());
@@ -407,6 +420,13 @@ impl MemoryManager {
         let _guard = ConsolidationFileLock::acquire(&self.storage)
             .await
             .context("failed to acquire consolidation lock")?;
+
+        // Signal that consolidation is in progress so concurrent
+        // add_memory() calls wait instead of reading transitional state.
+        self.consolidating.store(true, Ordering::SeqCst);
+        let _consolidating_guard = ConsolidatingGuard {
+            flag: self.consolidating.clone(),
+        };
 
         // Hold the write lock for the entire operation to prevent
         // concurrent add_memory() calls from inserting entries that
@@ -604,6 +624,18 @@ impl Drop for ConsolidationFileLock {
     }
 }
 
+/// RAII guard that resets the `consolidating` flag on drop, ensuring
+/// it is always cleared even when `consolidate()` returns early via `?`.
+struct ConsolidatingGuard {
+    flag: Arc<AtomicBool>,
+}
+
+impl Drop for ConsolidatingGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::SeqCst);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,6 +663,7 @@ mod tests {
             consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
             memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
+            consolidating: Arc::new(AtomicBool::new(false)),
         };
 
         // Pre-populate with one memory.
@@ -669,6 +702,7 @@ mod tests {
             consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
             memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
+            consolidating: Arc::new(AtomicBool::new(false)),
         };
 
         // Before consolidation, last_consolidation should be None.
