@@ -6,6 +6,7 @@
 
 pub mod consolidation;
 pub mod history;
+pub mod inject;
 pub mod memory_session;
 mod session;
 pub mod storage;
