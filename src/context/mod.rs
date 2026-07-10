@@ -453,6 +453,20 @@ impl MemoryManager {
         self.index.write().await.rebuild(&memories);
         let mut mem = self.memories.write().await;
         *mem = memories;
+
+        // Recover persisted sessions and history from disk so that
+        // previously-saved records remain visible after a restart. Without
+        // this, the in-memory HashMap/VecDeque starts empty and `list()`
+        // returns nothing even though the files still exist on disk.
+        // Failures here are non-fatal: a corrupt session/history file should
+        // not block the app from starting.
+        if let Err(e) = self.sessions.load_all().await {
+            tracing::warn!(error = %e, "Failed to load persisted sessions from disk");
+        }
+        if let Err(e) = self.history.load().await {
+            tracing::warn!(error = %e, "Failed to load command history from disk");
+        }
+
         Ok(())
     }
 
@@ -771,5 +785,81 @@ mod tests {
         assert_eq!(config.age_threshold_hours, 12);
         assert_eq!(config.consolidation_interval_hours, 48);
         assert!(!config.enable_auto_consolidation);
+    }
+
+    /// Regression test: `MemoryManager::load()` must recover persisted
+    /// sessions AND history from disk, not just memories. Previously `load()`
+    /// only loaded memories from storage, leaving the in-memory session
+    /// HashMap and history VecDeque empty after a restart - making all
+    /// historical sessions/history invisible even though the files existed.
+    #[tokio::test]
+    async fn load_recovers_sessions_and_history_from_disk() {
+        use crate::context::history::HistoryType;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_dir = tmp.path().join("sessions");
+        let history_path = tmp.path().join("history.jsonl");
+        let memory_dir = tmp.path().join("memory");
+        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
+
+        let storage = Arc::new(crate::context::Storage::new(memory_dir));
+        let mm = MemoryManager {
+            sessions: Arc::new(MemorySessionManager::with_dir(sessions_dir.clone())),
+            history: Arc::new(HistoryManager::with_path(history_path.clone())),
+            storage: storage.clone(),
+            consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
+            memories: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(RwLock::new(MemoryIndex::new())),
+            consolidating: Arc::new(AtomicBool::new(false)),
+        };
+
+        // Pre-populate a session and a history entry on disk.
+        let session = MemorySession::new(Some("regression-session"));
+        let session_id = session.id.clone();
+        mm.sessions().save(&session).await.unwrap();
+        mm.history()
+            .add(HistoryEntry::new(HistoryType::Command, "regression-cmd"))
+            .await
+            .unwrap();
+
+        // Simulate a restart: a fresh manager pointed at the same dirs.
+        let restarted = MemoryManager {
+            sessions: Arc::new(MemorySessionManager::with_dir(sessions_dir)),
+            history: Arc::new(HistoryManager::with_path(history_path)),
+            storage,
+            consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
+            memories: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(RwLock::new(MemoryIndex::new())),
+            consolidating: Arc::new(AtomicBool::new(false)),
+        };
+
+        // Before load(), the in-memory caches are empty.
+        assert!(
+            restarted.sessions().list().await.unwrap().is_empty(),
+            "fresh manager should have no sessions in memory before load()"
+        );
+        assert!(
+            restarted.history().get_recent(10).await.is_empty(),
+            "fresh manager should have no history in memory before load()"
+        );
+
+        // load() recovers sessions and history alongside memories.
+        restarted.load().await.unwrap();
+
+        let sessions = restarted.sessions().list().await.unwrap();
+        assert_eq!(
+            sessions.len(),
+            1,
+            "load() should recover the persisted session"
+        );
+        assert_eq!(sessions[0].id, session_id);
+
+        let recent = restarted.history().get_recent(10).await;
+        assert_eq!(
+            recent.len(),
+            1,
+            "load() should recover the persisted history entry"
+        );
+        assert_eq!(recent[0].content, "regression-cmd");
     }
 }

@@ -16,16 +16,29 @@ use std::collections::HashMap;
 
 impl App {
     pub(super) async fn handle_event(&mut self, event: AppEvent) {
-        // Derive phase from event (pure function); fall back to current
+        // Derive phase from event (pure function); fall back to current.
+        //
+        // When `suppress_phase_updates` is set (after /clear or cancel),
+        // ignore stale phase-changing events from a just-aborted turn so
+        // the status bar doesn't flip back to "Thinking". The flag is
+        // cleared when a new turn starts (spawn_agent_turn).
         if let Some(next_phase) = agent_phase_from_event(&event) {
-            if self.phase != next_phase {
-                tracing::info!(
+            if self.suppress_phase_updates {
+                tracing::debug!(
                     prev = ?self.phase,
-                    next = ?next_phase,
-                    "Agent phase transition"
+                    skipped = ?next_phase,
+                    "Suppressing stale phase update after turn cancellation"
                 );
+            } else {
+                if self.phase != next_phase {
+                    tracing::info!(
+                        prev = ?self.phase,
+                        next = ?next_phase,
+                        "Agent phase transition"
+                    );
+                }
+                self.phase = next_phase;
             }
-            self.phase = next_phase;
         }
         match event {
             AppEvent::KeyEvent(key) => {
@@ -892,11 +905,21 @@ impl App {
                 if self.session_state.visible {
                     self.session_state.dismiss();
                 } else {
+                    // Show the panel immediately with an empty list so the user
+                    // sees feedback right away; the actual list is loaded async.
+                    self.session_state.show(Vec::new());
                     let client = self.daemon_client.clone();
                     let tx = self.event_tx.clone();
                     tokio::spawn(async move {
-                        if let Ok(sessions) = client.list_sessions().await {
-                            let _ = tx.send(AppEvent::SessionListLoaded(sessions));
+                        match client.list_sessions().await {
+                            Ok(sessions) => {
+                                let _ = tx.send(AppEvent::SessionListLoaded(sessions));
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "Failed to list sessions");
+                                // Still update with empty list so the panel is visible
+                                let _ = tx.send(AppEvent::SessionListLoaded(Vec::new()));
+                            }
                         }
                     });
                 }
