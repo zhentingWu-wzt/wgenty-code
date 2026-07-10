@@ -86,16 +86,47 @@ fn sanitize_tool_call_args_for_replay(messages: &mut [ChatMessage]) {
 pub struct ApiClient {
     settings: Settings,
     http_client: Arc<Client>,
+    /// Dedicated client for streaming requests.
+    ///
+    /// Unlike `http_client`, this has **no total `.timeout()`**. A total
+    /// deadline covers the entire response body, so a long SSE stream
+    /// (reasoning models, long outputs) gets killed mid-stream and surfaces as
+    /// "error decoding response body" in the daemon's stream-chunk error path.
+    /// Instead this client caps only the connect phase and the per-chunk idle
+    /// time, so an active stream that keeps producing tokens stays alive
+    /// indefinitely while a hung connection still aborts. `transport.timeout`
+    /// is reused as that idle budget - i.e. "max seconds without progress".
+    http_client_stream: Arc<Client>,
     provider: Arc<dyn Provider>,
 }
 
 impl ApiClient {
     pub fn new(settings: Settings) -> Self {
+        let timeout = Duration::from_secs(settings.models.transport.timeout);
+
+        // Non-streaming client: a total deadline is correct here - the whole
+        // JSON response should arrive within `timeout`.
         let http_client = Client::builder()
-            .timeout(Duration::from_secs(settings.models.transport.timeout))
+            .timeout(timeout)
             .build()
             .unwrap_or_else(|e| {
                 tracing::error!(error = %e, "failed to build HTTP client, using default");
+                Client::default()
+            });
+
+        // Streaming client: no total deadline (see `http_client_stream` doc).
+        // `connect_timeout` bounds connection setup; `read_timeout` bounds the
+        // gap between SSE chunks (reset on each chunk received). Raise
+        // `transport.timeout` if a model's first-token latency exceeds it.
+        let http_client_stream = Client::builder()
+            .connect_timeout(timeout)
+            .read_timeout(timeout)
+            .build()
+            .unwrap_or_else(|e| {
+                tracing::error!(
+                    error = %e,
+                    "failed to build streaming HTTP client, using default"
+                );
                 Client::default()
             });
 
@@ -107,6 +138,7 @@ impl ApiClient {
         Self {
             settings,
             http_client: Arc::new(http_client),
+            http_client_stream: Arc::new(http_client_stream),
             provider,
         }
     }
@@ -168,10 +200,35 @@ impl ApiClient {
         headers: &[(&str, String)],
         body: &impl serde::Serialize,
     ) -> anyhow::Result<reqwest::Response> {
+        self.send_with_retry_impl(&self.http_client, endpoint, url, headers, body)
+            .await
+    }
+
+    /// Like `send_with_retry` but on the streaming client (no total timeout -
+    /// see `http_client_stream`), so a long SSE stream isn't killed mid-body.
+    async fn send_stream_with_retry(
+        &self,
+        endpoint: &str,
+        url: &str,
+        headers: &[(&str, String)],
+        body: &impl serde::Serialize,
+    ) -> anyhow::Result<reqwest::Response> {
+        self.send_with_retry_impl(&self.http_client_stream, endpoint, url, headers, body)
+            .await
+    }
+
+    async fn send_with_retry_impl(
+        &self,
+        client: &Client,
+        endpoint: &str,
+        url: &str,
+        headers: &[(&str, String)],
+        body: &impl serde::Serialize,
+    ) -> anyhow::Result<reqwest::Response> {
         const API_MAX_RETRIES: u32 = 4; // 5 total attempts
         let mut delay = 2u64;
         for attempt in 0..=API_MAX_RETRIES {
-            let mut req = self.http_client.post(url);
+            let mut req = client.post(url);
             for (k, v) in headers {
                 req = req.header(*k, v.as_str());
             }
@@ -393,7 +450,7 @@ impl ApiClient {
         let url = self.build_endpoint("chat/completions");
 
         let response = self
-            .send_with_retry(
+            .send_stream_with_retry(
                 "chat/completions",
                 &url,
                 &[("Authorization", format!("Bearer {}", api_key))],
@@ -448,7 +505,7 @@ impl ApiClient {
         let url = self.build_endpoint("messages");
 
         let response = self
-            .send_with_retry(
+            .send_stream_with_retry(
                 "messages",
                 &url,
                 &[

@@ -24,6 +24,14 @@ use tracing::info;
 pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
     let daemon_state = Arc::new(DaemonState::new(app_state));
 
+    // Recover persisted sessions from disk so the `list_sessions` API returns
+    // historical sessions instead of an empty list after a restart. The
+    // SessionManager keeps an in-memory HashMap that starts empty; without
+    // this call, previously-saved session files are invisible.
+    if let Err(e) = daemon_state.session_manager.load_all().await {
+        tracing::warn!(error = %e, "Failed to load persisted sessions into daemon");
+    }
+
     // Spawn background task to evict stale subagent progress sessions (60s TTL).
     let cleanup_state = daemon_state.clone();
     tokio::spawn(async move {

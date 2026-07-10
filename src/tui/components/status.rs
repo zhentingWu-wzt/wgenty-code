@@ -108,7 +108,7 @@ pub fn render(
     // Right-aligned shortcut hint (only when idle, to avoid clutter while
     // the agent is busy). Skipped on narrow terminals.
     if !is_active && !is_error && area.width >= 60 {
-        let hint = "Ctrl+O expand last · Ctrl+E expand all · Ctrl+S sessions · Ctrl+T tasks";
+        let hint = "Ctrl+O expand last · Ctrl+E expand all · Ctrl+S sessions";
         let hint_para = Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(DIM))))
             .alignment(Alignment::Right);
         // Reserve right portion of the same line for the hint.

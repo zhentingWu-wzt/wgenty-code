@@ -68,6 +68,11 @@ pub struct App {
     pub streaming_active: bool,
     pub token_counter: crate::api::token_counter::TokenCounter,
     pub phase: AgentPhase,
+    /// When true, phase-changing events from a just-cancelled turn are ignored
+    /// to prevent stale events (e.g. StreamDone, ToolResult) from overriding
+    /// the Idle phase back to Thinking. Set by `/clear` and
+    /// `cancel_current_turn`; cleared when a new turn starts.
+    suppress_phase_updates: bool,
     pub session_id: String,
     pub session_name: String,
     pub last_tool_name: Option<String>,
@@ -396,6 +401,7 @@ impl App {
             streaming_active: false,
             token_counter: crate::api::token_counter::TokenCounter::new(),
             phase: AgentPhase::Idle,
+            suppress_phase_updates: false,
             session_id,
             session_name: "New Session".to_string(),
             last_tool_name: None,

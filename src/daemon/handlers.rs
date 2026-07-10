@@ -34,6 +34,28 @@ fn debug_log(msg: &str) {
     }
 }
 
+/// Format an error with its full cause chain.
+///
+/// reqwest's `Display` only prints the outer kind (e.g. "error decoding
+/// response body") and silently drops the actual cause - timeout vs.
+/// connection reset vs. HTTP/2 stream error - which lives in
+/// `std::error::Error::source()`. This walks the chain so the real reason a
+/// stream was interrupted is visible in logs and in the error payload sent to
+/// the client.
+fn format_error_chain(e: &dyn std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut current = e.source();
+    while let Some(cause) = current {
+        let cause_str = cause.to_string();
+        if !cause_str.is_empty() {
+            s.push_str(": ");
+            s.push_str(&cause_str);
+        }
+        current = cause.source();
+    }
+    s
+}
+
 // ── Health ───────────────────────────────────────────────────────────────────
 
 pub async fn health() -> Json<HealthResponse> {
@@ -126,8 +148,14 @@ pub async fn chat_stream(
                     }
                 }
                 Err(e) => {
-                    error!(error = %e, "stream chunk error");
-                    stream_error = Some(format!("Upstream stream interrupted: {}", e));
+                    // reqwest's `Display` only prints the outer kind ("error
+                    // decoding response body") and drops the real cause
+                    // (timeout vs. connection reset vs. h2 error) that lives in
+                    // `Error::source()`. Walk the chain so it's visible in both
+                    // the log and the SSE error payload sent to the client.
+                    let chain = format_error_chain(&e);
+                    error!(error = ?e, chain = %chain, "stream chunk error");
+                    stream_error = Some(format!("Upstream stream interrupted: {}", chain));
                     break;
                 }
             }

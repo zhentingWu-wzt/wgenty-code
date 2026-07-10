@@ -15,7 +15,9 @@ pub struct Session {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub messages: Vec<SessionMessage>,
+    #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
+    #[serde(default)]
     pub status: SessionStatus,
 }
 
@@ -57,13 +59,26 @@ impl Session {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMessage {
     pub role: String,
+    /// `#[serde(default)]` for backward compat with legacy session files and
+    /// ChatMessage-originated saves where `content` may be absent (e.g.
+    /// assistant messages that only carry tool_calls).
+    #[serde(default)]
     pub content: String,
+    #[serde(default = "default_timestamp")]
     pub timestamp: DateTime<Utc>,
+    #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Default timestamp for legacy session files that lack the `timestamp` field
+/// on individual messages.
+fn default_timestamp() -> DateTime<Utc> {
+    Utc::now()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum SessionStatus {
+    #[default]
     Active,
     Paused,
     Archived,
@@ -139,21 +154,33 @@ impl SessionManager {
         }
 
         let mut loaded = 0usize;
+        let mut skipped = 0usize;
         let mut dir = tokio::fs::read_dir(&self.sessions_dir).await?;
 
         while let Some(entry) = dir.next_entry().await? {
             let path = entry.path();
             if path.extension().map(|e| e == "json").unwrap_or(false) {
                 if let Ok(content) = tokio::fs::read_to_string(&path).await {
-                    if let Ok(session) = serde_json::from_str::<Session>(&content) {
-                        let mut sessions = self.sessions.write().await;
-                        sessions.entry(session.id.clone()).or_insert(session);
-                        loaded += 1;
+                    match serde_json::from_str::<Session>(&content) {
+                        Ok(session) => {
+                            let mut sessions = self.sessions.write().await;
+                            sessions.entry(session.id.clone()).or_insert(session);
+                            loaded += 1;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                file = %path.display(),
+                                error = %e,
+                                "Skipping malformed session file during load_all"
+                            );
+                            skipped += 1;
+                        }
                     }
                 }
             }
         }
 
+        tracing::info!(loaded, skipped, "Session load_all complete");
         Ok(loaded)
     }
 
@@ -317,5 +344,41 @@ mod tests {
         let mgr = SessionManager::with_dir(tmp.path().join("does-not-exist"));
         let loaded = mgr.load_all().await.unwrap();
         assert_eq!(loaded, 0);
+    }
+
+    #[tokio::test]
+    async fn load_all_handles_legacy_session_format() {
+        // Legacy session files (from the old session.rs) only contain
+        // id/name/created_at/updated_at/messages, with messages having
+        // only role/content. The new Session struct adds status, metadata,
+        // project_path, timestamp, etc. - all must be #[serde(default)].
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+
+        let legacy_json = r#"{
+            "id": "legacy-001",
+            "name": "old session",
+            "created_at": "2026-06-01T12:00:00Z",
+            "updated_at": "2026-06-01T12:30:00Z",
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi there"},
+                {"role": "assistant", "tool_calls": [{"id": "tc1"}]}
+            ]
+        }"#;
+        tokio::fs::write(dir.join("legacy-001.json"), legacy_json)
+            .await
+            .unwrap();
+
+        let mgr = SessionManager::with_dir(dir);
+        let loaded = mgr.load_all().await.unwrap();
+        assert_eq!(loaded, 1, "legacy session should be loaded");
+
+        let list = mgr.list().await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "legacy-001");
+        assert_eq!(list[0].name, "old session");
+        assert_eq!(list[0].message_count, 3);
+        assert_eq!(list[0].status, SessionStatus::Active);
     }
 }

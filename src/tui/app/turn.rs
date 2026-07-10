@@ -46,6 +46,8 @@ impl App {
             self.session_name = name;
         }
         self.phase = AgentPhase::Thinking;
+        // New turn: stop suppressing phase updates (set by /clear or cancel).
+        self.suppress_phase_updates = false;
         let turn_id = TurnId::new();
         self.current_turn_id = Some(turn_id.clone());
         let _ = self.event_tx.send(AppEvent::TurnStarted {
@@ -160,6 +162,8 @@ impl App {
     /// `spawn_agent_turn` but calls `compact_only` instead of `process_input`.
     pub(super) fn spawn_compact_turn(&mut self) {
         self.phase = AgentPhase::Compacting;
+        // New turn: stop suppressing phase updates (set by /clear or cancel).
+        self.suppress_phase_updates = false;
         let turn_id = TurnId::new();
         self.current_turn_id = Some(turn_id.clone());
         let _ = self.event_tx.send(AppEvent::TurnStarted {
@@ -222,6 +226,11 @@ impl App {
         self.pending_inputs.clear();
         if let Some(handle) = self.current_turn_handle.take() {
             handle.abort();
+            // Set phase to Idle immediately and suppress stale phase updates
+            // from the aborted task's in-flight events (e.g. StreamDone,
+            // ToolResult) that would otherwise override Idle back to Thinking.
+            self.phase = AgentPhase::Idle;
+            self.suppress_phase_updates = true;
             let _ = self.event_tx.send(AppEvent::TurnAborted {
                 reason: TurnAbortReason::Interrupted,
             });

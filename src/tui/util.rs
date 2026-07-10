@@ -39,6 +39,13 @@ pub async fn start_daemon(
     use crate::daemon::{auth, routes};
     use std::sync::Arc;
     let daemon_state = Arc::new(DaemonState::new(app_state));
+
+    // Recover persisted sessions from disk so the session list is populated
+    // immediately after the background daemon starts (see daemon::run).
+    if let Err(e) = daemon_state.session_manager.load_all().await {
+        tracing::warn!(error = %e, "Failed to load persisted sessions into background daemon");
+    }
+
     let api_token = auth::generate_api_token();
     crate::utils::write_daemon_token(&api_token)?;
     eprintln!(
