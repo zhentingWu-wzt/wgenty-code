@@ -30,6 +30,11 @@ impl App {
             self.scroll_offset = 0;
             self.user_scrolled = false;
             self.cancel_current_turn();
+            // Reset phase immediately and suppress stale events from the
+            // just-aborted turn so the status bar shows "Ready" instead of
+            // lingering on "Thinking". Cleared when a new turn starts.
+            self.phase = AgentPhase::Idle;
+            self.suppress_phase_updates = true;
             let history = self.conversation_history.clone();
             let sys_msgs = self.assembled_system_messages.clone();
             tokio::spawn(async move {
