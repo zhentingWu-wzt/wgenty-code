@@ -1,6 +1,6 @@
 //! SubagentStatusBar — compact status bar above the input area.
 //!
-//! Shows active (Running + Pending) subagents with status icons, labels, and
+//! Shows nonterminal subagents with status icons, labels, and
 //! current tool/params. The selected item is highlighted for keyboard
 //! navigation (↑↓ to select, Enter to open the focus view).
 
@@ -23,15 +23,10 @@ pub fn render(
     selected_index: usize,
     focused: bool,
 ) {
-    let active: Vec<&SubagentNode> = tree
-        .nodes
-        .values()
-        .filter(|n| {
-            matches!(
-                n.progress.status,
-                SubagentStatus::Running | SubagentStatus::Pending
-            )
-        })
+    let active_ids = active_node_ids(tree);
+    let active: Vec<&SubagentNode> = active_ids
+        .iter()
+        .filter_map(|id| tree.nodes.get(id))
         .collect();
 
     if active.is_empty() {
@@ -151,7 +146,7 @@ fn truncate_str(s: &str, max: usize) -> String {
     }
 }
 
-/// Collect active (Running + Pending) REAL node IDs in the order they appear
+/// Collect nonterminal REAL node IDs in the order they appear
 /// in the tree. Grouping/wrapper nodes (e.g., a `delegate` 1:N wrapper stuck
 /// in Running) are excluded so they don't inflate the active list. Used by
 /// event handling for status bar navigation.
@@ -162,12 +157,7 @@ pub fn active_node_ids(tree: &SubagentTree) -> Vec<String> {
         .filter(|id| {
             tree.nodes
                 .get(id)
-                .map(|n| {
-                    matches!(
-                        n.progress.status,
-                        SubagentStatus::Running | SubagentStatus::Pending
-                    )
-                })
+                .map(|node| !node.progress.status.is_terminal())
                 .unwrap_or(false)
         })
         .collect()
@@ -178,6 +168,8 @@ mod tests {
     use super::*;
     use crate::agent::progress::SubagentProgress;
     use crate::tui::components::subagent_tree::SubagentNode;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
 
     #[test]
     fn test_lifecycle_status_icons() {
@@ -249,6 +241,61 @@ mod tests {
         let active = active_node_ids(&tree);
         // root is completed (filtered out), a + b are active, c + d are not
         assert_eq!(active, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn test_new_nonterminal_states_are_visible_and_navigable() {
+        for status in [
+            SubagentStatus::WaitingForChildren,
+            SubagentStatus::Finalizing,
+            SubagentStatus::Cancelling,
+        ] {
+            let mut tree = SubagentTree::default();
+            tree.nodes
+                .insert("active".to_string(), make_node("active", status.clone()));
+            tree.root_id = Some("active".to_string());
+
+            assert_eq!(active_node_ids(&tree), vec!["active".to_string()]);
+
+            let backend = TestBackend::new(80, 4);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| render(frame, frame.area(), &tree, 1, true))
+                .unwrap();
+            let rendered = terminal.backend().to_string();
+
+            assert!(
+                rendered.contains("Task active"),
+                "{status:?} must render in the status bar"
+            );
+        }
+    }
+
+    #[test]
+    fn test_terminal_states_are_not_navigable_or_rendered() {
+        for status in [
+            SubagentStatus::Completed,
+            SubagentStatus::Failed,
+            SubagentStatus::Cancelled,
+        ] {
+            let mut tree = SubagentTree::default();
+            tree.nodes.insert(
+                "terminal".to_string(),
+                make_node("terminal", status.clone()),
+            );
+            tree.root_id = Some("terminal".to_string());
+
+            assert!(active_node_ids(&tree).is_empty());
+
+            let backend = TestBackend::new(80, 4);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| render(frame, frame.area(), &tree, 0, false))
+                .unwrap();
+            let rendered = terminal.backend().to_string();
+
+            assert!(!rendered.contains("Task terminal"));
+        }
     }
 
     #[test]

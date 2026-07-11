@@ -56,10 +56,13 @@ impl SubagentTree {
             .count()
     }
 
-    /// Number of currently active (Running + Pending) subagent nodes.
+    /// Number of nonterminal subagent nodes.
     pub fn active_count(&self) -> usize {
-        self.count_by_status(SubagentStatus::Running)
-            + self.count_by_status(SubagentStatus::Pending)
+        self.real_node_list()
+            .iter()
+            .filter_map(|id| self.nodes.get(id))
+            .filter(|node| !node.progress.status.is_terminal())
+            .count()
     }
 
     /// Number of successfully completed subagent nodes.
@@ -186,12 +189,7 @@ impl SubagentTree {
         self.real_node_list()
             .iter()
             .filter_map(|id| self.nodes.get(id))
-            .all(|n| {
-                matches!(
-                    n.progress.status,
-                    SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
-                )
-            })
+            .all(|node| node.progress.status.is_terminal())
     }
 
     pub fn clear(&mut self) {
@@ -199,7 +197,7 @@ impl SubagentTree {
         self.nodes.clear();
     }
 
-    /// Clear the tree only when no subagents are still active (Running/Pending).
+    /// Clear the tree only when all subagents are terminal.
     ///
     /// Background subagents (task tool `background` mode) outlive the main
     /// turn — they are spawned via `tokio::spawn` and the main turn returns
@@ -484,6 +482,27 @@ mod tests {
     }
 
     #[test]
+    fn test_active_count_and_clear_if_idle_cover_every_nonterminal_status() {
+        for status in [
+            SubagentStatus::Pending,
+            SubagentStatus::Running,
+            SubagentStatus::WaitingForChildren,
+            SubagentStatus::Finalizing,
+            SubagentStatus::Cancelling,
+        ] {
+            let mut tree = SubagentTree::default();
+            tree.upsert(make_progress("active", None, status.clone()));
+
+            assert_eq!(tree.active_count(), 1, "{status:?} must count as active");
+            assert!(
+                !tree.clear_if_idle(),
+                "{status:?} must prevent the tree from being cleared"
+            );
+            assert!(tree.nodes.contains_key("active"));
+        }
+    }
+
+    #[test]
     fn test_clear_if_idle_clears_when_only_terminal_remain() {
         // Previous turn's foreground subagents are Completed; no active remain.
         let mut tree = SubagentTree::default();
@@ -496,6 +515,21 @@ mod tests {
         );
         assert!(tree.nodes.is_empty(), "terminal nodes must be cleared");
         assert!(tree.root_id.is_none());
+    }
+
+    #[test]
+    fn test_clear_if_idle_clears_each_terminal_status() {
+        for status in [
+            SubagentStatus::Completed,
+            SubagentStatus::Failed,
+            SubagentStatus::Cancelled,
+        ] {
+            let mut tree = SubagentTree::default();
+            tree.upsert(make_progress("terminal", None, status.clone()));
+
+            assert!(tree.clear_if_idle(), "{status:?} must allow clearing");
+            assert!(tree.is_empty());
+        }
     }
 
     #[test]
