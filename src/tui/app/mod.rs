@@ -117,6 +117,8 @@ pub struct App {
     pub subagent_focus: Option<FocusViewState>,
     /// Selected index in the subagent status bar.
     pub subagent_status_bar_selected: usize,
+    /// Scoped agent navigation state: current view frame + back stack.
+    pub agent_navigation: crate::tui::app::types::AgentNavigationState,
     /// Whether the status bar has keyboard focus (Tab toggles).
     pub subagent_status_bar_focused: bool,
     pub mouse_capture_enabled: bool,
@@ -433,6 +435,7 @@ impl App {
             subagent_history: HashMap::new(),
             subagent_focus: None,
             subagent_status_bar_selected: 0,
+            agent_navigation: crate::tui::app::types::AgentNavigationState::default(),
             subagent_status_bar_focused: false,
             mouse_capture_enabled: true,
             mouse_capture_toggle: None,
