@@ -44,16 +44,17 @@ impl AgentLoop {
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(500)).await;
-                    match client_clone.poll_subagent_progress(&sid).await {
-                        Ok(map) => {
-                            if map.is_empty() {
-                                continue;
-                            }
-                            for (_id, progress) in map {
-                                let _ = tx.send(AppEvent::SubagentUpdate(Box::new(progress)));
-                            }
+                    match client_clone.get_root_agent_view(&sid).await {
+                        Ok(view) => {
+                            let _ = tx.send(AppEvent::AgentLocalView(Box::new(view)));
                         }
-                        Err(_) => break,
+                        Err(error) => {
+                            tracing::warn!(
+                                session_id = %sid,
+                                error = %error,
+                                "Failed to poll scoped subagent view; retrying"
+                            );
+                        }
                     }
                 }
             }))

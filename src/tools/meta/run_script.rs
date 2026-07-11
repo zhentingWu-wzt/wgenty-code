@@ -4,6 +4,7 @@
 //! through a sandboxed Rhai scripting engine. Exposes key agent APIs as Rhai
 //! functions: `task`, `grep`, `read`, `exec`, `log`.
 
+use crate::agent::{AgentCoordinator, ToolContext};
 use crate::api::ApiClient;
 use crate::config::Settings;
 use crate::teams::subagent_loop::run_subagent_loop;
@@ -17,13 +18,19 @@ use std::sync::{Arc, Mutex};
 pub struct RunScriptTool {
     settings: Settings,
     tool_registry: std::sync::Weak<ToolRegistry>,
+    coordinator: Arc<AgentCoordinator>,
 }
 
 impl RunScriptTool {
-    pub fn new(settings: Settings, tool_registry: std::sync::Weak<ToolRegistry>) -> Self {
+    pub fn new(
+        settings: Settings,
+        tool_registry: std::sync::Weak<ToolRegistry>,
+        coordinator: Arc<AgentCoordinator>,
+    ) -> Self {
         Self {
             settings,
             tool_registry,
+            coordinator,
         }
     }
 }
@@ -49,7 +56,18 @@ impl Tool for RunScriptTool {
         })
     }
 
-    async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        Err(ToolError {
+            message: "run_script requires trusted agent context".to_string(),
+            code: Some("missing_agent_context".to_string()),
+        })
+    }
+
+    async fn execute_with_context(
+        &self,
+        context: &ToolContext<'_>,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
         let script = input["script"].as_str().unwrap_or("");
         let tool_registry = self.tool_registry.upgrade().ok_or_else(|| ToolError {
             message: "Tool registry unavailable".to_string(),
@@ -77,16 +95,47 @@ impl Tool for RunScriptTool {
             let tools = allowed_tools.clone();
             let cnt = call_count.clone();
             let rt = tokio::runtime::Handle::current();
+            let caller_context = context.agent.clone();
+            let coordinator = self.coordinator.clone();
             engine.register_fn("task", move |prompt: String| -> String {
                 let n = cnt.fetch_add(1, Ordering::Relaxed);
                 if n >= 10 { return "[ERROR] Max 10 subagent calls per script".to_string(); }
                 let client = ApiClient::new(settings.clone());
+                let coordinator = coordinator.clone();
+                let caller = caller_context.clone();
                 rt.block_on(async {
-                    run_subagent_loop(
-                        &client, &reg,
+                    // Reserve a coordinator-owned child derived from the trusted
+                    // caller context (never synthesized from tool arguments).
+                    let reservation = match coordinator
+                        .reserve_child(&caller, crate::agent::SpawnChildRequest::new(&prompt))
+                        .await
+                    {
+                        Ok(r) => r,
+                        Err(e) => return format!("[ERROR] coordinator reserve failed: {}", e),
+                    };
+                    let child_context = reservation.context.clone();
+                    let result = run_subagent_loop(
+                        &client, &reg, &child_context,
                         "You are a sub-agent in a Rhai script. Execute the task precisely and return a concise result.",
                         &prompt, &tools, 10, 120, None, None,
-                    ).await.unwrap_or_else(|e| format!("[ERROR] {}", e))
+                    ).await;
+                    let (terminal, content) = match result {
+                        Ok(r) => (
+                            crate::agent::ChildTerminal::Completed {
+                                summary: r.chars().take(500).collect(),
+                            },
+                            r,
+                        ),
+                        Err(e) => (
+                            crate::agent::ChildTerminal::Failed {
+                                code: "subagent_failed".to_string(),
+                                partial_result: None,
+                            },
+                            format!("[ERROR] {}", e),
+                        ),
+                    };
+                    let _ = coordinator.finish_child(&child_context, terminal).await;
+                    content
                 })
             });
         }

@@ -488,7 +488,7 @@ git commit -m "feat(agent): coordinate child spawning and concurrency"
 - Modify: `src/agent/coordinator.rs`
 - Modify: `src/agent/store.rs`
 
-- [ ] **Step 1: Write terminal-state and cancellation tests**
+- [x] **Step 1: Write terminal-state and cancellation tests**
 
 Add tests with controlled child futures using `tokio::sync::oneshot`:
 
@@ -530,13 +530,13 @@ async fn cancelling_parent_terminates_descendants_bottom_up() {
 
 Also test `BestEffort` waits for all children and `FailFast` cancels remaining children after the first required failure.
 
-- [ ] **Step 2: Run lifecycle tests to verify they fail**
+- [x] **Step 2: Run lifecycle tests to verify they fail**
 
 Run: `cargo test agent::coordinator::tests --lib`
 
 Expected: FAIL because finalization, joining, and cancellation are not implemented.
 
-- [ ] **Step 3: Implement lifecycle and result contracts**
+- [x] **Step 3: Implement lifecycle and result contracts**
 
 Add:
 
@@ -583,13 +583,13 @@ pub async fn cancel_subtree(&self, caller: &AgentExecutionContext, target: Agent
 
 Cancellation order must be: set `Cancelling`, cancel the scope token, recursively signal direct children, await handles with the configured shutdown timeout, abort uncooperative tasks, persist child terminal states, release child permits, then persist the requested parent terminal state. `cancel_subtree` must authorize self or direct child through the same store predicate and map all hidden/absent cases to `NotVisible`.
 
-- [ ] **Step 4: Verify structured concurrency tests**
+- [x] **Step 4: Verify structured concurrency tests**
 
 Run: `cargo fmt && cargo test agent::coordinator::tests --lib`
 
 Expected: PASS, including permit-release assertions.
 
-- [ ] **Step 5: Commit lifecycle enforcement**
+- [x] **Step 5: Commit lifecycle enforcement**
 
 ```bash
 git add src/agent/coordinator.rs src/agent/store.rs
@@ -602,7 +602,7 @@ git commit -m "feat(agent): enforce structured subagent lifetimes"
 - Modify: `src/tools/mod.rs`
 - Modify: `src/tools/executor.rs`
 
-- [ ] **Step 1: Write adapter and executor propagation tests**
+- [x] **Step 1: Write adapter and executor propagation tests**
 
 Add a test tool that records the caller identity in `src/tools/mod.rs` tests:
 
@@ -625,13 +625,13 @@ impl Tool for ContextProbe {
 
 Assert `ToolRegistry::execute_with_context` returns the trusted agent ID even when input contains forged `_agent_id`, `_session_id`, and `_subagent_depth`. Add an executor test proving `execute_with_hooks` passes the same `ToolContext` through pre/post hooks.
 
-- [ ] **Step 2: Run contextual execution tests to verify they fail**
+- [x] **Step 2: Run contextual execution tests to verify they fail**
 
 Run: `cargo test tools::external_tool_tests tools::executor::tests --lib`
 
 Expected: FAIL because contextual methods and `ToolOutput::text` do not exist.
 
-- [ ] **Step 3: Implement the backward-compatible adapter**
+- [x] **Step 3: Implement the backward-compatible adapter**
 
 Add to `Tool`:
 
@@ -658,7 +658,7 @@ pub async fn execute_with_context(
 
 Change both `ToolExecutor::execute_tool_call` and `ToolExecutor::execute_with_hooks` to require `&ToolContext<'_>` and call the contextual registry method. Keep hook `session_id` derived from `context.agent.session_id`; remove the separate optional session argument from these two methods.
 
-- [ ] **Step 4: Fix all compiler-reported executor call sites with trusted root contexts**
+- [x] **Step 4: Fix all compiler-reported executor call sites with trusted root contexts**
 
 At daemon/TUI roots, call `AgentCoordinator::ensure_root(SessionId::new(session_id))`; nested loops will receive child contexts in Task 6. Do not construct contexts from model JSON. Run:
 
@@ -666,13 +666,13 @@ At daemon/TUI roots, call `AgentCoordinator::ensure_root(SessionId::new(session_
 
 Expected: PASS with every executor call supplying a `ToolContext` and no identity-sensitive fallback to `ToolRegistry::execute`.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run: `cargo fmt && cargo test tools::external_tool_tests tools::executor::tests --lib`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit contextual tool execution**
+- [x] **Step 6: Commit contextual tool execution**
 
 ```bash
 git add src/tools/mod.rs src/tools/executor.rs src/daemon/handlers.rs src/daemon/state.rs src/tui/agent
@@ -688,7 +688,7 @@ git commit -m "feat(tools): propagate trusted agent context"
 - Modify: `src/tools/meta/task.rs`
 - Modify: `tests/refactor_e2e_test.rs`
 
-- [ ] **Step 1: Add a nested-tool context regression test**
+- [x] **Step 1: Add a nested-tool context regression test**
 
 In `tests/refactor_e2e_test.rs`, update the fake registry with a contextual probe and assert a nested tool invocation observes the child context, not the root context or forged JSON values.
 
@@ -709,13 +709,13 @@ run_subagent_loop(
 ).await
 ```
 
-- [ ] **Step 2: Run the regression test to verify it fails**
+- [x] **Step 2: Run the regression test to verify it fails**
 
 Run: `cargo test --test refactor_e2e_test`
 
 Expected: FAIL because `run_subagent_loop` does not accept execution context.
 
-- [ ] **Step 3: Change the loop signature and tool call path**
+- [x] **Step 3: Change the loop signature and tool call path**
 
 Add `context: &AgentExecutionContext` as the third parameter to `run_subagent_loop`. For each model tool call, construct:
 
@@ -728,7 +728,7 @@ let tool_context = ToolContext {
 
 Replace `tool_registry.execute(tool_name, args)` with `tool_registry.execute_with_context(&tool_context, tool_name, args)`. Wrap the loop future in `tokio::select!` so `context.cancellation.cancelled()` returns a `SubagentError` categorized as cancelled and emits `SubagentStatus::Cancelled`.
 
-- [ ] **Step 4: Update every direct call site**
+- [x] **Step 4: Update every direct call site**
 
 Update calls in:
 
@@ -739,13 +739,13 @@ Update calls in:
 
 Each child loop must receive a coordinator-created child context. Temporary root-only utilities may receive a daemon/runtime-created root context, never a context synthesized from tool arguments.
 
-- [ ] **Step 5: Verify all loop callers and cancellation tests**
+- [x] **Step 5: Verify all loop callers and cancellation tests**
 
 Run: `cargo fmt && cargo test --test refactor_e2e_test && cargo check --all-targets`
 
 Expected: PASS and `rg -n "run_subagent_loop\(" src tests` shows every call with a context argument.
 
-- [ ] **Step 6: Commit loop propagation**
+- [x] **Step 6: Commit loop propagation**
 
 ```bash
 git add src/teams/subagent_loop.rs src/tools/meta/rlm/pipeline.rs src/tools/meta/run_script.rs src/tools/meta/task.rs tests/refactor_e2e_test.rs
@@ -760,7 +760,7 @@ git commit -m "feat(agent): propagate context through nested loops"
 - Modify: `src/tools/meta/mod.rs`
 - Modify: `src/daemon/state.rs`
 
-- [ ] **Step 1: Write forged-field, parentage, and depth tests**
+- [x] **Step 1: Write forged-field, parentage, and depth tests**
 
 Add tests that invoke `TaskTool::execute_with_context` with trusted child context and input containing:
 
@@ -778,13 +778,13 @@ Add tests that invoke `TaskTool::execute_with_context` with trusted child contex
 
 Assert the created record uses the trusted caller session, `parent_id == caller.agent_id`, and `depth == caller.depth + 1`. Add a max-depth test proving forged `_subagent_depth` cannot bypass `DepthLimitReached`.
 
-- [ ] **Step 2: Run TaskTool tests to verify they fail**
+- [x] **Step 2: Run TaskTool tests to verify they fail**
 
 Run: `cargo test tools::meta::task::tests --lib`
 
 Expected: FAIL because TaskTool still reads reserved JSON fields and owns its own concurrency counter.
 
-- [ ] **Step 3: Replace TaskTool ownership fields**
+- [x] **Step 3: Replace TaskTool ownership fields**
 
 Change the constructor to receive:
 
@@ -800,7 +800,7 @@ pub fn new(
 
 Remove `active_count`, `BackgroundManager` subagent result delivery, and direct hierarchy mutation from `TaskTool`. Keep the command-background subsystem separate.
 
-- [ ] **Step 4: Implement contextual execution and coordinator spawning**
+- [x] **Step 4: Implement contextual execution and coordinator spawning**
 
 Keep `execute` only as a defensive error for direct identity-sensitive invocation:
 
@@ -817,7 +817,7 @@ In `execute_with_context`, ignore all keys beginning with `_`, derive depth from
 
 For `background: false`, await the child and return the bounded direct-child result. For `background: true`, return a scoped acknowledgement containing only a public result handle and status; the coordinator retains the child handle, and parent finalization joins it.
 
-- [ ] **Step 5: Update tool schema and user-visible text**
+- [x] **Step 5: Update tool schema and user-visible text**
 
 Remove any reserved identity/depth properties from the schema. Change background wording to:
 
@@ -827,13 +827,13 @@ The subagent is running concurrently inside this agent scope. This agent cannot 
 
 Do not claim delivery after the parent returns.
 
-- [ ] **Step 6: Run TaskTool and coordinator tests**
+- [x] **Step 6: Run TaskTool and coordinator tests**
 
 Run: `cargo fmt && cargo test tools::meta::task::tests agent::coordinator::tests --lib`
 
 Expected: PASS and `rg -n 'active_count|_subagent_depth|input\["_session_id"\]' src/tools/meta/task.rs` returns no matches.
 
-- [ ] **Step 7: Commit TaskTool migration**
+- [x] **Step 7: Commit TaskTool migration**
 
 ```bash
 git add src/tools/meta/task.rs src/tools/meta/task/tests.rs src/tools/meta/mod.rs src/daemon/state.rs
@@ -848,17 +848,17 @@ git commit -m "refactor(tools): route task children through coordinator"
 - Modify: `src/teams/subagent_mailbox.rs`
 - Modify: `src/tools/meta/task/tests.rs`
 
-- [ ] **Step 1: Write scoped-background and result-sanitization tests**
+- [x] **Step 1: Write scoped-background and result-sanitization tests**
 
 Test that a parent candidate result moves to `WaitingForChildren` while a background child is live, then reaches `Completed` only after the child completes. Add a child result containing strings shaped like descendant IDs and a serialized tree payload; assert `sanitize_child_result` returns bounded `summary`/`partial_result` and no fields for descendants, transcript, messages, events, or parent ID.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test scoped_background child_result --lib`
 
 Expected: FAIL because scoped acknowledgement/finalization and sanitizer contracts are incomplete.
 
-- [ ] **Step 3: Implement scoped result handles and sanitization**
+- [x] **Step 3: Implement scoped result handles and sanitization**
 
 Define an opaque handle whose serialized form contains only a random token:
 
@@ -889,13 +889,13 @@ pub fn sanitize_child_result(
 
 Limit summary and partial-result sizes using the existing mailbox thresholds. Persist large payloads under coordinator-owned metadata; do not expose filesystem paths as ambient authority. Retrieval must require the same parent context and handle binding.
 
-- [ ] **Step 4: Verify background scope and mailbox regressions**
+- [x] **Step 4: Verify background scope and mailbox regressions**
 
 Run: `cargo fmt && cargo test scoped_background child_result subagent_mailbox --lib`
 
 Expected: PASS, and no subagent path calls `BackgroundManager::push_subagent_result`.
 
-- [ ] **Step 5: Commit scoped background semantics**
+- [x] **Step 5: Commit scoped background semantics**
 
 ```bash
 git add src/agent/coordinator.rs src/tools/meta/task.rs src/teams/subagent_mailbox.rs src/tools/meta/task/tests.rs
@@ -910,17 +910,17 @@ git commit -m "feat(agent): scope asynchronous child execution"
 - Modify: `src/tools/meta/run_script.rs`
 - Modify: `src/tools/meta/task.rs`
 
-- [ ] **Step 1: Write RLM hierarchy parity tests**
+- [x] **Step 1: Write RLM hierarchy parity tests**
 
 Add tests that run an RLM plan with two parallel subtasks and assert both records are direct children of the RLM caller, use caller depth plus one, consume coordinator permits, and are joined before aggregation completes. Add a run-script test asserting its nested loop receives the caller context rather than a synthetic depth zero context.
 
-- [ ] **Step 2: Run focused tests to verify they fail**
+- [x] **Step 2: Run focused tests to verify they fail**
 
 Run: `cargo test tools::meta::rlm tools::meta::run_script --lib`
 
 Expected: FAIL because RLM still creates UUID progress nodes and raw Tokio tasks outside coordinator ownership.
 
-- [ ] **Step 3: Change RLM pipeline inputs and executor phase**
+- [x] **Step 3: Change RLM pipeline inputs and executor phase**
 
 Use this signature:
 
@@ -938,17 +938,17 @@ pub async fn run_rlm_pipeline(
 
 For every planned subtask, reserve a coordinator child and register the loop handle. Replace direct `tokio::spawn` ownership and direct progress-map writes. Keep dependency-level scheduling, but join through coordinator handles before aggregation. Hide `task` when the child context reaches max depth; coordinator remains the enforcement boundary.
 
-- [ ] **Step 4: Migrate delegate and run-script contextual paths**
+- [x] **Step 4: Migrate delegate and run-script contextual paths**
 
 Make identity-sensitive delegate execution reject missing `ToolContext`, pass `context.agent` into `run_rlm_pipeline`, and pass the trusted context through run-script nested tool execution. Remove any `_session_id` or `_subagent_depth` compatibility reads in these files.
 
-- [ ] **Step 5: Verify semantic parity**
+- [x] **Step 5: Verify semantic parity**
 
 Run: `cargo fmt && cargo test tools::meta::rlm tools::meta::run_script --lib && cargo check --all-targets`
 
 Expected: PASS and `rg -n 'parent_id:|Uuid::new_v4|tokio::spawn' src/tools/meta/rlm/pipeline.rs` has no hierarchy-ownership matches.
 
-- [ ] **Step 6: Commit RLM migration**
+- [x] **Step 6: Commit RLM migration**
 
 ```bash
 git add src/tools/meta/rlm/mod.rs src/tools/meta/rlm/pipeline.rs src/tools/meta/run_script.rs src/tools/meta/task.rs
@@ -964,17 +964,17 @@ git commit -m "refactor(agent): unify recursive child coordination"
 - Modify: `src/agent/coordinator.rs`
 - Modify: `src/teams/subagent_mailbox.rs`
 
-- [ ] **Step 1: Write shared authorization tests**
+- [x] **Step 1: Write shared authorization tests**
 
 For self, direct child, parent, sibling, grandchild, other branch, cross-session, and missing targets, run status, transcript, result, and cancellation lookups. Assert self/direct child succeed and every denied targeted operation returns the same external code `not_visible` and message.
 
-- [ ] **Step 2: Run authorization tests to verify they fail**
+- [x] **Step 2: Run authorization tests to verify they fail**
 
 Run: `cargo test transcript_authorization result_authorization cancellation_authorization --lib`
 
 Expected: FAIL because transcript/mailbox APIs accept raw identifiers or paths.
 
-- [ ] **Step 3: Add authorized repository methods**
+- [x] **Step 3: Add authorized repository methods**
 
 Implement coordinator methods whose first argument is always the trusted caller:
 
@@ -986,17 +986,17 @@ pub async fn read_status(&self, caller: &AgentExecutionContext, target: AgentId)
 
 Perform authorization before storage retrieval. Map absent handles, wrong parent, wrong session, stale generation, and hidden targets to `CoordinatorError::NotVisible`. Keep detailed internal tracing fields out of returned tool content.
 
-- [ ] **Step 4: Migrate SubagentTraceTool**
+- [x] **Step 4: Migrate SubagentTraceTool**
 
 Override `execute_with_context`, reject direct `execute`, and remove globally listable transcript behavior. Its schema may accept a direct-child opaque handle or target ID, but authorization must use `ToolContext`; raw IDs confer no authority.
 
-- [ ] **Step 5: Verify all scoped operations**
+- [x] **Step 5: Verify all scoped operations**
 
 Run: `cargo fmt && cargo test transcript_authorization result_authorization cancellation_authorization --lib`
 
 Expected: PASS with indistinguishable hidden/missing errors.
 
-- [ ] **Step 6: Commit scoped information access**
+- [x] **Step 6: Commit scoped information access**
 
 ```bash
 git add src/tools/meta/subagent_trace.rs src/transcript/mod.rs src/agent/store.rs src/agent/coordinator.rs src/teams/subagent_mailbox.rs
@@ -1010,7 +1010,7 @@ git commit -m "feat(agent): authorize subagent results and transcripts"
 - Modify: `src/agent/mod.rs`
 - Modify: `src/agent/store.rs`
 
-- [ ] **Step 1: Write capability binding tests**
+- [x] **Step 1: Write capability binding tests**
 
 Create a deterministic test clock and assert verification rejects each mismatch independently: wrong session, target, generation, operation, viewer, expiration, and unknown token. In the test module, define `test_secret() -> [u8; 32]` as `[7; 32]` and `fixed_clock()` as an `Arc<TestClock>` initialized to `2026-07-11T00:00:00Z`. Assert capability debug/log formatting does not expose the bearer token.
 
@@ -1025,25 +1025,25 @@ fn capability_is_bound_to_all_authority_dimensions() {
 }
 ```
 
-- [ ] **Step 2: Run capability tests to verify they fail**
+- [x] **Step 2: Run capability tests to verify they fail**
 
 Run: `cargo test agent::capability::tests --lib`
 
 Expected: FAIL because the capability service does not exist.
 
-- [ ] **Step 3: Implement opaque in-memory grants**
+- [x] **Step 3: Implement opaque in-memory grants**
 
 Define `CapabilityOperation::{Navigate, Transcript, Cancel}`, `ViewerId`, `NavigationCapability`, `CapabilityGrant`, and `CapabilityRequest`. Add a private `Clock` trait with `fn now(&self) -> DateTime<Utc>`, a production `SystemClock`, and a test `TestClock`. Generate 256-bit random bearer tokens with `rand::rngs::OsRng`, store only `Hmac<Sha256>(secret, token)` as the lookup key, bind all dimensions from the approved design, and expire grants after a configurable duration. Verification must return `CapabilityError::NotVisible` for every mismatch and remove expired entries.
 
 Do not implement capabilities as serialized agent IDs. Do not derive authority solely from the daemon bearer token.
 
-- [ ] **Step 4: Verify capability secrecy and constant lookup behavior**
+- [x] **Step 4: Verify capability secrecy and constant lookup behavior**
 
 Run: `cargo fmt && cargo test agent::capability::tests --lib`
 
 Expected: PASS; serialized local projections may contain opaque capability strings, while `Debug` output for the service and grant omits raw tokens.
 
-- [ ] **Step 5: Commit capability service**
+- [x] **Step 5: Commit capability service**
 
 ```bash
 git add src/agent/capability.rs src/agent/mod.rs src/agent/store.rs
@@ -1059,7 +1059,7 @@ git commit -m "feat(agent): add scoped navigation capabilities"
 - Modify: `src/daemon/routes.rs`
 - Create: `tests/strict_subagent_isolation.rs`
 
-- [ ] **Step 1: Write daemon API contract tests**
+- [x] **Step 1: Write daemon API contract tests**
 
 Build an Axum router with a seeded three-level tree. Test:
 
@@ -1074,13 +1074,13 @@ POST /api/v1/ui/viewers
 
 Assert the root response contains root plus direct children only; navigating with a child's capability returns that child plus its direct children only. Compare status and response body for expired, wrong-viewer, hidden, and random capabilities; all must be indistinguishable.
 
-- [ ] **Step 2: Run integration tests to verify they fail**
+- [x] **Step 2: Run integration tests to verify they fail**
 
 Run: `cargo test --test strict_subagent_isolation daemon_`
 
 Expected: FAIL because scoped routes and response models do not exist.
 
-- [ ] **Step 3: Add daemon models and trusted state ownership**
+- [x] **Step 3: Add daemon models and trusted state ownership**
 
 Add serializable `LocalAgentViewResponse`, `SelfAgentResponse`, and `DirectChildResponse { agent_id, status, summary, navigation_capability }`. Add `CreateViewerResponse { viewer_token: String }`; `POST /api/v1/ui/viewers` creates 256 random bits, stores only `Hmac<Sha256>(daemon_viewer_secret, token)` in daemon memory, and returns the bearer token once. `DaemonState` must own `Arc<AgentCoordinator>` and `Arc<CapabilityService>`, a viewer-token digest map, plus a root-context map keyed by the authenticated/current session.
 
@@ -1092,7 +1092,7 @@ pub async fn root_context(&self, session_id: &str) -> Result<AgentExecutionConte
 
 This method calls `ensure_root`; it never accepts agent ID, parent ID, or depth from request JSON.
 
-- [ ] **Step 4: Implement scoped handlers and routes**
+- [x] **Step 4: Implement scoped handlers and routes**
 
 The TUI sends its daemon-issued viewer token in `X-Wgenty-Viewer-Token`. Handlers hash and resolve that token to a trusted `ViewerId`, verify capabilities before target lookup, and issue fresh direct-child capabilities for each returned local view. Missing or unknown viewer tokens receive one stable unauthorized response. Add `.context("...")` at daemon boundaries and map capability/visibility failures to one stable 404 response without target details.
 
@@ -1100,17 +1100,17 @@ Disable request-URI logging for the scoped capability routes or install a redact
 
 Remove `_session_id` injection from both permission branches in `execute_tool`; build `ToolContext` from `DaemonState::root_context` and a fresh invocation ID.
 
-- [ ] **Step 5: Restrict and then remove the full progress endpoint**
+- [x] **Step 5: Restrict and then remove the full progress endpoint**
 
 First ensure no normal client or model tool calls `/api/v1/subagent/progress`. Remove the route and `get_subagent_progress` handler in the same commit. If an operator diagnostic is still required by an existing test, expose it under an explicitly operator-only state method with no HTTP route.
 
-- [ ] **Step 6: Verify daemon isolation contracts**
+- [x] **Step 6: Verify daemon isolation contracts**
 
 Run: `cargo fmt && cargo test --test strict_subagent_isolation daemon_ && cargo test daemon --lib`
 
 Expected: PASS and `rg -n '/api/v1/subagent/progress|_session_id.*insert' src/daemon src/tui` returns no matches.
 
-- [ ] **Step 7: Commit scoped daemon APIs**
+- [x] **Step 7: Commit scoped daemon APIs**
 
 ```bash
 git add src/daemon/state.rs src/daemon/models.rs src/daemon/handlers.rs src/daemon/routes.rs tests/strict_subagent_isolation.rs
@@ -1130,7 +1130,7 @@ git commit -m "feat(api): expose capability-scoped agent views"
 - Modify: `src/tui/components/subagent_tree.rs`
 - Modify: `src/tui/components/subagent_status_bar.rs`
 
-- [ ] **Step 1: Write local-view state tests**
+- [x] **Step 1: Write local-view state tests**
 
 Add tests proving that replacing the current view removes nodes from the previous layer, counts only the current self and direct children, and cannot select an ID absent from the current response.
 
@@ -1146,13 +1146,13 @@ fn replacing_local_view_drops_previous_layer_nodes() {
 }
 ```
 
-- [ ] **Step 2: Run TUI component tests to verify they fail**
+- [x] **Step 2: Run TUI component tests to verify they fail**
 
 Run: `cargo test tui::components::subagent_tree --lib`
 
 Expected: FAIL because `replace_local` and scoped selection do not exist.
 
-- [ ] **Step 3: Replace progress-map client methods**
+- [x] **Step 3: Replace progress-map client methods**
 
 Remove `poll_subagent_progress`. Add:
 
@@ -1165,7 +1165,7 @@ pub async fn cancel_child(&self, session_id: &str, capability: &str) -> anyhow::
 
 Add `DaemonClient::create_viewer()` and store its returned token in a private `DaemonClient` field for `X-Wgenty-Viewer-Token`; create it once during TUI startup and refresh it only after daemon restart/unauthorized response. Do not write viewer tokens or capability values to tracing output, chat messages, transcripts, or tool arguments.
 
-- [ ] **Step 4: Change app events and tree storage**
+- [x] **Step 4: Change app events and tree storage**
 
 Replace `AppEvent::SubagentUpdate(Box<SubagentProgress>)` with:
 
@@ -1175,17 +1175,17 @@ AppEvent::AgentLocalView(Box<LocalAgentViewResponse>)
 
 Make `SubagentTree` store exactly one `SelfAgentResponse` and a vector of direct children. Remove session-wide upsert semantics from the agent view path. `node_list` and `real_node_list` may render the local input but must not discover descendants.
 
-- [ ] **Step 5: Update polling and status rendering**
+- [x] **Step 5: Update polling and status rendering**
 
 Both existing pollers fetch the current root/local endpoint and emit `AgentLocalView`. Status counts, completion summaries, and active indicators must be computed only from the current response. Preserve current rendering labels and status colors where possible.
 
-- [ ] **Step 6: Verify local-only TUI state**
+- [x] **Step 6: Verify local-only TUI state**
 
 Run: `cargo fmt && cargo test tui::components::subagent_tree --lib && cargo check --all-targets`
 
 Expected: PASS and `rg -n 'poll_subagent_progress|SubagentUpdate' src/tui` returns no matches.
 
-- [ ] **Step 7: Commit TUI local state migration**
+- [x] **Step 7: Commit TUI local state migration**
 
 ```bash
 git add src/tui/client.rs src/tui/agent src/tui/app/types.rs src/tui/app/mod.rs src/tui/app/event.rs src/tui/components/subagent_tree.rs src/tui/components/subagent_status_bar.rs
@@ -1203,17 +1203,17 @@ git commit -m "refactor(tui): render scoped agent local views"
 - Modify: `src/tui/components/subagent_tree.rs`
 - Modify: `tests/strict_subagent_isolation.rs`
 
-- [ ] **Step 1: Write navigation-history tests**
+- [x] **Step 1: Write navigation-history tests**
 
 Test root-to-child-to-grandchild navigation using server-issued capabilities. Assert each loaded view contains exactly selected self plus direct children, back restores the previous cached trusted UI view, and no ancestor ID is added to the selected agent's `messages` or transcript.
 
-- [ ] **Step 2: Run navigation tests to verify they fail**
+- [x] **Step 2: Run navigation tests to verify they fail**
 
 Run: `cargo test --test strict_subagent_isolation tui_`
 
 Expected: FAIL because focus selection still traverses a complete tree.
 
-- [ ] **Step 3: Implement UI-owned navigation history**
+- [x] **Step 3: Implement UI-owned navigation history**
 
 Add:
 
@@ -1233,17 +1233,17 @@ pub struct AgentNavigationState {
 
 The capability remains inside `DirectChildResponse` in UI memory. Opening a child calls `navigate_agent_view`, pushes the current frame, and replaces it with the response. Back pops a frame locally. Breadcrumb labels are display-only and must never be appended to model messages.
 
-- [ ] **Step 4: Restrict focus selection to current direct children**
+- [x] **Step 4: Restrict focus selection to current direct children**
 
 Replace `visible_node_ids()` and selector-position calculations based on `real_node_list()` with the current local view's stable list. A focus action on self opens its transcript locally; a focus action on a direct child uses its capability. No raw grandchild ID can be selected before navigating into its parent view.
 
-- [ ] **Step 5: Verify navigation and information flow**
+- [x] **Step 5: Verify navigation and information flow**
 
 Run: `cargo fmt && cargo test --test strict_subagent_isolation tui_ && cargo test tui::components --lib`
 
 Expected: PASS, including assertions that focused child model messages contain no ancestor, sibling, or other-branch identifiers.
 
-- [ ] **Step 6: Commit capability navigation**
+- [x] **Step 6: Commit capability navigation**
 
 ```bash
 git add src/tui/app/types.rs src/tui/app/mod.rs src/tui/app/event.rs src/tui/app/event_key.rs src/tui/components/subagent_focus_view.rs src/tui/components/subagent_tree.rs tests/strict_subagent_isolation.rs
@@ -1258,17 +1258,17 @@ git commit -m "feat(tui): navigate agent hierarchy by capability"
 - Modify: `src/daemon/state.rs`
 - Modify: `tests/strict_subagent_isolation.rs`
 
-- [ ] **Step 1: Write recovery and uncooperative-child tests**
+- [x] **Step 1: Write recovery and uncooperative-child tests**
 
 Seed records in `Pending`, `Running`, `WaitingForChildren`, `Finalizing`, and `Cancelling`, simulate a daemon restart with no task handles, and assert the complete affected subtrees become `Cancelled` with internal reason `runtime_restarted`. Add a child future that ignores cancellation; after the configured shutdown timeout, assert it is aborted, terminal cleanup completes, and its permit is released.
 
-- [ ] **Step 2: Run recovery tests to verify they fail**
+- [x] **Step 2: Run recovery tests to verify they fail**
 
 Run: `cargo test --test strict_subagent_isolation recovery_`
 
 Expected: FAIL because restart recovery and forced abort are not wired.
 
-- [ ] **Step 3: Implement recovery queries and coordinator startup cleanup**
+- [x] **Step 3: Implement recovery queries and coordinator startup cleanup**
 
 Add a store query by non-terminal status and a coordinator method:
 
@@ -1284,17 +1284,17 @@ pub async fn recover_non_terminal_scopes(&self) -> Result<RecoveryReport, Coordi
 
 Group records into roots of affected subtrees, mark each subtree `Cancelling`, then persist descendants bottom-up as `Cancelled`. Do not reconstruct task handles or resume model loops. Return counts only in `RecoveryReport`; do not expose hidden IDs through daemon responses.
 
-- [ ] **Step 4: Wire recovery into DaemonState initialization**
+- [x] **Step 4: Wire recovery into DaemonState initialization**
 
 Run recovery after the canonical store is loaded and before routes accept requests. Add `.context("recovering non-terminal agent scopes after daemon restart")` at this application boundary.
 
-- [ ] **Step 5: Verify recovery and permit cleanup**
+- [x] **Step 5: Verify recovery and permit cleanup**
 
 Run: `cargo fmt && cargo test --test strict_subagent_isolation recovery_ && cargo test agent::coordinator::tests --lib`
 
 Expected: PASS; no recovered record remains non-terminal and all permits are available.
 
-- [ ] **Step 6: Commit recovery support**
+- [x] **Step 6: Commit recovery support**
 
 ```bash
 git add src/agent/coordinator.rs src/agent/store.rs src/daemon/state.rs tests/strict_subagent_isolation.rs
@@ -1311,25 +1311,25 @@ git commit -m "feat(agent): recover interrupted subagent scopes"
 - Modify: `src/tools/meta/rlm/mod.rs`
 - Modify: `src/daemon/handlers.rs`
 
-- [ ] **Step 1: Add a source-level compatibility guard test**
+- [x] **Step 1: Add a source-level compatibility guard test**
 
 Add an integration assertion that scans identity-sensitive source files and fails if they contain model-input reads for `_session_id`, `_agent_id`, `_parent_id`, or `_subagent_depth`, or expose a global agent listing method.
 
-- [ ] **Step 2: Run the guard to verify it fails**
+- [x] **Step 2: Run the guard to verify it fails**
 
 Run: `cargo test --test strict_subagent_isolation compatibility_`
 
 Expected: FAIL while old compatibility code or flat listing remains.
 
-- [ ] **Step 3: Retire the flat AgentsService hierarchy path**
+- [x] **Step 3: Retire the flat AgentsService hierarchy path**
 
 Remove or reduce `AgentSession`/`AgentsService` so no API can globally list subagents. Migrate any still-needed service construction to `AgentCoordinator`. Preserve unrelated chat-session functionality; this change concerns agent hierarchy only.
 
-- [ ] **Step 4: Remove reserved identity handling**
+- [x] **Step 4: Remove reserved identity handling**
 
 Delete reads, writes, and schema mentions for all four reserved identity fields in task, delegate, daemon, and nested loop paths. Unknown underscore-prefixed fields may remain ordinary ignored JSON, but they must never influence identity, authorization, depth, or cancellation.
 
-- [ ] **Step 5: Verify compatibility cleanup**
+- [x] **Step 5: Verify compatibility cleanup**
 
 Run:
 
@@ -1341,7 +1341,7 @@ cargo check --all-targets
 
 Expected: the search returns no identity-boundary matches, and both Cargo commands PASS.
 
-- [ ] **Step 6: Commit compatibility cleanup**
+- [x] **Step 6: Commit compatibility cleanup**
 
 ```bash
 git add src/teams/subagent.rs src/teams/mod.rs src/services/mod.rs src/tools/meta/task.rs src/tools/meta/rlm/mod.rs src/daemon/handlers.rs tests/strict_subagent_isolation.rs
@@ -1355,7 +1355,7 @@ git commit -m "refactor(agent): remove flat hierarchy compatibility"
 - Modify: `WGENTY.md`
 - Modify: `CHANGELOG.md`
 
-- [ ] **Step 1: Locate stale claims**
+- [x] **Step 1: Locate stale claims**
 
 Run:
 
@@ -1365,7 +1365,7 @@ rg -n '_subagent_depth|background subagent|background.*continues|full tree|subag
 
 Expected: output identifies descriptions of caller-provided depth, detached background children, or whole-tree visibility.
 
-- [ ] **Step 2: Document the implemented contracts**
+- [x] **Step 2: Document the implemented contracts**
 
 State explicitly:
 
@@ -1380,13 +1380,13 @@ State explicitly:
 
 Add a Conventional Changelog entry under the current unreleased section describing the security boundary and the behavior change.
 
-- [ ] **Step 3: Verify documentation consistency**
+- [x] **Step 3: Verify documentation consistency**
 
 Run the search from Step 1 again.
 
 Expected: remaining matches describe only trusted runtime depth, scoped background semantics, or historical documents explicitly labeled as historical.
 
-- [ ] **Step 4: Commit documentation**
+- [x] **Step 4: Commit documentation**
 
 ```bash
 git add README.md WGENTY.md CHANGELOG.md
@@ -1398,25 +1398,25 @@ git commit -m "docs(agent): describe strict subagent isolation"
 **Files:**
 - Verify: all files changed by Tasks 1-17
 
-- [ ] **Step 1: Run formatting check**
+- [x] **Step 1: Run formatting check**
 
 Run: `cargo fmt -- --check`
 
 Expected: PASS with no diff.
 
-- [ ] **Step 2: Run Clippy with warnings denied**
+- [x] **Step 2: Run Clippy with warnings denied**
 
 Run: `cargo clippy --all-targets -- -D warnings`
 
 Expected: PASS with zero warnings.
 
-- [ ] **Step 3: Run the full test suite**
+- [x] **Step 3: Run the full test suite**
 
 Run: `cargo test --all`
 
 Expected: PASS, including strict visibility, structured concurrency, daemon capability, TUI navigation, transcript/result, recovery, and compatibility tests.
 
-- [ ] **Step 4: Run acceptance searches**
+- [x] **Step 4: Run acceptance searches**
 
 ```bash
 rg -n '/api/v1/subagent/progress|poll_subagent_progress|SubagentUpdate' src
@@ -1426,7 +1426,7 @@ rg -n 'AtomicUsize|POLL_INTERVAL_MS|push_subagent_result' src/tools/meta/task.rs
 
 Expected: no matches.
 
-- [ ] **Step 5: Build release and check repository performance constraints**
+- [x] **Step 5: Build release and check repository performance constraints**
 
 Run:
 
@@ -1438,12 +1438,12 @@ ls -lh ./target/release/wgenty_code
 
 Expected: release build succeeds; startup regression is at most 5%, base memory regression is at most 2%, and binary growth is at most 500KB compared with the pre-change baseline recorded before execution begins.
 
-- [ ] **Step 6: Inspect the final diff for information leaks**
+- [x] **Step 6: Inspect the final diff for information leaks**
 
 Run: `git diff develop...HEAD -- src/agent src/tools/meta src/daemon src/tui src/transcript tests`
 
 Expected: no model-visible response, transcript, log message, or local projection contains capabilities, ancestor metadata, sibling/grandchild records, or full-session maps.
 
-- [ ] **Step 7: Record final verification**
+- [x] **Step 7: Record final verification**
 
 Add the exact command results and measured release deltas to the eventual PR description. Do not create a separate verification-only commit unless verification required source changes; if it did, commit those fixes with the narrowest applicable Conventional Commit type.

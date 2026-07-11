@@ -49,6 +49,18 @@ pub struct DaemonState {
         Arc<RwLock<HashMap<String, HashMap<String, crate::agent::progress::SubagentProgress>>>>,
     /// Last poll timestamp per session, used for TTL-based eviction.
     pub subagent_poll_times: Arc<RwLock<HashMap<String, Instant>>>,
+    /// Exclusive owner of agent spawning, concurrency, and lifecycle. Scoped
+    /// agent APIs read through it; identity is never taken from request JSON.
+    pub coordinator: Arc<crate::agent::AgentCoordinator>,
+    /// Viewer-bound capability service for trusted UI navigation.
+    pub capability_service: Arc<crate::agent::capability::CapabilityService>,
+    /// Viewer bearer-token digests: HMAC-SHA256(daemon_viewer_secret, token)
+    /// -> ViewerId. The raw token is never stored.
+    viewer_tokens: Arc<RwLock<HashMap<String, crate::agent::capability::ViewerId>>>,
+    /// Root execution context per session, created via `ensure_root`.
+    root_contexts: Arc<RwLock<HashMap<String, crate::agent::AgentExecutionContext>>>,
+    /// Secret used to digest viewer bearer tokens.
+    daemon_viewer_secret: [u8; 32],
 }
 
 impl DaemonState {
@@ -82,6 +94,27 @@ impl DaemonState {
         > = Arc::new(RwLock::new(HashMap::new()));
 
         let mcp_manager = Arc::new(crate::mcp::McpManager::new());
+
+        // Single shared coordinator owning all agent spawning, concurrency,
+        // and lifecycle for this daemon. Derived from trusted subagent
+        // settings; identity is never taken from model JSON. Constructed
+        // outside the registry's Arc::new_cyclic so DaemonState can hold it.
+        let coordinator = Arc::new(crate::agent::AgentCoordinator::new(
+            app_state.settings.agent.subagent.max_concurrent,
+            app_state.settings.agent.subagent.max_depth,
+        ));
+        // Viewer-bound capability service + viewer-token secret. The secret is
+        // random per daemon start; viewer tokens do not survive restart.
+        let daemon_viewer_secret = {
+            use rand::RngCore;
+            let mut bytes = [0u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut bytes);
+            bytes
+        };
+        let capability_service = Arc::new(crate::agent::capability::CapabilityService::new(
+            daemon_viewer_secret,
+        ));
+
         let mut reserved_tool_names: HashSet<String> = ToolRegistry::new()
             .with_settings(&app_state.settings)
             .list()
@@ -128,21 +161,24 @@ impl DaemonState {
             let task_tool = crate::tools::meta::task::TaskTool::new(
                 app_state.settings.clone(),
                 weak_reg.clone(),
-                bg_manager.clone(),
+                coordinator.clone(),
                 progress_store.clone(),
                 transcript_store.clone(),
             );
             registry.register(Box::new(task_tool));
 
             // Register subagent trace tool (read-only visualization for subagent transcripts)
-            let trace_tool =
-                crate::tools::meta::subagent_trace::SubagentTraceTool::new(transcript_store);
+            let trace_tool = crate::tools::meta::subagent_trace::SubagentTraceTool::new(
+                transcript_store,
+                coordinator.clone(),
+            );
             registry.register(Box::new(trace_tool));
 
             if app_state.settings.agent.rlm.enabled && app_state.settings.agent.rlm.delegate_tool {
                 let rlm_tool = crate::tools::meta::rlm::RlmDelegateTool::new(
                     app_state.settings.clone(),
                     weak_reg.clone(),
+                    coordinator.clone(),
                     progress_store.clone(),
                 );
                 registry.register(Box::new(rlm_tool));
@@ -151,6 +187,7 @@ impl DaemonState {
             let run_script_tool = crate::tools::meta::run_script::RunScriptTool::new(
                 app_state.settings.clone(),
                 weak_reg.clone(),
+                coordinator.clone(),
             );
             registry.register(Box::new(run_script_tool));
 
@@ -203,7 +240,72 @@ impl DaemonState {
             sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             subagent_progress: progress_store,
             subagent_poll_times: Arc::new(RwLock::new(HashMap::new())),
+            coordinator,
+            capability_service,
+            viewer_tokens: Arc::new(RwLock::new(HashMap::new())),
+            root_contexts: Arc::new(RwLock::new(HashMap::new())),
+            daemon_viewer_secret,
         }
+    }
+
+    /// Returns the trusted root execution context for `session_id`, creating
+    /// it via `ensure_root` on first use. Never accepts agent ID, parent ID, or
+    /// depth from request JSON.
+    pub async fn root_context(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<crate::agent::AgentExecutionContext> {
+        {
+            let roots = self.root_contexts.read().await;
+            if let Some(ctx) = roots.get(session_id) {
+                return Ok(ctx.clone());
+            }
+        }
+        let ctx = self
+            .coordinator
+            .ensure_root(crate::agent::SessionId::new(session_id))
+            .await
+            .map_err(|e| anyhow::anyhow!("ensure_root failed: {}", e))?;
+        let mut roots = self.root_contexts.write().await;
+        roots.insert(session_id.to_string(), ctx.clone());
+        Ok(ctx)
+    }
+
+    /// Creates a trusted UI viewer: generates a 256-bit bearer token, stores
+    /// only its HMAC digest mapped to a fresh ViewerId, and returns the raw
+    /// token once.
+    pub async fn create_viewer(&self) -> String {
+        use rand::RngCore;
+        let mut bytes = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        let token = hex_string(&bytes);
+        let digest = self.digest_viewer_token(&token);
+        let viewer_id = crate::agent::capability::ViewerId::new(token.clone());
+        let mut tokens = self.viewer_tokens.write().await;
+        tokens.insert(digest, viewer_id);
+        token
+    }
+
+    /// Resolves a viewer bearer token to its ViewerId. Returns None for
+    /// missing/unknown tokens; callers surface one stable unauthorized
+    /// response regardless of cause.
+    pub async fn resolve_viewer(&self, token: &str) -> Option<crate::agent::capability::ViewerId> {
+        let digest = self.digest_viewer_token(token);
+        let tokens = self.viewer_tokens.read().await;
+        tokens.get(&digest).cloned()
+    }
+
+    /// Computes the HMAC-SHA256 digest of a viewer token under the daemon
+    /// viewer secret. Used as the lookup key; the raw token is never stored.
+    fn digest_viewer_token(&self, token: &str) -> String {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        type HmacSha256 = Hmac<Sha256>;
+        let mut mac = HmacSha256::new_from_slice(&self.daemon_viewer_secret)
+            .expect("HMAC accepts any key size");
+        mac.update(token.as_bytes());
+        let bytes = mac.finalize().into_bytes();
+        hex_string(bytes.as_slice())
     }
 
     /// Check if a session rule is approved for a given session.
@@ -266,4 +368,13 @@ impl DaemonState {
             );
         }
     }
+}
+
+/// Encodes bytes as a lowercase hex string.
+fn hex_string(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
 }

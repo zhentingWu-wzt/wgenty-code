@@ -1,7 +1,7 @@
 //! Type definitions for the TUI application layer.
 
-use crate::agent::progress::SubagentProgress;
 use crate::api::ChatMessage;
+use crate::daemon::models::LocalAgentViewResponse;
 use crate::state::agent_phase::{TurnAbortReason, TurnId};
 use crate::tui::client::{SessionInfo, TodoItem};
 use crossterm::event::KeyEvent;
@@ -165,8 +165,8 @@ pub enum AppEvent {
     TodosUpdated(Vec<TodoItem>),
     /// Settings were hot-reloaded from disk
     ConfigChanged(Box<crate::config::Settings>),
-    /// A subagent progress update from daemon polling.
-    SubagentUpdate(Box<SubagentProgress>),
+    /// A scoped agent local view (self + direct children) from the daemon.
+    AgentLocalView(Box<LocalAgentViewResponse>),
     /// Background task/subagent result notification for display in chat.
     BackgroundTaskResult(String),
 }
@@ -375,4 +375,24 @@ mod tests {
         assert!(state.tabs.is_empty());
         assert_eq!(state.visible_matches().len(), 1);
     }
+}
+
+// ── Scoped agent navigation history (Task 14) ────────────────────────────────
+
+/// One frame in the scoped agent navigation stack: the currently loaded view
+/// plus which entry is selected (0 for self, 1+ for direct children).
+#[derive(Debug, Clone)]
+pub struct AgentViewFrame {
+    pub view: LocalAgentViewResponse,
+    pub selected: usize,
+    pub breadcrumb_label: String,
+}
+
+/// Owned navigation state for capability-driven agent tree traversal. The
+/// TUI starts at the root view and pushes frames as the user descends into
+/// direct children via their navigation capability.
+#[derive(Debug, Clone, Default)]
+pub struct AgentNavigationState {
+    pub current: Option<AgentViewFrame>,
+    pub back_stack: Vec<AgentViewFrame>,
 }

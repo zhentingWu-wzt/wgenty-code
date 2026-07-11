@@ -140,6 +140,7 @@ impl SubagentError {
             ErrorType::Stuck { .. } => "subagent_stuck",
             ErrorType::ToolError { .. } => "subagent_tool_error",
             ErrorType::ParseError { .. } => "subagent_parse_error",
+            ErrorType::Cancelled => "subagent_cancelled",
             ErrorType::Unknown => "subagent_error",
         }
     }
@@ -202,6 +203,7 @@ fn subagent_error(
 pub async fn run_subagent_loop(
     api_client: &ApiClient,
     tool_registry: &ToolRegistry,
+    context: &crate::agent::AgentExecutionContext,
     system_prompt: &str,
     user_prompt: &str,
     allowed_tools: &[String],
@@ -620,9 +622,15 @@ pub async fn run_subagent_loop(
                 } else {
                     Duration::from_secs(90)
                 };
-                let tool_result =
-                    tokio::time::timeout(tool_timeout, tool_registry.execute(tool_name, args))
-                        .await;
+                let tool_context = crate::agent::ToolContext {
+                    agent: context,
+                    invocation_id: crate::agent::ToolInvocationId::new(tool_call.id.clone()),
+                };
+                let tool_result = tokio::time::timeout(
+                    tool_timeout,
+                    tool_registry.execute_with_context(&tool_context, tool_name, args),
+                )
+                .await;
 
                 let mut content = match tool_result {
                     Ok(Ok(output)) => output.content,
@@ -731,9 +739,78 @@ pub async fn run_subagent_loop(
         ))
     };
 
-    match tokio::time::timeout(timeout_duration, loop_future).await {
-        Ok(result) => result,
-        Err(_elapsed) => {
+    // Race the loop (with its timeout) against the trusted cancellation token.
+    // If the parent scope is cancelled, the loop returns a Cancelled error and
+    // emits a Cancelled progress event instead of running to its own timeout.
+    let timeout_future = tokio::time::timeout(timeout_duration, loop_future);
+    tokio::pin!(timeout_future);
+    let cancelled = context.cancellation.cancelled();
+    tokio::pin!(cancelled);
+
+    tokio::select! {
+        biased;
+        _ = &mut cancelled => {
+            // Push a terminal Error event so the focus-view timeline shows the
+            // cancellation, then snapshot the accumulated state.
+            {
+                let mut log = action_log.lock().unwrap();
+                log.push(SubagentEvent {
+                    event_type: SubagentEventType::Error {
+                        message: "Subagent cancelled by parent scope".to_string(),
+                        error_type: ErrorType::Cancelled,
+                    },
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                });
+            }
+            let accumulated_events = action_log.lock().unwrap().clone();
+            if let Some(ref cb) = on_progress {
+                cb(SubagentProgress {
+                    node_id: trace_id.to_string(),
+                    parent_id: None,
+                    label: String::new(),
+                    status: SubagentStatus::Cancelled,
+                    round: None,
+                    max_rounds: Some(max_rounds),
+                    current_tool: None,
+                    current_params: current_params_val.lock().unwrap().clone(),
+                    action_log: accumulated_events.clone(),
+                    text_snapshot: text_snapshot.lock().unwrap().clone(),
+                    started_at: started_at_ms,
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                    metadata: Some(SubagentMetadata {
+                        token_count: None,
+                        error: Some("Subagent cancelled by parent scope".to_string()),
+                        depends_on: vec![],
+                    }),
+                    progress_delta: None,
+                    token_budget_k: None,
+                    cumulative_tokens: *cumulative_tokens.lock().unwrap() as u64,
+                    error_details: Some(ErrorInfo {
+                        error_type: ErrorType::Cancelled,
+                        message: "Subagent cancelled by parent scope".to_string(),
+                        last_tool: None,
+                        last_params: None,
+                        round: 0,
+                        retryable: false,
+                    }),
+                    events: accumulated_events,
+                    messages: Vec::new(),
+                });
+            }
+            tracing::info!(
+                trace_id = trace_id,
+                elapsed_secs = start.elapsed().as_secs(),
+                "Subagent: cancelled by parent scope"
+            );
+            Err(subagent_error(
+                "Subagent cancelled by parent scope".to_string(),
+                ErrorType::Cancelled,
+                &text_snapshot,
+            ))
+        }
+        result = &mut timeout_future => match result {
+            Ok(inner) => inner,
+            Err(_elapsed) => {
             // Push a terminal Error event so the focus-view timeline shows the
             // timeout instead of ending abruptly, then snapshot the accumulated
             // state. The Mutexes survive because they live outside loop_future.
@@ -801,6 +878,7 @@ pub async fn run_subagent_loop(
                 &text_snapshot,
             ))
         }
+        },
     }
 }
 

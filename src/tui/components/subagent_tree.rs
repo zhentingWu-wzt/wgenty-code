@@ -1,12 +1,16 @@
 //! SubagentTree — in-memory tree state for subagent execution progress.
 
 use crate::agent::progress::{SubagentProgress, SubagentStatus};
+use crate::daemon::models::LocalAgentViewResponse;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Default)]
 pub struct SubagentTree {
     pub root_id: Option<String>,
     pub nodes: HashMap<String, SubagentNode>,
+    /// Current scoped local view (self + direct children). When set, this
+    /// is the authoritative data source. When None, legacy nodes are used.
+    pub local_view: Option<LocalAgentViewResponse>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +52,108 @@ impl SubagentTree {
         }
     }
 
+    /// Replaces the tree with the given scoped local view. Previous layer
+    /// nodes are removed; only self + direct children populate the tree.
+    pub fn replace_local(&mut self, view: LocalAgentViewResponse) {
+        self.nodes.clear();
+        self.root_id = Some(view.self_view.agent_id.clone());
+        let child_ids: Vec<String> = view.children.iter().map(|c| c.agent_id.clone()).collect();
+        self.nodes.insert(
+            view.self_view.agent_id.clone(),
+            SubagentNode {
+                progress: SubagentProgress {
+                    node_id: view.self_view.agent_id.clone(),
+                    parent_id: None,
+                    label: String::new(),
+                    status: view.self_view.status.into(),
+                    ..self
+                        .nodes
+                        .values()
+                        .next()
+                        .map(|n| n.progress.clone())
+                        .unwrap_or_else(|| SubagentProgress {
+                            node_id: String::new(),
+                            parent_id: None,
+                            label: String::new(),
+                            status: SubagentStatus::Pending,
+                            round: None,
+                            max_rounds: None,
+                            current_tool: None,
+                            current_params: None,
+                            action_log: Vec::new(),
+                            text_snapshot: None,
+                            started_at: 0,
+                            elapsed_ms: 0,
+                            metadata: None,
+                            progress_delta: None,
+                            token_budget_k: None,
+                            cumulative_tokens: 0,
+                            error_details: None,
+                            events: Vec::new(),
+                            messages: Vec::new(),
+                        })
+                },
+                children: child_ids,
+            },
+        );
+        for child in &view.children {
+            self.nodes.insert(
+                child.agent_id.clone(),
+                SubagentNode {
+                    progress: SubagentProgress {
+                        node_id: child.agent_id.clone(),
+                        parent_id: Some(view.self_view.agent_id.clone()),
+                        label: child.label.clone(),
+                        status: child.status.into(),
+                        ..self
+                            .nodes
+                            .values()
+                            .next()
+                            .map(|n| n.progress.clone())
+                            .unwrap_or_else(|| SubagentProgress {
+                                node_id: String::new(),
+                                parent_id: None,
+                                label: String::new(),
+                                status: SubagentStatus::Pending,
+                                round: None,
+                                max_rounds: None,
+                                current_tool: None,
+                                current_params: None,
+                                action_log: Vec::new(),
+                                text_snapshot: None,
+                                started_at: 0,
+                                elapsed_ms: 0,
+                                metadata: None,
+                                progress_delta: None,
+                                token_budget_k: None,
+                                cumulative_tokens: 0,
+                                error_details: None,
+                                events: Vec::new(),
+                                messages: Vec::new(),
+                            })
+                    },
+                    children: Vec::new(),
+                },
+            );
+        }
+        self.local_view = Some(view);
+    }
+
+    /// Returns sorted selectable node ids (self + direct children).
+    pub fn selectable_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .nodes
+            .values()
+            .map(|n| n.progress.node_id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    pub fn contains(&self, node_id: &str) -> bool {
+        self.nodes.contains_key(node_id)
+    }
+
     pub fn count_by_status(&self, status: SubagentStatus) -> usize {
         self.real_node_list()
             .iter()
@@ -56,10 +162,13 @@ impl SubagentTree {
             .count()
     }
 
-    /// Number of currently active (Running + Pending) subagent nodes.
+    /// Number of nonterminal subagent nodes.
     pub fn active_count(&self) -> usize {
-        self.count_by_status(SubagentStatus::Running)
-            + self.count_by_status(SubagentStatus::Pending)
+        self.real_node_list()
+            .iter()
+            .filter_map(|id| self.nodes.get(id))
+            .filter(|node| !node.progress.status.is_terminal())
+            .count()
     }
 
     /// Number of successfully completed subagent nodes.
@@ -186,12 +295,7 @@ impl SubagentTree {
         self.real_node_list()
             .iter()
             .filter_map(|id| self.nodes.get(id))
-            .all(|n| {
-                matches!(
-                    n.progress.status,
-                    SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
-                )
-            })
+            .all(|node| node.progress.status.is_terminal())
     }
 
     pub fn clear(&mut self) {
@@ -199,7 +303,7 @@ impl SubagentTree {
         self.nodes.clear();
     }
 
-    /// Clear the tree only when no subagents are still active (Running/Pending).
+    /// Clear the tree only when all subagents are terminal.
     ///
     /// Background subagents (task tool `background` mode) outlive the main
     /// turn — they are spawned via `tokio::spawn` and the main turn returns
@@ -467,6 +571,29 @@ mod tests {
     }
 
     #[test]
+    fn replace_local_preserves_child_label_for_selector() {
+        let mut tree = SubagentTree::default();
+        tree.replace_local(crate::daemon::models::LocalAgentViewResponse {
+            self_view: crate::daemon::models::SelfAgentResponse {
+                agent_id: "root".to_string(),
+                status: crate::agent::AgentLifecycleStatus::Running,
+            },
+            children: vec![crate::daemon::models::DirectChildResponse {
+                agent_id: "child".to_string(),
+                status: crate::agent::AgentLifecycleStatus::Running,
+                label: "inspect selector labels".to_string(),
+                summary: None,
+                navigation_capability: "capability".to_string(),
+            }],
+        });
+
+        assert_eq!(
+            tree.nodes["child"].progress.label,
+            "inspect selector labels"
+        );
+    }
+
+    #[test]
     fn test_clear_if_idle_preserves_active_subagent() {
         // A background subagent is still Running when the next turn starts.
         let mut tree = SubagentTree::default();
@@ -484,6 +611,27 @@ mod tests {
     }
 
     #[test]
+    fn test_active_count_and_clear_if_idle_cover_every_nonterminal_status() {
+        for status in [
+            SubagentStatus::Pending,
+            SubagentStatus::Running,
+            SubagentStatus::WaitingForChildren,
+            SubagentStatus::Finalizing,
+            SubagentStatus::Cancelling,
+        ] {
+            let mut tree = SubagentTree::default();
+            tree.upsert(make_progress("active", None, status.clone()));
+
+            assert_eq!(tree.active_count(), 1, "{status:?} must count as active");
+            assert!(
+                !tree.clear_if_idle(),
+                "{status:?} must prevent the tree from being cleared"
+            );
+            assert!(tree.nodes.contains_key("active"));
+        }
+    }
+
+    #[test]
     fn test_clear_if_idle_clears_when_only_terminal_remain() {
         // Previous turn's foreground subagents are Completed; no active remain.
         let mut tree = SubagentTree::default();
@@ -496,6 +644,21 @@ mod tests {
         );
         assert!(tree.nodes.is_empty(), "terminal nodes must be cleared");
         assert!(tree.root_id.is_none());
+    }
+
+    #[test]
+    fn test_clear_if_idle_clears_each_terminal_status() {
+        for status in [
+            SubagentStatus::Completed,
+            SubagentStatus::Failed,
+            SubagentStatus::Cancelled,
+        ] {
+            let mut tree = SubagentTree::default();
+            tree.upsert(make_progress("terminal", None, status.clone()));
+
+            assert!(tree.clear_if_idle(), "{status:?} must allow clearing");
+            assert!(tree.is_empty());
+        }
     }
 
     #[test]
