@@ -376,3 +376,23 @@ mod tests {
         assert_eq!(state.visible_matches().len(), 1);
     }
 }
+
+// ── Scoped agent navigation history (Task 14) ────────────────────────────────
+
+/// One frame in the scoped agent navigation stack: the currently loaded view
+/// plus which entry is selected (0 for self, 1+ for direct children).
+#[derive(Debug, Clone)]
+pub struct AgentViewFrame {
+    pub view: LocalAgentViewResponse,
+    pub selected: usize,
+    pub breadcrumb_label: String,
+}
+
+/// Owned navigation state for capability-driven agent tree traversal. The
+/// TUI starts at the root view and pushes frames as the user descends into
+/// direct children via their navigation capability.
+#[derive(Debug, Clone, Default)]
+pub struct AgentNavigationState {
+    pub current: Option<AgentViewFrame>,
+    pub back_stack: Vec<AgentViewFrame>,
+}

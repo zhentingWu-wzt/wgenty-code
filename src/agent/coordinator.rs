@@ -1829,3 +1829,78 @@ mod tests {
         ));
     }
 }
+
+/// Describes the result of a restart recovery pass over the coordinator's
+/// in-memory store. Non-terminal scopes left over from a previous daemon
+/// run cannot be resumed without their task handles and cancellation scopes;
+/// this reports how many were cancelled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryReport {
+    pub cancelled_scopes: usize,
+    pub cancelled_subtrees: usize,
+}
+
+impl AgentCoordinator {
+    /// Scans the store for non-terminal scopes, groups them into affected
+    /// subtrees, and marks every affected scope `Cancelled` with an internal
+    /// `runtime_restarted` reason. Must be called after the coordinator is
+    /// constructed but before routes accept requests. Returns aggregate counts
+    /// only; the daemon must not expose hidden IDs from the report.
+    pub async fn recover_non_terminal_scopes(&self) -> Result<RecoveryReport, CoordinatorError> {
+        // Walk known scope states to find non-terminal records.
+        let mut to_scan: Vec<(SessionId, AgentId)> = Vec::new();
+        {
+            let scopes = self.scopes.read().await;
+            for ((_sid, aid), state) in scopes.iter() {
+                if !state.status.is_terminal() {
+                    to_scan.push((_sid.clone(), aid.clone()));
+                }
+            }
+        }
+        // BFS the affected subtree from each non-terminal scope.
+        let mut affected: Vec<(SessionId, AgentId)> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut i = 0;
+        while i < to_scan.len() {
+            let (sid, aid) = (&to_scan[i].0, &to_scan[i].1);
+            if seen.insert((sid.clone(), aid.clone())) {
+                affected.push((sid.clone(), aid.clone()));
+                if let Ok(desc) = self.store.descendants(sid, aid).await {
+                    for d in &desc {
+                        if !d.status.is_terminal()
+                            && seen.insert((d.session_id.clone(), d.agent_id.clone()))
+                        {
+                            to_scan.push((d.session_id.clone(), d.agent_id.clone()));
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+        // Deduplicate and persist Cancelled.
+        affected.sort_by(|a, b| {
+            a.0.as_str()
+                .cmp(b.0.as_str())
+                .then(a.1.as_str().cmp(b.1.as_str()))
+        });
+        affected.dedup();
+        let mut cancelled_subtrees = 0usize;
+        for (sid, aid) in &affected {
+            let _ = self
+                .store
+                .update_status(sid, aid, AgentLifecycleStatus::Cancelled)
+                .await;
+            // Release any scope-level permit held by these records.
+            let mut scopes = self.scopes.write().await;
+            if let Some(state) = scopes.get_mut(&(sid.clone(), aid.clone())) {
+                state.status = AgentLifecycleStatus::Cancelled;
+                state.permit.take();
+            }
+            cancelled_subtrees += 1;
+        }
+        Ok(RecoveryReport {
+            cancelled_scopes: affected.len(),
+            cancelled_subtrees,
+        })
+    }
+}

@@ -238,14 +238,8 @@ impl InMemoryAgentStore {
     /// Returns all descendants of `root` within `session` (exclusive of root).
     ///
     /// This is crate-private and reserved for coordinator lifecycle
-    /// management. It must never be exposed to agent-facing read paths.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "used by the agent coordinator introduced in Task 3"
-        )
-    )]
+    /// management (recovery, cancellation). It must never be exposed to
+    /// agent-facing read paths.
     pub(crate) async fn descendants(
         &self,
         session: &SessionId,

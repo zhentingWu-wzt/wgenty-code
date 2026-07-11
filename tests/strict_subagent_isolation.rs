@@ -186,3 +186,41 @@ async fn transcript_and_result_reads_require_direct_visibility() {
         .await
         .is_err());
 }
+
+#[test]
+fn compatibility_guard_no_reserved_identity_reads() {
+    // Scan identity-sensitive source files for model-input reads of
+    // `_session_id`, `_agent_id`, `_parent_id`, or `_subagent_depth`.
+    // These fields must never influence identity, authorization, depth, or
+    // cancellation.  Comment-only mentions are fine.
+    use std::fs;
+    let files = &[
+        "src/tools/meta/task.rs",
+        "src/tools/meta/rlm/mod.rs",
+        "src/tools/meta/run_script.rs",
+        "src/daemon/handlers.rs",
+        "src/teams/subagent_loop.rs",
+    ];
+    for file in files {
+        let content = match fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("//") || trimmed.starts_with("*") {
+                continue;
+            }
+            // Model input reads for these fields are illegal.
+            assert!(
+                !trimmed.contains("_session_id\"")
+                    && !trimmed.contains("_agent_id\"")
+                    && !trimmed.contains("_parent_id\"")
+                    && !trimmed.contains("_subagent_depth\""),
+                "{} has reserved-field read: {}",
+                file,
+                trimmed
+            );
+        }
+    }
+}

@@ -1203,17 +1203,17 @@ git commit -m "refactor(tui): render scoped agent local views"
 - Modify: `src/tui/components/subagent_tree.rs`
 - Modify: `tests/strict_subagent_isolation.rs`
 
-- [ ] **Step 1: Write navigation-history tests**
+- [x] **Step 1: Write navigation-history tests**
 
 Test root-to-child-to-grandchild navigation using server-issued capabilities. Assert each loaded view contains exactly selected self plus direct children, back restores the previous cached trusted UI view, and no ancestor ID is added to the selected agent's `messages` or transcript.
 
-- [ ] **Step 2: Run navigation tests to verify they fail**
+- [x] **Step 2: Run navigation tests to verify they fail**
 
 Run: `cargo test --test strict_subagent_isolation tui_`
 
 Expected: FAIL because focus selection still traverses a complete tree.
 
-- [ ] **Step 3: Implement UI-owned navigation history**
+- [x] **Step 3: Implement UI-owned navigation history**
 
 Add:
 
@@ -1233,17 +1233,17 @@ pub struct AgentNavigationState {
 
 The capability remains inside `DirectChildResponse` in UI memory. Opening a child calls `navigate_agent_view`, pushes the current frame, and replaces it with the response. Back pops a frame locally. Breadcrumb labels are display-only and must never be appended to model messages.
 
-- [ ] **Step 4: Restrict focus selection to current direct children**
+- [x] **Step 4: Restrict focus selection to current direct children**
 
 Replace `visible_node_ids()` and selector-position calculations based on `real_node_list()` with the current local view's stable list. A focus action on self opens its transcript locally; a focus action on a direct child uses its capability. No raw grandchild ID can be selected before navigating into its parent view.
 
-- [ ] **Step 5: Verify navigation and information flow**
+- [x] **Step 5: Verify navigation and information flow**
 
 Run: `cargo fmt && cargo test --test strict_subagent_isolation tui_ && cargo test tui::components --lib`
 
 Expected: PASS, including assertions that focused child model messages contain no ancestor, sibling, or other-branch identifiers.
 
-- [ ] **Step 6: Commit capability navigation**
+- [x] **Step 6: Commit capability navigation**
 
 ```bash
 git add src/tui/app/types.rs src/tui/app/mod.rs src/tui/app/event.rs src/tui/app/event_key.rs src/tui/components/subagent_focus_view.rs src/tui/components/subagent_tree.rs tests/strict_subagent_isolation.rs
@@ -1258,17 +1258,17 @@ git commit -m "feat(tui): navigate agent hierarchy by capability"
 - Modify: `src/daemon/state.rs`
 - Modify: `tests/strict_subagent_isolation.rs`
 
-- [ ] **Step 1: Write recovery and uncooperative-child tests**
+- [x] **Step 1: Write recovery and uncooperative-child tests**
 
 Seed records in `Pending`, `Running`, `WaitingForChildren`, `Finalizing`, and `Cancelling`, simulate a daemon restart with no task handles, and assert the complete affected subtrees become `Cancelled` with internal reason `runtime_restarted`. Add a child future that ignores cancellation; after the configured shutdown timeout, assert it is aborted, terminal cleanup completes, and its permit is released.
 
-- [ ] **Step 2: Run recovery tests to verify they fail**
+- [x] **Step 2: Run recovery tests to verify they fail**
 
 Run: `cargo test --test strict_subagent_isolation recovery_`
 
 Expected: FAIL because restart recovery and forced abort are not wired.
 
-- [ ] **Step 3: Implement recovery queries and coordinator startup cleanup**
+- [x] **Step 3: Implement recovery queries and coordinator startup cleanup**
 
 Add a store query by non-terminal status and a coordinator method:
 
@@ -1284,17 +1284,17 @@ pub async fn recover_non_terminal_scopes(&self) -> Result<RecoveryReport, Coordi
 
 Group records into roots of affected subtrees, mark each subtree `Cancelling`, then persist descendants bottom-up as `Cancelled`. Do not reconstruct task handles or resume model loops. Return counts only in `RecoveryReport`; do not expose hidden IDs through daemon responses.
 
-- [ ] **Step 4: Wire recovery into DaemonState initialization**
+- [x] **Step 4: Wire recovery into DaemonState initialization**
 
 Run recovery after the canonical store is loaded and before routes accept requests. Add `.context("recovering non-terminal agent scopes after daemon restart")` at this application boundary.
 
-- [ ] **Step 5: Verify recovery and permit cleanup**
+- [x] **Step 5: Verify recovery and permit cleanup**
 
 Run: `cargo fmt && cargo test --test strict_subagent_isolation recovery_ && cargo test agent::coordinator::tests --lib`
 
 Expected: PASS; no recovered record remains non-terminal and all permits are available.
 
-- [ ] **Step 6: Commit recovery support**
+- [x] **Step 6: Commit recovery support**
 
 ```bash
 git add src/agent/coordinator.rs src/agent/store.rs src/daemon/state.rs tests/strict_subagent_isolation.rs
@@ -1311,25 +1311,25 @@ git commit -m "feat(agent): recover interrupted subagent scopes"
 - Modify: `src/tools/meta/rlm/mod.rs`
 - Modify: `src/daemon/handlers.rs`
 
-- [ ] **Step 1: Add a source-level compatibility guard test**
+- [x] **Step 1: Add a source-level compatibility guard test**
 
 Add an integration assertion that scans identity-sensitive source files and fails if they contain model-input reads for `_session_id`, `_agent_id`, `_parent_id`, or `_subagent_depth`, or expose a global agent listing method.
 
-- [ ] **Step 2: Run the guard to verify it fails**
+- [x] **Step 2: Run the guard to verify it fails**
 
 Run: `cargo test --test strict_subagent_isolation compatibility_`
 
 Expected: FAIL while old compatibility code or flat listing remains.
 
-- [ ] **Step 3: Retire the flat AgentsService hierarchy path**
+- [x] **Step 3: Retire the flat AgentsService hierarchy path**
 
 Remove or reduce `AgentSession`/`AgentsService` so no API can globally list subagents. Migrate any still-needed service construction to `AgentCoordinator`. Preserve unrelated chat-session functionality; this change concerns agent hierarchy only.
 
-- [ ] **Step 4: Remove reserved identity handling**
+- [x] **Step 4: Remove reserved identity handling**
 
 Delete reads, writes, and schema mentions for all four reserved identity fields in task, delegate, daemon, and nested loop paths. Unknown underscore-prefixed fields may remain ordinary ignored JSON, but they must never influence identity, authorization, depth, or cancellation.
 
-- [ ] **Step 5: Verify compatibility cleanup**
+- [x] **Step 5: Verify compatibility cleanup**
 
 Run:
 
@@ -1341,7 +1341,7 @@ cargo check --all-targets
 
 Expected: the search returns no identity-boundary matches, and both Cargo commands PASS.
 
-- [ ] **Step 6: Commit compatibility cleanup**
+- [x] **Step 6: Commit compatibility cleanup**
 
 ```bash
 git add src/teams/subagent.rs src/teams/mod.rs src/services/mod.rs src/tools/meta/task.rs src/tools/meta/rlm/mod.rs src/daemon/handlers.rs tests/strict_subagent_isolation.rs
@@ -1355,7 +1355,7 @@ git commit -m "refactor(agent): remove flat hierarchy compatibility"
 - Modify: `WGENTY.md`
 - Modify: `CHANGELOG.md`
 
-- [ ] **Step 1: Locate stale claims**
+- [x] **Step 1: Locate stale claims**
 
 Run:
 
@@ -1365,7 +1365,7 @@ rg -n '_subagent_depth|background subagent|background.*continues|full tree|subag
 
 Expected: output identifies descriptions of caller-provided depth, detached background children, or whole-tree visibility.
 
-- [ ] **Step 2: Document the implemented contracts**
+- [x] **Step 2: Document the implemented contracts**
 
 State explicitly:
 
@@ -1380,13 +1380,13 @@ State explicitly:
 
 Add a Conventional Changelog entry under the current unreleased section describing the security boundary and the behavior change.
 
-- [ ] **Step 3: Verify documentation consistency**
+- [x] **Step 3: Verify documentation consistency**
 
 Run the search from Step 1 again.
 
 Expected: remaining matches describe only trusted runtime depth, scoped background semantics, or historical documents explicitly labeled as historical.
 
-- [ ] **Step 4: Commit documentation**
+- [x] **Step 4: Commit documentation**
 
 ```bash
 git add README.md WGENTY.md CHANGELOG.md
@@ -1398,25 +1398,25 @@ git commit -m "docs(agent): describe strict subagent isolation"
 **Files:**
 - Verify: all files changed by Tasks 1-17
 
-- [ ] **Step 1: Run formatting check**
+- [x] **Step 1: Run formatting check**
 
 Run: `cargo fmt -- --check`
 
 Expected: PASS with no diff.
 
-- [ ] **Step 2: Run Clippy with warnings denied**
+- [x] **Step 2: Run Clippy with warnings denied**
 
 Run: `cargo clippy --all-targets -- -D warnings`
 
 Expected: PASS with zero warnings.
 
-- [ ] **Step 3: Run the full test suite**
+- [x] **Step 3: Run the full test suite**
 
 Run: `cargo test --all`
 
 Expected: PASS, including strict visibility, structured concurrency, daemon capability, TUI navigation, transcript/result, recovery, and compatibility tests.
 
-- [ ] **Step 4: Run acceptance searches**
+- [x] **Step 4: Run acceptance searches**
 
 ```bash
 rg -n '/api/v1/subagent/progress|poll_subagent_progress|SubagentUpdate' src
@@ -1426,7 +1426,7 @@ rg -n 'AtomicUsize|POLL_INTERVAL_MS|push_subagent_result' src/tools/meta/task.rs
 
 Expected: no matches.
 
-- [ ] **Step 5: Build release and check repository performance constraints**
+- [x] **Step 5: Build release and check repository performance constraints**
 
 Run:
 
@@ -1438,12 +1438,12 @@ ls -lh ./target/release/wgenty_code
 
 Expected: release build succeeds; startup regression is at most 5%, base memory regression is at most 2%, and binary growth is at most 500KB compared with the pre-change baseline recorded before execution begins.
 
-- [ ] **Step 6: Inspect the final diff for information leaks**
+- [x] **Step 6: Inspect the final diff for information leaks**
 
 Run: `git diff develop...HEAD -- src/agent src/tools/meta src/daemon src/tui src/transcript tests`
 
 Expected: no model-visible response, transcript, log message, or local projection contains capabilities, ancestor metadata, sibling/grandchild records, or full-session maps.
 
-- [ ] **Step 7: Record final verification**
+- [x] **Step 7: Record final verification**
 
 Add the exact command results and measured release deltas to the eventual PR description. Do not create a separate verification-only commit unless verification required source changes; if it did, commit those fixes with the narrowest applicable Conventional Commit type.
