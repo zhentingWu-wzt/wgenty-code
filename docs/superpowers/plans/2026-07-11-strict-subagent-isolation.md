@@ -688,7 +688,7 @@ git commit -m "feat(tools): propagate trusted agent context"
 - Modify: `src/tools/meta/task.rs`
 - Modify: `tests/refactor_e2e_test.rs`
 
-- [ ] **Step 1: Add a nested-tool context regression test**
+- [x] **Step 1: Add a nested-tool context regression test**
 
 In `tests/refactor_e2e_test.rs`, update the fake registry with a contextual probe and assert a nested tool invocation observes the child context, not the root context or forged JSON values.
 
@@ -709,13 +709,13 @@ run_subagent_loop(
 ).await
 ```
 
-- [ ] **Step 2: Run the regression test to verify it fails**
+- [x] **Step 2: Run the regression test to verify it fails**
 
 Run: `cargo test --test refactor_e2e_test`
 
 Expected: FAIL because `run_subagent_loop` does not accept execution context.
 
-- [ ] **Step 3: Change the loop signature and tool call path**
+- [x] **Step 3: Change the loop signature and tool call path**
 
 Add `context: &AgentExecutionContext` as the third parameter to `run_subagent_loop`. For each model tool call, construct:
 
@@ -728,7 +728,7 @@ let tool_context = ToolContext {
 
 Replace `tool_registry.execute(tool_name, args)` with `tool_registry.execute_with_context(&tool_context, tool_name, args)`. Wrap the loop future in `tokio::select!` so `context.cancellation.cancelled()` returns a `SubagentError` categorized as cancelled and emits `SubagentStatus::Cancelled`.
 
-- [ ] **Step 4: Update every direct call site**
+- [x] **Step 4: Update every direct call site**
 
 Update calls in:
 
@@ -739,13 +739,13 @@ Update calls in:
 
 Each child loop must receive a coordinator-created child context. Temporary root-only utilities may receive a daemon/runtime-created root context, never a context synthesized from tool arguments.
 
-- [ ] **Step 5: Verify all loop callers and cancellation tests**
+- [x] **Step 5: Verify all loop callers and cancellation tests**
 
 Run: `cargo fmt && cargo test --test refactor_e2e_test && cargo check --all-targets`
 
 Expected: PASS and `rg -n "run_subagent_loop\(" src tests` shows every call with a context argument.
 
-- [ ] **Step 6: Commit loop propagation**
+- [x] **Step 6: Commit loop propagation**
 
 ```bash
 git add src/teams/subagent_loop.rs src/tools/meta/rlm/pipeline.rs src/tools/meta/run_script.rs src/tools/meta/task.rs tests/refactor_e2e_test.rs

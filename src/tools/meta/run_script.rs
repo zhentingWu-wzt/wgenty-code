@@ -81,9 +81,16 @@ impl Tool for RunScriptTool {
                 let n = cnt.fetch_add(1, Ordering::Relaxed);
                 if n >= 10 { return "[ERROR] Max 10 subagent calls per script".to_string(); }
                 let client = ApiClient::new(settings.clone());
+                // Temporary root context: Task 9 wires run-script nested loops to
+                // the caller's trusted AgentExecutionContext instead of synthesizing
+                // one here. The session is derived from trusted settings, not model JSON.
+                let root_context =
+                    crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new(
+                        "run_script",
+                    ));
                 rt.block_on(async {
                     run_subagent_loop(
-                        &client, &reg,
+                        &client, &reg, &root_context,
                         "You are a sub-agent in a Rhai script. Execute the task precisely and return a concise result.",
                         &prompt, &tools, 10, 120, None, None,
                     ).await.unwrap_or_else(|e| format!("[ERROR] {}", e))
