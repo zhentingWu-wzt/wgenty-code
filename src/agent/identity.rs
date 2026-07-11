@@ -91,19 +91,27 @@ mod tests {
     #[test]
     fn child_context_is_derived_from_parent() {
         let root = AgentExecutionContext::root(SessionId::new("session-a"));
-        let child = root.child(AgentId::new("child-a"));
+        let child_id = AgentId::new("child-a");
+        let child = root.child(child_id.clone());
 
         assert_eq!(child.session_id, root.session_id);
+        assert_eq!(child.agent_id, child_id);
         assert_eq!(child.parent_id.as_ref(), Some(&root.agent_id));
         assert_eq!(child.depth, 1);
         assert!(!child.cancellation.is_cancelled());
+
+        root.cancellation.cancel();
+
+        assert!(child.cancellation.is_cancelled());
     }
 
     #[test]
     fn only_completed_failed_and_cancelled_are_terminal() {
         assert!(!AgentLifecycleStatus::Pending.is_terminal());
+        assert!(!AgentLifecycleStatus::Running.is_terminal());
         assert!(!AgentLifecycleStatus::WaitingForChildren.is_terminal());
         assert!(!AgentLifecycleStatus::Finalizing.is_terminal());
+        assert!(!AgentLifecycleStatus::Cancelling.is_terminal());
         assert!(AgentLifecycleStatus::Completed.is_terminal());
         assert!(AgentLifecycleStatus::Failed.is_terminal());
         assert!(AgentLifecycleStatus::Cancelled.is_terminal());
