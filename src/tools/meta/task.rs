@@ -567,6 +567,8 @@ impl Tool for TaskTool {
                 let result = crate::tools::meta::rlm::run_rlm_pipeline(
                     &self.settings,
                     tool_registry.clone(),
+                    self.coordinator.clone(),
+                    &child_context,
                     description,
                     prompt,
                     Some((self.progress_store.clone(), session_id.clone())),
