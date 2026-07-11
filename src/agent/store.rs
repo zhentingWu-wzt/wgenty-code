@@ -276,13 +276,6 @@ impl InMemoryAgentStore {
     }
 
     /// Updates the lifecycle status of an agent.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "used by the agent coordinator introduced in Task 3"
-        )
-    )]
     pub(crate) async fn update_status(
         &self,
         session: &SessionId,
@@ -295,6 +288,23 @@ impl InMemoryAgentStore {
             .get_mut(&(session.clone(), agent.clone()))
             .ok_or_else(|| StoreError::Invariant(format!("agent not found: {}", agent)))?;
         record.status = status;
+        record.updated_at = Utc::now();
+        Ok(())
+    }
+
+    /// Sets the terminal summary for an agent.
+    pub(crate) async fn set_summary(
+        &self,
+        session: &SessionId,
+        agent: &AgentId,
+        summary: ChildSummary,
+    ) -> Result<(), StoreError> {
+        let mut state = self.state.write().await;
+        let record = state
+            .records
+            .get_mut(&(session.clone(), agent.clone()))
+            .ok_or_else(|| StoreError::Invariant(format!("agent not found: {}", agent)))?;
+        record.summary = Some(summary);
         record.updated_at = Utc::now();
         Ok(())
     }

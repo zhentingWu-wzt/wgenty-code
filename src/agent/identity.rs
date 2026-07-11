@@ -72,13 +72,6 @@ impl AgentExecutionContext {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "used by the agent coordinator introduced in Task 3"
-        )
-    )]
     pub(crate) fn child(&self, agent_id: AgentId) -> Self {
         Self {
             session_id: self.session_id.clone(),
