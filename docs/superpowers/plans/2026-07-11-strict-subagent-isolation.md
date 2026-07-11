@@ -910,17 +910,17 @@ git commit -m "feat(agent): scope asynchronous child execution"
 - Modify: `src/tools/meta/run_script.rs`
 - Modify: `src/tools/meta/task.rs`
 
-- [ ] **Step 1: Write RLM hierarchy parity tests**
+- [x] **Step 1: Write RLM hierarchy parity tests**
 
 Add tests that run an RLM plan with two parallel subtasks and assert both records are direct children of the RLM caller, use caller depth plus one, consume coordinator permits, and are joined before aggregation completes. Add a run-script test asserting its nested loop receives the caller context rather than a synthetic depth zero context.
 
-- [ ] **Step 2: Run focused tests to verify they fail**
+- [x] **Step 2: Run focused tests to verify they fail**
 
 Run: `cargo test tools::meta::rlm tools::meta::run_script --lib`
 
 Expected: FAIL because RLM still creates UUID progress nodes and raw Tokio tasks outside coordinator ownership.
 
-- [ ] **Step 3: Change RLM pipeline inputs and executor phase**
+- [x] **Step 3: Change RLM pipeline inputs and executor phase**
 
 Use this signature:
 
@@ -938,17 +938,17 @@ pub async fn run_rlm_pipeline(
 
 For every planned subtask, reserve a coordinator child and register the loop handle. Replace direct `tokio::spawn` ownership and direct progress-map writes. Keep dependency-level scheduling, but join through coordinator handles before aggregation. Hide `task` when the child context reaches max depth; coordinator remains the enforcement boundary.
 
-- [ ] **Step 4: Migrate delegate and run-script contextual paths**
+- [x] **Step 4: Migrate delegate and run-script contextual paths**
 
 Make identity-sensitive delegate execution reject missing `ToolContext`, pass `context.agent` into `run_rlm_pipeline`, and pass the trusted context through run-script nested tool execution. Remove any `_session_id` or `_subagent_depth` compatibility reads in these files.
 
-- [ ] **Step 5: Verify semantic parity**
+- [x] **Step 5: Verify semantic parity**
 
 Run: `cargo fmt && cargo test tools::meta::rlm tools::meta::run_script --lib && cargo check --all-targets`
 
 Expected: PASS and `rg -n 'parent_id:|Uuid::new_v4|tokio::spawn' src/tools/meta/rlm/pipeline.rs` has no hierarchy-ownership matches.
 
-- [ ] **Step 6: Commit RLM migration**
+- [x] **Step 6: Commit RLM migration**
 
 ```bash
 git add src/tools/meta/rlm/mod.rs src/tools/meta/rlm/pipeline.rs src/tools/meta/run_script.rs src/tools/meta/task.rs
