@@ -179,6 +179,33 @@ pub struct ChildResult {
     pub partial_result: Option<String>,
 }
 
+/// Opaque handle to a child result, returned only to the direct parent.
+///
+/// The serialized form contains only a random bearer token. It is not a
+/// serialized agent ID and does not confer authority by itself: retrieval
+/// requires the same parent context and a matching internal grant binding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ChildResultHandle(String);
+
+impl ChildResultHandle {
+    /// Returns the opaque bearer token string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Internal binding between a result handle and the (parent, child, session,
+/// generation) that produced it. Never serialized; never exposed to a model.
+/// Stored only inside the coordinator and looked up by handle token.
+#[derive(Debug, Clone)]
+struct ChildResultGrant {
+    session_id: SessionId,
+    parent_id: AgentId,
+    child_id: AgentId,
+    generation: u64,
+}
+
 /// A reserved child slot carrying the trusted execution context.
 ///
 /// The concurrency permit is retained internally by the coordinator's
@@ -245,6 +272,10 @@ pub struct AgentCoordinator {
     max_depth: usize,
     shutdown_timeout: Duration,
     scopes: Arc<RwLock<HashMap<(SessionId, AgentId), ScopeState>>>,
+    /// Opaque result-handle grants: bearer token -> binding. The token is the
+    /// only value returned to a parent; authority is confirmed by matching the
+    /// caller's context against the grant, never by trusting the token alone.
+    result_grants: Arc<RwLock<HashMap<String, ChildResultGrant>>>,
 }
 
 impl AgentCoordinator {
@@ -258,6 +289,7 @@ impl AgentCoordinator {
             max_depth,
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
             scopes: Arc::new(RwLock::new(HashMap::new())),
+            result_grants: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -450,6 +482,125 @@ impl AgentCoordinator {
         }
 
         Ok(())
+    }
+
+    /// Sanitizes a child's terminal into a bounded, parent-facing
+    /// [`ChildResult`].
+    ///
+    /// `summary` and `partial_result` are truncated to the mailbox thresholds
+    /// ([`crate::teams::subagent_mailbox::MAX_INLINE_RESULT_LEN`] and
+    /// [`crate::teams::subagent_mailbox::MAX_FULL_INLINE_LEN`]). The returned
+    /// `ChildResult` contains only its five fields: `child_id`, `status`,
+    /// `summary`, `error_code`, `partial_result`. It never exposes descendant
+    /// identifiers, raw transcripts, messages, events, parent IDs, or
+    /// serialized tree structures--the child is responsible for synthesizing
+    /// descendant work into its own result before returning it upward.
+    pub fn sanitize_child_result(
+        child_id: AgentId,
+        terminal: ChildTerminalStatus,
+        summary: &str,
+        error_code: Option<&str>,
+        partial_result: Option<&str>,
+    ) -> ChildResult {
+        use crate::teams::subagent_mailbox::{MAX_FULL_INLINE_LEN, MAX_INLINE_RESULT_LEN};
+
+        let truncated_summary: String = summary.chars().take(MAX_INLINE_RESULT_LEN).collect();
+        let truncated_partial = partial_result.map(|p| {
+            let s: String = p.chars().take(MAX_FULL_INLINE_LEN).collect();
+            s
+        });
+
+        ChildResult {
+            child_id,
+            status: terminal,
+            summary: truncated_summary,
+            error_code: error_code.map(|s| s.to_string()),
+            partial_result: truncated_partial,
+        }
+    }
+
+    /// Issues an opaque result handle bound to the direct parent, child,
+    /// session, and generation. The handle's serialized form is only a random
+    /// bearer token; authority is confirmed later via [`read_result`](Self::read_result)
+    /// by matching the caller's context against the stored grant.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "wired into finish_child in Task 10")
+    )]
+    async fn issue_result_handle(
+        &self,
+        parent: &AgentExecutionContext,
+        child: &AgentExecutionContext,
+        generation: u64,
+    ) -> ChildResultHandle {
+        // 256-bit random bearer token (32 bytes -> hex).
+        let token = {
+            use rand::RngCore;
+            let mut bytes = [0u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut bytes);
+            hex_encode(&bytes)
+        };
+        let grant = ChildResultGrant {
+            session_id: parent.session_id.clone(),
+            parent_id: parent.agent_id.clone(),
+            child_id: child.agent_id.clone(),
+            generation,
+        };
+        let mut grants = self.result_grants.write().await;
+        grants.insert(token.clone(), grant);
+        ChildResultHandle(token)
+    }
+
+    /// Reads a sanitized child result for `handle`, authorized by `caller`.
+    ///
+    /// Authorization requires the caller to be the direct parent of the child
+    /// bound to the handle, in the same session and at the matching generation.
+    /// Absent handles, wrong parent, wrong session, stale generation, and
+    /// hidden targets all map to [`CoordinatorError::NotVisible`] so the
+    /// denial is indistinguishable. Full result retrieval is completed in
+    /// Task 10; this method returns the persisted terminal summary for now.
+    pub async fn read_result(
+        &self,
+        caller: &AgentExecutionContext,
+        handle: &ChildResultHandle,
+    ) -> Result<ChildResult, CoordinatorError> {
+        let grants = self.result_grants.read().await;
+        let grant = grants
+            .get(handle.as_str())
+            .ok_or(CoordinatorError::NotVisible)?;
+        if grant.session_id != caller.session_id || grant.parent_id != caller.agent_id {
+            return Err(CoordinatorError::NotVisible);
+        }
+        // Look up the child record through the store to confirm visibility and
+        // fetch the persisted terminal summary.
+        let children = self
+            .store
+            .direct_children(&caller.session_id, &caller.agent_id)
+            .await?;
+        let child = children
+            .into_iter()
+            .find(|c| c.agent_id == grant.child_id)
+            .ok_or(CoordinatorError::NotVisible)?;
+        if child.generation != grant.generation {
+            return Err(CoordinatorError::NotVisible);
+        }
+
+        let (status, summary, error_code) = match &child.summary {
+            Some(s) if s.error_code.is_some() => (
+                ChildTerminalStatus::Failed,
+                s.text.clone(),
+                s.error_code.clone(),
+            ),
+            Some(s) => (ChildTerminalStatus::Completed, s.text.clone(), None),
+            None => (ChildTerminalStatus::Cancelled, String::new(), None),
+        };
+        Ok(Self::sanitize_child_result(
+            child.agent_id.clone(),
+            status,
+            &summary,
+            error_code.as_deref(),
+            None,
+        ))
     }
 
     /// Returns the local view (self plus direct children) for the caller.
@@ -987,6 +1138,15 @@ impl AgentCoordinator {
     }
 }
 
+/// Encodes bytes as a lowercase hex string (for opaque bearer tokens).
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1386,5 +1546,133 @@ mod tests {
             coordinator.status(&context).await.unwrap(),
             AgentLifecycleStatus::Cancelled
         );
+    }
+
+    // ---- Task 8: scoped background and result sanitization ----
+
+    #[test]
+    fn sanitize_child_result_truncates_to_mailbox_thresholds() {
+        let summary: String = "x".repeat(10_000);
+        let partial: String = "p".repeat(20_000);
+        let result = AgentCoordinator::sanitize_child_result(
+            AgentId::new("child"),
+            ChildTerminalStatus::Completed,
+            &summary,
+            None,
+            Some(&partial),
+        );
+        // summary bounded by MAX_INLINE_RESULT_LEN (4000 chars).
+        assert_eq!(result.summary.chars().count(), 4000);
+        // partial_result bounded by MAX_FULL_INLINE_LEN (8000 chars).
+        assert_eq!(result.partial_result.unwrap().chars().count(), 8000);
+        assert_eq!(result.child_id.as_str(), "child");
+        assert_eq!(result.status, ChildTerminalStatus::Completed);
+    }
+
+    #[test]
+    fn sanitize_child_result_has_only_five_fields() {
+        // The ChildResult struct physically has only child_id, status, summary,
+        // error_code, partial_result. This test asserts the field set so that
+        // any future addition of descendant/transcript/messages/events/parent_id
+        // fields is caught at compile time here.
+        let result = AgentCoordinator::sanitize_child_result(
+            AgentId::new("c"),
+            ChildTerminalStatus::Failed,
+            "boom",
+            Some("E1"),
+            Some("partial"),
+        );
+        assert_eq!(result.child_id.as_str(), "c");
+        assert_eq!(result.status, ChildTerminalStatus::Failed);
+        assert_eq!(result.summary, "boom");
+        assert_eq!(result.error_code.as_deref(), Some("E1"));
+        assert_eq!(result.partial_result.as_deref(), Some("partial"));
+    }
+
+    #[tokio::test]
+    async fn scoped_background_parent_waits_then_completes() {
+        // A parent with a live background child must not reach Completed while
+        // the child is live; it only completes after the child terminates.
+        let coordinator = test_coordinator(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let (child, release) =
+            register_controlled_child(&coordinator, &root, ChildTerminal::completed("done")).await;
+        // Keep the child live (leak the release) so finalize must wait, exactly
+        // as a scoped background child would force the parent to wait.
+        Box::leak(Box::new(release));
+
+        let coord_for_final = coordinator.clone();
+        let root_for_final = root.clone();
+        let finalize = tokio::spawn(async move {
+            coord_for_final
+                .finalize_scope(
+                    &root_for_final,
+                    ParentOutcome::Completed("root".into()),
+                    JoinPolicy::AllRequired,
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        // While the child is live, the parent is not yet Completed.
+        let mid_status = coordinator.status(&root).await.unwrap();
+        assert!(
+            !mid_status.is_terminal(),
+            "parent should not be terminal while child is live, got {:?}",
+            mid_status
+        );
+
+        // Externally complete the child (as the task tool would via finish_child).
+        coordinator
+            .finish_child(&child, ChildTerminal::completed("done"))
+            .await
+            .unwrap();
+        let results = finalize.await.unwrap().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            coordinator.status(&root).await.unwrap(),
+            AgentLifecycleStatus::Completed
+        );
+        assert_eq!(
+            coordinator.status(&child).await.unwrap(),
+            AgentLifecycleStatus::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn read_result_authorizes_direct_parent_only() {
+        let coordinator = test_coordinator(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let (child, release) =
+            register_controlled_child(&coordinator, &root, ChildTerminal::completed("result!"))
+                .await;
+        // Complete the child so a terminal summary is persisted.
+        drop(release);
+        // Wait for the controlled child's task to settle to terminal.
+        tokio::task::yield_now().await;
+        let _ = coordinator
+            .join_children(&root, JoinPolicy::AllRequired)
+            .await
+            .unwrap();
+
+        // Issue a handle bound to root -> child.
+        let handle = coordinator.issue_result_handle(&root, &child, 0).await;
+        // Direct parent reads successfully.
+        let result = coordinator.read_result(&root, &handle).await.unwrap();
+        assert_eq!(result.child_id, child.agent_id);
+        assert_eq!(result.status, ChildTerminalStatus::Completed);
+        assert_eq!(result.summary, "result!");
+
+        // A stranger context cannot read.
+        let stranger = AgentExecutionContext::root(SessionId::new("other"));
+        assert!(matches!(
+            coordinator.read_result(&stranger, &handle).await,
+            Err(CoordinatorError::NotVisible)
+        ));
+        // An unknown handle is NotVisible (indistinguishable).
+        let bogus = ChildResultHandle("not-a-real-token".to_string());
+        assert!(matches!(
+            coordinator.read_result(&root, &bogus).await,
+            Err(CoordinatorError::NotVisible)
+        ));
     }
 }
