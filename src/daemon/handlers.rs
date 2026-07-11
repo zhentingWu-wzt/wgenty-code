@@ -212,12 +212,13 @@ pub async fn execute_tool(
     tracing::info!("🔐 Daemon: policy for '{}' = {:?}", tool_name, decision);
     match decision {
         Ok(PolicyDecision::Allow) => {
-            // Build the trusted root execution context for this session. The
-            // agent identity is derived from trusted runtime state, never from
-            // model-supplied JSON. (Task 12 will route this through
-            // DaemonState::root_context and the AgentCoordinator.)
-            let root_context =
-                crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new(session_id));
+            // Build the trusted root execution context for this session. Uses
+            // the coordinator's ensure_root so the root scope is registered and
+            // the task tool can reserve children under it.
+            let root_context = state
+                .root_context(session_id)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             let tool_context = crate::agent::ToolContext {
                 agent: &root_context,
                 invocation_id: crate::agent::ToolInvocationId::new(
@@ -257,9 +258,10 @@ pub async fn execute_tool(
                         .create(&format!("before {}", tool_name))
                         .await;
                 }
-                let root_context = crate::agent::AgentExecutionContext::root(
-                    crate::agent::SessionId::new(session_id),
-                );
+                let root_context = state
+                    .root_context(session_id)
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                 let tool_context = crate::agent::ToolContext {
                     agent: &root_context,
                     invocation_id: crate::agent::ToolInvocationId::new(
