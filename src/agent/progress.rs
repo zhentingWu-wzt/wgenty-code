@@ -109,6 +109,9 @@ pub struct SubagentProgress {
 pub enum SubagentStatus {
     Pending,
     Running,
+    WaitingForChildren,
+    Finalizing,
+    Cancelling,
     Completed,
     Failed,
     Cancelled,
