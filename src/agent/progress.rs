@@ -138,6 +138,21 @@ pub enum SubagentStatus {
     Cancelled,
 }
 
+impl From<crate::agent::AgentLifecycleStatus> for SubagentStatus {
+    fn from(s: crate::agent::AgentLifecycleStatus) -> Self {
+        match s {
+            crate::agent::AgentLifecycleStatus::Pending => Self::Pending,
+            crate::agent::AgentLifecycleStatus::Running => Self::Running,
+            crate::agent::AgentLifecycleStatus::WaitingForChildren => Self::WaitingForChildren,
+            crate::agent::AgentLifecycleStatus::Finalizing => Self::Finalizing,
+            crate::agent::AgentLifecycleStatus::Cancelling => Self::Cancelling,
+            crate::agent::AgentLifecycleStatus::Completed => Self::Completed,
+            crate::agent::AgentLifecycleStatus::Failed => Self::Failed,
+            crate::agent::AgentLifecycleStatus::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
 impl SubagentStatus {
     /// Returns whether the subagent has finished and requires no further work.
     pub fn is_terminal(&self) -> bool {
