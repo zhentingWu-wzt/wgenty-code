@@ -22,7 +22,7 @@ use tracing::info;
 
 /// Start the daemon HTTP server. Blocks until the server exits.
 pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
-    let daemon_state = Arc::new(DaemonState::new(app_state));
+    let daemon_state = Arc::new(DaemonState::new(app_state).await);
 
     // Recover persisted sessions from disk so the `list_sessions` API returns
     // historical sessions instead of an empty list after a restart. The

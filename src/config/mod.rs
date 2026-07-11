@@ -18,6 +18,7 @@ pub use models::*;
 pub use prompts::*;
 pub use services::*;
 
+use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -51,8 +52,10 @@ impl Settings {
     pub fn load() -> anyhow::Result<Self> {
         let path = Self::config_path();
         if path.exists() {
-            let content = std::fs::read_to_string(&path)?;
-            Ok(serde_json::from_str(&content)?)
+            let content = std::fs::read_to_string(&path)
+                .context(format!("Failed to read config file: {}", path.display()))?;
+            Ok(serde_json::from_str(&content)
+                .context(format!("Failed to parse config file: {}", path.display()))?)
         } else {
             let s = Settings::default();
             s.save()?;
@@ -64,10 +67,14 @@ impl Settings {
     pub fn save(&self) -> anyhow::Result<()> {
         let path = Self::config_path();
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+            std::fs::create_dir_all(dir).context(format!(
+                "Failed to create config directory: {}",
+                dir.display()
+            ))?;
         }
-        let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, content)?;
+        let content = serde_json::to_string_pretty(self).context("Failed to serialize settings")?;
+        std::fs::write(&path, content)
+            .context(format!("Failed to write config file: {}", path.display()))?;
         Ok(())
     }
 

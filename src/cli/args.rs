@@ -73,9 +73,6 @@ impl Cli {
             Some(super::Commands::Skills { action }) => {
                 self.run_skills(action).await?;
             }
-            Some(super::Commands::Codegraph { action }) => {
-                self.run_codegraph(action)?;
-            }
             #[cfg(feature = "daemon")]
             Some(super::Commands::Daemon { port }) => {
                 crate::daemon::run(state, *port).await?;
@@ -104,7 +101,9 @@ impl Cli {
         println!(
             "  {:20} {}",
             "Working Directory:",
-            std::env::current_dir().unwrap().display()
+            std::env::current_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_else(|_| "<unknown>".to_string())
         );
         println!();
     }
@@ -299,7 +298,7 @@ impl Cli {
             "temperature": 0.7
         });
 
-        let http_client = reqwest::Client::new();
+        let http_client = crate::utils::http::default_client();
         let url = format!("{}/v1/chat/completions", base_url);
 
         let response = http_client
@@ -953,62 +952,6 @@ impl Cli {
                     println!("Sandbox enabled ({}).", status.backend_name);
                 } else {
                     println!("Sandbox enabled (policy-only, {}).", status.backend_name);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn run_codegraph(&self, action: &super::CodegraphCommands) -> anyhow::Result<()> {
-        let project_root = std::env::current_dir()?;
-        match action {
-            super::CodegraphCommands::Index {} => {
-                println!("[codegraph] Building index for {:?}...", project_root);
-                let store = Arc::new(crate::tools::codegraph::store::IndexStore::open(
-                    &project_root,
-                )?);
-                let adapters: Vec<Box<dyn crate::tools::codegraph::adapters::LanguageAdapter>> = vec![
-                    Box::new(crate::tools::codegraph::adapters::rust::RustAdapter::new()),
-                    Box::new(crate::tools::codegraph::adapters::java::JavaAdapter::new()),
-                    Box::new(crate::tools::codegraph::adapters::python::PythonAdapter::new()),
-                ];
-                let indexer = crate::tools::codegraph::indexer::Indexer::new(store, adapters);
-                let summary = indexer.index_full(&project_root)?;
-                println!(
-                    "[codegraph] Done: {} files, {} symbols in {:.1}s ({}) warnings",
-                    summary.files_indexed,
-                    summary.symbols_extracted,
-                    summary.elapsed_secs,
-                    summary.warnings
-                );
-            }
-            super::CodegraphCommands::Query { symbol } => {
-                let store = Arc::new(crate::tools::codegraph::store::IndexStore::open(
-                    &project_root,
-                )?);
-                let engine = crate::tools::codegraph::query::QueryEngine::new(store);
-                let result = engine.codegraph_node(symbol)?;
-                if result.found {
-                    for sym in &result.symbols {
-                        println!(
-                            "{} ({}) at {}:{}",
-                            sym.name,
-                            sym.kind.as_str(),
-                            sym.file_path,
-                            sym.line
-                        );
-                    }
-                } else {
-                    println!("Symbol `{}` not found.", symbol);
-                }
-            }
-            super::CodegraphCommands::Clean {} => {
-                let db = project_root.join(".codegraph").join("index.db");
-                if db.exists() {
-                    std::fs::remove_file(&db)?;
-                    println!("[codegraph] Index removed: {:?}", db);
-                } else {
-                    println!("[codegraph] No index found to clean.");
                 }
             }
         }

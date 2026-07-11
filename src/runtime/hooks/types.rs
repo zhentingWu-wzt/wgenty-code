@@ -113,6 +113,8 @@ impl<'de> Deserialize<'de> for HookDefinition {
             #[serde(default)]
             timeout_secs: Option<u64>,
             #[serde(default)]
+            // Accepted for forward compatibility with future
+            // hook schemas; not yet used by the current engine.
             #[allow(dead_code)]
             hook_type: Option<String>,
             #[serde(default)]

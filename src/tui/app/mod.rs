@@ -1,6 +1,7 @@
 //! Application main loop — event handling, layout, and daemon lifecycle.
 
 mod event;
+mod event_key;
 mod input;
 mod render;
 mod turn;

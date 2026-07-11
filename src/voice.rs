@@ -127,18 +127,13 @@ impl VoiceService {
         false
     }
 
-    #[allow(dead_code)]
+    #[cfg(target_os = "linux")]
     async fn check_arecord(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            let result = tokio::process::Command::new("arecord")
-                .arg("--version")
-                .output()
-                .await;
-            result.is_ok()
-        }
-        #[cfg(not(target_os = "linux"))]
-        false
+        tokio::process::Command::new("arecord")
+            .arg("--version")
+            .output()
+            .await
+            .is_ok()
     }
 
     async fn check_sox(&self) -> bool {

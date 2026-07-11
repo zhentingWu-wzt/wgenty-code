@@ -1,6 +1,5 @@
 //! Rendering methods for the TUI application.
 
-use super::types::MessageRole;
 use super::App;
 use crate::tui::components;
 use crate::tui::theme;
@@ -92,14 +91,11 @@ impl App {
         } else {
             layout[chat_idx]
         };
-        // The welcome banner shows until a real conversation turn (user,
-        // assistant, or tool) has been committed. Startup-injected `System`
-        // messages (e.g. the token-budget notice) must NOT suppress the
-        // banner — only filter on non-system roles.
-        let has_real_turn = self
-            .committed_messages
-            .iter()
-            .any(|m| !matches!(m.role, MessageRole::System));
+        // The welcome banner shows until the first message is committed to
+        // the chat. Any message — including System messages produced by
+        // slash commands like /help or /plan — should suppress the banner
+        // so the user can see the output.
+        let has_real_turn = !self.committed_messages.is_empty();
         if !has_real_turn && !self.streaming_active {
             let model_name = {
                 let s = self.settings_lock.read().unwrap();

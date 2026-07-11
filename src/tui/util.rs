@@ -38,7 +38,7 @@ pub async fn start_daemon(
     use crate::daemon::state::DaemonState;
     use crate::daemon::{auth, routes};
     use std::sync::Arc;
-    let daemon_state = Arc::new(DaemonState::new(app_state));
+    let daemon_state = Arc::new(DaemonState::new(app_state).await);
 
     // Recover persisted sessions from disk so the session list is populated
     // immediately after the background daemon starts (see daemon::run).
@@ -217,19 +217,6 @@ fn arg_u64(args: &serde_json::Value, key: &str) -> String {
         .unwrap_or_default()
 }
 
-fn arg_array(args: &serde_json::Value, key: &str) -> String {
-    args.get(key)
-        .and_then(|value| value.as_array())
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| value.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_default()
-}
-
 fn truncate_label(label: String) -> String {
     const MAX_LABEL_CHARS: usize = 80;
     if label.chars().count() <= MAX_LABEL_CHARS {
@@ -310,7 +297,6 @@ pub fn tool_label(name: &str, args: &serde_json::Value) -> String {
                 skill_name
             }
         }
-        "module_summary" => arg_str(args, "module_path"),
         "note_edit" => {
             let operation = arg_str(args, "operation");
             let title = arg_str(args, "title");
@@ -330,16 +316,6 @@ pub fn tool_label(name: &str, args: &serde_json::Value) -> String {
                 .into_iter()
                 .find(|value| !value.is_empty())
                 .unwrap_or_else(|| "auto".to_string())
-        }
-        "symbol_batch" => arg_array(args, "symbols"),
-        "call_path" => {
-            let from = args.get("from").and_then(|v| v.as_str()).unwrap_or("");
-            let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("");
-            if from.is_empty() || to.is_empty() {
-                String::new()
-            } else {
-                format!("{} → {}", from, to)
-            }
         }
         "TodoWrite" | "update_plan" => {
             let item_key = if name == "TodoWrite" { "items" } else { "plan" };

@@ -12,6 +12,8 @@ use crate::api::{ApiClient, ChatMessage, ToolCall, ToolDefinition};
 use crate::tools::ToolRegistry;
 use crate::utils::stuck_detector::{StuckDetector, StuckStatus};
 use std::sync::atomic::{AtomicU64, Ordering};
+// Progress snapshots are updated in short synchronous critical sections and
+// no guard is held across `.await`, so `std::sync::Mutex` is intentional.
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 

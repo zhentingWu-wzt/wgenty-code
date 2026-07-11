@@ -14,6 +14,8 @@ use std::sync::Arc;
 
 /// A node in the subagent call tree, enriched with timing and tool events.
 #[derive(Debug, Clone)]
+// Fields are populated during trace collection; some are only
+// read by future rendering formats (JSON export, tree view).
 #[allow(dead_code)]
 struct TraceNode {
     id: String,
@@ -63,6 +65,7 @@ impl TraceNode {
 }
 
 #[derive(Debug, Clone)]
+// Populated for completeness; not all fields are rendered yet.
 #[allow(dead_code)]
 struct TraceEvent {
     round: u32,

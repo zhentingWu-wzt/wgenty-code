@@ -41,6 +41,8 @@ pub struct DaemonState {
     pub background_manager: Arc<BackgroundManager>,
     pub team_manager: Option<Arc<TeamManager>>,
     pub session_manager: MemorySessionManager,
+    /// Long-lived external MCP sessions and their status.
+    pub mcp_manager: Arc<crate::mcp::McpManager>,
     sessions: Arc<RwLock<std::collections::HashMap<String, SessionRules>>>,
     /// Subagent progress store, scoped by session_id → node_id.
     pub subagent_progress:
@@ -50,7 +52,7 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
-    pub fn new(app_state: AppState) -> Self {
+    pub async fn new(app_state: AppState) -> Self {
         let task_manager = Arc::new(TaskManagementTool::new());
         let todo_state = Arc::new(RwLock::new(TodoState::default()));
         let policy = ToolPermissionPolicy::from_settings(&app_state.settings);
@@ -78,6 +80,17 @@ impl DaemonState {
         let progress_store: Arc<
             RwLock<HashMap<String, HashMap<String, crate::agent::progress::SubagentProgress>>>,
         > = Arc::new(RwLock::new(HashMap::new()));
+
+        let mcp_manager = Arc::new(crate::mcp::McpManager::new());
+        let mut reserved_tool_names: HashSet<String> = ToolRegistry::new()
+            .with_settings(&app_state.settings)
+            .list()
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect();
+        let external_tools = mcp_manager
+            .connect_configured_tools(&app_state.settings, &mut reserved_tool_names)
+            .await;
 
         // Use Arc::new_cyclic so the TaskTool holds a valid Weak<ToolRegistry>
         // that points to the *final* Arc allocation — not a temporary one that
@@ -141,6 +154,10 @@ impl DaemonState {
             );
             registry.register(Box::new(run_script_tool));
 
+            for tool in external_tools {
+                registry.register(tool);
+            }
+
             // Wire external skill registry into the skill tool so the model can
             // invoke external skills via the `skill` tool (fixes C1).
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -182,6 +199,7 @@ impl DaemonState {
             background_manager: bg_manager,
             team_manager,
             session_manager,
+            mcp_manager,
             sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             subagent_progress: progress_store,
             subagent_poll_times: Arc::new(RwLock::new(HashMap::new())),

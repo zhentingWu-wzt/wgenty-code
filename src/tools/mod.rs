@@ -7,7 +7,6 @@
 //!   - meta/        — think, lsp, ask_user_question, note_edit
 
 pub mod checkpoint;
-pub mod codegraph;
 pub mod execution;
 pub mod executor;
 pub mod filesystem;
@@ -27,6 +26,13 @@ pub trait Tool: Send + Sync {
     fn input_schema(&self) -> serde_json::Value;
 
     fn is_read_only(&self) -> bool {
+        false
+    }
+
+    /// Whether this tool requires explicit user confirmation before execution.
+    /// External MCP tools use this when the client cannot prove they are
+    /// read-only; built-in tools retain their existing specialized policies.
+    fn requires_confirmation(&self) -> bool {
         false
     }
 
@@ -122,13 +128,6 @@ impl ToolRegistry {
         registry.register(Box::new(meta::lsp::LspTool::new()));
         registry.register(Box::new(meta::note_edit::NoteEditTool::new()));
         registry.register(Box::new(crate::tasks::management::TaskManagementTool::new()));
-        // CodeGraph tools (lazy-init from .codegraph/index.db)
-        registry.register(Box::new(codegraph::tools::CodegraphNodeTool::new()));
-        registry.register(Box::new(codegraph::tools::CodegraphExploreTool::new()));
-        registry.register(Box::new(codegraph::tools::CallPathTool::new()));
-        registry.register(Box::new(codegraph::tools::SymbolBatchTool::new()));
-        registry.register(Box::new(codegraph::tools::ModuleSummaryTool::new()));
-
         registry
     }
 
@@ -169,6 +168,21 @@ impl ToolRegistry {
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         self.tools.insert(tool.name().to_string(), tool);
+    }
+
+    /// Register a remote tool, preserving its standard name when available and
+    /// prefixing it with the server name only when it collides with an existing
+    /// built-in or remote tool.
+    pub fn register_external(&mut self, server_name: &str, tool: Box<dyn Tool>) -> String {
+        let original_name = tool.name().to_string();
+        if !self.tools.contains_key(&original_name) {
+            self.tools.insert(original_name.clone(), tool);
+            return original_name;
+        }
+
+        let exposed_name = format!("{server_name}__{original_name}");
+        self.tools.insert(exposed_name.clone(), tool);
+        exposed_name
     }
 
     /// Wire the external skill registry into the `skill` tool so it can resolve external skills.
@@ -228,3 +242,45 @@ pub use meta::{
     SkillTool, SubagentTraceTool, TaskTool, TeamMessageTool, ThinkTool, UpdatePlanTool,
 };
 pub use search::{GlobTool, GrepTool, SearchTool, WebFetchTool, WebSearchTool};
+
+#[cfg(test)]
+mod external_tool_tests {
+    use super::*;
+
+    struct NamedTool(&'static str);
+
+    #[async_trait]
+    impl Tool for NamedTool {
+        fn name(&self) -> &str {
+            self.0
+        }
+
+        fn description(&self) -> &str {
+            "test"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput {
+                output_type: "text".to_string(),
+                content: String::new(),
+                metadata: HashMap::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn external_tools_keep_names_unless_they_collide() {
+        let mut registry = ToolRegistry::new();
+        let first = registry.register_external("codegraph", Box::new(NamedTool("remote_unique")));
+        let second = registry.register_external("other", Box::new(NamedTool("remote_unique")));
+
+        assert_eq!(first, "remote_unique");
+        assert_eq!(second, "other__remote_unique");
+        assert!(registry.get("remote_unique").is_some());
+        assert!(registry.get("other__remote_unique").is_some());
+    }
+}
