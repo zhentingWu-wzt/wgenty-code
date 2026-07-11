@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 移除项目内置 CodeGraph 索引器、`.codegraph/index.db` 格式和 `wgenty-code codegraph` CLI，统一使用第三方 CodeGraph MCP。
 - `UserPromptSubmit` hook 触发时机：从 `tui/app/input.rs` 的 `tokio::spawn` fire-and-forget 改为 `AgentLoop::process_input_inner` 内 `await`（10s 超时降级为空 outcomes）。
 
+### Fixed
+
+- 修复 scoped UI viewer 凭据缺失或 daemon 重启后失效时，主窗口 subagent selector 消失的问题。
+
 ## [0.1.0] - Unreleased
 
 ### Added

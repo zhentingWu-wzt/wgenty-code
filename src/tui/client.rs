@@ -4,7 +4,9 @@
 use std::sync::Arc;
 
 use crate::api::ChatMessage;
+use anyhow::Context;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+use reqwest::{Method, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
@@ -62,16 +64,22 @@ impl DaemonClient {
         }
     }
 
-    /// POST /api/v1/ui/viewers — obtain a trusted-UI viewer token. Called
-    /// once during TUI startup; refreshed only after a daemon restart
-    /// (detected via 401/404 on scoped endpoints).
+    /// POST /api/v1/ui/viewers — obtain a trusted-UI viewer token.
     pub async fn create_viewer(&self) -> anyhow::Result<()> {
         let url = format!("{}/api/v1/ui/viewers", self.base_url);
-        let resp = self.http_tools.post(&url).send().await?;
+        let resp = self
+            .http_tools
+            .post(&url)
+            .send()
+            .await
+            .context("create trusted UI viewer")?;
         if !resp.status().is_success() {
             anyhow::bail!("Failed to create viewer ({})", resp.status());
         }
-        let data: serde_json::Value = resp.json().await?;
+        let data: serde_json::Value = resp
+            .json()
+            .await
+            .context("decode trusted UI viewer response")?;
         let token = data["viewer_token"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing viewer_token in response"))?
@@ -80,13 +88,43 @@ impl DaemonClient {
         Ok(())
     }
 
-    /// Return the viewer token header value, or None if not yet created.
-    async fn viewer_header(&self) -> Option<(String, String)> {
-        self.viewer_token
+    async fn ensure_viewer(&self) -> anyhow::Result<()> {
+        if self.viewer_token.read().await.is_some() {
+            return Ok(());
+        }
+        self.create_viewer()
+            .await
+            .context("create trusted UI viewer before scoped agent request")
+    }
+
+    async fn scoped_request(&self, method: Method, url: &str) -> anyhow::Result<Response> {
+        let token = self
+            .viewer_token
             .read()
             .await
-            .as_deref()
-            .map(|t| ("X-Wgenty-Viewer-Token".to_string(), t.to_string()))
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("trusted UI viewer token is unavailable"))?;
+        self.http_tools
+            .request(method, url)
+            .header("X-Wgenty-Viewer-Token", token)
+            .send()
+            .await
+            .context("send capability-scoped agent request")
+    }
+
+    async fn send_scoped_request(&self, method: Method, url: &str) -> anyhow::Result<Response> {
+        self.ensure_viewer().await?;
+        let response = self.scoped_request(method.clone(), url).await?;
+        if matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::NOT_FOUND
+        ) {
+            self.create_viewer()
+                .await
+                .context("refresh trusted UI viewer after scoped request rejection")?;
+            return self.scoped_request(method, url).await;
+        }
+        Ok(response)
     }
 
     /// GET /api/v1/agents/self — root local view for `session_id`.
@@ -98,15 +136,13 @@ impl DaemonClient {
             "{}/api/v1/agents/self?session_id={}",
             self.base_url, session_id
         );
-        let mut req = self.http_tools.get(&url);
-        if let Some((k, v)) = self.viewer_header().await {
-            req = req.header(k, v);
-        }
-        let resp = req.send().await?;
+        let resp = self.send_scoped_request(Method::GET, &url).await?;
         if !resp.status().is_success() {
             anyhow::bail!("get_root_agent_view ({})", resp.status());
         }
-        Ok(resp.json().await?)
+        resp.json()
+            .await
+            .context("decode root agent local view response")
     }
 
     /// GET /api/v1/agents/children/:capability — navigate into a direct child.
@@ -119,15 +155,13 @@ impl DaemonClient {
             "{}/api/v1/agents/children/{}?session_id={}",
             self.base_url, capability, session_id
         );
-        let mut req = self.http_tools.get(&url);
-        if let Some((k, v)) = self.viewer_header().await {
-            req = req.header(k, v);
-        }
-        let resp = req.send().await?;
+        let resp = self.send_scoped_request(Method::GET, &url).await?;
         if !resp.status().is_success() {
             anyhow::bail!("navigate_agent_view ({})", resp.status());
         }
-        Ok(resp.json().await?)
+        resp.json()
+            .await
+            .context("decode child agent local view response")
     }
 
     /// GET /api/v1/agents/children/:capability/transcript
@@ -140,15 +174,13 @@ impl DaemonClient {
             "{}/api/v1/agents/children/{}/transcript?session_id={}",
             self.base_url, capability, session_id
         );
-        let mut req = self.http_tools.get(&url);
-        if let Some((k, v)) = self.viewer_header().await {
-            req = req.header(k, v);
-        }
-        let resp = req.send().await?;
+        let resp = self.send_scoped_request(Method::GET, &url).await?;
         if !resp.status().is_success() {
             anyhow::bail!("get_child_transcript ({})", resp.status());
         }
-        Ok(resp.json().await?)
+        resp.json()
+            .await
+            .context("decode child agent transcript response")
     }
 
     /// POST /api/v1/agents/children/:capability/cancel
@@ -157,11 +189,7 @@ impl DaemonClient {
             "{}/api/v1/agents/children/{}/cancel?session_id={}",
             self.base_url, capability, session_id
         );
-        let mut req = self.http_tools.post(&url);
-        if let Some((k, v)) = self.viewer_header().await {
-            req = req.header(k, v);
-        }
-        let resp = req.send().await?;
+        let resp = self.send_scoped_request(Method::POST, &url).await?;
         if !resp.status().is_success() {
             anyhow::bail!("cancel_child ({})", resp.status());
         }
@@ -504,4 +532,154 @@ pub struct TodoResponse {
     pub items: Vec<TodoItem>,
     pub has_open_items: bool,
     pub display: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::State;
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::RwLock;
+    use tokio::task::JoinHandle;
+
+    const VIEWER_HEADER: &str = "X-Wgenty-Viewer-Token";
+
+    #[derive(Clone)]
+    struct ScopedServerState {
+        viewer_creations: Arc<AtomicUsize>,
+        scoped_requests: Arc<AtomicUsize>,
+        valid_token: Arc<RwLock<Option<String>>>,
+        scoped_status: StatusCode,
+    }
+
+    impl ScopedServerState {
+        fn new(scoped_status: StatusCode) -> Self {
+            Self {
+                viewer_creations: Arc::new(AtomicUsize::new(0)),
+                scoped_requests: Arc::new(AtomicUsize::new(0)),
+                valid_token: Arc::new(RwLock::new(None)),
+                scoped_status,
+            }
+        }
+    }
+
+    async fn create_viewer(State(state): State<ScopedServerState>) -> Json<serde_json::Value> {
+        let creation = state.viewer_creations.fetch_add(1, Ordering::SeqCst) + 1;
+        let token = format!("viewer-{creation}");
+        *state.valid_token.write().await = Some(token.clone());
+        Json(serde_json::json!({"viewer_token": token}))
+    }
+
+    async fn root_view(
+        State(state): State<ScopedServerState>,
+        headers: HeaderMap,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        state.scoped_requests.fetch_add(1, Ordering::SeqCst);
+        if state.scoped_status != StatusCode::OK {
+            return (state.scoped_status, Json(serde_json::json!({})));
+        }
+        let supplied = headers
+            .get(VIEWER_HEADER)
+            .and_then(|value| value.to_str().ok());
+        let valid = state.valid_token.read().await;
+        if valid.is_none() || supplied != valid.as_deref() {
+            return (StatusCode::NOT_FOUND, Json(serde_json::json!({})));
+        }
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "self_view": {"agent_id": "root", "status": "Running"},
+                "children": []
+            })),
+        )
+    }
+
+    async fn spawn_scoped_server(
+        scoped_status: StatusCode,
+    ) -> (String, ScopedServerState, JoinHandle<()>) {
+        let state = ScopedServerState::new(scoped_status);
+        let app = Router::new()
+            .route("/api/v1/ui/viewers", post(create_viewer))
+            .route("/api/v1/agents/self", get(root_view))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind scoped test server");
+        let address = listener.local_addr().expect("read scoped server address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve scoped test server");
+        });
+        (format!("http://{address}"), state, server)
+    }
+
+    #[tokio::test]
+    async fn root_view_creates_viewer_before_first_scoped_request() {
+        let (base_url, state, server) = spawn_scoped_server(StatusCode::OK).await;
+        let client = DaemonClient::new(base_url);
+
+        let view = client
+            .get_root_agent_view("session-a")
+            .await
+            .expect("fetch root view");
+
+        assert_eq!(view.self_view.agent_id, "root");
+        assert_eq!(state.viewer_creations.load(Ordering::SeqCst), 1);
+        assert_eq!(state.scoped_requests.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn root_view_refreshes_stale_viewer_after_not_found() {
+        let (base_url, state, server) = spawn_scoped_server(StatusCode::OK).await;
+        let client = DaemonClient::new(base_url);
+        *client.viewer_token.write().await = Some("stale-viewer".to_string());
+
+        let view = client
+            .get_root_agent_view("session-a")
+            .await
+            .expect("refresh stale viewer and fetch root view");
+
+        assert_eq!(view.self_view.agent_id, "root");
+        assert_eq!(state.viewer_creations.load(Ordering::SeqCst), 1);
+        assert_eq!(state.scoped_requests.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn root_view_retries_auth_failure_only_once() {
+        let (base_url, state, server) = spawn_scoped_server(StatusCode::NOT_FOUND).await;
+        let client = DaemonClient::new(base_url);
+
+        let error = client
+            .get_root_agent_view("session-a")
+            .await
+            .expect_err("return final not-found response after one refresh");
+
+        assert!(error.to_string().contains("404 Not Found"));
+        assert_eq!(state.viewer_creations.load(Ordering::SeqCst), 2);
+        assert_eq!(state.scoped_requests.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn root_view_does_not_refresh_viewer_after_server_error() {
+        let (base_url, state, server) =
+            spawn_scoped_server(StatusCode::INTERNAL_SERVER_ERROR).await;
+        let client = DaemonClient::new(base_url);
+
+        let error = client
+            .get_root_agent_view("session-a")
+            .await
+            .expect_err("return server error without refreshing viewer");
+
+        assert!(error.to_string().contains("500 Internal Server Error"));
+        assert_eq!(state.viewer_creations.load(Ordering::SeqCst), 1);
+        assert_eq!(state.scoped_requests.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
 }
