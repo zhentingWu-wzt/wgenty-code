@@ -57,9 +57,7 @@ impl InputBox {
         // accent color, the rest in white. Bang commands share the slash
         // command's styling path because their boundary semantics are
         // identical (single leading sigil, optional space, then body).
-        let is_prefix = first_line
-            .trim_start()
-            .starts_with(|c| c == '/' || c == '!');
+        let is_prefix = first_line.trim_start().starts_with(['/', '!']);
         let space_pos = first_line.find(' ');
 
         // Current boundary state
