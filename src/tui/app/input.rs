@@ -22,6 +22,21 @@ impl App {
 
     /// Submit user input, automatically queueing if a Turn is already running.
     pub(super) fn submit_input(&mut self, text: String) {
+        // Bang commands: `! <command>` runs a shell command directly in the
+        // local working directory and shows its output as a system message.
+        // This bypasses the agent turn entirely (no LLM tokens, no history,
+        // no permission/sandbox/hook chain), matching Claude Code's bash mode.
+        // Must precede the `/` slash-command checks so `!` is never routed as
+        // a slash command or ordinary message.
+        if is_bang_input(&text) {
+            match parse_bang_command(&text) {
+                Some(command) => self.run_bang_command(command),
+                None => self.push_system_message(
+                    "Usage: ! <command> - run a shell command directly and show its output.",
+                ),
+            }
+            return;
+        }
         // Slash commands
         if text.trim() == "/clear" {
             self.committed_messages.clear();
@@ -169,7 +184,10 @@ impl App {
                 .map(|command| format!("/{} — {}", command.name, command.description))
                 .collect::<Vec<_>>()
                 .join("\n");
-            self.push_system_message(format!("Available commands:\n{}", commands));
+            self.push_system_message(format!(
+                "Available commands:\n{}\n\n! <command> - Run a shell command directly and show its output",
+                commands
+            ));
             return;
         }
 
@@ -273,4 +291,103 @@ impl App {
             self.start_next_turn();
         }
     }
+
+    /// Spawn a bang command (`! <command>`) for direct local execution.
+    ///
+    /// Shows an immediate "running" system message, then runs the command via
+    /// `sh -c` in the current working directory with a 120s timeout. The
+    /// result is delivered back to the UI as a `BackgroundTaskResult` system
+    /// message (the existing channel for background-task notifications), so no
+    /// new event variant or render branch is needed.
+    fn run_bang_command(&mut self, command: String) {
+        // Immediate feedback so the user sees the command was accepted. The
+        // command line is shown here once; the result message below carries
+        // only the output (stdout/stderr/exit) to avoid duplication.
+        self.push_system_message(format!("$ {}", command));
+
+        let tx = self.event_tx.clone();
+        tokio::spawn(async move {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(BANG_COMMAND_TIMEOUT_SECS),
+                tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&command)
+                    .current_dir(&cwd)
+                    .output(),
+            )
+            .await;
+
+            let message = match result {
+                Ok(Ok(output)) => format_bang_output(&output),
+                Ok(Err(e)) => format!("Failed to execute command: {}", e),
+                Err(_) => format!(
+                    "Command timed out ({}s)",
+                    BANG_COMMAND_TIMEOUT_SECS
+                ),
+            };
+            let _ = tx.send(AppEvent::BackgroundTaskResult(message));
+        });
+    }
+}
+
+/// Default timeout for a bang command, in seconds. Matches the minimum
+/// enforced by the `execute_command` agent tool.
+const BANG_COMMAND_TIMEOUT_SECS: u64 = 120;
+
+/// Returns true if the (trimmed) first line starts with `!`, i.e. the user
+/// intends a bang command - even if the command body is empty (bare `!`).
+fn is_bang_input(text: &str) -> bool {
+    text.lines()
+        .next()
+        .unwrap_or("")
+        .trim_start()
+        .starts_with('!')
+}
+
+/// Parse a bang command from user input.
+///
+/// Returns the command body when the (trimmed) first line starts with `!`.
+/// The leading `!` and any spaces immediately after it are stripped, so
+/// `!ls`, `! ls`, and `!  ls -la` all yield `ls -la`. Returns `None` for
+/// non-`!` input or a bare `!` with no command body.
+fn parse_bang_command(text: &str) -> Option<String> {
+    let first_line = text.lines().next().unwrap_or("").trim_start();
+    let rest = first_line.strip_prefix('!')?;
+    let command = rest.trim_start();
+    if command.is_empty() {
+        return None;
+    }
+    Some(command.to_string())
+}
+
+/// Format the output of a bang command into a single system message.
+///
+/// The command line itself is shown separately by `run_bang_command` as
+/// immediate feedback, so this carries only stdout/stderr/exit status.
+fn format_bang_output(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let exit_code = output.status.code();
+
+    let mut parts: Vec<String> = Vec::new();
+    if !stdout.is_empty() {
+        parts.push(stdout.trim_end().to_string());
+    }
+    if !stderr.is_empty() {
+        parts.push(format!("[stderr]\n{}", stderr.trim_end()));
+    }
+    // Only surface the exit code when the command did not succeed; a trailing
+    // "exit code 0" on every successful command is noise. An empty result with
+    // a zero exit is reported explicitly so success is still visible.
+    if !output.status.success() {
+        if let Some(code) = exit_code {
+            parts.push(format!("[exit code {}]", code));
+        } else {
+            parts.push("[terminated by signal]".to_string());
+        }
+    } else if parts.is_empty() {
+        parts.push("(no output)".to_string());
+    }
+    parts.join("\n")
 }
