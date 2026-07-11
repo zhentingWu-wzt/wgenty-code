@@ -8,6 +8,7 @@
 //! `StreamProcessor` handles the duplicated SSE parsing logic previously
 //! found in both frontends, producing structured `StreamEvent`s.
 
+pub mod capability;
 pub mod coordinator;
 pub mod core;
 pub mod events;
