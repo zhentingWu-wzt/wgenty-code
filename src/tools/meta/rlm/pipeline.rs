@@ -315,9 +315,16 @@ Context: {context}
             let handle = tokio::spawn(async move {
                 let mut sub_system_prompt = "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.".to_string();
                 inject_format_instruction("analysis", &mut sub_system_prompt);
+                // Temporary root context per planned subtask: Task 9 replaces this
+                // with a coordinator-created child context derived from the RLM
+                // caller's trusted AgentExecutionContext. The session is a trusted
+                // runtime value, never model-supplied JSON.
+                let sub_context =
+                    crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new("rlm"));
                 let result = run_subagent_loop(
                     &api_client,
                     &registry,
+                    &sub_context,
                     &sub_system_prompt,
                     &prompt,
                     &allowed,

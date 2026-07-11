@@ -49,10 +49,22 @@ pub enum SubagentEventType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ErrorType {
     Timeout,
-    BudgetExceeded { limit_k: u64, used: u64 },
-    Stuck { reason: String },
-    ToolError { tool: String, message: String },
-    ParseError { message: String },
+    BudgetExceeded {
+        limit_k: u64,
+        used: u64,
+    },
+    Stuck {
+        reason: String,
+    },
+    ToolError {
+        tool: String,
+        message: String,
+    },
+    ParseError {
+        message: String,
+    },
+    /// The subagent was cancelled via its execution context's cancellation token.
+    Cancelled,
     Unknown,
 }
 

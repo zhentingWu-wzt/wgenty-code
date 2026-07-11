@@ -420,9 +420,17 @@ impl Tool for TaskTool {
             let prompt_owned = full_prompt.clone();
 
             tokio::spawn(async move {
+                // Temporary root context: Task 7 replaces this with a
+                // coordinator-created child context derived from the caller's
+                // trusted AgentExecutionContext. The session is a trusted
+                // runtime value, never model-supplied JSON.
+                let bg_context = crate::agent::AgentExecutionContext::root(
+                    crate::agent::SessionId::new("task-bg"),
+                );
                 let result = run_subagent_loop(
                     &api_client_bg,
                     &reg,
+                    &bg_context,
                     &sys_prompt,
                     &prompt_owned,
                     &tools,
@@ -562,9 +570,16 @@ impl Tool for TaskTool {
                 (result, reason)
             } else {
                 let reason = "direct subagent: simple task".to_string();
+                // Temporary root context: Task 7 replaces this with a
+                // coordinator-created child context derived from the caller's
+                // trusted AgentExecutionContext.
+                let direct_context = crate::agent::AgentExecutionContext::root(
+                    crate::agent::SessionId::new("task-direct"),
+                );
                 let result = run_subagent_loop(
                     &api_client,
                     &tool_registry,
+                    &direct_context,
                     &system_prompt,
                     &full_prompt,
                     &allowed_tools,
