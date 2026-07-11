@@ -38,10 +38,23 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             "/api/v1/background/results",
             get(handlers::get_background_results),
         )
-        // Subagent progress
+        // Scoped agent APIs (strict subagent isolation). The flat
+        // /api/v1/subagent/progress endpoint is retired in favor of these
+        // capability-scoped local views.
+        .route("/api/v1/ui/viewers", post(handlers::create_viewer))
+        .route("/api/v1/agents/self", get(handlers::get_agent_self))
+        .route("/api/v1/agents/children", get(handlers::get_agent_children))
         .route(
-            "/api/v1/subagent/progress",
-            get(handlers::get_subagent_progress),
+            "/api/v1/agents/children/:capability",
+            get(handlers::navigate_agent_view),
+        )
+        .route(
+            "/api/v1/agents/children/:capability/transcript",
+            get(handlers::get_child_transcript),
+        )
+        .route(
+            "/api/v1/agents/children/:capability/cancel",
+            post(handlers::cancel_child),
         )
         // MCP
         .route("/api/v1/mcp/servers", get(handlers::list_mcp_servers))
