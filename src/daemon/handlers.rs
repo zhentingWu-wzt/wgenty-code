@@ -627,6 +627,15 @@ async fn build_local_view(
         .list_local(caller)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Cross-populate from the legacy progress store so the TUI focus view has
+    // text snapshots and token counts for each direct child. Once the
+    // coordinator owns the canonical progress store this lookup becomes a
+    // coordinator projection; for now it bridges the migration.
+    let progress_store = state.subagent_progress.read().await;
+    let session_progress = progress_store
+        .get(caller.session_id.as_str())
+        .cloned()
+        .unwrap_or_default();
     let mut children = Vec::with_capacity(view.children.len());
     for child in view.children {
         // Issue a navigate capability for this direct child.
@@ -637,12 +646,20 @@ async fn build_local_view(
             0, // generation; recovery/reissue handling lands in Task 15
         );
         let cap = state.capability_service.issue(&grant).await;
+        // Cross-fill snapshot data from the legacy progress store.
+        let node = session_progress.get(child.agent_id.as_str());
+        let text_snapshot = node.and_then(|p| p.text_snapshot.clone());
+        let cumulative_tokens = node.map(|p| p.cumulative_tokens).unwrap_or(0);
+        let messages = node.map(|p| p.messages.clone()).unwrap_or_default();
         children.push(DirectChildResponse {
             agent_id: child.agent_id.as_str().to_string(),
             status: child.status,
             label: child.label.clone(),
             summary: child.summary.clone(),
             navigation_capability: cap,
+            text_snapshot,
+            cumulative_tokens,
+            messages,
         });
     }
     Ok(LocalAgentViewResponse {

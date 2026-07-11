@@ -212,6 +212,16 @@ pub struct DirectChildResponse {
     pub label: String,
     pub summary: Option<String>,
     pub navigation_capability: String,
+    /// Latest text snapshot from the subagent loop (displayed when messages are empty).
+    #[serde(default)]
+    pub text_snapshot: Option<String>,
+    /// Cumulative tokens consumed by this subagent.
+    #[serde(default)]
+    pub cumulative_tokens: u64,
+    /// Model messages captured by the progress callback during the subagent
+    /// loop. Carried for the TUI focus view; not intended for model consumption.
+    #[serde(default)]
+    pub messages: Vec<crate::api::ChatMessage>,
 }
 
 /// Local view: self plus direct children only. No parent ID, descendant

@@ -105,32 +105,21 @@ impl SubagentTree {
                         parent_id: Some(view.self_view.agent_id.clone()),
                         label: child.label.clone(),
                         status: child.status.into(),
-                        ..self
-                            .nodes
-                            .values()
-                            .next()
-                            .map(|n| n.progress.clone())
-                            .unwrap_or_else(|| SubagentProgress {
-                                node_id: String::new(),
-                                parent_id: None,
-                                label: String::new(),
-                                status: SubagentStatus::Pending,
-                                round: None,
-                                max_rounds: None,
-                                current_tool: None,
-                                current_params: None,
-                                action_log: Vec::new(),
-                                text_snapshot: None,
-                                started_at: 0,
-                                elapsed_ms: 0,
-                                metadata: None,
-                                progress_delta: None,
-                                token_budget_k: None,
-                                cumulative_tokens: 0,
-                                error_details: None,
-                                events: Vec::new(),
-                                messages: Vec::new(),
-                            })
+                        text_snapshot: child.text_snapshot.clone(),
+                        cumulative_tokens: child.cumulative_tokens,
+                        messages: child.messages.clone(),
+                        round: None,
+                        max_rounds: None,
+                        current_tool: None,
+                        current_params: None,
+                        action_log: Vec::new(),
+                        started_at: 0,
+                        elapsed_ms: 0,
+                        metadata: None,
+                        progress_delta: None,
+                        token_budget_k: None,
+                        error_details: None,
+                        events: Vec::new(),
                     },
                     children: Vec::new(),
                 },
@@ -584,6 +573,9 @@ mod tests {
                 label: "inspect selector labels".to_string(),
                 summary: None,
                 navigation_capability: "capability".to_string(),
+                text_snapshot: None,
+                cumulative_tokens: 0,
+                messages: Vec::new(),
             }],
         });
 
