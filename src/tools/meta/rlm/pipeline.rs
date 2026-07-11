@@ -30,9 +30,12 @@ type ProgressContext = (ProgressStore, String);
 /// `progress_store` and `session_id` are used to create per-sub-task progress
 /// nodes so each sub-agent appears as a distinct entry in the subagent tree.
 /// `root_node_id` is the parent for all sub-task nodes.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_rlm_pipeline(
     settings: &Settings,
     tool_registry: Arc<ToolRegistry>,
+    coordinator: Arc<crate::agent::AgentCoordinator>,
+    caller: &crate::agent::AgentExecutionContext,
     task: &str,
     context: &str,
     progress_store: Option<ProgressContext>, // (store, session_id)
@@ -312,12 +315,31 @@ Context: {context}
             let task_budget = per_task_budget
                 .as_ref()
                 .and_then(|budgets| budgets.get(idx).copied());
+            // Reserve a coordinator-owned child for this subtask so it runs as
+            // a direct child of the RLM caller (trusted parentage/depth/session,
+            // never derived from model JSON). Depth hides `task` at the limit;
+            // the coordinator remains the enforcement boundary.
+            let reservation = match coordinator
+                .reserve_child(caller, crate::agent::SpawnChildRequest::new(&prompt))
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    // Could not reserve (e.g. depth limit). Record an error
+                    // result for this subtask and skip spawning.
+                    task_errors[idx] = Some(format!("coordinator reserve failed: {}", e));
+                    continue;
+                }
+            };
+            let sub_context = reservation.context.clone();
+            let sub_coordinator = coordinator.clone();
             let handle = tokio::spawn(async move {
                 let mut sub_system_prompt = "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.".to_string();
                 inject_format_instruction("analysis", &mut sub_system_prompt);
                 let result = run_subagent_loop(
                     &api_client,
                     &registry,
+                    &sub_context,
                     &sub_system_prompt,
                     &prompt,
                     &allowed,
@@ -327,6 +349,18 @@ Context: {context}
                     task_budget,
                 )
                 .await;
+                // Persist the child's terminal through the coordinator so its
+                // permit is released and it appears in the hierarchy.
+                let terminal = match &result {
+                    Ok(r) => crate::agent::ChildTerminal::Completed {
+                        summary: r.chars().take(500).collect(),
+                    },
+                    Err(_) => crate::agent::ChildTerminal::Failed {
+                        code: "subagent_failed".to_string(),
+                        partial_result: None,
+                    },
+                };
+                let _ = sub_coordinator.finish_child(&sub_context, terminal).await;
                 (result, idx)
             });
             handles.push(handle);
