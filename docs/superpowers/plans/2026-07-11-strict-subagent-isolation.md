@@ -848,17 +848,17 @@ git commit -m "refactor(tools): route task children through coordinator"
 - Modify: `src/teams/subagent_mailbox.rs`
 - Modify: `src/tools/meta/task/tests.rs`
 
-- [ ] **Step 1: Write scoped-background and result-sanitization tests**
+- [x] **Step 1: Write scoped-background and result-sanitization tests**
 
 Test that a parent candidate result moves to `WaitingForChildren` while a background child is live, then reaches `Completed` only after the child completes. Add a child result containing strings shaped like descendant IDs and a serialized tree payload; assert `sanitize_child_result` returns bounded `summary`/`partial_result` and no fields for descendants, transcript, messages, events, or parent ID.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test scoped_background child_result --lib`
 
 Expected: FAIL because scoped acknowledgement/finalization and sanitizer contracts are incomplete.
 
-- [ ] **Step 3: Implement scoped result handles and sanitization**
+- [x] **Step 3: Implement scoped result handles and sanitization**
 
 Define an opaque handle whose serialized form contains only a random token:
 
@@ -889,13 +889,13 @@ pub fn sanitize_child_result(
 
 Limit summary and partial-result sizes using the existing mailbox thresholds. Persist large payloads under coordinator-owned metadata; do not expose filesystem paths as ambient authority. Retrieval must require the same parent context and handle binding.
 
-- [ ] **Step 4: Verify background scope and mailbox regressions**
+- [x] **Step 4: Verify background scope and mailbox regressions**
 
 Run: `cargo fmt && cargo test scoped_background child_result subagent_mailbox --lib`
 
 Expected: PASS, and no subagent path calls `BackgroundManager::push_subagent_result`.
 
-- [ ] **Step 5: Commit scoped background semantics**
+- [x] **Step 5: Commit scoped background semantics**
 
 ```bash
 git add src/agent/coordinator.rs src/tools/meta/task.rs src/teams/subagent_mailbox.rs src/tools/meta/task/tests.rs
