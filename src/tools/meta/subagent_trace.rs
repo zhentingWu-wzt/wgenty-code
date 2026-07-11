@@ -8,6 +8,7 @@
 //! The tool is read-only and requires a session_id. When no session_id is
 //! provided, it returns a usage hint.
 
+use crate::agent::{AgentCoordinator, ToolContext};
 use crate::teams::subagent_trace::SubagentTraceReporter;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
@@ -15,11 +16,15 @@ use std::sync::Arc;
 
 pub struct SubagentTraceTool {
     store: Option<Arc<crate::transcript::SubagentTranscriptStore>>,
+    coordinator: Arc<AgentCoordinator>,
 }
 
 impl SubagentTraceTool {
-    pub fn new(store: Option<Arc<crate::transcript::SubagentTranscriptStore>>) -> Self {
-        Self { store }
+    pub fn new(
+        store: Option<Arc<crate::transcript::SubagentTranscriptStore>>,
+        coordinator: Arc<AgentCoordinator>,
+    ) -> Self {
+        Self { store, coordinator }
     }
 }
 
@@ -57,7 +62,18 @@ impl Tool for SubagentTraceTool {
         })
     }
 
-    async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        Err(ToolError {
+            message: "subagent_trace requires trusted agent context".to_string(),
+            code: Some("missing_agent_context".to_string()),
+        })
+    }
+
+    async fn execute_with_context(
+        &self,
+        context: &ToolContext<'_>,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
         let store = self.store.as_ref().ok_or_else(|| ToolError {
             message: "Subagent transcript store is not available (persistence disabled)."
                 .to_string(),
@@ -66,13 +82,11 @@ impl Tool for SubagentTraceTool {
 
         let reporter = SubagentTraceReporter::new(store.clone());
 
-        let session_id = input["session_id"].as_str().unwrap_or("");
-        if session_id.is_empty() {
-            return Err(ToolError {
-                message: "Missing required parameter: 'session_id'".to_string(),
-                code: Some("missing_parameter".to_string()),
-            });
-        }
+        // Trusted session identity from the execution context. A raw
+        // `session_id` in the input is ignored: it confers no authority. The
+        // caller may only trace its own session.
+        let session_id = context.agent.session_id.as_str();
+        let _ = &self.coordinator; // authorization boundary lives in the coordinator
 
         let format = input["format"].as_str().unwrap_or("call_tree");
 
