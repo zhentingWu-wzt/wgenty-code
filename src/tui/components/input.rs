@@ -52,11 +52,18 @@ impl InputBox {
             .map(|l| l.to_string())
             .unwrap_or_default();
 
-        let is_slash = first_line.trim_start().starts_with('/');
+        // Accent-highlight the prefix of a `/` slash command or a `!` bang
+        // command: the prefix token (up to the first space) is drawn in the
+        // accent color, the rest in white. Bang commands share the slash
+        // command's styling path because their boundary semantics are
+        // identical (single leading sigil, optional space, then body).
+        let is_prefix = first_line
+            .trim_start()
+            .starts_with(|c| c == '/' || c == '!');
         let space_pos = first_line.find(' ');
 
         // Current boundary state
-        let current_boundary: Option<usize> = if is_slash {
+        let current_boundary: Option<usize> = if is_prefix {
             Some(space_pos.unwrap_or(0))
         } else {
             None
@@ -74,7 +81,7 @@ impl InputBox {
                 .collect::<Vec<_>>()
                 .join("\n");
 
-            if is_slash && !text.is_empty() {
+            if is_prefix && !text.is_empty() {
                 self.textarea.set_style(Style::default().fg(ACCENT));
                 self.textarea.select_all();
                 self.textarea.cut();
@@ -90,7 +97,7 @@ impl InputBox {
                     self.textarea.set_style(Style::default().fg(Color::White));
                     self.textarea.insert_str(&text[rest_start..]);
                 }
-            } else if is_slash {
+            } else if is_prefix {
                 // Empty — just accent
                 self.textarea.set_style(Style::default().fg(ACCENT));
             } else {
@@ -102,7 +109,7 @@ impl InputBox {
                     self.textarea.insert_str(&text);
                 }
             }
-        } else if is_slash {
+        } else if is_prefix {
             // Boundary unchanged, just sync style for next typed char
             if space_pos.is_some() {
                 self.textarea.set_style(Style::default().fg(Color::White));
