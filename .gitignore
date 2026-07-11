@@ -33,6 +33,7 @@ settings.json
 # CodeGraph index
 .codegraph/
 .claude/worktrees/
+.worktrees/
 
 # Install scripts (self-contained, don't ignore)
 # install.ps1 and install-unix.sh are part of the repo
