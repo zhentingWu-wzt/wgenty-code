@@ -16,7 +16,8 @@ pub mod progress;
 pub mod store;
 
 pub use coordinator::{
-    AgentCoordinator, ChildReservation, ChildTerminal, CoordinatorError, SpawnChildRequest,
+    AgentCoordinator, ChildReservation, ChildResult, ChildTerminal, ChildTerminalStatus,
+    CoordinatorError, JoinPolicy, ParentOutcome, SpawnChildRequest,
 };
 pub use core::StreamProcessor;
 pub use events::{StreamEvent, StreamResult};
