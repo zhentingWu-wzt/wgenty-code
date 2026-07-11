@@ -321,10 +321,7 @@ impl App {
             let message = match result {
                 Ok(Ok(output)) => format_bang_output(&output),
                 Ok(Err(e)) => format!("Failed to execute command: {}", e),
-                Err(_) => format!(
-                    "Command timed out ({}s)",
-                    BANG_COMMAND_TIMEOUT_SECS
-                ),
+                Err(_) => format!("Command timed out ({}s)", BANG_COMMAND_TIMEOUT_SECS),
             };
             let _ = tx.send(AppEvent::BackgroundTaskResult(message));
         });
@@ -390,4 +387,143 @@ fn format_bang_output(output: &std::process::Output) -> String {
         parts.push("(no output)".to_string());
     }
     parts.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── is_bang_input ──────────────────────────────────────────
+
+    #[test]
+    fn is_bang_input_plain_command() {
+        assert!(is_bang_input("!ls"));
+        assert!(is_bang_input("! ls -la"));
+        assert!(is_bang_input("  !echo hi"));
+    }
+
+    #[test]
+    fn is_bang_input_bare_bang() {
+        // Bare `!` is still a bang input (so we can show a usage hint).
+        assert!(is_bang_input("!"));
+    }
+
+    #[test]
+    fn is_bang_input_non_bang() {
+        assert!(!is_bang_input("ls"));
+        assert!(!is_bang_input("/clear"));
+        assert!(!is_bang_input("hello world"));
+        assert!(!is_bang_input(""));
+    }
+
+    #[test]
+    fn is_bang_input_multiline_first_line_wins() {
+        // Only the first line matters.
+        assert!(is_bang_input("!ls\necho hi"));
+        assert!(!is_bang_input("echo hi\n!ls"));
+    }
+
+    // ── parse_bang_command ─────────────────────────────────────
+
+    #[test]
+    fn parse_bang_no_space() {
+        assert_eq!(parse_bang_command("!ls"), Some("ls".to_string()));
+    }
+
+    #[test]
+    fn parse_bang_with_space() {
+        assert_eq!(parse_bang_command("! ls -la"), Some("ls -la".to_string()));
+    }
+
+    #[test]
+    fn parse_bang_multiple_spaces() {
+        assert_eq!(
+            parse_bang_command("!  cargo build"),
+            Some("cargo build".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_bang_bare_bang_returns_none() {
+        assert_eq!(parse_bang_command("!"), None);
+    }
+
+    #[test]
+    fn parse_bang_only_spaces_after_bang() {
+        assert_eq!(parse_bang_command("!   "), None);
+    }
+
+    #[test]
+    fn parse_bang_non_bang_returns_none() {
+        assert_eq!(parse_bang_command("/clear"), None);
+        assert_eq!(parse_bang_command("hello"), None);
+        assert_eq!(parse_bang_command(""), None);
+    }
+
+    #[test]
+    fn parse_bang_with_leading_whitespace() {
+        // Leading whitespace is stripped by trim_start outside `!`.
+        assert_eq!(
+            parse_bang_command("  !cargo build"),
+            Some("cargo build".to_string())
+        );
+    }
+
+    // ── format_bang_output ─────────────────────────────────────
+
+    /// Run a trivial shell command and return its Output. Uses real
+    /// subprocesses so the tests work cross-platform without requiring
+    /// `ExitStatusExt` (which is Unix-only).
+    fn shell_output(command: &str) -> std::process::Output {
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .output()
+            .expect("test helper shell command should succeed")
+    }
+
+    #[test]
+    fn format_bang_output_success_no_stderr_no_exit_line() {
+        let output = shell_output("echo hello");
+        let result = format_bang_output(&output);
+        assert!(result.contains("hello"));
+        // 0 exit → no "exit code" line
+        assert!(!result.contains("exit code"));
+    }
+
+    #[test]
+    fn format_bang_output_success_with_stderr() {
+        let output = shell_output("echo ok && echo warning >&2");
+        let result = format_bang_output(&output);
+        assert!(result.contains("ok"));
+        assert!(result.contains("[stderr]"));
+        assert!(result.contains("warning"));
+        assert!(!result.contains("exit code")); // 0 exit → no exit line
+    }
+
+    #[test]
+    fn format_bang_output_failure_shows_exit_code() {
+        // `false` exits with code 1, no stdout.
+        let output = shell_output("false");
+        let result = format_bang_output(&output);
+        assert!(result.contains("[exit code 1]"));
+    }
+
+    #[test]
+    fn format_bang_output_success_no_output() {
+        // `true` exits 0 with no stdout or stderr.
+        let output = shell_output("true");
+        let result = format_bang_output(&output);
+        assert_eq!(result, "(no output)");
+    }
+
+    #[test]
+    fn format_bang_output_failure_with_stderr() {
+        // Command that fails and writes to stderr.
+        let output = shell_output("echo error msg >&2 && false");
+        let result = format_bang_output(&output);
+        assert!(result.contains("[stderr]"));
+        assert!(result.contains("error msg"));
+        assert!(result.contains("[exit code 1]"));
+    }
 }
