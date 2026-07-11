@@ -1,6 +1,5 @@
 //! HTTP request handlers for the daemon API.
 
-use crate::agent::progress::SubagentProgress;
 use crate::api::{ApiClient, ToolDefinition};
 use crate::daemon::models::*;
 use crate::daemon::state::DaemonState;
@@ -411,22 +410,6 @@ pub async fn get_background_results(
 
 // ── Subagent Progress ────────────────────────────────────────────────────────
 
-/// GET /api/v1/subagent/progress?session_id=<id>
-pub async fn get_subagent_progress(
-    State(state): State<Arc<DaemonState>>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Json<HashMap<String, SubagentProgress>> {
-    let session_id = params
-        .get("session_id")
-        .map(|s| s.as_str())
-        .unwrap_or("default");
-    // Record poll time for TTL-based eviction
-    state.touch_subagent_session(session_id).await;
-    let store = state.subagent_progress.read().await;
-    let result = store.get(session_id).cloned().unwrap_or_default();
-    Json(result)
-}
-
 // ── MCP ──────────────────────────────────────────────────────────────────────
 
 pub async fn list_mcp_servers(
@@ -594,4 +577,270 @@ pub async fn undo_checkpoint(State(state): State<Arc<DaemonState>>) -> Result<St
         Ok(output) => Ok(output),
         Err(_e) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+// ── Scoped agent APIs (strict subagent isolation) ────────────────────────────
+//
+// These handlers replace the flat `/api/v1/subagent/progress` endpoint with
+// capability-scoped local views. Every denial (missing/unknown viewer token,
+// expired/wrong-viewer/wrong-session/wrong-target capability, hidden target)
+// maps to one stable 404 with no target details, so denials are
+// indistinguishable.
+
+use axum::http::HeaderMap;
+
+/// Header name carrying the trusted-UI viewer bearer token.
+const VIEWER_TOKEN_HEADER: &str = "x-wgenty-viewer-token";
+
+/// Extracts and resolves the viewer token from headers. Returns None on any
+/// failure; callers respond with a stable 404.
+async fn resolve_viewer_from_headers(
+    state: &DaemonState,
+    headers: &HeaderMap,
+) -> Option<crate::agent::capability::ViewerId> {
+    let token = headers.get(VIEWER_TOKEN_HEADER)?.to_str().ok()?;
+    state.resolve_viewer(token).await
+}
+
+/// `POST /api/v1/ui/viewers` -- create a trusted UI viewer. Generates a
+/// 256-bit bearer token, stores only its HMAC digest, returns the token once.
+pub async fn create_viewer(
+    State(state): State<Arc<DaemonState>>,
+) -> Result<Json<CreateViewerResponse>, StatusCode> {
+    let token = state.create_viewer().await;
+    Ok(Json(CreateViewerResponse {
+        viewer_token: token,
+    }))
+}
+
+/// Builds a `LocalAgentViewResponse` for `caller`, issuing fresh navigate
+/// capabilities for each direct child bound to `viewer`.
+async fn build_local_view(
+    state: &DaemonState,
+    caller: &crate::agent::AgentExecutionContext,
+    viewer: &crate::agent::capability::ViewerId,
+) -> Result<LocalAgentViewResponse, StatusCode> {
+    let view = state
+        .coordinator
+        .list_local(caller)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut children = Vec::with_capacity(view.children.len());
+    for child in view.children {
+        // Issue a navigate capability for this direct child.
+        let grant = crate::agent::capability::CapabilityGrant::navigate(
+            viewer.as_str(),
+            caller.session_id.as_str(),
+            child.agent_id.as_str(),
+            0, // generation; recovery/reissue handling lands in Task 15
+        );
+        let cap = state.capability_service.issue(&grant).await;
+        children.push(DirectChildResponse {
+            agent_id: child.agent_id.as_str().to_string(),
+            status: child.status,
+            summary: child.summary.clone(),
+            navigation_capability: cap,
+        });
+    }
+    Ok(LocalAgentViewResponse {
+        self_view: SelfAgentResponse {
+            agent_id: view.self_view.agent_id.as_str().to_string(),
+            status: view.self_view.status,
+        },
+        children,
+    })
+}
+
+/// `GET /api/v1/agents/self?session_id=<id>` -- root local view (self + direct
+/// children).
+pub async fn get_agent_self(
+    State(state): State<Arc<DaemonState>>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<LocalAgentViewResponse>, StatusCode> {
+    let viewer = resolve_viewer_from_headers(&state, &headers)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let session_id = params
+        .get("session_id")
+        .map(|s| s.as_str())
+        .unwrap_or("default");
+    let root = state
+        .root_context(session_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let view = build_local_view(&state, &root, &viewer).await?;
+    Ok(Json(view))
+}
+
+/// `GET /api/v1/agents/children?session_id=<id>` -- alias for the root local
+/// view, kept for the route shape in the plan.
+pub async fn get_agent_children(
+    State(state): State<Arc<DaemonState>>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<LocalAgentViewResponse>, StatusCode> {
+    get_agent_self(State(state), Query(params), headers).await
+}
+
+/// `GET /api/v1/agents/children/:capability?session_id=<id>` -- navigate into
+/// the direct child bound by `capability`. Returns that child's local view
+/// (self + its direct children), with fresh navigate capabilities.
+pub async fn navigate_agent_view(
+    State(state): State<Arc<DaemonState>>,
+    Path(capability): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<LocalAgentViewResponse>, StatusCode> {
+    let viewer = resolve_viewer_from_headers(&state, &headers)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let session_id = params
+        .get("session_id")
+        .map(|s| s.as_str())
+        .unwrap_or("default");
+    let root = state
+        .root_context(session_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Resolve the capability to a target child of the root. The capability
+    // binds viewer+session+target+operation+generation; verify it for Navigate.
+    // We discover the target by scanning root's direct children and verifying
+    // each until one matches (constant-time-ish; denies are indistinguishable).
+    let view = state
+        .coordinator
+        .list_local(&root)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let mut matched: Option<crate::agent::AgentExecutionContext> = None;
+    for child in &view.children {
+        let req = crate::agent::capability::CapabilityRequest::navigate(
+            viewer.as_str(),
+            session_id,
+            child.agent_id.as_str(),
+            0,
+        );
+        if state
+            .capability_service
+            .verify(&capability, &req)
+            .await
+            .is_ok()
+        {
+            // Reconstruct the child context via reserve_child is not possible
+            // (it would spawn); instead read status and build a synthetic view
+            // from the child's own local view.
+            let child_ctx = crate::agent::AgentExecutionContext {
+                session_id: root.session_id.clone(),
+                agent_id: child.agent_id.clone(),
+                parent_id: Some(root.agent_id.clone()),
+                depth: root.depth + 1,
+                cancellation: root.cancellation.child_token(),
+            };
+            matched = Some(child_ctx);
+            break;
+        }
+    }
+    let child_ctx = matched.ok_or(StatusCode::NOT_FOUND)?;
+    let child_view = build_local_view(&state, &child_ctx, &viewer).await?;
+    Ok(Json(child_view))
+}
+
+/// `GET /api/v1/agents/children/:capability/transcript?session_id=<id>` --
+/// read the transcript of the direct child bound by `capability`.
+pub async fn get_child_transcript(
+    State(state): State<Arc<DaemonState>>,
+    Path(capability): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let viewer = resolve_viewer_from_headers(&state, &headers)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let session_id = params
+        .get("session_id")
+        .map(|s| s.as_str())
+        .unwrap_or("default");
+    let root = state
+        .root_context(session_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let view = state
+        .coordinator
+        .list_local(&root)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    for child in &view.children {
+        let req = crate::agent::capability::CapabilityRequest::transcript(
+            viewer.as_str(),
+            session_id,
+            child.agent_id.as_str(),
+            0,
+        );
+        if state
+            .capability_service
+            .verify(&capability, &req)
+            .await
+            .is_ok()
+        {
+            let transcript = state
+                .coordinator
+                .read_transcript(&root, child.agent_id.clone())
+                .await
+                .map_err(|_| StatusCode::NOT_FOUND)?;
+            return Ok(Json(serde_json::json!({ "transcript": transcript })));
+        }
+    }
+    // Indistinguishable denial.
+    Err(StatusCode::NOT_FOUND)
+}
+
+/// `POST /api/v1/agents/children/:capability/cancel?session_id=<id>` --
+/// cancel the direct child bound by `capability`.
+pub async fn cancel_child(
+    State(state): State<Arc<DaemonState>>,
+    Path(capability): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<StatusCode, StatusCode> {
+    let viewer = resolve_viewer_from_headers(&state, &headers)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let session_id = params
+        .get("session_id")
+        .map(|s| s.as_str())
+        .unwrap_or("default");
+    let root = state
+        .root_context(session_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let view = state
+        .coordinator
+        .list_local(&root)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    for child in &view.children {
+        let req = crate::agent::capability::CapabilityRequest::cancel(
+            viewer.as_str(),
+            session_id,
+            child.agent_id.as_str(),
+            0,
+        );
+        if state
+            .capability_service
+            .verify(&capability, &req)
+            .await
+            .is_ok()
+        {
+            let result = state
+                .coordinator
+                .cancel_subtree(&root, child.agent_id.clone())
+                .await;
+            return match result {
+                Ok(()) => Ok(StatusCode::NO_CONTENT),
+                Err(_) => Err(StatusCode::NOT_FOUND),
+            };
+        }
+    }
+    Err(StatusCode::NOT_FOUND)
 }

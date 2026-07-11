@@ -1059,7 +1059,7 @@ git commit -m "feat(agent): add scoped navigation capabilities"
 - Modify: `src/daemon/routes.rs`
 - Create: `tests/strict_subagent_isolation.rs`
 
-- [ ] **Step 1: Write daemon API contract tests**
+- [x] **Step 1: Write daemon API contract tests**
 
 Build an Axum router with a seeded three-level tree. Test:
 
@@ -1074,13 +1074,13 @@ POST /api/v1/ui/viewers
 
 Assert the root response contains root plus direct children only; navigating with a child's capability returns that child plus its direct children only. Compare status and response body for expired, wrong-viewer, hidden, and random capabilities; all must be indistinguishable.
 
-- [ ] **Step 2: Run integration tests to verify they fail**
+- [x] **Step 2: Run integration tests to verify they fail**
 
 Run: `cargo test --test strict_subagent_isolation daemon_`
 
 Expected: FAIL because scoped routes and response models do not exist.
 
-- [ ] **Step 3: Add daemon models and trusted state ownership**
+- [x] **Step 3: Add daemon models and trusted state ownership**
 
 Add serializable `LocalAgentViewResponse`, `SelfAgentResponse`, and `DirectChildResponse { agent_id, status, summary, navigation_capability }`. Add `CreateViewerResponse { viewer_token: String }`; `POST /api/v1/ui/viewers` creates 256 random bits, stores only `Hmac<Sha256>(daemon_viewer_secret, token)` in daemon memory, and returns the bearer token once. `DaemonState` must own `Arc<AgentCoordinator>` and `Arc<CapabilityService>`, a viewer-token digest map, plus a root-context map keyed by the authenticated/current session.
 
@@ -1092,7 +1092,7 @@ pub async fn root_context(&self, session_id: &str) -> Result<AgentExecutionConte
 
 This method calls `ensure_root`; it never accepts agent ID, parent ID, or depth from request JSON.
 
-- [ ] **Step 4: Implement scoped handlers and routes**
+- [x] **Step 4: Implement scoped handlers and routes**
 
 The TUI sends its daemon-issued viewer token in `X-Wgenty-Viewer-Token`. Handlers hash and resolve that token to a trusted `ViewerId`, verify capabilities before target lookup, and issue fresh direct-child capabilities for each returned local view. Missing or unknown viewer tokens receive one stable unauthorized response. Add `.context("...")` at daemon boundaries and map capability/visibility failures to one stable 404 response without target details.
 
@@ -1100,17 +1100,17 @@ Disable request-URI logging for the scoped capability routes or install a redact
 
 Remove `_session_id` injection from both permission branches in `execute_tool`; build `ToolContext` from `DaemonState::root_context` and a fresh invocation ID.
 
-- [ ] **Step 5: Restrict and then remove the full progress endpoint**
+- [x] **Step 5: Restrict and then remove the full progress endpoint**
 
 First ensure no normal client or model tool calls `/api/v1/subagent/progress`. Remove the route and `get_subagent_progress` handler in the same commit. If an operator diagnostic is still required by an existing test, expose it under an explicitly operator-only state method with no HTTP route.
 
-- [ ] **Step 6: Verify daemon isolation contracts**
+- [x] **Step 6: Verify daemon isolation contracts**
 
 Run: `cargo fmt && cargo test --test strict_subagent_isolation daemon_ && cargo test daemon --lib`
 
 Expected: PASS and `rg -n '/api/v1/subagent/progress|_session_id.*insert' src/daemon src/tui` returns no matches.
 
-- [ ] **Step 7: Commit scoped daemon APIs**
+- [x] **Step 7: Commit scoped daemon APIs**
 
 ```bash
 git add src/daemon/state.rs src/daemon/models.rs src/daemon/handlers.rs src/daemon/routes.rs tests/strict_subagent_isolation.rs
