@@ -27,6 +27,8 @@ pub struct AgentRecord {
     pub generation: u64,
     /// Current lifecycle status.
     pub status: AgentLifecycleStatus,
+    /// Human-readable task label assigned when this child was spawned.
+    pub label: String,
     /// Creation timestamp.
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// Last update timestamp.
@@ -52,10 +54,17 @@ impl AgentRecord {
             depth,
             generation: 0,
             status: AgentLifecycleStatus::Pending,
+            label: String::new(),
             created_at: now,
             updated_at: now,
             summary: None,
         }
+    }
+
+    /// Assigns the human-readable task label for this agent record.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = label.into();
+        self
     }
 }
 
@@ -71,6 +80,8 @@ pub struct SelfView {
 pub struct DirectChildView {
     pub agent_id: AgentId,
     pub status: AgentLifecycleStatus,
+    #[serde(default)]
+    pub label: String,
     pub summary: Option<String>,
 }
 
@@ -171,6 +182,7 @@ impl InMemoryAgentStore {
             .map(|r| DirectChildView {
                 agent_id: r.agent_id.clone(),
                 status: r.status,
+                label: r.label.clone(),
                 summary: r.summary.as_ref().map(|s| s.text.clone()),
             })
             .collect();

@@ -640,6 +640,7 @@ async fn build_local_view(
         children.push(DirectChildResponse {
             agent_id: child.agent_id.as_str().to_string(),
             status: child.status,
+            label: child.label.clone(),
             summary: child.summary.clone(),
             navigation_capability: cap,
         });

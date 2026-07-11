@@ -103,7 +103,7 @@ impl SubagentTree {
                     progress: SubagentProgress {
                         node_id: child.agent_id.clone(),
                         parent_id: Some(view.self_view.agent_id.clone()),
-                        label: String::new(),
+                        label: child.label.clone(),
                         status: child.status.into(),
                         ..self
                             .nodes
@@ -568,6 +568,29 @@ mod tests {
         assert_eq!(list.len(), 4, "independent task-sub must not be orphaned");
         // active_count excludes the delegate grouping node: dt1 + dt2 + task-sub
         assert_eq!(tree.active_count(), 3);
+    }
+
+    #[test]
+    fn replace_local_preserves_child_label_for_selector() {
+        let mut tree = SubagentTree::default();
+        tree.replace_local(crate::daemon::models::LocalAgentViewResponse {
+            self_view: crate::daemon::models::SelfAgentResponse {
+                agent_id: "root".to_string(),
+                status: crate::agent::AgentLifecycleStatus::Running,
+            },
+            children: vec![crate::daemon::models::DirectChildResponse {
+                agent_id: "child".to_string(),
+                status: crate::agent::AgentLifecycleStatus::Running,
+                label: "inspect selector labels".to_string(),
+                summary: None,
+                navigation_capability: "capability".to_string(),
+            }],
+        });
+
+        assert_eq!(
+            tree.nodes["child"].progress.label,
+            "inspect selector labels"
+        );
     }
 
     #[test]
