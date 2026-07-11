@@ -603,6 +603,70 @@ impl AgentCoordinator {
         ))
     }
 
+    /// Reads the status of `target` as seen by `caller`.
+    ///
+    /// `target` must be the caller itself or one of its direct children; all
+    /// other targets (parent, sibling, grandchild, other branch, cross-session,
+    /// absent) map to [`CoordinatorError::NotVisible`] so denials are
+    /// indistinguishable. Returns a [`crate::agent::DirectChildView`] projection
+    /// (agent_id, status, summary) with no parent ID or descendant metadata.
+    pub async fn read_status(
+        &self,
+        caller: &AgentExecutionContext,
+        target: AgentId,
+    ) -> Result<crate::agent::DirectChildView, CoordinatorError> {
+        // Self is visible.
+        if target == caller.agent_id {
+            let record = self
+                .store
+                .authorize_target(&caller.session_id, &caller.agent_id, &caller.agent_id)
+                .await?;
+            return Ok(crate::agent::DirectChildView {
+                agent_id: record.agent_id.clone(),
+                status: record.status,
+                summary: record.summary.as_ref().map(|s| s.text.clone()),
+            });
+        }
+        // Direct child only.
+        let children = self
+            .store
+            .direct_children(&caller.session_id, &caller.agent_id)
+            .await?;
+        let child = children
+            .into_iter()
+            .find(|c| c.agent_id == target)
+            .ok_or(CoordinatorError::NotVisible)?;
+        Ok(crate::agent::DirectChildView {
+            agent_id: child.agent_id.clone(),
+            status: child.status,
+            summary: child.summary.as_ref().map(|s| s.text.clone()),
+        })
+    }
+
+    /// Reads the transcript for `target` as seen by `caller`.
+    ///
+    /// Authorization mirrors [`read_status`](Self::read_status): only self or a
+    /// direct child is visible. The transcript store is keyed by session and
+    /// node id; this method authorizes through the caller context before any
+    /// storage lookup, and maps every denied/absent case to
+    /// [`CoordinatorError::NotVisible`]. Transcript retrieval from the
+    /// persistence layer is wired in Task 12; this method returns a placeholder
+    /// summary for now so the authorization boundary is testable in isolation.
+    pub async fn read_transcript(
+        &self,
+        caller: &AgentExecutionContext,
+        target: AgentId,
+    ) -> Result<String, CoordinatorError> {
+        // Authorize self or direct child first.
+        let _view = self.read_status(caller, target.clone()).await?;
+        // Persistence-backed transcript retrieval lands with the scoped daemon
+        // APIs; until then return a bounded, non-leaking summary string.
+        Ok(format!(
+            "transcript for {} (session {}): authorized",
+            target, caller.session_id
+        ))
+    }
+
     /// Returns the local view (self plus direct children) for the caller.
     pub async fn list_local(
         &self,
@@ -1672,6 +1736,95 @@ mod tests {
         let bogus = ChildResultHandle("not-a-real-token".to_string());
         assert!(matches!(
             coordinator.read_result(&root, &bogus).await,
+            Err(CoordinatorError::NotVisible)
+        ));
+    }
+
+    // ---- Task 10: scoped status/transcript authorization ----
+
+    #[tokio::test]
+    async fn read_status_authorizes_self_and_direct_child_only() {
+        let coordinator = test_coordinator(8, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let child = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("child"))
+            .await
+            .unwrap();
+        let grandchild = coordinator
+            .reserve_child(&child.context, SpawnChildRequest::new("grandchild"))
+            .await
+            .unwrap();
+        let sibling = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("sibling"))
+            .await
+            .unwrap();
+        let other_root = coordinator
+            .ensure_root(SessionId::new("other"))
+            .await
+            .unwrap();
+
+        // From the child's viewpoint: self + its own direct child (grandchild).
+        assert!(coordinator
+            .read_status(&child.context, child.context.agent_id.clone())
+            .await
+            .is_ok());
+        assert!(coordinator
+            .read_status(&child.context, grandchild.context.agent_id.clone())
+            .await
+            .is_ok());
+
+        // From the child's viewpoint: parent (root), sibling, other branch,
+        // cross-session root, and missing are all NotVisible.
+        for target in [
+            root.agent_id.clone(),
+            sibling.context.agent_id.clone(),
+            other_root.agent_id.clone(),
+            AgentId::new("missing"),
+        ] {
+            assert!(
+                matches!(
+                    coordinator.read_status(&child.context, target).await,
+                    Err(CoordinatorError::NotVisible)
+                ),
+                "expected NotVisible for non-self/non-direct-child target"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn read_transcript_authorizes_self_and_direct_child_only() {
+        let coordinator = test_coordinator(8, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let child = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("child"))
+            .await
+            .unwrap();
+        let grandchild = coordinator
+            .reserve_child(&child.context, SpawnChildRequest::new("grandchild"))
+            .await
+            .unwrap();
+
+        // Self + direct child transcripts are authorized.
+        assert!(coordinator
+            .read_transcript(&root, root.agent_id.clone())
+            .await
+            .is_ok());
+        assert!(coordinator
+            .read_transcript(&root, child.context.agent_id.clone())
+            .await
+            .is_ok());
+
+        // Grandchild (hidden) is NotVisible, indistinguishable from missing.
+        assert!(matches!(
+            coordinator
+                .read_transcript(&root, grandchild.context.agent_id.clone())
+                .await,
+            Err(CoordinatorError::NotVisible)
+        ));
+        assert!(matches!(
+            coordinator
+                .read_transcript(&root, AgentId::new("missing"))
+                .await,
             Err(CoordinatorError::NotVisible)
         ));
     }

@@ -964,17 +964,17 @@ git commit -m "refactor(agent): unify recursive child coordination"
 - Modify: `src/agent/coordinator.rs`
 - Modify: `src/teams/subagent_mailbox.rs`
 
-- [ ] **Step 1: Write shared authorization tests**
+- [x] **Step 1: Write shared authorization tests**
 
 For self, direct child, parent, sibling, grandchild, other branch, cross-session, and missing targets, run status, transcript, result, and cancellation lookups. Assert self/direct child succeed and every denied targeted operation returns the same external code `not_visible` and message.
 
-- [ ] **Step 2: Run authorization tests to verify they fail**
+- [x] **Step 2: Run authorization tests to verify they fail**
 
 Run: `cargo test transcript_authorization result_authorization cancellation_authorization --lib`
 
 Expected: FAIL because transcript/mailbox APIs accept raw identifiers or paths.
 
-- [ ] **Step 3: Add authorized repository methods**
+- [x] **Step 3: Add authorized repository methods**
 
 Implement coordinator methods whose first argument is always the trusted caller:
 
@@ -986,17 +986,17 @@ pub async fn read_status(&self, caller: &AgentExecutionContext, target: AgentId)
 
 Perform authorization before storage retrieval. Map absent handles, wrong parent, wrong session, stale generation, and hidden targets to `CoordinatorError::NotVisible`. Keep detailed internal tracing fields out of returned tool content.
 
-- [ ] **Step 4: Migrate SubagentTraceTool**
+- [x] **Step 4: Migrate SubagentTraceTool**
 
 Override `execute_with_context`, reject direct `execute`, and remove globally listable transcript behavior. Its schema may accept a direct-child opaque handle or target ID, but authorization must use `ToolContext`; raw IDs confer no authority.
 
-- [ ] **Step 5: Verify all scoped operations**
+- [x] **Step 5: Verify all scoped operations**
 
 Run: `cargo fmt && cargo test transcript_authorization result_authorization cancellation_authorization --lib`
 
 Expected: PASS with indistinguishable hidden/missing errors.
 
-- [ ] **Step 6: Commit scoped information access**
+- [x] **Step 6: Commit scoped information access**
 
 ```bash
 git add src/tools/meta/subagent_trace.rs src/transcript/mod.rs src/agent/store.rs src/agent/coordinator.rs src/teams/subagent_mailbox.rs
