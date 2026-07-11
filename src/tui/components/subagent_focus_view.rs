@@ -448,6 +448,9 @@ fn status_display(status: &SubagentStatus) -> (&'static str, Color) {
         SubagentStatus::Cancelled => ("CANCELLED", Color::Rgb(243, 139, 168)),
         SubagentStatus::Running => ("RUNNING", Color::Rgb(249, 226, 175)),
         SubagentStatus::Pending => ("PENDING", Color::Rgb(108, 112, 134)),
+        SubagentStatus::WaitingForChildren => ("WAITING", Color::Rgb(137, 180, 250)),
+        SubagentStatus::Finalizing => ("FINALIZING", Color::Rgb(166, 227, 161)),
+        SubagentStatus::Cancelling => ("CANCELLING", Color::Rgb(243, 139, 168)),
     }
 }
 
@@ -625,6 +628,9 @@ fn selector_status_icon(status: &SubagentStatus) -> (&'static str, Color) {
         SubagentStatus::Completed => ("✓", Color::Rgb(166, 227, 161)),
         SubagentStatus::Failed => ("✗", Color::Rgb(243, 139, 168)),
         SubagentStatus::Cancelled => ("⊘", Color::Rgb(243, 139, 168)),
+        SubagentStatus::WaitingForChildren => ("◌", Color::Rgb(137, 180, 250)),
+        SubagentStatus::Finalizing => ("◆", Color::Rgb(166, 227, 161)),
+        SubagentStatus::Cancelling => ("◐", Color::Rgb(243, 139, 168)),
     }
 }
 
@@ -642,6 +648,35 @@ mod tests {
     use super::*;
     use crate::agent::progress::{SubagentEvent, SubagentEventType, SubagentProgress};
     use crate::tui::components::subagent_tree::SubagentNode;
+
+    #[test]
+    fn test_lifecycle_status_display_helpers() {
+        assert_eq!(
+            status_display(&SubagentStatus::WaitingForChildren),
+            ("WAITING", Color::Rgb(137, 180, 250))
+        );
+        assert_eq!(
+            status_display(&SubagentStatus::Finalizing),
+            ("FINALIZING", Color::Rgb(166, 227, 161))
+        );
+        assert_eq!(
+            status_display(&SubagentStatus::Cancelling),
+            ("CANCELLING", Color::Rgb(243, 139, 168))
+        );
+
+        assert_eq!(
+            selector_status_icon(&SubagentStatus::WaitingForChildren),
+            ("◌", Color::Rgb(137, 180, 250))
+        );
+        assert_eq!(
+            selector_status_icon(&SubagentStatus::Finalizing),
+            ("◆", Color::Rgb(166, 227, 161))
+        );
+        assert_eq!(
+            selector_status_icon(&SubagentStatus::Cancelling),
+            ("◐", Color::Rgb(243, 139, 168))
+        );
+    }
 
     #[test]
     fn test_timeline_start_index_newest() {
