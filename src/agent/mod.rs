@@ -10,8 +10,12 @@
 
 pub mod core;
 pub mod events;
+pub mod identity;
 pub mod progress;
 
 pub use core::StreamProcessor;
 pub use events::{StreamEvent, StreamResult};
+pub use identity::{
+    AgentExecutionContext, AgentId, AgentLifecycleStatus, SessionId, ToolContext, ToolInvocationId,
+};
 pub use progress::{ProgressCallback, SubagentMetadata, SubagentProgress, SubagentStatus};
