@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - 修复 scoped UI viewer 凭据缺失或 daemon 重启后失效时，主窗口 subagent selector 消失的问题。
+- 修复 scoped agent view 丢弃 subagent task label，导致 selector 名称显示为空的问题。
 
 ## [0.1.0] - Unreleased
 

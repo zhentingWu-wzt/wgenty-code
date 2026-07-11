@@ -405,7 +405,8 @@ impl AgentCoordinator {
             context.agent_id.clone(),
             Some(caller.agent_id.clone()),
             context.depth,
-        );
+        )
+        .with_label(request.label);
         self.store.insert(record).await?;
 
         {
@@ -432,9 +433,6 @@ impl AgentCoordinator {
                 .expect("scope just inserted");
             state.status = AgentLifecycleStatus::Running;
         }
-
-        // Drop request to avoid unused warnings in this phase.
-        let _ = &request.label;
 
         Ok(ChildReservation { context })
     }
@@ -609,7 +607,7 @@ impl AgentCoordinator {
     /// other targets (parent, sibling, grandchild, other branch, cross-session,
     /// absent) map to [`CoordinatorError::NotVisible`] so denials are
     /// indistinguishable. Returns a [`crate::agent::DirectChildView`] projection
-    /// (agent_id, status, summary) with no parent ID or descendant metadata.
+    /// (agent_id, status, label, summary) with no parent ID or descendant metadata.
     pub async fn read_status(
         &self,
         caller: &AgentExecutionContext,
@@ -624,6 +622,7 @@ impl AgentCoordinator {
             return Ok(crate::agent::DirectChildView {
                 agent_id: record.agent_id.clone(),
                 status: record.status,
+                label: record.label.clone(),
                 summary: record.summary.as_ref().map(|s| s.text.clone()),
             });
         }
@@ -639,6 +638,7 @@ impl AgentCoordinator {
         Ok(crate::agent::DirectChildView {
             agent_id: child.agent_id.clone(),
             status: child.status,
+            label: child.label.clone(),
             summary: child.summary.as_ref().map(|s| s.text.clone()),
         })
     }
@@ -1307,6 +1307,7 @@ mod tests {
         assert_eq!(view.self_view.agent_id, root.agent_id);
         assert_eq!(view.children.len(), 1);
         assert_eq!(view.children[0].agent_id, child.context.agent_id);
+        assert_eq!(view.children[0].label, "child-a");
     }
 
     // ---- Task 4: structured finalization, joining, cancellation ----

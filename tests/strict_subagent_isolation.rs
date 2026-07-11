@@ -60,6 +60,9 @@ async fn root_local_view_contains_self_and_direct_children_only() {
     let child_ids: Vec<&str> = view.children.iter().map(|c| c.agent_id.as_str()).collect();
     assert!(child_ids.contains(&tree.child.agent_id.as_str()));
     assert!(child_ids.contains(&tree.sibling.agent_id.as_str()));
+    let child_labels: Vec<&str> = view.children.iter().map(|c| c.label.as_str()).collect();
+    assert!(child_labels.contains(&"child"));
+    assert!(child_labels.contains(&"sibling"));
     // Grandchild must not appear in root's view.
     assert!(!child_ids.contains(&tree.grandchild.agent_id.as_str()));
 }

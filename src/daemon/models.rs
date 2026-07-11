@@ -208,6 +208,8 @@ pub struct SelfAgentResponse {
 pub struct DirectChildResponse {
     pub agent_id: String,
     pub status: AgentLifecycleStatus,
+    #[serde(default)]
+    pub label: String,
     pub summary: Option<String>,
     pub navigation_capability: String,
 }
