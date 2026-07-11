@@ -200,6 +200,12 @@ async fn test_refactor_rename_trait_method_across_project() {
         .map(|t| t.name().to_string())
         .filter(|n| n != "task")
         .collect();
+    // The e2e test is the root scope: build a trusted root execution context
+    // (never derived from model JSON) and pass it through the loop so every
+    // nested tool call observes the trusted agent identity.
+    let root_context = wgenty_code::agent::AgentExecutionContext::root(
+        wgenty_code::agent::SessionId::new("refactor-e2e"),
+    );
     println!("\n🔧 Tools: {}", allowed_tools.len());
 
     let system_prompt = r#"You are a code refactoring subagent. RULES:
@@ -230,6 +236,7 @@ Return summary with files changed and remaining occurrences of "process_transact
     let result = run_subagent_loop(
         &api_client,
         &registry,
+        &root_context,
         system_prompt,
         &user_prompt,
         &allowed_tools,
