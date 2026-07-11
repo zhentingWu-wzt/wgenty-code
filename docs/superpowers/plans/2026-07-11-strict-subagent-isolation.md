@@ -1130,7 +1130,7 @@ git commit -m "feat(api): expose capability-scoped agent views"
 - Modify: `src/tui/components/subagent_tree.rs`
 - Modify: `src/tui/components/subagent_status_bar.rs`
 
-- [ ] **Step 1: Write local-view state tests**
+- [x] **Step 1: Write local-view state tests**
 
 Add tests proving that replacing the current view removes nodes from the previous layer, counts only the current self and direct children, and cannot select an ID absent from the current response.
 
@@ -1146,13 +1146,13 @@ fn replacing_local_view_drops_previous_layer_nodes() {
 }
 ```
 
-- [ ] **Step 2: Run TUI component tests to verify they fail**
+- [x] **Step 2: Run TUI component tests to verify they fail**
 
 Run: `cargo test tui::components::subagent_tree --lib`
 
 Expected: FAIL because `replace_local` and scoped selection do not exist.
 
-- [ ] **Step 3: Replace progress-map client methods**
+- [x] **Step 3: Replace progress-map client methods**
 
 Remove `poll_subagent_progress`. Add:
 
@@ -1165,7 +1165,7 @@ pub async fn cancel_child(&self, session_id: &str, capability: &str) -> anyhow::
 
 Add `DaemonClient::create_viewer()` and store its returned token in a private `DaemonClient` field for `X-Wgenty-Viewer-Token`; create it once during TUI startup and refresh it only after daemon restart/unauthorized response. Do not write viewer tokens or capability values to tracing output, chat messages, transcripts, or tool arguments.
 
-- [ ] **Step 4: Change app events and tree storage**
+- [x] **Step 4: Change app events and tree storage**
 
 Replace `AppEvent::SubagentUpdate(Box<SubagentProgress>)` with:
 
@@ -1175,17 +1175,17 @@ AppEvent::AgentLocalView(Box<LocalAgentViewResponse>)
 
 Make `SubagentTree` store exactly one `SelfAgentResponse` and a vector of direct children. Remove session-wide upsert semantics from the agent view path. `node_list` and `real_node_list` may render the local input but must not discover descendants.
 
-- [ ] **Step 5: Update polling and status rendering**
+- [x] **Step 5: Update polling and status rendering**
 
 Both existing pollers fetch the current root/local endpoint and emit `AgentLocalView`. Status counts, completion summaries, and active indicators must be computed only from the current response. Preserve current rendering labels and status colors where possible.
 
-- [ ] **Step 6: Verify local-only TUI state**
+- [x] **Step 6: Verify local-only TUI state**
 
 Run: `cargo fmt && cargo test tui::components::subagent_tree --lib && cargo check --all-targets`
 
 Expected: PASS and `rg -n 'poll_subagent_progress|SubagentUpdate' src/tui` returns no matches.
 
-- [ ] **Step 7: Commit TUI local state migration**
+- [x] **Step 7: Commit TUI local state migration**
 
 ```bash
 git add src/tui/client.rs src/tui/agent src/tui/app/types.rs src/tui/app/mod.rs src/tui/app/event.rs src/tui/components/subagent_tree.rs src/tui/components/subagent_status_bar.rs

@@ -1,7 +1,7 @@
 //! Type definitions for the TUI application layer.
 
-use crate::agent::progress::SubagentProgress;
 use crate::api::ChatMessage;
+use crate::daemon::models::LocalAgentViewResponse;
 use crate::state::agent_phase::{TurnAbortReason, TurnId};
 use crate::tui::client::{SessionInfo, TodoItem};
 use crossterm::event::KeyEvent;
@@ -165,8 +165,8 @@ pub enum AppEvent {
     TodosUpdated(Vec<TodoItem>),
     /// Settings were hot-reloaded from disk
     ConfigChanged(Box<crate::config::Settings>),
-    /// A subagent progress update from daemon polling.
-    SubagentUpdate(Box<SubagentProgress>),
+    /// A scoped agent local view (self + direct children) from the daemon.
+    AgentLocalView(Box<LocalAgentViewResponse>),
     /// Background task/subagent result notification for display in chat.
     BackgroundTaskResult(String),
 }

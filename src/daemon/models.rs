@@ -196,7 +196,7 @@ pub struct SearchSessionsQuery {
 use crate::agent::AgentLifecycleStatus;
 
 /// Self projection in a scoped agent view.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelfAgentResponse {
     pub agent_id: String,
     pub status: AgentLifecycleStatus,
@@ -204,7 +204,7 @@ pub struct SelfAgentResponse {
 
 /// Direct-child projection, including an opaque navigation capability the
 /// trusted UI may use to descend one level.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectChildResponse {
     pub agent_id: String,
     pub status: AgentLifecycleStatus,
@@ -214,7 +214,7 @@ pub struct DirectChildResponse {
 
 /// Local view: self plus direct children only. No parent ID, descendant
 /// counts, or sibling/other-branch records.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalAgentViewResponse {
     pub self_view: SelfAgentResponse,
     pub children: Vec<DirectChildResponse>,
@@ -222,7 +222,7 @@ pub struct LocalAgentViewResponse {
 
 /// Response to `POST /api/v1/ui/viewers`: a bearer token returned once. The
 /// daemon stores only the HMAC digest of the token.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateViewerResponse {
     pub viewer_token: String,
 }
