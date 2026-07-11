@@ -1010,7 +1010,7 @@ git commit -m "feat(agent): authorize subagent results and transcripts"
 - Modify: `src/agent/mod.rs`
 - Modify: `src/agent/store.rs`
 
-- [ ] **Step 1: Write capability binding tests**
+- [x] **Step 1: Write capability binding tests**
 
 Create a deterministic test clock and assert verification rejects each mismatch independently: wrong session, target, generation, operation, viewer, expiration, and unknown token. In the test module, define `test_secret() -> [u8; 32]` as `[7; 32]` and `fixed_clock()` as an `Arc<TestClock>` initialized to `2026-07-11T00:00:00Z`. Assert capability debug/log formatting does not expose the bearer token.
 
@@ -1025,25 +1025,25 @@ fn capability_is_bound_to_all_authority_dimensions() {
 }
 ```
 
-- [ ] **Step 2: Run capability tests to verify they fail**
+- [x] **Step 2: Run capability tests to verify they fail**
 
 Run: `cargo test agent::capability::tests --lib`
 
 Expected: FAIL because the capability service does not exist.
 
-- [ ] **Step 3: Implement opaque in-memory grants**
+- [x] **Step 3: Implement opaque in-memory grants**
 
 Define `CapabilityOperation::{Navigate, Transcript, Cancel}`, `ViewerId`, `NavigationCapability`, `CapabilityGrant`, and `CapabilityRequest`. Add a private `Clock` trait with `fn now(&self) -> DateTime<Utc>`, a production `SystemClock`, and a test `TestClock`. Generate 256-bit random bearer tokens with `rand::rngs::OsRng`, store only `Hmac<Sha256>(secret, token)` as the lookup key, bind all dimensions from the approved design, and expire grants after a configurable duration. Verification must return `CapabilityError::NotVisible` for every mismatch and remove expired entries.
 
 Do not implement capabilities as serialized agent IDs. Do not derive authority solely from the daemon bearer token.
 
-- [ ] **Step 4: Verify capability secrecy and constant lookup behavior**
+- [x] **Step 4: Verify capability secrecy and constant lookup behavior**
 
 Run: `cargo fmt && cargo test agent::capability::tests --lib`
 
 Expected: PASS; serialized local projections may contain opaque capability strings, while `Debug` output for the service and grant omits raw tokens.
 
-- [ ] **Step 5: Commit capability service**
+- [x] **Step 5: Commit capability service**
 
 ```bash
 git add src/agent/capability.rs src/agent/mod.rs src/agent/store.rs
