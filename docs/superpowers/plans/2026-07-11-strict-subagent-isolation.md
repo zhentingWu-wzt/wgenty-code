@@ -602,7 +602,7 @@ git commit -m "feat(agent): enforce structured subagent lifetimes"
 - Modify: `src/tools/mod.rs`
 - Modify: `src/tools/executor.rs`
 
-- [ ] **Step 1: Write adapter and executor propagation tests**
+- [x] **Step 1: Write adapter and executor propagation tests**
 
 Add a test tool that records the caller identity in `src/tools/mod.rs` tests:
 
@@ -625,13 +625,13 @@ impl Tool for ContextProbe {
 
 Assert `ToolRegistry::execute_with_context` returns the trusted agent ID even when input contains forged `_agent_id`, `_session_id`, and `_subagent_depth`. Add an executor test proving `execute_with_hooks` passes the same `ToolContext` through pre/post hooks.
 
-- [ ] **Step 2: Run contextual execution tests to verify they fail**
+- [x] **Step 2: Run contextual execution tests to verify they fail**
 
 Run: `cargo test tools::external_tool_tests tools::executor::tests --lib`
 
 Expected: FAIL because contextual methods and `ToolOutput::text` do not exist.
 
-- [ ] **Step 3: Implement the backward-compatible adapter**
+- [x] **Step 3: Implement the backward-compatible adapter**
 
 Add to `Tool`:
 
@@ -658,7 +658,7 @@ pub async fn execute_with_context(
 
 Change both `ToolExecutor::execute_tool_call` and `ToolExecutor::execute_with_hooks` to require `&ToolContext<'_>` and call the contextual registry method. Keep hook `session_id` derived from `context.agent.session_id`; remove the separate optional session argument from these two methods.
 
-- [ ] **Step 4: Fix all compiler-reported executor call sites with trusted root contexts**
+- [x] **Step 4: Fix all compiler-reported executor call sites with trusted root contexts**
 
 At daemon/TUI roots, call `AgentCoordinator::ensure_root(SessionId::new(session_id))`; nested loops will receive child contexts in Task 6. Do not construct contexts from model JSON. Run:
 
@@ -666,13 +666,13 @@ At daemon/TUI roots, call `AgentCoordinator::ensure_root(SessionId::new(session_
 
 Expected: PASS with every executor call supplying a `ToolContext` and no identity-sensitive fallback to `ToolRegistry::execute`.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run: `cargo fmt && cargo test tools::external_tool_tests tools::executor::tests --lib`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit contextual tool execution**
+- [x] **Step 6: Commit contextual tool execution**
 
 ```bash
 git add src/tools/mod.rs src/tools/executor.rs src/daemon/handlers.rs src/daemon/state.rs src/tui/agent

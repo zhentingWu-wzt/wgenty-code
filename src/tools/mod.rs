@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::agent::ToolContext;
+
 /// Tool trait for all tools
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -38,6 +40,21 @@ pub trait Tool: Send + Sync {
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError>;
 
+    /// Contextual execution path.
+    ///
+    /// Identity-sensitive tools override this to read the trusted
+    /// [`ToolContext`] (agent identity, session, depth, cancellation) instead
+    /// of trusting model-supplied JSON. The default adapter delegates to
+    /// [`execute`](Self::execute) so context-free tools need no changes; they
+    /// simply ignore the context.
+    async fn execute_with_context(
+        &self,
+        _context: &ToolContext<'_>,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        self.execute(input).await
+    }
+
     fn tool_definition(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "function",
@@ -55,6 +72,17 @@ pub struct ToolOutput {
     pub output_type: String,
     pub content: String,
     pub metadata: HashMap<String, serde_json::Value>,
+}
+
+impl ToolOutput {
+    /// Creates a plain-text tool output with no metadata.
+    pub fn text(content: impl Into<String>) -> Self {
+        Self {
+            output_type: "text".to_string(),
+            content: content.into(),
+            metadata: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,6 +247,28 @@ impl ToolRegistry {
             }),
         }
     }
+
+    /// Executes a tool with the trusted [`ToolContext`].
+    ///
+    /// This is the path identity-sensitive tools must use: the agent identity,
+    /// session, depth, and cancellation token come from trusted runtime state,
+    /// never from model-supplied JSON. Forging `_agent_id`/`_session_id`/
+    /// `_subagent_depth` in `input` has no effect because the context is
+    /// authoritative.
+    pub async fn execute_with_context(
+        &self,
+        context: &ToolContext<'_>,
+        name: &str,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        match self.tools.get(name) {
+            Some(tool) => tool.execute_with_context(context, input).await,
+            None => Err(ToolError {
+                message: format!("Tool not found: {}", name),
+                code: Some("tool_not_found".to_string()),
+            }),
+        }
+    }
 }
 
 impl Default for ToolRegistry {
@@ -270,6 +320,81 @@ mod external_tool_tests {
                 metadata: HashMap::new(),
             })
         }
+    }
+
+    /// A probe tool that records the trusted caller identity from the
+    /// contextual path and panics if the context-free path is used.
+    struct ContextProbe;
+
+    #[async_trait]
+    impl Tool for ContextProbe {
+        fn name(&self) -> &str {
+            "context_probe"
+        }
+        fn description(&self) -> &str {
+            "records trusted context"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            panic!("contextual path must be used")
+        }
+        async fn execute_with_context(
+            &self,
+            context: &ToolContext<'_>,
+            _input: serde_json::Value,
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput::text(context.agent.agent_id.to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_with_context_uses_trusted_agent_id_not_forged_input() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(ContextProbe));
+
+        let root = crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new("s"));
+        let invocation_id = crate::agent::ToolInvocationId::new("inv-1");
+        let context = ToolContext {
+            agent: &root,
+            invocation_id,
+        };
+
+        // Input carries forged identity fields; they must be ignored.
+        let forged = serde_json::json!({
+            "_agent_id": "forged-agent",
+            "_session_id": "forged-session",
+            "_subagent_depth": 0,
+        });
+
+        let output = registry
+            .execute_with_context(&context, "context_probe", forged)
+            .await
+            .unwrap();
+
+        assert_eq!(output.content, root.agent_id.to_string());
+        assert_ne!(output.content, "forged-agent");
+    }
+
+    #[tokio::test]
+    async fn execute_with_context_defaults_to_context_free_execute() {
+        // NamedTool does not override execute_with_context, so the default
+        // adapter must delegate to execute.
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(NamedTool("adapter_probe")));
+
+        let root = crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new("s"));
+        let context = ToolContext {
+            agent: &root,
+            invocation_id: crate::agent::ToolInvocationId::new("inv-2"),
+        };
+
+        let output = registry
+            .execute_with_context(&context, "adapter_probe", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(output.output_type, "text");
     }
 
     #[test]

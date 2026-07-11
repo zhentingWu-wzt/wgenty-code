@@ -213,17 +213,22 @@ pub async fn execute_tool(
     tracing::info!("🔐 Daemon: policy for '{}' = {:?}", tool_name, decision);
     match decision {
         Ok(PolicyDecision::Allow) => {
-            // Inject session_id for tools that need it (task, delegate).
-            let mut args = args.clone();
-            if tool_name == "task" || tool_name == "delegate" {
-                if let Some(obj) = args.as_object_mut() {
-                    obj.insert("_session_id".to_string(), serde_json::json!(session_id));
-                }
-            }
+            // Build the trusted root execution context for this session. The
+            // agent identity is derived from trusted runtime state, never from
+            // model-supplied JSON. (Task 12 will route this through
+            // DaemonState::root_context and the AgentCoordinator.)
+            let root_context =
+                crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new(session_id));
+            let tool_context = crate::agent::ToolContext {
+                agent: &root_context,
+                invocation_id: crate::agent::ToolInvocationId::new(
+                    uuid::Uuid::new_v4().to_string(),
+                ),
+            };
             // Execute directly with hooks
             let msg = state
                 .tool_executor
-                .execute_with_hooks("api", tool_name, args, Some(session_id))
+                .execute_with_hooks(&tool_context, "api", tool_name, args.clone())
                 .await;
             let content = msg.content.unwrap_or_default();
             let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
@@ -253,15 +258,18 @@ pub async fn execute_tool(
                         .create(&format!("before {}", tool_name))
                         .await;
                 }
-                let mut args = args.clone();
-                if tool_name == "task" || tool_name == "delegate" {
-                    if let Some(obj) = args.as_object_mut() {
-                        obj.insert("_session_id".to_string(), serde_json::json!(session_id));
-                    }
-                }
+                let root_context = crate::agent::AgentExecutionContext::root(
+                    crate::agent::SessionId::new(session_id),
+                );
+                let tool_context = crate::agent::ToolContext {
+                    agent: &root_context,
+                    invocation_id: crate::agent::ToolInvocationId::new(
+                        uuid::Uuid::new_v4().to_string(),
+                    ),
+                };
                 let msg = state
                     .tool_executor
-                    .execute_with_hooks("api", tool_name, args, Some(session_id))
+                    .execute_with_hooks(&tool_context, "api", tool_name, args.clone())
                     .await;
                 let content = msg.content.unwrap_or_default();
                 let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();

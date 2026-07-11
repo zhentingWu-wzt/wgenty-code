@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use wgenty_code::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
 use wgenty_code::permissions::policy::ToolPermissionPolicy;
 use wgenty_code::runtime::hooks::{HookAction, HookDefinition, HookEvent, HookManager};
 use wgenty_code::tools::ToolRegistry;
@@ -20,6 +21,15 @@ fn make_executor() -> wgenty_code::tools::ToolExecutor {
 /// Helper: extract content string from a ChatMessage for assertions.
 fn content(msg: &wgenty_code::api::ChatMessage) -> &str {
     msg.content.as_deref().unwrap_or("")
+}
+
+/// Build a trusted root execution context for a test invocation.
+///
+/// The returned context is derived from trusted runtime state, never from
+/// model-supplied JSON. Each test binds a [`ToolContext`] to it locally so the
+/// borrow lives for the duration of the tool call.
+fn test_context() -> AgentExecutionContext {
+    AgentExecutionContext::root(SessionId::new("test"))
 }
 
 /// Build a blocking PreToolUse hook that blocks a given tool name when
@@ -72,12 +82,17 @@ async fn test_no_state_handle_skips_hook_blocking() {
     // No state_handle set → hooks with when_state fire regardless (state=None fallback)
 
     // Use read-only tool to avoid touching the filesystem
+    let root = test_context();
+    let context = ToolContext {
+        agent: &root,
+        invocation_id: ToolInvocationId::new("test-no-state"),
+    };
     let result = executor
         .execute_with_hooks(
+            &context,
             "test-no-state",
             "file_read",
             serde_json::json!({"file_path": "/tmp/test.rs"}),
-            None,
         )
         .await;
     // Without state, the file_read tool runs (though it may error on missing file — that's fine)
@@ -104,12 +119,17 @@ async fn test_build_phase_allows_write_tools() {
     let mut executor = make_executor().with_hooks(hook_manager);
     executor.set_state_handle(Some(Arc::new(RwLock::new("build".to_string()))));
 
+    let root = test_context();
+    let context = ToolContext {
+        agent: &root,
+        invocation_id: ToolInvocationId::new("test-build"),
+    };
     let result = executor
         .execute_with_hooks(
+            &context,
             "test-build",
             "file_write",
             serde_json::json!({"path": "/tmp/test_build_rs", "content": "fn main() {}"}),
-            None,
         )
         .await;
     let msg = content(&result);
@@ -134,12 +154,17 @@ async fn test_open_phase_blocks_write_tools() {
     let mut executor = make_executor().with_hooks(hook_manager);
     executor.set_state_handle(Some(Arc::new(RwLock::new("open".to_string()))));
 
+    let root = test_context();
+    let context = ToolContext {
+        agent: &root,
+        invocation_id: ToolInvocationId::new("test-open"),
+    };
     let result = executor
         .execute_with_hooks(
+            &context,
             "test-open",
             "file_write",
             serde_json::json!({"path": "/tmp/test_open_rs", "content": "fn main() {}"}),
-            None,
         )
         .await;
     let msg = content(&result);
@@ -164,12 +189,17 @@ async fn test_read_tools_not_blocked_in_open_phase() {
     let mut executor = make_executor().with_hooks(hook_manager);
     executor.set_state_handle(Some(Arc::new(RwLock::new("open".to_string()))));
 
+    let root = test_context();
+    let context = ToolContext {
+        agent: &root,
+        invocation_id: ToolInvocationId::new("test-read-open"),
+    };
     let result = executor
         .execute_with_hooks(
+            &context,
             "test-read-open",
             "file_read",
             serde_json::json!({"file_path": "/tmp/nonexistent"}),
-            None,
         )
         .await;
     let msg = content(&result);
@@ -194,12 +224,17 @@ async fn test_exec_command_blocked_in_open_phase() {
     let mut executor = make_executor().with_hooks(hook_manager);
     executor.set_state_handle(Some(Arc::new(RwLock::new("open".to_string()))));
 
+    let root = test_context();
+    let context = ToolContext {
+        agent: &root,
+        invocation_id: ToolInvocationId::new("test-cmd-open"),
+    };
     let result = executor
         .execute_with_hooks(
+            &context,
             "test-cmd-open",
             "exec_command",
             serde_json::json!({"command": "rm -rf /tmp/test"}),
-            None,
         )
         .await;
     let msg = content(&result);
@@ -224,12 +259,17 @@ async fn test_exec_command_allowed_in_build_phase() {
     let mut executor = make_executor().with_hooks(hook_manager);
     executor.set_state_handle(Some(Arc::new(RwLock::new("build".to_string()))));
 
+    let root = test_context();
+    let context = ToolContext {
+        agent: &root,
+        invocation_id: ToolInvocationId::new("test-cmd-build"),
+    };
     let result = executor
         .execute_with_hooks(
+            &context,
             "test-cmd-build",
             "exec_command",
             serde_json::json!({"command": "echo hello"}),
-            None,
         )
         .await;
     let msg = content(&result);
@@ -265,12 +305,17 @@ async fn test_notification_hook_fires_on_block() {
     let mut executor = make_executor().with_hooks(hook_manager);
     executor.set_state_handle(Some(Arc::new(RwLock::new("open".to_string()))));
 
+    let root = test_context();
+    let context = ToolContext {
+        agent: &root,
+        invocation_id: ToolInvocationId::new("test-notif"),
+    };
     let result = executor
         .execute_with_hooks(
+            &context,
             "test-notif",
             "file_write",
             serde_json::json!({"path": "/tmp/test_notify_rs", "content": "fn main() {}"}),
-            None,
         )
         .await;
     let msg = content(&result);
@@ -298,12 +343,17 @@ async fn test_hook_state_mismatch_allows() {
     // State is "design" — hook's when_state is "open" → should NOT match
     executor.set_state_handle(Some(Arc::new(RwLock::new("design".to_string()))));
 
+    let root = test_context();
+    let context = ToolContext {
+        agent: &root,
+        invocation_id: ToolInvocationId::new("test-mismatch"),
+    };
     let result = executor
         .execute_with_hooks(
+            &context,
             "test-mismatch",
             "file_write",
             serde_json::json!({"path": "/tmp/test_mismatch_rs", "content": "fn main() {}"}),
-            None,
         )
         .await;
     let msg = content(&result);
