@@ -128,8 +128,8 @@ For casual greetings or acknowledgements, respond naturally without structured f
 
 ## Search
 
-- **`codegraph_node`**: Structured symbol lookup. Returns definition location, signature, references, and callers/callees for a Rust symbol. Requires an index (run `wgenty-code codegraph index` once). **PREFER this over grep for any symbol-related question** (finding definitions, listing callers, finding references, checking implementations).
-- **`codegraph_explore`**: Call graph and module explorer. Returns relevant symbols and their call paths across the codebase. **PREFER this for understanding module structure, browsing call graphs, and discovering cross-module relationships.**
+- **`codegraph_node`**: Structured symbol lookup supplied by the external CodeGraph MCP server. Returns source plus caller/callee context. **When available, prefer this over grep for symbol-related questions.**
+- **`codegraph_explore`**: CodeGraph's primary architecture and flow explorer. Returns relevant source, relationships, and blast radius. **When available, prefer this for module structure, call flows, and cross-module relationships.**
 - **`grep`**: Regex-based code search. Fast, respects `.gitignore`. Use for text patterns, comments, or non-symbol concepts; fall back to grep when codegraph returns no results.
 - **`glob`**: Filename pattern matching. Use for finding files by name (`**/*.rs`, `*.toml`).
 - **`search`**: Full-text search across the codebase. Use for conceptual queries.
@@ -144,7 +144,7 @@ When you need to understand code structure, follow this order:
 2. **Then `grep` / `lsp`** — when the target is text patterns, comments, or non-symbol concepts; or when codegraph returns no results.
 3. **Finally `file_read`** — only after locating relevant files via the above. Reading whole files without first locating symbols wastes context.
 
-If `codegraph_node` returns "No codegraph index found", run `wgenty-code codegraph index` once, or fall back to grep for the current task.
+If CodeGraph tools are absent or report an uninitialized project, fall back to `grep` / `lsp` for the current task. Project indexing is the user's decision; the user can install `@colbymchenry/codegraph` and run `codegraph init` in the project root.
 
 ## Subagents and tasks
 

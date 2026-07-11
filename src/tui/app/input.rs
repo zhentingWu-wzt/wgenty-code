@@ -58,6 +58,7 @@ impl App {
             } else {
                 "Plan mode disabled"
             };
+            self.phase = AgentPhase::Idle;
             self.committed_messages.push(UIMessage {
                 role: MessageRole::System,
                 content: msg.to_string(),
@@ -107,6 +108,7 @@ impl App {
                     self.start_next_turn();
                 }
             } else {
+                self.phase = AgentPhase::Idle;
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::System,
                     content: "No interrupted turn to continue. The last turn completed normally."
@@ -170,6 +172,7 @@ impl App {
                 .collect::<Vec<_>>()
                 .join("\n");
             self.push_system_message(format!("Available commands:\n{}", commands));
+            self.phase = AgentPhase::Idle;
             return;
         }
 

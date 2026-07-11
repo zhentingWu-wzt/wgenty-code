@@ -10,9 +10,6 @@ const IDLE_ICON: &str = "●";
 const DIM: Color = Color::Rgb(100, 100, 115);
 const ACTIVE: Color = Color::Rgb(100, 200, 255);
 const ERROR: Color = Color::Rgb(255, 100, 100);
-#[allow(dead_code)]
-const WARN: Color = Color::Rgb(255, 180, 50);
-
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Render a status line:

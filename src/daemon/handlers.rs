@@ -425,16 +425,15 @@ pub async fn list_mcp_servers(
     State(state): State<Arc<DaemonState>>,
 ) -> Json<ListMcpServersResponse> {
     let servers: Vec<McpServerInfo> = state
-        .app_state
-        .settings
-        .integrations
-        .mcp_servers
-        .iter()
-        .map(|cfg| McpServerInfo {
-            name: cfg.name.clone(),
-            status: format!("{:?}", cfg.status),
-            tools_count: 0,
-            resources_count: 0,
+        .mcp_manager
+        .list_servers_for_settings(&state.app_state.settings)
+        .await
+        .into_iter()
+        .map(|server| McpServerInfo {
+            name: server.name,
+            status: server.status.to_string(),
+            tools_count: server.tools_count,
+            resources_count: server.resources_count,
         })
         .collect();
 

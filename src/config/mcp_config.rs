@@ -26,13 +26,44 @@ pub struct McpConfig {
     pub auto_start: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum McpServerStatus {
     Running,
     Stopped,
     Error,
     Unknown,
     Starting,
+}
+
+impl<'de> serde::Deserialize<'de> for McpServerStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
+        struct StatusVisitor;
+        impl<'de> de::Visitor<'de> for StatusVisitor {
+            type Value = McpServerStatus;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a valid server status string")
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                match v.to_lowercase().as_str() {
+                    "running" => Ok(McpServerStatus::Running),
+                    "stopped" => Ok(McpServerStatus::Stopped),
+                    "error" => Ok(McpServerStatus::Error),
+                    "unknown" => Ok(McpServerStatus::Unknown),
+                    "starting" => Ok(McpServerStatus::Starting),
+                    _ => Err(de::Error::unknown_variant(
+                        v,
+                        &["running", "stopped", "error", "unknown", "starting"],
+                    )),
+                }
+            }
+        }
+        deserializer.deserialize_str(StatusVisitor)
+    }
 }
 
 impl std::fmt::Display for McpServerStatus {
@@ -77,6 +108,13 @@ impl McpConfig {
             auto_start: true,
             filesystem_path: None,
         }
+    }
+
+    /// Default configuration for the third-party local CodeGraph MCP server.
+    pub fn codegraph() -> Self {
+        Self::new("codegraph", "codegraph")
+            .with_arg("serve")
+            .with_arg("--mcp")
     }
 
     /// Add an argument
