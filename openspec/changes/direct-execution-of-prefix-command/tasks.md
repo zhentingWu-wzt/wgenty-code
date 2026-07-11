@@ -15,5 +15,5 @@
 
 ## T3: 测试与构建验证
 
-- [ ] 3.1 为 `!` 前缀判定与命令体解析补充单元测试（纯 `!`、`!ls`、`! ls`、`!echo hi && echo bye`）。
-- [ ] 3.2 运行 `cargo fmt`、`cargo clippy`、`cargo build`、相关 `cargo test`。
+- [x] 3.1 为 `!` 前缀判定与命令体解析补充单元测试（纯 `!`、`!ls`、`! ls`、`!echo hi && echo bye`）。
+- [x] 3.2 运行 `cargo fmt`、`cargo clippy`、`cargo build`、相关 `cargo test`。
