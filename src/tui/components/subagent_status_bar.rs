@@ -136,6 +136,9 @@ fn status_icon(status: &SubagentStatus) -> (&'static str, Color) {
         SubagentStatus::Completed => ("✓", Color::Rgb(166, 227, 161)),
         SubagentStatus::Failed => ("✗", Color::Rgb(243, 139, 168)),
         SubagentStatus::Cancelled => ("⊘", Color::Rgb(243, 139, 168)),
+        SubagentStatus::WaitingForChildren => ("◌", Color::Rgb(137, 180, 250)),
+        SubagentStatus::Finalizing => ("◆", Color::Rgb(166, 227, 161)),
+        SubagentStatus::Cancelling => ("◐", Color::Rgb(243, 139, 168)),
     }
 }
 
@@ -175,6 +178,22 @@ mod tests {
     use super::*;
     use crate::agent::progress::SubagentProgress;
     use crate::tui::components::subagent_tree::SubagentNode;
+
+    #[test]
+    fn test_lifecycle_status_icons() {
+        assert_eq!(
+            status_icon(&SubagentStatus::WaitingForChildren),
+            ("◌", Color::Rgb(137, 180, 250))
+        );
+        assert_eq!(
+            status_icon(&SubagentStatus::Finalizing),
+            ("◆", Color::Rgb(166, 227, 161))
+        );
+        assert_eq!(
+            status_icon(&SubagentStatus::Cancelling),
+            ("◐", Color::Rgb(243, 139, 168))
+        );
+    }
 
     fn make_node(id: &str, status: SubagentStatus) -> SubagentNode {
         SubagentNode {
