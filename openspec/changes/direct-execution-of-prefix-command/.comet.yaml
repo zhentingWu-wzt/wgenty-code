@@ -1,5 +1,5 @@
 workflow: tweak
-phase: build
+phase: verify
 context_compression: off
 build_mode: direct
 build_pause: null
