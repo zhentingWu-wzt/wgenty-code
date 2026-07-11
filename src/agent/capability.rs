@@ -164,6 +164,22 @@ impl CapabilityRequest {
             operation: CapabilityOperation::Transcript,
         }
     }
+
+    /// Creates a cancel request.
+    pub fn cancel(
+        viewer: impl Into<String>,
+        session: impl Into<String>,
+        target: impl Into<String>,
+        generation: u64,
+    ) -> Self {
+        Self {
+            viewer: ViewerId::new(viewer),
+            session_id: SessionId::new(session),
+            target: AgentId::new(target),
+            generation,
+            operation: CapabilityOperation::Cancel,
+        }
+    }
 }
 
 /// Errors returned by the capability service. Every denial variant is
