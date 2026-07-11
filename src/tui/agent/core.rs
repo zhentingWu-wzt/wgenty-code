@@ -434,7 +434,13 @@ impl AgentLoop {
                                             let _ =
                                                 tx.send(AppEvent::AgentLocalView(Box::new(view)));
                                         }
-                                        Err(_) => break,
+                                        Err(error) => {
+                                            tracing::warn!(
+                                                session_id = %session_id,
+                                                error = %error,
+                                                "Failed to poll scoped subagent view; retrying"
+                                            );
+                                        }
                                     }
                                 }
                             }))
