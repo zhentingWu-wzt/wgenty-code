@@ -488,7 +488,7 @@ git commit -m "feat(agent): coordinate child spawning and concurrency"
 - Modify: `src/agent/coordinator.rs`
 - Modify: `src/agent/store.rs`
 
-- [ ] **Step 1: Write terminal-state and cancellation tests**
+- [x] **Step 1: Write terminal-state and cancellation tests**
 
 Add tests with controlled child futures using `tokio::sync::oneshot`:
 
@@ -530,13 +530,13 @@ async fn cancelling_parent_terminates_descendants_bottom_up() {
 
 Also test `BestEffort` waits for all children and `FailFast` cancels remaining children after the first required failure.
 
-- [ ] **Step 2: Run lifecycle tests to verify they fail**
+- [x] **Step 2: Run lifecycle tests to verify they fail**
 
 Run: `cargo test agent::coordinator::tests --lib`
 
 Expected: FAIL because finalization, joining, and cancellation are not implemented.
 
-- [ ] **Step 3: Implement lifecycle and result contracts**
+- [x] **Step 3: Implement lifecycle and result contracts**
 
 Add:
 
@@ -583,13 +583,13 @@ pub async fn cancel_subtree(&self, caller: &AgentExecutionContext, target: Agent
 
 Cancellation order must be: set `Cancelling`, cancel the scope token, recursively signal direct children, await handles with the configured shutdown timeout, abort uncooperative tasks, persist child terminal states, release child permits, then persist the requested parent terminal state. `cancel_subtree` must authorize self or direct child through the same store predicate and map all hidden/absent cases to `NotVisible`.
 
-- [ ] **Step 4: Verify structured concurrency tests**
+- [x] **Step 4: Verify structured concurrency tests**
 
 Run: `cargo fmt && cargo test agent::coordinator::tests --lib`
 
 Expected: PASS, including permit-release assertions.
 
-- [ ] **Step 5: Commit lifecycle enforcement**
+- [x] **Step 5: Commit lifecycle enforcement**
 
 ```bash
 git add src/agent/coordinator.rs src/agent/store.rs
