@@ -125,13 +125,17 @@ impl DaemonState {
                     }
                 }
             };
+            // Single shared coordinator owning all agent spawning, concurrency,
+            // and lifecycle for this daemon. Derived from trusted subagent
+            // settings; identity is never taken from model JSON.
+            let coordinator = std::sync::Arc::new(crate::agent::AgentCoordinator::new(
+                app_state.settings.agent.subagent.max_concurrent,
+                app_state.settings.agent.subagent.max_depth,
+            ));
             let task_tool = crate::tools::meta::task::TaskTool::new(
                 app_state.settings.clone(),
                 weak_reg.clone(),
-                std::sync::Arc::new(crate::agent::AgentCoordinator::new(
-                    app_state.settings.agent.subagent.max_concurrent,
-                    app_state.settings.agent.subagent.max_depth,
-                )),
+                coordinator.clone(),
                 progress_store.clone(),
                 transcript_store.clone(),
             );
@@ -146,6 +150,7 @@ impl DaemonState {
                 let rlm_tool = crate::tools::meta::rlm::RlmDelegateTool::new(
                     app_state.settings.clone(),
                     weak_reg.clone(),
+                    coordinator.clone(),
                     progress_store.clone(),
                 );
                 registry.register(Box::new(rlm_tool));
@@ -154,6 +159,7 @@ impl DaemonState {
             let run_script_tool = crate::tools::meta::run_script::RunScriptTool::new(
                 app_state.settings.clone(),
                 weak_reg.clone(),
+                coordinator.clone(),
             );
             registry.register(Box::new(run_script_tool));
 
