@@ -3,16 +3,19 @@ use std::fmt;
 use tokio_util::sync::CancellationToken;
 
 macro_rules! string_id {
-    ($name:ident) => {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
         #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
         #[serde(transparent)]
         pub struct $name(String);
 
         impl $name {
+            /// Creates an identifier from its string wire representation.
             pub fn new(value: impl Into<String>) -> Self {
                 Self(value.into())
             }
 
+            /// Returns the identifier's string wire representation.
             pub fn as_str(&self) -> &str {
                 &self.0
             }
@@ -26,20 +29,39 @@ macro_rules! string_id {
     };
 }
 
-string_id!(SessionId);
-string_id!(AgentId);
-string_id!(ToolInvocationId);
+string_id!(
+    /// Identifies an agent execution session and serializes as a plain string.
+    SessionId
+);
+string_id!(
+    /// Identifies an agent within a session and serializes as a plain string.
+    AgentId
+);
+string_id!(
+    /// Identifies one tool invocation and serializes as a plain string.
+    ToolInvocationId
+);
 
+/// Trusted execution identity and cancellation state for an agent.
+///
+/// Parent identity and depth are derived internally when creating children.
+/// Cancellation propagates downward from a parent context to its descendants.
 #[derive(Debug, Clone)]
 pub struct AgentExecutionContext {
+    /// Session shared by the root agent and all descendants.
     pub session_id: SessionId,
+    /// Identity of this agent execution.
     pub agent_id: AgentId,
+    /// Parent agent identity, or `None` for the root agent.
     pub parent_id: Option<AgentId>,
+    /// Trusted hierarchy depth, with the root at depth zero.
     pub depth: usize,
+    /// Cancellation token inherited downward through child tokens.
     pub cancellation: CancellationToken,
 }
 
 impl AgentExecutionContext {
+    /// Creates a root execution context with a generated agent identity.
     pub fn root(session_id: SessionId) -> Self {
         Self {
             agent_id: AgentId::new(uuid::Uuid::new_v4().to_string()),
@@ -50,6 +72,13 @@ impl AgentExecutionContext {
         }
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "used by the agent coordinator introduced in Task 3"
+        )
+    )]
     pub(crate) fn child(&self, agent_id: AgentId) -> Self {
         Self {
             session_id: self.session_id.clone(),
@@ -61,26 +90,39 @@ impl AgentExecutionContext {
     }
 }
 
+/// Lifecycle state for a trusted agent execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentLifecycleStatus {
+    /// Created but not yet running.
     Pending,
+    /// Actively executing.
     Running,
+    /// Suspended until child agents reach terminal states.
     WaitingForChildren,
+    /// Producing the final result after execution.
     Finalizing,
+    /// Cancellation is in progress.
     Cancelling,
+    /// Finished successfully.
     Completed,
+    /// Finished with an error.
     Failed,
+    /// Finished due to cancellation.
     Cancelled,
 }
 
 impl AgentLifecycleStatus {
+    /// Returns whether no further lifecycle work can occur for this execution.
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
     }
 }
 
+/// Context supplied to a tool invocation on behalf of an agent.
 pub struct ToolContext<'a> {
+    /// Trusted identity and cancellation state of the invoking agent.
     pub agent: &'a AgentExecutionContext,
+    /// Identity assigned to this tool invocation.
     pub invocation_id: ToolInvocationId,
 }
 

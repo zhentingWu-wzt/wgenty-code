@@ -105,16 +105,32 @@ pub struct SubagentProgress {
     pub messages: Vec<ChatMessage>,
 }
 
+/// Serializable lifecycle state reported by a subagent.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SubagentStatus {
+    /// Created but not yet executing.
     Pending,
+    /// Actively executing model or tool work.
     Running,
+    /// Waiting for child subagents to finish.
     WaitingForChildren,
+    /// Producing the final result.
     Finalizing,
+    /// Cancellation is in progress.
     Cancelling,
+    /// Finished successfully.
     Completed,
+    /// Finished with an error.
     Failed,
+    /// Finished due to cancellation.
     Cancelled,
+}
+
+impl SubagentStatus {
+    /// Returns whether the subagent has finished and requires no further work.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -488,6 +504,27 @@ mod tests {
         assert_eq!(SubagentStatus::Failed, SubagentStatus::Failed);
         assert_eq!(SubagentStatus::Cancelled, SubagentStatus::Cancelled);
         assert_ne!(SubagentStatus::Pending, SubagentStatus::Running);
+    }
+
+    #[test]
+    fn test_subagent_status_terminal_semantics() {
+        for status in [
+            SubagentStatus::Pending,
+            SubagentStatus::Running,
+            SubagentStatus::WaitingForChildren,
+            SubagentStatus::Finalizing,
+            SubagentStatus::Cancelling,
+        ] {
+            assert!(!status.is_terminal(), "{status:?} must remain active");
+        }
+
+        for status in [
+            SubagentStatus::Completed,
+            SubagentStatus::Failed,
+            SubagentStatus::Cancelled,
+        ] {
+            assert!(status.is_terminal(), "{status:?} must be terminal");
+        }
     }
 
     // ── contract tests for error_details population ──
