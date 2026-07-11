@@ -1,12 +1,16 @@
 //! SubagentTree — in-memory tree state for subagent execution progress.
 
 use crate::agent::progress::{SubagentProgress, SubagentStatus};
+use crate::daemon::models::LocalAgentViewResponse;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Default)]
 pub struct SubagentTree {
     pub root_id: Option<String>,
     pub nodes: HashMap<String, SubagentNode>,
+    /// Current scoped local view (self + direct children). When set, this
+    /// is the authoritative data source. When None, legacy nodes are used.
+    pub local_view: Option<LocalAgentViewResponse>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +50,108 @@ impl SubagentTree {
                 );
             }
         }
+    }
+
+    /// Replaces the tree with the given scoped local view. Previous layer
+    /// nodes are removed; only self + direct children populate the tree.
+    pub fn replace_local(&mut self, view: LocalAgentViewResponse) {
+        self.nodes.clear();
+        self.root_id = Some(view.self_view.agent_id.clone());
+        let child_ids: Vec<String> = view.children.iter().map(|c| c.agent_id.clone()).collect();
+        self.nodes.insert(
+            view.self_view.agent_id.clone(),
+            SubagentNode {
+                progress: SubagentProgress {
+                    node_id: view.self_view.agent_id.clone(),
+                    parent_id: None,
+                    label: String::new(),
+                    status: view.self_view.status.into(),
+                    ..self
+                        .nodes
+                        .values()
+                        .next()
+                        .map(|n| n.progress.clone())
+                        .unwrap_or_else(|| SubagentProgress {
+                            node_id: String::new(),
+                            parent_id: None,
+                            label: String::new(),
+                            status: SubagentStatus::Pending,
+                            round: None,
+                            max_rounds: None,
+                            current_tool: None,
+                            current_params: None,
+                            action_log: Vec::new(),
+                            text_snapshot: None,
+                            started_at: 0,
+                            elapsed_ms: 0,
+                            metadata: None,
+                            progress_delta: None,
+                            token_budget_k: None,
+                            cumulative_tokens: 0,
+                            error_details: None,
+                            events: Vec::new(),
+                            messages: Vec::new(),
+                        })
+                },
+                children: child_ids,
+            },
+        );
+        for child in &view.children {
+            self.nodes.insert(
+                child.agent_id.clone(),
+                SubagentNode {
+                    progress: SubagentProgress {
+                        node_id: child.agent_id.clone(),
+                        parent_id: Some(view.self_view.agent_id.clone()),
+                        label: String::new(),
+                        status: child.status.into(),
+                        ..self
+                            .nodes
+                            .values()
+                            .next()
+                            .map(|n| n.progress.clone())
+                            .unwrap_or_else(|| SubagentProgress {
+                                node_id: String::new(),
+                                parent_id: None,
+                                label: String::new(),
+                                status: SubagentStatus::Pending,
+                                round: None,
+                                max_rounds: None,
+                                current_tool: None,
+                                current_params: None,
+                                action_log: Vec::new(),
+                                text_snapshot: None,
+                                started_at: 0,
+                                elapsed_ms: 0,
+                                metadata: None,
+                                progress_delta: None,
+                                token_budget_k: None,
+                                cumulative_tokens: 0,
+                                error_details: None,
+                                events: Vec::new(),
+                                messages: Vec::new(),
+                            })
+                    },
+                    children: Vec::new(),
+                },
+            );
+        }
+        self.local_view = Some(view);
+    }
+
+    /// Returns sorted selectable node ids (self + direct children).
+    pub fn selectable_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .nodes
+            .values()
+            .map(|n| n.progress.node_id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    pub fn contains(&self, node_id: &str) -> bool {
+        self.nodes.contains_key(node_id)
     }
 
     pub fn count_by_status(&self, status: SubagentStatus) -> usize {

@@ -1,7 +1,7 @@
 //! HTTP client for communicating with the daemon API.
 //! Mirrors the TypeScript ApiClient in packages/core/src/client.ts.
 
-use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::api::ChatMessage;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
@@ -20,6 +20,11 @@ pub struct DaemonClient {
     /// killing legitimate subagent runs mid-flight).
     http_long: reqwest::Client,
     base_url: String,
+    /// Trusted-UI viewer bearer token, obtained once from `POST /api/v1/ui/viewers`
+    /// and refreshed only after a daemon restart (401/404). Sent as the
+    /// `X-Wgenty-Viewer-Token` header on scoped agent requests. Stored behind
+    /// a `RwLock` so `create_viewer` can take `&self`.
+    viewer_token: Arc<tokio::sync::RwLock<Option<String>>>,
 }
 
 impl DaemonClient {
@@ -53,7 +58,114 @@ impl DaemonClient {
             http_tools,
             http_long,
             base_url: base_url.trim_end_matches('/').to_string(),
+            viewer_token: Arc::new(tokio::sync::RwLock::new(None)),
         }
+    }
+
+    /// POST /api/v1/ui/viewers — obtain a trusted-UI viewer token. Called
+    /// once during TUI startup; refreshed only after a daemon restart
+    /// (detected via 401/404 on scoped endpoints).
+    pub async fn create_viewer(&self) -> anyhow::Result<()> {
+        let url = format!("{}/api/v1/ui/viewers", self.base_url);
+        let resp = self.http_tools.post(&url).send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("Failed to create viewer ({})", resp.status());
+        }
+        let data: serde_json::Value = resp.json().await?;
+        let token = data["viewer_token"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing viewer_token in response"))?
+            .to_string();
+        *self.viewer_token.write().await = Some(token);
+        Ok(())
+    }
+
+    /// Return the viewer token header value, or None if not yet created.
+    async fn viewer_header(&self) -> Option<(String, String)> {
+        self.viewer_token
+            .read()
+            .await
+            .as_deref()
+            .map(|t| ("X-Wgenty-Viewer-Token".to_string(), t.to_string()))
+    }
+
+    /// GET /api/v1/agents/self — root local view for `session_id`.
+    pub async fn get_root_agent_view(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<crate::daemon::models::LocalAgentViewResponse> {
+        let url = format!(
+            "{}/api/v1/agents/self?session_id={}",
+            self.base_url, session_id
+        );
+        let mut req = self.http_tools.get(&url);
+        if let Some((k, v)) = self.viewer_header().await {
+            req = req.header(k, v);
+        }
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("get_root_agent_view ({})", resp.status());
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// GET /api/v1/agents/children/:capability — navigate into a direct child.
+    pub async fn navigate_agent_view(
+        &self,
+        session_id: &str,
+        capability: &str,
+    ) -> anyhow::Result<crate::daemon::models::LocalAgentViewResponse> {
+        let url = format!(
+            "{}/api/v1/agents/children/{}?session_id={}",
+            self.base_url, capability, session_id
+        );
+        let mut req = self.http_tools.get(&url);
+        if let Some((k, v)) = self.viewer_header().await {
+            req = req.header(k, v);
+        }
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("navigate_agent_view ({})", resp.status());
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// GET /api/v1/agents/children/:capability/transcript
+    pub async fn get_child_transcript(
+        &self,
+        session_id: &str,
+        capability: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        let url = format!(
+            "{}/api/v1/agents/children/{}/transcript?session_id={}",
+            self.base_url, capability, session_id
+        );
+        let mut req = self.http_tools.get(&url);
+        if let Some((k, v)) = self.viewer_header().await {
+            req = req.header(k, v);
+        }
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("get_child_transcript ({})", resp.status());
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// POST /api/v1/agents/children/:capability/cancel
+    pub async fn cancel_child(&self, session_id: &str, capability: &str) -> anyhow::Result<()> {
+        let url = format!(
+            "{}/api/v1/agents/children/{}/cancel?session_id={}",
+            self.base_url, capability, session_id
+        );
+        let mut req = self.http_tools.post(&url);
+        if let Some((k, v)) = self.viewer_header().await {
+            req = req.header(k, v);
+        }
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("cancel_child ({})", resp.status());
+        }
+        Ok(())
     }
 
     pub fn base_url(&self) -> &str {
@@ -187,22 +299,6 @@ impl DaemonClient {
         }
         let data: serde_json::Value = resp.json().await?;
         Ok(data["results"].as_array().cloned().unwrap_or_default())
-    }
-
-    /// GET /api/v1/subagent/progress — poll subagent execution progress.
-    pub async fn poll_subagent_progress(
-        &self,
-        session_id: &str,
-    ) -> anyhow::Result<HashMap<String, crate::agent::progress::SubagentProgress>> {
-        let url = format!(
-            "{}/api/v1/subagent/progress?session_id={}",
-            self.base_url, session_id
-        );
-        let resp = self.http_tools.get(&url).send().await?;
-        if !resp.status().is_success() {
-            return Ok(HashMap::new());
-        }
-        Ok(resp.json().await?)
     }
 
     /// GET /api/v1/sessions

@@ -429,13 +429,10 @@ impl AgentLoop {
                                         break;
                                     }
                                     tokio::time::sleep(Duration::from_millis(500)).await;
-                                    match client.poll_subagent_progress(&session_id).await {
-                                        Ok(map) => {
-                                            for (_id, progress) in map {
-                                                let _ = tx.send(AppEvent::SubagentUpdate(
-                                                    Box::new(progress),
-                                                ));
-                                            }
+                                    match client.get_root_agent_view(&session_id).await {
+                                        Ok(view) => {
+                                            let _ =
+                                                tx.send(AppEvent::AgentLocalView(Box::new(view)));
                                         }
                                         Err(_) => break,
                                     }

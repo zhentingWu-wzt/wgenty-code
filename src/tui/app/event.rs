@@ -2,7 +2,6 @@
 
 use super::types::*;
 use super::App;
-use crate::agent::progress::SubagentStatus;
 use crate::prompts::{self, PromptContext};
 use crate::tui::util::{
     agent_phase_from_event, compute_collapse_state, extract_diff_data, extract_tool_metadata,
@@ -594,33 +593,11 @@ impl App {
                     diff_data: extract_diff_data("undo", &serde_json::json!({}), &output),
                 });
             }
-            AppEvent::SubagentUpdate(progress) => {
-                // Track completion time on transition to a terminal status
-                // (Completed/Failed/Cancelled). Used by the focus view selector
-                // to dim completed subagents and remove them after a delay.
-                let node_id = progress.node_id.clone();
-                let is_terminal = matches!(
-                    progress.status,
-                    SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
-                );
-                let was_terminal = self
-                    .subagent_tree
-                    .nodes
-                    .get(&node_id)
-                    .map(|n| {
-                        matches!(
-                            n.progress.status,
-                            SubagentStatus::Completed
-                                | SubagentStatus::Failed
-                                | SubagentStatus::Cancelled
-                        )
-                    })
-                    .unwrap_or(false);
-                if is_terminal && !was_terminal {
-                    self.completed_at
-                        .insert(node_id.clone(), std::time::Instant::now());
-                }
-                self.subagent_tree.upsert(*progress);
+            AppEvent::AgentLocalView(view) => {
+                // Replace the tree with the scoped local view from the daemon.
+                // Completion-time tracking and focus updates are computed from
+                // the current response only.
+                self.subagent_tree.replace_local(*view);
                 if let Some(ref mut focus) = self.subagent_focus {
                     focus.rebuild(&self.subagent_tree);
                 }
