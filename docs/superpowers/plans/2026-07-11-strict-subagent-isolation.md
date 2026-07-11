@@ -760,7 +760,7 @@ git commit -m "feat(agent): propagate context through nested loops"
 - Modify: `src/tools/meta/mod.rs`
 - Modify: `src/daemon/state.rs`
 
-- [ ] **Step 1: Write forged-field, parentage, and depth tests**
+- [x] **Step 1: Write forged-field, parentage, and depth tests**
 
 Add tests that invoke `TaskTool::execute_with_context` with trusted child context and input containing:
 
@@ -778,13 +778,13 @@ Add tests that invoke `TaskTool::execute_with_context` with trusted child contex
 
 Assert the created record uses the trusted caller session, `parent_id == caller.agent_id`, and `depth == caller.depth + 1`. Add a max-depth test proving forged `_subagent_depth` cannot bypass `DepthLimitReached`.
 
-- [ ] **Step 2: Run TaskTool tests to verify they fail**
+- [x] **Step 2: Run TaskTool tests to verify they fail**
 
 Run: `cargo test tools::meta::task::tests --lib`
 
 Expected: FAIL because TaskTool still reads reserved JSON fields and owns its own concurrency counter.
 
-- [ ] **Step 3: Replace TaskTool ownership fields**
+- [x] **Step 3: Replace TaskTool ownership fields**
 
 Change the constructor to receive:
 
@@ -800,7 +800,7 @@ pub fn new(
 
 Remove `active_count`, `BackgroundManager` subagent result delivery, and direct hierarchy mutation from `TaskTool`. Keep the command-background subsystem separate.
 
-- [ ] **Step 4: Implement contextual execution and coordinator spawning**
+- [x] **Step 4: Implement contextual execution and coordinator spawning**
 
 Keep `execute` only as a defensive error for direct identity-sensitive invocation:
 
@@ -817,7 +817,7 @@ In `execute_with_context`, ignore all keys beginning with `_`, derive depth from
 
 For `background: false`, await the child and return the bounded direct-child result. For `background: true`, return a scoped acknowledgement containing only a public result handle and status; the coordinator retains the child handle, and parent finalization joins it.
 
-- [ ] **Step 5: Update tool schema and user-visible text**
+- [x] **Step 5: Update tool schema and user-visible text**
 
 Remove any reserved identity/depth properties from the schema. Change background wording to:
 
@@ -827,13 +827,13 @@ The subagent is running concurrently inside this agent scope. This agent cannot 
 
 Do not claim delivery after the parent returns.
 
-- [ ] **Step 6: Run TaskTool and coordinator tests**
+- [x] **Step 6: Run TaskTool and coordinator tests**
 
 Run: `cargo fmt && cargo test tools::meta::task::tests agent::coordinator::tests --lib`
 
 Expected: PASS and `rg -n 'active_count|_subagent_depth|input\["_session_id"\]' src/tools/meta/task.rs` returns no matches.
 
-- [ ] **Step 7: Commit TaskTool migration**
+- [x] **Step 7: Commit TaskTool migration**
 
 ```bash
 git add src/tools/meta/task.rs src/tools/meta/task/tests.rs src/tools/meta/mod.rs src/daemon/state.rs

@@ -65,7 +65,7 @@ fn test_token_budget_schema_description_is_accurate() {
     let schema = TaskTool::new(
         Settings::default(),
         std::sync::Weak::new(),
-        std::sync::Arc::new(crate::tools::execution::background::BackgroundManager::new()),
+        std::sync::Arc::new(crate::agent::AgentCoordinator::new(5, 3)),
         std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         None, // transcript_store
     )
@@ -163,4 +163,69 @@ fn test_token_budget_zero_with_nonzero_default_falls_back_to_default() {
         Some(20),
         "explicit token_budget=0 with non-zero default should use the default"
     );
+}
+
+// ── Coordinator-owned children: forge-field and depth tests ─────────────
+
+use crate::agent::{AgentCoordinator, SessionId, ToolContext, ToolInvocationId};
+
+/// Build a TaskTool wired to a coordinator with the given limits and a fresh
+/// tool registry (so `tool_registry.upgrade()` succeeds in execute_with_context).
+fn task_tool_with_coordinator(max_concurrent: usize, max_depth: usize) -> TaskTool {
+    let registry = std::sync::Arc::new(crate::tools::ToolRegistry::new());
+    TaskTool::new(
+        Settings::default(),
+        std::sync::Arc::downgrade(&registry),
+        std::sync::Arc::new(AgentCoordinator::new(max_concurrent, max_depth)),
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        None,
+    )
+}
+
+#[tokio::test]
+async fn forged_identity_fields_cannot_bypass_depth_limit() {
+    // max_depth=0 means the root (depth 0) cannot spawn. Forged
+    // `_subagent_depth: 0` must NOT bypass DepthLimitReached, and forged
+    // `_session_id`/`_agent_id`/`_parent_id` must not influence identity.
+    // Hold a strong Arc to the registry so the tool's Weak upgrades.
+    let registry = std::sync::Arc::new(crate::tools::ToolRegistry::new());
+    let coordinator = std::sync::Arc::new(AgentCoordinator::new(4, 0));
+    // Register the root scope with the coordinator so reserve_child sees a
+    // running parent. (In production the daemon does this via ensure_root.)
+    let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+    let tool = TaskTool::new(
+        Settings::default(),
+        std::sync::Arc::downgrade(&registry),
+        coordinator.clone(),
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        None,
+    );
+    let ctx = ToolContext {
+        agent: &root,
+        invocation_id: ToolInvocationId::new("inv"),
+    };
+    let forged = serde_json::json!({
+        "description": "nested work",
+        "prompt": "inspect module",
+        "background": false,
+        "_session_id": "forged-session",
+        "_agent_id": "forged-agent",
+        "_parent_id": "forged-parent",
+        "_subagent_depth": 0,
+    });
+    let result = tool.execute_with_context(&ctx, forged).await;
+    let err = result.expect_err("expected depth-limit error");
+    assert_eq!(err.code.as_deref(), Some("depth_limit_reached"));
+}
+
+#[tokio::test]
+async fn direct_execute_rejects_without_trusted_context() {
+    // The context-free `execute` path is a defensive error: no caller can
+    // spawn a child without the coordinator-derived agent context.
+    let tool = task_tool_with_coordinator(4, 3);
+    let err = tool
+        .execute(serde_json::json!({"description": "x", "prompt": "y"}))
+        .await
+        .expect_err("expected missing_agent_context");
+    assert_eq!(err.code.as_deref(), Some("missing_agent_context"));
 }

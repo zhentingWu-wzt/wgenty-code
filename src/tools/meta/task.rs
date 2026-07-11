@@ -10,6 +10,9 @@
 //! - `plan`                      — architecture planning and breakdown
 
 use crate::agent::progress::{ProgressCallback, SubagentProgress, SubagentStatus};
+use crate::agent::{
+    AgentCoordinator, ChildTerminal, CoordinatorError, SpawnChildRequest, ToolContext,
+};
 use crate::api::ApiClient;
 use crate::config::Settings;
 use crate::teams::subagent_loop::{run_subagent_loop, SubagentError};
@@ -18,7 +21,6 @@ use crate::tools::{Tool, ToolError, ToolOutput};
 use crate::transcript::TranscriptStatus;
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -34,9 +36,10 @@ use transcript::build_transcript;
 pub struct TaskTool {
     settings: Settings,
     tool_registry: std::sync::Weak<crate::tools::ToolRegistry>,
-    background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
-    /// Tracks currently running subagents to enforce max_concurrent limit.
-    active_count: Arc<AtomicUsize>,
+    /// Exclusive owner of agent spawning, concurrency, and lifecycle. The
+    /// `task` tool delegates all child creation and completion to it; it never
+    /// derives identity from model-supplied JSON.
+    coordinator: Arc<AgentCoordinator>,
     /// Mailbox for offloading large subagent results to disk.
     mailbox: SubagentResultMailbox,
     /// Shared store for subagent progress updates (session_id → node_id → progress).
@@ -49,15 +52,14 @@ impl TaskTool {
     pub fn new(
         settings: Settings,
         tool_registry: std::sync::Weak<crate::tools::ToolRegistry>,
-        background_manager: std::sync::Arc<crate::tools::execution::background::BackgroundManager>,
+        coordinator: Arc<AgentCoordinator>,
         progress_store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
         transcript_store: Option<Arc<crate::transcript::SubagentTranscriptStore>>,
     ) -> Self {
         Self {
             settings,
             tool_registry,
-            background_manager,
-            active_count: Arc::new(AtomicUsize::new(0)),
+            coordinator,
             progress_store,
             mailbox: SubagentResultMailbox::default_location(),
             transcript_store,
@@ -127,7 +129,7 @@ impl Tool for TaskTool {
                 },
                 "background": {
                     "type": "boolean",
-                    "description": "Run subagent in background. Returns task_id immediately; result delivered later. Default: true"
+                    "description": "Run subagent concurrently inside this agent scope. The subagent is running concurrently inside this agent scope. This agent cannot terminate until the child reaches a terminal state. Default: true"
                 },
                 "use_small_model": {
                     "type": "boolean",
@@ -160,7 +162,25 @@ impl Tool for TaskTool {
         })
     }
 
-    async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+    /// Direct (context-free) execution is rejected: `task` is identity-sensitive
+    /// and requires a trusted [`ToolContext`]. This defensive path returns an
+    /// error so no caller can spawn a child without the coordinator-derived
+    /// agent context.
+    async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        Err(ToolError {
+            message: "task requires trusted agent context".to_string(),
+            code: Some("missing_agent_context".to_string()),
+        })
+    }
+
+    /// Contextual execution: derive child identity, parentage, and depth from
+    /// the trusted `context.agent`, ignoring all model-supplied `_`-prefixed
+    /// fields. Child creation and completion go through the `AgentCoordinator`.
+    async fn execute_with_context(
+        &self,
+        context: &ToolContext<'_>,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
         let _subagent_type = input["subagent_type"].as_str().unwrap_or("general-purpose");
         let description = input["description"].as_str().unwrap_or("Subagent task");
         let prompt = input["prompt"].as_str().unwrap_or("");
@@ -209,10 +229,9 @@ impl Tool for TaskTool {
             ))
         });
 
-        let session_id = input["_session_id"]
-            .as_str()
-            .unwrap_or("default")
-            .to_string();
+        // Trusted session identity: derived from the execution context, never
+        // from model-supplied JSON. `_session_id` in input is ignored.
+        let session_id = context.agent.session_id.as_str().to_string();
 
         tracing::info!(
             subagent_type = _subagent_type,
@@ -229,8 +248,9 @@ impl Tool for TaskTool {
             code: Some("registry_dropped".to_string()),
         })?;
 
-        // Filter tools: exclude "task" when depth exceeds limit.
-        let depth = input["_subagent_depth"].as_u64().unwrap_or(0) as usize;
+        // Filter tools: exclude "task" when the trusted caller depth is at the
+        // limit. Depth comes from the execution context, not model input.
+        let depth = context.agent.depth;
         let allowed_tools: Vec<String> = tool_registry
             .list()
             .iter()
@@ -304,43 +324,21 @@ impl Tool for TaskTool {
             description, prompt
         );
 
-        // ── Guard: depth limit ──────────────────────────────────────────
-        let depth = input["_subagent_depth"].as_u64().unwrap_or(0) as usize;
-        if depth >= self.settings.agent.subagent.max_depth {
-            return Ok(ToolOutput {
-                output_type: "text".to_string(),
-                content: format!(
-                    "Maximum subagent depth ({}) reached. Refusing to spawn deeper subagent.",
-                    self.settings.agent.subagent.max_depth
-                ),
-                metadata: HashMap::new(),
-            });
-        }
-
         // ── Guard: concurrency limit — queue until slot opens ───────────
         let max = self.settings.agent.subagent.max_concurrent;
-        let wait_start = tokio::time::Instant::now();
-        const POLL_INTERVAL_MS: u64 = 250;
-        const MAX_WAIT_SECS: u64 = 120;
-
-        loop {
-            let current = self.active_count.load(Ordering::SeqCst);
-            if current < max {
-                break;
-            }
-            if wait_start.elapsed().as_secs() >= MAX_WAIT_SECS {
-                return Ok(ToolOutput {
-                    output_type: "text".to_string(),
-                    content: format!(
-                        "Maximum concurrent subagents ({}) reached and queue wait expired ({} running). Try again later.",
-                        max, current
-                    ),
-                    metadata: HashMap::new(),
-                });
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
-        }
-        self.active_count.fetch_add(1, Ordering::SeqCst);
+        let _ = max; // retained for future acknowledgement metadata
+                     // Reserve a coordinator-owned child. The coordinator enforces both depth
+                     // (DepthLimitReached) and concurrency (semaphore) using the trusted
+                     // caller context. `max` is recorded for the acknowledgement metadata;
+                     // The legacy polling-based concurrency counter and
+                     // BackgroundManager delivery are
+                     // retired in favor of the coordinator owning the child lifetime.
+        let reservation = self
+            .coordinator
+            .reserve_child(context.agent, SpawnChildRequest::new(description))
+            .await
+            .map_err(map_coordinator_error)?;
+        let child_context = reservation.context.clone();
 
         // Use small model when requested and configured.
         // small_model_settings() returns a clone with main endpoint overridden
@@ -357,8 +355,6 @@ impl Tool for TaskTool {
             // ── Background mode: spawn and return immediately ──────────────
             let desc = description.to_string();
             let sys_prompt = system_prompt.clone();
-            let bg = self.background_manager.clone();
-            let active = self.active_count.clone();
             let reg = tool_registry.clone();
             let tools = allowed_tools.clone();
             let api_client_bg = if use_small && self.settings.models.small.is_some() {
@@ -418,19 +414,16 @@ impl Tool for TaskTool {
 
             // Clone full_prompt before moving it into the run_subagent_loop call
             let prompt_owned = full_prompt.clone();
+            // The coordinator-owned child context moves into the spawned task so
+            // the loop runs as the child agent and cancellation propagates.
+            let bg_child_context = child_context.clone();
+            let bg_coordinator = self.coordinator.clone();
 
             tokio::spawn(async move {
-                // Temporary root context: Task 7 replaces this with a
-                // coordinator-created child context derived from the caller's
-                // trusted AgentExecutionContext. The session is a trusted
-                // runtime value, never model-supplied JSON.
-                let bg_context = crate::agent::AgentExecutionContext::root(
-                    crate::agent::SessionId::new("task-bg"),
-                );
                 let result = run_subagent_loop(
                     &api_client_bg,
                     &reg,
-                    &bg_context,
+                    &bg_child_context,
                     &sys_prompt,
                     &prompt_owned,
                     &tools,
@@ -441,19 +434,35 @@ impl Tool for TaskTool {
                 )
                 .await;
 
-                active.fetch_sub(1, Ordering::SeqCst);
-
-                let (success, content) = match result {
-                    Ok(r) => (true, r),
-                    Err(e) => (false, format!("Subagent error: {}", e)),
+                let (terminal, content) = match result {
+                    Ok(r) => (
+                        ChildTerminal::Completed {
+                            summary: r.chars().take(500).collect(),
+                        },
+                        r,
+                    ),
+                    Err(e) => (
+                        ChildTerminal::Failed {
+                            code: e.code().to_string(),
+                            partial_result: None,
+                        },
+                        format!("Subagent error: {}", e),
+                    ),
                 };
+
+                // Persist the child's terminal state and release its permit
+                // through the coordinator. The coordinator (not the
+                // BackgroundManager) owns the child lifetime.
+                let _ = bg_coordinator
+                    .finish_child(&bg_child_context, terminal)
+                    .await;
 
                 // Offload large results to mailbox before storing.
                 let content = mailbox_bg
                     .offload_if_large(&st_bg, &desc_full_bg, &sid_bg, &content)
                     .to_content();
 
-                bg.push_subagent_result(&desc, &content, success).await;
+                let success = !content.starts_with("Subagent error:");
 
                 // ── Save transcript ────────────────────────────────────────
                 if let Some(ref store) = transcript_store_bg {
@@ -488,7 +497,7 @@ impl Tool for TaskTool {
             Ok(ToolOutput {
                 output_type: "text".to_string(),
                 content: format!(
-                    "[Subagent launched in background]\ntype: {}\ndescription: {}\nstatus: running\n\nThe subagent result will be delivered when it completes.",
+                    "[Subagent launched in background]\ntype: {}\ndescription: {}\nstatus: running\n\nThe subagent is running concurrently inside this agent scope. This agent cannot terminate until the child reaches a terminal state.",
                     _subagent_type, description
                 ),
                 metadata: {
@@ -570,16 +579,12 @@ impl Tool for TaskTool {
                 (result, reason)
             } else {
                 let reason = "direct subagent: simple task".to_string();
-                // Temporary root context: Task 7 replaces this with a
-                // coordinator-created child context derived from the caller's
-                // trusted AgentExecutionContext.
-                let direct_context = crate::agent::AgentExecutionContext::root(
-                    crate::agent::SessionId::new("task-direct"),
-                );
+                // Run as the coordinator-owned child. The child_context was
+                // reserved above from the trusted caller context.
                 let result = run_subagent_loop(
                     &api_client,
                     &tool_registry,
-                    &direct_context,
+                    &child_context,
                     &system_prompt,
                     &full_prompt,
                     &allowed_tools,
@@ -591,7 +596,22 @@ impl Tool for TaskTool {
                 .await;
                 (result, reason)
             };
-            self.active_count.fetch_sub(1, Ordering::SeqCst);
+
+            // Persist the child's terminal state and release its permit through
+            // the coordinator, regardless of routing path.
+            let terminal = match &result {
+                Ok(r) => ChildTerminal::Completed {
+                    summary: r.chars().take(500).collect(),
+                },
+                Err(e) => ChildTerminal::Failed {
+                    code: e.code().to_string(),
+                    partial_result: None,
+                },
+            };
+            let _ = self
+                .coordinator
+                .finish_child(&child_context, terminal)
+                .await;
 
             // ── Save transcript on completion/failure (sync path) ──────────
             let transcript_store_sync = self.transcript_store.clone();
@@ -687,5 +707,30 @@ impl Tool for TaskTool {
                 }
             }
         }
+    }
+}
+
+/// Maps a coordinator error to a user-facing `ToolError`.
+///
+/// `DepthLimitReached` surfaces the configured limit so the model can adjust;
+/// `NotVisible` and other operational failures map to a stable code without
+/// leaking hidden agent identifiers.
+fn map_coordinator_error(e: CoordinatorError) -> ToolError {
+    match e {
+        CoordinatorError::DepthLimitReached { limit } => ToolError {
+            message: format!(
+                "Maximum subagent depth ({}) reached. Refusing to spawn deeper subagent.",
+                limit
+            ),
+            code: Some("depth_limit_reached".to_string()),
+        },
+        CoordinatorError::NotVisible => ToolError {
+            message: "agent is not visible from the current execution scope".to_string(),
+            code: Some("not_visible".to_string()),
+        },
+        other => ToolError {
+            message: other.to_string(),
+            code: Some("coordinator_error".to_string()),
+        },
     }
 }
