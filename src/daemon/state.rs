@@ -128,7 +128,10 @@ impl DaemonState {
             let task_tool = crate::tools::meta::task::TaskTool::new(
                 app_state.settings.clone(),
                 weak_reg.clone(),
-                bg_manager.clone(),
+                std::sync::Arc::new(crate::agent::AgentCoordinator::new(
+                    app_state.settings.agent.subagent.max_concurrent,
+                    app_state.settings.agent.subagent.max_depth,
+                )),
                 progress_store.clone(),
                 transcript_store.clone(),
             );
