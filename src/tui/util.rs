@@ -429,7 +429,10 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::ContextCompacted { .. }
         | AppEvent::AgentLocalView(_)
         | AppEvent::BackgroundTaskResult(_)
-        | AppEvent::AgentGenerationReset { .. } => None,
+        | AppEvent::AgentGenerationReset { .. }
+        | AppEvent::NavigateAgent { .. }
+        | AppEvent::AgentViewNavigated(_)
+        | AppEvent::NavigateAgentBack => None,
     }
 }
 
