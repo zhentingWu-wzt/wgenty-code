@@ -223,6 +223,24 @@ impl InMemoryAgentStore {
             .ok_or(StoreError::NotVisible)
     }
 
+    /// Returns a canonical record to trusted UI projection code.
+    ///
+    /// This bypasses agent-facing local visibility and must only be called
+    /// after the UI viewer's authority for the requested scope is verified.
+    pub(crate) async fn record_for_trusted_ui(
+        &self,
+        session: &SessionId,
+        agent: &AgentId,
+    ) -> Result<AgentRecord, StoreError> {
+        self.state
+            .read()
+            .await
+            .records
+            .get(&(session.clone(), agent.clone()))
+            .cloned()
+            .ok_or(StoreError::NotVisible)
+    }
+
     /// Returns all direct children of `parent` within `session`.
     pub async fn direct_children(
         &self,

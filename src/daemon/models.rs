@@ -206,6 +206,17 @@ use crate::agent::AgentLifecycleStatus;
 pub struct SelfAgentResponse {
     pub agent_id: String,
     pub status: AgentLifecycleStatus,
+    #[serde(default)]
+    pub label: String,
+    /// Latest text snapshot from the subagent loop (displayed when messages are empty).
+    #[serde(default)]
+    pub text_snapshot: Option<String>,
+    /// Cumulative tokens consumed by this agent.
+    #[serde(default)]
+    pub cumulative_tokens: u64,
+    /// Model messages captured by the progress callback during the subagent loop.
+    #[serde(default)]
+    pub messages: Vec<crate::api::ChatMessage>,
 }
 
 /// Direct-child projection, including an opaque navigation capability the

@@ -629,8 +629,13 @@ async fn build_local_view(
         .list_local(caller)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let self_record = state
+        .coordinator
+        .trusted_ui_record(&caller.session_id, &view.self_view.agent_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     // Cross-populate from the legacy progress store so the TUI focus view has
-    // text snapshots and token counts for each direct child. Once the
+    // conversation data for self and each direct child. Once the
     // coordinator owns the canonical progress store this lookup becomes a
     // coordinator projection; for now it bridges the migration.
     let progress_store = state.subagent_progress.read().await;
@@ -638,6 +643,7 @@ async fn build_local_view(
         .get(caller.session_id.as_str())
         .cloned()
         .unwrap_or_default();
+    let self_node = session_progress.get(view.self_view.agent_id.as_str());
     let mut children = Vec::with_capacity(view.children.len());
     for child in view.children {
         // Issue a navigate capability for this direct child.
@@ -668,6 +674,14 @@ async fn build_local_view(
         self_view: SelfAgentResponse {
             agent_id: view.self_view.agent_id.as_str().to_string(),
             status: view.self_view.status,
+            label: self_record.label,
+            text_snapshot: self_node.and_then(|progress| progress.text_snapshot.clone()),
+            cumulative_tokens: self_node
+                .map(|progress| progress.cumulative_tokens)
+                .unwrap_or(0),
+            messages: self_node
+                .map(|progress| progress.messages.clone())
+                .unwrap_or_default(),
         },
         children,
     })
