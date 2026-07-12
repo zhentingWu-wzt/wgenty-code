@@ -268,8 +268,7 @@ impl TaskGroupStore {
             .filter(|group| {
                 group.session_id == *session_id
                     && group.generation == generation
-                    && !group.child_ids.is_empty()
-                    && group.child_ids.len() == group.results.len()
+                    && Self::is_ready(group)
             })
             .map(|group| group.id.clone())
             .min_by(|left, right| left.as_str().cmp(right.as_str()));
@@ -277,21 +276,95 @@ impl TaskGroupStore {
             return Ok(None);
         };
 
-        let group =
-            state
-                .groups
-                .remove(&group_id)
-                .ok_or_else(|| TaskGroupError::GroupNotFound {
-                    group_id: group_id.as_str().to_owned(),
-                })?;
+        Self::remove_delivery(&mut state, &group_id).map(Some)
+    }
+
+    /// Atomically claims one ready group owned directly by `owner_id`.
+    pub async fn claim_ready_for_owner(
+        &self,
+        session_id: &SessionId,
+        owner_id: &AgentId,
+        generation: u64,
+    ) -> Result<Option<TaskGroupDelivery>, TaskGroupError> {
+        let mut state = self.inner.write().await;
+        if state
+            .generations
+            .get(session_id)
+            .copied()
+            .unwrap_or_default()
+            != generation
+        {
+            return Ok(None);
+        }
+
+        let group_id = state
+            .groups
+            .values()
+            .filter(|group| {
+                group.session_id == *session_id
+                    && group.owner_id == *owner_id
+                    && group.generation == generation
+                    && Self::is_ready(group)
+            })
+            .map(|group| group.id.clone())
+            .min_by(|left, right| left.as_str().cmp(right.as_str()));
+        let Some(group_id) = group_id else {
+            return Ok(None);
+        };
+
+        Self::remove_delivery(&mut state, &group_id).map(Some)
+    }
+
+    /// Atomically claims one exact ready group when its ownership matches.
+    pub async fn claim_specific(
+        &self,
+        group_id: &TaskGroupId,
+        session_id: &SessionId,
+        owner_id: &AgentId,
+        generation: u64,
+    ) -> Result<Option<TaskGroupDelivery>, TaskGroupError> {
+        let mut state = self.inner.write().await;
+        let matches = state.groups.get(group_id).is_some_and(|group| {
+            group.session_id == *session_id
+                && group.owner_id == *owner_id
+                && group.generation == generation
+                && state
+                    .generations
+                    .get(session_id)
+                    .copied()
+                    .unwrap_or_default()
+                    == generation
+                && Self::is_ready(group)
+        });
+        if !matches {
+            return Ok(None);
+        }
+
+        Self::remove_delivery(&mut state, group_id).map(Some)
+    }
+
+    fn is_ready(group: &GroupRecord) -> bool {
+        !group.child_ids.is_empty() && group.child_ids.len() == group.results.len()
+    }
+
+    fn remove_delivery(
+        state: &mut TaskGroupState,
+        group_id: &TaskGroupId,
+    ) -> Result<TaskGroupDelivery, TaskGroupError> {
+        let group = state
+            .groups
+            .remove(group_id)
+            .ok_or_else(|| TaskGroupError::GroupNotFound {
+                group_id: group_id.as_str().to_owned(),
+            })?;
         let mut results: Vec<_> = group.results.values().cloned().collect();
         results.sort_by(|left, right| left.child_id.as_str().cmp(right.child_id.as_str()));
 
-        Ok(Some(TaskGroupDelivery {
-            group_id,
-            generation,
+        Ok(TaskGroupDelivery {
+            group_id: group.id,
+            generation: group.generation,
             results,
-        }))
+        })
     }
 
     /// Returns the current generation for a session, defaulting to zero.
@@ -912,5 +985,95 @@ mod tests {
             usize::from(first.is_some()) + usize::from(second.is_some()),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn owner_claim_does_not_deliver_another_owners_ready_group() {
+        let store = TaskGroupStore::default();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let root_group = store
+            .create_for_root_turn(
+                SessionId::new("s"),
+                AgentId::new("root"),
+                "turn-1",
+                0,
+                deadline,
+            )
+            .await
+            .unwrap();
+        let parent_group = store
+            .create_for_parent(SessionId::new("s"), AgentId::new("parent"), 0, deadline)
+            .await
+            .unwrap();
+        store
+            .add_child(&parent_group, AgentId::new("grandchild"))
+            .await
+            .unwrap();
+        store
+            .record_result(
+                &parent_group,
+                result("grandchild", ChildTerminalStatus::Completed),
+            )
+            .await
+            .unwrap();
+
+        assert!(store
+            .claim_ready_for_owner(&SessionId::new("s"), &AgentId::new("root"), 0)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(store.group_count().await, 2);
+
+        store
+            .add_child(&root_group, AgentId::new("child"))
+            .await
+            .unwrap();
+        store
+            .record_result(&root_group, result("child", ChildTerminalStatus::Completed))
+            .await
+            .unwrap();
+        let delivery = store
+            .claim_ready_for_owner(&SessionId::new("s"), &AgentId::new("root"), 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivery.group_id, root_group);
+    }
+
+    #[tokio::test]
+    async fn specific_claim_requires_matching_group_owner_and_generation() {
+        let store = TaskGroupStore::default();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let group = store
+            .create_for_parent(SessionId::new("s"), AgentId::new("parent"), 0, deadline)
+            .await
+            .unwrap();
+        store
+            .add_child(&group, AgentId::new("child"))
+            .await
+            .unwrap();
+        store
+            .record_result(&group, result("child", ChildTerminalStatus::Completed))
+            .await
+            .unwrap();
+
+        assert!(store
+            .claim_specific(&group, &SessionId::new("s"), &AgentId::new("other"), 0,)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store
+            .claim_specific(&group, &SessionId::new("s"), &AgentId::new("parent"), 1,)
+            .await
+            .unwrap()
+            .is_none());
+
+        let delivery = store
+            .claim_specific(&group, &SessionId::new("s"), &AgentId::new("parent"), 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivery.group_id, group);
+        assert_eq!(store.group_count().await, 0);
     }
 }

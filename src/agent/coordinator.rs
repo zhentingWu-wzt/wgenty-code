@@ -10,12 +10,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Notify, OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::identity::{AgentExecutionContext, AgentId, AgentLifecycleStatus, SessionId};
 use crate::agent::store::{InMemoryAgentStore, LocalAgentView, StoreError};
+use crate::agent::task_group::{TaskGroupDelivery, TaskGroupError, TaskGroupId, TaskGroupStore};
 
 /// Default bounded shutdown timeout applied while awaiting cancelling children.
 ///
@@ -253,6 +255,15 @@ pub enum CoordinatorError {
     /// Underlying agent storage failed.
     #[error("agent storage failed: {0}")]
     Storage(String),
+    /// Task-group membership or delivery failed.
+    #[error("task group operation failed: {0}")]
+    TaskGroup(String),
+    /// The caller still has live direct children.
+    #[error("direct children are still running")]
+    ChildrenStillRunning,
+    /// The persistent root is not allowed to enter a terminal lifecycle state.
+    #[error("the persistent root has no terminal lifecycle state")]
+    RootHasNoTerminalState,
 }
 
 impl From<StoreError> for CoordinatorError {
@@ -264,10 +275,25 @@ impl From<StoreError> for CoordinatorError {
     }
 }
 
+impl From<TaskGroupError> for CoordinatorError {
+    fn from(err: TaskGroupError) -> Self {
+        Self::TaskGroup(err.to_string())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct OwnerGroupKey {
+    session_id: SessionId,
+    owner_id: AgentId,
+    generation: u64,
+    origin_turn_id: Option<String>,
+}
+
 /// Exclusive owner of agent spawning, concurrency, and lifecycle transitions.
 #[derive(Clone)]
 pub struct AgentCoordinator {
     store: InMemoryAgentStore,
+    task_groups: Arc<TaskGroupStore>,
     permits: Arc<Semaphore>,
     max_depth: usize,
     shutdown_timeout: Duration,
@@ -276,6 +302,9 @@ pub struct AgentCoordinator {
     /// only value returned to a parent; authority is confirmed by matching the
     /// caller's context against the grant, never by trusting the token alone.
     result_grants: Arc<RwLock<HashMap<String, ChildResultGrant>>>,
+    child_groups: Arc<RwLock<HashMap<(SessionId, AgentId), TaskGroupId>>>,
+    owner_groups: Arc<RwLock<HashMap<OwnerGroupKey, TaskGroupId>>>,
+    group_operations: Arc<Mutex<()>>,
 }
 
 impl AgentCoordinator {
@@ -285,11 +314,15 @@ impl AgentCoordinator {
     pub fn new(max_concurrent: usize, max_depth: usize) -> Self {
         Self {
             store: InMemoryAgentStore::default(),
+            task_groups: Arc::new(TaskGroupStore::default()),
             permits: Arc::new(Semaphore::new(max_concurrent)),
             max_depth,
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
             scopes: Arc::new(RwLock::new(HashMap::new())),
             result_grants: Arc::new(RwLock::new(HashMap::new())),
+            child_groups: Arc::new(RwLock::new(HashMap::new())),
+            owner_groups: Arc::new(RwLock::new(HashMap::new())),
+            group_operations: Arc::new(Mutex::new(())),
         }
     }
 
@@ -437,12 +470,156 @@ impl AgentCoordinator {
         Ok(ChildReservation { context })
     }
 
+    /// Creates or reuses the task group for one trusted persistent-root turn.
+    pub async fn create_root_task_group(
+        &self,
+        root: &AgentExecutionContext,
+        origin_turn_id: impl Into<String>,
+        deadline_at: Instant,
+    ) -> Result<TaskGroupId, CoordinatorError> {
+        if !Self::is_root(root) {
+            return Err(CoordinatorError::NotVisible);
+        }
+        let _operation = self.group_operations.lock().await;
+        let origin_turn_id = origin_turn_id.into();
+        let generation = self.current_generation(&root.session_id).await;
+        let key = OwnerGroupKey {
+            session_id: root.session_id.clone(),
+            owner_id: root.agent_id.clone(),
+            generation,
+            origin_turn_id: Some(origin_turn_id.clone()),
+        };
+        if let Some(group_id) = self.owner_groups.read().await.get(&key).cloned() {
+            return Ok(group_id);
+        }
+
+        let group_id = self
+            .task_groups
+            .create_for_root_turn(
+                root.session_id.clone(),
+                root.agent_id.clone(),
+                origin_turn_id,
+                generation,
+                deadline_at,
+            )
+            .await?;
+        self.owner_groups
+            .write()
+            .await
+            .insert(key, group_id.clone());
+        Ok(group_id)
+    }
+
+    /// Creates or reuses the direct-child task group for a non-root owner.
+    pub async fn create_parent_task_group(
+        &self,
+        owner: &AgentExecutionContext,
+        deadline_at: Instant,
+    ) -> Result<TaskGroupId, CoordinatorError> {
+        if Self::is_root(owner) {
+            return Err(CoordinatorError::RootHasNoTerminalState);
+        }
+        let _operation = self.group_operations.lock().await;
+        let generation = self.current_generation(&owner.session_id).await;
+        let key = OwnerGroupKey {
+            session_id: owner.session_id.clone(),
+            owner_id: owner.agent_id.clone(),
+            generation,
+            origin_turn_id: None,
+        };
+        if let Some(group_id) = self.owner_groups.read().await.get(&key).cloned() {
+            return Ok(group_id);
+        }
+
+        let group_id = self
+            .task_groups
+            .create_for_parent(
+                owner.session_id.clone(),
+                owner.agent_id.clone(),
+                generation,
+                deadline_at,
+            )
+            .await?;
+        self.owner_groups
+            .write()
+            .await
+            .insert(key, group_id.clone());
+        Ok(group_id)
+    }
+
+    /// Reserves a direct child and registers it in exactly one task group.
+    pub async fn reserve_child_in_group(
+        &self,
+        caller: &AgentExecutionContext,
+        request: SpawnChildRequest,
+        group_id: TaskGroupId,
+    ) -> Result<ChildReservation, CoordinatorError> {
+        let reservation = self.reserve_child(caller, request).await?;
+        let _operation = self.group_operations.lock().await;
+        let group_is_owned = self.owner_groups.read().await.iter().any(|(key, mapped)| {
+            key.session_id == caller.session_id
+                && key.owner_id == caller.agent_id
+                && mapped == &group_id
+        });
+        if !group_is_owned {
+            drop(_operation);
+            self.finish_child(&reservation.context, ChildTerminal::Cancelled)
+                .await?;
+            return Err(CoordinatorError::TaskGroup(format!(
+                "task group `{}` is not owned by caller `{}`",
+                group_id.as_str(),
+                caller.agent_id
+            )));
+        }
+        if let Err(error) = self
+            .task_groups
+            .add_child(&group_id, reservation.context.agent_id.clone())
+            .await
+        {
+            drop(_operation);
+            self.finish_child(&reservation.context, ChildTerminal::Cancelled)
+                .await?;
+            return Err(error.into());
+        }
+        self.child_groups.write().await.insert(
+            (
+                reservation.context.session_id.clone(),
+                reservation.context.agent_id.clone(),
+            ),
+            group_id,
+        );
+        Ok(reservation)
+    }
+
     /// Marks a child as terminal, persists the outcome, and releases its permit.
     pub async fn finish_child(
         &self,
         child: &AgentExecutionContext,
         terminal: ChildTerminal,
     ) -> Result<(), CoordinatorError> {
+        if Self::is_root(child) {
+            return Err(CoordinatorError::RootHasNoTerminalState);
+        }
+        let existing_terminal = {
+            let mut scopes = self.scopes.write().await;
+            let key = (child.session_id.clone(), child.agent_id.clone());
+            match scopes.get_mut(&key) {
+                Some(state) if state.status.is_terminal() => state.terminal.clone(),
+                Some(state) => {
+                    state.status = terminal.to_status();
+                    state.terminal = Some(terminal.clone());
+                    state.permit.take();
+                    state.terminal_notify.notify_waiters();
+                    None
+                }
+                None => None,
+            }
+        };
+        if let Some(stored) = existing_terminal {
+            self.record_mapped_child_result(child, &stored).await?;
+            return Ok(());
+        }
+
         let status = terminal.to_status();
         self.store
             .update_status(&child.session_id, &child.agent_id, status)
@@ -466,20 +643,44 @@ impl AgentCoordinator {
                 .await?;
         }
 
-        let mut scopes = self.scopes.write().await;
-        let key = (child.session_id.clone(), child.agent_id.clone());
-        if let Some(state) = scopes.get_mut(&key) {
-            state.status = status;
-            state.terminal = Some(terminal);
-            // Drop the permit to release the concurrency slot.
-            state.permit.take();
-            // Wake any parent blocked in `await_child_terminal` so the join
-            // resolves when the terminal is set here rather than only when the
-            // child's registered task completes.
-            state.terminal_notify.notify_waiters();
-        }
+        self.record_mapped_child_result(child, &terminal).await?;
 
         Ok(())
+    }
+
+    async fn record_mapped_child_result(
+        &self,
+        child: &AgentExecutionContext,
+        terminal: &ChildTerminal,
+    ) -> Result<(), CoordinatorError> {
+        let _operation = self.group_operations.lock().await;
+        let child_key = (child.session_id.clone(), child.agent_id.clone());
+        let group_id = self.child_groups.read().await.get(&child_key).cloned();
+        let Some(group_id) = group_id else {
+            return Ok(());
+        };
+        let (summary, error_code, partial_result) = match terminal {
+            ChildTerminal::Completed { summary } => (summary.as_str(), None, None),
+            ChildTerminal::Failed {
+                code,
+                partial_result,
+            } => ("", Some(code.as_str()), partial_result.as_deref()),
+            ChildTerminal::Cancelled => ("", None, None),
+        };
+        let result = Self::sanitize_child_result(
+            child.agent_id.clone(),
+            terminal.to_child_status(),
+            summary,
+            error_code,
+            partial_result,
+        );
+        match self.task_groups.record_result(&group_id, result).await {
+            Ok(()) | Err(TaskGroupError::ResultAlreadyRecorded { .. }) => {
+                self.child_groups.write().await.remove(&child_key);
+                Ok(())
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Sanitizes a child's terminal into a bounded, parent-facing
@@ -696,6 +897,212 @@ impl AgentCoordinator {
         Ok(record.status)
     }
 
+    fn is_root(context: &AgentExecutionContext) -> bool {
+        context.parent_id.is_none() && context.depth == 0
+    }
+
+    async fn transition_status_if_current(
+        &self,
+        context: &AgentExecutionContext,
+        expected: AgentLifecycleStatus,
+        status: AgentLifecycleStatus,
+    ) -> Result<bool, CoordinatorError> {
+        let mut scopes = self.scopes.write().await;
+        let state = scopes
+            .get_mut(&(context.session_id.clone(), context.agent_id.clone()))
+            .ok_or(CoordinatorError::ParentNotRunning)?;
+        if state.status != expected {
+            return Ok(false);
+        }
+        self.store
+            .update_status(&context.session_id, &context.agent_id, status)
+            .await?;
+        state.status = status;
+        Ok(true)
+    }
+
+    async fn active_owner_status(
+        &self,
+        context: &AgentExecutionContext,
+    ) -> Result<AgentLifecycleStatus, CoordinatorError> {
+        let status = self.status(context).await?;
+        if matches!(
+            status,
+            AgentLifecycleStatus::Running | AgentLifecycleStatus::WaitingForChildren
+        ) {
+            Ok(status)
+        } else {
+            Err(CoordinatorError::ParentNotRunning)
+        }
+    }
+
+    /// Claims one ready delivery owned by the trusted persistent root.
+    pub async fn claim_ready_root_group(
+        &self,
+        root: &AgentExecutionContext,
+        generation: u64,
+    ) -> Result<Option<TaskGroupDelivery>, CoordinatorError> {
+        if !Self::is_root(root) {
+            return Err(CoordinatorError::NotVisible);
+        }
+        let _operation = self.group_operations.lock().await;
+        let delivery = self
+            .task_groups
+            .claim_ready_for_owner(&root.session_id, &root.agent_id, generation)
+            .await?;
+        if let Some(delivery) = &delivery {
+            self.remove_owner_group(&delivery.group_id).await;
+        }
+        Ok(delivery)
+    }
+
+    /// Returns the coordinator-owned task generation for a session.
+    pub async fn current_generation(&self, session_id: &SessionId) -> u64 {
+        self.task_groups.current_generation(session_id).await
+    }
+
+    /// Advances a task generation and discards mappings into older groups.
+    pub async fn advance_generation(&self, session_id: &SessionId) -> u64 {
+        let _operation = self.group_operations.lock().await;
+        let generation = self.task_groups.advance_generation(session_id).await;
+        self.clean_generation_mappings(session_id, |mapped| mapped < generation)
+            .await;
+        generation
+    }
+
+    /// Cancels one task generation and discards all mappings into its groups.
+    pub async fn cancel_generation(&self, session_id: &SessionId, generation: u64) -> usize {
+        let _operation = self.group_operations.lock().await;
+        let removed = self
+            .task_groups
+            .cancel_generation(session_id, generation)
+            .await;
+        self.clean_generation_mappings(session_id, |mapped| mapped == generation)
+            .await;
+        removed
+    }
+
+    async fn clean_generation_mappings(
+        &self,
+        session_id: &SessionId,
+        should_remove: impl Fn(u64) -> bool,
+    ) {
+        let stale_groups = {
+            let mut owner_groups = self.owner_groups.write().await;
+            let stale_groups: Vec<_> = owner_groups
+                .iter()
+                .filter(|(key, _)| key.session_id == *session_id && should_remove(key.generation))
+                .map(|(_, group_id)| group_id.clone())
+                .collect();
+            owner_groups
+                .retain(|key, _| key.session_id != *session_id || !should_remove(key.generation));
+            stale_groups
+        };
+        self.child_groups
+            .write()
+            .await
+            .retain(|_, group_id| !stale_groups.contains(group_id));
+    }
+
+    async fn remove_owner_group(&self, group_id: &TaskGroupId) {
+        self.owner_groups
+            .write()
+            .await
+            .retain(|_, mapped_group_id| mapped_group_id != group_id);
+    }
+
+    /// Waits for direct-child results without terminalizing the non-root owner.
+    pub async fn collect_children_for_synthesis(
+        &self,
+        caller: &AgentExecutionContext,
+    ) -> Result<Vec<ChildResult>, CoordinatorError> {
+        if Self::is_root(caller) {
+            return Err(CoordinatorError::RootHasNoTerminalState);
+        }
+        let initial_status = self.active_owner_status(caller).await?;
+        if !self.live_direct_children(caller).await?.is_empty()
+            && initial_status == AgentLifecycleStatus::Running
+        {
+            self.transition_status_if_current(
+                caller,
+                AgentLifecycleStatus::Running,
+                AgentLifecycleStatus::WaitingForChildren,
+            )
+            .await?;
+        }
+
+        let joined = self.join_children(caller, JoinPolicy::BestEffort).await;
+        let result = match joined {
+            Ok(joined) => {
+                let _operation = self.group_operations.lock().await;
+                let generation = self.current_generation(&caller.session_id).await;
+                let key = OwnerGroupKey {
+                    session_id: caller.session_id.clone(),
+                    owner_id: caller.agent_id.clone(),
+                    generation,
+                    origin_turn_id: None,
+                };
+                let group_id = self.owner_groups.read().await.get(&key).cloned();
+                if let Some(group_id) = group_id {
+                    match self
+                        .task_groups
+                        .claim_specific(&group_id, &caller.session_id, &caller.agent_id, generation)
+                        .await?
+                    {
+                        Some(delivery) => {
+                            self.remove_owner_group(&delivery.group_id).await;
+                            Ok(delivery.results)
+                        }
+                        None => Ok(joined),
+                    }
+                } else {
+                    Ok(joined)
+                }
+            }
+            Err(error) => Err(error),
+        };
+
+        self.transition_status_if_current(
+            caller,
+            AgentLifecycleStatus::WaitingForChildren,
+            AgentLifecycleStatus::Running,
+        )
+        .await?;
+        result
+    }
+
+    /// Transitions a child owner into final synthesis after its children stop.
+    pub async fn begin_finalizing(
+        &self,
+        caller: &AgentExecutionContext,
+    ) -> Result<(), CoordinatorError> {
+        if Self::is_root(caller) {
+            return Err(CoordinatorError::RootHasNoTerminalState);
+        }
+        let status = self.active_owner_status(caller).await?;
+        if !self.live_direct_children(caller).await?.is_empty() {
+            return Err(CoordinatorError::ChildrenStillRunning);
+        }
+        if self
+            .transition_status_if_current(caller, status, AgentLifecycleStatus::Finalizing)
+            .await?
+        {
+            Ok(())
+        } else {
+            Err(CoordinatorError::ParentNotRunning)
+        }
+    }
+
+    #[cfg(test)]
+    async fn child_group_count(&self) -> usize {
+        self.child_groups.read().await.len()
+    }
+
+    #[cfg(test)]
+    async fn owner_group_count(&self) -> usize {
+        self.owner_groups.read().await.len()
+    }
+
     /// Registers the task handle backing a reserved child scope.
     ///
     /// The coordinator owns the handle so that finalization, joining, and
@@ -769,20 +1176,20 @@ impl AgentCoordinator {
     /// Converts a stored terminal into a bounded [`ChildResult`] for the parent.
     fn child_result_from_terminal(child_id: &AgentId, terminal: &ChildTerminal) -> ChildResult {
         let (summary, error_code, partial_result) = match terminal {
-            ChildTerminal::Completed { summary } => (summary.clone(), None, None),
+            ChildTerminal::Completed { summary } => (summary.as_str(), None, None),
             ChildTerminal::Failed {
                 code,
                 partial_result,
-            } => (String::new(), Some(code.clone()), partial_result.clone()),
-            ChildTerminal::Cancelled => (String::new(), None, None),
+            } => ("", Some(code.as_str()), partial_result.as_deref()),
+            ChildTerminal::Cancelled => ("", None, None),
         };
-        ChildResult {
-            child_id: child_id.clone(),
-            status: terminal.to_child_status(),
+        Self::sanitize_child_result(
+            child_id.clone(),
+            terminal.to_child_status(),
             summary,
             error_code,
             partial_result,
-        }
+        )
     }
 
     /// Joins all direct children of `caller` according to `policy`.
@@ -1027,6 +1434,9 @@ impl AgentCoordinator {
         outcome: ParentOutcome,
         policy: JoinPolicy,
     ) -> Result<Vec<ChildResult>, CoordinatorError> {
+        if Self::is_root(caller) {
+            return Err(CoordinatorError::RootHasNoTerminalState);
+        }
         // Move into WaitingForChildren while any direct child is still live.
         let has_live = !self.live_direct_children(caller).await?.is_empty();
         if has_live {
@@ -1134,6 +1544,9 @@ impl AgentCoordinator {
         &self,
         caller: &AgentExecutionContext,
     ) -> Result<(), CoordinatorError> {
+        if Self::is_root(caller) {
+            return Err(CoordinatorError::RootHasNoTerminalState);
+        }
         self.cancel_descendants(caller).await?;
 
         // Persist the caller as Cancelled and release its permit.
@@ -1167,6 +1580,9 @@ impl AgentCoordinator {
         if !is_self && !is_direct_child {
             return Err(CoordinatorError::NotVisible);
         }
+        if is_self && Self::is_root(caller) {
+            return Err(CoordinatorError::RootHasNoTerminalState);
+        }
 
         let target_context = if is_self {
             caller.clone()
@@ -1191,12 +1607,8 @@ impl AgentCoordinator {
         };
 
         self.cancel_descendants(&target_context).await?;
-
-        if is_self {
-            // Self-cancellation persists the caller as Cancelled.
-            self.finish_child(caller, ChildTerminal::Cancelled).await?;
-        }
-        // For a direct child, cancel_descendants already persisted it Cancelled.
+        self.finish_child(&target_context, ChildTerminal::Cancelled)
+            .await?;
 
         Ok(())
     }
@@ -1214,6 +1626,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::time::Instant;
 
     fn test_coordinator(max_concurrent: usize, max_depth: usize) -> AgentCoordinator {
         AgentCoordinator::new(max_concurrent, max_depth)
@@ -1270,6 +1683,425 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reserved_root_child_joins_the_exact_turn_group_and_delivers() {
+        let coordinator = test_coordinator(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let group = coordinator
+            .create_root_task_group(&root, "turn-1", Instant::now() + Duration::from_secs(30))
+            .await
+            .unwrap();
+        let child = coordinator
+            .reserve_child_in_group(&root, SpawnChildRequest::new("work"), group.clone())
+            .await
+            .unwrap();
+
+        coordinator
+            .finish_child(&child.context, ChildTerminal::completed("done"))
+            .await
+            .unwrap();
+
+        let delivery = coordinator
+            .claim_ready_root_group(&root, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivery.group_id, group);
+        assert_eq!(delivery.results.len(), 1);
+        assert_eq!(delivery.results[0].summary, "done");
+        assert_eq!(coordinator.child_group_count().await, 0);
+        assert_eq!(coordinator.owner_group_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn root_claim_cannot_claim_a_ready_non_root_group() {
+        let coordinator = test_coordinator(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let root_group = coordinator
+            .create_root_task_group(&root, "turn-1", Instant::now() + Duration::from_secs(30))
+            .await
+            .unwrap();
+        let parent = coordinator
+            .reserve_child_in_group(&root, SpawnChildRequest::new("parent"), root_group)
+            .await
+            .unwrap();
+        let parent_group = coordinator
+            .create_parent_task_group(&parent.context, Instant::now() + Duration::from_secs(30))
+            .await
+            .unwrap();
+        let grandchild = coordinator
+            .reserve_child_in_group(
+                &parent.context,
+                SpawnChildRequest::new("grandchild"),
+                parent_group,
+            )
+            .await
+            .unwrap();
+        coordinator
+            .finish_child(
+                &grandchild.context,
+                ChildTerminal::completed("grandchild done"),
+            )
+            .await
+            .unwrap();
+
+        assert!(coordinator
+            .claim_ready_root_group(&root, 0)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn group_registration_failure_releases_permit_and_leaves_no_live_orphan() {
+        let coordinator = test_coordinator(1, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let group = coordinator
+            .create_root_task_group(&root, "turn-1", Instant::now() + Duration::from_secs(30))
+            .await
+            .unwrap();
+        coordinator.cancel_generation(&root.session_id, 0).await;
+
+        assert!(matches!(
+            coordinator
+                .reserve_child_in_group(&root, SpawnChildRequest::new("work"), group)
+                .await,
+            Err(CoordinatorError::TaskGroup(_))
+        ));
+        assert_eq!(coordinator.available_permits(), 1);
+        assert!(coordinator
+            .live_direct_children(&root)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(coordinator.child_group_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn finishing_failed_child_records_error_and_partial_result() {
+        let coordinator = test_coordinator(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let group = coordinator
+            .create_root_task_group(&root, "turn-1", Instant::now() + Duration::from_secs(30))
+            .await
+            .unwrap();
+        let child = coordinator
+            .reserve_child_in_group(&root, SpawnChildRequest::new("work"), group)
+            .await
+            .unwrap();
+
+        coordinator
+            .finish_child(
+                &child.context,
+                ChildTerminal::Failed {
+                    code: "E_WORK".to_owned(),
+                    partial_result: Some("partial".to_owned()),
+                },
+            )
+            .await
+            .unwrap();
+        let delivery = coordinator
+            .claim_ready_root_group(&root, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivery.results[0].status, ChildTerminalStatus::Failed);
+        assert_eq!(delivery.results[0].error_code.as_deref(), Some("E_WORK"));
+        assert_eq!(
+            delivery.results[0].partial_result.as_deref(),
+            Some("partial")
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_finish_is_idempotent_and_does_not_duplicate_delivery() {
+        let coordinator = test_coordinator(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let group = coordinator
+            .create_root_task_group(&root, "turn-1", Instant::now() + Duration::from_secs(30))
+            .await
+            .unwrap();
+        let child = coordinator
+            .reserve_child_in_group(&root, SpawnChildRequest::new("work"), group)
+            .await
+            .unwrap();
+
+        coordinator
+            .finish_child(&child.context, ChildTerminal::completed("first"))
+            .await
+            .unwrap();
+        coordinator
+            .finish_child(&child.context, ChildTerminal::completed("second"))
+            .await
+            .unwrap();
+
+        let delivery = coordinator
+            .claim_ready_root_group(&root, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivery.results.len(), 1);
+        assert_eq!(delivery.results[0].summary, "first");
+        assert!(coordinator
+            .claim_ready_root_group(&root, 0)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn concurrent_finish_keeps_the_first_terminal_outcome() {
+        let coordinator = test_coordinator(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let group = coordinator
+            .create_root_task_group(&root, "turn-1", Instant::now() + Duration::from_secs(30))
+            .await
+            .unwrap();
+        let child = coordinator
+            .reserve_child_in_group(&root, SpawnChildRequest::new("work"), group)
+            .await
+            .unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+
+        let mut finishers = Vec::new();
+        for terminal in [
+            ChildTerminal::completed("first"),
+            ChildTerminal::Failed {
+                code: "second".to_owned(),
+                partial_result: None,
+            },
+        ] {
+            let coordinator = coordinator.clone();
+            let child = child.context.clone();
+            let barrier = barrier.clone();
+            finishers.push(tokio::spawn(async move {
+                barrier.wait().await;
+                coordinator.finish_child(&child, terminal).await.unwrap();
+            }));
+        }
+        barrier.wait().await;
+        for finisher in finishers {
+            finisher.await.unwrap();
+        }
+
+        let stored = coordinator.stored_terminal(&child.context).await.unwrap();
+        let record = coordinator
+            .store
+            .authorize_target(
+                &child.context.session_id,
+                &child.context.agent_id,
+                &child.context.agent_id,
+            )
+            .await
+            .unwrap();
+        assert_eq!(record.status, stored.to_status());
+        let delivery = coordinator
+            .claim_ready_root_group(&root, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivery.results[0].status, stored.to_child_status());
+    }
+
+    #[tokio::test]
+    async fn persistent_root_rejects_finalization_transitions() {
+        let coordinator = test_coordinator(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+
+        assert!(matches!(
+            coordinator.begin_finalizing(&root).await,
+            Err(CoordinatorError::RootHasNoTerminalState)
+        ));
+        assert!(matches!(
+            coordinator
+                .finish_child(&root, ChildTerminal::completed("done"))
+                .await,
+            Err(CoordinatorError::RootHasNoTerminalState)
+        ));
+        assert!(matches!(
+            coordinator
+                .finalize_scope(
+                    &root,
+                    ParentOutcome::Completed("done".to_owned()),
+                    JoinPolicy::BestEffort,
+                )
+                .await,
+            Err(CoordinatorError::RootHasNoTerminalState)
+        ));
+        assert_eq!(
+            coordinator.status(&root).await.unwrap(),
+            AgentLifecycleStatus::Running
+        );
+    }
+
+    #[tokio::test]
+    async fn begin_finalizing_rejects_live_direct_children() {
+        let coordinator = test_coordinator(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let parent = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("parent"))
+            .await
+            .unwrap();
+        let _child = coordinator
+            .reserve_child(&parent.context, SpawnChildRequest::new("child"))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            coordinator.begin_finalizing(&parent.context).await,
+            Err(CoordinatorError::ChildrenStillRunning)
+        ));
+        assert_eq!(
+            coordinator.status(&parent.context).await.unwrap(),
+            AgentLifecycleStatus::Running
+        );
+    }
+
+    #[tokio::test]
+    async fn synthesis_and_finalizing_do_not_resurrect_terminal_owner() {
+        let coordinator = test_coordinator(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let parent = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("parent"))
+            .await
+            .unwrap();
+        coordinator
+            .finish_child(&parent.context, ChildTerminal::completed("done"))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            coordinator
+                .collect_children_for_synthesis(&parent.context)
+                .await,
+            Err(CoordinatorError::ParentNotRunning)
+        ));
+        assert!(matches!(
+            coordinator.begin_finalizing(&parent.context).await,
+            Err(CoordinatorError::ParentNotRunning)
+        ));
+        assert_eq!(
+            coordinator.status(&parent.context).await.unwrap(),
+            AgentLifecycleStatus::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_join_results_are_sanitized() {
+        let coordinator = test_coordinator(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let child = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("work"))
+            .await
+            .unwrap();
+        coordinator
+            .finish_child(&child.context, ChildTerminal::completed("x".repeat(10_000)))
+            .await
+            .unwrap();
+
+        let results = coordinator
+            .join_children(&root, JoinPolicy::BestEffort)
+            .await
+            .unwrap();
+        assert_eq!(results[0].summary.chars().count(), 4_000);
+    }
+
+    #[tokio::test]
+    async fn collection_waits_returns_direct_results_and_restores_parent_running() {
+        let coordinator = test_coordinator(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let parent = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("parent"))
+            .await
+            .unwrap();
+        let group = coordinator
+            .create_parent_task_group(&parent.context, Instant::now() + Duration::from_secs(30))
+            .await
+            .unwrap();
+        let child = coordinator
+            .reserve_child_in_group(&parent.context, SpawnChildRequest::new("child"), group)
+            .await
+            .unwrap();
+        let coordinator_for_collect = coordinator.clone();
+        let parent_for_collect = parent.context.clone();
+        let collect = tokio::spawn(async move {
+            coordinator_for_collect
+                .collect_children_for_synthesis(&parent_for_collect)
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(
+            coordinator.status(&parent.context).await.unwrap(),
+            AgentLifecycleStatus::WaitingForChildren
+        );
+
+        coordinator
+            .finish_child(&child.context, ChildTerminal::completed("child result"))
+            .await
+            .unwrap();
+        let results = collect.await.unwrap().unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].child_id, child.context.agent_id);
+        assert_eq!(results[0].summary, "child result");
+        assert_eq!(
+            coordinator.status(&parent.context).await.unwrap(),
+            AgentLifecycleStatus::Running
+        );
+        assert_eq!(coordinator.owner_group_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn generation_advance_cleans_owner_and_child_group_mappings() {
+        let coordinator = test_coordinator(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let group = coordinator
+            .create_root_task_group(&root, "turn-1", Instant::now() + Duration::from_secs(30))
+            .await
+            .unwrap();
+        let _child = coordinator
+            .reserve_child_in_group(&root, SpawnChildRequest::new("work"), group)
+            .await
+            .unwrap();
+        assert_eq!(coordinator.owner_group_count().await, 1);
+        assert_eq!(coordinator.child_group_count().await, 1);
+
+        assert_eq!(coordinator.advance_generation(&root.session_id).await, 1);
+        assert_eq!(coordinator.owner_group_count().await, 0);
+        assert_eq!(coordinator.child_group_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn cancelling_grouped_child_records_result_and_cleans_mapping() {
+        let coordinator = test_coordinator(4, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let group = coordinator
+            .create_root_task_group(&root, "turn-1", Instant::now() + Duration::from_secs(30))
+            .await
+            .unwrap();
+        let child = coordinator
+            .reserve_child_in_group(&root, SpawnChildRequest::new("work"), group)
+            .await
+            .unwrap();
+
+        coordinator
+            .cancel_subtree(&root, child.context.agent_id.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            coordinator.status(&child.context).await.unwrap(),
+            AgentLifecycleStatus::Cancelled
+        );
+        assert_eq!(coordinator.child_group_count().await, 0);
+        let delivery = coordinator
+            .claim_ready_root_group(&root, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivery.results[0].status, ChildTerminalStatus::Cancelled);
+    }
+
+    #[tokio::test]
     async fn ensure_root_is_idempotent_for_running_session() {
         let coordinator = test_coordinator(4, 3);
         let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
@@ -1282,13 +2114,17 @@ mod tests {
     async fn reserve_child_rejects_terminal_parent() {
         let coordinator = test_coordinator(4, 3);
         let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let parent = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("parent"))
+            .await
+            .unwrap();
         coordinator
-            .finish_child(&root, ChildTerminal::completed("root done"))
+            .finish_child(&parent.context, ChildTerminal::completed("parent done"))
             .await
             .unwrap();
         assert!(matches!(
             coordinator
-                .reserve_child(&root, SpawnChildRequest::new("after"))
+                .reserve_child(&parent.context, SpawnChildRequest::new("after"))
                 .await,
             Err(CoordinatorError::ParentNotRunning)
         ));
@@ -1349,33 +2185,40 @@ mod tests {
     ) {
         let coordinator = test_coordinator(4, 3);
         let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
-        let (child, release) =
-            register_controlled_child(&coordinator, &root, ChildTerminal::completed("child done"))
-                .await;
+        let parent = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("parent"))
+            .await
+            .unwrap();
+        let (child, release) = register_controlled_child(
+            &coordinator,
+            &parent.context,
+            ChildTerminal::completed("child done"),
+        )
+        .await;
         // Keep the release sender alive for the lifetime of the test so the
         // child's future stays blocked until `finish_child` externally sets its
         // terminal. Leaking is acceptable in a test fixture.
         Box::leak(Box::new(release));
-        (coordinator, root, child)
+        (coordinator, parent.context, child)
     }
 
     #[tokio::test]
     async fn parent_waits_for_live_direct_children_before_completion() {
-        let (coordinator, root, child) = running_parent_and_child().await;
+        let (coordinator, parent, child) = running_parent_and_child().await;
         let coordinator_for_finalize = coordinator.clone();
-        let root_for_finalize = root.clone();
+        let parent_for_finalize = parent.clone();
         let finalize = tokio::spawn(async move {
             coordinator_for_finalize
                 .finalize_scope(
-                    &root_for_finalize,
-                    ParentOutcome::Completed("root done".into()),
+                    &parent_for_finalize,
+                    ParentOutcome::Completed("parent done".into()),
                     JoinPolicy::AllRequired,
                 )
                 .await
         });
         tokio::task::yield_now().await;
         assert_eq!(
-            coordinator.status(&root).await.unwrap(),
+            coordinator.status(&parent).await.unwrap(),
             AgentLifecycleStatus::WaitingForChildren
         );
 
@@ -1391,7 +2234,7 @@ mod tests {
         let results = finalize.await.unwrap().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(
-            coordinator.status(&root).await.unwrap(),
+            coordinator.status(&parent).await.unwrap(),
             AgentLifecycleStatus::Completed
         );
     }
@@ -1433,7 +2276,7 @@ mod tests {
         let fixture = three_level_running_tree().await;
         fixture
             .coordinator
-            .cancel_scope(&fixture.root)
+            .cancel_scope(&fixture.child)
             .await
             .unwrap();
         assert_eq!(
@@ -1450,7 +2293,7 @@ mod tests {
         );
         assert_eq!(
             fixture.coordinator.status(&fixture.root).await.unwrap(),
-            AgentLifecycleStatus::Cancelled
+            AgentLifecycleStatus::Running
         );
         assert_eq!(
             fixture.coordinator.available_permits(),
@@ -1462,13 +2305,20 @@ mod tests {
     async fn best_effort_waits_for_all_children() {
         let coordinator = test_coordinator(8, 3);
         let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let parent = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("parent"))
+            .await
+            .unwrap();
         // Two children: one completes, one fails. BestEffort waits for both.
-        let (child_a, release_a) =
-            register_controlled_child(&coordinator, &root, ChildTerminal::completed("a done"))
-                .await;
+        let (child_a, release_a) = register_controlled_child(
+            &coordinator,
+            &parent.context,
+            ChildTerminal::completed("a done"),
+        )
+        .await;
         let (child_b, release_b) = register_controlled_child(
             &coordinator,
-            &root,
+            &parent.context,
             ChildTerminal::Failed {
                 code: "boom".into(),
                 partial_result: None,
@@ -1481,8 +2331,8 @@ mod tests {
 
         let results = coordinator
             .finalize_scope(
-                &root,
-                ParentOutcome::Completed("root".into()),
+                &parent.context,
+                ParentOutcome::Completed("parent".into()),
                 JoinPolicy::BestEffort,
             )
             .await
@@ -1493,7 +2343,7 @@ mod tests {
         assert!(ids.contains(&child_a.agent_id.as_str()));
         assert!(ids.contains(&child_b.agent_id.as_str()));
         assert_eq!(
-            coordinator.status(&root).await.unwrap(),
+            coordinator.status(&parent.context).await.unwrap(),
             AgentLifecycleStatus::Completed
         );
     }
@@ -1502,10 +2352,14 @@ mod tests {
     async fn fail_fast_cancels_remaining_children_after_first_failure() {
         let coordinator = test_coordinator(8, 3);
         let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let parent = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("parent"))
+            .await
+            .unwrap();
         // First child fails when released.
         let (child_a, release_a) = register_controlled_child(
             &coordinator,
-            &root,
+            &parent.context,
             ChildTerminal::Failed {
                 code: "boom".into(),
                 partial_result: None,
@@ -1515,9 +2369,12 @@ mod tests {
         // Second child is live and must be cancelled by FailFast. Keep its
         // release alive so cancellation--not natural completion--drives its
         // terminal, proving FailFast cancels the remaining child.
-        let (child_b, release_b) =
-            register_controlled_child(&coordinator, &root, ChildTerminal::completed("b done"))
-                .await;
+        let (child_b, release_b) = register_controlled_child(
+            &coordinator,
+            &parent.context,
+            ChildTerminal::completed("b done"),
+        )
+        .await;
         Box::leak(Box::new(release_b));
 
         // Release the first child so it settles to Failed, triggering FailFast.
@@ -1525,7 +2382,7 @@ mod tests {
 
         let results = coordinator
             .finalize_scope(
-                &root,
+                &parent.context,
                 ParentOutcome::Failed {
                     code: "child_failed".into(),
                     partial_result: None,
@@ -1545,7 +2402,7 @@ mod tests {
             AgentLifecycleStatus::Cancelled
         );
         assert_eq!(
-            coordinator.status(&root).await.unwrap(),
+            coordinator.status(&parent.context).await.unwrap(),
             AgentLifecycleStatus::Failed
         );
         // All permits released after finalization.
@@ -1563,13 +2420,15 @@ mod tests {
         // Keep the child live until cancellation drives its terminal.
         Box::leak(Box::new(release));
 
-        // Self-cancellation is allowed.
-        assert!(coordinator
-            .cancel_subtree(&root, root.agent_id.clone())
-            .await
-            .is_ok());
+        // Persistent-root self-cancellation is rejected before lifecycle mutation.
+        assert!(matches!(
+            coordinator
+                .cancel_subtree(&root, root.agent_id.clone())
+                .await,
+            Err(CoordinatorError::RootHasNoTerminalState)
+        ));
 
-        // Direct child cancellation is allowed (child already terminal via root).
+        // Direct child cancellation is allowed.
         assert!(coordinator
             .cancel_subtree(&root, child.agent_id.clone())
             .await
@@ -1589,10 +2448,14 @@ mod tests {
         // A child that ignores cooperative cancellation must be aborted and its
         // permit released after the shutdown timeout.
         let coordinator =
-            AgentCoordinator::new(1, 3).with_shutdown_timeout(Duration::from_millis(50));
+            AgentCoordinator::new(2, 3).with_shutdown_timeout(Duration::from_millis(50));
         let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let parent = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("parent"))
+            .await
+            .unwrap();
         let reservation = coordinator
-            .reserve_child(&root, SpawnChildRequest::new("uncooperative"))
+            .reserve_child(&parent.context, SpawnChildRequest::new("uncooperative"))
             .await
             .unwrap();
         let context = reservation.context.clone();
@@ -1604,9 +2467,9 @@ mod tests {
         coordinator.register_task(&context, task).await.unwrap();
 
         assert_eq!(coordinator.available_permits(), 0);
-        coordinator.cancel_scope(&root).await.unwrap();
-        // Child aborted and permit released.
-        assert_eq!(coordinator.available_permits(), 1);
+        coordinator.cancel_scope(&parent.context).await.unwrap();
+        // Parent and child permits are released.
+        assert_eq!(coordinator.available_permits(), 2);
         assert_eq!(
             coordinator.status(&context).await.unwrap(),
             AgentLifecycleStatus::Cancelled
@@ -1660,26 +2523,34 @@ mod tests {
         // the child is live; it only completes after the child terminates.
         let coordinator = test_coordinator(4, 3);
         let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
-        let (child, release) =
-            register_controlled_child(&coordinator, &root, ChildTerminal::completed("done")).await;
+        let parent = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("parent"))
+            .await
+            .unwrap();
+        let (child, release) = register_controlled_child(
+            &coordinator,
+            &parent.context,
+            ChildTerminal::completed("done"),
+        )
+        .await;
         // Keep the child live (leak the release) so finalize must wait, exactly
         // as a scoped background child would force the parent to wait.
         Box::leak(Box::new(release));
 
         let coord_for_final = coordinator.clone();
-        let root_for_final = root.clone();
+        let parent_for_final = parent.context.clone();
         let finalize = tokio::spawn(async move {
             coord_for_final
                 .finalize_scope(
-                    &root_for_final,
-                    ParentOutcome::Completed("root".into()),
+                    &parent_for_final,
+                    ParentOutcome::Completed("parent".into()),
                     JoinPolicy::AllRequired,
                 )
                 .await
         });
         tokio::task::yield_now().await;
         // While the child is live, the parent is not yet Completed.
-        let mid_status = coordinator.status(&root).await.unwrap();
+        let mid_status = coordinator.status(&parent.context).await.unwrap();
         assert!(
             !mid_status.is_terminal(),
             "parent should not be terminal while child is live, got {:?}",
@@ -1694,7 +2565,7 @@ mod tests {
         let results = finalize.await.unwrap().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(
-            coordinator.status(&root).await.unwrap(),
+            coordinator.status(&parent.context).await.unwrap(),
             AgentLifecycleStatus::Completed
         );
         assert_eq!(

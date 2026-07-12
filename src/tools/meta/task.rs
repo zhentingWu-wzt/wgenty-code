@@ -364,7 +364,10 @@ impl Tool for TaskTool {
             };
             let timeout_secs = self.settings.agent.subagent.timeout_secs;
 
-            let subagent_node_id = uuid::Uuid::new_v4().to_string();
+            // Use the coordinator-owned child's identity as the progress-store
+            // key so build_local_view() can cross-fill messages/snapshots/tokens
+            // by looking up child.agent_id in the legacy subagent_progress store.
+            let subagent_node_id = child_context.agent_id.as_str().to_string();
             {
                 let mut store = self.progress_store.write().await;
                 store.entry(session_id.clone()).or_default().insert(
@@ -512,7 +515,9 @@ impl Tool for TaskTool {
             })
         } else {
             // ── Synchronous mode: block until complete ─────────────────────
-            let subagent_node_id = uuid::Uuid::new_v4().to_string();
+            // Use the coordinator-owned child's identity as the progress-store
+            // key so build_local_view() can cross-fill messages/snapshots/tokens.
+            let subagent_node_id = child_context.agent_id.as_str().to_string();
             let started_at_sync = chrono::Utc::now().timestamp_millis();
             {
                 let mut store = self.progress_store.write().await;
