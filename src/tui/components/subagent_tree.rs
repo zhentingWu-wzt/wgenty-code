@@ -143,6 +143,17 @@ impl SubagentTree {
         self.nodes.contains_key(node_id)
     }
 
+    /// Returns the opaque navigation capability for a direct child of the
+    /// currently loaded local view, if any. Capabilities are viewer-bound and
+    /// issued by the daemon; raw agent ids confer no authority.
+    pub fn capability_for_child(&self, child_id: &str) -> Option<String> {
+        let view = self.local_view.as_ref()?;
+        view.children
+            .iter()
+            .find(|c| c.agent_id == child_id)
+            .map(|c| c.navigation_capability.clone())
+    }
+
     pub fn count_by_status(&self, status: SubagentStatus) -> usize {
         self.real_node_list()
             .iter()
@@ -583,6 +594,41 @@ mod tests {
             tree.nodes["child"].progress.label,
             "inspect selector labels"
         );
+    }
+
+    #[test]
+    fn capability_for_child_returns_direct_child_capability_only() {
+        // Only direct children of the loaded local view expose a navigation
+        // capability; the self node and unknown ids return None.
+        let mut tree = SubagentTree::default();
+        tree.replace_local(crate::daemon::models::LocalAgentViewResponse {
+            self_view: crate::daemon::models::SelfAgentResponse {
+                agent_id: "root".to_string(),
+                status: crate::agent::AgentLifecycleStatus::Running,
+            },
+            children: vec![crate::daemon::models::DirectChildResponse {
+                agent_id: "child".to_string(),
+                status: crate::agent::AgentLifecycleStatus::Running,
+                label: "child".to_string(),
+                summary: None,
+                navigation_capability: "cap-child".to_string(),
+                text_snapshot: None,
+                cumulative_tokens: 0,
+                messages: Vec::new(),
+            }],
+        });
+
+        assert_eq!(
+            tree.capability_for_child("child").as_deref(),
+            Some("cap-child")
+        );
+        // Self node has no capability.
+        assert!(tree.capability_for_child("root").is_none());
+        // Unknown / hidden id has no capability.
+        assert!(tree.capability_for_child("grandchild").is_none());
+        // No loaded view -> None.
+        let empty = SubagentTree::default();
+        assert!(empty.capability_for_child("anything").is_none());
     }
 
     #[test]

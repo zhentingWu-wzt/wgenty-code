@@ -58,11 +58,21 @@ impl App {
                             now,
                             &focus.node_id,
                         );
-                        let new_state = visible
-                            .get(focus.selector_index - 1)
-                            .and_then(|id| FocusViewState::build(id, &self.subagent_tree));
-                        if let Some(state) = new_state {
-                            *focus = state;
+                        let new_state = visible.get(focus.selector_index - 1);
+                        if let Some(id) = new_state {
+                            // Descend into the selected direct child via its
+                            // opaque navigation capability. The daemon verifies
+                            // the capability and returns the child's local view;
+                            // we do not rebuild from the in-memory tree.
+                            if let Some(capability) = self.subagent_tree.capability_for_child(id) {
+                                let _ = self.event_tx.send(AppEvent::NavigateAgent { capability });
+                            } else if let Some(state) =
+                                FocusViewState::build(id, &self.subagent_tree)
+                            {
+                                // No capability (self node or stale view):
+                                // fall back to the in-memory focus switch.
+                                *focus = state;
+                            }
                         }
                         return;
                     }
@@ -79,6 +89,11 @@ impl App {
                 }
                 KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     // pass through to global Ctrl+L handler
+                }
+                KeyCode::Backspace => {
+                    // One-level back navigation while the focus view is open.
+                    let _ = self.event_tx.send(AppEvent::NavigateAgentBack);
+                    return;
                 }
                 _ => return,
             }

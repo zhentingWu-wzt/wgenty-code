@@ -610,6 +610,14 @@ impl App {
                 // Replace the tree with the scoped local view from the daemon.
                 // Completion-time tracking and focus updates are computed from
                 // the current response only.
+                let view_ref = &*view;
+                if self.agent_navigation.current.is_none() {
+                    self.agent_navigation.current = Some(crate::tui::app::types::AgentViewFrame {
+                        view: view_ref.clone(),
+                        selected: 0,
+                        breadcrumb_label: view_ref.self_view.agent_id.clone(),
+                    });
+                }
                 self.subagent_tree.replace_local(*view);
                 if let Some(ref mut focus) = self.subagent_focus {
                     focus.rebuild(&self.subagent_tree);
@@ -659,6 +667,51 @@ impl App {
                 // Obsolete generation's deliveries are now rejected by the
                 // daemon; resume normal phase updates.
                 self.suppress_phase_updates = false;
+            }
+            AppEvent::NavigateAgent { capability } => {
+                // Descend into a direct child via its opaque capability.
+                let client = self.daemon_client.clone();
+                let session_id = self.session_id.clone();
+                let cap = capability.clone();
+                let event_tx = self.event_tx.clone();
+                tokio::spawn(async move {
+                    match client.navigate_agent_view(&session_id, &cap).await {
+                        Ok(view) => {
+                            let _ = event_tx.send(AppEvent::AgentViewNavigated(Box::new(view)));
+                        }
+                        Err(error) => {
+                            tracing::warn!(error = %error, capability = %cap, "navigate_agent_view failed");
+                        }
+                    }
+                });
+            }
+            AppEvent::AgentViewNavigated(view) => {
+                // Push the current frame (if any) and replace it with the
+                // newly navigated view. A failed/stale capability leaves the
+                // current view intact (we only get here on success).
+                let frame = crate::tui::app::types::AgentViewFrame {
+                    view: (*view).clone(),
+                    selected: 0,
+                    breadcrumb_label: view.self_view.agent_id.clone(),
+                };
+                if let Some(current) = self.agent_navigation.current.take() {
+                    self.agent_navigation.back_stack.push(current);
+                }
+                self.agent_navigation.current = Some(frame);
+                self.subagent_tree.replace_local(*view);
+                if let Some(ref mut focus) = self.subagent_focus {
+                    focus.rebuild(&self.subagent_tree);
+                }
+            }
+            AppEvent::NavigateAgentBack => {
+                // Pop the back stack locally; no daemon round-trip needed.
+                if let Some(prev) = self.agent_navigation.back_stack.pop() {
+                    self.agent_navigation.current = Some(prev.clone());
+                    self.subagent_tree.replace_local(prev.view);
+                    if let Some(ref mut focus) = self.subagent_focus {
+                        focus.rebuild(&self.subagent_tree);
+                    }
+                }
             }
             AppEvent::SaveSession => {
                 let id = self.session_id.clone();
