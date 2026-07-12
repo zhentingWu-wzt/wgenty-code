@@ -16,7 +16,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::identity::{AgentExecutionContext, AgentId, AgentLifecycleStatus, SessionId};
-use crate::agent::store::{InMemoryAgentStore, LocalAgentView, StoreError};
+use crate::agent::store::{AgentRecord, InMemoryAgentStore, LocalAgentView, StoreError};
 use crate::agent::task_group::{TaskGroupDelivery, TaskGroupError, TaskGroupId, TaskGroupStore};
 
 /// Default bounded shutdown timeout applied while awaiting cancelling children.
@@ -904,6 +904,19 @@ impl AgentCoordinator {
     ) -> Result<LocalAgentView, CoordinatorError> {
         self.store
             .local_view(&caller.session_id, &caller.agent_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Returns a canonical record for a trusted UI projection after its
+    /// authority for the requested scope has already been verified.
+    pub(crate) async fn trusted_ui_record(
+        &self,
+        session: &SessionId,
+        agent: &AgentId,
+    ) -> Result<AgentRecord, CoordinatorError> {
+        self.store
+            .record_for_trusted_ui(session, agent)
             .await
             .map_err(Into::into)
     }
