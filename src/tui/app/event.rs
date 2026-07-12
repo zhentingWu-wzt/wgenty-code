@@ -607,7 +607,20 @@ impl App {
                     diff_data: extract_diff_data("undo", &serde_json::json!({}), &output),
                 });
             }
-            AppEvent::AgentLocalView(view) => {
+            AppEvent::AgentLocalView { view, generation } => {
+                // P1: Discard stale views from a previous generation. After
+                // `/clear` or a generation reset, old polling loops (if still
+                // running) would send views with an outdated generation tag.
+                // Comparing against `self.agent_generation` ensures only
+                // current-generation views reach the tree.
+                if generation != self.agent_generation {
+                    tracing::debug!(
+                        stale_generation = generation,
+                        current_generation = self.agent_generation,
+                        "Discarding stale AgentLocalView from previous generation"
+                    );
+                    return;
+                }
                 // Replace the tree with the scoped local view from the daemon,
                 // but only when the view matches the current navigation scope.
                 // Background polling always fetches the root view; if the user
@@ -630,6 +643,17 @@ impl App {
                     .unwrap_or(true);
                 if matches_current_scope {
                     self.subagent_tree.replace_local(*view);
+                    // P2: Populate `completed_at` for nodes that have reached a
+                    // terminal status.  This activates the
+                    // `COMPLETED_REMOVE_DELAY_SECS` auto-removal in
+                    // `visible_node_ids`, so finished subagents fade out of the
+                    // selector after 10 s instead of lingering indefinitely.
+                    let now = std::time::Instant::now();
+                    for (node_id, node) in &self.subagent_tree.nodes {
+                        if node.progress.status.is_terminal() {
+                            self.completed_at.entry(node_id.clone()).or_insert(now);
+                        }
+                    }
                 }
                 if let Some(ref mut focus) = self.subagent_focus {
                     focus.rebuild(&self.subagent_tree);

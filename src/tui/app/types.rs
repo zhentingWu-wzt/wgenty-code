@@ -166,7 +166,13 @@ pub enum AppEvent {
     /// Settings were hot-reloaded from disk
     ConfigChanged(Box<crate::config::Settings>),
     /// A scoped agent local view (self + direct children) from the daemon.
-    AgentLocalView(Box<LocalAgentViewResponse>),
+    /// Carries the `generation` at which the polling loop was spawned so the
+    /// handler can discard stale views from a previous generation (e.g. after
+    /// `/clear` or a generation reset).
+    AgentLocalView {
+        view: Box<LocalAgentViewResponse>,
+        generation: u64,
+    },
     /// Background task/subagent result notification for display in chat.
     BackgroundTaskResult(String),
     /// A new task generation was established after `/clear` or shutdown
