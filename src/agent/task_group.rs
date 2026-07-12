@@ -33,11 +33,20 @@ pub struct TaskGroupDelivery {
 /// Errors produced while mutating task-group membership and results.
 #[derive(Debug, Error)]
 pub enum TaskGroupError {
+    /// The caller attempted to create or mutate state from an obsolete generation.
+    #[error(
+        "session `{session_id}` is at generation {expected}, but generation {actual} was supplied"
+    )]
+    StaleGeneration {
+        session_id: SessionId,
+        expected: u64,
+        actual: u64,
+    },
     /// The requested group is not present in this store.
     #[error("task group `{group_id}` does not exist")]
     GroupNotFound { group_id: String },
     /// Membership cannot change after cancellation or delivery.
-    #[error("task group `{group_id}` is closed and cannot accept child `{child_id}`")]
+    #[error("task group `{group_id}` is closed and cannot accept updates for child `{child_id}`")]
     GroupClosed { group_id: String, child_id: String },
     /// A direct child may be added to a group only once.
     #[error("child `{child_id}` is already registered in task group `{group_id}`")]
@@ -71,8 +80,13 @@ struct GroupRecord {
     deadline_at: Instant,
     child_ids: HashSet<AgentId>,
     results: HashMap<AgentId, ChildResult>,
-    claimed: bool,
-    cancelled: bool,
+    lifecycle: GroupLifecycle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupLifecycle {
+    Active,
+    Expired,
 }
 
 impl TaskGroupStore {
@@ -84,33 +98,29 @@ impl TaskGroupStore {
         origin_turn_id: impl Into<String>,
         generation: u64,
         deadline_at: Instant,
-    ) -> TaskGroupId {
+    ) -> Result<TaskGroupId, TaskGroupError> {
         let origin_turn_id = origin_turn_id.into();
         let mut state = self.inner.write().await;
-        state
-            .generations
-            .entry(session_id.clone())
-            .or_insert(generation);
+        Self::ensure_generation(&state, &session_id, generation)?;
+        state.generations.entry(session_id.clone()).or_default();
 
         if let Some(group) = state.groups.values().find(|group| {
             group.session_id == session_id
                 && group.owner_id == owner_id
                 && group.origin_turn_id.as_deref() == Some(origin_turn_id.as_str())
                 && group.generation == generation
-                && !group.claimed
-                && !group.cancelled
         }) {
-            return group.id.clone();
+            return Ok(group.id.clone());
         }
 
-        Self::insert_group(
+        Ok(Self::insert_group(
             &mut state,
             session_id,
             owner_id,
             Some(origin_turn_id),
             generation,
             deadline_at,
-        )
+        ))
     }
 
     /// Creates or reuses the unclaimed direct-child group for one parent.
@@ -120,32 +130,28 @@ impl TaskGroupStore {
         owner_id: AgentId,
         generation: u64,
         deadline_at: Instant,
-    ) -> TaskGroupId {
+    ) -> Result<TaskGroupId, TaskGroupError> {
         let mut state = self.inner.write().await;
-        state
-            .generations
-            .entry(session_id.clone())
-            .or_insert(generation);
+        Self::ensure_generation(&state, &session_id, generation)?;
+        state.generations.entry(session_id.clone()).or_default();
 
         if let Some(group) = state.groups.values().find(|group| {
             group.session_id == session_id
                 && group.owner_id == owner_id
                 && group.origin_turn_id.is_none()
                 && group.generation == generation
-                && !group.claimed
-                && !group.cancelled
         }) {
-            return group.id.clone();
+            return Ok(group.id.clone());
         }
 
-        Self::insert_group(
+        Ok(Self::insert_group(
             &mut state,
             session_id,
             owner_id,
             None,
             generation,
             deadline_at,
-        )
+        ))
     }
 
     /// Registers one direct child as part of a group.
@@ -155,8 +161,9 @@ impl TaskGroupStore {
         child_id: AgentId,
     ) -> Result<(), TaskGroupError> {
         let mut state = self.inner.write().await;
+        Self::ensure_group_current(&state, group_id)?;
         let group = Self::group_mut(&mut state, group_id)?;
-        if group.claimed || group.cancelled {
+        if group.lifecycle != GroupLifecycle::Active {
             return Err(TaskGroupError::GroupClosed {
                 group_id: group_id.as_str().to_owned(),
                 child_id: child_id.as_str().to_owned(),
@@ -178,8 +185,9 @@ impl TaskGroupStore {
         result: ChildResult,
     ) -> Result<(), TaskGroupError> {
         let mut state = self.inner.write().await;
+        Self::ensure_group_current(&state, group_id)?;
         let group = Self::group_mut(&mut state, group_id)?;
-        if group.claimed || group.cancelled {
+        if group.lifecycle != GroupLifecycle::Active {
             return Err(TaskGroupError::GroupClosed {
                 group_id: group_id.as_str().to_owned(),
                 child_id: result.child_id.as_str().to_owned(),
@@ -209,7 +217,7 @@ impl TaskGroupStore {
         for group in state
             .groups
             .values_mut()
-            .filter(|group| !group.claimed && !group.cancelled && group.deadline_at <= now)
+            .filter(|group| group.lifecycle == GroupLifecycle::Active && group.deadline_at <= now)
         {
             let unfinished: Vec<_> = group
                 .child_ids
@@ -230,7 +238,11 @@ impl TaskGroupStore {
                     },
                 );
             }
+            group.lifecycle = GroupLifecycle::Expired;
         }
+        state.groups.retain(|_, group| {
+            group.lifecycle != GroupLifecycle::Expired || !group.child_ids.is_empty()
+        });
 
         Ok(expired_children)
     }
@@ -258,8 +270,6 @@ impl TaskGroupStore {
             .filter(|group| {
                 group.session_id == *session_id
                     && group.generation == generation
-                    && !group.claimed
-                    && !group.cancelled
                     && !group.child_ids.is_empty()
                     && group.child_ids.len() == group.results.len()
             })
@@ -269,8 +279,13 @@ impl TaskGroupStore {
             return Ok(None);
         };
 
-        let group = Self::group_mut(&mut state, &group_id)?;
-        group.claimed = true;
+        let group =
+            state
+                .groups
+                .remove(&group_id)
+                .ok_or_else(|| TaskGroupError::GroupNotFound {
+                    group_id: group_id.as_str().to_owned(),
+                })?;
         let mut results: Vec<_> = group.results.values().cloned().collect();
         results.sort_by(|left, right| left.child_id.as_str().cmp(right.child_id.as_str()));
 
@@ -292,7 +307,7 @@ impl TaskGroupStore {
             .unwrap_or_default()
     }
 
-    /// Advances a session generation and cancels every older unclaimed group.
+    /// Advances a session generation and removes every older unclaimed group.
     pub async fn advance_generation(&self, session_id: &SessionId) -> u64 {
         let mut state = self.inner.write().await;
         let generation = {
@@ -300,25 +315,20 @@ impl TaskGroupStore {
             *generation += 1;
             *generation
         };
-        for group in state.groups.values_mut().filter(|group| {
-            group.session_id == *session_id && group.generation < generation && !group.claimed
-        }) {
-            group.cancelled = true;
-        }
+        state
+            .groups
+            .retain(|_, group| group.session_id != *session_id || group.generation >= generation);
         generation
     }
 
-    /// Cancels all groups for exactly one session generation.
+    /// Cancels and removes all groups for exactly one session generation.
     pub async fn cancel_generation(&self, session_id: &SessionId, generation: u64) -> usize {
         let mut state = self.inner.write().await;
-        let mut cancelled = 0;
-        for group in state.groups.values_mut().filter(|group| {
-            group.session_id == *session_id && group.generation == generation && !group.cancelled
-        }) {
-            group.cancelled = true;
-            cancelled += 1;
-        }
-        cancelled
+        let original_len = state.groups.len();
+        state
+            .groups
+            .retain(|_, group| group.session_id != *session_id || group.generation != generation);
+        original_len - state.groups.len()
     }
 
     fn insert_group(
@@ -341,11 +351,43 @@ impl TaskGroupStore {
                 deadline_at,
                 child_ids: HashSet::new(),
                 results: HashMap::new(),
-                claimed: false,
-                cancelled: false,
+                lifecycle: GroupLifecycle::Active,
             },
         );
         id
+    }
+
+    fn ensure_generation(
+        state: &TaskGroupState,
+        session_id: &SessionId,
+        generation: u64,
+    ) -> Result<(), TaskGroupError> {
+        let current = state
+            .generations
+            .get(session_id)
+            .copied()
+            .unwrap_or_default();
+        if current != generation {
+            return Err(TaskGroupError::StaleGeneration {
+                session_id: session_id.clone(),
+                expected: current,
+                actual: generation,
+            });
+        }
+        Ok(())
+    }
+
+    fn ensure_group_current(
+        state: &TaskGroupState,
+        group_id: &TaskGroupId,
+    ) -> Result<(), TaskGroupError> {
+        let group = state
+            .groups
+            .get(group_id)
+            .ok_or_else(|| TaskGroupError::GroupNotFound {
+                group_id: group_id.as_str().to_owned(),
+            })?;
+        Self::ensure_generation(state, &group.session_id, group.generation)
     }
 
     fn group_mut<'a>(
@@ -359,14 +401,21 @@ impl TaskGroupStore {
                 group_id: group_id.as_str().to_owned(),
             })
     }
+
+    #[cfg(test)]
+    async fn group_count(&self) -> usize {
+        self.inner.read().await.groups.len()
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
-    use super::{TaskGroupId, TaskGroupStore};
+    use super::{TaskGroupError, TaskGroupId, TaskGroupStore};
     use crate::agent::{AgentId, ChildResult, ChildTerminalStatus, SessionId};
+    use tokio::sync::Barrier;
 
     fn result(child_id: &str, status: ChildTerminalStatus) -> ChildResult {
         ChildResult {
@@ -393,6 +442,7 @@ mod tests {
                 deadline_at,
             )
             .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -401,7 +451,7 @@ mod tests {
         let group = create_root_group(
             &store,
             "turn-1",
-            3,
+            0,
             tokio::time::Instant::now() + Duration::from_secs(30),
         )
         .await;
@@ -413,7 +463,7 @@ mod tests {
             .await
             .unwrap();
         assert!(store
-            .claim_ready(&SessionId::new("s"), 3)
+            .claim_ready(&SessionId::new("s"), 0)
             .await
             .unwrap()
             .is_none());
@@ -423,7 +473,7 @@ mod tests {
             .await
             .unwrap();
         let delivery = store
-            .claim_ready(&SessionId::new("s"), 3)
+            .claim_ready(&SessionId::new("s"), 0)
             .await
             .unwrap()
             .unwrap();
@@ -464,7 +514,7 @@ mod tests {
         let group = create_root_group(
             &store,
             "turn-1",
-            4,
+            0,
             tokio::time::Instant::now() + Duration::from_secs(30),
         )
         .await;
@@ -474,9 +524,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(store.advance_generation(&SessionId::new("s")).await, 5);
+        assert_eq!(store.advance_generation(&SessionId::new("s")).await, 1);
         assert!(store
-            .claim_ready(&SessionId::new("s"), 4)
+            .claim_ready(&SessionId::new("s"), 0)
             .await
             .unwrap()
             .is_none());
@@ -498,7 +548,7 @@ mod tests {
         let group = create_root_group(
             &store,
             "turn-1",
-            2,
+            0,
             tokio::time::Instant::now() + Duration::from_secs(30),
         )
         .await;
@@ -508,9 +558,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(store.cancel_generation(&SessionId::new("s"), 2).await, 1);
+        assert_eq!(store.cancel_generation(&SessionId::new("s"), 0).await, 1);
         assert!(store
-            .claim_ready(&SessionId::new("s"), 2)
+            .claim_ready(&SessionId::new("s"), 0)
             .await
             .unwrap()
             .is_none());
@@ -599,10 +649,12 @@ mod tests {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let parent = store
             .create_for_parent(SessionId::new("s"), AgentId::new("parent"), 0, deadline)
-            .await;
+            .await
+            .unwrap();
         let child_group = store
             .create_for_parent(SessionId::new("s"), AgentId::new("child"), 0, deadline)
-            .await;
+            .await
+            .unwrap();
         store
             .add_child(&parent, AgentId::new("child"))
             .await
@@ -641,5 +693,171 @@ mod tests {
 
         assert_eq!(parent_delivery.results.len(), 1);
         assert_eq!(parent_delivery.results[0].child_id.as_str(), "child");
+    }
+
+    #[tokio::test]
+    async fn root_creation_rejects_a_stale_generation_after_advance() {
+        let store = TaskGroupStore::default();
+        let session_id = SessionId::new("s");
+        assert_eq!(store.advance_generation(&session_id).await, 1);
+
+        let error = store
+            .create_for_root_turn(
+                session_id.clone(),
+                AgentId::new("root"),
+                "turn-1",
+                0,
+                tokio::time::Instant::now() + Duration::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            TaskGroupError::StaleGeneration {
+                session_id: stale_session,
+                expected: 1,
+                actual: 0,
+            } if stale_session == session_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn parent_creation_rejects_a_future_generation() {
+        let store = TaskGroupStore::default();
+        let session_id = SessionId::new("s");
+
+        let error = store
+            .create_for_parent(
+                session_id.clone(),
+                AgentId::new("parent"),
+                1,
+                tokio::time::Instant::now() + Duration::from_secs(30),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            TaskGroupError::StaleGeneration {
+                session_id: stale_session,
+                expected: 0,
+                actual: 1,
+            } if stale_session == session_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn expired_group_rejects_new_children_and_late_results() {
+        let store = TaskGroupStore::default();
+        let group = create_root_group(
+            &store,
+            "turn-1",
+            0,
+            tokio::time::Instant::now() - Duration::from_secs(1),
+        )
+        .await;
+        store.add_child(&group, AgentId::new("a")).await.unwrap();
+        store
+            .expire_due_groups(tokio::time::Instant::now())
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store.add_child(&group, AgentId::new("b")).await,
+            Err(TaskGroupError::GroupClosed { .. })
+        ));
+        assert!(matches!(
+            store
+                .record_result(&group, result("a", ChildTerminalStatus::Completed))
+                .await,
+            Err(TaskGroupError::GroupClosed { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancellation_removes_group_and_rejects_late_result() {
+        let store = TaskGroupStore::default();
+        let group = create_root_group(
+            &store,
+            "turn-1",
+            0,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await;
+        store.add_child(&group, AgentId::new("a")).await.unwrap();
+
+        assert_eq!(store.cancel_generation(&SessionId::new("s"), 0).await, 1);
+        assert_eq!(store.group_count().await, 0);
+        assert!(matches!(
+            store
+                .record_result(&group, result("a", ChildTerminalStatus::Completed))
+                .await,
+            Err(TaskGroupError::GroupNotFound { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn claiming_removes_group_from_retained_state() {
+        let store = TaskGroupStore::default();
+        let group = create_root_group(
+            &store,
+            "turn-1",
+            0,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await;
+        store.add_child(&group, AgentId::new("a")).await.unwrap();
+        store
+            .record_result(&group, result("a", ChildTerminalStatus::Completed))
+            .await
+            .unwrap();
+
+        assert!(store
+            .claim_ready(&SessionId::new("s"), 0)
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(store.group_count().await, 0);
+        assert!(matches!(
+            store.add_child(&group, AgentId::new("b")).await,
+            Err(TaskGroupError::GroupNotFound { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn concurrent_claimers_deliver_a_ready_group_exactly_once() {
+        let store = Arc::new(TaskGroupStore::default());
+        let group = create_root_group(
+            &store,
+            "turn-1",
+            0,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await;
+        store.add_child(&group, AgentId::new("a")).await.unwrap();
+        store
+            .record_result(&group, result("a", ChildTerminalStatus::Completed))
+            .await
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(3));
+
+        let mut claimers = Vec::new();
+        for _ in 0..2 {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            claimers.push(tokio::spawn(async move {
+                barrier.wait().await;
+                store.claim_ready(&SessionId::new("s"), 0).await.unwrap()
+            }));
+        }
+        barrier.wait().await;
+
+        let first = claimers.remove(0).await.unwrap();
+        let second = claimers.remove(0).await.unwrap();
+        assert_eq!(
+            usize::from(first.is_some()) + usize::from(second.is_some()),
+            1
+        );
     }
 }
