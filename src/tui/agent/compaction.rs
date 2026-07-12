@@ -83,30 +83,32 @@ impl AgentLoop {
     pub(super) async fn inject_background_results(&mut self) {
         match self.client.get_background_results().await {
             Ok(results) if !results.is_empty() => {
+                // Subagent results are no longer delivered through the command
+                // background manager: they arrive through task-group
+                // continuation turns (process_continuation). Only command
+                // background results are injected here.
                 let notification: String = results
                     .iter()
-                    .map(|r| {
-                        let task_id = r["task_id"].as_str().unwrap_or("unknown");
+                    .filter_map(|r| {
                         let result_type = r["result_type"].as_str().unwrap_or("command");
                         if result_type == "subagent" {
-                            let result = r["stdout"].as_str().unwrap_or("");
-                            let success = r["success"].as_bool().unwrap_or(false);
-                            let status = if success { "SUCCESS" } else { "FAILED" };
-                            format!(
-                                "📦 Subagent completed [{}]: {}\n{}",
-                                status, task_id, result
-                            )
-                        } else {
-                            let success = r["success"].as_bool().unwrap_or(false);
-                            format!(
-                                "[Background task {} completed: {}]",
-                                task_id,
-                                if success { "SUCCESS" } else { "FAILED" }
-                            )
+                            // Stale subagent entry from before the unified
+                            // lifecycle; skip it.
+                            return None;
                         }
+                        let task_id = r["task_id"].as_str().unwrap_or("unknown");
+                        let success = r["success"].as_bool().unwrap_or(false);
+                        Some(format!(
+                            "[Background task {} completed: {}]",
+                            task_id,
+                            if success { "SUCCESS" } else { "FAILED" }
+                        ))
                     })
                     .collect::<Vec<_>>()
                     .join("\n\n");
+                if notification.is_empty() {
+                    return;
+                }
                 {
                     let mut history = self.conversation_history.lock().await;
                     history.push(ChatMessage::user(notification.clone()));

@@ -177,6 +177,39 @@ impl AgentLoop {
         Ok(())
     }
 
+    /// Run a synthetic continuation turn that consumes a claimed task-group
+    /// delivery. The child results are injected as a structured system message
+    /// (no visible user row, no `ChatMessage::user`), then the loop runs so the
+    /// main agent can synthesize the completed subagent work into a response.
+    pub async fn process_continuation(
+        &mut self,
+        delivery: crate::tui::client::TaskGroupDeliveryResponse,
+    ) -> Result<(), AgentError> {
+        self.token_counter.reset_turn();
+        self.compaction_failed = false;
+        // Command-background results are still injected here (subagent results
+        // are NOT -- they arrive through the delivery).
+        self.inject_background_results().await;
+        // Inject the delivered child-result batch as a system message so the
+        // model sees the completed subagent work without a fabricated user turn.
+        let batch = format!(
+            "<child-results>\n{}\n</child-results>\n\nA background subagent group \
+             completed. Synthesize these results into your current work and \
+             continue; do not repeat the subagent's steps.",
+            serde_json::to_string(&delivery.results)
+                .unwrap_or_else(|e| format!("{{\"serialize_error\":\"{e}\"}}"))
+        );
+        {
+            let mut history = self.conversation_history.lock().await;
+            history.push(ChatMessage::system(batch));
+        }
+        // Run the loop with an empty user prompt: the system message above is
+        // the continuation signal. process_input_inner requires a non-empty
+        // input in some paths, so pass a minimal continuation marker.
+        self.process_input_inner("Continue from the delivered subagent results.".to_string())
+            .await
+    }
+
     /// Generate a plan using a dedicated planner model (non-streaming).
     /// Returns the plan text or an error message.
     pub(super) async fn plan_with_model(

@@ -274,7 +274,20 @@ impl App {
             AppEvent::Tick if self.has_running_tool => {
                 self.spinner_frame = self.spinner_frame.wrapping_add(1);
             }
-            AppEvent::Tick => {}
+            AppEvent::Tick => {
+                // Throttle the task-group claim poll to 500ms so idle polling
+                // does not generate excessive HTTP traffic. Only poll when no
+                // turn is running.
+                let should_poll = self.current_turn_handle.is_none()
+                    && self
+                        .last_claim_attempt
+                        .map(|t| t.elapsed() >= std::time::Duration::from_millis(500))
+                        .unwrap_or(true);
+                if should_poll {
+                    self.last_claim_attempt = Some(std::time::Instant::now());
+                    self.poll_ready_task_groups().await;
+                }
+            }
             AppEvent::ConfigChanged(new_settings) => {
                 // Rebuild system messages from new settings
                 let prompt_ctx = PromptContext::new()
