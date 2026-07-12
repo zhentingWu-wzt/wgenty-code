@@ -139,3 +139,12 @@ path = "src/main.rs"
 name = "export_wgenty_icon"
 path = "src/bin/export_wgenty_icon.rs"
 required-features = ["export-icon"]
+
+# ── Dev/test compilation profiles ────────────────────────────────────────────
+# Explicit incremental compilation for the test profile (inherits dev by
+# default, but making it explicit guards against future Cargo changes).
+[profile.dev]
+incremental = true
+
+[profile.test]
+incremental = true
