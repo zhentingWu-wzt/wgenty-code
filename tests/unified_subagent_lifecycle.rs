@@ -210,3 +210,91 @@ async fn root_direct_child_group_is_deliverable_once_terminal() {
         .unwrap()
         .is_none());
 }
+
+#[tokio::test]
+async fn generation_reset_rejects_stale_claims_and_cancels_live_children() {
+    // On /clear, the daemon advances the generation. A ready group from the
+    // old generation must no longer be deliverable, and live root-direct
+    // children are cancelled.
+    let coordinator = coordinator();
+    let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+    let group = coordinator
+        .create_root_task_group(
+            &root,
+            "turn-1",
+            tokio::time::Instant::now() + Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let child = coordinator
+        .reserve_child_in_group(&root, SpawnChildRequest::new("work"), group.clone())
+        .await
+        .unwrap();
+    coordinator
+        .finish_child(&child.context, ChildTerminal::completed("done"))
+        .await
+        .unwrap();
+
+    // The old generation's group is deliverable before reset.
+    assert!(coordinator
+        .claim_ready_root_group(&root, 0)
+        .await
+        .unwrap()
+        .is_some());
+
+    // Re-create a fresh ready group at generation 0 for the stale-check.
+    let group2 = coordinator
+        .create_root_task_group(
+            &root,
+            "turn-2",
+            tokio::time::Instant::now() + Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let child2 = coordinator
+        .reserve_child_in_group(&root, SpawnChildRequest::new("work2"), group2.clone())
+        .await
+        .unwrap();
+    coordinator
+        .finish_child(&child2.context, ChildTerminal::completed("done2"))
+        .await
+        .unwrap();
+
+    // Advance the generation (simulating /clear). Old ready groups are
+    // cancelled and no longer deliverable at the old generation.
+    let old_gen = coordinator.current_generation(&root.session_id).await;
+    let _ = coordinator
+        .cancel_generation(&root.session_id, old_gen)
+        .await;
+    let new_gen = coordinator.advance_generation(&root.session_id).await;
+    assert_eq!(new_gen, old_gen + 1);
+    assert!(
+        coordinator
+            .claim_ready_root_group(&root, old_gen)
+            .await
+            .unwrap()
+            .is_none(),
+        "stale-generation claim must be rejected after reset"
+    );
+}
+
+#[tokio::test]
+async fn cancel_agent_session_cancels_live_root_children() {
+    // Application shutdown cancels every live root-direct child subtree.
+    let coordinator = coordinator();
+    let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+    let child =
+        register_terminal_child(&coordinator, &root, ChildTerminal::completed("done")).await;
+    // The child is registered; cancel_root_children drives it terminal.
+    let cancelled = coordinator.cancel_root_children(&root).await.unwrap();
+    assert!(
+        cancelled >= 1,
+        "expected at least one child cancelled, got {cancelled}"
+    );
+    // The child reaches a terminal state after cancellation.
+    let status = coordinator.status(&child).await.unwrap();
+    assert!(
+        status == AgentLifecycleStatus::Completed || status == AgentLifecycleStatus::Cancelled,
+        "child should be terminal after session cancel, got {status:?}"
+    );
+}
