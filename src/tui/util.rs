@@ -428,7 +428,8 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::ConfigChanged(_)
         | AppEvent::ContextCompacted { .. }
         | AppEvent::AgentLocalView(_)
-        | AppEvent::BackgroundTaskResult(_) => None,
+        | AppEvent::BackgroundTaskResult(_)
+        | AppEvent::AgentGenerationReset { .. } => None,
     }
 }
 

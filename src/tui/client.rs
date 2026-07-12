@@ -252,6 +252,26 @@ impl DaemonClient {
         Ok(parsed.generation)
     }
 
+    /// `POST /api/v1/agents/session/cancel` -- cancel the entire agent session
+    /// on shutdown. Cancels live root-direct subtrees bottom-up and releases
+    /// every permit.
+    pub async fn cancel_agent_session(&self, session_id: &str) -> anyhow::Result<()> {
+        let url = format!("{}/api/v1/agents/session/cancel", self.base_url);
+        let body = serde_json::json!({ "session_id": session_id });
+        let resp = self
+            .http_tools
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .context("cancel agent session")?;
+        if !resp.status().is_success() {
+            anyhow::bail!("cancel_agent_session ({})", resp.status());
+        }
+        Ok(())
+    }
+
     pub fn base_url(&self) -> &str {
         &self.base_url
     }

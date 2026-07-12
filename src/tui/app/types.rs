@@ -169,6 +169,12 @@ pub enum AppEvent {
     AgentLocalView(Box<LocalAgentViewResponse>),
     /// Background task/subagent result notification for display in chat.
     BackgroundTaskResult(String),
+    /// A new task generation was established after `/clear` or shutdown
+    /// cancellation. Obsolete root-direct subtrees are cancelled by the
+    /// daemon; the app adopts the new generation and clears local views.
+    AgentGenerationReset {
+        generation: u64,
+    },
 }
 
 /// UI state for a single message in the chat view.

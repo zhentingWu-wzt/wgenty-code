@@ -631,6 +631,35 @@ impl App {
                     tool_metadata: None,
                 });
             }
+            AppEvent::AgentGenerationReset { generation } => {
+                if generation == u64::MAX {
+                    // Reset failed on the daemon: surface an actionable
+                    // system message and retain the old generation rather
+                    // than pretending cancellation succeeded.
+                    self.committed_messages.push(UIMessage {
+                        role: MessageRole::System,
+                        content: "Failed to reset subagent generation; \
+                                  obsolete subagents may still be running."
+                            .to_string(),
+                        tool_name: None,
+                        tool_args: None,
+                        content_collapsed: false,
+                        tool_collapsed: false,
+                        tool_running: false,
+                        diff_data: None,
+                        tool_metadata: None,
+                    });
+                    self.suppress_phase_updates = false;
+                    return;
+                }
+                self.agent_generation = generation;
+                self.subagent_tree.clear();
+                self.completed_at.clear();
+                self.agent_navigation = crate::tui::app::types::AgentNavigationState::default();
+                // Obsolete generation's deliveries are now rejected by the
+                // daemon; resume normal phase updates.
+                self.suppress_phase_updates = false;
+            }
             AppEvent::SaveSession => {
                 let id = self.session_id.clone();
                 let name = self.session_name.clone();
