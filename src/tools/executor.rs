@@ -286,6 +286,7 @@ mod tests {
         let context = crate::agent::ToolContext {
             agent: &root,
             invocation_id: crate::agent::ToolInvocationId::new("test-1"),
+            origin_turn_id: None,
         };
         let result = executor
             .execute_with_hooks(
@@ -327,6 +328,7 @@ mod tests {
         let context = crate::agent::ToolContext {
             agent: &root,
             invocation_id: crate::agent::ToolInvocationId::new("test-2"),
+            origin_turn_id: None,
         };
         let result = executor
             .execute_with_hooks(

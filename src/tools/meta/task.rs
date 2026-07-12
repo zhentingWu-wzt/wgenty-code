@@ -127,10 +127,6 @@ impl Tool for TaskTool {
                     "type": "string",
                     "description": "Short (3-5 word) description of the task"
                 },
-                "background": {
-                    "type": "boolean",
-                    "description": "Run subagent concurrently inside this agent scope. The subagent is running concurrently inside this agent scope. This agent cannot terminate until the child reaches a terminal state. Default: true"
-                },
                 "use_small_model": {
                     "type": "boolean",
                     "description": "When true and a small model is configured, run the subagent with a smaller/cheaper model. Use for simple, self-contained tasks (e.g., reading files, searching, running a single command). Default: false"
@@ -184,7 +180,11 @@ impl Tool for TaskTool {
         let _subagent_type = input["subagent_type"].as_str().unwrap_or("general-purpose");
         let description = input["description"].as_str().unwrap_or("Subagent task");
         let prompt = input["prompt"].as_str().unwrap_or("");
-        let background = input["background"].as_bool().unwrap_or(true);
+        // `background` is a legacy mode switch that is now ignored: every
+        // `task` call spawns asynchronously. Track whether the model supplied
+        // it so the acknowledgement can report it as ignored rather than
+        // silently dropping a field the model thinks it controls.
+        let background_supplied = input.get("background").is_some();
 
         // Token budget: 4-level fallback per spec §3.3a.
         // 1. explicit input.token_budget (caller-explicit; 0 = unlimited stays None)
@@ -238,7 +238,7 @@ impl Tool for TaskTool {
             description = description,
             prompt_len = prompt.len(),
             session_id = %session_id,
-            background = background,
+            background_supplied = background_supplied,
             "TaskTool: executing subagent"
         );
 
@@ -325,20 +325,41 @@ impl Tool for TaskTool {
         );
 
         // ── Guard: concurrency limit — queue until slot opens ───────────
-        let max = self.settings.agent.subagent.max_concurrent;
-        let _ = max; // retained for future acknowledgement metadata
-                     // Reserve a coordinator-owned child. The coordinator enforces both depth
-                     // (DepthLimitReached) and concurrency (semaphore) using the trusted
-                     // caller context. `max` is recorded for the acknowledgement metadata;
-                     // The legacy polling-based concurrency counter and
-                     // BackgroundManager delivery are
-                     // retired in favor of the coordinator owning the child lifetime.
+        let _ = self.settings.agent.subagent.max_concurrent; // retained for acknowledgement metadata
+                                                             // ── Unified asynchronous path ───────────────────────────────────
+                                                             // `task` always spawns a coordinator-owned child and returns a
+                                                             // structured acknowledgement immediately. The legacy sync/background
+                                                             // split is retired: a parent observes child results through the
+                                                             // coordinator (non-root parents get a synthesis round; the persistent
+                                                             // root consumes ready groups via the daemon delivery API).
+        let is_root_call = context.agent.parent_id.is_none();
+        let group_id = if is_root_call {
+            let turn_id = context.origin_turn_id.ok_or_else(|| ToolError {
+                message: "root task invocation is missing its trusted turn id".to_string(),
+                code: Some("missing_turn_context".to_string()),
+            })?;
+            self.coordinator
+                .current_or_create_root_group(context.agent, turn_id)
+                .await
+                .map_err(map_coordinator_error)?
+        } else {
+            self.coordinator
+                .current_or_create_parent_group(context.agent)
+                .await
+                .map_err(map_coordinator_error)?
+        };
+
         let reservation = self
             .coordinator
-            .reserve_child(context.agent, SpawnChildRequest::new(description))
+            .reserve_child_in_group(
+                context.agent,
+                SpawnChildRequest::new(description),
+                group_id.clone(),
+            )
             .await
             .map_err(map_coordinator_error)?;
         let child_context = reservation.context.clone();
+        let child_id = child_context.agent_id.clone();
 
         // Use small model when requested and configured.
         // small_model_settings() returns a clone with main endpoint overridden
@@ -350,214 +371,73 @@ impl Tool for TaskTool {
             ApiClient::new(self.settings.clone())
         };
 
-        // Run the subagent loop (capped at 100 rounds).
-        if background {
-            // ── Background mode: spawn and return immediately ──────────────
-            let desc = description.to_string();
-            let sys_prompt = system_prompt.clone();
-            let reg = tool_registry.clone();
-            let tools = allowed_tools.clone();
-            let api_client_bg = if use_small && self.settings.models.small.is_some() {
-                ApiClient::new(self.settings.small_model_settings())
-            } else {
-                ApiClient::new(self.settings.clone())
-            };
-            let timeout_secs = self.settings.agent.subagent.timeout_secs;
-
-            // Use the coordinator-owned child's identity as the progress-store
-            // key so build_local_view() can cross-fill messages/snapshots/tokens
-            // by looking up child.agent_id in the legacy subagent_progress store.
-            let subagent_node_id = child_context.agent_id.as_str().to_string();
-            {
-                let mut store = self.progress_store.write().await;
-                store.entry(session_id.clone()).or_default().insert(
-                    subagent_node_id.clone(),
-                    SubagentProgress {
-                        node_id: subagent_node_id.clone(),
-                        parent_id: None,
-                        label: format!("subagent: {}", desc),
-                        status: SubagentStatus::Pending,
-                        round: None,
-                        max_rounds: Some(100),
-                        current_tool: None,
-                        current_params: None,
-                        action_log: Vec::new(),
-                        text_snapshot: None,
-                        started_at: chrono::Utc::now().timestamp_millis(),
-                        elapsed_ms: 0,
-                        metadata: None,
-                        progress_delta: None,
-                        token_budget_k: None,
-                        cumulative_tokens: 0,
-                        error_details: None,
-                        events: Vec::new(),
-                        messages: Vec::new(),
-                    },
-                );
-            }
-            let cb = Self::make_progress_callback(
-                self.progress_store.clone(),
-                session_id.clone(),
+        // ── Unified spawn: progress record + spawned child future ──────
+        let timeout_secs = self.settings.agent.subagent.timeout_secs;
+        let mailbox_bg = self.mailbox.clone();
+        let st_bg = _subagent_type.to_string();
+        let desc_full_bg = description.to_string();
+        let sid_bg = session_id.clone();
+        let desc_bg = description.to_string();
+        let sys_prompt_bg = system_prompt.clone();
+        let prompt_bg = full_prompt.clone();
+        let transcript_store_bg = self.transcript_store.clone();
+        let retention_days = self.settings.storage.transcript.max_age_days;
+        let started_at_bg = chrono::Utc::now().timestamp_millis();
+        let subagent_node_id = child_context.agent_id.as_str().to_string();
+        let bg_node_id = subagent_node_id.clone();
+        {
+            let mut store = self.progress_store.write().await;
+            store.entry(session_id.clone()).or_default().insert(
                 subagent_node_id.clone(),
-                None,
-                format!("subagent: {}", desc),
-            );
-
-            let mailbox_bg = self.mailbox.clone();
-            let st_bg = _subagent_type.to_string();
-            let desc_full_bg = description.to_string();
-            let sid_bg = session_id.clone();
-            let desc_bg = desc.clone();
-            let sys_prompt_bg = sys_prompt.clone();
-            let prompt_bg = full_prompt.clone();
-            let transcript_store_bg = self.transcript_store.clone();
-            let retention_days = self.settings.storage.transcript.max_age_days;
-            let started_at_bg = chrono::Utc::now().timestamp_millis();
-            let bg_node_id = subagent_node_id.clone();
-
-            // Clone full_prompt before moving it into the run_subagent_loop call
-            let prompt_owned = full_prompt.clone();
-            // The coordinator-owned child context moves into the spawned task so
-            // the loop runs as the child agent and cancellation propagates.
-            let bg_child_context = child_context.clone();
-            let bg_coordinator = self.coordinator.clone();
-
-            tokio::spawn(async move {
-                let result = run_subagent_loop(
-                    &api_client_bg,
-                    &reg,
-                    &bg_child_context,
-                    &sys_prompt,
-                    &prompt_owned,
-                    &tools,
-                    100,
-                    timeout_secs,
-                    Some(cb),
-                    token_budget,
-                )
-                .await;
-
-                let (terminal, content) = match result {
-                    Ok(r) => (
-                        ChildTerminal::Completed {
-                            summary: r.chars().take(500).collect(),
-                        },
-                        r,
-                    ),
-                    Err(e) => (
-                        ChildTerminal::Failed {
-                            code: e.code().to_string(),
-                            partial_result: None,
-                        },
-                        format!("Subagent error: {}", e),
-                    ),
-                };
-
-                // Persist the child's terminal state and release its permit
-                // through the coordinator. The coordinator (not the
-                // BackgroundManager) owns the child lifetime.
-                let _ = bg_coordinator
-                    .finish_child(&bg_child_context, terminal)
-                    .await;
-
-                // Offload large results to mailbox before storing.
-                let content = mailbox_bg
-                    .offload_if_large(&st_bg, &desc_full_bg, &sid_bg, &content)
-                    .to_content();
-
-                let success = !content.starts_with("Subagent error:");
-
-                // ── Save transcript ────────────────────────────────────────
-                if let Some(ref store) = transcript_store_bg {
-                    let retention = if retention_days > 0 {
-                        Some(retention_days)
-                    } else {
-                        None
-                    };
-                    let transcript = build_transcript(
-                        bg_node_id,
-                        &sid_bg,
-                        &desc_bg,
-                        if success {
-                            TranscriptStatus::Completed
-                        } else {
-                            TranscriptStatus::Failed
-                        },
-                        Some(sys_prompt_bg),
-                        prompt_bg,
-                        started_at_bg,
-                        0, // total_tokens — not yet tracked from subagent loop
-                        0, // actual_rounds
-                        token_budget,
-                        None,   // error_message captured in content, not individual
-                        None,   // summary
-                        vec![], // events — not yet tracked from subagent loop
-                    );
-                    let _ = store.save(&transcript, retention);
-                }
-            });
-
-            Ok(ToolOutput {
-                output_type: "text".to_string(),
-                content: format!(
-                    "[Subagent launched in background]\ntype: {}\ndescription: {}\nstatus: running\n\nThe subagent is running concurrently inside this agent scope. This agent cannot terminate until the child reaches a terminal state.",
-                    _subagent_type, description
-                ),
-                metadata: {
-                    let mut m = HashMap::new();
-                    m.insert("subagent_type".to_string(), serde_json::json!(_subagent_type));
-                    m.insert("description".to_string(), serde_json::json!(description));
-                    m.insert("background".to_string(), serde_json::json!(true));
-                    m.insert("execution_mode".to_string(), serde_json::json!("background"));
-                    m.insert("routing_reason".to_string(), serde_json::json!("direct subagent (background)"));
-                    m
+                SubagentProgress {
+                    node_id: subagent_node_id.clone(),
+                    parent_id: None,
+                    label: format!("subagent: {}", description),
+                    status: SubagentStatus::Pending,
+                    round: None,
+                    max_rounds: Some(100),
+                    current_tool: None,
+                    current_params: None,
+                    action_log: Vec::new(),
+                    text_snapshot: None,
+                    started_at: chrono::Utc::now().timestamp_millis(),
+                    elapsed_ms: 0,
+                    metadata: None,
+                    progress_delta: None,
+                    token_budget_k: None,
+                    cumulative_tokens: 0,
+                    error_details: None,
+                    events: Vec::new(),
+                    messages: Vec::new(),
                 },
-            })
-        } else {
-            // ── Synchronous mode: block until complete ─────────────────────
-            // Use the coordinator-owned child's identity as the progress-store
-            // key so build_local_view() can cross-fill messages/snapshots/tokens.
-            let subagent_node_id = child_context.agent_id.as_str().to_string();
-            let started_at_sync = chrono::Utc::now().timestamp_millis();
-            {
-                let mut store = self.progress_store.write().await;
-                store.entry(session_id.clone()).or_default().insert(
-                    subagent_node_id.clone(),
-                    SubagentProgress {
-                        node_id: subagent_node_id.clone(),
-                        parent_id: None,
-                        label: format!("subagent: {}", description),
-                        status: SubagentStatus::Pending,
-                        round: None,
-                        max_rounds: Some(100),
-                        current_tool: None,
-                        current_params: None,
-                        action_log: Vec::new(),
-                        text_snapshot: None,
-                        started_at: chrono::Utc::now().timestamp_millis(),
-                        elapsed_ms: 0,
-                        metadata: None,
-                        progress_delta: None,
-                        token_budget_k: None,
-                        cumulative_tokens: 0,
-                        error_details: None,
-                        events: Vec::new(),
-                        messages: Vec::new(),
-                    },
-                );
-            }
-            let cb = Self::make_progress_callback(
-                self.progress_store.clone(),
-                session_id.clone(),
-                subagent_node_id.clone(),
-                None,
-                format!("subagent: {}", description),
             );
+        }
+        let cb = Self::make_progress_callback(
+            self.progress_store.clone(),
+            session_id.clone(),
+            subagent_node_id.clone(),
+            None,
+            format!("subagent: {}", description),
+        );
 
-            let (result, routing_reason) = if self.settings.agent.rlm.enabled
-                && self.settings.agent.rlm.auto_routing
-                && is_complex_task(&full_prompt, use_small)
-            {
+        let reg = tool_registry.clone();
+        let tools = allowed_tools.clone();
+        let rlm_enabled = self.settings.agent.rlm.enabled
+            && self.settings.agent.rlm.auto_routing
+            && is_complex_task(&full_prompt, use_small);
+        let progress_store_bg = self.progress_store.clone();
+        let sid_for_rlm = session_id.clone();
+        let node_id_for_rlm = subagent_node_id.clone();
+        let settings_bg = self.settings.clone();
+        let coordinator_bg = self.coordinator.clone();
+
+        // The coordinator-owned child context moves into the spawned task so
+        // the loop runs as the child agent and cancellation propagates. The
+        // spawned future persists its own terminal through the coordinator so
+        // root children become deliverable even when no parent joins them.
+        let bg_child_context = child_context.clone();
+        let handle = tokio::spawn(async move {
+            let result = if rlm_enabled {
                 let reason = format!(
                     "RLM pipeline: prompt_len={}, use_small={}",
                     full_prompt.len(),
@@ -569,151 +449,147 @@ impl Tool for TaskTool {
                     reason = %reason,
                     "Complex task detected, routing to RLM pipeline"
                 );
-                let result = crate::tools::meta::rlm::run_rlm_pipeline(
-                    &self.settings,
-                    tool_registry.clone(),
-                    self.coordinator.clone(),
-                    &child_context,
-                    description,
-                    prompt,
-                    Some((self.progress_store.clone(), session_id.clone())),
-                    Some(subagent_node_id.clone()),
+                crate::tools::meta::rlm::run_rlm_pipeline(
+                    &settings_bg,
+                    reg.clone(),
+                    coordinator_bg.clone(),
+                    &bg_child_context,
+                    &desc_full_bg,
+                    &prompt_bg,
+                    Some((progress_store_bg, sid_for_rlm)),
+                    Some(node_id_for_rlm),
                     token_budget,
                 )
                 .await
                 .map(|r| r.aggregated)
-                .map_err(SubagentError::from);
-                (result, reason)
+                .map_err(SubagentError::from)
             } else {
-                let reason = "direct subagent: simple task".to_string();
-                // Run as the coordinator-owned child. The child_context was
-                // reserved above from the trusted caller context.
-                let result = run_subagent_loop(
+                run_subagent_loop(
                     &api_client,
-                    &tool_registry,
-                    &child_context,
-                    &system_prompt,
-                    &full_prompt,
-                    &allowed_tools,
+                    &reg,
+                    &bg_child_context,
+                    &sys_prompt_bg,
+                    &prompt_bg,
+                    &tools,
                     100,
-                    self.settings.agent.subagent.timeout_secs,
+                    timeout_secs,
                     Some(cb),
                     token_budget,
                 )
-                .await;
-                (result, reason)
+                .await
             };
 
-            // Persist the child's terminal state and release its permit through
-            // the coordinator, regardless of routing path.
-            let terminal = match &result {
-                Ok(r) => ChildTerminal::Completed {
-                    summary: r.chars().take(500).collect(),
-                },
-                Err(e) => ChildTerminal::Failed {
-                    code: e.code().to_string(),
-                    partial_result: None,
-                },
+            let (terminal, content) = match result {
+                Ok(r) => (
+                    ChildTerminal::Completed {
+                        summary: r.chars().take(500).collect(),
+                    },
+                    r,
+                ),
+                Err(e) => (
+                    ChildTerminal::Failed {
+                        code: e.code().to_string(),
+                        partial_result: None,
+                    },
+                    format!("Subagent error: {}", e),
+                ),
             };
-            let _ = self
-                .coordinator
-                .finish_child(&child_context, terminal)
-                .await;
 
-            // ── Save transcript on completion/failure (sync path) ──────────
-            let transcript_store_sync = self.transcript_store.clone();
-            let sid_sync = session_id.clone();
-            let desc_sync = description.to_string();
-            let sys_prompt_sync = system_prompt.clone();
-            let prompt_sync = full_prompt.clone();
-            let sync_node_id = subagent_node_id.clone();
-            let retention_days_sync = self.settings.storage.transcript.max_age_days;
-
-            match result {
-                Ok(result) => {
-                    // Offload to mailbox if result exceeds inline threshold.
-                    let response = self.mailbox.offload_if_large(
-                        _subagent_type,
-                        description,
-                        &session_id,
-                        &result,
-                    );
-
-                    // Save completed transcript
-                    if let Some(ref store) = transcript_store_sync {
-                        let retention = if retention_days_sync > 0 {
-                            Some(retention_days_sync)
-                        } else {
-                            None
-                        };
-                        let transcript = build_transcript(
-                            sync_node_id,
-                            &sid_sync,
-                            &desc_sync,
-                            TranscriptStatus::Completed,
-                            Some(sys_prompt_sync),
-                            prompt_sync,
-                            started_at_sync,
-                            0, // total_tokens
-                            0, // actual_rounds
-                            token_budget,
-                            None,
-                            Some(result.chars().take(500).collect()),
-                            vec![],
-                        );
-                        let _ = store.save(&transcript, retention);
-                    }
-
-                    let mut metadata = HashMap::new();
-                    metadata.insert(
-                        "subagent_type".to_string(),
-                        serde_json::json!(_subagent_type),
-                    );
-                    metadata.insert("description".to_string(), serde_json::json!(description));
-                    metadata.insert(
-                        "routing_reason".to_string(),
-                        serde_json::json!(routing_reason),
-                    );
-
-                    Ok(ToolOutput {
-                        output_type: "text".to_string(),
-                        content: response.to_content(),
-                        metadata,
-                    })
-                }
-                Err(e) => {
-                    // Save failed transcript
-                    if let Some(ref store) = transcript_store_sync {
-                        let retention = if retention_days_sync > 0 {
-                            Some(retention_days_sync)
-                        } else {
-                            None
-                        };
-                        let transcript = build_transcript(
-                            sync_node_id,
-                            &sid_sync,
-                            &desc_sync,
-                            TranscriptStatus::Failed,
-                            Some(sys_prompt_sync),
-                            prompt_sync,
-                            started_at_sync,
-                            0,
-                            0,
-                            token_budget,
-                            Some(e.full_message()),
-                            None,
-                            vec![],
-                        );
-                        let _ = store.save(&transcript, retention);
-                    }
-
-                    Err(ToolError {
-                        message: e.full_message(),
-                        code: Some(e.code().to_string()),
-                    })
-                }
+            // Persist the child's terminal state and release its permit
+            // through the coordinator. The coordinator (not a background
+            // manager) owns the child lifetime.
+            if let Err(error) = coordinator_bg
+                .finish_child(&bg_child_context, terminal.clone())
+                .await
+            {
+                tracing::error!(
+                    child_id = %bg_child_context.agent_id,
+                    error = %error,
+                    "failed to persist child terminal state"
+                );
             }
+
+            // Offload large results to mailbox before storing transcript.
+            let content = mailbox_bg
+                .offload_if_large(&st_bg, &desc_full_bg, &sid_bg, &content)
+                .to_content();
+            let success = !content.starts_with("Subagent error:");
+
+            // ── Save transcript ────────────────────────────────────────
+            if let Some(ref store) = transcript_store_bg {
+                let retention = if retention_days > 0 {
+                    Some(retention_days)
+                } else {
+                    None
+                };
+                let transcript = build_transcript(
+                    bg_node_id,
+                    &sid_bg,
+                    &desc_bg,
+                    if success {
+                        TranscriptStatus::Completed
+                    } else {
+                        TranscriptStatus::Failed
+                    },
+                    Some(sys_prompt_bg),
+                    prompt_bg,
+                    started_at_bg,
+                    0, // total_tokens - not yet tracked from subagent loop
+                    0, // actual_rounds
+                    token_budget,
+                    None,   // error_message captured in content, not individual
+                    None,   // summary
+                    vec![], // events - not yet tracked from subagent loop
+                );
+                let _ = store.save(&transcript, retention);
+            }
+
+            terminal
+        });
+
+        // The coordinator owns the spawned handle so finalization, joining,
+        // and cancellation can await or abort it. Registration cannot fail
+        // for a freshly reserved child scope.
+        if let Err(error) = self.coordinator.register_task(&child_context, handle).await {
+            tracing::error!(
+                child_id = %child_id,
+                error = %error,
+                "failed to register child task handle with coordinator"
+            );
         }
+
+        // ── Return one structured acknowledgement ───────────────────────
+        let mut metadata = HashMap::from([
+            ("child_id".to_string(), serde_json::json!(child_id.as_str())),
+            (
+                "task_group_id".to_string(),
+                serde_json::json!(group_id.as_str()),
+            ),
+            ("status".to_string(), serde_json::json!("running")),
+            (
+                "subagent_type".to_string(),
+                serde_json::json!(_subagent_type),
+            ),
+            ("description".to_string(), serde_json::json!(description)),
+        ]);
+        // Compatibility: report the legacy `background` switch as ignored when
+        // the model supplies it, instead of branching on its value.
+        if background_supplied {
+            metadata.insert(
+                "ignored_arguments".to_string(),
+                serde_json::json!(["background"]),
+            );
+        }
+        Ok(ToolOutput {
+            output_type: "json".to_string(),
+            content: serde_json::json!({
+                "child_id": child_id.as_str(),
+                "task_group_id": group_id.as_str(),
+                "status": "running"
+            })
+            .to_string(),
+            metadata,
+        })
     }
 }
 

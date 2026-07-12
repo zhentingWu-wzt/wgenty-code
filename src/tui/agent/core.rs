@@ -292,10 +292,11 @@ impl AgentLoop {
                         let event_tx = event_tx.clone();
                         let poll_timeout = Duration::from_secs(s_timeout);
                         let tool_timeout = parallel_tool_timeout;
+                        let turn_id = self.turn_id.clone();
                         tokio::spawn(async move {
                             let result = tokio::time::timeout(
                                 tool_timeout,
-                                Self::execute_tool_static(&client, &name, args.clone(), &session_id, Some(event_tx.clone()), poll_timeout),
+                                Self::execute_tool_static(&client, &name, args.clone(), &session_id, turn_id.as_deref(), Some(event_tx.clone()), poll_timeout),
                             ).await;
                             let content = match result {
                                 Ok(r) => r,

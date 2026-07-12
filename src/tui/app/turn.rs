@@ -88,6 +88,7 @@ impl App {
         let prompt_context = self.prompt_context.clone();
         let memory_manager = self.memory_manager.clone();
         let input_agent = input_text.clone();
+        let turn_id_for_loop = turn_id.clone();
 
         // Per-turn smart memory recall — runs inside the tokio task.
         let recall_top_n = {
@@ -128,6 +129,7 @@ impl App {
                 client,
                 event_tx.clone(),
                 session_id,
+                Some(turn_id_for_loop.to_string()),
                 history,
                 sys_msgs,
                 plan_mode,
@@ -203,6 +205,7 @@ impl App {
                 client,
                 event_tx.clone(),
                 session_id,
+                None,
                 history,
                 sys_msgs,
                 false,
