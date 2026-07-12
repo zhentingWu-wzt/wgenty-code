@@ -66,6 +66,14 @@ impl AgentRecord {
         self.label = label.into();
         self
     }
+
+    /// Sets the authoritative runtime generation captured when this agent is
+    /// reserved.
+    #[must_use]
+    pub fn with_generation(mut self, generation: u64) -> Self {
+        self.generation = generation;
+        self
+    }
 }
 
 /// Serializable self-projection visible to the caller.
@@ -262,11 +270,20 @@ impl InMemoryAgentStore {
             .get(&(session.clone(), Some(agent.clone())))
             .cloned()
             .unwrap_or_default();
-        let mut children: Vec<AgentRecord> = child_ids
-            .iter()
-            .filter_map(|child| state.records.get(&(session.clone(), child.clone())))
-            .cloned()
-            .collect();
+        let mut children = Vec::with_capacity(child_ids.len());
+        for child in child_ids {
+            let record = state
+                .records
+                .get(&(session.clone(), child.clone()))
+                .cloned()
+                .ok_or_else(|| {
+                    StoreError::Invariant(format!(
+                        "child index references missing agent: {}",
+                        child
+                    ))
+                })?;
+            children.push(record);
+        }
         children.sort_by(|a, b| a.agent_id.as_str().cmp(b.agent_id.as_str()));
         Ok((self_record, children))
     }
@@ -342,23 +359,6 @@ impl InMemoryAgentStore {
             .get_mut(&(session.clone(), agent.clone()))
             .ok_or_else(|| StoreError::Invariant(format!("agent not found: {}", agent)))?;
         record.status = status;
-        record.updated_at = Utc::now();
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn set_generation_for_test(
-        &self,
-        session: &SessionId,
-        agent: &AgentId,
-        generation: u64,
-    ) -> Result<(), StoreError> {
-        let mut state = self.state.write().await;
-        let record = state
-            .records
-            .get_mut(&(session.clone(), agent.clone()))
-            .ok_or_else(|| StoreError::Invariant(format!("agent not found: {}", agent)))?;
-        record.generation = generation;
         record.updated_at = Utc::now();
         Ok(())
     }
