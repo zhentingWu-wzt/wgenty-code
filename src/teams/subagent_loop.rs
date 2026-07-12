@@ -625,6 +625,9 @@ pub async fn run_subagent_loop(
                 let tool_context = crate::agent::ToolContext {
                     agent: context,
                     invocation_id: crate::agent::ToolInvocationId::new(tool_call.id.clone()),
+                    // Non-root agents do not carry a root turn id; their `task`
+                    // calls group under current_or_create_parent_group.
+                    origin_turn_id: None,
                 };
                 let tool_result = tokio::time::timeout(
                     tool_timeout,

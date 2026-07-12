@@ -77,6 +77,10 @@ pub struct AgentLoop {
     /// generation when PlanMode is active and planner_model is configured.
     pub(super) planner_client: Option<crate::api::ApiClient>,
     pub(super) session_id: String,
+    /// Trusted identifier of the root turn this loop is executing. Propagated
+    /// to the daemon as `turn_id` on `execute_tool` so root-direct `task`
+    /// children group under one turn. `None` for compaction-only turns.
+    pub(super) turn_id: Option<String>,
     /// Hook manager shared with the App for lifecycle event hooks.
     pub(super) hook_manager: std::sync::Arc<HookManager>,
     /// Prompt context for building per-turn `<system-reminder>` blocks.
@@ -100,6 +104,7 @@ impl AgentLoop {
         client: DaemonClient,
         event_tx: mpsc::UnboundedSender<AppEvent>,
         session_id: String,
+        turn_id: Option<String>,
         conversation_history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
         system_messages: Vec<ChatMessage>,
         plan_mode: bool,
@@ -127,6 +132,7 @@ impl AgentLoop {
             stuck_detector: StuckDetector::new(),
             token_counter,
             session_id,
+            turn_id,
             plan_mode,
             planner_client,
             hook_manager,
@@ -300,6 +306,7 @@ mod tests {
             client,
             tx,
             "test-session".into(),
+            None,
             Arc::new(tokio::sync::Mutex::new(vec![])),
             vec![],
             false,
