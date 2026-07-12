@@ -13,6 +13,39 @@ use axum::{
 };
 use std::sync::Arc;
 
+/// Builds the scoped agent routes. Production and boundary tests share this
+/// exact route table so navigation tests exercise the public Axum handlers.
+pub(crate) fn agent_routes() -> Router<Arc<DaemonState>> {
+    Router::new()
+        .route("/api/v1/ui/viewers", post(handlers::create_viewer))
+        .route("/api/v1/agents/self", get(handlers::get_agent_self))
+        .route("/api/v1/agents/children", get(handlers::get_agent_children))
+        .route(
+            "/api/v1/agents/children/:capability",
+            get(handlers::navigate_agent_view),
+        )
+        .route(
+            "/api/v1/agents/children/:capability/transcript",
+            get(handlers::get_child_transcript),
+        )
+        .route(
+            "/api/v1/agents/children/:capability/cancel",
+            post(handlers::cancel_child),
+        )
+        .route(
+            "/api/v1/agents/task-groups/claim",
+            post(handlers::claim_task_group),
+        )
+        .route(
+            "/api/v1/agents/generation/reset",
+            post(handlers::reset_agent_generation),
+        )
+        .route(
+            "/api/v1/agents/session/cancel",
+            post(handlers::cancel_agent_session),
+        )
+}
+
 /// Return `(health_router, protected_router)` so callers can layer differently.
 pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Router) {
     let health = Router::new()
@@ -41,21 +74,7 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         // Scoped agent APIs (strict subagent isolation). The flat
         // /api/v1/subagent/progress endpoint is retired in favor of these
         // capability-scoped local views.
-        .route("/api/v1/ui/viewers", post(handlers::create_viewer))
-        .route("/api/v1/agents/self", get(handlers::get_agent_self))
-        .route("/api/v1/agents/children", get(handlers::get_agent_children))
-        .route(
-            "/api/v1/agents/children/:capability",
-            get(handlers::navigate_agent_view),
-        )
-        .route(
-            "/api/v1/agents/children/:capability/transcript",
-            get(handlers::get_child_transcript),
-        )
-        .route(
-            "/api/v1/agents/children/:capability/cancel",
-            post(handlers::cancel_child),
-        )
+        .merge(agent_routes())
         // MCP
         .route("/api/v1/mcp/servers", get(handlers::list_mcp_servers))
         // Sessions

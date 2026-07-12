@@ -169,6 +169,22 @@ pub enum AppEvent {
     AgentLocalView(Box<LocalAgentViewResponse>),
     /// Background task/subagent result notification for display in chat.
     BackgroundTaskResult(String),
+    /// A new task generation was established after `/clear` or shutdown
+    /// cancellation. Obsolete root-direct subtrees are cancelled by the
+    /// daemon; the app adopts the new generation and clears local views.
+    AgentGenerationReset {
+        generation: u64,
+    },
+    /// Descend into a direct child via its opaque navigation capability.
+    /// The daemon verifies the capability and returns the child's local view.
+    NavigateAgent {
+        capability: String,
+    },
+    /// A capability-bound navigation returned a new local view. Pushes the
+    /// current frame onto the back stack and replaces the loaded view.
+    AgentViewNavigated(Box<LocalAgentViewResponse>),
+    /// Pop the navigation back stack to restore the previous scoped view.
+    NavigateAgentBack,
 }
 
 /// UI state for a single message in the chat view.

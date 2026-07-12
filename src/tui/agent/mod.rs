@@ -77,6 +77,10 @@ pub struct AgentLoop {
     /// generation when PlanMode is active and planner_model is configured.
     pub(super) planner_client: Option<crate::api::ApiClient>,
     pub(super) session_id: String,
+    /// Trusted identifier of the root turn this loop is executing. Propagated
+    /// to the daemon as `turn_id` on `execute_tool` so root-direct `task`
+    /// children group under one turn. `None` for compaction-only turns.
+    pub(super) turn_id: Option<String>,
     /// Hook manager shared with the App for lifecycle event hooks.
     pub(super) hook_manager: std::sync::Arc<HookManager>,
     /// Prompt context for building per-turn `<system-reminder>` blocks.
@@ -100,6 +104,7 @@ impl AgentLoop {
         client: DaemonClient,
         event_tx: mpsc::UnboundedSender<AppEvent>,
         session_id: String,
+        turn_id: Option<String>,
         conversation_history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
         system_messages: Vec<ChatMessage>,
         plan_mode: bool,
@@ -127,6 +132,7 @@ impl AgentLoop {
             stuck_detector: StuckDetector::new(),
             token_counter,
             session_id,
+            turn_id,
             plan_mode,
             planner_client,
             hook_manager,
@@ -169,6 +175,39 @@ impl AgentLoop {
         }
         let _ = self.do_auto_compact().await;
         Ok(())
+    }
+
+    /// Run a synthetic continuation turn that consumes a claimed task-group
+    /// delivery. The child results are injected as a structured system message
+    /// (no visible user row, no `ChatMessage::user`), then the loop runs so the
+    /// main agent can synthesize the completed subagent work into a response.
+    pub async fn process_continuation(
+        &mut self,
+        delivery: crate::tui::client::TaskGroupDeliveryResponse,
+    ) -> Result<(), AgentError> {
+        self.token_counter.reset_turn();
+        self.compaction_failed = false;
+        // Command-background results are still injected here (subagent results
+        // are NOT -- they arrive through the delivery).
+        self.inject_background_results().await;
+        // Inject the delivered child-result batch as a system message so the
+        // model sees the completed subagent work without a fabricated user turn.
+        let batch = format!(
+            "<child-results>\n{}\n</child-results>\n\nA background subagent group \
+             completed. Synthesize these results into your current work and \
+             continue; do not repeat the subagent's steps.",
+            serde_json::to_string(&delivery.results)
+                .unwrap_or_else(|e| format!("{{\"serialize_error\":\"{e}\"}}"))
+        );
+        {
+            let mut history = self.conversation_history.lock().await;
+            history.push(ChatMessage::system(batch));
+        }
+        // Run the loop with an empty user prompt: the system message above is
+        // the continuation signal. process_input_inner requires a non-empty
+        // input in some paths, so pass a minimal continuation marker.
+        self.process_input_inner("Continue from the delivered subagent results.".to_string())
+            .await
     }
 
     /// Generate a plan using a dedicated planner model (non-streaming).
@@ -300,6 +339,7 @@ mod tests {
             client,
             tx,
             "test-session".into(),
+            None,
             Arc::new(tokio::sync::Mutex::new(vec![])),
             vec![],
             false,

@@ -14,6 +14,7 @@ impl AgentLoop {
         name: &str,
         args: serde_json::Value,
         session_id: &str,
+        turn_id: Option<&str>,
         event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
         max_poll_duration: Duration,
     ) -> String {
@@ -62,7 +63,7 @@ impl AgentLoop {
             None
         };
 
-        let result = match client.execute_tool(name, args, session_id).await {
+        let result = match client.execute_tool(name, args, session_id, turn_id).await {
             Ok(resp) => {
                 if let Some(perm) = resp.permission_required {
                     format!(
@@ -110,7 +111,12 @@ impl AgentLoop {
 
         let result = match self
             .client
-            .execute_tool(name, args.clone(), &self.session_id)
+            .execute_tool(
+                name,
+                args.clone(),
+                &self.session_id,
+                self.turn_id.as_deref(),
+            )
             .await
         {
             Ok(resp) => resp,
@@ -177,7 +183,12 @@ impl AgentLoop {
 
                     let result = self
                         .client
-                        .execute_tool(name, args.clone(), &self.session_id)
+                        .execute_tool(
+                            name,
+                            args.clone(),
+                            &self.session_id,
+                            self.turn_id.as_deref(),
+                        )
                         .await;
 
                     // Remove the temporary approval
@@ -208,7 +219,12 @@ impl AgentLoop {
 
                     match self
                         .client
-                        .execute_tool(name, args.clone(), &self.session_id)
+                        .execute_tool(
+                            name,
+                            args.clone(),
+                            &self.session_id,
+                            self.turn_id.as_deref(),
+                        )
                         .await
                     {
                         Ok(resp) => {

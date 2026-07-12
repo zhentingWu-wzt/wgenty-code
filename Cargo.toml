@@ -28,7 +28,7 @@ serde_json = "1.0"
 rhai = "1"
 
 # SQLite-backed application storage
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.31" }
 
 # File system
 walkdir = "2.5"
@@ -85,7 +85,6 @@ similar = "2.5"
 
 # Markdown & Syntax Highlighting
 pulldown-cmark = "0.10"
-syntect = { version = "5.2", default-features = false, features = ["default-themes", "default-syntaxes", "regex-onig"] }
 
 
 # File operations
@@ -129,7 +128,10 @@ daemon = ["axum", "tower", "tower-http", "tokio-stream"]
 i18n = ["fluent", "fluent-bundle", "unic-langid", "rust-embed"]
 bundled-skills = ["rust-embed"]
 export-icon = ["image"]
-full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon"]
+full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqlite"]
+# Bundle SQLite from source (for platforms without system SQLite, e.g. Windows).
+# macOS and Linux use the system SQLite by default, avoiding ~60s of C compilation.
+bundled-sqlite = ["rusqlite/bundled"]
 
 [[bin]]
 name = "wgenty-code"
@@ -139,3 +141,12 @@ path = "src/main.rs"
 name = "export_wgenty_icon"
 path = "src/bin/export_wgenty_icon.rs"
 required-features = ["export-icon"]
+
+# ── Dev/test compilation profiles ────────────────────────────────────────────
+# Explicit incremental compilation for the test profile (inherits dev by
+# default, but making it explicit guards against future Cargo changes).
+[profile.dev]
+incremental = true
+
+[profile.test]
+incremental = true

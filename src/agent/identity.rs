@@ -117,6 +117,12 @@ pub struct ToolContext<'a> {
     pub agent: &'a AgentExecutionContext,
     /// Identity assigned to this tool invocation.
     pub invocation_id: ToolInvocationId,
+    /// Trusted identifier of the originating root turn, supplied by the
+    /// daemon for root-agent invocations so identity-sensitive tools (e.g.
+    /// `task`) can group direct children under one root turn. `None` for
+    /// non-root agents and direct/test contexts; never accepted from model
+    /// JSON.
+    pub origin_turn_id: Option<&'a str>,
 }
 
 #[cfg(test)]

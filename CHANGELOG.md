@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed (Subagent Lifecycle)
+
+- `task` 工具统一为单一异步路径：每次调用立即生成一个 coordinator 拥有的子代理并返回结构化确认（`child_id` / `task_group_id` / `status:"running"`），移除 `background` 同步/后台模式开关。模型传入的 `background` 参数在兼容期内被忽略并在确认元数据中以 `ignored_arguments` 标注。
+- 父代理（非根）在返回最终结果前必须执行一轮子结果合成（`collect_children_for_synthesis` + `begin_finalizing`），已完成的直接子代理结果作为 `<child-results>` 系统消息注入下一轮。
+- 持久主代理永不为终态；已就绪的根直接子代理组通过 `POST /api/v1/agents/task-groups/claim` 原子领取（exactly-once），并由 TUI 以隐藏的合成续轮注入模型，不产生可见用户消息。
+- `/clear` 与应用关机通过 coordinator 取消过时的子代理子树并推进 generation（`POST /api/v1/agents/generation/reset`、`POST /api/v1/agents/session/cancel`），过时 generation 的结果不再可领取。
+- TUI 子代理导航改为基于短期 capability 的逐层下钻（Enter 下钻、Backspace 回退），不暴露后代/兄弟/全树。
+
 ### BREAKING
 
 - 项目说明（`AGENTS.md` / `WGENTY.md`）不再以 system message 形式注入 prompt 链。

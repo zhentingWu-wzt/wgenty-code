@@ -148,7 +148,7 @@ If CodeGraph tools are absent or report an uninitialized project, fall back to `
 
 ## Subagents and tasks
 
-- **`task`**: Spawn a subagent for complex, multi-step work. Available types: `explore` (codebase analysis), `plan` (architecture breakdown), `general-purpose` (tool-use tasks). Subagents have isolated context and filtered tools (no recursive task spawning). **Before spawning a subagent, check the anti-patterns in §Task delegation above — if the job is 1-2 direct tool calls, use the direct tools instead.**
+- **`task`**: Spawn a subagent for complex, multi-step work. Available types: `explore` (codebase analysis), `plan` (architecture breakdown), `general-purpose` (tool-use tasks). Subagents have isolated context and filtered tools (no recursive task spawning). Every `task` call returns immediately with a `{child_id, task_group_id, status:"running"}` acknowledgement and runs concurrently inside this agent scope; do not wait for one subagent to finish before starting another. Completed subagent results are synthesized into a later turn automatically. **Before spawning a subagent, check the anti-patterns in §Task delegation above — if the job is 1-2 direct tool calls, use the direct tools instead.**
 - **`TodoWrite`**: Session-scoped checklist. Replace the ENTIRE list each call. Max 20 items, one `in_progress` at a time.
 - **`note_edit`**: Persistent notes with Markdown support. Use for tracking decisions, gotchas, or patterns across sessions.
 

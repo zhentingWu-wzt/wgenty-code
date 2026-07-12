@@ -8,9 +8,21 @@ use std::collections::{HashMap, HashSet};
 pub struct SubagentTree {
     pub root_id: Option<String>,
     pub nodes: HashMap<String, SubagentNode>,
-    /// Current scoped local view (self + direct children). When set, this
-    /// is the authoritative data source. When None, legacy nodes are used.
-    pub local_view: Option<LocalAgentViewResponse>,
+    /// Lightweight navigation metadata for the current scoped local view.
+    /// Conversation payloads live only in `nodes`.
+    local_view: Option<ScopedLocalViewMetadata>,
+}
+
+#[derive(Debug, Clone)]
+struct ScopedLocalViewMetadata {
+    self_agent_id: String,
+    children: Vec<ScopedChildNavigation>,
+}
+
+#[derive(Debug, Clone)]
+struct ScopedChildNavigation {
+    agent_id: String,
+    navigation_capability: String,
 }
 
 #[derive(Debug, Clone)]
@@ -55,88 +67,80 @@ impl SubagentTree {
     /// Replaces the tree with the given scoped local view. Previous layer
     /// nodes are removed; only self + direct children populate the tree.
     pub fn replace_local(&mut self, view: LocalAgentViewResponse) {
+        let LocalAgentViewResponse {
+            self_view,
+            children,
+        } = view;
         self.nodes.clear();
-        self.root_id = Some(view.self_view.agent_id.clone());
-        let child_ids: Vec<String> = view.children.iter().map(|c| c.agent_id.clone()).collect();
+        self.root_id = Some(self_view.agent_id.clone());
+        let child_ids: Vec<String> = children.iter().map(|c| c.agent_id.clone()).collect();
+        let local_view = ScopedLocalViewMetadata {
+            self_agent_id: self_view.agent_id.clone(),
+            children: children
+                .iter()
+                .map(|child| ScopedChildNavigation {
+                    agent_id: child.agent_id.clone(),
+                    navigation_capability: child.navigation_capability.clone(),
+                })
+                .collect(),
+        };
         self.nodes.insert(
-            view.self_view.agent_id.clone(),
+            self_view.agent_id.clone(),
             SubagentNode {
                 progress: SubagentProgress {
-                    node_id: view.self_view.agent_id.clone(),
+                    node_id: self_view.agent_id,
                     parent_id: None,
-                    label: String::new(),
-                    status: view.self_view.status.into(),
-                    ..self
-                        .nodes
-                        .values()
-                        .next()
-                        .map(|n| n.progress.clone())
-                        .unwrap_or_else(|| SubagentProgress {
-                            node_id: String::new(),
-                            parent_id: None,
-                            label: String::new(),
-                            status: SubagentStatus::Pending,
-                            round: None,
-                            max_rounds: None,
-                            current_tool: None,
-                            current_params: None,
-                            action_log: Vec::new(),
-                            text_snapshot: None,
-                            started_at: 0,
-                            elapsed_ms: 0,
-                            metadata: None,
-                            progress_delta: None,
-                            token_budget_k: None,
-                            cumulative_tokens: 0,
-                            error_details: None,
-                            events: Vec::new(),
-                            messages: Vec::new(),
-                        })
+                    label: self_view.label,
+                    status: self_view.status.into(),
+                    round: None,
+                    max_rounds: None,
+                    current_tool: None,
+                    current_params: None,
+                    action_log: Vec::new(),
+                    text_snapshot: self_view.text_snapshot,
+                    started_at: 0,
+                    elapsed_ms: 0,
+                    metadata: None,
+                    progress_delta: None,
+                    token_budget_k: None,
+                    cumulative_tokens: self_view.cumulative_tokens,
+                    error_details: None,
+                    events: Vec::new(),
+                    messages: self_view.messages,
                 },
                 children: child_ids,
             },
         );
-        for child in &view.children {
+        for child in children {
             self.nodes.insert(
                 child.agent_id.clone(),
                 SubagentNode {
                     progress: SubagentProgress {
-                        node_id: child.agent_id.clone(),
-                        parent_id: Some(view.self_view.agent_id.clone()),
-                        label: child.label.clone(),
+                        node_id: child.agent_id,
+                        parent_id: Some(local_view.self_agent_id.clone()),
+                        label: child.label,
                         status: child.status.into(),
-                        ..self
-                            .nodes
-                            .values()
-                            .next()
-                            .map(|n| n.progress.clone())
-                            .unwrap_or_else(|| SubagentProgress {
-                                node_id: String::new(),
-                                parent_id: None,
-                                label: String::new(),
-                                status: SubagentStatus::Pending,
-                                round: None,
-                                max_rounds: None,
-                                current_tool: None,
-                                current_params: None,
-                                action_log: Vec::new(),
-                                text_snapshot: None,
-                                started_at: 0,
-                                elapsed_ms: 0,
-                                metadata: None,
-                                progress_delta: None,
-                                token_budget_k: None,
-                                cumulative_tokens: 0,
-                                error_details: None,
-                                events: Vec::new(),
-                                messages: Vec::new(),
-                            })
+                        text_snapshot: child.text_snapshot,
+                        cumulative_tokens: child.cumulative_tokens,
+                        messages: child.messages,
+                        round: None,
+                        max_rounds: None,
+                        current_tool: None,
+                        current_params: None,
+                        action_log: Vec::new(),
+                        started_at: 0,
+                        elapsed_ms: 0,
+                        metadata: None,
+                        progress_delta: None,
+                        token_budget_k: None,
+                        error_details: None,
+                        events: Vec::new(),
                     },
                     children: Vec::new(),
                 },
             );
         }
-        self.local_view = Some(view);
+        self.local_view = Some(local_view);
     }
 
     /// Returns sorted selectable node ids (self + direct children).
@@ -152,6 +156,17 @@ impl SubagentTree {
 
     pub fn contains(&self, node_id: &str) -> bool {
         self.nodes.contains_key(node_id)
+    }
+
+    /// Returns the opaque navigation capability for a direct child of the
+    /// currently loaded local view, if any. Capabilities are viewer-bound and
+    /// issued by the daemon; raw agent ids confer no authority.
+    pub fn capability_for_child(&self, child_id: &str) -> Option<String> {
+        let view = self.local_view.as_ref()?;
+        view.children
+            .iter()
+            .find(|c| c.agent_id == child_id)
+            .map(|c| c.navigation_capability.clone())
     }
 
     pub fn count_by_status(&self, status: SubagentStatus) -> usize {
@@ -577,6 +592,10 @@ mod tests {
             self_view: crate::daemon::models::SelfAgentResponse {
                 agent_id: "root".to_string(),
                 status: crate::agent::AgentLifecycleStatus::Running,
+                label: String::new(),
+                text_snapshot: None,
+                cumulative_tokens: 0,
+                messages: Vec::new(),
             },
             children: vec![crate::daemon::models::DirectChildResponse {
                 agent_id: "child".to_string(),
@@ -584,6 +603,9 @@ mod tests {
                 label: "inspect selector labels".to_string(),
                 summary: None,
                 navigation_capability: "capability".to_string(),
+                text_snapshot: None,
+                cumulative_tokens: 0,
+                messages: Vec::new(),
             }],
         });
 
@@ -591,6 +613,105 @@ mod tests {
             tree.nodes["child"].progress.label,
             "inspect selector labels"
         );
+    }
+
+    #[test]
+    fn replace_local_populates_self_conversation_and_metadata() {
+        let mut tree = SubagentTree::default();
+        tree.replace_local(crate::daemon::models::LocalAgentViewResponse {
+            self_view: crate::daemon::models::SelfAgentResponse {
+                agent_id: "child".to_string(),
+                status: crate::agent::AgentLifecycleStatus::Running,
+                label: "Child task".to_string(),
+                text_snapshot: Some("snapshot-child".to_string()),
+                cumulative_tokens: 42,
+                messages: vec![crate::api::ChatMessage::assistant("child answer")],
+            },
+            children: Vec::new(),
+        });
+
+        let progress = &tree.nodes["child"].progress;
+        assert_eq!(progress.label, "Child task");
+        assert_eq!(progress.text_snapshot.as_deref(), Some("snapshot-child"));
+        assert_eq!(progress.cumulative_tokens, 42);
+        assert_eq!(progress.messages.len(), 1);
+        assert_eq!(progress.messages[0].role, "assistant");
+        assert_eq!(
+            progress.messages[0].content.as_deref(),
+            Some("child answer")
+        );
+    }
+
+    #[test]
+    fn capability_for_child_returns_direct_child_capability_only() {
+        // Only direct children of the loaded local view expose a navigation
+        // capability; the self node and unknown ids return None.
+        let mut tree = SubagentTree::default();
+        tree.replace_local(crate::daemon::models::LocalAgentViewResponse {
+            self_view: crate::daemon::models::SelfAgentResponse {
+                agent_id: "root".to_string(),
+                status: crate::agent::AgentLifecycleStatus::Running,
+                label: String::new(),
+                text_snapshot: None,
+                cumulative_tokens: 0,
+                messages: Vec::new(),
+            },
+            children: vec![crate::daemon::models::DirectChildResponse {
+                agent_id: "child".to_string(),
+                status: crate::agent::AgentLifecycleStatus::Running,
+                label: "child".to_string(),
+                summary: None,
+                navigation_capability: "cap-child".to_string(),
+                text_snapshot: None,
+                cumulative_tokens: 0,
+                messages: Vec::new(),
+            }],
+        });
+
+        assert_eq!(
+            tree.capability_for_child("child").as_deref(),
+            Some("cap-child")
+        );
+        // Self node has no capability.
+        assert!(tree.capability_for_child("root").is_none());
+        // Unknown / hidden id has no capability.
+        assert!(tree.capability_for_child("grandchild").is_none());
+        // No loaded view -> None.
+        let empty = SubagentTree::default();
+        assert!(empty.capability_for_child("anything").is_none());
+    }
+
+    #[test]
+    fn replace_local_caches_navigation_metadata_without_response_payload() {
+        let mut tree = SubagentTree::default();
+        tree.replace_local(crate::daemon::models::LocalAgentViewResponse {
+            self_view: crate::daemon::models::SelfAgentResponse {
+                agent_id: "root".to_string(),
+                status: crate::agent::AgentLifecycleStatus::Running,
+                label: "Root".to_string(),
+                text_snapshot: Some("root snapshot".to_string()),
+                cumulative_tokens: 7,
+                messages: vec![crate::api::ChatMessage::assistant("root answer")],
+            },
+            children: vec![crate::daemon::models::DirectChildResponse {
+                agent_id: "child".to_string(),
+                status: crate::agent::AgentLifecycleStatus::Running,
+                label: "Child".to_string(),
+                summary: None,
+                navigation_capability: "cap-child".to_string(),
+                text_snapshot: Some("child snapshot".to_string()),
+                cumulative_tokens: 11,
+                messages: vec![crate::api::ChatMessage::assistant("child answer")],
+            }],
+        });
+
+        let cached = tree.local_view.as_ref().expect("local view metadata");
+        assert_eq!(cached.self_agent_id, "root");
+        assert_eq!(cached.children.len(), 1);
+        assert_eq!(cached.children[0].agent_id, "child");
+        assert_eq!(cached.children[0].navigation_capability, "cap-child");
+        assert_eq!(tree.nodes["root"].progress.messages.len(), 1);
+        assert_eq!(tree.nodes["child"].progress.messages.len(), 1);
     }
 
     #[test]
