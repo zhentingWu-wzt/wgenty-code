@@ -433,13 +433,20 @@ impl AgentCoordinator {
         let context = caller.child(child_id.clone());
         let key = (context.session_id.clone(), context.agent_id.clone());
 
+        // Serialize generation capture and record insertion with group create,
+        // add, cancel, and advance operations. The permit is acquired first so
+        // a saturated coordinator cannot block generation resets.
+        let _operation = self.group_operations.lock().await;
+        let generation = self.current_generation(&context.session_id).await;
+
         let record = crate::agent::store::AgentRecord::new(
             context.session_id.clone(),
             context.agent_id.clone(),
             Some(caller.agent_id.clone()),
             context.depth,
         )
-        .with_label(request.label);
+        .with_label(request.label)
+        .with_generation(generation);
         self.store.insert(record).await?;
 
         {
@@ -930,19 +937,6 @@ impl AgentCoordinator {
     ) -> Result<(AgentRecord, Vec<AgentRecord>), CoordinatorError> {
         self.store
             .local_records_for_trusted_ui(session, agent)
-            .await
-            .map_err(Into::into)
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn set_agent_generation_for_test(
-        &self,
-        session: &SessionId,
-        agent: &AgentId,
-        generation: u64,
-    ) -> Result<(), CoordinatorError> {
-        self.store
-            .set_generation_for_test(session, agent, generation)
             .await
             .map_err(Into::into)
     }
@@ -2170,6 +2164,28 @@ mod tests {
         assert_eq!(coordinator.advance_generation(&root.session_id).await, 1);
         assert_eq!(coordinator.owner_group_count().await, 0);
         assert_eq!(coordinator.child_group_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn reserve_child_records_current_runtime_generation() {
+        let coordinator = AgentCoordinator::new(4, 3);
+        let root = coordinator
+            .ensure_root(SessionId::new("generation-session"))
+            .await
+            .unwrap();
+
+        assert_eq!(coordinator.advance_generation(&root.session_id).await, 1);
+        let child = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("fresh generation"))
+            .await
+            .unwrap()
+            .context;
+        let record = coordinator
+            .trusted_ui_record(&child.session_id, &child.agent_id)
+            .await
+            .unwrap();
+
+        assert_eq!(record.generation, 1);
     }
 
     #[tokio::test]
