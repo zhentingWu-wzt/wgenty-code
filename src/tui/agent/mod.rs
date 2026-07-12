@@ -96,6 +96,10 @@ pub struct AgentLoop {
     pub(super) max_tokens: usize,
     /// Memory manager for cross-session memory extraction and recall.
     pub(super) memory_manager: Arc<crate::context::MemoryManager>,
+    /// Agent generation at the time this loop was created. Used to tag
+    /// `AgentLocalView` events so the handler can discard stale views from
+    /// a previous generation after `/clear` or a generation reset.
+    pub(super) agent_generation: u64,
 }
 
 impl AgentLoop {
@@ -117,6 +121,7 @@ impl AgentLoop {
         context_window: usize,
         max_tokens: usize,
         memory_manager: Arc<crate::context::MemoryManager>,
+        agent_generation: u64,
     ) -> Self {
         Self {
             client,
@@ -141,6 +146,7 @@ impl AgentLoop {
             context_window,
             max_tokens,
             memory_manager,
+            agent_generation,
         }
     }
 
@@ -352,6 +358,7 @@ mod tests {
             200_000,
             65536,
             mm.clone(),
+            0,
         );
 
         // Verify the field is accessible and is of the correct type.

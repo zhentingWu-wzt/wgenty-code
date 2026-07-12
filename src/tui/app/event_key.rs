@@ -99,6 +99,18 @@ impl App {
             }
         }
         if exit_focus {
+            // Restore the root view by popping all navigation frames.
+            // This ensures the status bar selector shows the root's
+            // direct children (main + subagents) after exiting the
+            // focus view, not the navigated subagent's scoped view.
+            // The first frame in the back_stack is the root (pushed
+            // first when descending); restoring it returns the tree
+            // to the top-level local view.
+            if let Some(root) = self.agent_navigation.back_stack.first().cloned() {
+                self.agent_navigation.current = Some(root.clone());
+                self.subagent_tree.replace_local(root.view);
+            }
+            self.agent_navigation.back_stack.clear();
             self.subagent_focus = None;
             return;
         }
@@ -323,6 +335,18 @@ impl App {
                                     FocusViewState::build(node_id, &self.subagent_tree)
                                 {
                                     self.subagent_focus = Some(state);
+                                }
+                                // Descend into the selected subagent so the
+                                // selector reflects the scoped local view
+                                // (parent + this subagent's direct children)
+                                // instead of all siblings from the root view.
+                                // The AgentViewNavigated handler will rebuild
+                                // the focus view once the daemon responds.
+                                if let Some(capability) =
+                                    self.subagent_tree.capability_for_child(node_id)
+                                {
+                                    let _ =
+                                        self.event_tx.send(AppEvent::NavigateAgent { capability });
                                 }
                             }
                             return;

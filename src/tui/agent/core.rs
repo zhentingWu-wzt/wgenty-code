@@ -286,6 +286,7 @@ impl AgentLoop {
 
                     let s_timeout = self.subagent_timeout_secs;
                     let parallel_tool_timeout = Duration::from_secs(s_timeout.saturating_add(120));
+                    let agent_generation = self.agent_generation;
                     let handles: Vec<_> = tasks.into_iter().map(|(id, name, args)| {
                         let client = client.clone();
                         let session_id = session_id.clone();
@@ -296,7 +297,7 @@ impl AgentLoop {
                         tokio::spawn(async move {
                             let result = tokio::time::timeout(
                                 tool_timeout,
-                                Self::execute_tool_static(&client, &name, args.clone(), &session_id, turn_id.as_deref(), Some(event_tx.clone()), poll_timeout),
+                                Self::execute_tool_static(&client, &name, args.clone(), &session_id, turn_id.as_deref(), Some(event_tx.clone()), poll_timeout, agent_generation),
                             ).await;
                             let content = match result {
                                 Ok(r) => r,
@@ -422,6 +423,7 @@ impl AgentLoop {
                             let client = self.client.clone();
                             let session_id = self.session_id.clone();
                             let s_timeout = self.subagent_timeout_secs;
+                            let generation = self.agent_generation;
                             Some(tokio::spawn(async move {
                                 let start = tokio::time::Instant::now();
                                 let max_duration = Duration::from_secs(s_timeout);
@@ -432,8 +434,21 @@ impl AgentLoop {
                                     tokio::time::sleep(Duration::from_millis(500)).await;
                                     match client.get_root_agent_view(&session_id).await {
                                         Ok(view) => {
-                                            let _ =
-                                                tx.send(AppEvent::AgentLocalView(Box::new(view)));
+                                            // Self-terminate once every polled child has
+                                            // reached a terminal status, mirroring the
+                                            // parallel path in `execute_tool_static`.
+                                            let all_terminal = !view.children.is_empty()
+                                                && view
+                                                    .children
+                                                    .iter()
+                                                    .all(|c| c.status.is_terminal());
+                                            let _ = tx.send(AppEvent::AgentLocalView {
+                                                view: Box::new(view),
+                                                generation,
+                                            });
+                                            if all_terminal {
+                                                break;
+                                            }
                                         }
                                         Err(error) => {
                                             tracing::warn!(
@@ -476,14 +491,23 @@ impl AgentLoop {
                                     let mut history = self.conversation_history.lock().await;
                                     history.push(ChatMessage::tool(&tc.id, msg));
                                 }
-                                if let Some(h) = poll_handle {
-                                    h.abort();
-                                }
+                                // Detach (do not abort): the poller self-terminates
+                                // once all polled children are terminal. Subagents
+                                // may still be running on the daemon after a TUI-side
+                                // timeout, so keep tracking them.
+                                drop(poll_handle);
                                 continue;
                             }
                         };
 
-                        // Drop poll handle (poller self-terminates based on configured subagent timeout)
+                        // Detach the poller (do not abort). The `task` tool is
+                        // fire-and-forget: it returns a "running" acknowledgement
+                        // immediately while the subagent keeps executing on the
+                        // daemon. Aborting here would kill the poller before its
+                        // first 500 ms poll, so no `AgentLocalView` events would
+                        // reach the TUI and subagents would never appear in the
+                        // selector. The poller self-terminates once all polled
+                        // children are terminal, so it does not linger.
                         drop(poll_handle);
 
                         let _ = self.event_tx.send(AppEvent::ToolResult {
