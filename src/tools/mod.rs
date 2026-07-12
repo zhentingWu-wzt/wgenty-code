@@ -359,6 +359,7 @@ mod external_tool_tests {
         let context = ToolContext {
             agent: &root,
             invocation_id,
+            origin_turn_id: None,
         };
 
         // Input carries forged identity fields; they must be ignored.
@@ -388,6 +389,7 @@ mod external_tool_tests {
         let context = ToolContext {
             agent: &root,
             invocation_id: crate::agent::ToolInvocationId::new("inv-2"),
+            origin_turn_id: None,
         };
 
         let output = registry

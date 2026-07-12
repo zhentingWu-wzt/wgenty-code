@@ -57,6 +57,12 @@ pub struct ExecuteToolRequest {
     pub arguments: serde_json::Value,
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Trusted identifier of the originating root turn, propagated into
+    /// `ToolContext::origin_turn_id` so identity-sensitive tools (e.g. `task`)
+    /// can group root-direct children under one turn. Optional; model-supplied
+    /// `_turn_id` arguments are never honored.
+    #[serde(default)]
+    pub turn_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -200,6 +206,17 @@ use crate::agent::AgentLifecycleStatus;
 pub struct SelfAgentResponse {
     pub agent_id: String,
     pub status: AgentLifecycleStatus,
+    #[serde(default)]
+    pub label: String,
+    /// Latest text snapshot from the subagent loop (displayed when messages are empty).
+    #[serde(default)]
+    pub text_snapshot: Option<String>,
+    /// Cumulative tokens consumed by this agent.
+    #[serde(default)]
+    pub cumulative_tokens: u64,
+    /// Model messages captured by the progress callback during the subagent loop.
+    #[serde(default)]
+    pub messages: Vec<crate::api::ChatMessage>,
 }
 
 /// Direct-child projection, including an opaque navigation capability the
@@ -212,6 +229,16 @@ pub struct DirectChildResponse {
     pub label: String,
     pub summary: Option<String>,
     pub navigation_capability: String,
+    /// Latest text snapshot from the subagent loop (displayed when messages are empty).
+    #[serde(default)]
+    pub text_snapshot: Option<String>,
+    /// Cumulative tokens consumed by this subagent.
+    #[serde(default)]
+    pub cumulative_tokens: u64,
+    /// Model messages captured by the progress callback during the subagent
+    /// loop. Carried for the TUI focus view; not intended for model consumption.
+    #[serde(default)]
+    pub messages: Vec<crate::api::ChatMessage>,
 }
 
 /// Local view: self plus direct children only. No parent ID, descendant
@@ -227,4 +254,37 @@ pub struct LocalAgentViewResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateViewerResponse {
     pub viewer_token: String,
+}
+
+// ── Unified subagent lifecycle: task-group delivery ───────────────────────
+
+use crate::agent::ChildResult;
+
+/// `POST /api/v1/agents/task-groups/claim` -- atomically claim one ready
+/// root-direct task group for the persistent main agent.
+#[derive(Debug, Deserialize)]
+pub struct ClaimTaskGroupRequest {
+    pub session_id: String,
+    pub generation: u64,
+}
+
+/// One delivered task-group batch. Returned with `200 OK` when a ready group
+/// is claimed, or absent (204 No Content) when nothing is ready.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TaskGroupDeliveryResponse {
+    pub group_id: String,
+    pub generation: u64,
+    pub results: Vec<ChildResult>,
+}
+
+/// `POST /api/v1/agents/generation/reset` -- advance the session generation,
+/// cancelling obsolete root-direct subtrees. Returns the new generation.
+#[derive(Debug, Deserialize)]
+pub struct ResetAgentGenerationRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResetAgentGenerationResponse {
+    pub generation: u64,
 }

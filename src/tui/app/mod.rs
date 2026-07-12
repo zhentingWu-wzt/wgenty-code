@@ -1,5 +1,6 @@
 //! Application main loop — event handling, layout, and daemon lifecycle.
 
+mod continuation;
 mod event;
 mod event_key;
 mod input;
@@ -38,10 +39,15 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::RwLock;
 
 /// A queued turn with separate user-facing text and agent-facing input.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `continuation` carries a claimed task-group delivery for a synthetic
+/// continuation turn. When set, the turn injects the delivered child results
+/// as a system message (no visible user row) instead of a user prompt.
+#[derive(Debug, Clone)]
 pub struct PendingInput {
     pub display_text: String,
     pub agent_input: String,
+    pub continuation: Option<crate::tui::client::TaskGroupDeliveryResponse>,
 }
 
 impl PendingInput {
@@ -49,6 +55,7 @@ impl PendingInput {
         Self {
             display_text: text.clone(),
             agent_input: text,
+            continuation: None,
         }
     }
 
@@ -56,7 +63,23 @@ impl PendingInput {
         Self {
             display_text,
             agent_input,
+            continuation: None,
         }
+    }
+
+    /// A synthetic continuation turn that consumes a claimed task-group
+    /// delivery. No visible user row is added; the delivery is injected as a
+    /// structured system message.
+    pub fn continuation(delivery: crate::tui::client::TaskGroupDeliveryResponse) -> Self {
+        Self {
+            display_text: String::new(),
+            agent_input: String::new(),
+            continuation: Some(delivery),
+        }
+    }
+
+    pub fn is_continuation(&self) -> bool {
+        self.continuation.is_some()
     }
 }
 
@@ -89,6 +112,14 @@ pub struct App {
     pub current_turn_handle: Option<tokio::task::JoinHandle<()>>,
     /// ID of the currently executing turn (for lifecycle tracking).
     pub current_turn_id: Option<TurnId>,
+    /// Coordinator-owned task generation for this session. Incremented on
+    /// `/clear`/reset; ready root-direct task groups are claimed at this
+    /// generation. Stale-generation deliveries are rejected by the daemon.
+    pub agent_generation: u64,
+    /// Instant of the last task-group claim poll. Throttles the 100ms Tick
+    /// path to a 500ms claim interval so idle polling does not generate
+    /// excessive HTTP traffic.
+    last_claim_attempt: Option<std::time::Instant>,
     /// Number of completed turns (for UI / debugging).
     pub turn_count: usize,
     pub mode: AgentMode,
@@ -416,6 +447,8 @@ impl App {
             pending_inputs: VecDeque::new(),
             current_turn_handle: None,
             current_turn_id: None,
+            agent_generation: 0,
+            last_claim_attempt: None,
             turn_count: 0,
             mode: if settings.agent.plan_mode {
                 AgentMode::PlanMode
@@ -601,6 +634,19 @@ impl App {
             if let Some(event) = self.event_rx.recv().await {
                 self.handle_event(event).await;
             }
+        }
+
+        // Cancel the agent session through the coordinator so no subagent
+        // outlives the TUI: live root-direct subtrees are cancelled bottom-up
+        // and their permits released. Best-effort: shutdown proceeds even if
+        // the daemon is unreachable.
+        {
+            let client = self.daemon_client.clone();
+            let sid = self.session_id.clone();
+            let handle = tokio::spawn(async move {
+                let _ = client.cancel_agent_session(&sid).await;
+            });
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }
 
         // Fire SessionEnd hook before exit; wait up to 5s for it to complete

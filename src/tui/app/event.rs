@@ -3,6 +3,7 @@
 use super::types::*;
 use super::App;
 use crate::prompts::{self, PromptContext};
+use crate::tui::components::subagent_focus_view::FocusViewState;
 use crate::tui::util::{
     agent_phase_from_event, compute_collapse_state, extract_diff_data, extract_tool_metadata,
     format_tool_result, tool_label,
@@ -274,7 +275,20 @@ impl App {
             AppEvent::Tick if self.has_running_tool => {
                 self.spinner_frame = self.spinner_frame.wrapping_add(1);
             }
-            AppEvent::Tick => {}
+            AppEvent::Tick => {
+                // Throttle the task-group claim poll to 500ms so idle polling
+                // does not generate excessive HTTP traffic. Only poll when no
+                // turn is running.
+                let should_poll = self.current_turn_handle.is_none()
+                    && self
+                        .last_claim_attempt
+                        .map(|t| t.elapsed() >= std::time::Duration::from_millis(500))
+                        .unwrap_or(true);
+                if should_poll {
+                    self.last_claim_attempt = Some(std::time::Instant::now());
+                    self.poll_ready_task_groups().await;
+                }
+            }
             AppEvent::ConfigChanged(new_settings) => {
                 // Rebuild system messages from new settings
                 let prompt_ctx = PromptContext::new()
@@ -594,10 +608,29 @@ impl App {
                 });
             }
             AppEvent::AgentLocalView(view) => {
-                // Replace the tree with the scoped local view from the daemon.
-                // Completion-time tracking and focus updates are computed from
-                // the current response only.
-                self.subagent_tree.replace_local(*view);
+                // Replace the tree with the scoped local view from the daemon,
+                // but only when the view matches the current navigation scope.
+                // Background polling always fetches the root view; if the user
+                // has navigated into a child, a stale root-view update would
+                // leak siblings into the selector and overwrite the navigated
+                // scope.
+                let view_ref = &*view;
+                if self.agent_navigation.current.is_none() {
+                    self.agent_navigation.current = Some(crate::tui::app::types::AgentViewFrame {
+                        view: view_ref.clone(),
+                        selected: 0,
+                        breadcrumb_label: view_ref.self_view.agent_id.clone(),
+                    });
+                }
+                let matches_current_scope = self
+                    .agent_navigation
+                    .current
+                    .as_ref()
+                    .map(|frame| frame.view.self_view.agent_id == view_ref.self_view.agent_id)
+                    .unwrap_or(true);
+                if matches_current_scope {
+                    self.subagent_tree.replace_local(*view);
+                }
                 if let Some(ref mut focus) = self.subagent_focus {
                     focus.rebuild(&self.subagent_tree);
                 }
@@ -617,6 +650,95 @@ impl App {
                     diff_data: None,
                     tool_metadata: None,
                 });
+            }
+            AppEvent::AgentGenerationReset { generation } => {
+                if generation == u64::MAX {
+                    // Reset failed on the daemon: surface an actionable
+                    // system message and retain the old generation rather
+                    // than pretending cancellation succeeded.
+                    self.committed_messages.push(UIMessage {
+                        role: MessageRole::System,
+                        content: "Failed to reset subagent generation; \
+                                  obsolete subagents may still be running."
+                            .to_string(),
+                        tool_name: None,
+                        tool_args: None,
+                        content_collapsed: false,
+                        tool_collapsed: false,
+                        tool_running: false,
+                        diff_data: None,
+                        tool_metadata: None,
+                    });
+                    self.suppress_phase_updates = false;
+                    return;
+                }
+                self.agent_generation = generation;
+                self.subagent_tree.clear();
+                self.completed_at.clear();
+                self.agent_navigation = crate::tui::app::types::AgentNavigationState::default();
+                // Obsolete generation's deliveries are now rejected by the
+                // daemon; resume normal phase updates.
+                self.suppress_phase_updates = false;
+            }
+            AppEvent::NavigateAgent { capability } => {
+                // Descend into a direct child via its opaque capability.
+                let client = self.daemon_client.clone();
+                let session_id = self.session_id.clone();
+                let cap = capability.clone();
+                let event_tx = self.event_tx.clone();
+                tokio::spawn(async move {
+                    match client.navigate_agent_view(&session_id, &cap).await {
+                        Ok(view) => {
+                            let _ = event_tx.send(AppEvent::AgentViewNavigated(Box::new(view)));
+                        }
+                        Err(error) => {
+                            tracing::warn!(error = %error, "navigate_agent_view failed");
+                        }
+                    }
+                });
+            }
+            AppEvent::AgentViewNavigated(view) => {
+                // Push the current frame (if any) and replace it with the
+                // newly navigated view. A failed/stale capability leaves the
+                // current view intact (we only get here on success).
+                let new_self_id = view.self_view.agent_id.clone();
+                let frame = crate::tui::app::types::AgentViewFrame {
+                    view: (*view).clone(),
+                    selected: 0,
+                    breadcrumb_label: new_self_id.clone(),
+                };
+                if let Some(current) = self.agent_navigation.current.take() {
+                    self.agent_navigation.back_stack.push(current);
+                }
+                self.agent_navigation.current = Some(frame);
+                self.subagent_tree.replace_local(*view);
+                if let Some(ref mut focus) = self.subagent_focus {
+                    // Switch the focus view to the newly navigated agent.
+                    // `rebuild` alone preserves the old `node_id`, so the
+                    // timeline would stay pinned to the previous agent.
+                    if let Some(state) = FocusViewState::build(&new_self_id, &self.subagent_tree) {
+                        *focus = state;
+                    } else {
+                        focus.rebuild(&self.subagent_tree);
+                    }
+                }
+            }
+            AppEvent::NavigateAgentBack => {
+                // Pop the back stack locally; no daemon round-trip needed.
+                if let Some(prev) = self.agent_navigation.back_stack.pop() {
+                    let prev_self_id = prev.view.self_view.agent_id.clone();
+                    self.agent_navigation.current = Some(prev.clone());
+                    self.subagent_tree.replace_local(prev.view);
+                    if let Some(ref mut focus) = self.subagent_focus {
+                        if let Some(state) =
+                            FocusViewState::build(&prev_self_id, &self.subagent_tree)
+                        {
+                            *focus = state;
+                        } else {
+                            focus.rebuild(&self.subagent_tree);
+                        }
+                    }
+                }
             }
             AppEvent::SaveSession => {
                 let id = self.session_id.clone();

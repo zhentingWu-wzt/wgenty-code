@@ -11,6 +11,16 @@ impl App {
     /// Start the next pending turn (if any).
     pub(super) fn start_next_turn(&mut self) {
         if let Some(pending) = self.pending_inputs.pop_front() {
+            if pending.is_continuation() {
+                // Synthetic continuation: inject the delivered child results
+                // as a system message with no visible user row.
+                let delivery = pending
+                    .continuation
+                    .clone()
+                    .expect("continuation pending input carries a delivery");
+                self.spawn_continuation_turn(delivery);
+                return;
+            }
             // Push user message to UI immediately
             self.committed_messages.push(UIMessage {
                 role: MessageRole::User,
@@ -88,6 +98,7 @@ impl App {
         let prompt_context = self.prompt_context.clone();
         let memory_manager = self.memory_manager.clone();
         let input_agent = input_text.clone();
+        let turn_id_for_loop = turn_id.clone();
 
         // Per-turn smart memory recall — runs inside the tokio task.
         let recall_top_n = {
@@ -128,6 +139,7 @@ impl App {
                 client,
                 event_tx.clone(),
                 session_id,
+                Some(turn_id_for_loop.to_string()),
                 history,
                 sys_msgs,
                 plan_mode,
@@ -142,6 +154,90 @@ impl App {
                 memory_manager,
             );
             let result = agent.process_input(input_agent).await;
+            if let Err(ref e) = result {
+                let reason = match e {
+                    AgentError::StreamTimeout(_) => TurnAbortReason::TimedOut,
+                    AgentError::MaxRoundsExceeded { .. } => TurnAbortReason::MaxRoundsExceeded,
+                    AgentError::StreamError(_)
+                    | AgentError::PlannerError(_)
+                    | AgentError::EmptyResponse => TurnAbortReason::StreamError,
+                };
+                let _ = event_tx.send(AppEvent::TurnAborted { reason });
+            }
+            let _ = event_tx.send(AppEvent::TurnComplete);
+        }));
+    }
+
+    /// Spawn a synthetic continuation turn that consumes a claimed task-group
+    /// delivery. No visible user row is added; the delivery is injected as a
+    /// structured system message inside `process_continuation`.
+    pub(super) fn spawn_continuation_turn(
+        &mut self,
+        delivery: crate::tui::client::TaskGroupDeliveryResponse,
+    ) {
+        self.phase = AgentPhase::Thinking;
+        self.suppress_phase_updates = false;
+        let turn_id = TurnId::new();
+        self.current_turn_id = Some(turn_id.clone());
+        let _ = self.event_tx.send(AppEvent::TurnStarted {
+            turn_id: turn_id.clone(),
+        });
+        let history = self.conversation_history.clone();
+        let client = self.daemon_client.clone();
+        let event_tx = self.event_tx.clone();
+        let session_id = self.session_id.clone();
+        let sys_msgs = self.assembled_system_messages.clone();
+        let plan_mode = self.mode == AgentMode::PlanMode;
+        let (planner_client, max_rounds, subagent_timeout_secs, context_window, max_tokens) = {
+            let s = self.settings_lock.read().unwrap();
+            let planner = if let Some(ref pm) = s.models.planner {
+                let mut planner_settings = s.clone();
+                planner_settings.models.main.name = pm.name.clone();
+                if let Some(ref url) = pm.base_url {
+                    planner_settings.models.main.base_url = Some(url.clone());
+                }
+                if let Some(ref key) = pm.api_key {
+                    planner_settings.models.main.api_key = Some(key.clone());
+                }
+                Some(crate::api::ApiClient::new(planner_settings))
+            } else {
+                None
+            };
+            (
+                planner,
+                s.agent.max_rounds.unwrap_or(100),
+                s.agent.subagent.timeout_secs,
+                s.models.context_window,
+                s.models.transport.max_tokens,
+            )
+        };
+        let token_counter = self.token_counter.clone();
+        let hook_manager = self.hook_manager.clone();
+        let prompt_context = self.prompt_context.clone();
+        let memory_manager = self.memory_manager.clone();
+        let turn_id_for_loop = turn_id.clone();
+
+        self.current_turn_handle = Some(tokio::spawn(async move {
+            let prompt_context = std::sync::Arc::new((*prompt_context).clone());
+            let mut agent = AgentLoop::new(
+                client,
+                event_tx.clone(),
+                session_id,
+                Some(turn_id_for_loop.to_string()),
+                history,
+                sys_msgs,
+                plan_mode,
+                planner_client,
+                max_rounds,
+                token_counter,
+                hook_manager,
+                prompt_context,
+                subagent_timeout_secs,
+                context_window,
+                max_tokens,
+                memory_manager,
+            );
+            let result = agent.process_continuation(delivery).await;
             if let Err(ref e) = result {
                 let reason = match e {
                     AgentError::StreamTimeout(_) => TurnAbortReason::TimedOut,
@@ -203,6 +299,7 @@ impl App {
                 client,
                 event_tx.clone(),
                 session_id,
+                None,
                 history,
                 sys_msgs,
                 false,
