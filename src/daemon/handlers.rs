@@ -920,3 +920,20 @@ pub async fn reset_agent_generation(
         generation: new_generation,
     }))
 }
+
+/// `POST /api/v1/agents/session/cancel` -- cancel the entire agent session:
+/// resolve the trusted root, cancel its live subtrees bottom-up, await handles
+/// with the shutdown timeout, persist `Cancelled` descendants, and release
+/// every permit. Used on application shutdown so no subagent outlives the
+/// session.
+pub async fn cancel_agent_session(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<ResetAgentGenerationRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let root = state
+        .root_context(&body.session_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let _ = state.coordinator.cancel_root_children(&root).await;
+    Ok(StatusCode::NO_CONTENT)
+}

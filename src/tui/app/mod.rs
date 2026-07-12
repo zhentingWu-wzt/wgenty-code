@@ -636,6 +636,19 @@ impl App {
             }
         }
 
+        // Cancel the agent session through the coordinator so no subagent
+        // outlives the TUI: live root-direct subtrees are cancelled bottom-up
+        // and their permits released. Best-effort: shutdown proceeds even if
+        // the daemon is unreachable.
+        {
+            let client = self.daemon_client.clone();
+            let sid = self.session_id.clone();
+            let handle = tokio::spawn(async move {
+                let _ = client.cancel_agent_session(&sid).await;
+            });
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+        }
+
         // Fire SessionEnd hook before exit; wait up to 5s for it to complete
         {
             let hm = self.hook_manager.clone();
