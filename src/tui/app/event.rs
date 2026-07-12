@@ -3,6 +3,7 @@
 use super::types::*;
 use super::App;
 use crate::prompts::{self, PromptContext};
+use crate::tui::components::subagent_focus_view::FocusViewState;
 use crate::tui::util::{
     agent_phase_from_event, compute_collapse_state, extract_diff_data, extract_tool_metadata,
     format_tool_result, tool_label,
@@ -607,9 +608,12 @@ impl App {
                 });
             }
             AppEvent::AgentLocalView(view) => {
-                // Replace the tree with the scoped local view from the daemon.
-                // Completion-time tracking and focus updates are computed from
-                // the current response only.
+                // Replace the tree with the scoped local view from the daemon,
+                // but only when the view matches the current navigation scope.
+                // Background polling always fetches the root view; if the user
+                // has navigated into a child, a stale root-view update would
+                // leak siblings into the selector and overwrite the navigated
+                // scope.
                 let view_ref = &*view;
                 if self.agent_navigation.current.is_none() {
                     self.agent_navigation.current = Some(crate::tui::app::types::AgentViewFrame {
@@ -618,7 +622,15 @@ impl App {
                         breadcrumb_label: view_ref.self_view.agent_id.clone(),
                     });
                 }
-                self.subagent_tree.replace_local(*view);
+                let matches_current_scope = self
+                    .agent_navigation
+                    .current
+                    .as_ref()
+                    .map(|frame| frame.view.self_view.agent_id == view_ref.self_view.agent_id)
+                    .unwrap_or(true);
+                if matches_current_scope {
+                    self.subagent_tree.replace_local(*view);
+                }
                 if let Some(ref mut focus) = self.subagent_focus {
                     focus.rebuild(&self.subagent_tree);
                 }
@@ -689,10 +701,11 @@ impl App {
                 // Push the current frame (if any) and replace it with the
                 // newly navigated view. A failed/stale capability leaves the
                 // current view intact (we only get here on success).
+                let new_self_id = view.self_view.agent_id.clone();
                 let frame = crate::tui::app::types::AgentViewFrame {
                     view: (*view).clone(),
                     selected: 0,
-                    breadcrumb_label: view.self_view.agent_id.clone(),
+                    breadcrumb_label: new_self_id.clone(),
                 };
                 if let Some(current) = self.agent_navigation.current.take() {
                     self.agent_navigation.back_stack.push(current);
@@ -700,16 +713,30 @@ impl App {
                 self.agent_navigation.current = Some(frame);
                 self.subagent_tree.replace_local(*view);
                 if let Some(ref mut focus) = self.subagent_focus {
-                    focus.rebuild(&self.subagent_tree);
+                    // Switch the focus view to the newly navigated agent.
+                    // `rebuild` alone preserves the old `node_id`, so the
+                    // timeline would stay pinned to the previous agent.
+                    if let Some(state) = FocusViewState::build(&new_self_id, &self.subagent_tree) {
+                        *focus = state;
+                    } else {
+                        focus.rebuild(&self.subagent_tree);
+                    }
                 }
             }
             AppEvent::NavigateAgentBack => {
                 // Pop the back stack locally; no daemon round-trip needed.
                 if let Some(prev) = self.agent_navigation.back_stack.pop() {
+                    let prev_self_id = prev.view.self_view.agent_id.clone();
                     self.agent_navigation.current = Some(prev.clone());
                     self.subagent_tree.replace_local(prev.view);
                     if let Some(ref mut focus) = self.subagent_focus {
-                        focus.rebuild(&self.subagent_tree);
+                        if let Some(state) =
+                            FocusViewState::build(&prev_self_id, &self.subagent_tree)
+                        {
+                            *focus = state;
+                        } else {
+                            focus.rebuild(&self.subagent_tree);
+                        }
                     }
                 }
             }
