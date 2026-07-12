@@ -468,6 +468,7 @@ impl Tool for TaskTool {
                     &api_client,
                     &reg,
                     &bg_child_context,
+                    coordinator_bg.clone(),
                     &sys_prompt_bg,
                     &prompt_bg,
                     &tools,

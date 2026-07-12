@@ -342,6 +342,7 @@ Context: {context}
                     &api_client,
                     &registry,
                     &sub_context,
+                    sub_coordinator.clone(),
                     &sub_system_prompt,
                     &prompt,
                     &allowed,
