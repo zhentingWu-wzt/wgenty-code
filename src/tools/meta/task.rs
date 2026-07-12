@@ -421,6 +421,12 @@ impl Tool for TaskTool {
             None,
             format!("subagent: {}", description),
         );
+        // Clone the callback so we can emit a terminal status after the loop
+        // returns, even if `run_subagent_loop` exited early via `?` (e.g. API
+        // timeout/failure) without calling `emit`. Without this, the progress
+        // store would stay in `Running` forever and the TUI selector would
+        // never remove the completed subagent.
+        let cb_for_cleanup = cb.clone();
 
         let reg = tool_registry.clone();
         let tools = allowed_tools.clone();
@@ -497,6 +503,48 @@ impl Tool for TaskTool {
                     partial_result: None,
                 }),
             };
+
+            // Ensure the progress store always reflects a terminal status, even
+            // if `run_subagent_loop` exited early via `?` (e.g. API timeout or
+            // failure on the first round) without calling `emit`. The TUI
+            // selector uses `is_terminal()` to decide when to remove a
+            // subagent; without this, a non-terminal progress entry would keep
+            // the subagent pinned in the selector forever.
+            {
+                let (status, error_msg) = match &result {
+                    Ok(_) => (SubagentStatus::Completed, None),
+                    Err(e) => (SubagentStatus::Failed, Some(e.full_message())),
+                };
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                cb_for_cleanup(SubagentProgress {
+                    node_id: bg_node_id.clone(),
+                    parent_id: None,
+                    label: String::new(),
+                    status,
+                    round: None,
+                    max_rounds: Some(100),
+                    current_tool: None,
+                    current_params: None,
+                    action_log: Vec::new(),
+                    text_snapshot: None,
+                    started_at: started_at_bg,
+                    elapsed_ms: (now_ms - started_at_bg) as u64,
+                    metadata: None,
+                    progress_delta: None,
+                    token_budget_k: None,
+                    cumulative_tokens: 0,
+                    error_details: error_msg.map(|msg| crate::agent::progress::ErrorInfo {
+                        error_type: ErrorType::Unknown,
+                        message: msg,
+                        last_tool: None,
+                        last_params: None,
+                        round: 0,
+                        retryable: false,
+                    }),
+                    events: Vec::new(),
+                    messages: Vec::new(),
+                });
+            }
 
             let (terminal, content) = match result {
                 Ok(r) => (
