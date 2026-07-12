@@ -298,3 +298,18 @@ async fn cancel_agent_session_cancels_live_root_children() {
         "child should be terminal after session cancel, got {status:?}"
     );
 }
+
+#[test]
+fn bundled_prompts_do_not_instruct_models_to_select_background_mode() {
+    for path in ["src/prompts/base.md", "src/prompts/init_instructions.md"] {
+        let text = std::fs::read_to_string(path).expect("read bundled prompt");
+        assert!(
+            !text.contains("background: true"),
+            "legacy background:true instruction in {path}"
+        );
+        assert!(
+            !text.contains("background: false"),
+            "legacy background:false instruction in {path}"
+        );
+    }
+}

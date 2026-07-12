@@ -2,8 +2,9 @@
 //!
 //! These types are standalone — they do NOT depend on AppEvent or TUI types.
 //! The subagent loop emits `SubagentProgress` events through an optional
-//! `ProgressCallback`. The daemon stores them in a shared store; the TUI polls
-//! the store and converts updates into `AppEvent::SubagentUpdate` for rendering.
+//! `ProgressCallback`. The daemon stores them in a shared store; the TUI
+//! consumes scoped `LocalAgentViewResponse` updates (`AppEvent::AgentLocalView`)
+//! for rendering rather than polling a flat progress map.
 
 use crate::api::ChatMessage;
 use serde::{Deserialize, Serialize};
