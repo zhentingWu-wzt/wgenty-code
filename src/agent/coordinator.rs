@@ -921,6 +921,32 @@ impl AgentCoordinator {
             .map_err(Into::into)
     }
 
+    /// Returns canonical self and direct-child records for a trusted UI local
+    /// projection after navigation authority has already been established.
+    pub(crate) async fn trusted_ui_local_records(
+        &self,
+        session: &SessionId,
+        agent: &AgentId,
+    ) -> Result<(AgentRecord, Vec<AgentRecord>), CoordinatorError> {
+        self.store
+            .local_records_for_trusted_ui(session, agent)
+            .await
+            .map_err(Into::into)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn set_agent_generation_for_test(
+        &self,
+        session: &SessionId,
+        agent: &AgentId,
+        generation: u64,
+    ) -> Result<(), CoordinatorError> {
+        self.store
+            .set_generation_for_test(session, agent, generation)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Returns the lifecycle status of an agent.
     pub async fn status(
         &self,

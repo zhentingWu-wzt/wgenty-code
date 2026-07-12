@@ -631,16 +631,6 @@ async fn build_local_view(
     caller: &crate::agent::AgentExecutionContext,
     viewer: &crate::agent::capability::ViewerId,
 ) -> Result<LocalAgentViewResponse, StatusCode> {
-    let view = state
-        .coordinator
-        .list_local(caller)
-        .await
-        .map_err(map_scoped_coordinator_error)?;
-    let self_record = state
-        .coordinator
-        .trusted_ui_record(&caller.session_id, &view.self_view.agent_id)
-        .await
-        .map_err(map_scoped_coordinator_error)?;
     // Cross-populate from the legacy progress store so the TUI focus view has
     // conversation data for self and each direct child. Once the
     // coordinator owns the canonical progress store this lookup becomes a
@@ -654,17 +644,40 @@ async fn build_local_view(
             .cloned()
             .unwrap_or_default()
     };
-    let self_node = session_progress.get(view.self_view.agent_id.as_str());
-    let mut children = Vec::with_capacity(view.children.len());
-    for child in view.children {
-        // Issue a navigate capability for this direct child.
+
+    assemble_local_view(
+        &state.coordinator,
+        &state.capability_service,
+        &session_progress,
+        caller,
+        viewer,
+    )
+    .await
+}
+
+/// Assembles a trusted UI local response and issues generation-bound
+/// capabilities for its canonical direct children.
+async fn assemble_local_view(
+    coordinator: &crate::agent::AgentCoordinator,
+    capability_service: &crate::agent::capability::CapabilityService,
+    session_progress: &HashMap<String, crate::agent::progress::SubagentProgress>,
+    caller: &crate::agent::AgentExecutionContext,
+    viewer: &crate::agent::capability::ViewerId,
+) -> Result<LocalAgentViewResponse, StatusCode> {
+    let (self_record, child_records) = coordinator
+        .trusted_ui_local_records(&caller.session_id, &caller.agent_id)
+        .await
+        .map_err(map_scoped_coordinator_error)?;
+    let self_node = session_progress.get(self_record.agent_id.as_str());
+    let mut children = Vec::with_capacity(child_records.len());
+    for child in child_records {
         let grant = crate::agent::capability::CapabilityGrant::navigate(
             viewer.as_str(),
             caller.session_id.as_str(),
             child.agent_id.as_str(),
-            0, // generation; recovery/reissue handling lands in Task 15
+            child.generation,
         );
-        let cap = state.capability_service.issue(&grant).await;
+        let cap = capability_service.issue(&grant).await;
         // Cross-fill snapshot data from the legacy progress store.
         let node = session_progress.get(child.agent_id.as_str());
         let text_snapshot = node.and_then(|p| p.text_snapshot.clone());
@@ -674,7 +687,7 @@ async fn build_local_view(
             agent_id: child.agent_id.as_str().to_string(),
             status: child.status,
             label: child.label.clone(),
-            summary: child.summary.clone(),
+            summary: child.summary.as_ref().map(|summary| summary.text.clone()),
             navigation_capability: cap,
             text_snapshot,
             cumulative_tokens,
@@ -683,8 +696,8 @@ async fn build_local_view(
     }
     Ok(LocalAgentViewResponse {
         self_view: SelfAgentResponse {
-            agent_id: view.self_view.agent_id.as_str().to_string(),
-            status: view.self_view.status,
+            agent_id: self_record.agent_id.as_str().to_string(),
+            status: self_record.status,
             label: self_record.label,
             text_snapshot: self_node.and_then(|progress| progress.text_snapshot.clone()),
             cumulative_tokens: self_node
@@ -968,6 +981,7 @@ mod tests {
     async fn navigation_resolves_recursive_targets_with_canonical_hierarchy() {
         use crate::agent::capability::{CapabilityGrant, CapabilityService, ViewerId};
         use crate::agent::{AgentCoordinator, SessionId, SpawnChildRequest};
+        use std::collections::HashMap;
 
         let coordinator = AgentCoordinator::new(8, 4);
         let root = coordinator
@@ -986,25 +1000,31 @@ mod tests {
             .context;
         let service = CapabilityService::new([7; 32]);
         let viewer = ViewerId::new("viewer");
+        coordinator
+            .set_agent_generation_for_test(&child.session_id, &child.agent_id, 3)
+            .await
+            .unwrap();
+        coordinator
+            .set_agent_generation_for_test(&grandchild.session_id, &grandchild.agent_id, 7)
+            .await
+            .unwrap();
+        let progress = HashMap::new();
 
-        let root_view = coordinator.list_local(&root).await.unwrap();
-        assert!(!root_view
+        let root_response = assemble_local_view(&coordinator, &service, &progress, &root, &viewer)
+            .await
+            .unwrap();
+        assert_eq!(root_response.self_view.agent_id, root.agent_id.as_str());
+        assert_eq!(root_response.children.len(), 1);
+        assert!(!root_response
             .children
             .iter()
-            .any(|record| record.agent_id == grandchild.agent_id));
+            .any(|record| record.agent_id == grandchild.agent_id.as_str()));
 
-        let child_capability = service
-            .issue(&CapabilityGrant::navigate(
-                viewer.as_str(),
-                "session",
-                child.agent_id.as_str(),
-                0,
-            ))
-            .await;
+        let child_capability = &root_response.children[0].navigation_capability;
         let child_context = resolve_navigation_context(
             &coordinator,
             &service,
-            &child_capability,
+            child_capability,
             &viewer,
             "session",
         )
@@ -1013,23 +1033,22 @@ mod tests {
         assert_eq!(child_context.agent_id, child.agent_id);
         assert_eq!(child_context.parent_id, Some(root.agent_id.clone()));
         assert_eq!(child_context.depth, 1);
-        let child_view = coordinator.list_local(&child_context).await.unwrap();
-        assert_eq!(child_view.self_view.agent_id, child.agent_id);
-        assert_eq!(child_view.children.len(), 1);
-        assert_eq!(child_view.children[0].agent_id, grandchild.agent_id);
+        let child_response =
+            assemble_local_view(&coordinator, &service, &progress, &child_context, &viewer)
+                .await
+                .unwrap();
+        assert_eq!(child_response.self_view.agent_id, child.agent_id.as_str());
+        assert_eq!(child_response.children.len(), 1);
+        assert_eq!(
+            child_response.children[0].agent_id,
+            grandchild.agent_id.as_str()
+        );
 
-        let grandchild_capability = service
-            .issue(&CapabilityGrant::navigate(
-                viewer.as_str(),
-                "session",
-                grandchild.agent_id.as_str(),
-                0,
-            ))
-            .await;
+        let grandchild_capability = &child_response.children[0].navigation_capability;
         let grandchild_context = resolve_navigation_context(
             &coordinator,
             &service,
-            &grandchild_capability,
+            grandchild_capability,
             &viewer,
             "session",
         )
@@ -1038,18 +1057,54 @@ mod tests {
         assert_eq!(grandchild_context.agent_id, grandchild.agent_id);
         assert_eq!(grandchild_context.parent_id, Some(child.agent_id.clone()));
         assert_eq!(grandchild_context.depth, 2);
-        let grandchild_view = coordinator.list_local(&grandchild_context).await.unwrap();
-        assert_eq!(grandchild_view.self_view.agent_id, grandchild.agent_id);
-        assert!(grandchild_view.children.is_empty());
+        let grandchild_response = assemble_local_view(
+            &coordinator,
+            &service,
+            &progress,
+            &grandchild_context,
+            &viewer,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            grandchild_response.self_view.agent_id,
+            grandchild.agent_id.as_str()
+        );
+        assert!(grandchild_response.children.is_empty());
+
+        let stale_capability = service
+            .issue(&CapabilityGrant::navigate(
+                viewer.as_str(),
+                "session",
+                grandchild.agent_id.as_str(),
+                6,
+            ))
+            .await;
+        assert_eq!(
+            resolve_navigation_context(
+                &coordinator,
+                &service,
+                &stale_capability,
+                &viewer,
+                "session",
+            )
+            .await
+            .unwrap_err(),
+            StatusCode::NOT_FOUND
+        );
 
         for (capability, denied_viewer, denied_session) in [
             (
-                &grandchild_capability,
+                grandchild_capability.as_str(),
                 ViewerId::new("wrong-viewer"),
                 "session",
             ),
-            (&grandchild_capability, viewer.clone(), "wrong-session"),
-            (&"forged-capability".to_string(), viewer.clone(), "session"),
+            (
+                grandchild_capability.as_str(),
+                viewer.clone(),
+                "wrong-session",
+            ),
+            ("forged-capability", viewer.clone(), "session"),
         ] {
             assert_eq!(
                 resolve_navigation_context(
