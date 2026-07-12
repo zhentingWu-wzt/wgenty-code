@@ -227,3 +227,61 @@ fn compatibility_guard_no_reserved_identity_reads() {
         }
     }
 }
+
+#[tokio::test]
+async fn root_delivery_claim_is_atomic_and_session_scoped() {
+    use std::time::Duration;
+    use wgenty_code::agent::ChildTerminal;
+    let coordinator = AgentCoordinator::new(8, 4);
+    let root = coordinator
+        .ensure_root(SessionId::new("session-a"))
+        .await
+        .unwrap();
+    let group = coordinator
+        .create_root_task_group(
+            &root,
+            "turn-1",
+            tokio::time::Instant::now() + Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let child = coordinator
+        .reserve_child_in_group(&root, SpawnChildRequest::new("work"), group.clone())
+        .await
+        .unwrap();
+    coordinator
+        .finish_child(&child.context, ChildTerminal::completed("done"))
+        .await
+        .unwrap();
+
+    // First claim delivers the ready group.
+    let first = coordinator
+        .claim_ready_root_group(&root, 0)
+        .await
+        .unwrap()
+        .expect("first claim should deliver");
+    assert_eq!(first.group_id, group);
+    assert_eq!(first.results.len(), 1);
+    // Second claim is empty (exactly-once).
+    assert!(coordinator
+        .claim_ready_root_group(&root, 0)
+        .await
+        .unwrap()
+        .is_none());
+    // A different session's root claim is empty (session-scoped).
+    let other_root = coordinator
+        .ensure_root(SessionId::new("session-b"))
+        .await
+        .unwrap();
+    assert!(coordinator
+        .claim_ready_root_group(&other_root, 0)
+        .await
+        .unwrap()
+        .is_none());
+    // A stale generation claim is empty.
+    assert!(coordinator
+        .claim_ready_root_group(&root, 99)
+        .await
+        .unwrap()
+        .is_none());
+}
