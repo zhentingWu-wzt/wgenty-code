@@ -97,6 +97,7 @@ impl App {
         let hook_manager = self.hook_manager.clone();
         let prompt_context = self.prompt_context.clone();
         let memory_manager = self.memory_manager.clone();
+        let agent_generation = self.agent_generation;
         let input_agent = input_text.clone();
         let turn_id_for_loop = turn_id.clone();
 
@@ -152,6 +153,7 @@ impl App {
                 context_window,
                 max_tokens,
                 memory_manager,
+                agent_generation,
             );
             let result = agent.process_input(input_agent).await;
             if let Err(ref e) = result {
@@ -215,6 +217,7 @@ impl App {
         let hook_manager = self.hook_manager.clone();
         let prompt_context = self.prompt_context.clone();
         let memory_manager = self.memory_manager.clone();
+        let agent_generation = self.agent_generation;
         let turn_id_for_loop = turn_id.clone();
 
         self.current_turn_handle = Some(tokio::spawn(async move {
@@ -236,6 +239,7 @@ impl App {
                 context_window,
                 max_tokens,
                 memory_manager,
+                agent_generation,
             );
             let result = agent.process_continuation(delivery).await;
             if let Err(ref e) = result {
@@ -294,6 +298,7 @@ impl App {
             }
         };
         let memory_manager = self.memory_manager.clone();
+        let agent_generation = self.agent_generation;
         self.current_turn_handle = Some(tokio::spawn(async move {
             let mut agent = AgentLoop::new(
                 client,
@@ -312,6 +317,7 @@ impl App {
                 context_window,
                 max_tokens,
                 memory_manager,
+                agent_generation,
             );
             let _ = agent.compact_only().await;
             let _ = event_tx.send(AppEvent::TurnComplete);
