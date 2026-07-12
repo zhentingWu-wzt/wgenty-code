@@ -728,7 +728,7 @@ async fn resolve_navigation_context(
     let record = coordinator
         .trusted_ui_record(&session, &resolved.target)
         .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+        .map_err(map_scoped_coordinator_error)?;
     if record.generation != resolved.generation {
         return Err(StatusCode::NOT_FOUND);
     }
@@ -978,6 +978,166 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn agent_routes_support_recursive_generation_bound_navigation() {
+        use crate::agent::capability::CapabilityGrant;
+        use crate::agent::SpawnChildRequest;
+        use crate::config::Settings;
+        use crate::daemon::models::{CreateViewerResponse, LocalAgentViewResponse};
+        use crate::state::AppState;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        settings.storage.transcript.db_path = temp
+            .path()
+            .join("subagent-transcripts.db")
+            .to_string_lossy()
+            .into_owned();
+        let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+        let root = state.root_context("session").await.unwrap();
+        assert_eq!(
+            state.coordinator.advance_generation(&root.session_id).await,
+            1
+        );
+        let child = state
+            .coordinator
+            .reserve_child(&root, SpawnChildRequest::new("child"))
+            .await
+            .unwrap()
+            .context;
+        let grandchild = state
+            .coordinator
+            .reserve_child(&child, SpawnChildRequest::new("grandchild"))
+            .await
+            .unwrap()
+            .context;
+
+        let app = crate::daemon::routes::agent_routes().with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base_url = format!("http://{address}");
+        let client = reqwest::Client::new();
+
+        let viewer = client
+            .post(format!("{base_url}/api/v1/ui/viewers"))
+            .send()
+            .await
+            .unwrap()
+            .json::<CreateViewerResponse>()
+            .await
+            .unwrap()
+            .viewer_token;
+        let root_response = client
+            .get(format!("{base_url}/api/v1/agents/self?session_id=session"))
+            .header(VIEWER_TOKEN_HEADER, &viewer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(root_response.status(), StatusCode::OK);
+        let root_view = root_response
+            .json::<LocalAgentViewResponse>()
+            .await
+            .unwrap();
+        assert_eq!(root_view.self_view.agent_id, root.agent_id.as_str());
+        assert_eq!(root_view.children.len(), 1);
+        assert_eq!(root_view.children[0].agent_id, child.agent_id.as_str());
+
+        let child_capability = &root_view.children[0].navigation_capability;
+        let child_response = client
+            .get(format!(
+                "{base_url}/api/v1/agents/children/{child_capability}?session_id=session"
+            ))
+            .header(VIEWER_TOKEN_HEADER, &viewer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(child_response.status(), StatusCode::OK);
+        let child_view = child_response
+            .json::<LocalAgentViewResponse>()
+            .await
+            .unwrap();
+        assert_eq!(child_view.self_view.agent_id, child.agent_id.as_str());
+        assert_eq!(child_view.children.len(), 1);
+        assert_eq!(
+            child_view.children[0].agent_id,
+            grandchild.agent_id.as_str()
+        );
+
+        let grandchild_capability = &child_view.children[0].navigation_capability;
+        let grandchild_response = client
+            .get(format!(
+                "{base_url}/api/v1/agents/children/{grandchild_capability}?session_id=session"
+            ))
+            .header(VIEWER_TOKEN_HEADER, &viewer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(grandchild_response.status(), StatusCode::OK);
+        let grandchild_view = grandchild_response
+            .json::<LocalAgentViewResponse>()
+            .await
+            .unwrap();
+        assert_eq!(
+            grandchild_view.self_view.agent_id,
+            grandchild.agent_id.as_str()
+        );
+        assert!(grandchild_view.children.is_empty());
+
+        let wrong_viewer = client
+            .post(format!("{base_url}/api/v1/ui/viewers"))
+            .send()
+            .await
+            .unwrap()
+            .json::<CreateViewerResponse>()
+            .await
+            .unwrap()
+            .viewer_token;
+        for (capability, denied_viewer, denied_session) in [
+            (
+                grandchild_capability.as_str(),
+                wrong_viewer.as_str(),
+                "session",
+            ),
+            (grandchild_capability.as_str(), viewer.as_str(), "other"),
+            ("forged-capability", viewer.as_str(), "session"),
+        ] {
+            let response = client
+                .get(format!(
+                    "{base_url}/api/v1/agents/children/{capability}?session_id={denied_session}"
+                ))
+                .header(VIEWER_TOKEN_HEADER, denied_viewer)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+
+        let stale_capability = state
+            .capability_service
+            .issue(&CapabilityGrant::navigate(
+                viewer.as_str(),
+                "session",
+                grandchild.agent_id.as_str(),
+                0,
+            ))
+            .await;
+        let stale_response = client
+            .get(format!(
+                "{base_url}/api/v1/agents/children/{stale_capability}?session_id=session"
+            ))
+            .header(VIEWER_TOKEN_HEADER, &viewer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stale_response.status(), StatusCode::NOT_FOUND);
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn navigation_resolves_recursive_targets_with_canonical_hierarchy() {
         use crate::agent::capability::{CapabilityGrant, CapabilityService, ViewerId};
         use crate::agent::{AgentCoordinator, SessionId, SpawnChildRequest};
@@ -988,6 +1148,7 @@ mod tests {
             .ensure_root(SessionId::new("session"))
             .await
             .unwrap();
+        assert_eq!(coordinator.advance_generation(&root.session_id).await, 1);
         let child = coordinator
             .reserve_child(&root, SpawnChildRequest::new("child"))
             .await
@@ -1000,14 +1161,6 @@ mod tests {
             .context;
         let service = CapabilityService::new([7; 32]);
         let viewer = ViewerId::new("viewer");
-        coordinator
-            .set_agent_generation_for_test(&child.session_id, &child.agent_id, 3)
-            .await
-            .unwrap();
-        coordinator
-            .set_agent_generation_for_test(&grandchild.session_id, &grandchild.agent_id, 7)
-            .await
-            .unwrap();
         let progress = HashMap::new();
 
         let root_response = assemble_local_view(&coordinator, &service, &progress, &root, &viewer)
@@ -1077,7 +1230,7 @@ mod tests {
                 viewer.as_str(),
                 "session",
                 grandchild.agent_id.as_str(),
-                6,
+                0,
             ))
             .await;
         assert_eq!(
