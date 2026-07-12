@@ -56,6 +56,31 @@ impl App {
                 let mut h = history.lock().await;
                 *h = sys_msgs;
             });
+            // Clear queued inputs: a fresh generation cancels obsolete work.
+            self.pending_inputs.clear();
+            // Atomically advance the task generation on the daemon (which
+            // cancels obsolete root-direct subtrees) and adopt the new
+            // generation when it returns. Until it completes, stale
+            // subagent views are suppressed and no queued work starts.
+            let client = self.daemon_client.clone();
+            let session_id = self.session_id.clone();
+            let event_tx = self.event_tx.clone();
+            tokio::spawn(async move {
+                match client.reset_agent_generation(&session_id).await {
+                    Ok(generation) => {
+                        let _ = event_tx.send(AppEvent::AgentGenerationReset { generation });
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "reset_agent_generation failed; retaining old generation"
+                        );
+                        let _ = event_tx.send(AppEvent::AgentGenerationReset {
+                            generation: u64::MAX,
+                        });
+                    }
+                }
+            });
             return;
         }
         if text.trim() == "/plan" {

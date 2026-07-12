@@ -9,6 +9,7 @@ WORKDIR /build
 
 # 安装 GUI 构建所需的系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    libsqlite3-dev \
     libxcb-render0-dev \
     libxcb-shape0-dev \
     libxcb-xfixes0-dev \
@@ -39,6 +40,7 @@ LABEL version="0.1.0"
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

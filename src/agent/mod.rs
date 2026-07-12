@@ -15,6 +15,7 @@ pub mod events;
 pub mod identity;
 pub mod progress;
 pub mod store;
+pub mod task_group;
 
 pub use coordinator::{
     AgentCoordinator, ChildReservation, ChildResult, ChildResultHandle, ChildTerminal,
@@ -30,3 +31,4 @@ pub use store::{
     AgentRecord, ChildSummary, DirectChildView, InMemoryAgentStore, LocalAgentView, SelfView,
     StoreError,
 };
+pub use task_group::{TaskGroupDelivery, TaskGroupError, TaskGroupId, TaskGroupStore};

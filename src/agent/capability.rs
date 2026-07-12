@@ -193,6 +193,18 @@ pub enum CapabilityError {
     NotVisible,
 }
 
+/// Authority resolved from a valid navigation capability.
+///
+/// The target and generation come exclusively from the server-side stored
+/// grant; callers never supply a raw target agent id for navigation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedCapability {
+    /// Canonical target bound to the capability at issue time.
+    pub target: AgentId,
+    /// Target generation bound to the capability at issue time.
+    pub generation: u64,
+}
+
 /// Clock abstraction so expiration can be tested deterministically.
 pub trait Clock: Send + Sync {
     /// Returns the current time.
@@ -353,6 +365,35 @@ impl CapabilityService {
         Ok(())
     }
 
+    /// Resolves a navigation capability to its server-stored target.
+    ///
+    /// The token must be known, unexpired, viewer-bound, session-bound, and
+    /// issued specifically for [`CapabilityOperation::Navigate`]. Every denial
+    /// returns [`CapabilityError::NotVisible`] without revealing which check
+    /// failed.
+    pub async fn resolve_navigation(
+        &self,
+        token: &str,
+        viewer: &str,
+        session: &str,
+    ) -> Result<ResolvedCapability, CapabilityError> {
+        let digest = self.digest(token);
+        let now = self.clock.now();
+        let grants = self.grants.read().await;
+        let stored = grants.get(&digest).ok_or(CapabilityError::NotVisible)?;
+        if stored.expires_at <= now
+            || stored.viewer.as_str() != viewer
+            || stored.session_id.as_str() != session
+            || stored.operation != CapabilityOperation::Navigate
+        {
+            return Err(CapabilityError::NotVisible);
+        }
+        Ok(ResolvedCapability {
+            target: stored.target.clone(),
+            generation: stored.generation,
+        })
+    }
+
     /// Computes the HMAC-SHA256 digest of `token` under the service secret.
     /// Used as the lookup key; the raw token is never stored.
     fn digest(&self, token: &str) -> String {
@@ -495,6 +536,67 @@ mod tests {
                     &token,
                     &CapabilityRequest::navigate("viewer-a", "s", "child", 7)
                 )
+                .await,
+            Err(CapabilityError::NotVisible)
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_navigation_returns_bound_target_only() {
+        let clock = fixed_clock();
+        let service = CapabilityService::with_clock_and_ttl(
+            test_secret(),
+            clock.clone(),
+            Duration::seconds(60),
+        );
+        let token = service
+            .issue(&CapabilityGrant::navigate(
+                "viewer",
+                "session",
+                "grandchild",
+                7,
+            ))
+            .await;
+
+        let resolved = service
+            .resolve_navigation(&token, "viewer", "session")
+            .await
+            .unwrap();
+        assert_eq!(resolved.target, AgentId::new("grandchild"));
+        assert_eq!(resolved.generation, 7);
+
+        assert_eq!(
+            service
+                .resolve_navigation(&token, "wrong-viewer", "session")
+                .await,
+            Err(CapabilityError::NotVisible)
+        );
+        assert_eq!(
+            service
+                .resolve_navigation(&token, "viewer", "wrong-session")
+                .await,
+            Err(CapabilityError::NotVisible)
+        );
+
+        let transcript_token = service
+            .issue(&CapabilityGrant::transcript(
+                "viewer",
+                "session",
+                "grandchild",
+                7,
+            ))
+            .await;
+        assert_eq!(
+            service
+                .resolve_navigation(&transcript_token, "viewer", "session")
+                .await,
+            Err(CapabilityError::NotVisible)
+        );
+
+        clock.advance(Duration::seconds(61));
+        assert_eq!(
+            service
+                .resolve_navigation(&token, "viewer", "session")
                 .await,
             Err(CapabilityError::NotVisible)
         );

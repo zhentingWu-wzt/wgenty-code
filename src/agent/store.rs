@@ -66,6 +66,14 @@ impl AgentRecord {
         self.label = label.into();
         self
     }
+
+    /// Sets the authoritative runtime generation captured when this agent is
+    /// reserved.
+    #[must_use]
+    pub fn with_generation(mut self, generation: u64) -> Self {
+        self.generation = generation;
+        self
+    }
 }
 
 /// Serializable self-projection visible to the caller.
@@ -221,6 +229,63 @@ impl InMemoryAgentStore {
             .get(&(session.clone(), caller.clone()))
             .cloned()
             .ok_or(StoreError::NotVisible)
+    }
+
+    /// Returns a canonical record to trusted UI projection code.
+    ///
+    /// This bypasses agent-facing local visibility and must only be called
+    /// after the UI viewer's authority for the requested scope is verified.
+    pub(crate) async fn record_for_trusted_ui(
+        &self,
+        session: &SessionId,
+        agent: &AgentId,
+    ) -> Result<AgentRecord, StoreError> {
+        self.state
+            .read()
+            .await
+            .records
+            .get(&(session.clone(), agent.clone()))
+            .cloned()
+            .ok_or(StoreError::NotVisible)
+    }
+
+    /// Returns canonical self and direct-child records for trusted UI
+    /// projection code in one read transaction.
+    ///
+    /// This bypasses agent-facing visibility and must only be called for a
+    /// root context or after UI navigation authority has been verified.
+    pub(crate) async fn local_records_for_trusted_ui(
+        &self,
+        session: &SessionId,
+        agent: &AgentId,
+    ) -> Result<(AgentRecord, Vec<AgentRecord>), StoreError> {
+        let state = self.state.read().await;
+        let self_record = state
+            .records
+            .get(&(session.clone(), agent.clone()))
+            .cloned()
+            .ok_or(StoreError::NotVisible)?;
+        let child_ids = state
+            .children
+            .get(&(session.clone(), Some(agent.clone())))
+            .cloned()
+            .unwrap_or_default();
+        let mut children = Vec::with_capacity(child_ids.len());
+        for child in child_ids {
+            let record = state
+                .records
+                .get(&(session.clone(), child.clone()))
+                .cloned()
+                .ok_or_else(|| {
+                    StoreError::Invariant(format!(
+                        "child index references missing agent: {}",
+                        child
+                    ))
+                })?;
+            children.push(record);
+        }
+        children.sort_by(|a, b| a.agent_id.as_str().cmp(b.agent_id.as_str()));
+        Ok((self_record, children))
     }
 
     /// Returns all direct children of `parent` within `session`.
