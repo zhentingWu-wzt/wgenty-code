@@ -719,6 +719,36 @@ impl AgentCoordinator {
         }
     }
 
+    /// Fallback path that directly records a child's terminal result into its
+    /// task group, bypassing the store updates in [`finish_child`].
+    ///
+    /// Use this when `finish_child` returns `Err` (e.g., store I/O failure) to
+    /// ensure the group still receives the result and becomes deliverable.
+    /// Without this fallback, a `finish_child` failure would leave the child's
+    /// group slot permanently unfilled, causing the parent agent to wait for a
+    /// delivery that never arrives.
+    ///
+    /// Returns `Ok(())` even when the child has no group mapping or the result
+    /// was already recorded -- the caller only cares that the group is no
+    /// longer blocked by this child.
+    pub async fn force_record_child_result(
+        &self,
+        child: &AgentExecutionContext,
+        terminal: &ChildTerminal,
+    ) {
+        match self.record_mapped_child_result(child, terminal).await {
+            Ok(()) => {}
+            Err(error) => {
+                tracing::error!(
+                    child_id = %child.agent_id,
+                    error = %error,
+                    "force_record_child_result: fallback recording also failed; \
+                     group may remain blocked"
+                );
+            }
+        }
+    }
+
     /// Sanitizes a child's terminal into a bounded, parent-facing
     /// [`ChildResult`].
     ///
@@ -999,6 +1029,12 @@ impl AgentCoordinator {
     }
 
     /// Claims one ready delivery owned by the trusted persistent root.
+    ///
+    /// Before checking readiness, expired groups are swept so that children
+    /// whose spawned futures never reached `finish_child` (panic, abort, or
+    /// store failure) are converted to timeout failures. Without this sweep,
+    /// a single stuck child would keep the group in `is_ready == false`
+    /// forever, causing the parent agent to wait indefinitely.
     pub async fn claim_ready_root_group(
         &self,
         root: &AgentExecutionContext,
@@ -1008,6 +1044,14 @@ impl AgentCoordinator {
             return Err(CoordinatorError::NotVisible);
         }
         let _operation = self.group_operations.lock().await;
+        // Sweep expired groups so stuck children become deliverable timeouts.
+        let expired = self.task_groups.expire_due_groups(Instant::now()).await?;
+        if expired > 0 {
+            tracing::warn!(
+                expired_children = expired,
+                "Swept expired task-group children during root claim"
+            );
+        }
         let delivery = self
             .task_groups
             .claim_ready_for_owner(&root.session_id, &root.agent_id, generation)
