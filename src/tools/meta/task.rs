@@ -9,7 +9,7 @@
 //! - `explore`                   — codebase search and analysis
 //! - `plan`                      — architecture planning and breakdown
 
-use crate::agent::progress::{ProgressCallback, SubagentProgress, SubagentStatus};
+use crate::agent::progress::{ErrorType, ProgressCallback, SubagentProgress, SubagentStatus};
 use crate::agent::{
     AgentCoordinator, ChildTerminal, CoordinatorError, SpawnChildRequest, ToolContext,
 };
@@ -20,7 +20,9 @@ use crate::teams::subagent_mailbox::SubagentResultMailbox;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use crate::transcript::TranscriptStatus;
 use async_trait::async_trait;
+use futures::FutureExt;
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -437,47 +439,63 @@ impl Tool for TaskTool {
         // root children become deliverable even when no parent joins them.
         let bg_child_context = child_context.clone();
         let handle = tokio::spawn(async move {
-            let result = if rlm_enabled {
-                let reason = format!(
-                    "RLM pipeline: prompt_len={}, use_small={}",
-                    full_prompt.len(),
-                    use_small
-                );
-                tracing::info!(
-                    target: "rlm",
-                    phase = "auto_route",
-                    reason = %reason,
-                    "Complex task detected, routing to RLM pipeline"
-                );
-                crate::tools::meta::rlm::run_rlm_pipeline(
-                    &settings_bg,
-                    reg.clone(),
-                    coordinator_bg.clone(),
-                    &bg_child_context,
-                    &desc_full_bg,
-                    &prompt_bg,
-                    Some((progress_store_bg, sid_for_rlm)),
-                    Some(node_id_for_rlm),
-                    token_budget,
-                )
-                .await
-                .map(|r| r.aggregated)
-                .map_err(SubagentError::from)
-            } else {
-                run_subagent_loop(
-                    &api_client,
-                    &reg,
-                    &bg_child_context,
-                    coordinator_bg.clone(),
-                    &sys_prompt_bg,
-                    &prompt_bg,
-                    &tools,
-                    100,
-                    timeout_secs,
-                    Some(cb),
-                    token_budget,
-                )
-                .await
+            // Wrap the subagent loop in `catch_unwind` so a panic inside the
+            // loop is converted to a `SubagentError` instead of aborting the
+            // spawned future before `finish_child` can run. Without this, a
+            // panicking child would leave its task-group slot unfilled forever,
+            // causing the parent agent to wait for a delivery that never comes.
+            let loop_future = async {
+                if rlm_enabled {
+                    let reason = format!(
+                        "RLM pipeline: prompt_len={}, use_small={}",
+                        full_prompt.len(),
+                        use_small
+                    );
+                    tracing::info!(
+                        target: "rlm",
+                        phase = "auto_route",
+                        reason = %reason,
+                        "Complex task detected, routing to RLM pipeline"
+                    );
+                    crate::tools::meta::rlm::run_rlm_pipeline(
+                        &settings_bg,
+                        reg.clone(),
+                        coordinator_bg.clone(),
+                        &bg_child_context,
+                        &desc_full_bg,
+                        &prompt_bg,
+                        Some((progress_store_bg, sid_for_rlm)),
+                        Some(node_id_for_rlm),
+                        token_budget,
+                    )
+                    .await
+                    .map(|r| r.aggregated)
+                    .map_err(SubagentError::from)
+                } else {
+                    run_subagent_loop(
+                        &api_client,
+                        &reg,
+                        &bg_child_context,
+                        coordinator_bg.clone(),
+                        &sys_prompt_bg,
+                        &prompt_bg,
+                        &tools,
+                        100,
+                        timeout_secs,
+                        Some(cb),
+                        token_budget,
+                    )
+                    .await
+                }
+            };
+
+            let result = match AssertUnwindSafe(loop_future).catch_unwind().await {
+                Ok(r) => r,
+                Err(_) => Err(SubagentError {
+                    message: "subagent panicked during execution".to_string(),
+                    error_type: ErrorType::Unknown,
+                    partial_result: None,
+                }),
             };
 
             let (terminal, content) = match result {
@@ -498,7 +516,10 @@ impl Tool for TaskTool {
 
             // Persist the child's terminal state and release its permit
             // through the coordinator. The coordinator (not a background
-            // manager) owns the child lifetime.
+            // manager) owns the child lifetime. If `finish_child` fails (e.g.,
+            // store I/O error), fall back to `force_record_child_result` so the
+            // group result is still recorded and the parent agent receives the
+            // delivery instead of waiting forever.
             if let Err(error) = coordinator_bg
                 .finish_child(&bg_child_context, terminal.clone())
                 .await
@@ -506,8 +527,11 @@ impl Tool for TaskTool {
                 tracing::error!(
                     child_id = %bg_child_context.agent_id,
                     error = %error,
-                    "failed to persist child terminal state"
+                    "failed to persist child terminal state; attempting fallback"
                 );
+                coordinator_bg
+                    .force_record_child_result(&bg_child_context, &terminal)
+                    .await;
             }
 
             // Offload large results to mailbox before storing transcript.
