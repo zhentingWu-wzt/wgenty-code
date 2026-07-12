@@ -244,3 +244,36 @@ pub struct LocalAgentViewResponse {
 pub struct CreateViewerResponse {
     pub viewer_token: String,
 }
+
+// ── Unified subagent lifecycle: task-group delivery ───────────────────────
+
+use crate::agent::ChildResult;
+
+/// `POST /api/v1/agents/task-groups/claim` -- atomically claim one ready
+/// root-direct task group for the persistent main agent.
+#[derive(Debug, Deserialize)]
+pub struct ClaimTaskGroupRequest {
+    pub session_id: String,
+    pub generation: u64,
+}
+
+/// One delivered task-group batch. Returned with `200 OK` when a ready group
+/// is claimed, or absent (204 No Content) when nothing is ready.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TaskGroupDeliveryResponse {
+    pub group_id: String,
+    pub generation: u64,
+    pub results: Vec<ChildResult>,
+}
+
+/// `POST /api/v1/agents/generation/reset` -- advance the session generation,
+/// cancelling obsolete root-direct subtrees. Returns the new generation.
+#[derive(Debug, Deserialize)]
+pub struct ResetAgentGenerationRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResetAgentGenerationResponse {
+    pub generation: u64,
+}

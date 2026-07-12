@@ -1011,6 +1011,40 @@ impl AgentCoordinator {
         removed
     }
 
+    /// Cancels every live direct child of the persistent root for `session_id`.
+    ///
+    /// Used by the daemon generation-reset endpoint to abort obsolete
+    /// root-direct subtrees when the main agent starts a fresh turn (e.g. on
+    /// `/clear`). Each child is cancelled bottom-up through `cancel_subtree`
+    /// so its handle is awaited (bounded by the shutdown timeout), its permit
+    /// is released, and it is persisted as `Cancelled`. Returns the number of
+    /// children that were cancelled.
+    pub async fn cancel_root_children(
+        &self,
+        root: &AgentExecutionContext,
+    ) -> Result<usize, CoordinatorError> {
+        if !Self::is_root(root) {
+            return Err(CoordinatorError::NotVisible);
+        }
+        let children = self
+            .store
+            .direct_children(&root.session_id, &root.agent_id)
+            .await?;
+        let mut cancelled = 0usize;
+        for child in children {
+            // Skip already-terminal children.
+            if child.status.is_terminal() {
+                continue;
+            }
+            match self.cancel_subtree(root, child.agent_id.clone()).await {
+                Ok(()) => cancelled += 1,
+                Err(CoordinatorError::NotVisible) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(cancelled)
+    }
+
     async fn clean_generation_mappings(
         &self,
         session_id: &SessionId,

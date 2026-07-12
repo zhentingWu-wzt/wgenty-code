@@ -866,3 +866,57 @@ pub async fn cancel_child(
     }
     Err(StatusCode::NOT_FOUND)
 }
+
+/// `POST /api/v1/agents/task-groups/claim` -- atomically claim one ready
+/// root-direct task group for the persistent main agent. Returns `200` with a
+/// delivery when a ready group exists, or `204 No Content` when nothing is
+/// ready. Atomicity is coordinator-owned: concurrent claims deliver a group at
+/// most once.
+pub async fn claim_task_group(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<ClaimTaskGroupRequest>,
+) -> Result<Json<TaskGroupDeliveryResponse>, StatusCode> {
+    let root = state
+        .root_context(&body.session_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let delivery = state
+        .coordinator
+        .claim_ready_root_group(&root, body.generation)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    match delivery {
+        Some(d) => Ok(Json(TaskGroupDeliveryResponse {
+            group_id: d.group_id.as_str().to_string(),
+            generation: d.generation,
+            results: d.results,
+        })),
+        None => Err(StatusCode::NO_CONTENT),
+    }
+}
+
+/// `POST /api/v1/agents/generation/reset` -- advance the session generation
+/// and cancel obsolete root-direct subtrees. The old generation's ready groups
+/// are no longer deliverable; in-flight root children are cancelled
+/// bottom-up. Returns the new generation.
+pub async fn reset_agent_generation(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<ResetAgentGenerationRequest>,
+) -> Result<Json<ResetAgentGenerationResponse>, StatusCode> {
+    let root = state
+        .root_context(&body.session_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    // Cancel obsolete root-direct children before advancing so their permits
+    // are released and their terminals persisted as Cancelled.
+    let _ = state.coordinator.cancel_root_children(&root).await;
+    let old_generation = state.coordinator.current_generation(&root.session_id).await;
+    let _ = state
+        .coordinator
+        .cancel_generation(&root.session_id, old_generation)
+        .await;
+    let new_generation = state.coordinator.advance_generation(&root.session_id).await;
+    Ok(Json(ResetAgentGenerationResponse {
+        generation: new_generation,
+    }))
+}

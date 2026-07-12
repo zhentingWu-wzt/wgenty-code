@@ -196,6 +196,62 @@ impl DaemonClient {
         Ok(())
     }
 
+    /// `POST /api/v1/agents/task-groups/claim` -- atomically claim one ready
+    /// root-direct task group. Returns `Ok(Some(delivery))` when a ready group
+    /// was claimed, or `Ok(None)` when nothing is ready (HTTP 204).
+    pub async fn claim_task_group(
+        &self,
+        session_id: &str,
+        generation: u64,
+    ) -> anyhow::Result<Option<TaskGroupDeliveryResponse>> {
+        let url = format!("{}/api/v1/agents/task-groups/claim", self.base_url);
+        let body = serde_json::json!({
+            "session_id": session_id,
+            "generation": generation,
+        });
+        let resp = self
+            .http_tools
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .context("claim ready task group")?;
+        if resp.status() == StatusCode::NO_CONTENT {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            anyhow::bail!("claim_task_group ({})", resp.status());
+        }
+        Ok(Some(
+            resp.json().await.context("decode task group delivery")?,
+        ))
+    }
+
+    /// `POST /api/v1/agents/generation/reset` -- advance the session generation
+    /// and cancel obsolete root-direct subtrees. Returns the new generation.
+    pub async fn reset_agent_generation(&self, session_id: &str) -> anyhow::Result<u64> {
+        let url = format!("{}/api/v1/agents/generation/reset", self.base_url);
+        let body = serde_json::json!({ "session_id": session_id });
+        let resp = self
+            .http_tools
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .context("reset agent generation")?;
+        if !resp.status().is_success() {
+            anyhow::bail!("reset_agent_generation ({})", resp.status());
+        }
+        #[derive(serde::Deserialize)]
+        struct ResetResponse {
+            generation: u64,
+        }
+        let parsed: ResetResponse = resp.json().await.context("decode reset generation")?;
+        Ok(parsed.generation)
+    }
+
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -474,6 +530,16 @@ pub struct ConfigResponse {
     pub max_tokens: usize,
     pub timeout: u64,
     pub streaming: bool,
+}
+
+/// One delivered task-group batch (mirrors the daemon response). Used by the
+/// continuation scheduler to inject completed subagent results into the main
+/// agent turn.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TaskGroupDeliveryResponse {
+    pub group_id: String,
+    pub generation: u64,
+    pub results: Vec<crate::agent::ChildResult>,
 }
 
 #[derive(Debug, Deserialize)]

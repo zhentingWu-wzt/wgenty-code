@@ -56,6 +56,14 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             "/api/v1/agents/children/:capability/cancel",
             post(handlers::cancel_child),
         )
+        .route(
+            "/api/v1/agents/task-groups/claim",
+            post(handlers::claim_task_group),
+        )
+        .route(
+            "/api/v1/agents/generation/reset",
+            post(handlers::reset_agent_generation),
+        )
         // MCP
         .route("/api/v1/mcp/servers", get(handlers::list_mcp_servers))
         // Sessions
