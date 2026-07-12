@@ -224,6 +224,7 @@ pub async fn execute_tool(
                 invocation_id: crate::agent::ToolInvocationId::new(
                     uuid::Uuid::new_v4().to_string(),
                 ),
+                origin_turn_id: body.turn_id.as_deref(),
             };
             // Execute directly with hooks
             let msg = state
@@ -267,6 +268,7 @@ pub async fn execute_tool(
                     invocation_id: crate::agent::ToolInvocationId::new(
                         uuid::Uuid::new_v4().to_string(),
                     ),
+                    origin_turn_id: body.turn_id.as_deref(),
                 };
                 let msg = state
                     .tool_executor

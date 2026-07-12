@@ -259,12 +259,14 @@ impl DaemonClient {
         tool_name: &str,
         arguments: serde_json::Value,
         session_id: &str,
+        turn_id: Option<&str>,
     ) -> anyhow::Result<ExecuteToolResponse> {
         let url = format!("{}/api/v1/tools/execute", self.base_url);
         let body = ExecuteToolRequest {
             tool_name: tool_name.to_string(),
             arguments,
             session_id: Some(session_id.to_string()),
+            turn_id: turn_id.map(|t| t.to_string()),
         };
         // task/delegate run subagents that can take many minutes. Use the
         // no-timeout client so the HTTP request isn't killed at 300s while
@@ -453,6 +455,8 @@ struct ExecuteToolRequest {
     arguments: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    turn_id: Option<String>,
 }
 
 // ── Response types ────────────────────────────────────────────────────────

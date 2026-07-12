@@ -57,6 +57,12 @@ pub struct ExecuteToolRequest {
     pub arguments: serde_json::Value,
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Trusted identifier of the originating root turn, propagated into
+    /// `ToolContext::origin_turn_id` so identity-sensitive tools (e.g. `task`)
+    /// can group root-direct children under one turn. Optional; model-supplied
+    /// `_turn_id` arguments are never honored.
+    #[serde(default)]
+    pub turn_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
