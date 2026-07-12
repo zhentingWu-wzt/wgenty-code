@@ -101,8 +101,7 @@ impl TaskGroupStore {
     ) -> Result<TaskGroupId, TaskGroupError> {
         let origin_turn_id = origin_turn_id.into();
         let mut state = self.inner.write().await;
-        Self::ensure_generation(&state, &session_id, generation)?;
-        state.generations.entry(session_id.clone()).or_default();
+        Self::initialize_or_validate_generation(&mut state, &session_id, generation)?;
 
         if let Some(group) = state.groups.values().find(|group| {
             group.session_id == session_id
@@ -132,8 +131,7 @@ impl TaskGroupStore {
         deadline_at: Instant,
     ) -> Result<TaskGroupId, TaskGroupError> {
         let mut state = self.inner.write().await;
-        Self::ensure_generation(&state, &session_id, generation)?;
-        state.generations.entry(session_id.clone()).or_default();
+        Self::initialize_or_validate_generation(&mut state, &session_id, generation)?;
 
         if let Some(group) = state.groups.values().find(|group| {
             group.session_id == session_id
@@ -377,6 +375,25 @@ impl TaskGroupStore {
         Ok(())
     }
 
+    fn initialize_or_validate_generation(
+        state: &mut TaskGroupState,
+        session_id: &SessionId,
+        generation: u64,
+    ) -> Result<(), TaskGroupError> {
+        match state.generations.get(session_id).copied() {
+            Some(current) if current != generation => Err(TaskGroupError::StaleGeneration {
+                session_id: session_id.clone(),
+                expected: current,
+                actual: generation,
+            }),
+            Some(_) => Ok(()),
+            None => {
+                state.generations.insert(session_id.clone(), generation);
+                Ok(())
+            }
+        }
+    }
+
     fn ensure_group_current(
         state: &TaskGroupState,
         group_id: &TaskGroupId,
@@ -478,6 +495,32 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(delivery.results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn fresh_session_can_start_and_deliver_at_a_nonzero_generation() {
+        let store = TaskGroupStore::default();
+        let group = create_root_group(
+            &store,
+            "turn-1",
+            3,
+            tokio::time::Instant::now() + Duration::from_secs(30),
+        )
+        .await;
+        store.add_child(&group, AgentId::new("a")).await.unwrap();
+        store
+            .record_result(&group, result("a", ChildTerminalStatus::Completed))
+            .await
+            .unwrap();
+
+        assert_eq!(store.current_generation(&SessionId::new("s")).await, 3);
+        let delivery = store
+            .claim_ready(&SessionId::new("s"), 3)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivery.generation, 3);
+        assert_eq!(delivery.results.len(), 1);
     }
 
     #[tokio::test]
@@ -723,9 +766,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn parent_creation_rejects_a_future_generation() {
+    async fn parent_creation_rejects_a_mismatch_after_generation_is_initialized() {
         let store = TaskGroupStore::default();
         let session_id = SessionId::new("s");
+        store
+            .create_for_root_turn(
+                session_id.clone(),
+                AgentId::new("root"),
+                "turn-1",
+                0,
+                tokio::time::Instant::now() + Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
 
         let error = store
             .create_for_parent(
