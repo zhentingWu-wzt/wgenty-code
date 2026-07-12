@@ -145,7 +145,7 @@ impl DaemonClient {
             .context("decode root agent local view response")
     }
 
-    /// GET /api/v1/agents/children/:capability — navigate into a direct child.
+    /// GET /api/v1/agents/children/:capability — navigate to the bound target.
     pub async fn navigate_agent_view(
         &self,
         session_id: &str,
