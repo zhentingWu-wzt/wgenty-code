@@ -64,34 +64,23 @@ impl SubagentTree {
                 progress: SubagentProgress {
                     node_id: view.self_view.agent_id.clone(),
                     parent_id: None,
-                    label: String::new(),
+                    label: view.self_view.label.clone(),
                     status: view.self_view.status.into(),
-                    ..self
-                        .nodes
-                        .values()
-                        .next()
-                        .map(|n| n.progress.clone())
-                        .unwrap_or_else(|| SubagentProgress {
-                            node_id: String::new(),
-                            parent_id: None,
-                            label: String::new(),
-                            status: SubagentStatus::Pending,
-                            round: None,
-                            max_rounds: None,
-                            current_tool: None,
-                            current_params: None,
-                            action_log: Vec::new(),
-                            text_snapshot: None,
-                            started_at: 0,
-                            elapsed_ms: 0,
-                            metadata: None,
-                            progress_delta: None,
-                            token_budget_k: None,
-                            cumulative_tokens: 0,
-                            error_details: None,
-                            events: Vec::new(),
-                            messages: Vec::new(),
-                        })
+                    round: None,
+                    max_rounds: None,
+                    current_tool: None,
+                    current_params: None,
+                    action_log: Vec::new(),
+                    text_snapshot: view.self_view.text_snapshot.clone(),
+                    started_at: 0,
+                    elapsed_ms: 0,
+                    metadata: None,
+                    progress_delta: None,
+                    token_budget_k: None,
+                    cumulative_tokens: view.self_view.cumulative_tokens,
+                    error_details: None,
+                    events: Vec::new(),
+                    messages: view.self_view.messages.clone(),
                 },
                 children: child_ids,
             },
@@ -577,6 +566,10 @@ mod tests {
             self_view: crate::daemon::models::SelfAgentResponse {
                 agent_id: "root".to_string(),
                 status: crate::agent::AgentLifecycleStatus::Running,
+                label: String::new(),
+                text_snapshot: None,
+                cumulative_tokens: 0,
+                messages: Vec::new(),
             },
             children: vec![crate::daemon::models::DirectChildResponse {
                 agent_id: "child".to_string(),
@@ -597,6 +590,33 @@ mod tests {
     }
 
     #[test]
+    fn replace_local_populates_self_conversation_and_metadata() {
+        let mut tree = SubagentTree::default();
+        tree.replace_local(crate::daemon::models::LocalAgentViewResponse {
+            self_view: crate::daemon::models::SelfAgentResponse {
+                agent_id: "child".to_string(),
+                status: crate::agent::AgentLifecycleStatus::Running,
+                label: "Child task".to_string(),
+                text_snapshot: Some("snapshot-child".to_string()),
+                cumulative_tokens: 42,
+                messages: vec![crate::api::ChatMessage::assistant("child answer")],
+            },
+            children: Vec::new(),
+        });
+
+        let progress = &tree.nodes["child"].progress;
+        assert_eq!(progress.label, "Child task");
+        assert_eq!(progress.text_snapshot.as_deref(), Some("snapshot-child"));
+        assert_eq!(progress.cumulative_tokens, 42);
+        assert_eq!(progress.messages.len(), 1);
+        assert_eq!(progress.messages[0].role, "assistant");
+        assert_eq!(
+            progress.messages[0].content.as_deref(),
+            Some("child answer")
+        );
+    }
+
+    #[test]
     fn capability_for_child_returns_direct_child_capability_only() {
         // Only direct children of the loaded local view expose a navigation
         // capability; the self node and unknown ids return None.
@@ -605,6 +625,10 @@ mod tests {
             self_view: crate::daemon::models::SelfAgentResponse {
                 agent_id: "root".to_string(),
                 status: crate::agent::AgentLifecycleStatus::Running,
+                label: String::new(),
+                text_snapshot: None,
+                cumulative_tokens: 0,
+                messages: Vec::new(),
             },
             children: vec![crate::daemon::models::DirectChildResponse {
                 agent_id: "child".to_string(),
