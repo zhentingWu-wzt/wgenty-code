@@ -245,7 +245,6 @@ Context: {context}
 
         for (idx, registry, api_client, prompt, allowed) in level_data {
             // ── Create a per-sub-task progress callback with unique node_id ──
-            let sub_node_id = uuid::Uuid::new_v4().to_string();
             let sub_label = {
                 // Truncate prompt to ~50 chars for a readable label.
                 let p = prompt.trim();
@@ -262,6 +261,29 @@ Context: {context}
                     format!("sub: {}", p)
                 }
             };
+            let task_budget = per_task_budget
+                .as_ref()
+                .and_then(|budgets| budgets.get(idx).copied());
+            // Reserve a coordinator-owned child for this subtask so it runs as
+            // a direct child of the RLM caller (trusted parentage/depth/session,
+            // never derived from model JSON). Depth hides `task` at the limit;
+            // the coordinator remains the enforcement boundary.
+            let reservation = match coordinator
+                .reserve_child(caller, crate::agent::SpawnChildRequest::new(&prompt))
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    // Could not reserve (e.g. depth limit). Record an error
+                    // result for this subtask and skip spawning.
+                    task_errors[idx] = Some(format!("coordinator reserve failed: {}", e));
+                    continue;
+                }
+            };
+            let sub_context = reservation.context.clone();
+            // Use the coordinator-owned child's identity as the progress-store
+            // key so build_local_view() can cross-fill messages/snapshots/tokens.
+            let sub_node_id = sub_context.agent_id.as_str().to_string();
             let sub_progress: Option<ProgressCallback> =
                 if let Some((ref store, ref session_id)) = progress_store {
                     let store = store.clone();
@@ -312,26 +334,6 @@ Context: {context}
                 } else {
                     None
                 };
-            let task_budget = per_task_budget
-                .as_ref()
-                .and_then(|budgets| budgets.get(idx).copied());
-            // Reserve a coordinator-owned child for this subtask so it runs as
-            // a direct child of the RLM caller (trusted parentage/depth/session,
-            // never derived from model JSON). Depth hides `task` at the limit;
-            // the coordinator remains the enforcement boundary.
-            let reservation = match coordinator
-                .reserve_child(caller, crate::agent::SpawnChildRequest::new(&prompt))
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    // Could not reserve (e.g. depth limit). Record an error
-                    // result for this subtask and skip spawning.
-                    task_errors[idx] = Some(format!("coordinator reserve failed: {}", e));
-                    continue;
-                }
-            };
-            let sub_context = reservation.context.clone();
             let sub_coordinator = coordinator.clone();
             let handle = tokio::spawn(async move {
                 let mut sub_system_prompt = "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.".to_string();
