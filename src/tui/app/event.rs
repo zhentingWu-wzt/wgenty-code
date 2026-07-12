@@ -680,7 +680,7 @@ impl App {
                             let _ = event_tx.send(AppEvent::AgentViewNavigated(Box::new(view)));
                         }
                         Err(error) => {
-                            tracing::warn!(error = %error, capability = %cap, "navigate_agent_view failed");
+                            tracing::warn!(error = %error, "navigate_agent_view failed");
                         }
                     }
                 });
