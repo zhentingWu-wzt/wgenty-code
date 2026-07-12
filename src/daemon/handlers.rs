@@ -606,6 +606,13 @@ async fn resolve_viewer_from_headers(
     state.resolve_viewer(token).await
 }
 
+fn map_scoped_coordinator_error(error: crate::agent::CoordinatorError) -> StatusCode {
+    match error {
+        crate::agent::CoordinatorError::NotVisible => StatusCode::NOT_FOUND,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
 /// `POST /api/v1/ui/viewers` -- create a trusted UI viewer. Generates a
 /// 256-bit bearer token, stores only its HMAC digest, returns the token once.
 pub async fn create_viewer(
@@ -628,21 +635,25 @@ async fn build_local_view(
         .coordinator
         .list_local(caller)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(map_scoped_coordinator_error)?;
     let self_record = state
         .coordinator
         .trusted_ui_record(&caller.session_id, &view.self_view.agent_id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(map_scoped_coordinator_error)?;
     // Cross-populate from the legacy progress store so the TUI focus view has
     // conversation data for self and each direct child. Once the
     // coordinator owns the canonical progress store this lookup becomes a
     // coordinator projection; for now it bridges the migration.
-    let progress_store = state.subagent_progress.read().await;
-    let session_progress = progress_store
-        .get(caller.session_id.as_str())
-        .cloned()
-        .unwrap_or_default();
+    let session_progress = {
+        // Clone only this session's progress so the read guard is released
+        // before issuing child capabilities across await points below.
+        let progress_store = state.subagent_progress.read().await;
+        progress_store
+            .get(caller.session_id.as_str())
+            .cloned()
+            .unwrap_or_default()
+    };
     let self_node = session_progress.get(view.self_view.agent_id.as_str());
     let mut children = Vec::with_capacity(view.children.len());
     for child in view.children {
@@ -950,4 +961,23 @@ pub async fn cancel_agent_session(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let _ = state.coordinator.cancel_root_children(&root).await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scoped_coordinator_error_preserves_not_found_boundary() {
+        assert_eq!(
+            map_scoped_coordinator_error(crate::agent::CoordinatorError::NotVisible),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            map_scoped_coordinator_error(crate::agent::CoordinatorError::Storage(
+                "invariant".to_string()
+            )),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
 }
