@@ -26,10 +26,9 @@ Thumbs.db
 settings.json
 !settings.json.template
 
-# Environment variables / secrets
+# Environment variables / secrets (prevent accidental commit)
 .env
 .env.*
-!.env.example
 
 # Logs
 *.log

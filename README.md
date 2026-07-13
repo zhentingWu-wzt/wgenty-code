@@ -4,138 +4,63 @@
 
 # Wgenty Code 🦀
 
-> **High-performance coding agent CLI, rewritten in Rust** — 2.5× faster startup, 97% smaller binary, zero runtime dependencies.
-
-Wgenty Code is an LLM-powered coding agent that reads, writes, and refactors your codebase through a terminal interface. It supports multiple AI providers (Anthropic, DeepSeek, DashScope) and ships as a single, self-contained binary with no Node.js or Python runtime required.
+Supports multiple AI providers: **Anthropic (Claude)**, **DeepSeek**, and **DashScope**.
 
 ---
 
-## Why Rust?
+## Features
 
-The original TypeScript implementation carried the weight of an entire Node.js runtime — 164 MB of dependencies, 100 MB of idle memory, and JIT warm-up latency on every invocation. Rewriting in Rust eliminates all of that:
-
-| Metric | Rust | TypeScript | Improvement |
-|:-------|:----:|:----------:|:-----------:|
-| Cold start | **58 ms** | 152 ms | **2.6× faster** |
-| Binary size | **5 MB** | 164 MB | **97% smaller** |
-| Idle memory | **10 MB** | 100 MB | **90% less** |
-| Config read | **6 ms** | 150 ms | **25× faster** |
-| REPL keystroke | **<1 ms** | 100 ms | **instant** |
-
-Beyond raw numbers, Rust's ownership model eliminates entire categories of bugs: no null-pointer exceptions, no data races, no garbage-collection pauses. The compiler proves memory safety and thread safety at build time — before the binary ever runs.
-
-See [PERFORMANCE_BENCHMARKS.md](PERFORMANCE_BENCHMARKS.md) for the full benchmark report.
-
----
-
-## Design Highlights
-
-### 🔒 Security by Default
-
-Every command the agent wants to execute passes through a **two-stage guardian review** before touching the system:
-
-1. **Rule-based filter** — static patterns block obviously dangerous operations (e.g., `rm -rf /`, `curl | sh`).
-2. **LLM review** (optional) — the model itself evaluates the risk of ambiguous commands, classifying them as `Low / Medium / High / Critical`.
-
-Critical-risk operations are auto-denied. The entire execution surface is further isolated by **OS-level sandboxing**: Seatbelt on macOS, seccomp-bpf on Linux, Job Objects on Windows. If sandbox facilities are unavailable, the system degrades gracefully to a no-op backend rather than crashing.
-
-### 🧩 25 Tools, One Abstraction
-
-All agent capabilities — file operations, code search, command execution, web access — implement a single `Tool` trait with a crucial design choice: **`is_read_only()` defaults to `false`**. Every read-only tool (like `file_read`, `grep`, `glob`) must explicitly declare itself safe. This forces tool authors to think about side effects and prevents the guardian from accidentally granting write access to tools that modify state.
-
-Tools are also **provider-aware**: the `ToolRegistry` can dynamically remove tools that an AI provider doesn't support (e.g., `apply_patch` for non-Anthropic backends), keeping the agent's capabilities honest and preventing runtime failures.
-
-### 📐 8-Layer Prompt Assembly
-
-The system prompt isn't a single blob — it's assembled from 8 independently toggleable instruction layers:
-
-```
-base_instructions → permissions → developer → collaboration
-  → environment → skills → agents_md → wgenty_md
-```
-
-Each layer can be enabled/disabled, allowing precise control over what context the model receives. Repository-specific instructions from `AGENTS.md` and `WGENTY.md` files are automatically injected with scoping rules — deeper-nested files take precedence over parent-level ones.
-
-### 👥 RLM Architecture — Recursive Language Model
-
-Complex tasks automatically decompose into independent sub-tasks through a **Planner → Executor → Aggregator** pipeline:
-
-```
-model → task tool (simple tasks)
-      → delegate tool (complex: auto-decompose → parallel execute → merge)
-      → dispatch tool (map-reduce: grep results → per-item analyze → aggregate)
-```
-
-**RLM pipeline (delegate tool):**
-- Planner calls LLM to decompose the task into structured JSON sub-tasks
-- Executor runs sub-tasks in parallel, ordered by dependency levels
-- Aggregator merges all results into a coherent response
-
-**Auto-routing (`task` tool):**
-The `task` tool detects complex prompts (>500 chars, multi-step indicators) and automatically routes to the RLM pipeline — the model doesn't need to decide which tool to use.
-
-**Recursion control:**
-- Depth propagation via `_subagent_depth` — each sub-agent knows its level
-- Hard limit via `agent.subagent.max_depth` (default: 3) — prevents runaway recursion
-- Self-referential: sub-agents can spawn further sub-agents when depth allows
-- Trace ID: every sub-agent logs a unique monotonically-increasing ID
-
-### 🏗️ Plan Mode
-
-Toggle `plan_mode` in config or press `Ctrl+P` in the REPL. In plan mode:
-
-1. The agent explores the codebase, reads relevant files, and asks clarifying questions
-2. Calls `update_plan` to present a structured plan in the UI panel
-3. Waits for user approval before executing any mutations
-
-The plan panel renders each step with a status indicator: `○ pending / ◐ in_progress / ✓ completed`. After approval, the agent executes step-by-step, updating the plan as it progresses.
-
-### 🖥️ TUI Features
-
-Built with [ratatui](https://ratatui.rs/), the terminal interface includes:
-
-- **Turn-based chat** — solid separators between turns, dotted separators within turns
-- **Structured plan panel** — plan steps rendered inline with status indicators
-- **Collapsed tool results** — tool outputs default-collapsed (Ctrl+O to expand), minimizing noise
-- **Agent mode switching** — `Normal / Plan / Accept Edits / Yolo` modes with color-coded labels
-- **Multi-line input** — Shift+Enter for newlines, full IME/CJK support
-- **Session management** — save/load/delete sessions with search
-
-### 📦 Feature-Gated Modularity
-
-The project compiles to a single binary with feature gates controlling optional capabilities:
-
-| Binary | Features | Purpose |
-|:-------|:---------|:--------|
-| `wgenty-code` | `default` (i18n, daemon, bundled-skills) | Full-featured CLI with TUI |
-
-Build without any features (`--no-default-features`) and you get a pure CLI binary under 5 MB — ideal for CI pipelines, Docker containers, or embedding into other tools. Add features on demand: WASM compilation for browser targets, i18n for 10-language Fluent localization, daemon mode for long-running server processes.
-
-### 🌍 Multi-Provider, Transparent Routing
-
-The API layer automatically detects which AI provider to use based on your configuration and routes requests accordingly — no code changes needed to switch between Anthropic, DeepSeek, and DashScope. Model aliases like `sonnet`, `haiku`, and `opus` are transparently mapped to full provider-specific model IDs, and request/response formats are transformed behind a unified `ApiClient` trait.
+- **Interactive TUI** - turn-based chat, structured plan panel, collapsed tool outputs, agent mode switching (`Normal / Plan / Accept Edits / Yolo`)
+- **Plan Mode** - agent explores and proposes a plan before executing any mutations (`Ctrl+P` to toggle)
+- **25 built-in tools** - file operations, code search, command execution, web access, and more
+- **Multi-provider routing** - automatically detects and routes to the configured AI provider; model aliases like `sonnet`, `haiku`, `opus` are transparently mapped
+- **Security by default** - all commands pass through a two-stage guardian review (rule-based + optional LLM review); critical-risk operations are auto-denied; OS-level sandboxing on all platforms
+- **Sub-agent delegation** - complex tasks automatically decompose into parallel sub-tasks with recursion control
+- **Session management** - save, load, and search past sessions
+- **i18n** - 10-language support via Fluent localization
+- **MCP support** - connect external MCP servers and use their tools transparently
 
 ---
 
 ## Quick Start
 
-### Prerequisites
-- **Rust** 1.75+ ([rustup.rs](https://rustup.rs/))
-- **Git**
+### Install via npm (recommended)
 
-### Install & Run
+Requires [Node.js](https://nodejs.org/) 14+. The npm package downloads the correct prebuilt binary for your platform automatically—no Rust toolchain needed.
+
+```bash
+npm install -g wgenty-code
+wgenty-code --version     # verify installation
+```
+
+Supported platforms: `linux-x64`, `linux-arm64`, `darwin-x64` (Intel macOS), `darwin-arm64` (Apple Silicon), `win32-x64`.
+
+### Build from source
+
+Requires **Rust** 1.75+ ([rustup.rs](https://rustup.rs/)) and **Git**.
 
 ```bash
 git clone https://github.com/zhentingWu-wzt/wgenty-code.git
 cd wgenty-code
 cargo build --release
+```
 
-# Set your API key
-export ANTHROPIC_API_KEY="sk-ant-..."
+The binary is at `./target/release/wgenty-code` (`.exe` on Windows).
+
+### Set your API key & run
+
+```bash
+# Set your API key (one of the following)
+export ANTHROPIC_API_KEY="sk-ant-..."    # Anthropic Claude
+# export DEEPSEEK_API_KEY="sk-..."       # DeepSeek
+# export DASHSCOPE_API_KEY="sk-..."      # DashScope (Alibaba Cloud)
 
 # Start coding
-./target/release/wgenty-code repl
+wgenty-code repl                            # if installed via npm
+# ./target/release/wgenty-code repl         # if built from source
 ```
+
+> Alternatively, set `api_key` in `~/.wgenty-code/settings.json`. Environment variables take priority.
 
 ### Docker
 
@@ -158,12 +83,12 @@ Settings live in `~/.wgenty-code/settings.json` (auto-generated). Key options:
 | `agent.subagent.max_depth` | `3` | Max recursion depth for nested sub-agents |
 | `agent.subagent.max_concurrent` | `5` | Max parallel sub-agents |
 | `agent.token_budget.main_k` | `0` | Cumulative token limit (0 = unlimited) |
-| `agent.rlm.enabled` | `true` | RLM pipeline master switch |
-| `prompt.collaboration_mode` | *(none)* | Agent behavior: `plan`, `execute`, or `pair_programming` |
 | `integrations.guardian.enabled` | `true` | Toggle command safety review |
 | `storage.transcript.max_age_days` | `30` | Days to retain subagent transcripts |
 
-> Use `wgenty-code config set <dotted.path> <value>` to change any setting, e.g. `config set agent.subagent.max_depth 5`. The old flat key names (`model`, `max_subagent_depth`, etc.) are no longer supported.
+> Use `wgenty-code config set <dotted.path> <value>` to change any setting, e.g. `config set agent.subagent.max_depth 5`.
+
+Environment variable priority: `ANTHROPIC_API_KEY` > `DASHSCOPE_API_KEY` > `DEEPSEEK_API_KEY`. You can also set `api_key` directly in `settings.json`.
 
 ---
 
@@ -179,18 +104,6 @@ wgenty-code agent --agent-type plan --prompt "Design an API"
 ```
 
 Full command reference: `wgenty-code --help`
-
-### CodeGraph MCP
-
-Wgenty Code uses the local third-party CodeGraph MCP server for structural code navigation. Install and initialize it in projects where you want `codegraph_explore`, `codegraph_node`, `codegraph_search`, and `codegraph_callers`:
-
-```bash
-npm install -g @colbymchenry/codegraph
-cd /path/to/project
-codegraph init
-```
-
-The daemon launches `codegraph serve --mcp`, discovers its tools through MCP, and exposes them to the model through the same registry as built-in tools. Source code and the SQLite index remain local. If CodeGraph is not installed or a project is not initialized, the agent continues with `grep`, `lsp`, and file tools.
 
 ### REPL Shortcuts
 
@@ -211,11 +124,6 @@ cargo build                           # Debug build
 cargo test --all                      # Full test suite
 cargo clippy --all-targets -- -D warnings  # Zero warnings required
 cargo fmt                             # Auto-format
-
-# Performance check
-cargo build --release
-time ./target/release/wgenty-code --version
-ls -lh ./target/release/wgenty-code
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for branch conventions, commit format, and PR workflow.
@@ -224,17 +132,15 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for branch conventions, commit format, an
 
 ## Documentation
 
-- [QUICKSTART.md](QUICKSTART.md) — Hands-on getting started
-- [INSTALL.md](INSTALL.md) — Platform-specific installation
-- [PERFORMANCE_BENCHMARKS.md](PERFORMANCE_BENCHMARKS.md) — Full benchmark data
-- [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md) — Moving from TypeScript version
-- [CHANGELOG.md](CHANGELOG.md) — Release history
-- [CONTRIBUTING.md](CONTRIBUTING.md) — How to contribute
+- [QUICKSTART.md](QUICKSTART.md) - Hands-on getting started
+- [INSTALL.md](INSTALL.md) - Platform-specific installation
+- [PERFORMANCE_BENCHMARKS.md](PERFORMANCE_BENCHMARKS.md) - Full benchmark data
+- [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md) - Moving from TypeScript version
+- [CHANGELOG.md](CHANGELOG.md) - Release history
+- [CONTRIBUTING.md](CONTRIBUTING.md) - How to contribute
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
-
-**Repository**: [github.com/zhentingWu-wzt/wgenty-code](https://github.com/zhentingWu-wzt/wgenty-code)
+MIT - see [LICENSE](LICENSE).
