@@ -12,16 +12,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone)]
 pub struct DaemonClient {
     /// Client for SSE streaming requests (no timeout — streams can run for minutes).
-    http: reqwest::Client,
+    http: Arc<std::sync::OnceLock<reqwest::Client>>,
     /// Separate client for short-lived tool/API requests, avoiding connection-pool
     /// conflicts with the long-lived SSE streaming connection.
-    http_tools: reqwest::Client,
+    http_tools: Arc<std::sync::OnceLock<reqwest::Client>>,
     /// Client for long-running tools (`task`/`delegate`) whose subagents can run
     /// for many minutes. No timeout — the tool-level and subagent-level timeouts
     /// are the real ceilings, not the HTTP client (a 300s client timeout was
     /// killing legitimate subagent runs mid-flight).
-    http_long: reqwest::Client,
+    http_long: Arc<std::sync::OnceLock<reqwest::Client>>,
     base_url: String,
+    /// Default headers (auth token) shared across all lazily-created clients.
+    default_headers: HeaderMap,
     /// Trusted-UI viewer bearer token, obtained once from `POST /api/v1/ui/viewers`
     /// and refreshed only after a daemon restart (401/404). Sent as the
     /// `X-Wgenty-Viewer-Token` header on scoped agent requests. Stored behind
@@ -31,8 +33,8 @@ pub struct DaemonClient {
 
 impl DaemonClient {
     pub fn new(base_url: String) -> Self {
-        // Read auth token from token file (if present) and set as default
-        // header for all requests. Protected endpoints require this header.
+        // Read auth token from token file (if present). The headers are stored
+        // and used when each client is lazily created on first use.
         let mut default_headers = HeaderMap::new();
         if let Some(token) = crate::utils::read_daemon_token() {
             if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", token)) {
@@ -40,35 +42,57 @@ impl DaemonClient {
             }
         }
 
-        let http = reqwest::Client::builder()
-            .default_headers(default_headers.clone())
-            .build()
-            .expect("reqwest client build");
-        let http_tools = reqwest::Client::builder()
-            .default_headers(default_headers.clone())
-            .timeout(std::time::Duration::from_secs(300))
-            .pool_max_idle_per_host(0) // don't keep idle connections — always fresh
-            .build()
-            .expect("reqwest tools client build");
-        let http_long = reqwest::Client::builder()
-            .default_headers(default_headers)
-            .pool_max_idle_per_host(0)
-            .build()
-            .expect("reqwest long client build");
+        // Clients are created lazily on first use to avoid blocking the first
+        // rendered frame. reqwest::Client::builder().build() initialises the
+        // TLS backend and connection pool, which can take 200-300ms.
         Self {
-            http,
-            http_tools,
-            http_long,
+            http: Arc::new(std::sync::OnceLock::new()),
+            http_tools: Arc::new(std::sync::OnceLock::new()),
+            http_long: Arc::new(std::sync::OnceLock::new()),
             base_url: base_url.trim_end_matches('/').to_string(),
+            default_headers,
             viewer_token: Arc::new(tokio::sync::RwLock::new(None)),
         }
+    }
+
+    /// Lazily create the SSE streaming client (no timeout).
+    pub fn http(&self) -> &reqwest::Client {
+        self.http.get_or_init(|| {
+            reqwest::Client::builder()
+                .default_headers(self.default_headers.clone())
+                .build()
+                .expect("reqwest client build")
+        })
+    }
+
+    /// Lazily create the tool/API client (300s timeout, no idle pool).
+    pub fn http_tools(&self) -> &reqwest::Client {
+        self.http_tools.get_or_init(|| {
+            reqwest::Client::builder()
+                .default_headers(self.default_headers.clone())
+                .timeout(std::time::Duration::from_secs(300))
+                .pool_max_idle_per_host(0) // don't keep idle connections - always fresh
+                .build()
+                .expect("reqwest tools client build")
+        })
+    }
+
+    /// Lazily create the long-running tool client (no timeout, no idle pool).
+    pub fn http_long(&self) -> &reqwest::Client {
+        self.http_long.get_or_init(|| {
+            reqwest::Client::builder()
+                .default_headers(self.default_headers.clone())
+                .pool_max_idle_per_host(0)
+                .build()
+                .expect("reqwest long client build")
+        })
     }
 
     /// POST /api/v1/ui/viewers — obtain a trusted-UI viewer token.
     pub async fn create_viewer(&self) -> anyhow::Result<()> {
         let url = format!("{}/api/v1/ui/viewers", self.base_url);
         let resp = self
-            .http_tools
+            .http_tools()
             .post(&url)
             .send()
             .await
@@ -104,7 +128,7 @@ impl DaemonClient {
             .await
             .clone()
             .ok_or_else(|| anyhow::anyhow!("trusted UI viewer token is unavailable"))?;
-        self.http_tools
+        self.http_tools()
             .request(method, url)
             .header("X-Wgenty-Viewer-Token", token)
             .send()
@@ -210,7 +234,7 @@ impl DaemonClient {
             "generation": generation,
         });
         let resp = self
-            .http_tools
+            .http_tools()
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&body)
@@ -234,7 +258,7 @@ impl DaemonClient {
         let url = format!("{}/api/v1/agents/generation/reset", self.base_url);
         let body = serde_json::json!({ "session_id": session_id });
         let resp = self
-            .http_tools
+            .http_tools()
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&body)
@@ -259,7 +283,7 @@ impl DaemonClient {
         let url = format!("{}/api/v1/agents/session/cancel", self.base_url);
         let body = serde_json::json!({ "session_id": session_id });
         let resp = self
-            .http_tools
+            .http_tools()
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&body)
@@ -279,14 +303,14 @@ impl DaemonClient {
     /// Check daemon health. Returns the health response.
     pub async fn health(&self) -> anyhow::Result<HealthResponse> {
         let url = format!("{}/api/v1/health", self.base_url);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.http().get(&url).send().await?;
         Ok(resp.json().await?)
     }
 
     /// Get daemon config.
     pub async fn get_config(&self) -> anyhow::Result<ConfigResponse> {
         let url = format!("{}/api/v1/config", self.base_url);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.http().get(&url).send().await?;
         Ok(resp.json().await?)
     }
 
@@ -314,7 +338,7 @@ impl DaemonClient {
             plan_mode,
         };
         let resp = self
-            .http
+            .http()
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&body)
@@ -348,9 +372,9 @@ impl DaemonClient {
         // no-timeout client so the HTTP request isn't killed at 300s while
         // the subagent is still running on the daemon.
         let client = if tool_name == "task" || tool_name == "delegate" {
-            &self.http_long
+            self.http_long()
         } else {
-            &self.http_tools
+            self.http_tools()
         };
         let resp = client
             .post(&url)
@@ -368,7 +392,7 @@ impl DaemonClient {
     /// POST /api/v1/tools/approve
     pub async fn approve_tool(&self, session_rule: &str) -> anyhow::Result<()> {
         let url = format!("{}/api/v1/tools/approve", self.base_url);
-        self.http_tools
+        self.http_tools()
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({"session_rule": session_rule}))
@@ -380,7 +404,7 @@ impl DaemonClient {
     /// POST /api/v1/tools/unapprove
     pub async fn unapprove_tool(&self, session_rule: &str) -> anyhow::Result<()> {
         let url = format!("{}/api/v1/tools/unapprove", self.base_url);
-        self.http_tools
+        self.http_tools()
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({"session_rule": session_rule}))
@@ -392,14 +416,14 @@ impl DaemonClient {
     /// GET /api/v1/undo — undo most recent checkpoint
     pub async fn undo(&self) -> anyhow::Result<String> {
         let url = format!("{}/api/v1/tools/undo", self.base_url);
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.http().get(&url).send().await?;
         Ok(resp.text().await?)
     }
 
     /// GET /api/v1/background/results
     pub async fn get_background_results(&self) -> anyhow::Result<Vec<serde_json::Value>> {
         let url = format!("{}/api/v1/background/results", self.base_url);
-        let resp = self.http_tools.get(&url).send().await?;
+        let resp = self.http_tools().get(&url).send().await?;
         if !resp.status().is_success() {
             return Ok(Vec::new());
         }
@@ -410,7 +434,7 @@ impl DaemonClient {
     /// GET /api/v1/sessions
     pub async fn list_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
         let url = format!("{}/api/v1/sessions", self.base_url);
-        let resp = self.http_tools.get(&url).send().await?;
+        let resp = self.http_tools().get(&url).send().await?;
         if !resp.status().is_success() {
             anyhow::bail!("Failed to list sessions ({})", resp.status());
         }
@@ -421,7 +445,7 @@ impl DaemonClient {
     pub async fn create_session(&self, name: Option<&str>) -> anyhow::Result<SessionResponse> {
         let url = format!("{}/api/v1/sessions", self.base_url);
         let resp = self
-            .http_tools
+            .http_tools()
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({"name": name}))
@@ -437,7 +461,7 @@ impl DaemonClient {
     pub async fn load_session(&self, id: &str) -> anyhow::Result<SessionResponse> {
         let encoded = urlencode(id);
         let url = format!("{}/api/v1/sessions/{}", self.base_url, encoded);
-        let resp = self.http_tools.get(&url).send().await?;
+        let resp = self.http_tools().get(&url).send().await?;
         if !resp.status().is_success() {
             anyhow::bail!("Failed to load session ({})", resp.status());
         }
@@ -454,7 +478,7 @@ impl DaemonClient {
         let encoded = urlencode(id);
         let url = format!("{}/api/v1/sessions/{}", self.base_url, encoded);
         let resp = self
-            .http_tools
+            .http_tools()
             .put(&url)
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({"name": name, "messages": messages}))
@@ -470,7 +494,7 @@ impl DaemonClient {
     pub async fn delete_session(&self, id: &str) -> anyhow::Result<()> {
         let encoded = urlencode(id);
         let url = format!("{}/api/v1/sessions/{}", self.base_url, encoded);
-        let resp = self.http_tools.delete(&url).send().await?;
+        let resp = self.http_tools().delete(&url).send().await?;
         if !resp.status().is_success() {
             anyhow::bail!("Failed to delete session ({})", resp.status());
         }
@@ -481,7 +505,7 @@ impl DaemonClient {
     pub async fn search_sessions(&self, query: &str) -> anyhow::Result<Vec<SessionInfo>> {
         let encoded = urlencode(query);
         let url = format!("{}/api/v1/sessions/search?q={}", self.base_url, encoded);
-        let resp = self.http_tools.get(&url).send().await?;
+        let resp = self.http_tools().get(&url).send().await?;
         if !resp.status().is_success() {
             return Ok(Vec::new());
         }
@@ -491,7 +515,7 @@ impl DaemonClient {
     /// GET /api/v1/todos
     pub async fn get_todos(&self) -> anyhow::Result<TodoResponse> {
         let url = format!("{}/api/v1/todos", self.base_url);
-        let resp = self.http_tools.get(&url).send().await?;
+        let resp = self.http_tools().get(&url).send().await?;
         Ok(resp.json().await?)
     }
 }

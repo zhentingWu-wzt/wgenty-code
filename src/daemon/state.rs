@@ -77,6 +77,7 @@ impl DaemonState {
             let root = &app_state.settings.storage.working_dir;
             TeamManager::load(root).map(Arc::new)
         };
+        crate::utils::startup_timing::mark("daemon state: team manager loaded");
 
         // Initialize skill loader (needed before registry so TaskTool can use it).
         let skill_loader = {
@@ -88,6 +89,7 @@ impl DaemonState {
             let loader = SkillLoader::load_from_dirs(&base_dirs);
             Arc::new(loader)
         };
+        crate::utils::startup_timing::mark("daemon state: skill loader ready");
 
         let progress_store: Arc<
             RwLock<HashMap<String, HashMap<String, crate::agent::progress::SubagentProgress>>>,
@@ -115,21 +117,16 @@ impl DaemonState {
             daemon_viewer_secret,
         ));
 
-        let mut reserved_tool_names: HashSet<String> = ToolRegistry::new()
-            .with_settings(&app_state.settings)
-            .list()
-            .into_iter()
-            .map(|tool| tool.name().to_string())
-            .collect();
-        let external_tools = mcp_manager
-            .connect_configured_tools(&app_state.settings, &mut reserved_tool_names)
-            .await;
+        // Reserved built-in tool names (extracted from the real registry after
+        // construction below) so MCP external tools can avoid name collisions.
+        // The MCP connection itself is deferred to a background task so it never
+        // blocks the first rendered frame.
 
         // Use Arc::new_cyclic so the TaskTool holds a valid Weak<ToolRegistry>
         // that points to the *final* Arc allocation — not a temporary one that
         // gets dropped (which would leave a dangling weak reference).
         let tool_registry = Arc::new_cyclic(|weak_reg| {
-            let mut registry = ToolRegistry::new().with_settings(&app_state.settings);
+            let registry = ToolRegistry::new().with_settings(&app_state.settings);
             registry.register(Box::new(BackgroundTool::new(bg_manager.clone())));
 
             // Register team message tool if team is configured
@@ -191,10 +188,6 @@ impl DaemonState {
             );
             registry.register(Box::new(run_script_tool));
 
-            for tool in external_tools {
-                registry.register(tool);
-            }
-
             // Wire external skill registry into the skill tool so the model can
             // invoke external skills via the `skill` tool (fixes C1).
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -211,7 +204,49 @@ impl DaemonState {
 
             registry
         });
+        crate::utils::startup_timing::mark("daemon state: tool registry built");
         let checkpoint_manager = tool_registry.checkpoint_manager.clone();
+
+        // Extract reserved tool names from the real registry (no throwaway
+        // construction needed - avoids a second ToolRegistry::new() which
+        // re-creates all built-in tool instances).
+        let reserved_tool_names: HashSet<String> = tool_registry
+            .list()
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect();
+
+        // ── Background MCP tool connection (non-blocking) ────────────────
+        // Connect to configured MCP servers in the background so the daemon
+        // starts (and the TUI renders its first frame) without waiting for
+        // subprocess spawns + initialize/tools/list handshakes. External tools
+        // are registered into the live registry via register(&self) once each
+        // server handshake completes. If the user submits a prompt before MCP
+        // tools are ready, the request proceeds with built-in tools only - the
+        // model never sees MCP tools until they are registered.
+        {
+            let mcp_manager = Arc::clone(&mcp_manager);
+            let tool_registry = Arc::clone(&tool_registry);
+            let settings = app_state.settings.clone();
+            let mut reserved = reserved_tool_names;
+            tokio::spawn(async move {
+                let external_tools = mcp_manager
+                    .connect_configured_tools(&settings, &mut reserved)
+                    .await;
+                crate::utils::startup_timing::mark(
+                    "daemon state: mcp tools connected (background)",
+                );
+                let count = external_tools.len();
+                for tool in external_tools {
+                    tool_registry.register(tool);
+                }
+                crate::utils::startup_timing::mark("daemon state: mcp tools registered");
+                tracing::info!(
+                    registered = count,
+                    "background MCP tool connection complete"
+                );
+            });
+        }
 
         // Initialize HookManager from settings hooks configuration
         let hooks_config = app_state
