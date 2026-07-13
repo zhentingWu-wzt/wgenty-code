@@ -6,10 +6,10 @@
 //! This allows multiple user inputs to be queued while one is processing:
 //! each pending input becomes a new AgentLoop that inherits the accumulated history.
 
+mod adapters;
 mod compaction;
 mod core;
-mod stream;
-mod tool_dispatch;
+// stream / tool_dispatch live in adapters + agent::runtime
 
 use crate::api::ChatMessage;
 use crate::runtime::hooks::HookManager;
@@ -45,6 +45,21 @@ pub enum AgentError {
     EmptyResponse,
 }
 
+impl From<crate::agent::runtime::RuntimeError> for AgentError {
+    fn from(err: crate::agent::runtime::RuntimeError) -> Self {
+        use crate::agent::runtime::RuntimeError;
+        match err {
+            RuntimeError::StreamTimeout(msg) => AgentError::StreamTimeout(msg),
+            RuntimeError::Stream(msg) | RuntimeError::Tool(msg) => AgentError::StreamError(msg),
+            RuntimeError::MaxRoundsExceeded { max_rounds } => {
+                AgentError::MaxRoundsExceeded { max_rounds }
+            }
+            RuntimeError::Planner(msg) => AgentError::PlannerError(msg),
+            RuntimeError::EmptyResponse => AgentError::EmptyResponse,
+        }
+    }
+}
+
 pub struct AgentLoop {
     pub(super) client: DaemonClient,
     pub(super) event_tx: mpsc::UnboundedSender<AppEvent>,
@@ -64,9 +79,8 @@ pub struct AgentLoop {
     /// `InvalidParameter`.
     pub(super) compact_requested: bool,
     /// Set when a compaction attempt failed during this turn. Prevents
-    /// unbounded retries: `do_auto_compact` returns false on failure, and the
-    /// loop falls through to a normal request instead of spinning. Reset at
-    /// the start of each turn.
+    /// unbounded retries: the shared loop falls through to a normal request
+    /// instead of spinning. Reset at the start of each turn.
     pub(super) compaction_failed: bool,
     pub(super) preparing_tools_fired: bool,
     pub(super) max_rounds: usize,
@@ -162,10 +176,12 @@ impl AgentLoop {
 
     /// Run a single compaction pass without generating an LLM response.
     /// Used by the `/compact` slash command for user-initiated compaction:
-    /// archives the transcript and replaces history with a summary. The
-    /// `CompactionStarted` / `ContextCompacted` events fired inside
-    /// `do_auto_compact` drive the UI status bar.
+    /// archives the transcript and replaces history with a summary.
+    /// `CompactionStarted` / `ContextCompacted` drive the UI status bar.
     pub async fn compact_only(&mut self) -> Result<(), AgentError> {
+        use crate::agent::runtime::{Compactor, MutexHistoryStore};
+        use adapters::TuiCompactor;
+
         self.token_counter.reset_turn();
         self.compaction_failed = false;
         // Guard: nothing meaningful to summarize (only system messages).
@@ -179,7 +195,19 @@ impl AgentLoop {
             ));
             return Ok(());
         }
-        let _ = self.do_auto_compact().await;
+
+        let _ = self.event_tx.send(AppEvent::CompactionStarted);
+        let history = MutexHistoryStore::new(self.conversation_history.clone());
+        let summary_slot = Arc::new(tokio::sync::Mutex::new(String::new()));
+        let compactor = TuiCompactor::new(
+            self.client.clone(),
+            self.event_tx.clone(),
+            self.assembled_system_messages.clone(),
+            self.memory_manager.clone(),
+            summary_slot.clone(),
+        );
+        let _ = compactor.compact(&history).await;
+        self.compacted_summary = summary_slot.lock().await.clone();
         Ok(())
     }
 
@@ -214,24 +242,6 @@ impl AgentLoop {
         // input in some paths, so pass a minimal continuation marker.
         self.process_input_inner("Continue from the delivered subagent results.".to_string())
             .await
-    }
-
-    /// Generate a plan using a dedicated planner model (non-streaming).
-    /// Returns the plan text or an error message.
-    pub(super) async fn plan_with_model(
-        &self,
-        planner: &crate::api::ApiClient,
-        messages: &[ChatMessage],
-    ) -> Result<String, String> {
-        let response = planner
-            .chat(messages.to_vec(), None)
-            .await
-            .map_err(|e| format!("Planner model call failed: {}", e))?;
-        Ok(response
-            .choices
-            .first()
-            .map(|c| c.message.content.clone().unwrap_or_default())
-            .unwrap_or_default())
     }
 
     /// Inner implementation of the agent loop.

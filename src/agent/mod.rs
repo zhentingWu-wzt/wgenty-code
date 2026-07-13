@@ -7,6 +7,9 @@
 //!
 //! `StreamProcessor` handles the duplicated SSE parsing logic previously
 //! found in both frontends, producing structured `StreamEvent`s.
+//!
+//! `runtime` holds pure loop helpers (compaction, tool timeouts) shared by
+//! every frontend; later phases host the full `AgentRuntime` here.
 
 pub mod capability;
 pub mod coordinator;
@@ -14,6 +17,7 @@ pub mod core;
 pub mod events;
 pub mod identity;
 pub mod progress;
+pub mod runtime;
 pub mod store;
 pub mod task_group;
 
