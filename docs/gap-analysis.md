@@ -28,7 +28,7 @@
 | s03 | TodoWrite + 提醒注入 | 3 轮未更新则注入提醒 | `TodoWriteTool` + `rounds_since_todo` 提醒 | **已实现** |
 | s04 | 子代理（Subagent） | 独立 Agent 循环，隔离上下文，过滤工具（无递归 task） | `teams/subagent_loop` 薄封装 → 共享 loop + `FilteredToolPort` + synthesis barrier | **已实现** |
 | s05 | 技能加载 | 两层注入：system prompt 列名称 → `load_skill` 工具按需加载完整 SKILL.md | `LoadSkillTool` 注册（daemon），`SkillLoader` 加载 `~/.wgenty-code/skills/`，Prompt Layer 6 注入 | **已实现** |
-| s06 | 上下文压缩（3 层） | 微压缩（替换旧 tool_result）+ 自动压缩（token 超阈值摘要）+ 手动压缩（compact 工具） | micro 在 runtime 共享；auto-summary 经 `Compactor`（TUI 已接）；CLI headless 仅 micro | **TUI 完整；CLI micro-only** |
+| s06 | 上下文压缩（3 层） | 微压缩（替换旧 tool_result）+ 自动压缩（token 超阈值摘要）+ 手动压缩（compact 工具） | micro 在 runtime 共享；auto-summary 经 `Compactor`（TUI `TuiCompactor` + CLI `ApiCompactor`） | **已实现（TUI + CLI）** |
 | s07 | 任务系统（依赖图） | 文件持久化 + `blockedBy` 依赖图 | `TaskManagementTool` 有 CRUD 但**无 blockedBy 依赖** | **部分实现** |
 | s08 | 后台任务 | `BackgroundManager` + 通知队列 + 注入 agent loop | `background` 工具 + TUI `inject_background_results`；CLI 无后台会话 | **部分实现（TUI）** |
 | s09 | 代理团队 | 多线程 Agent 循环 + JSONL 邮箱通信 | `teams/` 仅定义数据结构，无邮箱、无多 agent 通信 | **未实现** |

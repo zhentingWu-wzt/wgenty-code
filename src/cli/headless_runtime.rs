@@ -1,15 +1,18 @@
 //! Headless agent runtime used by `wgenty-code query`.
 //!
 //! Builds in-process ports (ApiClient + ToolRegistry) and runs the shared
-//! multi-round loop so CLI gets the same tool/compaction micro-policy as TUI.
+//! multi-round loop so CLI gets the same tool / compaction policy as TUI
+//! (micro-compact always; auto-summary via [`ApiCompactor`]).
 
 use crate::agent::runtime::{
-    run_agent_loop, ApiLlmPort, EventSink, LoopHooks, LoopTurnState, MutexHistoryStore,
-    RunLoopArgs, RuntimeConfig, RuntimeEvent, StreamStyle, ToolPort, ToolRequest, ToolResponse,
+    run_agent_loop, ApiCompactor, ApiLlmPort, EventSink, LoopHooks, LoopTurnState,
+    MutexHistoryStore, RunLoopArgs, RuntimeConfig, RuntimeEvent, StreamStyle, ToolPort,
+    ToolRequest, ToolResponse,
 };
 use crate::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
 use crate::api::{ApiClient, ChatMessage, ToolDefinition};
 use crate::config::Settings;
+use crate::context::MemoryManager;
 use crate::prompts::{self, PromptContext};
 use crate::tools::ToolRegistry;
 use async_trait::async_trait;
@@ -42,6 +45,12 @@ impl EventSink for CliEventSink {
             }
             RuntimeEvent::StreamError(msg) => {
                 eprintln!("[stream] {}", msg);
+            }
+            RuntimeEvent::CompactionStarted => {
+                eprintln!("[compact] summarizing conversation…");
+            }
+            RuntimeEvent::ContextCompacted { summary_chars } => {
+                eprintln!("[compact] done (summary ~{} chars)", summary_chars);
             }
             RuntimeEvent::ToolStart { name, .. } if self.verbose => {
                 eprintln!("[tool] start {}", name);
@@ -160,7 +169,7 @@ impl ToolPort for RegistryToolPort {
     }
 }
 
-/// Run a single headless agent turn (tools enabled, streaming to stdout).
+/// Run a single headless agent turn (tools + micro/auto compaction, streaming to stdout).
 pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<()> {
     let client = ApiClient::new(settings.clone());
     if client.get_api_key().is_none() {
@@ -173,17 +182,19 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
     let session_id = Uuid::new_v4().to_string();
     let prompt_ctx = PromptContext::default();
     let assembled = prompts::assemble_instructions(&settings, &prompt_ctx);
+    let system_messages = assembled.system_messages.clone();
     let mut seed = assembled.system_messages;
     seed.push(ChatMessage::user(&prompt));
 
+    // Shared memory manager: recall at start + extract during auto-compact.
+    let memory_manager = Arc::new(MemoryManager::new());
     {
-        let manager = crate::context::MemoryManager::new();
-        if manager.load().await.is_ok() {
+        if memory_manager.load().await.is_ok() {
             let recall_top_n = settings.storage.memory.recall_top_n;
             let recall_threshold = settings.storage.memory.recall_similarity_threshold;
             crate::context::inject::MemoryContextInjector::inject(
                 &mut seed,
-                &manager,
+                memory_manager.as_ref(),
                 &prompt,
                 recall_top_n,
                 recall_threshold as f64,
@@ -194,9 +205,23 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
 
     let history = MutexHistoryStore::new(Arc::new(Mutex::new(seed)));
     let llm = ApiLlmPort::new(client);
+    // Same client for summarization (tools omitted in chat_completion call).
+    let llm_for_compact: Arc<dyn crate::agent::runtime::LlmPort> = Arc::new(llm.clone());
     let registry = Arc::new(ToolRegistry::new().with_settings(&settings));
     let tools = RegistryToolPort::new(registry, &session_id);
     let events = CliEventSink::new(std::env::var("WGENTY_VERBOSE").is_ok());
+
+    let verbose = std::env::var("WGENTY_VERBOSE").is_ok();
+    let compactor = ApiCompactor::new(
+        llm_for_compact,
+        system_messages,
+        Some(memory_manager),
+    )
+    .with_status_sink(move |msg| {
+        // Always show compact status on stderr (not only when verbose).
+        eprintln!("[compact] {}", msg);
+        let _ = verbose; // silence unused when not verbose-gated
+    });
 
     let config = RuntimeConfig {
         max_rounds: settings.agent.max_rounds.unwrap_or(100),
@@ -219,7 +244,15 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
         config: &config,
         state: &mut state,
         stream_style: StreamStyle::default(),
-        hooks: LoopHooks::default(),
+        hooks: LoopHooks {
+            compactor: Some(&compactor),
+            interaction: None,
+            planner: None,
+            stuck_detector: None,
+            token_counter: None,
+            synthesis: None,
+            observer: None,
+        },
     })
     .await?;
 
