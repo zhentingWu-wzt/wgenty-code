@@ -1,5 +1,5 @@
 workflow: tweak
-phase: verify
+phase: archive
 context_compression: off
 build_mode: direct
 build_pause: null
@@ -11,9 +11,9 @@ auto_transition: true
 base_ref: 83a5a120cdb66bd9650f1e5fd909ff7b4cfb7bfa
 design_doc: null
 plan: null
-verify_result: pending
+verify_result: pass
 verification_report: null
 branch_status: pending
 created_at: 2026-07-11
 verified_at: null
-archived: false
+archived: true
