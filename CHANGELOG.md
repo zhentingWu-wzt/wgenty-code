@@ -45,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 修复 scoped UI viewer 凭据缺失或 daemon 重启后失效时，主窗口 subagent selector 消失的问题。
 - 修复 scoped agent view 丢弃 subagent task label，导致 selector 名称显示为空的问题。
+- 修复 `bundled-skills` 默认 feature 在 CI/全新 checkout 时因 `.wgenty-code/skills/` 缺失导致 `rust-embed` 编译失败（`#[derive(RustEmbed)] folder does not exist`）的问题：恢复该目录为已跟踪的打包源，并在 `.gitignore` 中以 `!.wgenty-code/skills/` 例外保护，防止再次被"开源清洗"误删。
+- 修复 `BundledSkills::install_to` 只识别扁平 `<name>/SKILL.md`、对命名空间技能（`superpowers/<name>/`）和支撑文件（`comet/scripts/*`、`comet/reference/*`）处理错误的问题：改为镜像整棵嵌入树，按 `SKILL.md` 派生规范名（`<namespace>:<name>`），并对 `scripts/` 下文件设置可执行位。`count`/`list_bundled` 同步改为按 `SKILL.md` 计数与命名。
 
 ## [0.1.0] - Unreleased
 
