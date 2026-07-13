@@ -33,9 +33,11 @@
 让命令在「声称沙箱」下裸跑。
 
 ### Linux（`seccomp+ns`）
-- `unshare --mount --net --pid --mount-proc` 隔离
+- `unshare --mount --net --pid --mount-proc` 隔离（namespace）
 - cgroups v2 写 `memory.max` / `cpu.max` / `pids.max`
-- 真正的 seccomp-bpf syscall 过滤尚未接入（依赖 libseccomp，见下）
+- **seccomp-bpf syscall 过滤未真正接入**：backend 名与 capabilities 仍标
+  `syscall-filter`，但当前只靠 namespace+cgroup。真正白名单需 `libseccomp` C
+  依赖 + syscall allowlist，列为后续（见路线图）。
 
 ### macOS（`seatbelt`）
 - 运行时生成 `.sb` profile，按 `readable_paths`/`writable_paths`/`NetworkPolicy`
