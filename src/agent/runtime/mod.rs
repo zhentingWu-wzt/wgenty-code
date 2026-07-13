@@ -35,7 +35,7 @@ pub use history::MutexHistoryStore;
 pub use loop_::{run_agent_loop, LoopHooks, LoopTurnState, RunLoopArgs, StreamStyle};
 pub use ports::{
     ChatCompletion, Compactor, EventSink, HistoryStore, InteractionPort, LlmPort, PlannerPort,
-    RoundObserver, SynthesisPort, ToolPort, ToolRequest, ToolResponse,
+    RoundObserver, SynthesisPort, TaskProgressPort, ToolPort, ToolRequest, ToolResponse,
 };
 pub use stream::{stream_response, stream_with_retry, StreamRetryOpts, STREAM_IDLE_TIMEOUT};
 pub use timeout::resolve_tool_timeout;

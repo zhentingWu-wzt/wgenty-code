@@ -6,7 +6,7 @@ use super::error::RuntimeError;
 use super::events::RuntimeEvent;
 use super::ports::{
     Compactor, EventSink, HistoryStore, InteractionPort, LlmPort, PlannerPort, RoundObserver,
-    SynthesisPort, ToolPort, ToolRequest,
+    SynthesisPort, TaskProgressPort, ToolPort, ToolRequest,
 };
 use super::stream::{stream_with_retry, StreamRetryOpts};
 use super::timeout::resolve_tool_timeout;
@@ -84,6 +84,8 @@ pub struct LoopTurnState {
     pub compacted_summary: String,
     /// Consecutive tool rounds with irrecoverable JSON arg failures.
     pub consecutive_parse_errors: usize,
+    /// Rounds since the model last called `task_management`; drives ready-task nudges.
+    pub rounds_since_task_mgmt: usize,
 }
 
 /// Optional capabilities wired by each frontend.
@@ -96,6 +98,7 @@ pub struct LoopHooks<'a> {
     pub token_counter: Option<&'a TokenCounter>,
     pub synthesis: Option<&'a dyn SynthesisPort>,
     pub observer: Option<&'a dyn RoundObserver>,
+    pub task_progress: Option<&'a dyn TaskProgressPort>,
 }
 
 /// Bundled arguments for [`run_agent_loop`] (keeps the free-function signature small).
@@ -612,6 +615,35 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
                     "\n<reminder>Update your plan with update_plan.</reminder>",
                 )
                 .await;
+            }
+
+            // Task-board nudge: if the model went several rounds without touching
+            // task_management and there are ready tasks, surface a gentle reminder
+            // so completed blockers don't strand queued work.
+            let called_task_mgmt = result
+                .tool_calls
+                .iter()
+                .any(|tc| tc.function.name == "task_management");
+            state.rounds_since_task_mgmt = if called_task_mgmt {
+                0
+            } else {
+                state.rounds_since_task_mgmt.saturating_add(1)
+            };
+            if let Some(tp) = hooks.task_progress {
+                if state.rounds_since_task_mgmt >= 3 {
+                    let (blocked, ready) = tp.blocked_and_ready();
+                    if ready > 0 {
+                        append_to_last_tool(
+                            history,
+                            &format!(
+                                "\n<reminder>{ready} task(s) are ready (unblocked) and \
+                                 {blocked} still blocked. Use task_management with operation \
+                                 `ready` to pick up unblocked work.</reminder>"
+                            ),
+                        )
+                        .await;
+                    }
+                }
             }
 
             if let Some(detector) = hooks.stuck_detector.as_mut() {

@@ -122,6 +122,16 @@ pub trait RoundObserver: Send + Sync {
     fn on_usage(&self, _total_tokens: usize) {}
 }
 
+/// Optional task-board progress for the agent loop to surface reminders.
+///
+/// Implementations (daemon/CLI holding a `TaskManagementTool`) expose how many
+/// tasks are blocked vs ready so the loop can inject a gentle nudge when the
+/// model goes several rounds without acting on a ready task.
+pub trait TaskProgressPort: Send + Sync {
+    /// `(blocked_count, ready_count)` excluding completed/deleted tasks.
+    fn blocked_and_ready(&self) -> (usize, usize);
+}
+
 /// Input to [`ToolPort::execute`].
 #[derive(Debug, Clone)]
 pub struct ToolRequest {

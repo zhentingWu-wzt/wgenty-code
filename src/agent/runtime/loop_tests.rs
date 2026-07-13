@@ -5,7 +5,8 @@
 //! canned tool results, and a [`VecSink`] records emitted events.
 
 use super::ports::{
-    ChatCompletion, EventSink, HistoryStore, LlmPort, ToolPort, ToolRequest, ToolResponse,
+    ChatCompletion, EventSink, HistoryStore, LlmPort, TaskProgressPort, ToolPort, ToolRequest,
+    ToolResponse,
 };
 use super::{run_agent_loop, LoopHooks, LoopTurnState, RunLoopArgs, RuntimeConfig, RuntimeError,
     RuntimeEvent, StreamStyle};
@@ -388,4 +389,116 @@ async fn recoverable_parse_still_executes_tool() {
         .unwrap();
     assert_eq!(out, "ok");
     assert_eq!(tools.recorded().len(), 1);
+}
+
+// ── Task progress nudge ─────────────────────────────────────────────────────
+
+struct FixedTaskProgress {
+    blocked: usize,
+    ready: usize,
+}
+
+#[async_trait::async_trait]
+impl TaskProgressPort for FixedTaskProgress {
+    fn blocked_and_ready(&self) -> (usize, usize) {
+        (self.blocked, self.ready)
+    }
+}
+
+#[tokio::test]
+async fn ready_task_nudge_injected_after_idle_rounds() {
+    // Model keeps calling a non-task tool; after 3 idle rounds with ready>0,
+    // a <reminder> about ready tasks is appended to the last tool result.
+    let mut responses = Vec::new();
+    for i in 0..6 {
+        responses.push(tool_call_response(
+            &format!("c{i}"),
+            "file_read",
+            r#"{"path":"a"}"#,
+        ));
+    }
+    responses.push(text_response("done"));
+    let llm = ScriptedLlm::new(responses);
+    let tools = MockToolPort::new().with_result(
+        "file_read",
+        r#"{"success":true,"content":"x"}"#,
+    );
+    let events = VecSink::new();
+    let history =
+        MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("work")])));
+
+    let progress = FixedTaskProgress { blocked: 1, ready: 2 };
+
+    let mut state = LoopTurnState::default();
+    let _ = run_agent_loop(RunLoopArgs {
+        llm: &llm,
+        tools: &tools,
+        events: &events,
+        history: &history,
+        config: &default_config(),
+        state: &mut state,
+        stream_style: StreamStyle::subagent(),
+        hooks: LoopHooks {
+            task_progress: Some(&progress),
+            ..LoopHooks::default()
+        },
+    })
+    .await
+    .unwrap();
+
+    let hist = history.get().await;
+    let nudged = hist
+        .iter()
+        .filter(|m| m.role == "tool")
+        .filter_map(|m| m.content.as_deref())
+        .any(|c| c.contains("ready") && c.contains("task_management"));
+    assert!(nudged, "expected a ready-task reminder in tool results");
+}
+
+#[tokio::test]
+async fn no_nudge_when_nothing_ready() {
+    let mut responses = Vec::new();
+    for i in 0..5 {
+        responses.push(tool_call_response(
+            &format!("c{i}"),
+            "file_read",
+            r#"{"path":"a"}"#,
+        ));
+    }
+    responses.push(text_response("done"));
+    let llm = ScriptedLlm::new(responses);
+    let tools = MockToolPort::new().with_result(
+        "file_read",
+        r#"{"success":true,"content":"x"}"#,
+    );
+    let events = VecSink::new();
+    let history =
+        MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("work")])));
+
+    let progress = FixedTaskProgress { blocked: 3, ready: 0 };
+
+    let mut state = LoopTurnState::default();
+    let _ = run_agent_loop(RunLoopArgs {
+        llm: &llm,
+        tools: &tools,
+        events: &events,
+        history: &history,
+        config: &default_config(),
+        state: &mut state,
+        stream_style: StreamStyle::subagent(),
+        hooks: LoopHooks {
+            task_progress: Some(&progress),
+            ..LoopHooks::default()
+        },
+    })
+    .await
+    .unwrap();
+
+    let hist = history.get().await;
+    let nudged = hist
+        .iter()
+        .filter(|m| m.role == "tool")
+        .filter_map(|m| m.content.as_deref())
+        .any(|c| c.contains("ready") && c.contains("task_management"));
+    assert!(!nudged, "no ready-task reminder when ready==0");
 }
