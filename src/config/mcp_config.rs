@@ -111,10 +111,16 @@ impl McpConfig {
     }
 
     /// Default configuration for the third-party local CodeGraph MCP server.
+    ///
+    /// `NODE_OPTIONS=--max-old-space-size=8192` is injected because CodeGraph
+    /// is a Node.js process and the default V8 heap (~4 GB) is easily
+    /// exhausted when indexing large projects, causing an OOM crash that
+    /// manifests as "MCP connection lost".
     pub fn codegraph() -> Self {
         Self::new("codegraph", "codegraph")
             .with_arg("serve")
             .with_arg("--mcp")
+            .with_env("NODE_OPTIONS", "--max-old-space-size=8192")
     }
 
     /// Add an argument
