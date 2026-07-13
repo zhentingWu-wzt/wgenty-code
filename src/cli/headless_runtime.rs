@@ -252,6 +252,7 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
             token_counter: None,
             synthesis: None,
             observer: None,
+            task_progress: None,
         },
     })
     .await?;

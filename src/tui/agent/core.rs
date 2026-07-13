@@ -63,6 +63,7 @@ impl AgentLoop {
             rounds_since_plan: self.rounds_since_plan,
             compacted_summary: self.compacted_summary.clone(),
             consecutive_parse_errors: 0,
+            rounds_since_task_mgmt: 0,
         };
 
         let planner_ref = planner.as_ref().map(|p| p as &dyn crate::agent::runtime::PlannerPort);
@@ -83,6 +84,7 @@ impl AgentLoop {
                 token_counter: Some(&self.token_counter),
                 synthesis: None,
                 observer: None,
+                task_progress: None,
             },
         })
         .await;

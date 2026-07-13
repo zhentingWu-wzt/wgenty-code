@@ -549,6 +549,7 @@ pub async fn run_subagent_loop(
             token_counter: None,
             synthesis: Some(&synthesis),
             observer: Some(&observer),
+            task_progress: None,
         },
     });
 
