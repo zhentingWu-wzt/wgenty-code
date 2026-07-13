@@ -581,7 +581,7 @@ async fn test_skill_tool_registry_wired_through_tool_registry() {
     )])
     .unwrap();
 
-    let mut registry = ToolRegistry::new();
+    let registry = ToolRegistry::new();
     registry.wire_skill_registry(Arc::new(external_registry));
 
     let result = registry

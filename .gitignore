@@ -26,15 +26,32 @@ Thumbs.db
 settings.json
 !settings.json.template
 
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
 # Logs
 *.log
 .superpowers/
 
 # CodeGraph index
 .codegraph/
+
+# Worktrees
 .claude/worktrees/
 .worktrees/
 
+# Internal tool configs (not part of the public project)
+.claude/
+.codex/
+.wgenty-code/
+
+# OpenSpec development workflow artifacts
+openspec/changes/
+
+# Benchmark output
+benchmark_results/
+
 # Install scripts (self-contained, don't ignore)
 # install.ps1 and install-unix.sh are part of the repo
->>>>>>> b4a1728 (fix(review): address Critical issues from code review)
