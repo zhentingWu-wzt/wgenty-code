@@ -579,6 +579,33 @@ impl Compactor for TuiCompactor {
     }
 }
 
+// ── Task progress (daemon) ───────────────────────────────────────────────────
+
+/// [`TaskProgressPort`] backed by the daemon `/tasks/progress` endpoint.
+pub struct DaemonTaskProgress {
+    client: DaemonClient,
+}
+
+impl DaemonTaskProgress {
+    pub fn new(client: DaemonClient) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl crate::agent::runtime::TaskProgressPort for DaemonTaskProgress {
+    async fn blocked_and_ready(&self) -> (usize, usize) {
+        // Opportunistic: a fetch failure just skips the nudge this round.
+        match self.client.task_progress().await {
+            Ok(resp) => (resp.blocked, resp.ready),
+            Err(e) => {
+                tracing::debug!(error = %e, "task_progress fetch failed; skipping nudge");
+                (0, 0)
+            }
+        }
+    }
+}
+
 // ── Planner ─────────────────────────────────────────────────────────────────
 
 pub struct ApiPlannerPort {

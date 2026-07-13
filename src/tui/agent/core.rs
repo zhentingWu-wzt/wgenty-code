@@ -1,7 +1,8 @@
 //! TUI agent loop — thin facade over `agent::runtime::run_agent_loop`.
 
 use super::adapters::{
-    ApiPlannerPort, DaemonLlmPort, DaemonToolPort, TuiCompactor, TuiEventSink, TuiInteractionPort,
+    ApiPlannerPort, DaemonLlmPort, DaemonTaskProgress, DaemonToolPort, TuiCompactor, TuiEventSink,
+    TuiInteractionPort,
 };
 use super::{AgentError, AgentLoop};
 use crate::agent::runtime::{
@@ -68,6 +69,10 @@ impl AgentLoop {
 
         let planner_ref = planner.as_ref().map(|p| p as &dyn crate::agent::runtime::PlannerPort);
 
+        // Best-effort task-board nudge over the daemon. Holds its own client clone.
+        let task_progress = DaemonTaskProgress::new(self.client.clone());
+        let task_progress_ref: &dyn crate::agent::runtime::TaskProgressPort = &task_progress;
+
         let result = run_agent_loop(RunLoopArgs {
             llm: &llm,
             tools: &tools,
@@ -84,7 +89,7 @@ impl AgentLoop {
                 token_counter: Some(&self.token_counter),
                 synthesis: None,
                 observer: None,
-                task_progress: None,
+                task_progress: Some(task_progress_ref),
             },
         })
         .await;
