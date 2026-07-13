@@ -104,31 +104,38 @@ learn 项目：文件即数据库（JSON 任务文件、JSONL 邮箱、SKILL.md 
 
 ---
 
-## 实现优先级建议（修订）
+## 实现优先级建议（2026-07-14 修订）
 
-### 阶段 1：移植 TUI 机制到其他路径
+### 阶段 1：统一 runtime（已完成）
 
-| 优先级 | 功能 | 原因 |
+| 优先级 | 功能 | 状态 |
 |--------|------|------|
-| **P0** | CLI/daemon 移植上下文压缩（s06） | TUI 已验证可行，CLI/daemon 长对话仍会崩溃 |
-| **P0** | CLI/daemon 移植后台通知注入（s08） | 后台任务完成通知在 CLI/daemon 路径无效 |
-| **P1** | CLI/daemon 移植 skill 加载 | 当前仅 TUI 路径加载 skills 并注入 prompt |
+| **P0** | 统一 `run_agent_loop`（TUI/CLI/subagent） | ✅ `agent::runtime` |
+| **P0** | CLI auto-compact | ✅ `ApiCompactor` |
+| **P0** | 任务依赖图 `blockedBy` + 环检测 + ready | ✅ `tasks/graph.rs` |
+| **P1** | ready-task 提醒注入 | ✅ `TaskProgressPort`（TUI 待 daemon 端点） |
 
-### 阶段 2：完善协作与扩展机制
+### 阶段 2：安全与可验证
 
-| 优先级 | 功能 | 原因 |
+| 优先级 | 功能 | 状态 |
 |--------|------|------|
-| **P1** | Hook/事件系统 | 权限管理、工具执行监控的基础设施 |
-| **P1** | 任务依赖图（blockedBy，s07） | 当前任务系统有 CRUD 无依赖 |
-| **P2** | 团队邮箱通信（s09） | 多 Agent 协作的基础 |
+| **P0** | 共享 loop mock 回归网 | ✅ `loop_tests` |
+| **P0** | Windows Job Object 沙箱 | ✅（Restricted Token 待做） |
+| **P1** | Windows CI test job | ✅ |
+| **P1** | Provider 质量矩阵文档 | ✅ `docs/PROVIDERS.md` |
 
-### 阶段 3：高级协作（按需）
+### 阶段 3：协作与扩展（未完成）
 
-| 优先级 | 功能 | 原因 |
+| 优先级 | 功能 | 状态 |
 |--------|------|------|
-| **P2** | 团队协议（s10） | 计划审批在实际使用中很有价值 |
-| **P3** | 工作树隔离（s12） | Git 工作树管理 |
-| **P3** | 自主 Agent（s11） | 后台自主工作 |
+| **P1** | TUI task 提醒（daemon `/tasks/ready` 端点） | 🔲 |
+| **P1** | Daemon 内嵌完整 loop（`/agent/turn`） | 🔲 设计决策 |
+| **P2** | 团队邮箱通信运行时（s09） | 🔲 仅数据结构 |
+| **P2** | 团队协议：关闭 / 计划审批（s10） | 🔲 |
+| **P2** | worktree 隔离（s12） | 🔲 |
+| **P3** | 自主 Agent（s11） | 🔲 |
+| **P2** | Linux seccomp-bpf syscall 白名单 | 🔲 |
+| **P2** | WASM 插件执行 | 🔲（仅 script hooks） |
 
 ---
 
