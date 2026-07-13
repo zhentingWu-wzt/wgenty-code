@@ -62,6 +62,7 @@ impl AgentLoop {
             preparing_tools_fired: self.preparing_tools_fired,
             rounds_since_plan: self.rounds_since_plan,
             compacted_summary: self.compacted_summary.clone(),
+            consecutive_parse_errors: 0,
         };
 
         let planner_ref = planner.as_ref().map(|p| p as &dyn crate::agent::runtime::PlannerPort);

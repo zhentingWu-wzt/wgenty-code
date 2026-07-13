@@ -107,9 +107,13 @@ impl ToolPort for RegistryToolPort {
             }
         }
 
+        let inv_id = req
+            .invocation_id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
         let context = ToolContext {
             agent: &self.agent,
-            invocation_id: ToolInvocationId::new(Uuid::new_v4().to_string()),
+            invocation_id: ToolInvocationId::new(inv_id),
             origin_turn_id: req.turn_id.as_deref(),
         };
         match self
