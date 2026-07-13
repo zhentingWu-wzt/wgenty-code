@@ -25,6 +25,9 @@ COPY Cargo.toml Cargo.lock ./
 # 复制源代码
 COPY src ./src
 
+# bundled-skills 的 rust-embed 编译期打包源（SKILL.md + 支撑文件）
+COPY .wgenty-code/skills ./.wgenty-code/skills
+
 # 构建优化版本（完整功能）
 RUN cargo build --release --bin wgenty-code
 

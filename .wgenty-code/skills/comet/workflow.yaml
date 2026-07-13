@@ -1,0 +1,396 @@
+name: comet
+entry_commands:
+  - comet
+  - comet-open
+  - comet-design
+  - comet-build
+  - comet-verify
+  - comet-archive
+  - comet-hotfix
+  - comet-tweak
+
+state:
+  read:
+    script: "${COMET_STATE} current --json"
+  write:
+    script: "${COMET_STATE} set"
+
+hooks:
+  SlashCommand:
+    - action: inject_context
+      source: SKILL.md
+  PreToolUse:
+    - action: run_script
+      script: "comet-hook-guard.sh phase-guard"
+  UserPromptSubmit:
+    - action: inject_rules
+      source: comet-phase-guard.md
+
+states:
+  open:
+    skill: comet-open
+    on_enter:
+      - context:
+          - phase-instruction
+          - comet-phase-guard
+  design:
+    skill: comet-design
+    on_enter:
+      - context:
+          - phase-instruction
+          - comet-phase-guard
+  build:
+    skill: comet-build
+    on_enter:
+      - context:
+          - phase-instruction
+          - comet-phase-guard
+          - coordinator-reminder
+  verify:
+    skill: comet-verify
+    on_enter:
+      - context:
+          - phase-instruction
+          - comet-phase-guard
+  archive:
+    skill: comet-archive
+    on_enter:
+      - context:
+          - phase-instruction
+          - comet-phase-guard
+
+transitions:
+  - from: open
+    to: design
+    guards:
+      - type: file_exists
+        files:
+          - proposal.md
+          - design.md
+          - tasks.md
+        relative_to: "${CHANGE_DIR}"
+      - type: user_confirm
+        message: "Proposal / Design / Tasks 已完成审阅，确认进入深度设计？"
+        options:
+          - label: "确认进入 design"
+            value: confirm
+          - label: "返回完善"
+            value: abort
+      - type: script
+        run: "${COMET_GUARD} ${CHANGE} open --apply"
+  - from: design
+    to: build
+    guards:
+      - type: user_confirm
+        message: "Design Doc 已完成，确认进入构建阶段？"
+        options:
+          - label: "确认进入 build"
+            value: confirm
+          - label: "返回完善设计"
+            value: abort
+      - type: script
+        run: "${COMET_GUARD} ${CHANGE} design --apply"
+  - from: build
+    to: verify
+    guards:
+      - type: file_check
+        file: tasks.md
+        check: all_tasks_checked
+      - type: script
+        run: "${COMET_GUARD} ${CHANGE} build --apply"
+  - from: verify
+    to: archive
+    guards:
+      - type: user_confirm
+        message: "验证通过，确认归档？"
+        options:
+          - label: "确认归档"
+            value: confirm
+          - label: "暂不归档"
+            value: abort
+      - type: script
+        run: "${COMET_GUARD} ${CHANGE} verify --apply"
+    when:
+      verify_result: pass
+  - from: verify
+    to: build
+    guards:
+      - type: user_decision
+        message: "验证未通过，选择处理方式："
+        options:
+          - label: "返回修复"
+            value: back_to_build
+          - label: "接受偏差继续归档"
+            value: accept_deviation
+    when:
+      verify_result: fail
+
+tool_guards:
+  - type: deny_in_states
+    states:
+      - open
+      - design
+      - verify
+      - archive
+    tools:
+      - file_write
+      - file_edit
+      - apply_patch
+    message: "当前阶段不允许修改源代码文件"
+  - type: deny_in_states
+    states:
+      - open
+      - design
+      - verify
+      - archive
+    tools:
+      - exec_command
+      - execute_command
+    unless_command_matches:
+      - "git status"
+      - "git log *"
+      - "git diff *"
+      - "git branch *"
+      - "git worktree list"
+      - "ls *"
+      - "cat *"
+      - "find *"
+      - "grep *"
+      - "head *"
+      - "tail *"
+      - "wc *"
+      - "which *"
+      - "codegraph *"
+      - "openspec list*"
+      - "openspec status*"
+    message: "当前阶段只允许只读命令"
+
+discovery:
+  script: "openspec list --json"
+  schema:
+    type: object
+    properties:
+      changes:
+        type: array
+        items:
+          type: object
+          properties:
+            name:
+              type: string
+            phase:
+              type: string
+            workflow:
+              type: string
+
+routing:
+  - when:
+      discovery:
+        changes:
+          count: 0
+    then:
+      - interaction:
+          question: "没有活跃的 OpenSpec change。是否创建新变更？"
+          options:
+            - label: "创建新变更"
+              action: transition
+              target: open
+              skill: comet-open
+            - label: "取消"
+              action: abort
+  - when:
+      discovery:
+        changes:
+          count: 1
+    then:
+      - interaction:
+          question: "检测到 1 个活跃 change：{{ changes.0.name }}（阶段：{{ changes.0.phase }}）。"
+          options:
+            - label: "继续该变更"
+              action: continue
+              change: "{{ changes.0.name }}"
+            - label: "创建新变更"
+              action: transition
+              target: open
+              skill: comet-open
+  - when:
+      discovery:
+        changes:
+          count: ">1"
+    then:
+      - interaction:
+          question: "检测到 {{ discovery.changes.count }} 个活跃 change。请选择操作："
+          options:
+            - label: "选择已有 change"
+              action: select_change
+              choices_from: discovery.changes
+            - label: "创建新变更"
+              action: transition
+              target: open
+              skill: comet-open
+
+context:
+  - id: phase-instruction
+    priority: 35
+    visibility: internal
+    source:
+      type: template
+      template: |
+        {{ phase_rules[state] }}
+  - id: coordinator-reminder
+    priority: 30
+    visibility: internal
+    source:
+      type: conditional
+      when:
+        build_mode: subagent-driven-development
+      template: |
+        你是 subagent-driven-development 模式的协调者。
+        - 禁止在主会话中直接执行 task
+        - 使用 Task 工具将 task 分发到后台 implementer agent
+        - 每个 task 完成后进行 spec compliance + code quality 双审查
+        - 审查通过后在 tasks.md 勾选任务并 git commit
+        - 按 tasks.md 顺序执行，不得跳过
+  - id: comet-phase-guard
+    priority: 25
+    visibility: internal
+    source:
+      type: file
+      path: ".wgenty-code/skills/comet/reference/comet-yaml-fields.md"
+
+templates:
+  phase_rules:
+    open: |
+      ## 当前阶段：Open（开启）
+
+      你正处于 Comet 工作流的 **Open** 阶段。此阶段允许以下操作：
+
+      **允许**：
+      - 创建 proposal、design、tasks 文件
+      - 运行 openspec new 创建 change 结构
+      - 运行 comet-guard 验证产物
+      - 读取和分析现有代码（只读操作）
+
+      **禁止**：
+      - 编写或修改源代码
+      - 执行会修改文件的构建命令
+      - 创建实现代码
+
+      **当前目标**：
+      1. 澄清用户需求并完成需求理解
+      2. 创建 proposal.md（问题陈述、动机、范围）
+      3. 创建 design.md（高层设计方向，非详细技术设计）
+      4. 创建 tasks.md（可操作的任务分解清单）
+      5. 运行 comet-guard 验证产物完整性
+
+      **退出条件**：proposal/design/tasks 三文件已创建并通过 guard 验证，用户确认审阅通过。
+    design: |
+      ## 当前阶段：Design（深度设计）
+
+      你正处于 Comet 工作流的 **Design** 阶段。此阶段允许以下操作：
+
+      **允许**：
+      - 加载 brainstorming 技能进行方案探索
+      - 创建和更新 Design Doc
+      - 创建和更新 delta spec
+      - 运行 comet-guard 验证设计方案
+      - 读取和分析现有代码
+      - 创建和编辑 markdown 文档
+
+      **禁止**：
+      - 编写或修改源代码
+      - 执行会修改源码的构建命令
+      - 创建实现代码
+
+      **当前目标**：
+      1. 加载 brainstorming 技能进行深度方案探索
+      2. 产出 brainstorm-summary.md（方案定稿）
+      3. 创建完整 Design Doc（技术方案、架构决策、权衡分析）
+      4. 创建 delta spec（如有 spec 变更）
+      5. 运行 comet-guard 验证设计完整性
+
+      **退出条件**：Design Doc 完成并通过 brainstorming 方案确认，用户确认进入构建阶段。
+    build: |
+      ## 当前阶段：Build（计划与构建）
+
+      你正处于 Comet 工作流的 **Build** 阶段。此阶段允许以下操作：
+
+      **允许**：
+      - 编写和修改源代码
+      - 运行构建命令和测试
+      - 执行 plan 中的 task
+      - git commit 代码变更
+      - 修改 tasks.md（勾选已完成任务）
+
+      **禁止**：
+      - 修改 proposal.md 或 design.md（除非是小修正）
+      - 跳过用户确认点
+      - 在 plan 未创建时开始实现
+
+      **当前目标**：
+      1. 创建实现计划（通过 writing-plans 技能）
+      2. 用户确认 plan 并选择执行方式（subagent 或 direct）
+      3. 按 tasks.md 顺序执行任务（遵循 TDD 规则）
+      4. 每个任务完成后：tasks.md 勾选后 git commit
+      5. 所有任务完成并全部测试通过后运行 comet-guard 验证
+
+      **退出条件**：所有 tasks 已勾选完成，测试全部通过，build guard 验证通过。
+    verify: |
+      ## 当前阶段：Verify（验证与收尾）
+
+      你正处于 Comet 工作流的 **Verify** 阶段。此阶段允许以下操作：
+
+      **允许**：
+      - 运行测试和验证脚本
+      - 读取和分析代码
+      - 处理开发分支（合并、PR 或清理）
+      - 创建验证报告
+      - 修复验证发现的问题（如选择修复）
+
+      **禁止**：
+      - 添加新功能
+      - 大范围重构
+      - 修改 spec 或 design doc
+
+      **当前目标**：
+      1. 运行 comet-state scale 确定验证级别
+      2. 执行验证：测试套件、spec 合规性、代码质量
+      3. 对比实现产物与设计文档的一致性
+      4. 处理验证失败（修复或接受偏差）
+      5. 处理开发分支（合并到 main 或创建 PR）
+      6. 运行 comet-guard 验证
+
+      **退出条件**：验证结果 pass，分支处理完成，用户确认归档。
+    archive: |
+      ## 当前阶段：Archive（归档）
+
+      你正处于 Comet 工作流的 **Archive** 阶段。此阶段允许以下操作：
+
+      **允许**：
+      - 运行归档脚本
+      - 合并 delta spec 到主 spec
+      - 移动 change 到 archive 目录
+      - 标注 Design Doc 归档状态
+
+      **禁止**：
+      - 编写或修改源代码
+      - 修改已归档的 change
+
+      **当前目标**：
+      1. 等待用户最终确认归档
+      2. 同步 delta spec 到 main spec
+      3. 标注 Design Doc（添加归档日期和 change 引用）
+      4. 移动 change 目录到 archive
+      5. 运行 comet-guard 验证
+
+      **退出条件**：归档完成，change 已移入 archive 目录。
+
+presets:
+  hotfix:
+    skip_states:
+      - design
+    description: "Bug fix 或热修复预设路径，跳过 brainstorming 和深度设计阶段"
+  tweak:
+    skip_states:
+      - design
+    description: "小改动预设路径，跳过 brainstorming 和完整 plan"
+    build_mode: direct
