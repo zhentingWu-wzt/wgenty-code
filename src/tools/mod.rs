@@ -16,7 +16,7 @@ pub mod search;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::agent::ToolContext;
 
@@ -92,7 +92,7 @@ pub struct ToolError {
 }
 
 pub struct ToolRegistry {
-    tools: HashMap<String, Box<dyn Tool>>,
+    tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
     pub checkpoint_manager: Arc<CheckpointManager>,
 }
 
@@ -103,8 +103,8 @@ impl ToolRegistry {
             execution::session_manager::CommandSessionManager::new().with_sandbox(sandbox.clone()),
         );
         let checkpoint_manager = std::sync::Arc::new(checkpoint::CheckpointManager::new());
-        let mut registry = Self {
-            tools: HashMap::new(),
+        let registry = Self {
+            tools: RwLock::new(HashMap::new()),
             checkpoint_manager: checkpoint_manager.clone(),
         };
 
@@ -169,7 +169,7 @@ impl ToolRegistry {
     /// lack native search capability (DeepSeek, self-hosted Ollama/vLLM).
     /// The local tool uses DuckDuckGo by default (zero-config), with optional
     /// Tavily fallback.
-    pub fn with_settings(mut self, settings: &crate::config::Settings) -> Self {
+    pub fn with_settings(self, settings: &crate::config::Settings) -> Self {
         let provider = crate::api::provider::resolve_provider(
             &settings.models.main.endpoint_base_url(),
             settings.models.main.provider.as_deref(),
@@ -184,7 +184,7 @@ impl ToolRegistry {
         // typically don't have built-in search.
 
         if !PROVIDERS_WITHOUT_BUILTIN_SEARCH.contains(&provider.name()) {
-            self.tools.remove("web_search");
+            self.tools.write().unwrap().remove("web_search");
             tracing::info!(
                 "web_search tool skipped: {} has built-in search capability",
                 provider.name()
@@ -194,22 +194,26 @@ impl ToolRegistry {
         self
     }
 
-    pub fn register(&mut self, tool: Box<dyn Tool>) {
-        self.tools.insert(tool.name().to_string(), tool);
+    /// Register a tool. Takes `&self` so it works on an `Arc<ToolRegistry>`,
+    /// enabling runtime registration (e.g. background MCP tool connection).
+    pub fn register(&self, tool: Box<dyn Tool>) {
+        let name = tool.name().to_string();
+        self.tools.write().unwrap().insert(name, Arc::from(tool));
     }
 
     /// Register a remote tool, preserving its standard name when available and
     /// prefixing it with the server name only when it collides with an existing
     /// built-in or remote tool.
-    pub fn register_external(&mut self, server_name: &str, tool: Box<dyn Tool>) -> String {
+    pub fn register_external(&self, server_name: &str, tool: Box<dyn Tool>) -> String {
         let original_name = tool.name().to_string();
-        if !self.tools.contains_key(&original_name) {
-            self.tools.insert(original_name.clone(), tool);
+        let mut tools = self.tools.write().unwrap();
+        if !tools.contains_key(&original_name) {
+            tools.insert(original_name.clone(), Arc::from(tool));
             return original_name;
         }
 
         let exposed_name = format!("{server_name}__{original_name}");
-        self.tools.insert(exposed_name.clone(), tool);
+        tools.insert(exposed_name.clone(), Arc::from(tool));
         exposed_name
     }
 
@@ -218,20 +222,23 @@ impl ToolRegistry {
     /// Replaces the existing `SkillTool` (created via `SkillTool::new()` without a registry)
     /// with one that has the registry wired, enabling the model to invoke external skills
     /// via the `skill` tool.
-    pub fn wire_skill_registry(&mut self, registry: Arc<crate::knowledge::ExternalSkillRegistry>) {
-        let new_tool = Box::new(meta::skill::SkillTool::with_registry(
+    pub fn wire_skill_registry(&self, registry: Arc<crate::knowledge::ExternalSkillRegistry>) {
+        let new_tool: Box<dyn Tool> = Box::new(meta::skill::SkillTool::with_registry(
             registry,
             crate::knowledge::LoadedSkillContext::default(),
         ));
-        self.tools.insert("skill".to_string(), new_tool);
+        self.tools
+            .write()
+            .unwrap()
+            .insert("skill".to_string(), Arc::from(new_tool));
     }
 
-    pub fn get(&self, name: &str) -> Option<&dyn Tool> {
-        self.tools.get(name).map(|b| b.as_ref())
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.read().unwrap().get(name).cloned()
     }
 
-    pub fn list(&self) -> Vec<&dyn Tool> {
-        self.tools.values().map(|b| b.as_ref()).collect()
+    pub fn list(&self) -> Vec<Arc<dyn Tool>> {
+        self.tools.read().unwrap().values().cloned().collect()
     }
 
     pub async fn execute(
@@ -239,7 +246,8 @@ impl ToolRegistry {
         name: &str,
         input: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
-        match self.tools.get(name) {
+        let tool = self.tools.read().unwrap().get(name).cloned();
+        match tool {
             Some(tool) => tool.execute(input).await,
             None => Err(ToolError {
                 message: format!("Tool not found: {}", name),
@@ -261,7 +269,8 @@ impl ToolRegistry {
         name: &str,
         input: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
-        match self.tools.get(name) {
+        let tool = self.tools.read().unwrap().get(name).cloned();
+        match tool {
             Some(tool) => tool.execute_with_context(context, input).await,
             None => Err(ToolError {
                 message: format!("Tool not found: {}", name),
@@ -351,7 +360,7 @@ mod external_tool_tests {
 
     #[tokio::test]
     async fn execute_with_context_uses_trusted_agent_id_not_forged_input() {
-        let mut registry = ToolRegistry::new();
+        let registry = ToolRegistry::new();
         registry.register(Box::new(ContextProbe));
 
         let root = crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new("s"));
@@ -382,7 +391,7 @@ mod external_tool_tests {
     async fn execute_with_context_defaults_to_context_free_execute() {
         // NamedTool does not override execute_with_context, so the default
         // adapter must delegate to execute.
-        let mut registry = ToolRegistry::new();
+        let registry = ToolRegistry::new();
         registry.register(Box::new(NamedTool("adapter_probe")));
 
         let root = crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new("s"));
@@ -401,7 +410,7 @@ mod external_tool_tests {
 
     #[test]
     fn external_tools_keep_names_unless_they_collide() {
-        let mut registry = ToolRegistry::new();
+        let registry = ToolRegistry::new();
         let first = registry.register_external("codegraph", Box::new(NamedTool("remote_unique")));
         let second = registry.register_external("other", Box::new(NamedTool("remote_unique")));
 

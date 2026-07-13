@@ -11,7 +11,6 @@ pub mod types;
 pub use types::*;
 
 use crate::api::ChatMessage;
-use crate::knowledge::should_expose_skill_by_default;
 use crate::prompts::{self, PromptContext};
 use crate::runtime::command::CommandRouter;
 use crate::runtime::context::ContextAssembler;
@@ -32,7 +31,6 @@ use crossterm::event::EnableBracketedPaste;
 use ratatui::Terminal;
 use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex as TokioMutex;
@@ -228,105 +226,113 @@ impl App {
                 .unwrap_or_default(),
         );
 
-        // Load skills inventory for system prompt injection
-        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        let skills_dirs = vec![home.join(".wgenty-code").join("skills")];
-        let skill_loader = crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);
-        let mut skill_inventory: Vec<prompts::SkillEntry> = Vec::new();
-        for name in skill_loader.skill_names() {
-            if !should_expose_skill_by_default(&name) {
-                continue;
-            }
-            if let Some(skill) = skill_loader.load_skill(&name) {
-                let desc = skill.description.clone();
-                skill_inventory.push(prompts::SkillEntry {
-                    name,
-                    description: desc,
-                });
-            }
-        }
+        // ── Skill discovery deferred to background (Task 4) ───────────────
+        // Skill discovery (SkillLoader + ExternalSkillRegistry) involves
+        // synchronous disk I/O that can take 50-200ms on systems with many
+        // skills. It is spawned in a background blocking task and delivered
+        // via AppEvent::SkillsReady so it never delays the first rendered
+        // frame. The App starts with an empty inventory; the event handler
+        // re-assembles the system prompt when results arrive.
+        let prompt_ctx = prompt_ctx.with_skills(Vec::new());
 
-        // Also discover external skills from all sources and merge into inventory
-        let project_root =
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let external_registry_roots =
-            crate::knowledge::SkillRootResolver::roots_with(&home, &project_root);
-        let root_count = external_registry_roots.len();
-        let external_skill_registry =
-            crate::knowledge::ExternalSkillRegistry::discover(external_registry_roots).ok();
-        if let Some(ref external_registry) = external_skill_registry {
-            for skill_def in external_registry.list() {
-                if !should_expose_skill_by_default(&skill_def.canonical_name) {
-                    continue;
-                }
-                // Avoid duplicates: only add external skills not already in inventory
-                if !skill_inventory
-                    .iter()
-                    .any(|s| s.name == skill_def.canonical_name)
-                {
-                    skill_inventory.push(prompts::SkillEntry {
-                        name: skill_def.canonical_name.clone(),
-                        description: skill_def.description.clone(),
-                    });
-                }
-            }
-            tracing::info!(
-                total_skills = skill_inventory.len(),
-                root_count,
-                "Skill registry initialized with external skills"
-            );
-        } else {
-            tracing::info!(
-                total_skills = skill_inventory.len(),
-                root_count,
-                "Skill registry initialized (no external skills discovered)"
-            );
-        }
-
-        let prompt_ctx = prompt_ctx.with_skills(skill_inventory);
-
-        // ── Generic Agent Runtime: workflow config + CommandRouter ─────
+        // ── Generic Agent Runtime: CommandRouter (workflow.yaml deferred) ─
         let builtin_commands = crate::tui::completion::CompletionEngine::default_builtin_commands();
         let builtin_command_names: Vec<String> =
             builtin_commands.iter().map(|c| c.name.clone()).collect();
-        let mut command_router = CommandRouter::new(builtin_command_names);
+        let command_router = CommandRouter::new(builtin_command_names);
 
-        let workflow_yaml_path = PathBuf::from(".wgenty-code/skills/comet/workflow.yaml");
         let context_assembler: Option<Arc<ContextAssembler>> = None;
         let workflow_state: Option<Arc<RwLock<String>>> = None;
+        let external_skill_registry: Option<crate::knowledge::ExternalSkillRegistry> = None;
 
-        if workflow_yaml_path.exists() {
-            match std::fs::read_to_string(&workflow_yaml_path) {
-                Ok(content) => {
-                    // Parse entry_commands from workflow.yaml via simple line parsing
-                    let entry_cmds = parse_yaml_list(&content, "entry_commands:");
-                    if !entry_cmds.is_empty() {
-                        command_router.register_workflow("comet", &entry_cmds);
+        // Spawn background skill discovery + workflow.yaml parsing
+        {
+            let tx = event_tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+                let skills_dirs = vec![home.join(".wgenty-code").join("skills")];
+                let skill_loader =
+                    crate::knowledge::loader::SkillLoader::load_from_dirs(&skills_dirs);
+                let mut skill_inventory: Vec<prompts::SkillEntry> = Vec::new();
+                for name in skill_loader.skill_names() {
+                    if !crate::knowledge::should_expose_skill_by_default(&name) {
+                        continue;
+                    }
+                    if let Some(skill) = skill_loader.load_skill(&name) {
+                        skill_inventory.push(prompts::SkillEntry {
+                            name,
+                            description: skill.description.clone(),
+                        });
                     }
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to read workflow.yaml: {}. Skipping workflow config.",
-                        e
+
+                let project_root =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let external_registry_roots =
+                    crate::knowledge::SkillRootResolver::roots_with(&home, &project_root);
+                let root_count = external_registry_roots.len();
+                let external_registry =
+                    crate::knowledge::ExternalSkillRegistry::discover(external_registry_roots).ok();
+                if let Some(ref reg) = external_registry {
+                    for skill_def in reg.list() {
+                        if !crate::knowledge::should_expose_skill_by_default(
+                            &skill_def.canonical_name,
+                        ) {
+                            continue;
+                        }
+                        if !skill_inventory
+                            .iter()
+                            .any(|s| s.name == skill_def.canonical_name)
+                        {
+                            skill_inventory.push(prompts::SkillEntry {
+                                name: skill_def.canonical_name.clone(),
+                                description: skill_def.description.clone(),
+                            });
+                        }
+                    }
+                    tracing::info!(
+                        total_skills = skill_inventory.len(),
+                        root_count,
+                        "Skill registry initialized with external skills"
+                    );
+                } else {
+                    tracing::info!(
+                        total_skills = skill_inventory.len(),
+                        root_count,
+                        "Skill registry initialized (no external skills discovered)"
                     );
                 }
-            }
-        }
 
-        // Also register comet commands from external skill registry as fallback
-        if let Some(ref reg) = external_skill_registry {
-            let comet_cmds: Vec<String> = reg
-                .list()
-                .into_iter()
-                .filter(|s| s.canonical_name.starts_with("comet"))
-                .map(|s| s.canonical_name.clone())
-                .collect();
-            if !comet_cmds.is_empty()
-                && command_router.entry_commands().len() == builtin_commands.len()
-            {
-                // Only register from registry if workflow.yaml didn't provide any
-                command_router.register_workflow("comet", &comet_cmds);
-            }
+                // Parse comet entry commands from workflow.yaml, falling back
+                // to the external registry if workflow.yaml is absent.
+                let mut comet_entry_commands: Vec<String> = Vec::new();
+                let workflow_yaml_path =
+                    std::path::PathBuf::from(".wgenty-code/skills/comet/workflow.yaml");
+                if workflow_yaml_path.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&workflow_yaml_path) {
+                        let entry_cmds = parse_yaml_list(&content, "entry_commands:");
+                        if !entry_cmds.is_empty() {
+                            comet_entry_commands = entry_cmds;
+                        }
+                    }
+                }
+                if comet_entry_commands.is_empty() {
+                    if let Some(ref reg) = external_registry {
+                        comet_entry_commands = reg
+                            .list()
+                            .iter()
+                            .filter(|s| s.canonical_name.starts_with("comet"))
+                            .map(|s| s.canonical_name.clone())
+                            .collect();
+                    }
+                }
+
+                let _ = tx.send(AppEvent::SkillsReady(Box::new(SkillsReadyData {
+                    skill_inventory,
+                    external_skill_registry: external_registry.map(std::sync::Arc::new),
+                    comet_entry_commands,
+                })));
+            });
         }
 
         // Load WGENTY.md and AGENTS.md sections from project root
@@ -334,6 +340,7 @@ impl App {
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let wgenty_sections = crate::utils::project::read_wgenty_md_sections(&project_root);
         let agents_sections = crate::utils::project::read_agents_md_sections(&project_root);
+        crate::utils::startup_timing::mark("app new: wgenty/agents sections read");
 
         // Warn if the per-turn <system-reminder> block exceeds the token budget.
         // Estimated once at session startup using a preview PromptContext (preamble
@@ -375,6 +382,7 @@ impl App {
         }
 
         let assembled = prompts::assemble_instructions(&settings, &prompt_ctx);
+        crate::utils::startup_timing::mark("app new: prompt assembled");
         let system_messages = assembled.system_messages;
         let conversation_history = Arc::new(TokioMutex::new(system_messages.clone()));
         // Share the prompt context with each AgentLoop so per-turn reminders
@@ -544,69 +552,66 @@ impl App {
             }
         });
 
-        // ── Session startup: run AutoDream consolidation before recall ─────
+        // Render the first frame IMMEDIATELY so the user sees the UI before any
+        // startup background work runs. AutoDream consolidation (which may
+        // trigger an LLM call) and cross-session memory recall are spawned
+        // below and deliver their results via events - they never block the
+        // first paint.
+        terminal.draw(|f| self.render(f))?;
+        crate::utils::startup_timing::mark("first frame rendered (UI ready)");
+
+        // ── Background startup: AutoDream consolidation (fire-and-forget) ──
+        // Runs after the first frame so an LLM-backed consolidation can never
+        // delay the first visible paint. Best-effort: failures are logged and
+        // the session continues with existing memories.
         if let Some(ref ads) = self.auto_dream_service {
-            match ads.check_and_run().await {
-                Ok(true) => tracing::info!("AutoDream consolidation completed at session startup"),
-                Ok(false) => tracing::debug!("AutoDream gate not passed; consolidation skipped"),
-                Err(e) => {
-                    tracing::warn!(error = %e, "AutoDream consolidation failed; continuing with existing memories")
+            let ads = Arc::clone(ads);
+            tokio::spawn(async move {
+                match ads.check_and_run().await {
+                    Ok(true) => {
+                        tracing::info!("AutoDream consolidation completed at session startup")
+                    }
+                    Ok(false) => {
+                        tracing::debug!("AutoDream gate not passed; consolidation skipped")
+                    }
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "AutoDream consolidation failed; continuing with existing memories"
+                    ),
                 }
-            }
+            });
         }
 
-        // ── Session startup: recall cross-session memories ─────────────────
+        // ── Background startup: recall cross-session memories ─────────────
+        // Loads + searches memories off the render path; formatted results are
+        // delivered via `MemoriesReady` so they populate `startup_memories`
+        // without blocking the first frame (arriving one tick later).
         {
             let mm = self.memory_manager.clone();
-            if let Err(e) = mm.load().await {
-                tracing::warn!(error = %e, "failed to load memories at session startup; recall skipped");
-            } else {
-                // Get current project name from cwd
+            let tx = self.event_tx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = mm.load().await {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to load memories at session startup; recall skipped"
+                    );
+                    return;
+                }
                 let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let project_name = cwd
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "unknown".to_string());
-
-                // Search memories by project name (keyword match)
                 let matched = mm.search_memories(&project_name).await;
-
-                // Filter by importance >= 0.5
-                let important: Vec<_> = matched
-                    .into_iter()
-                    .filter(|m| m.importance >= 0.5)
-                    .collect();
-
-                // Sort by importance descending, take top N (default 5)
-                let mut sorted = important;
-                sorted.sort_by(|a, b| {
-                    b.importance
-                        .partial_cmp(&a.importance)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-                let top_n = 5;
-                let top: Vec<_> = sorted.into_iter().take(top_n).collect();
-
-                // Format as system message lines
-                if !top.is_empty() {
-                    let lines: Vec<String> = top
-                        .iter()
-                        .map(|m| {
-                            format!(
-                                "- [{}] {} (importance: {:.1})",
-                                format_memory_type(&m.memory_type),
-                                m.content,
-                                m.importance
-                            )
-                        })
-                        .collect();
+                let lines = format_startup_memories(&matched);
+                if !lines.is_empty() {
                     tracing::info!(
                         count = lines.len(),
                         "recalled cross-session memories at startup"
                     );
-                    self.startup_memories = lines;
+                    let _ = tx.send(AppEvent::MemoriesReady(lines));
                 }
-            }
+            });
         }
 
         // Main loop
@@ -752,6 +757,52 @@ mod tests {
             "auto_dream_service should be Some after App::new()"
         );
     }
+
+    #[test]
+    fn format_startup_memories_filters_below_threshold() {
+        use crate::context::{MemoryEntry, MemoryType};
+        let mems = vec![
+            MemoryEntry::new(MemoryType::Decision, "keep me").with_importance(0.8),
+            MemoryEntry::new(MemoryType::Error, "drop me").with_importance(0.3),
+        ];
+        let lines = format_startup_memories(&mems);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("keep me"));
+    }
+
+    #[test]
+    fn format_startup_memories_sorts_by_importance_desc() {
+        use crate::context::{MemoryEntry, MemoryType};
+        let mems = vec![
+            MemoryEntry::new(MemoryType::Knowledge, "low").with_importance(0.5),
+            MemoryEntry::new(MemoryType::Decision, "high").with_importance(0.9),
+            MemoryEntry::new(MemoryType::Insight, "mid").with_importance(0.7),
+        ];
+        let lines = format_startup_memories(&mems);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].contains("high"));
+        assert!(lines[1].contains("mid"));
+        assert!(lines[2].contains("low"));
+    }
+
+    #[test]
+    fn format_startup_memories_limits_to_top_n() {
+        use crate::context::{MemoryEntry, MemoryType};
+        let mems: Vec<_> = (0..10)
+            .map(|i| {
+                MemoryEntry::new(MemoryType::Knowledge, &format!("m{}", i))
+                    .with_importance(0.5 + i as f32 * 0.01)
+            })
+            .collect();
+        let lines = format_startup_memories(&mems);
+        assert_eq!(lines.len(), STARTUP_MEMORY_TOP_N);
+    }
+
+    #[test]
+    fn format_startup_memories_empty_input() {
+        let lines: Vec<String> = format_startup_memories(&[]);
+        assert!(lines.is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -874,4 +925,39 @@ fn format_memory_type(mt: &crate::context::MemoryType) -> &'static str {
         crate::context::MemoryType::Session => "session",
         crate::context::MemoryType::Conversation => "conversation",
     }
+}
+
+/// Minimum importance for a memory to be surfaced at startup recall.
+const STARTUP_MEMORY_MIN_IMPORTANCE: f32 = 0.5;
+/// Maximum number of memories recalled at startup.
+const STARTUP_MEMORY_TOP_N: usize = 5;
+
+/// Filter, rank, and format cross-session memories for startup recall.
+///
+/// Extracted as a pure function so the selection logic (importance threshold,
+/// descending sort, top-N cap, line formatting) is unit-testable independently
+/// of the async memory manager. Returns the formatted lines (possibly empty).
+fn format_startup_memories(matched: &[crate::context::MemoryEntry]) -> Vec<String> {
+    let mut important: Vec<&crate::context::MemoryEntry> = matched
+        .iter()
+        .filter(|m| m.importance >= STARTUP_MEMORY_MIN_IMPORTANCE)
+        .collect();
+    // Sort by importance descending (stable on equal importance).
+    important.sort_by(|a, b| {
+        b.importance
+            .partial_cmp(&a.importance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    important
+        .into_iter()
+        .take(STARTUP_MEMORY_TOP_N)
+        .map(|m| {
+            format!(
+                "- [{}] {} (importance: {:.1})",
+                format_memory_type(&m.memory_type),
+                m.content,
+                m.importance
+            )
+        })
+        .collect()
 }
