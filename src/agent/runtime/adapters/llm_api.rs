@@ -8,6 +8,7 @@ use bytes::Bytes;
 use futures::stream::{BoxStream, StreamExt};
 
 /// Direct provider access (CLI headless, tests, optional in-process daemon).
+#[derive(Clone)]
 pub struct ApiLlmPort {
     client: ApiClient,
 }

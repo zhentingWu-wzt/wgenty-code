@@ -3,13 +3,14 @@
 //! Lives under `tui` so `agent::runtime` never depends on TUI or DaemonClient.
 
 use crate::agent::runtime::{
-    assemble_post_compaction_history, split_for_compaction, Compactor, EventSink, HistoryStore,
+    archive_transcript, assemble_post_compaction_history, build_transcript_text,
+    parse_compaction_response, split_for_compaction, Compactor, EventSink, HistoryStore,
     InteractionPort, LlmPort, PlannerPort, RuntimeError, RuntimeEvent, ToolPort, ToolRequest,
-    ToolResponse,
+    ToolResponse, COMPACTION_SYSTEM_PROMPT,
 };
 use crate::agent::{StreamEvent, StreamProcessor};
 use crate::api::{ApiClient, ChatMessage, ToolDefinition};
-use crate::context::{MemoryEntry, MemoryManager, MemoryType};
+use crate::context::MemoryManager;
 use crate::runtime::guardian::classify_risk;
 use crate::runtime::hooks::HookManager;
 use crate::tui::app::AppEvent;
@@ -17,7 +18,6 @@ use crate::tui::client::DaemonClient;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::{BoxStream, StreamExt};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -473,79 +473,22 @@ impl TuiCompactor {
 #[async_trait]
 impl Compactor for TuiCompactor {
     async fn compact(&self, history: &dyn HistoryStore) -> bool {
-        // Transcript archive.
-        let transcript_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".wgenty-code")
-            .join("transcripts");
-        tokio::fs::create_dir_all(&transcript_dir).await.ok();
-        let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
-        let transcript_path = transcript_dir.join(format!("session_{}.json", timestamp));
-
         let history_snapshot = history.get().await;
-        let json = serde_json::to_string_pretty(&history_snapshot).unwrap_or_default();
-        tokio::fs::write(&transcript_path, json).await.ok();
+        archive_transcript(&history_snapshot).await;
 
         let (to_summarize, tail) = split_for_compaction(&history_snapshot);
-        let transcript_text: String = to_summarize
-            .iter()
-            .map(|m| {
-                let mut parts: Vec<String> = vec![format!("[{}]", m.role)];
-                if let Some(rc) = m.reasoning_content.as_ref().filter(|s| !s.is_empty()) {
-                    const RC_CAP: usize = 1000;
-                    let mut chars = rc.chars();
-                    let snippet: String = chars.by_ref().take(RC_CAP).collect();
-                    let truncated = chars.next().is_some();
-                    parts.push(format!(
-                        "reasoning: {}{}",
-                        snippet,
-                        if truncated { "…(truncated)" } else { "" }
-                    ));
-                }
-                if let Some(c) = m.content.as_ref().filter(|s| !s.is_empty()) {
-                    parts.push(c.clone());
-                }
-                if let Some(tcs) = m.tool_calls.as_ref() {
-                    for tc in tcs {
-                        parts.push(format!(
-                            "tool_call: {}({})",
-                            tc.function.name, tc.function.arguments
-                        ));
-                    }
-                }
-                parts.join("\n")
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let transcript_text = build_transcript_text(&to_summarize);
 
         let summary_messages = vec![
-            ChatMessage::system(
-                "You are a conversation summary assistant for an AI coding agent. \
-                 Your task is to:\n\
-                 1. Summarize the conversation history, preserving key details: \
-                 project context, files modified, decisions made, bugs found, \
-                 commands executed, and any pending tasks.\n\
-                 2. Extract key memories from the conversation as structured JSON.\n\n\
-                 Output format — respond with a single JSON object (no markdown fences, no extra text):\n\
-                 {\n\
-                   \"summary\": \"<concise summary string>\",\n\
-                   \"memories\": [\n\
-                     {\n\
-                       \"type\": \"decision|error|preference|insight|knowledge|task\",\n\
-                       \"content\": \"<what to remember>\",\n\
-                       \"importance\": <0.0 to 1.0>\n\
-                     }\n\
-                   ]\n\
-                 }\n\n\
-                 If there is nothing worth remembering, return an empty memories array.\n\
-                 Do NOT use any tools — just return the JSON as plain text.",
-            ),
+            ChatMessage::system(COMPACTION_SYSTEM_PROMPT),
             ChatMessage::user(format!(
                 "Process this conversation history:\n\n{}",
                 transcript_text
             )),
         ];
 
+        // plan_mode=true makes the daemon omit tools so the model cannot
+        // answer with a tool_call (empty content → silent compaction failure).
         let response = match self
             .client
             .chat_stream_with_plan(summary_messages, None, Some(true))
@@ -599,58 +542,7 @@ impl Compactor for TuiCompactor {
             result.reasoning_content
         };
 
-        let (summary, extracted_memories) =
-            match serde_json::from_str::<serde_json::Value>(full_text.trim()) {
-                Ok(json) => {
-                    let summary = json
-                        .get("summary")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(full_text.trim())
-                        .to_string();
-                    let memories: Vec<MemoryEntry> = json
-                        .get("memories")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|m| {
-                                    let mem_type_str = m
-                                        .get("type")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("knowledge");
-                                    let mem_type = match mem_type_str {
-                                        "decision" => MemoryType::Decision,
-                                        "error" => MemoryType::Error,
-                                        "preference" => MemoryType::Preference,
-                                        "insight" => MemoryType::Insight,
-                                        "knowledge" => MemoryType::Knowledge,
-                                        "task" => MemoryType::Task,
-                                        _ => MemoryType::Knowledge,
-                                    };
-                                    let content =
-                                        m.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                                    let importance = m
-                                        .get("importance")
-                                        .and_then(|v| v.as_f64())
-                                        .unwrap_or(0.5)
-                                        as f32;
-                                    if content.is_empty() {
-                                        return None;
-                                    }
-                                    Some(
-                                        MemoryEntry::new(mem_type, content)
-                                            .with_importance(importance),
-                                    )
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    (summary, memories)
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "compaction response is not valid JSON; using full text as summary");
-                    (full_text.trim().to_string(), Vec::new())
-                }
-            };
+        let (summary, extracted_memories) = parse_compaction_response(&full_text);
 
         if summary.trim().is_empty() {
             tracing::warn!("compaction produced an empty summary; leaving history intact");

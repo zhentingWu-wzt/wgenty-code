@@ -6,6 +6,7 @@
 
 pub mod adapters;
 pub mod compaction;
+pub mod compactor;
 pub mod config;
 pub mod error;
 pub mod events;
@@ -19,6 +20,10 @@ pub use adapters::ApiLlmPort;
 pub use compaction::{
     assemble_post_compaction_history, micro_compact_messages, needs_compaction, request_size_chars,
     split_for_compaction,
+};
+pub use compactor::{
+    archive_transcript, build_transcript_text, parse_compaction_response, ApiCompactor,
+    COMPACTION_SYSTEM_PROMPT,
 };
 pub use config::RuntimeConfig;
 pub use error::RuntimeError;
