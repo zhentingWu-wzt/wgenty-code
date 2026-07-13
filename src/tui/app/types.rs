@@ -191,6 +191,36 @@ pub enum AppEvent {
     AgentViewNavigated(Box<LocalAgentViewResponse>),
     /// Pop the navigation back stack to restore the previous scoped view.
     NavigateAgentBack,
+    /// Cross-session memory recall completed in the background at startup.
+    /// Carries formatted memory lines to inject into the conversation context.
+    MemoriesReady(Vec<String>),
+    /// Skill discovery completed in the background at startup.
+    /// Carries the merged skill inventory, external skill registry, and
+    /// comet workflow entry commands for the command router / completion engine.
+    SkillsReady(Box<SkillsReadyData>),
+}
+
+/// Payload for [`AppEvent::SkillsReady`].
+pub struct SkillsReadyData {
+    /// Merged skill inventory (internal + external, filtered by exposure rules).
+    pub skill_inventory: Vec<crate::prompts::SkillEntry>,
+    /// Discovered external skill registry (if any).
+    pub external_skill_registry: Option<std::sync::Arc<crate::knowledge::ExternalSkillRegistry>>,
+    /// Comet entry commands parsed from workflow.yaml or external registry.
+    pub comet_entry_commands: Vec<String>,
+}
+
+impl std::fmt::Debug for SkillsReadyData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SkillsReadyData")
+            .field("skill_inventory_len", &self.skill_inventory.len())
+            .field(
+                "has_external_registry",
+                &self.external_skill_registry.is_some(),
+            )
+            .field("comet_entry_commands", &self.comet_entry_commands)
+            .finish()
+    }
 }
 
 /// UI state for a single message in the chat view.

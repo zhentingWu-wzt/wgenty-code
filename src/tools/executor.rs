@@ -60,7 +60,7 @@ impl ToolExecutor {
         match tool {
             Some(t) => self
                 .policy
-                .validate_tool_call(t, tool_name, args, &session_rules),
+                .validate_tool_call(t.as_ref(), tool_name, args, &session_rules),
             None => Ok(PolicyDecision::Allow),
         }
     }

@@ -16,6 +16,7 @@ pub mod tools;
 pub mod transport;
 
 use chrono::{DateTime, Utc};
+use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -274,24 +275,32 @@ impl McpManager {
             }
         }
 
+        // Connect to all auto-start MCP servers concurrently. The slow part of
+        // each connection (subprocess spawn + initialize + tools/list, each
+        // bounded by a 15s timeout) runs in parallel, so total connect time
+        // approaches the max individual time instead of the sum. Proxy building
+        // (name reservation) is done serially afterward - it's fast and needs
+        // exclusive access to `reserved_names`.
+        let auto_start_configs: Vec<&McpConfig> = configs
+            .iter()
+            .filter(|config| config.auto_start && config.name != "filesystem")
+            .collect();
+        let connect_futures: Vec<_> = auto_start_configs
+            .iter()
+            .map(|config| async move { (config.name.clone(), self.connect_server(config).await) })
+            .collect();
+        let results = join_all(connect_futures).await;
+
         let mut proxies = Vec::new();
-        for config in configs.iter().filter(|config| config.auto_start) {
-            if config.name == "filesystem" {
-                continue;
-            }
-            match self.connect_server(config).await {
+        for (name, result) in results {
+            match result {
                 Ok((session, tools)) => {
                     let caller: Arc<dyn McpToolCaller> = session;
-                    proxies.extend(build_tool_proxies(
-                        &config.name,
-                        tools,
-                        caller,
-                        reserved_names,
-                    ));
+                    proxies.extend(build_tool_proxies(&name, tools, caller, reserved_names));
                 }
                 Err(error) => {
                     tracing::warn!(
-                        server = %config.name,
+                        server = %name,
                         error = %error,
                         "MCP server unavailable; continuing without its tools"
                     );

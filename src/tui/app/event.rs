@@ -805,6 +805,63 @@ impl App {
             AppEvent::TodosUpdated(items) => {
                 self.task_panel.update(items);
             }
+            AppEvent::MemoriesReady(lines) => {
+                // Cross-session memory recall completed in the background at
+                // startup. Populate the shared startup_memories so subsequent
+                // turns inject them into the conversation context. Replacing
+                // (not appending) is correct: recall fires once per session.
+                self.startup_memories = lines;
+            }
+            AppEvent::SkillsReady(data) => {
+                // Skill discovery completed in the background at startup.
+                // Update the prompt context with the full skill inventory,
+                // re-assemble system messages, and wire the external skill
+                // registry + comet workflow commands. This runs after the
+                // first frame so disk I/O never delays the first paint.
+                let data = *data;
+
+                // Store the external skill registry for the `skill` tool.
+                self.external_skill_registry = data.external_skill_registry;
+
+                // Register comet entry commands on the command router and
+                // merge them into the completion engine for /-autocomplete.
+                if !data.comet_entry_commands.is_empty() {
+                    if let Some(ref mut router) = self.command_router {
+                        router.register_workflow("comet", &data.comet_entry_commands);
+                    }
+                    if let Some(ref mut engine) = self.completion_engine {
+                        engine.merge_from_entry_commands(&data.comet_entry_commands);
+                    }
+                }
+
+                // Rebuild the prompt context with the discovered skills and
+                // re-assemble the system messages so Layer 7 (skills_inventory)
+                // is populated for subsequent turns.
+                let mut new_ctx = (*self.prompt_context).clone();
+                new_ctx.skills_inventory = data.skill_inventory;
+                let new_ctx = std::sync::Arc::new(new_ctx);
+
+                let settings = self.settings_lock.read().unwrap().clone();
+                let assembled = prompts::assemble_instructions(&settings, &new_ctx);
+
+                self.prompt_context = new_ctx;
+                self.assembled_system_messages = assembled.system_messages.clone();
+
+                // If no turns have started yet (the common case at startup),
+                // replace the conversation history so the first turn includes
+                // the skills. If a turn is already in flight (race with
+                // --prompt), the updated assembled_system_messages will be
+                // used on the next turn.
+                if self.turn_count == 0 {
+                    let mut history = self.conversation_history.lock().await;
+                    *history = assembled.system_messages;
+                }
+
+                tracing::info!(
+                    skill_count = self.prompt_context.skills_inventory.len(),
+                    "skills loaded in background; system prompt re-assembled"
+                );
+            }
             _ => {}
         }
     }

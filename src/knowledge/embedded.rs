@@ -149,3 +149,40 @@ pub fn is_auto_installed() -> bool {
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
     BundledSkills::is_installed(&home.join(".wgenty-code"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The skip-if-installed fast path in `run_repl` relies on `is_installed`
+    /// correctly detecting a prior `install_to`. Lock that contract in: before
+    /// install it reports false, after install it reports true, and re-install
+    /// is idempotent (never overwrites).
+    #[cfg(feature = "bundled-skills")]
+    #[test]
+    fn is_installed_detects_prior_install_to() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let base = tmp.path();
+
+        // Sentinel absent before any install.
+        assert!(
+            !BundledSkills::is_installed(base),
+            "should report not-installed before install_to"
+        );
+
+        let _installed = BundledSkills::install_to(base).expect("install_to");
+
+        // Sentinel present after install -> the run_repl skip path can fire.
+        assert!(
+            BundledSkills::is_installed(base),
+            "should report installed after install_to"
+        );
+
+        // Re-install must not overwrite (idempotent): no newly-written skills.
+        let again = BundledSkills::install_to(base).expect("install_to again");
+        assert!(
+            again.is_empty(),
+            "re-install should not write any new skills"
+        );
+    }
+}
