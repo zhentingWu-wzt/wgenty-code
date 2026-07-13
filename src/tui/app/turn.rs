@@ -341,8 +341,140 @@ impl App {
         self.current_turn_id = None;
     }
 
+    /// Interrupt the running turn from a user keypress (ESC).
+    ///
+    /// Finalizes visible streaming/tool state, aborts the turn task and any
+    /// daemon-side subagents, then surfaces an "Interrupted by user" system
+    /// message. Unlike `/clear` (which wipes the conversation), already-
+    /// generated partial output is preserved. `/clear` still calls
+    /// `cancel_current_turn` directly, so its clean-slate semantics are
+    /// unaffected.
+    pub(super) fn interrupt_running_turn(&mut self) {
+        // Commit partial streamed content as an Assistant message so it stays
+        // visible after streaming is turned off (the chat only renders
+        // streaming_content while streaming_active is true). Mirrors StreamDone.
+        let content = std::mem::take(&mut self.streaming_content);
+        let is_hint = content.starts_with('\u{23F3}');
+        if !content.is_empty() && !is_hint {
+            self.committed_messages.push(UIMessage {
+                role: MessageRole::Assistant,
+                content,
+                tool_name: None,
+                content_collapsed: false,
+                tool_collapsed: true,
+                tool_running: false,
+                tool_args: None,
+                diff_data: None,
+                tool_metadata: None,
+            });
+        }
+        self.streaming_active = false;
+        // Stop the tool spinner and finalize a running tool placeholder so it
+        // does not show as perpetually running after the abort.
+        self.has_running_tool = false;
+        if let Some(last) = self.committed_messages.last_mut() {
+            if last.role == MessageRole::Tool && last.tool_running {
+                last.tool_running = false;
+                last.tool_collapsed = true;
+            }
+        }
+        // Abort the turn task (phase -> Idle, suppress stale phase updates,
+        // emit TurnAborted::Interrupted).
+        self.cancel_current_turn();
+        // Cancel daemon-side subagents belonging to this turn by advancing the
+        // agent generation, mirroring /clear. The next turn adopts the fresh
+        // generation returned asynchronously.
+        let client = self.daemon_client.clone();
+        let session_id = self.session_id.clone();
+        let event_tx = self.event_tx.clone();
+        tokio::spawn(async move {
+            match client.reset_agent_generation(&session_id).await {
+                Ok(generation) => {
+                    let _ = event_tx.send(AppEvent::AgentGenerationReset { generation });
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "reset_agent_generation failed during interrupt; retaining old generation"
+                    );
+                    let _ = event_tx.send(AppEvent::AgentGenerationReset {
+                        generation: u64::MAX,
+                    });
+                }
+            }
+        });
+        // User-facing feedback.
+        self.push_system_message("\u{23F9} Interrupted by user");
+    }
+
     /// Number of inputs waiting in the queue (excluding the running one).
     pub(super) fn pending_count(&self) -> usize {
         self.pending_inputs.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::watcher::SettingsHandle;
+    use crate::config::Settings;
+    use crate::tui::client::DaemonClient;
+    use std::sync::{Arc, RwLock};
+    use std::time::Duration;
+
+    fn build_app() -> App {
+        let client = DaemonClient::new("http://localhost:0".to_string());
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        App::new(client, "test-interrupt".to_string(), settings)
+    }
+
+    #[tokio::test]
+    async fn interrupt_running_turn_commits_partial_and_resets_state() {
+        let mut app = build_app();
+        app.streaming_content = "partial response".to_string();
+        app.streaming_active = true;
+        app.current_turn_handle = Some(tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }));
+
+        app.interrupt_running_turn();
+
+        assert!(!app.streaming_active, "streaming should be inactive");
+        assert!(app.streaming_content.is_empty(), "streaming buffer cleared");
+        assert!(app.current_turn_handle.is_none(), "turn handle cleared");
+        assert_eq!(app.phase, AgentPhase::Idle);
+        assert!(app.suppress_phase_updates, "phase updates suppressed");
+        assert!(
+            app.committed_messages
+                .iter()
+                .any(|m| m.role == MessageRole::Assistant && m.content == "partial response"),
+            "partial content committed as Assistant message"
+        );
+        assert!(
+            app.committed_messages
+                .iter()
+                .any(|m| m.content.contains("Interrupted by user")),
+            "interrupt feedback message present"
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupt_running_turn_skips_preparing_hint() {
+        let mut app = build_app();
+        app.streaming_content = "\u{23F3} preparing tools...".to_string();
+        app.streaming_active = true;
+        app.current_turn_handle = Some(tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }));
+
+        app.interrupt_running_turn();
+
+        assert!(
+            !app.committed_messages.iter().any(|m| {
+                m.role == MessageRole::Assistant && m.content.contains("preparing tools")
+            }),
+            "preparing-tools hint should not be committed as Assistant content"
+        );
+        assert!(!app.streaming_active);
     }
 }

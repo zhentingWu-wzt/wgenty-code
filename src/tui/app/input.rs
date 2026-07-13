@@ -6,7 +6,7 @@ use crate::api::ChatMessage;
 use crate::state::agent_phase::{AgentPhase, TurnAbortReason};
 
 impl App {
-    fn push_system_message(&mut self, content: impl Into<String>) {
+    pub(super) fn push_system_message(&mut self, content: impl Into<String>) {
         self.committed_messages.push(UIMessage {
             role: MessageRole::System,
             content: content.into(),
