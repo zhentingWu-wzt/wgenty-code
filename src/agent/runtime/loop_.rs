@@ -835,38 +835,6 @@ fn recovered_useful_fields(args: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn recovered_useful_fields_true_when_real_keys_present() {
-        assert!(recovered_useful_fields(&json!({"path": "a.rs"})));
-        assert!(recovered_useful_fields(&json!({"pattern": "x", "_partial": true})));
-    }
-
-    #[test]
-    fn recovered_useful_fields_false_for_empty_or_internal_only() {
-        assert!(!recovered_useful_fields(&json!({})));
-        assert!(!recovered_useful_fields(&json!({"_error": "x"})));
-        assert!(!recovered_useful_fields(&json!(null)));
-    }
-
-    #[test]
-    fn parse_error_guidance_mentions_tool_and_error() {
-        let g = parse_error_guidance("grep", "expected `,`", r#"{"pattern":"\d"#);
-        assert!(g.contains("grep"));
-        assert!(g.contains("expected `,`"));
-        assert!(g.contains("Tool Argument Parse Warning"));
-    }
-
-    #[test]
-    fn max_consecutive_parse_errors_is_three() {
-        assert_eq!(MAX_CONSECUTIVE_PARSE_ERRORS, 3);
-    }
-}
-
 async fn schedule_compact(
     events: &dyn EventSink,
     state: &mut LoopTurnState,
@@ -901,4 +869,36 @@ async fn append_to_last_tool(history: &dyn HistoryStore, suffix: &str) {
         }
     }
     history.replace(msgs).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn recovered_useful_fields_true_when_real_keys_present() {
+        assert!(recovered_useful_fields(&json!({"path": "a.rs"})));
+        assert!(recovered_useful_fields(&json!({"pattern": "x", "_partial": true})));
+    }
+
+    #[test]
+    fn recovered_useful_fields_false_for_empty_or_internal_only() {
+        assert!(!recovered_useful_fields(&json!({})));
+        assert!(!recovered_useful_fields(&json!({"_error": "x"})));
+        assert!(!recovered_useful_fields(&json!(null)));
+    }
+
+    #[test]
+    fn parse_error_guidance_mentions_tool_and_error() {
+        let g = parse_error_guidance("grep", "expected `,`", r#"{"pattern":"\d"#);
+        assert!(g.contains("grep"));
+        assert!(g.contains("expected `,`"));
+        assert!(g.contains("Tool Argument Parse Warning"));
+    }
+
+    #[test]
+    fn max_consecutive_parse_errors_is_three() {
+        assert_eq!(MAX_CONSECUTIVE_PARSE_ERRORS, 3);
+    }
 }
