@@ -35,24 +35,35 @@ pub async fn start_daemon(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
     let base_url = format!("http://127.0.0.1:{}", port);
+    crate::utils::startup_timing::mark("daemon: tcp bound");
     use crate::daemon::state::DaemonState;
     use crate::daemon::{auth, routes};
     use std::sync::Arc;
-    let daemon_state = Arc::new(DaemonState::new(app_state));
+    let daemon_state = Arc::new(DaemonState::new(app_state).await);
+    crate::utils::startup_timing::mark("daemon: DaemonState created");
 
-    // Recover persisted sessions from disk so the session list is populated
-    // immediately after the background daemon starts (see daemon::run).
-    if let Err(e) = daemon_state.session_manager.load_all().await {
-        tracing::warn!(error = %e, "Failed to load persisted sessions into background daemon");
+    // Recover persisted sessions as lightweight index entries (metadata only,
+    // no full message deserialization) so the session list populates quickly
+    // without blocking daemon startup. Full sessions are hydrated on demand
+    // via `load(id)` / `get(id)`.
+    {
+        let sm_state = Arc::clone(&daemon_state);
+        tokio::spawn(async move {
+            if let Err(e) = sm_state.session_manager.load_index().await {
+                tracing::warn!(error = %e, "Failed to load session index into background daemon");
+            }
+            tracing::debug!("background session index load complete");
+        });
     }
 
     let api_token = auth::generate_api_token();
     crate::utils::write_daemon_token(&api_token)?;
-    eprintln!(
+    tracing::debug!(
         "Daemon API token saved to: {}",
         crate::utils::daemon_token_path().display()
     );
     let (health, protected) = routes::create_routers(daemon_state, api_token);
+    crate::utils::startup_timing::mark("daemon: routers created");
     let app = health.merge(protected).layer(
         tower_http::cors::CorsLayer::new()
             .allow_origin([
@@ -80,16 +91,14 @@ pub async fn start_daemon(
         // Clean up token file on daemon shutdown.
         let _ = crate::utils::remove_daemon_token();
     });
-    // Wait for daemon to be ready (poll health endpoint)
-    let client = super::client::DaemonClient::new(base_url.clone());
-    for _attempt in 0..50 {
-        if client.health().await.is_ok() {
-            tracing::info!("daemon ready on port {}", port);
-            return Ok((base_url, shutdown_tx, handle));
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    }
-    anyhow::bail!("daemon did not become ready within 5 seconds");
+    // The listener is already bound, so axum::serve will accept connections
+    // as soon as its task is scheduled. We don't block on a health-check
+    // poll: no daemon request is made before the user submits a prompt
+    // (App::new and the first frame are purely local), so the server has
+    // plenty of time to start. A single yield_now lets the serve task run.
+    tokio::task::yield_now().await;
+    tracing::info!("daemon ready on port {}", port);
+    Ok((base_url, shutdown_tx, handle))
 }
 
 /// Compute initial collapse state based on line-count thresholds.
@@ -217,19 +226,6 @@ fn arg_u64(args: &serde_json::Value, key: &str) -> String {
         .unwrap_or_default()
 }
 
-fn arg_array(args: &serde_json::Value, key: &str) -> String {
-    args.get(key)
-        .and_then(|value| value.as_array())
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| value.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_default()
-}
-
 fn truncate_label(label: String) -> String {
     const MAX_LABEL_CHARS: usize = 80;
     if label.chars().count() <= MAX_LABEL_CHARS {
@@ -310,7 +306,6 @@ pub fn tool_label(name: &str, args: &serde_json::Value) -> String {
                 skill_name
             }
         }
-        "module_summary" => arg_str(args, "module_path"),
         "note_edit" => {
             let operation = arg_str(args, "operation");
             let title = arg_str(args, "title");
@@ -330,16 +325,6 @@ pub fn tool_label(name: &str, args: &serde_json::Value) -> String {
                 .into_iter()
                 .find(|value| !value.is_empty())
                 .unwrap_or_else(|| "auto".to_string())
-        }
-        "symbol_batch" => arg_array(args, "symbols"),
-        "call_path" => {
-            let from = args.get("from").and_then(|v| v.as_str()).unwrap_or("");
-            let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("");
-            if from.is_empty() || to.is_empty() {
-                String::new()
-            } else {
-                format!("{} → {}", from, to)
-            }
         }
         "TodoWrite" | "update_plan" => {
             let item_key = if name == "TodoWrite" { "items" } else { "plan" };
@@ -451,8 +436,14 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::TurnStarted { .. }
         | AppEvent::ConfigChanged(_)
         | AppEvent::ContextCompacted { .. }
-        | AppEvent::SubagentUpdate(_)
-        | AppEvent::BackgroundTaskResult(_) => None,
+        | AppEvent::AgentLocalView { .. }
+        | AppEvent::BackgroundTaskResult(_)
+        | AppEvent::AgentGenerationReset { .. }
+        | AppEvent::NavigateAgent { .. }
+        | AppEvent::AgentViewNavigated(_)
+        | AppEvent::NavigateAgentBack
+        | AppEvent::MemoriesReady(_)
+        | AppEvent::SkillsReady(_) => None,
     }
 }
 
@@ -565,6 +556,12 @@ mod tests {
             agent_phase_from_event(&AppEvent::TurnStarted {
                 turn_id: TurnId::new()
             }),
+            None
+        );
+        // Startup memory recall is non-phase - it must not change the agent
+        // phase indicator.
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::MemoriesReady(vec!["mem1".into()])),
             None
         );
     }

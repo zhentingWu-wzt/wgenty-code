@@ -6,7 +6,9 @@
 //! - Prompt system
 //! - Sampling support
 
+pub mod client;
 pub mod prompts;
+pub mod proxy;
 pub mod resources;
 pub mod sampling;
 pub mod server;
@@ -14,10 +16,15 @@ pub mod tools;
 pub mod transport;
 
 use chrono::{DateTime, Utc};
+use futures::future::join_all;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+use crate::mcp::client::{McpClientSession, McpRemoteTool};
+use crate::mcp::proxy::{is_known_read_only_tool, McpToolCaller, McpToolProxy};
+use crate::tools::Tool;
 
 pub use crate::config::mcp_config::{McpConfig, McpServerStatus};
 pub use prompts::{Prompt, PromptManager};
@@ -101,7 +108,8 @@ pub struct McpManager {
 
 struct McpServerConnection {
     config: McpConfig,
-    process: Option<tokio::process::Child>,
+    session: Option<Arc<McpClientSession>>,
+    tools_count: usize,
     started_at: Option<DateTime<Utc>>,
     last_error: Option<String>,
 }
@@ -119,24 +127,43 @@ impl McpManager {
 
     pub async fn list_servers(&self) -> anyhow::Result<Vec<McpServerInfo>> {
         let settings = crate::config::Settings::load()?;
+        Ok(self.list_servers_for_settings(&settings).await)
+    }
+
+    pub async fn list_servers_for_settings(
+        &self,
+        settings: &crate::config::Settings,
+    ) -> Vec<McpServerInfo> {
         let servers = self.servers.read().await;
-        Ok(settings
-            .integrations
-            .mcp_servers
+        let mut configs = settings.integrations.mcp_servers.clone();
+        if !configs
+            .iter()
+            .any(|config| config.name.eq_ignore_ascii_case("codegraph"))
+        {
+            let mut config = McpConfig::codegraph();
+            config.cwd = Some(settings.storage.working_dir.clone());
+            configs.push(config);
+        }
+        for config in &mut configs {
+            if config.name.eq_ignore_ascii_case("codegraph") && config.cwd.is_none() {
+                config.cwd = Some(settings.storage.working_dir.clone());
+            }
+        }
+        configs
             .iter()
             .map(|config| {
                 let conn = servers.get(&config.name);
                 McpServerInfo {
                     name: config.name.clone(),
                     status: conn.map_or(config.status.clone(), |c| c.config.status.clone()),
-                    tools_count: 0,
+                    tools_count: conn.map_or(0, |c| c.tools_count),
                     resources_count: 0,
                     prompts_count: 0,
                     started_at: conn.and_then(|c| c.started_at),
                     last_error: conn.and_then(|c| c.last_error.clone()),
                 }
             })
-            .collect())
+            .collect()
     }
 
     pub async fn add_server(&self, config: McpConfig) -> anyhow::Result<()> {
@@ -172,7 +199,8 @@ impl McpManager {
                 name.to_string(),
                 McpServerConnection {
                     config,
-                    process: None,
+                    session: None,
+                    tools_count: 0,
                     started_at: Some(Utc::now()),
                     last_error: None,
                 },
@@ -189,61 +217,22 @@ impl McpManager {
             .ok_or_else(|| anyhow::anyhow!("Server not found: {}", name))?
             .clone();
 
-        let mut cmd = tokio::process::Command::new(&config.command);
-        cmd.args(&config.args);
-
-        for (key, value) in &config.env {
-            cmd.env(key, value);
-        }
-
-        let mut config = config;
-        config.status = McpServerStatus::Starting;
-
-        match cmd.spawn() {
-            Ok(process) => {
-                let mut servers = self.servers.write().await;
-                servers.insert(
-                    name.to_string(),
-                    McpServerConnection {
-                        config: McpConfig {
-                            status: McpServerStatus::Running,
-                            ..config
-                        },
-                        process: Some(process),
-                        started_at: Some(Utc::now()),
-                        last_error: None,
-                    },
-                );
-                println!("✅ MCP server started: {}", name);
-            }
-            Err(e) => {
-                let mut servers = self.servers.write().await;
-                config.status = McpServerStatus::Error;
-                servers.insert(
-                    name.to_string(),
-                    McpServerConnection {
-                        config,
-                        process: None,
-                        started_at: None,
-                        last_error: Some(e.to_string()),
-                    },
-                );
-                println!("❌ Failed to start MCP server {}: {}", name, e);
-            }
-        }
-
-        Ok(())
+        self.connect_server(&config).await.map(|_| ())
     }
 
     pub async fn stop_server(&self, name: &str) -> anyhow::Result<()> {
-        let mut servers = self.servers.write().await;
-        if let Some(conn) = servers.get_mut(name) {
-            if let Some(mut process) = conn.process.take() {
-                let _ = process.kill().await;
-            }
+        let session = {
+            let mut servers = self.servers.write().await;
+            let Some(conn) = servers.get_mut(name) else {
+                return Ok(());
+            };
             conn.config.status = McpServerStatus::Stopped;
-            println!("🛑 MCP server stopped: {}", name);
+            conn.session.take()
+        };
+        if let Some(session) = session {
+            session.shutdown().await?;
         }
+        println!("🛑 MCP server stopped: {}", name);
         Ok(())
     }
 
@@ -261,6 +250,123 @@ impl McpManager {
             }
         }
         Ok(())
+    }
+
+    /// Connect configured MCP servers and return remote tools ready to install
+    /// into the agent's native tool registry. Individual server failures are
+    /// recorded and logged but do not prevent the coding agent from starting.
+    pub async fn connect_configured_tools(
+        &self,
+        settings: &crate::config::Settings,
+        reserved_names: &mut HashSet<String>,
+    ) -> Vec<Box<dyn Tool>> {
+        let mut configs = settings.integrations.mcp_servers.clone();
+        if !configs
+            .iter()
+            .any(|config| config.name.eq_ignore_ascii_case("codegraph"))
+        {
+            let mut config = McpConfig::codegraph();
+            config.cwd = Some(settings.storage.working_dir.clone());
+            configs.push(config);
+        }
+        for config in &mut configs {
+            if config.name.eq_ignore_ascii_case("codegraph") && config.cwd.is_none() {
+                config.cwd = Some(settings.storage.working_dir.clone());
+            }
+        }
+
+        // Connect to all auto-start MCP servers concurrently. The slow part of
+        // each connection (subprocess spawn + initialize + tools/list, each
+        // bounded by a 15s timeout) runs in parallel, so total connect time
+        // approaches the max individual time instead of the sum. Proxy building
+        // (name reservation) is done serially afterward - it's fast and needs
+        // exclusive access to `reserved_names`.
+        let auto_start_configs: Vec<&McpConfig> = configs
+            .iter()
+            .filter(|config| config.auto_start && config.name != "filesystem")
+            .collect();
+        let connect_futures: Vec<_> = auto_start_configs
+            .iter()
+            .map(|config| async move { (config.name.clone(), self.connect_server(config).await) })
+            .collect();
+        let results = join_all(connect_futures).await;
+
+        let mut proxies = Vec::new();
+        for (name, result) in results {
+            match result {
+                Ok((session, tools)) => {
+                    let caller: Arc<dyn McpToolCaller> = session;
+                    proxies.extend(build_tool_proxies(&name, tools, caller, reserved_names));
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        server = %name,
+                        error = %error,
+                        "MCP server unavailable; continuing without its tools"
+                    );
+                }
+            }
+        }
+        proxies
+    }
+
+    async fn connect_server(
+        &self,
+        config: &McpConfig,
+    ) -> anyhow::Result<(Arc<McpClientSession>, Vec<McpRemoteTool>)> {
+        let result = async {
+            let session = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                McpClientSession::spawn(config),
+            )
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("MCP server `{}` initialization timed out", config.name)
+            })??;
+            let tools =
+                tokio::time::timeout(std::time::Duration::from_secs(15), session.list_tools())
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("MCP server `{}` tools/list timed out", config.name)
+                    })??;
+            Ok::<_, anyhow::Error>((session, tools))
+        }
+        .await;
+
+        match result {
+            Ok((session, tools)) => {
+                self.servers.write().await.insert(
+                    config.name.clone(),
+                    McpServerConnection {
+                        config: McpConfig {
+                            status: McpServerStatus::Running,
+                            ..config.clone()
+                        },
+                        session: Some(session.clone()),
+                        tools_count: tools.len(),
+                        started_at: Some(Utc::now()),
+                        last_error: None,
+                    },
+                );
+                Ok((session, tools))
+            }
+            Err(error) => {
+                self.servers.write().await.insert(
+                    config.name.clone(),
+                    McpServerConnection {
+                        config: McpConfig {
+                            status: McpServerStatus::Error,
+                            ..config.clone()
+                        },
+                        session: None,
+                        tools_count: 0,
+                        started_at: None,
+                        last_error: Some(format!("{error:#}")),
+                    },
+                );
+                Err(error)
+            }
+        }
     }
 
     pub async fn stop_all(&self) -> anyhow::Result<()> {
@@ -291,8 +397,77 @@ impl McpManager {
     }
 }
 
+fn build_tool_proxies(
+    server_name: &str,
+    tools: Vec<McpRemoteTool>,
+    caller: Arc<dyn McpToolCaller>,
+    reserved_names: &mut HashSet<String>,
+) -> Vec<Box<dyn Tool>> {
+    tools
+        .into_iter()
+        .map(|tool| {
+            let exposed_name = if reserved_names.insert(tool.name.clone()) {
+                tool.name.clone()
+            } else {
+                let prefixed = format!("{server_name}__{}", tool.name);
+                reserved_names.insert(prefixed.clone());
+                prefixed
+            };
+            Box::new(McpToolProxy::new(
+                server_name.to_string(),
+                exposed_name,
+                tool.name.clone(),
+                tool.description,
+                tool.input_schema,
+                is_known_read_only_tool(server_name, &tool.name),
+                caller.clone(),
+            )) as Box<dyn Tool>
+        })
+        .collect()
+}
+
 impl Default for McpManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod external_registration_tests {
+    use super::*;
+    use crate::mcp::client::McpRemoteTool;
+    use crate::mcp::proxy::McpToolCaller;
+    use serde_json::json;
+
+    struct NoopCaller;
+
+    #[async_trait::async_trait]
+    impl McpToolCaller for NoopCaller {
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: serde_json::Value,
+        ) -> anyhow::Result<serde_json::Value> {
+            Ok(json!({"content": []}))
+        }
+    }
+
+    #[test]
+    fn builds_read_only_codegraph_proxies_with_standard_names() {
+        let tools = vec![McpRemoteTool {
+            name: "codegraph_node".to_string(),
+            description: "Find symbols".to_string(),
+            input_schema: json!({"type": "object"}),
+        }];
+
+        let proxies = build_tool_proxies(
+            "codegraph",
+            tools,
+            std::sync::Arc::new(NoopCaller),
+            &mut std::collections::HashSet::new(),
+        );
+        assert_eq!(proxies.len(), 1);
+        assert_eq!(proxies[0].name(), "codegraph_node");
+        assert!(proxies[0].is_read_only());
     }
 }

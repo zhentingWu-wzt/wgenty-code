@@ -1,7 +1,7 @@
 use crate::config::Settings;
 use crate::tools::{Tool, ToolError};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub struct ToolPermissionPolicy {
     workspace_root: PathBuf,
@@ -44,6 +44,20 @@ impl ToolPermissionPolicy {
             return self.validate_read_paths(tool_name, args, session_rules);
         }
 
+        if tool.requires_confirmation() {
+            let session_rule = format!("tool:{tool_name}");
+            if session_rules.contains(&session_rule) {
+                return Ok(PolicyDecision::Allow);
+            }
+            return Ok(PolicyDecision::Ask(PermissionRequest {
+                tool_name: tool_name.to_string(),
+                reason: format!(
+                    "external tool `{tool_name}` may modify state; explicit approval is required"
+                ),
+                session_rule,
+            }));
+        }
+
         match tool_name {
             "file_write" | "file_edit" | "apply_patch" => {
                 self.validate_write_paths(tool_name, args, session_rules)
@@ -67,11 +81,6 @@ impl ToolPermissionPolicy {
         match tool_name {
             "file_read" | "list_files" | "view" | "grep" | "glob" | "search" | "lsp" => {
                 if let Some(path_str) = args["path"].as_str() {
-                    return self.check_path_boundary(tool_name, path_str, "read", session_rules);
-                }
-            }
-            "module_summary" => {
-                if let Some(path_str) = args["module_path"].as_str() {
                     return self.check_path_boundary(tool_name, path_str, "read", session_rules);
                 }
             }
@@ -128,7 +137,7 @@ impl ToolPermissionPolicy {
                     .as_str()
                     .map(PathBuf::from)
                     .unwrap_or_else(|| self.workspace_root.clone());
-                let resolved = canonical_or_original(&workdir);
+                let resolved = canonical_or_normalized(&workdir);
                 if !resolved.starts_with(&self.workspace_root) {
                     let rule_key = format!("workdir:{}", resolved.display());
                     if session_rules.contains(&rule_key) {
@@ -204,12 +213,7 @@ impl ToolPermissionPolicy {
     }
 
     fn path_rule_key(&self, raw_path: &str) -> Result<Option<String>, ToolError> {
-        let path = PathBuf::from(raw_path);
-        let resolved = if path.is_absolute() {
-            canonical_or_original(&path)
-        } else {
-            canonical_or_original(&self.workspace_root.join(path))
-        };
+        let resolved = self.resolve_path(raw_path);
 
         if !resolved.starts_with(&self.workspace_root) {
             return Ok(Some(format!("path:{}", resolved.display())));
@@ -217,20 +221,67 @@ impl ToolPermissionPolicy {
 
         Ok(None)
     }
+
+    fn resolve_path(&self, raw_path: &str) -> PathBuf {
+        let path = PathBuf::from(raw_path);
+        let absolute = if path.is_absolute() {
+            path
+        } else {
+            self.workspace_root.join(path)
+        };
+        canonical_or_normalized(&absolute)
+    }
 }
 
-fn canonical_or_original(path: &Path) -> PathBuf {
+fn canonical_or_normalized(path: &Path) -> PathBuf {
     if let Ok(canon) = path.canonicalize() {
         return canon;
     }
-    if let Some(parent) = path.parent() {
-        if let Ok(canon_parent) = parent.canonicalize() {
-            if let Some(filename) = path.file_name() {
-                return canon_parent.join(filename);
+
+    let normalized = normalize_path(path);
+    let mut ancestor = normalized.as_path();
+    let mut suffix = Vec::new();
+
+    while !ancestor.exists() {
+        let Some(name) = ancestor.file_name() else {
+            return normalized;
+        };
+        suffix.push(name.to_os_string());
+        let Some(parent) = ancestor.parent() else {
+            return normalized;
+        };
+        ancestor = parent;
+    }
+
+    let Ok(mut resolved) = ancestor.canonicalize() else {
+        return normalized;
+    };
+    for component in suffix.iter().rev() {
+        resolved.push(component);
+    }
+    resolved
+}
+
+fn canonical_or_original(path: &Path) -> PathBuf {
+    canonical_or_normalized(path)
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
             }
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Normal(part) => normalized.push(part),
         }
     }
-    path.to_path_buf()
+
+    normalized
 }
 
 /// Split a shell command by control operators into individual sub-commands.
@@ -388,6 +439,7 @@ fn classify_command_risk(command: &str) -> Option<(String, String)> {
 mod tests {
     use super::*;
     use crate::tools::filesystem::file_read::FileReadTool;
+    use crate::tools::filesystem::file_write::FileWriteTool;
     use crate::tools::filesystem::list_files::ListFilesTool;
     use crate::tools::search::grep::GrepTool;
     use crate::tools::ToolOutput;
@@ -438,6 +490,79 @@ mod tests {
 
         let result = policy.validate_tool_call(&tool, "file_read", &args, &rules);
         assert!(matches!(result, Ok(PolicyDecision::Allow)));
+    }
+
+    #[test]
+    fn test_read_nonexistent_path_traversal_asks() {
+        let temp = tempfile::tempdir().expect("temp directory should be created");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace should be created");
+        let policy = ToolPermissionPolicy::new(workspace);
+        let tool = FileReadTool::new();
+        let args = serde_json::json!({"path": "missing/../../outside/secret.txt"});
+
+        let result = policy.validate_tool_call(&tool, "file_read", &args, &empty_rules());
+
+        assert!(matches!(result, Ok(PolicyDecision::Ask(_))));
+    }
+
+    #[test]
+    fn test_write_nonexistent_path_traversal_asks() {
+        let temp = tempfile::tempdir().expect("temp directory should be created");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace should be created");
+        let policy = ToolPermissionPolicy::new(workspace);
+        let tool = FileWriteTool::new();
+        let args = serde_json::json!({
+            "path": "missing/../../outside/secret.txt",
+            "content": "secret"
+        });
+
+        let result = policy.validate_tool_call(&tool, "file_write", &args, &empty_rules());
+
+        assert!(matches!(result, Ok(PolicyDecision::Ask(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_write_through_symlink_to_nonexistent_outside_file_asks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("temp directory should be created");
+        let workspace = temp.path().join("workspace");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&workspace).expect("workspace should be created");
+        std::fs::create_dir(&outside).expect("outside directory should be created");
+        symlink(&outside, workspace.join("external"))
+            .expect("symlink to outside directory should be created");
+        let policy = ToolPermissionPolicy::new(workspace);
+        let tool = FileWriteTool::new();
+        let args = serde_json::json!({
+            "path": "external/new-file.txt",
+            "content": "secret"
+        });
+
+        let result = policy.validate_tool_call(&tool, "file_write", &args, &empty_rules());
+
+        assert!(matches!(result, Ok(PolicyDecision::Ask(_))));
+    }
+
+    #[test]
+    fn test_apply_patch_nonexistent_workdir_traversal_asks() {
+        let temp = tempfile::tempdir().expect("temp directory should be created");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace should be created");
+        let policy = ToolPermissionPolicy::new(workspace.clone());
+        let tool = crate::tools::filesystem::apply_patch::ApplyPatchTool::new();
+        let workdir = workspace.join("missing/../../outside");
+        let args = serde_json::json!({
+            "workdir": workdir,
+            "patch": "*** Begin Patch\n*** End Patch"
+        });
+
+        let result = policy.validate_tool_call(&tool, "apply_patch", &args, &empty_rules());
+
+        assert!(matches!(result, Ok(PolicyDecision::Ask(_))));
     }
 
     #[test]
@@ -492,17 +617,13 @@ mod tests {
     }
 
     #[test]
-    fn test_module_summary_outside_asks() {
+    fn test_external_mutating_tool_requires_confirmation() {
         let policy = policy_for_test();
-        // module_summary uses "module_path" not "path"
-        struct ModuleSummaryTool;
+        struct ExternalMutationTool;
         #[async_trait::async_trait]
-        impl Tool for ModuleSummaryTool {
+        impl Tool for ExternalMutationTool {
             fn name(&self) -> &str {
-                "module_summary"
-            }
-            fn is_read_only(&self) -> bool {
-                true
+                "remote_mutation"
             }
             fn description(&self) -> &str {
                 ""
@@ -510,18 +631,47 @@ mod tests {
             fn input_schema(&self) -> serde_json::Value {
                 serde_json::json!({})
             }
+            fn requires_confirmation(&self) -> bool {
+                true
+            }
             async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-                Ok(ToolOutput {
-                    output_type: "text".to_string(),
-                    content: String::new(),
-                    metadata: std::collections::HashMap::new(),
-                })
+                unreachable!("permission test does not execute the tool")
             }
         }
-        let tool = ModuleSummaryTool;
-        let args = serde_json::json!({"module_path": "/etc"});
-        let result = policy.validate_tool_call(&tool, "module_summary", &args, &empty_rules());
+
+        let tool = ExternalMutationTool;
+        let result =
+            policy.validate_tool_call(&tool, tool.name(), &serde_json::json!({}), &empty_rules());
         assert!(matches!(result, Ok(PolicyDecision::Ask(_))));
+    }
+
+    #[test]
+    fn test_external_mutating_tool_respects_session_approval() {
+        let policy = policy_for_test();
+        struct ExternalMutationTool;
+        #[async_trait::async_trait]
+        impl Tool for ExternalMutationTool {
+            fn name(&self) -> &str {
+                "remote_mutation"
+            }
+            fn description(&self) -> &str {
+                ""
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            fn requires_confirmation(&self) -> bool {
+                true
+            }
+            async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+                unreachable!("permission test does not execute the tool")
+            }
+        }
+
+        let tool = ExternalMutationTool;
+        let rules = HashSet::from(["tool:remote_mutation".to_string()]);
+        let result = policy.validate_tool_call(&tool, tool.name(), &serde_json::json!({}), &rules);
+        assert!(matches!(result, Ok(PolicyDecision::Allow)));
     }
 
     // ── Existing classify/split tests ─────────────────────────────

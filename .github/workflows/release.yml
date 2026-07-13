@@ -1,4 +1,4 @@
-name: Release — Build and Publish
+name: Release - Build and Publish
 
 on:
   push:
@@ -19,22 +19,27 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact: wgenty-code
             asset_name: wgenty-code-linux-x86_64
+            bundled_sqlite: ""
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             artifact: wgenty-code
             asset_name: wgenty-code-linux-aarch64
+            bundled_sqlite: "--features bundled-sqlite"
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact: wgenty-code
             asset_name: wgenty-code-macos-x86_64
+            bundled_sqlite: ""
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: wgenty-code
             asset_name: wgenty-code-macos-aarch64
+            bundled_sqlite: ""
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: wgenty-code.exe
             asset_name: wgenty-code-windows-x86_64.exe
+            bundled_sqlite: "--features bundled-sqlite"
 
     steps:
       - uses: actions/checkout@v4
@@ -51,10 +56,10 @@ jobs:
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libwayland-dev
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libwayland-dev
 
       - name: Build Release
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} ${{ matrix.bundled_sqlite }}
 
       - name: Rename artifact
         run: cp target/${{ matrix.target }}/release/${{ matrix.artifact }} ${{ matrix.asset_name }}
@@ -63,6 +68,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.asset_name }}
+
+      - name: Upload binary artifact for npm
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: ${{ matrix.asset_name }}
+          retention-days: 3
 
   docker:
     name: Build Docker Image
@@ -78,3 +90,45 @@ jobs:
 
       - name: Verify Image
         run: docker run --rm wgenty-code:latest --version
+
+  publish-npm:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    # Only publish on version tags.
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Compute version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: binary-*
+
+      - name: Assemble npm packages
+        run: bash npm/scripts/assemble.sh "${{ steps.ver.outputs.version }}" artifacts npm-dist
+
+      - name: Publish platform subpackages
+        run: |
+          for sub in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+            echo "::group::publish wgenty-code-$sub"
+            (cd "npm-dist/wgenty-code-$sub" && npm publish --access public)
+            echo "::endgroup::"
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish main package
+        run: (cd npm-dist/wgenty-code && npm publish --access public)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

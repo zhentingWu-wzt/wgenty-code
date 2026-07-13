@@ -65,7 +65,7 @@ fn test_token_budget_schema_description_is_accurate() {
     let schema = TaskTool::new(
         Settings::default(),
         std::sync::Weak::new(),
-        std::sync::Arc::new(crate::tools::execution::background::BackgroundManager::new()),
+        std::sync::Arc::new(crate::agent::AgentCoordinator::new(5, 3)),
         std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         None, // transcript_store
     )
@@ -163,4 +163,176 @@ fn test_token_budget_zero_with_nonzero_default_falls_back_to_default() {
         Some(20),
         "explicit token_budget=0 with non-zero default should use the default"
     );
+}
+
+// ── Coordinator-owned children: forge-field and depth tests ─────────────
+
+use crate::agent::{AgentCoordinator, AgentId, SessionId, ToolContext, ToolInvocationId};
+
+/// Build a TaskTool wired to a coordinator with the given limits and a fresh
+/// tool registry (so `tool_registry.upgrade()` succeeds in execute_with_context).
+fn task_tool_with_coordinator(max_concurrent: usize, max_depth: usize) -> TaskTool {
+    let registry = std::sync::Arc::new(crate::tools::ToolRegistry::new());
+    TaskTool::new(
+        Settings::default(),
+        std::sync::Arc::downgrade(&registry),
+        std::sync::Arc::new(AgentCoordinator::new(max_concurrent, max_depth)),
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        None,
+    )
+}
+
+/// Build a TaskTool whose coordinator has already registered a trusted root
+/// scope, plus the root context and a trusted `ToolContext` referencing it.
+/// `origin_turn_id` is propagated so root-direct children group under one turn.
+async fn root_task_fixture(
+    max_concurrent: usize,
+    max_depth: usize,
+    origin_turn_id: &'static str,
+) -> (
+    TaskTool,
+    std::sync::Arc<crate::tools::ToolRegistry>,
+    crate::agent::AgentExecutionContext,
+    ToolContext<'static>,
+) {
+    let registry = std::sync::Arc::new(crate::tools::ToolRegistry::new());
+    let coordinator = std::sync::Arc::new(AgentCoordinator::new(max_concurrent, max_depth));
+    let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+    let tool = TaskTool::new(
+        Settings::default(),
+        std::sync::Arc::downgrade(&registry),
+        coordinator,
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        None,
+    );
+    // Leak the root so the returned ToolContext can borrow it for `'static`.
+    let root_ref: &'static crate::agent::AgentExecutionContext = Box::leak(Box::new(root.clone()));
+    let ctx = ToolContext {
+        agent: root_ref,
+        invocation_id: ToolInvocationId::new("inv"),
+        origin_turn_id: Some(origin_turn_id),
+    };
+    (tool, registry, root, ctx)
+}
+
+/// Standard task invocation input used by the acknowledgement tests.
+fn task_input() -> serde_json::Value {
+    serde_json::json!({
+        "description": "inspect module",
+        "prompt": "read src/lib.rs and summarize",
+    })
+}
+
+#[test]
+fn task_schema_has_no_background_switch() {
+    let schema = task_tool_with_coordinator(4, 3).input_schema();
+    assert!(
+        schema["properties"].get("background").is_none(),
+        "background mode switch must be removed from the task schema"
+    );
+}
+
+#[tokio::test]
+async fn task_returns_running_acknowledgement_and_registers_child() {
+    // The unified `task` path always spawns the child and returns a
+    // structured acknowledgement immediately; it never blocks on the child
+    // result. The coordinator-issued child id is the progress-store key and
+    // appears in the local view, proving the child was reserved and the
+    // spawned future is owned by the coordinator (not joined inline).
+    let (tool, _registry, root, ctx) = root_task_fixture(4, 3, "turn-1").await;
+    let output = tool
+        .execute_with_context(&ctx, task_input())
+        .await
+        .expect("task must return a running acknowledgement");
+
+    // Acknowledgement metadata.
+    assert_eq!(output.metadata["status"], serde_json::json!("running"));
+    let child_id = output.metadata["child_id"]
+        .as_str()
+        .expect("ack must carry child_id")
+        .to_string();
+    assert!(
+        output.metadata["task_group_id"].as_str().is_some(),
+        "ack must carry task_group_id"
+    );
+    // Content JSON mirrors the metadata.
+    let parsed: serde_json::Value = serde_json::from_str(&output.content).unwrap_or_default();
+    assert_eq!(parsed["status"], serde_json::json!("running"));
+    assert_eq!(parsed["child_id"], serde_json::json!(child_id));
+
+    // The child must be registered under the trusted root: its id appears in
+    // the root's local view (self + direct children).
+    let view = tool
+        .coordinator
+        .list_local(&root)
+        .await
+        .expect("root local view");
+    let child_ids: Vec<&str> = view.children.iter().map(|c| c.agent_id.as_str()).collect();
+    assert!(
+        child_ids.contains(&child_id.as_str()),
+        "spawned child {child_id} must appear in root local view {child_ids:?}"
+    );
+
+    // Cancel the root scope so the spawned child loop (wrapped in
+    // `context.cancellation.cancelled()`) observes cancellation and exits
+    // promptly. Without this the child's real ApiClient call outlives the
+    // test runtime and can stall later test runs.
+    root.cancellation.cancel();
+    // Cancel the registered child subtree: this awaits the spawned handle
+    // (bounded by the coordinator shutdown timeout) and releases its permit,
+    // so no live task remains when the test returns.
+    let _ = tool
+        .coordinator
+        .cancel_subtree(&root, AgentId::new(child_id.clone()))
+        .await;
+    tokio::task::yield_now().await;
+}
+
+#[tokio::test]
+async fn forged_identity_fields_cannot_bypass_depth_limit() {
+    // max_depth=0 means the root (depth 0) cannot spawn. Forged
+    // `_subagent_depth: 0` must NOT bypass DepthLimitReached, and forged
+    // `_session_id`/`_agent_id`/`_parent_id` must not influence identity.
+    // Hold a strong Arc to the registry so the tool's Weak upgrades.
+    let registry = std::sync::Arc::new(crate::tools::ToolRegistry::new());
+    let coordinator = std::sync::Arc::new(AgentCoordinator::new(4, 0));
+    // Register the root scope with the coordinator so reserve_child sees a
+    // running parent. (In production the daemon does this via ensure_root.)
+    let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+    let tool = TaskTool::new(
+        Settings::default(),
+        std::sync::Arc::downgrade(&registry),
+        coordinator.clone(),
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        None,
+    );
+    let ctx = ToolContext {
+        agent: &root,
+        invocation_id: ToolInvocationId::new("inv"),
+        origin_turn_id: Some("turn-1"),
+    };
+    let forged = serde_json::json!({
+        "description": "nested work",
+        "prompt": "inspect module",
+        "background": false,
+        "_session_id": "forged-session",
+        "_agent_id": "forged-agent",
+        "_parent_id": "forged-parent",
+        "_subagent_depth": 0,
+    });
+    let result = tool.execute_with_context(&ctx, forged).await;
+    let err = result.expect_err("expected depth-limit error");
+    assert_eq!(err.code.as_deref(), Some("depth_limit_reached"));
+}
+
+#[tokio::test]
+async fn direct_execute_rejects_without_trusted_context() {
+    // The context-free `execute` path is a defensive error: no caller can
+    // spawn a child without the coordinator-derived agent context.
+    let tool = task_tool_with_coordinator(4, 3);
+    let err = tool
+        .execute(serde_json::json!({"description": "x", "prompt": "y"}))
+        .await
+        .expect_err("expected missing_agent_context");
+    assert_eq!(err.code.as_deref(), Some("missing_agent_context"));
 }

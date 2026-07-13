@@ -9,13 +9,16 @@ impl AgentLoop {
     /// Static version of tool execution for use in parallel spawned tasks.
     /// Skips the interactive permission flow (tools requiring permission should
     /// not be executed in parallel batches).
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn execute_tool_static(
         client: &DaemonClient,
         name: &str,
         args: serde_json::Value,
         session_id: &str,
+        turn_id: Option<&str>,
         event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
         max_poll_duration: Duration,
+        generation: u64,
     ) -> String {
         // Guardian: inline safety check (no UI interaction in parallel path)
         if name == "execute_command" || name == "exec_command" {
@@ -44,16 +47,31 @@ impl AgentLoop {
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(500)).await;
-                    match client_clone.poll_subagent_progress(&sid).await {
-                        Ok(map) => {
-                            if map.is_empty() {
-                                continue;
-                            }
-                            for (_id, progress) in map {
-                                let _ = tx.send(AppEvent::SubagentUpdate(Box::new(progress)));
+                    match client_clone.get_root_agent_view(&sid).await {
+                        Ok(view) => {
+                            // Self-terminate once every polled child has reached a
+                            // terminal status. This stops the poller shortly after
+                            // the subagents finish instead of lingering for the full
+                            // `max_poll_duration`, which both wastes requests and
+                            // risks a stale `replace_local` overwriting a newer
+                            // turn's tree.
+                            let all_terminal = !view.children.is_empty()
+                                && view.children.iter().all(|c| c.status.is_terminal());
+                            let _ = tx.send(AppEvent::AgentLocalView {
+                                view: Box::new(view),
+                                generation,
+                            });
+                            if all_terminal {
+                                break;
                             }
                         }
-                        Err(_) => break,
+                        Err(error) => {
+                            tracing::warn!(
+                                session_id = %sid,
+                                error = %error,
+                                "Failed to poll scoped subagent view; retrying"
+                            );
+                        }
                     }
                 }
             }))
@@ -61,7 +79,7 @@ impl AgentLoop {
             None
         };
 
-        let result = match client.execute_tool(name, args, session_id).await {
+        let result = match client.execute_tool(name, args, session_id, turn_id).await {
             Ok(resp) => {
                 if let Some(perm) = resp.permission_required {
                     format!(
@@ -82,9 +100,13 @@ impl AgentLoop {
             Err(e) => format!(r#"{{"success":false,"error":"{}"}}"#, e),
         };
 
-        // Poller continues in background for async subagents (task tool with background=true).
-        // It self-terminates based on the configured subagent timeout.
-        // Drop the handle — tokio::spawn keeps it alive.
+        // Detach the poller (do NOT abort). The `task` tool is fire-and-forget:
+        // it returns a "running" acknowledgement immediately while the subagent
+        // keeps executing on the daemon. Aborting here would kill the poller
+        // before its first 500 ms poll, so no `AgentLocalView` events would
+        // ever reach the TUI and subagents would never appear in the selector.
+        // The poller self-terminates once all polled children are terminal
+        // (see the loop above), so it does not linger indefinitely.
         drop(poll_handle);
 
         result
@@ -109,7 +131,12 @@ impl AgentLoop {
 
         let result = match self
             .client
-            .execute_tool(name, args.clone(), &self.session_id)
+            .execute_tool(
+                name,
+                args.clone(),
+                &self.session_id,
+                self.turn_id.as_deref(),
+            )
             .await
         {
             Ok(resp) => resp,
@@ -176,7 +203,12 @@ impl AgentLoop {
 
                     let result = self
                         .client
-                        .execute_tool(name, args.clone(), &self.session_id)
+                        .execute_tool(
+                            name,
+                            args.clone(),
+                            &self.session_id,
+                            self.turn_id.as_deref(),
+                        )
                         .await;
 
                     // Remove the temporary approval
@@ -207,7 +239,12 @@ impl AgentLoop {
 
                     match self
                         .client
-                        .execute_tool(name, args.clone(), &self.session_id)
+                        .execute_tool(
+                            name,
+                            args.clone(),
+                            &self.session_id,
+                            self.turn_id.as_deref(),
+                        )
                         .await
                     {
                         Ok(resp) => {

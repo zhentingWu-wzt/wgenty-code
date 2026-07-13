@@ -378,8 +378,8 @@ fn tool_verb(name: &str) -> &str {
         "think" => "Thought",
         "undo" => "Undid",
         "update_plan" => "Planned",
-        "codegraph_node" | "codegraph_explore" | "module_summary" | "symbol_batch"
-        | "call_path" | "lsp" => "Inspected",
+        "codegraph_node" | "codegraph_explore" | "codegraph_search" | "codegraph_callers"
+        | "lsp" => "Inspected",
         _ => "Used",
     }
 }
@@ -395,19 +395,6 @@ fn arg_u64(args: &serde_json::Value, key: &str) -> String {
     args.get(key)
         .and_then(|value| value.as_u64())
         .map(|value| value.to_string())
-        .unwrap_or_default()
-}
-
-fn arg_array(args: &serde_json::Value, key: &str) -> String {
-    args.get(key)
-        .and_then(|value| value.as_array())
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| value.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
         .unwrap_or_default()
 }
 
@@ -492,7 +479,6 @@ fn tool_label(name: &str, args: &serde_json::Value) -> String {
                 skill_name
             }
         }
-        "module_summary" => arg_str(args, "module_path"),
         "note_edit" => {
             let operation = arg_str(args, "operation");
             let title = arg_str(args, "title");
@@ -512,16 +498,6 @@ fn tool_label(name: &str, args: &serde_json::Value) -> String {
                 .into_iter()
                 .find(|value| !value.is_empty())
                 .unwrap_or_else(|| "auto".to_string())
-        }
-        "symbol_batch" => arg_array(args, "symbols"),
-        "call_path" => {
-            let from = args.get("from").and_then(|v| v.as_str()).unwrap_or("");
-            let to = args.get("to").and_then(|v| v.as_str()).unwrap_or("");
-            if from.is_empty() || to.is_empty() {
-                String::new()
-            } else {
-                format!("{} → {}", from, to)
-            }
         }
         "TodoWrite" | "update_plan" => {
             let item_key = if name == "TodoWrite" { "items" } else { "plan" };

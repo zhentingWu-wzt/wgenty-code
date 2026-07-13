@@ -135,8 +135,6 @@ impl Mailbox {
 
 /// Team manager that coordinates mailboxes for all members
 pub struct TeamManager {
-    #[allow(dead_code)]
-    base_dir: PathBuf,
     config: TeamConfig,
     mailboxes: HashMap<String, Mailbox>,
 }
@@ -160,11 +158,7 @@ impl TeamManager {
             mailboxes.insert(member.name.clone(), Mailbox::new(mbox_path));
         }
 
-        Some(Self {
-            base_dir,
-            config,
-            mailboxes,
-        })
+        Some(Self { config, mailboxes })
     }
 
     /// Send a message to a specific team member's mailbox

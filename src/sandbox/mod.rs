@@ -191,3 +191,37 @@ pub struct SandboxStatus {
     pub is_hardware_enforced: bool,
     pub capabilities: Vec<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn manager_status_has_backend_name() {
+        let status = SandboxManager::new().status();
+
+        assert!(!status.backend_name.trim().is_empty());
+    }
+
+    #[test]
+    fn manager_capabilities_are_unique() {
+        let status = SandboxManager::new().status();
+        let unique: HashSet<&str> = status.capabilities.iter().map(String::as_str).collect();
+
+        assert_eq!(unique.len(), status.capabilities.len());
+    }
+
+    #[test]
+    fn cleanup_missing_resource_is_idempotent() {
+        let temp = tempfile::tempdir().expect("temp directory should be created");
+        let missing = temp.path().join("missing-profile.sb");
+        let cleanup = Some(SandboxCleanup {
+            cleanup_type: CleanupType::DeleteTempFile,
+            resource_handle: Some(missing.display().to_string()),
+        });
+
+        SandboxedChild::perform_cleanup(&cleanup);
+        SandboxedChild::perform_cleanup(&cleanup);
+    }
+}

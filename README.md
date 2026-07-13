@@ -180,6 +180,18 @@ wgenty-code agent --agent-type plan --prompt "Design an API"
 
 Full command reference: `wgenty-code --help`
 
+### CodeGraph MCP
+
+Wgenty Code uses the local third-party CodeGraph MCP server for structural code navigation. Install and initialize it in projects where you want `codegraph_explore`, `codegraph_node`, `codegraph_search`, and `codegraph_callers`:
+
+```bash
+npm install -g @colbymchenry/codegraph
+cd /path/to/project
+codegraph init
+```
+
+The daemon launches `codegraph serve --mcp`, discovers its tools through MCP, and exposes them to the model through the same registry as built-in tools. Source code and the SQLite index remain local. If CodeGraph is not installed or a project is not initialized, the agent continues with `grep`, `lsp`, and file tools.
+
 ### REPL Shortcuts
 
 | Key | Action |

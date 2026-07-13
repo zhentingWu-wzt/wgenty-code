@@ -1,3 +1,4 @@
+use crate::agent::ToolContext;
 use crate::api::ChatMessage;
 use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
 use crate::runtime::guardian::{Guardian, GuardianDecision};
@@ -59,7 +60,7 @@ impl ToolExecutor {
         match tool {
             Some(t) => self
                 .policy
-                .validate_tool_call(t, tool_name, args, &session_rules),
+                .validate_tool_call(t.as_ref(), tool_name, args, &session_rules),
             None => Ok(PolicyDecision::Allow),
         }
     }
@@ -103,11 +104,15 @@ impl ToolExecutor {
 
     pub async fn execute_tool_call(
         &self,
+        context: &ToolContext<'_>,
         tool_call_id: &str,
         tool_name: &str,
         args: serde_json::Value,
     ) -> ChatMessage {
-        let result = self.registry.execute(tool_name, args).await;
+        let result = self
+            .registry
+            .execute_with_context(context, tool_name, args)
+            .await;
         let content = match result {
             Ok(result) => serde_json::json!({
                 "success": true,
@@ -137,13 +142,18 @@ impl ToolExecutor {
     /// is blocked.
     ///
     /// PostToolUse hooks run after execution and cannot block.
+    ///
+    /// The trusted [`ToolContext`] supplies the agent identity and session;
+    /// `session_id` is derived from `context.agent.session_id` and never read
+    /// from model-supplied JSON.
     pub async fn execute_with_hooks(
         &self,
+        context: &ToolContext<'_>,
         tool_call_id: &str,
         tool_name: &str,
         args: serde_json::Value,
-        session_id: Option<&str>,
     ) -> ChatMessage {
+        let session_id = context.agent.session_id.as_str();
         tracing::info!(
             tool = tool_name,
             args_len = serde_json::to_string(&args).map(|s| s.len()).unwrap_or(0),
@@ -160,7 +170,7 @@ impl ToolExecutor {
 
         // PreToolUse hooks — hooks with when_state matching the current state
         // may block the tool by returning `{ "continue_execution": false }`.
-        let pre_ctx = HookManager::pre_tool_context(tool_name, &args, session_id)
+        let pre_ctx = HookManager::pre_tool_context(tool_name, &args, Some(session_id))
             .with_state(state_val.clone());
         let pre_outcomes = self
             .hook_manager
@@ -174,7 +184,7 @@ impl ToolExecutor {
                 let msg = format!("Tool '{}' blocked by hook: {}", tool_name, reason);
                 // Fire Notification hook asynchronously (do not await)
                 let hook_manager = Arc::clone(&self.hook_manager);
-                let notif_ctx = HookManager::notification_context(Some(&msg), session_id)
+                let notif_ctx = HookManager::notification_context(Some(&msg), Some(session_id))
                     .with_state(state_val.clone());
                 let tool_name_owned = tool_name.to_string();
                 let state_owned = state_val.clone();
@@ -192,8 +202,11 @@ impl ToolExecutor {
             }
         }
 
-        // Execute the tool
-        let result = self.registry.execute(tool_name, args.clone()).await;
+        // Execute the tool with the trusted context.
+        let result = self
+            .registry
+            .execute_with_context(context, tool_name, args.clone())
+            .await;
         let content = match &result {
             Ok(r) => serde_json::json!({
                 "success": true,
@@ -210,7 +223,7 @@ impl ToolExecutor {
         };
 
         // PostToolUse hook
-        let post_ctx = HookManager::post_tool_context(tool_name, &args, &content, session_id)
+        let post_ctx = HookManager::post_tool_context(tool_name, &args, &content, Some(session_id))
             .with_state(state_val.clone());
         let _post_outcomes = self
             .hook_manager
@@ -269,12 +282,18 @@ mod tests {
         let mut executor = make_executor(hook_manager);
         executor.set_state_handle(Some(Arc::new(RwLock::new("open".to_string()))));
 
+        let root = crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new("test"));
+        let context = crate::agent::ToolContext {
+            agent: &root,
+            invocation_id: crate::agent::ToolInvocationId::new("test-1"),
+            origin_turn_id: None,
+        };
         let result = executor
             .execute_with_hooks(
+                &context,
                 "test-1",
                 "exec_command",
                 serde_json::json!({"command": "echo hello"}),
-                None,
             )
             .await;
 
@@ -305,12 +324,18 @@ mod tests {
         // State is "build" — hook's when_state is "open" → should NOT fire
         executor.set_state_handle(Some(Arc::new(RwLock::new("build".to_string()))));
 
+        let root = crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new("test"));
+        let context = crate::agent::ToolContext {
+            agent: &root,
+            invocation_id: crate::agent::ToolInvocationId::new("test-2"),
+            origin_turn_id: None,
+        };
         let result = executor
             .execute_with_hooks(
+                &context,
                 "test-2",
                 "exec_command",
                 serde_json::json!({"command": "echo hello"}),
-                None,
             )
             .await;
 

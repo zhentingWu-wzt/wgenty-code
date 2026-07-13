@@ -260,36 +260,6 @@ impl TeamMemorySyncService {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    async fn resolve_conflict(
-        &self,
-        local: &TeamMemory,
-        remote: &TeamMemory,
-    ) -> anyhow::Result<()> {
-        match self.config.conflict_resolution {
-            ConflictResolution::PreferLocal => {
-                self.upload_memory(local).await?;
-            }
-            ConflictResolution::PreferRemote => {
-                self.download_memory(remote).await?;
-            }
-            ConflictResolution::PreferNewer => {
-                if local.updated_at > remote.updated_at {
-                    self.upload_memory(local).await?;
-                } else {
-                    self.download_memory(remote).await?;
-                }
-            }
-            ConflictResolution::Manual => {
-                println!("⚠️ Conflict detected for: {}", local.title);
-                println!("   Local updated: {}", local.updated_at);
-                println!("   Remote updated: {}", remote.updated_at);
-            }
-        }
-
-        Ok(())
-    }
-
     pub async fn create_memory(
         &self,
         title: &str,

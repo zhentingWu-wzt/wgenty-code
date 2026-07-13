@@ -8,11 +8,15 @@ use crate::agent::progress::{
     ErrorInfo, ErrorType, ProgressCallback, SubagentEvent, SubagentEventType, SubagentMetadata,
     SubagentProgress, SubagentStatus,
 };
+use crate::agent::{AgentCoordinator, ChildResult, CoordinatorError};
 use crate::api::{ApiClient, ChatMessage, ToolCall, ToolDefinition};
 use crate::tools::ToolRegistry;
 use crate::utils::stuck_detector::{StuckDetector, StuckStatus};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+// Progress snapshots are updated in short synchronous critical sections and
+// no guard is held across `.await`, so `std::sync::Mutex` is intentional.
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Maximum consecutive JSON parse errors before aborting the subagent.
@@ -138,6 +142,7 @@ impl SubagentError {
             ErrorType::Stuck { .. } => "subagent_stuck",
             ErrorType::ToolError { .. } => "subagent_tool_error",
             ErrorType::ParseError { .. } => "subagent_parse_error",
+            ErrorType::Cancelled => "subagent_cancelled",
             ErrorType::Unknown => "subagent_error",
         }
     }
@@ -177,6 +182,30 @@ fn subagent_error(
     }
 }
 
+/// Maps a coordinator lifecycle error into a `SubagentError`. Uses an explicit
+/// conversion rather than a blanket `From` impl so the error categorization
+/// stays localized to the synthesis-barrier call sites.
+fn coordinator_error(error: CoordinatorError) -> SubagentError {
+    SubagentError {
+        message: format!("subagent lifecycle coordination failed: {error}"),
+        error_type: ErrorType::Unknown,
+        partial_result: None,
+    }
+}
+
+/// Formats a batch of direct-child results into a bounded system message the
+/// parent model consumes in its synthesis round. Serialization errors are
+/// surfaced as actionable JSON rather than panicking.
+fn format_child_result_batch(results: &[ChildResult]) -> String {
+    let body = serde_json::to_string(results).unwrap_or_else(|error| {
+        format!(
+            r#"{{"error":"serialize_child_results","message":{}}}"#,
+            serde_json::json!(error.to_string())
+        )
+    });
+    format!("<child-results>\n{body}\n</child-results>")
+}
+
 /// Run a subagent with an isolated agent loop.
 ///
 /// The subagent starts with a clean `[system, user]` message list and iterates
@@ -200,6 +229,8 @@ fn subagent_error(
 pub async fn run_subagent_loop(
     api_client: &ApiClient,
     tool_registry: &ToolRegistry,
+    context: &crate::agent::AgentExecutionContext,
+    coordinator: Arc<AgentCoordinator>,
     system_prompt: &str,
     user_prompt: &str,
     allowed_tools: &[String],
@@ -250,6 +281,15 @@ pub async fn run_subagent_loop(
         let has_tools = !tool_defs.is_empty();
         let mut stuck_detector = StuckDetector::new();
         let mut consecutive_parse_errors: usize = 0;
+        // Child IDs whose terminal results have already been injected as a
+        // synthesis round. Tracked so a later candidate response does not
+        // re-inject the same batch; new children spawned mid-synthesis force
+        // another barrier before the next final return.
+        let mut synthesized_children: HashSet<String> = HashSet::new();
+        // A non-root parent must consume its direct children's results in one
+        // synthesis round before it may finalize. Root loops never synthesize
+        // (the persistent root consumes ready groups via the daemon API).
+        let is_non_root = context.parent_id.is_some();
 
         let emit = |status: SubagentStatus,
                     round: Option<usize>,
@@ -432,6 +472,49 @@ pub async fn run_subagent_loop(
             });
 
             if !is_tool_call {
+                let candidate = choice.message.content.clone().unwrap_or_default();
+
+                // ── Non-root synthesis barrier ──────────────────────────────
+                // Before a non-root parent may return a final result, it must
+                // consume any direct children that reached a terminal state in
+                // one bounded synthesis round. Root loops skip this: the
+                // persistent root never finalizes and its ready groups are
+                // claimed through the daemon delivery API.
+                if is_non_root {
+                    let child_results = coordinator
+                        .collect_children_for_synthesis(context)
+                        .await
+                        .map_err(coordinator_error)?;
+                    let fresh: Vec<ChildResult> = child_results
+                        .iter()
+                        .filter(|r| !synthesized_children.contains(r.child_id.as_str()))
+                        .cloned()
+                        .collect();
+                    if !fresh.is_empty() {
+                        for r in &fresh {
+                            synthesized_children.insert(r.child_id.as_str().to_string());
+                        }
+                        // Keep the candidate assistant turn, then inject the
+                        // child-result batch as a system message so the next
+                        // round can synthesize child evidence into the final
+                        // answer. `messages` already holds the assistant turn
+                        // pushed above.
+                        messages.push(ChatMessage::system(format_child_result_batch(&fresh)));
+                        tracing::info!(
+                            trace_id = trace_id,
+                            round = round,
+                            fresh_children = fresh.len(),
+                            "Subagent: injected child-result synthesis round"
+                        );
+                        continue;
+                    }
+                    // No outstanding children: the parent may finalize.
+                    coordinator
+                        .begin_finalizing(context)
+                        .await
+                        .map_err(coordinator_error)?;
+                }
+
                 let elapsed = start.elapsed();
                 tracing::info!(
                     trace_id = trace_id,
@@ -444,7 +527,7 @@ pub async fn run_subagent_loop(
                     log.push(SubagentEvent {
                         event_type: SubagentEventType::Completion {
                             status: "completed".to_string(),
-                            summary: Some(choice.message.content.clone().unwrap_or_default()),
+                            summary: Some(candidate.clone()),
                         },
                         elapsed_ms: start.elapsed().as_millis() as u64,
                     });
@@ -457,7 +540,7 @@ pub async fn run_subagent_loop(
                     None,
                     messages.clone(),
                 );
-                return Ok(choice.message.content.unwrap_or_default());
+                return Ok(candidate);
             }
 
             // ── Stuck detection ──────────────────────────────────────────
@@ -618,9 +701,18 @@ pub async fn run_subagent_loop(
                 } else {
                     Duration::from_secs(90)
                 };
-                let tool_result =
-                    tokio::time::timeout(tool_timeout, tool_registry.execute(tool_name, args))
-                        .await;
+                let tool_context = crate::agent::ToolContext {
+                    agent: context,
+                    invocation_id: crate::agent::ToolInvocationId::new(tool_call.id.clone()),
+                    // Non-root agents do not carry a root turn id; their `task`
+                    // calls group under current_or_create_parent_group.
+                    origin_turn_id: None,
+                };
+                let tool_result = tokio::time::timeout(
+                    tool_timeout,
+                    tool_registry.execute_with_context(&tool_context, tool_name, args),
+                )
+                .await;
 
                 let mut content = match tool_result {
                     Ok(Ok(output)) => output.content,
@@ -729,9 +821,78 @@ pub async fn run_subagent_loop(
         ))
     };
 
-    match tokio::time::timeout(timeout_duration, loop_future).await {
-        Ok(result) => result,
-        Err(_elapsed) => {
+    // Race the loop (with its timeout) against the trusted cancellation token.
+    // If the parent scope is cancelled, the loop returns a Cancelled error and
+    // emits a Cancelled progress event instead of running to its own timeout.
+    let timeout_future = tokio::time::timeout(timeout_duration, loop_future);
+    tokio::pin!(timeout_future);
+    let cancelled = context.cancellation.cancelled();
+    tokio::pin!(cancelled);
+
+    tokio::select! {
+        biased;
+        _ = &mut cancelled => {
+            // Push a terminal Error event so the focus-view timeline shows the
+            // cancellation, then snapshot the accumulated state.
+            {
+                let mut log = action_log.lock().unwrap();
+                log.push(SubagentEvent {
+                    event_type: SubagentEventType::Error {
+                        message: "Subagent cancelled by parent scope".to_string(),
+                        error_type: ErrorType::Cancelled,
+                    },
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                });
+            }
+            let accumulated_events = action_log.lock().unwrap().clone();
+            if let Some(ref cb) = on_progress {
+                cb(SubagentProgress {
+                    node_id: trace_id.to_string(),
+                    parent_id: None,
+                    label: String::new(),
+                    status: SubagentStatus::Cancelled,
+                    round: None,
+                    max_rounds: Some(max_rounds),
+                    current_tool: None,
+                    current_params: current_params_val.lock().unwrap().clone(),
+                    action_log: accumulated_events.clone(),
+                    text_snapshot: text_snapshot.lock().unwrap().clone(),
+                    started_at: started_at_ms,
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                    metadata: Some(SubagentMetadata {
+                        token_count: None,
+                        error: Some("Subagent cancelled by parent scope".to_string()),
+                        depends_on: vec![],
+                    }),
+                    progress_delta: None,
+                    token_budget_k: None,
+                    cumulative_tokens: *cumulative_tokens.lock().unwrap() as u64,
+                    error_details: Some(ErrorInfo {
+                        error_type: ErrorType::Cancelled,
+                        message: "Subagent cancelled by parent scope".to_string(),
+                        last_tool: None,
+                        last_params: None,
+                        round: 0,
+                        retryable: false,
+                    }),
+                    events: accumulated_events,
+                    messages: Vec::new(),
+                });
+            }
+            tracing::info!(
+                trace_id = trace_id,
+                elapsed_secs = start.elapsed().as_secs(),
+                "Subagent: cancelled by parent scope"
+            );
+            Err(subagent_error(
+                "Subagent cancelled by parent scope".to_string(),
+                ErrorType::Cancelled,
+                &text_snapshot,
+            ))
+        }
+        result = &mut timeout_future => match result {
+            Ok(inner) => inner,
+            Err(_elapsed) => {
             // Push a terminal Error event so the focus-view timeline shows the
             // timeout instead of ending abruptly, then snapshot the accumulated
             // state. The Mutexes survive because they live outside loop_future.
@@ -799,6 +960,7 @@ pub async fn run_subagent_loop(
                 &text_snapshot,
             ))
         }
+        },
     }
 }
 

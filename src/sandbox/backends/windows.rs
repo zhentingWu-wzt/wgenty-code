@@ -54,6 +54,12 @@ impl SandboxBackend for WindowsBackend {
         command: &str,
         workdir: Option<&Path>,
     ) -> Result<SandboxedChild, SandboxError> {
+        tracing::warn!(
+            "Windows sandbox is not hardware-enforced: only environment variable \
+             filtering is active. Commands run without Job Object or Restricted Token \
+             isolation."
+        );
+
         // On Windows, we spawn via cmd.exe and rely on the OS-level
         // sandbox primitives. The full Restricted Token + Job Object
         // pipeline requires the `windows` crate and is phased in
