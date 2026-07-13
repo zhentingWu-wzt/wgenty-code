@@ -1,8 +1,9 @@
 {
-  "name": "wgenty-code-darwin-arm64",
+  "name": "@wuzhenting/darwin-arm64",
   "version": "0.1.0",
   "description": "wgenty-code prebuilt binary for darwin-arm64 (Apple Silicon)",
   "license": "MIT",
+  "author": "zhentingWu-wzt",
   "os": ["darwin"],
   "cpu": ["arm64"],
   "bin": "wgenty-code",

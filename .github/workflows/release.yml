@@ -13,6 +13,7 @@ jobs:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -39,6 +40,11 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: wgenty-code.exe
             asset_name: wgenty-code-windows-x86_64.exe
+            bundled_sqlite: "--features bundled-sqlite"
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            artifact: wgenty-code.exe
+            asset_name: wgenty-code-windows-aarch64.exe
             bundled_sqlite: "--features bundled-sqlite"
 
     steps:
@@ -91,11 +97,87 @@ jobs:
       - name: Verify Image
         run: docker run --rm wgenty-code:latest --version
 
-  publish-npm:
-    name: Publish to npm
+  publish-platform:
+    name: Publish wgenty-code-${{ matrix.sub }}
     needs: build
     runs-on: ubuntu-latest
-    # Only publish on version tags.
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sub: linux-x64
+            target: x86_64-unknown-linux-gnu
+            asset: wgenty-code-linux-x86_64
+            bin: wgenty-code
+          - sub: linux-arm64
+            target: aarch64-unknown-linux-gnu
+            asset: wgenty-code-linux-aarch64
+            bin: wgenty-code
+          - sub: darwin-x64
+            target: x86_64-apple-darwin
+            asset: wgenty-code-macos-x86_64
+            bin: wgenty-code
+          - sub: darwin-arm64
+            target: aarch64-apple-darwin
+            asset: wgenty-code-macos-aarch64
+            bin: wgenty-code
+          - sub: win32-x64
+            target: x86_64-pc-windows-msvc
+            asset: wgenty-code-windows-x86_64.exe
+            bin: wgenty-code.exe
+          - sub: win32-arm64
+            target: aarch64-pc-windows-msvc
+            asset: wgenty-code-windows-aarch64.exe
+            bin: wgenty-code.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Compute version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: artifacts
+
+      - name: Assemble single platform package
+        run: |
+          set -euo pipefail
+          pkg="@wuzhenting/${{ matrix.sub }}"
+          dir="npm-dist/${{ matrix.sub }}"
+          mkdir -p "$dir"
+          cp "npm/platforms/${{ matrix.sub }}/package.json" "$dir/package.json"
+          cp "artifacts/${{ matrix.asset }}" "$dir/${{ matrix.bin }}"
+          if [[ "${{ matrix.bin }}" != *.exe ]]; then
+            chmod +x "$dir/${{ matrix.bin }}"
+          fi
+          (cd "$dir" && npm pkg set version="${{ steps.ver.outputs.version }}" >/dev/null)
+
+      - name: Publish (idempotent)
+        run: |
+          set -euo pipefail
+          pkg="@wuzhenting/${{ matrix.sub }}"
+          ver="${{ steps.ver.outputs.version }}"
+          if npm view "${pkg}@${ver}" >/dev/null 2>&1; then
+            echo "skip: ${pkg}@${ver} already published"
+          else
+            (cd "npm-dist/${{ matrix.sub }}" && npm publish --access public)
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-main:
+    name: Publish main package
+    needs: publish-platform
+    runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
@@ -109,26 +191,29 @@ jobs:
         id: ver
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Download all binary artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          pattern: binary-*
-
-      - name: Assemble npm packages
-        run: bash npm/scripts/assemble.sh "${{ steps.ver.outputs.version }}" artifacts npm-dist
-
-      - name: Publish platform subpackages
+      - name: Assemble main package
         run: |
-          for sub in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
-            echo "::group::publish wgenty-code-$sub"
-            (cd "npm-dist/wgenty-code-$sub" && npm publish --access public)
-            echo "::endgroup::"
-          done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          set -euo pipefail
+          dir="npm-dist/wgenty-code"
+          mkdir -p "$dir/bin"
+          cp npm/wgenty-code/package.json "$dir/package.json"
+          cp npm/wgenty-code/bin/wgenty-code.js "$dir/bin/wgenty-code.js"
+          cp npm/wgenty-code/README.md "$dir/README.md"
+          ver="${{ steps.ver.outputs.version }}"
+          jq --arg v "$ver" \
+            '.version=$v | .optionalDependencies = (.optionalDependencies | with_entries(.value = $v))' \
+            "$dir/package.json" > "$dir/package.json.tmp"
+          mv "$dir/package.json.tmp" "$dir/package.json"
 
-      - name: Publish main package
-        run: (cd npm-dist/wgenty-code && npm publish --access public)
+      - name: Publish (idempotent)
+        run: |
+          set -euo pipefail
+          pkg="wgenty-code"
+          ver="${{ steps.ver.outputs.version }}"
+          if npm view "${pkg}@${ver}" >/dev/null 2>&1; then
+            echo "skip: ${pkg}@${ver} already published"
+          else
+            (cd "npm-dist/$pkg" && npm publish --access public)
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

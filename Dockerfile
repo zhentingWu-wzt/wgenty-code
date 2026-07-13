@@ -28,6 +28,9 @@ COPY src ./src
 # bundled-skills 的 rust-embed 编译期打包源（SKILL.md + 支撑文件）
 COPY .wgenty-code/skills ./.wgenty-code/skills
 
+# i18n 的 rust-embed 编译期打包源（.ftl 语言文件）
+COPY locales ./locales
+
 # 构建优化版本（完整功能）
 RUN cargo build --release --bin wgenty-code
 

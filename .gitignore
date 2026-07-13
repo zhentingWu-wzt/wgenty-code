@@ -45,11 +45,6 @@ settings.json
 .claude/
 .codex/
 
-# Project-level wgenty-code: only bundled skills are tracked
-# (embed source for the `bundled-skills` feature + project skills root)
-.wgenty-code/*
-!.wgenty-code/skills/
-
 # OpenSpec development workflow artifacts
 openspec/changes/
 

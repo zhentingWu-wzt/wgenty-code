@@ -1,8 +1,9 @@
 {
-  "name": "wgenty-code-darwin-x64",
+  "name": "@wuzhenting/darwin-x64",
   "version": "0.1.0",
   "description": "wgenty-code prebuilt binary for darwin-x64 (macOS Intel)",
   "license": "MIT",
+  "author": "zhentingWu-wzt",
   "os": ["darwin"],
   "cpu": ["x64"],
   "bin": "wgenty-code",
