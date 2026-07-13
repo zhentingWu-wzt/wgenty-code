@@ -7,6 +7,7 @@
 //! Returns title + URL only (no snippets — use web_fetch to read page content).
 //! Max 8 uses per session (following Wgenty Code's pattern).
 
+use crate::utils::http::web_search_client;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Serialize;
@@ -33,11 +34,7 @@ impl WebSearchTool {
         Self {
             use_count: AtomicUsize::new(0),
             max_uses: 8,
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .user_agent("Mozilla/5.0 (compatible; wgenty-code/1.0)")
-                .build()
-                .unwrap_or_default(),
+            client: web_search_client(),
         }
     }
 
@@ -46,11 +43,7 @@ impl WebSearchTool {
         Self {
             use_count: AtomicUsize::new(0),
             max_uses,
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .user_agent("Mozilla/5.0 (compatible; wgenty-code/1.0)")
-                .build()
-                .unwrap_or_default(),
+            client: web_search_client(),
         }
     }
 
@@ -81,6 +74,15 @@ impl WebSearchTool {
 
         let results = Self::parse_ddg_html(&html, max_results);
         if results.is_empty() {
+            // Detect common anti-bot responses
+            if html.contains("g-recaptcha")
+                || html.contains("Complete the following challenge")
+                || html.contains("Unfortunately, bots use DuckDuckGo")
+            {
+                return Err("DuckDuckGo anti-bot challenge triggered — search blocked. \
+                     Set TAVILY_API_KEY as a fallback."
+                    .to_string());
+            }
             return Err("DuckDuckGo returned no results".to_string());
         }
 

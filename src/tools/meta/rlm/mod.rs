@@ -17,6 +17,7 @@ mod pipeline;
 pub use pipeline::{extract_json, run_rlm_pipeline, RlmResult};
 
 use crate::agent::progress::{SubagentProgress, SubagentStatus};
+use crate::agent::{AgentCoordinator, ToolContext};
 use crate::config::Settings;
 use crate::tools::{Tool, ToolError, ToolOutput, ToolRegistry};
 use async_trait::async_trait;
@@ -27,6 +28,7 @@ use tokio::sync::RwLock;
 pub struct RlmDelegateTool {
     settings: Settings,
     tool_registry: std::sync::Weak<ToolRegistry>,
+    coordinator: Arc<AgentCoordinator>,
     progress_store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
 }
 
@@ -34,11 +36,13 @@ impl RlmDelegateTool {
     pub fn new(
         settings: Settings,
         tool_registry: std::sync::Weak<ToolRegistry>,
+        coordinator: Arc<AgentCoordinator>,
         progress_store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
     ) -> Self {
         Self {
             settings,
             tool_registry,
+            coordinator,
             progress_store,
         }
     }
@@ -75,13 +79,23 @@ impl Tool for RlmDelegateTool {
         })
     }
 
-    async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        Err(ToolError {
+            message: "delegate requires trusted agent context".to_string(),
+            code: Some("missing_agent_context".to_string()),
+        })
+    }
+
+    async fn execute_with_context(
+        &self,
+        context: &ToolContext<'_>,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
         let task = input["task"].as_str().unwrap_or("");
-        let context = input["context"].as_str().unwrap_or("");
-        let session_id = input["_session_id"]
-            .as_str()
-            .unwrap_or("default")
-            .to_string();
+        let context_str = input["context"].as_str().unwrap_or("");
+        // Trusted session identity from the execution context; `_session_id`
+        // in input is ignored.
+        let session_id = context.agent.session_id.as_str().to_string();
 
         let tool_registry = self.tool_registry.upgrade().ok_or_else(|| ToolError {
             message: "Tool registry is no longer available".to_string(),
@@ -120,8 +134,10 @@ impl Tool for RlmDelegateTool {
         let result = run_rlm_pipeline(
             &self.settings,
             tool_registry,
+            self.coordinator.clone(),
+            context.agent,
             task,
-            context,
+            context_str,
             Some((self.progress_store.clone(), session_id)),
             Some(root_node_id),
             None,

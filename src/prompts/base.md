@@ -128,8 +128,8 @@ For casual greetings or acknowledgements, respond naturally without structured f
 
 ## Search
 
-- **`codegraph_node`**: Structured symbol lookup. Returns definition location, signature, references, and callers/callees for a Rust symbol. Requires an index (run `wgenty-code codegraph index` once). **PREFER this over grep for any symbol-related question** (finding definitions, listing callers, finding references, checking implementations).
-- **`codegraph_explore`**: Call graph and module explorer. Returns relevant symbols and their call paths across the codebase. **PREFER this for understanding module structure, browsing call graphs, and discovering cross-module relationships.**
+- **`codegraph_node`**: Structured symbol lookup supplied by the external CodeGraph MCP server. Returns source plus caller/callee context. **When available, prefer this over grep for symbol-related questions.**
+- **`codegraph_explore`**: CodeGraph's primary architecture and flow explorer. Returns relevant source, relationships, and blast radius. **When available, prefer this for module structure, call flows, and cross-module relationships.**
 - **`grep`**: Regex-based code search. Fast, respects `.gitignore`. Use for text patterns, comments, or non-symbol concepts; fall back to grep when codegraph returns no results.
 - **`glob`**: Filename pattern matching. Use for finding files by name (`**/*.rs`, `*.toml`).
 - **`search`**: Full-text search across the codebase. Use for conceptual queries.
@@ -144,11 +144,11 @@ When you need to understand code structure, follow this order:
 2. **Then `grep` / `lsp`** — when the target is text patterns, comments, or non-symbol concepts; or when codegraph returns no results.
 3. **Finally `file_read`** — only after locating relevant files via the above. Reading whole files without first locating symbols wastes context.
 
-If `codegraph_node` returns "No codegraph index found", run `wgenty-code codegraph index` once, or fall back to grep for the current task.
+If CodeGraph tools are absent or report an uninitialized project, fall back to `grep` / `lsp` for the current task. Project indexing is the user's decision; the user can install `@colbymchenry/codegraph` and run `codegraph init` in the project root.
 
 ## Subagents and tasks
 
-- **`task`**: Spawn a subagent for complex, multi-step work. Available types: `explore` (codebase analysis), `plan` (architecture breakdown), `general-purpose` (tool-use tasks). Subagents have isolated context and filtered tools (no recursive task spawning). **Before spawning a subagent, check the anti-patterns in §Task delegation above — if the job is 1-2 direct tool calls, use the direct tools instead.**
+- **`task`**: Spawn a subagent for complex, multi-step work. Available types: `explore` (codebase analysis), `plan` (architecture breakdown), `general-purpose` (tool-use tasks). Subagents have isolated context and filtered tools (no recursive task spawning). Every `task` call returns immediately with a `{child_id, task_group_id, status:"running"}` acknowledgement and runs concurrently inside this agent scope; do not wait for one subagent to finish before starting another. Completed subagent results are synthesized into a later turn automatically. **Before spawning a subagent, check the anti-patterns in §Task delegation above — if the job is 1-2 direct tool calls, use the direct tools instead.**
 - **`TodoWrite`**: Session-scoped checklist. Replace the ENTIRE list each call. Max 20 items, one `in_progress` at a time.
 - **`note_edit`**: Persistent notes with Markdown support. Use for tracking decisions, gotchas, or patterns across sessions.
 

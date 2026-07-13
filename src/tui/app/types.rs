@@ -1,7 +1,7 @@
 //! Type definitions for the TUI application layer.
 
-use crate::agent::progress::SubagentProgress;
 use crate::api::ChatMessage;
+use crate::daemon::models::LocalAgentViewResponse;
 use crate::state::agent_phase::{TurnAbortReason, TurnId};
 use crate::tui::client::{SessionInfo, TodoItem};
 use crossterm::event::KeyEvent;
@@ -165,10 +165,62 @@ pub enum AppEvent {
     TodosUpdated(Vec<TodoItem>),
     /// Settings were hot-reloaded from disk
     ConfigChanged(Box<crate::config::Settings>),
-    /// A subagent progress update from daemon polling.
-    SubagentUpdate(Box<SubagentProgress>),
+    /// A scoped agent local view (self + direct children) from the daemon.
+    /// Carries the `generation` at which the polling loop was spawned so the
+    /// handler can discard stale views from a previous generation (e.g. after
+    /// `/clear` or a generation reset).
+    AgentLocalView {
+        view: Box<LocalAgentViewResponse>,
+        generation: u64,
+    },
     /// Background task/subagent result notification for display in chat.
     BackgroundTaskResult(String),
+    /// A new task generation was established after `/clear` or shutdown
+    /// cancellation. Obsolete root-direct subtrees are cancelled by the
+    /// daemon; the app adopts the new generation and clears local views.
+    AgentGenerationReset {
+        generation: u64,
+    },
+    /// Descend into a direct child via its opaque navigation capability.
+    /// The daemon verifies the capability and returns the child's local view.
+    NavigateAgent {
+        capability: String,
+    },
+    /// A capability-bound navigation returned a new local view. Pushes the
+    /// current frame onto the back stack and replaces the loaded view.
+    AgentViewNavigated(Box<LocalAgentViewResponse>),
+    /// Pop the navigation back stack to restore the previous scoped view.
+    NavigateAgentBack,
+    /// Cross-session memory recall completed in the background at startup.
+    /// Carries formatted memory lines to inject into the conversation context.
+    MemoriesReady(Vec<String>),
+    /// Skill discovery completed in the background at startup.
+    /// Carries the merged skill inventory, external skill registry, and
+    /// comet workflow entry commands for the command router / completion engine.
+    SkillsReady(Box<SkillsReadyData>),
+}
+
+/// Payload for [`AppEvent::SkillsReady`].
+pub struct SkillsReadyData {
+    /// Merged skill inventory (internal + external, filtered by exposure rules).
+    pub skill_inventory: Vec<crate::prompts::SkillEntry>,
+    /// Discovered external skill registry (if any).
+    pub external_skill_registry: Option<std::sync::Arc<crate::knowledge::ExternalSkillRegistry>>,
+    /// Comet entry commands parsed from workflow.yaml or external registry.
+    pub comet_entry_commands: Vec<String>,
+}
+
+impl std::fmt::Debug for SkillsReadyData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SkillsReadyData")
+            .field("skill_inventory_len", &self.skill_inventory.len())
+            .field(
+                "has_external_registry",
+                &self.external_skill_registry.is_some(),
+            )
+            .field("comet_entry_commands", &self.comet_entry_commands)
+            .finish()
+    }
 }
 
 /// UI state for a single message in the chat view.
@@ -375,4 +427,24 @@ mod tests {
         assert!(state.tabs.is_empty());
         assert_eq!(state.visible_matches().len(), 1);
     }
+}
+
+// ── Scoped agent navigation history (Task 14) ────────────────────────────────
+
+/// One frame in the scoped agent navigation stack: the currently loaded view
+/// plus which entry is selected (0 for self, 1+ for direct children).
+#[derive(Debug, Clone)]
+pub struct AgentViewFrame {
+    pub view: LocalAgentViewResponse,
+    pub selected: usize,
+    pub breadcrumb_label: String,
+}
+
+/// Owned navigation state for capability-driven agent tree traversal. The
+/// TUI starts at the root view and pushes frames as the user descends into
+/// direct children via their navigation capability.
+#[derive(Debug, Clone, Default)]
+pub struct AgentNavigationState {
+    pub current: Option<AgentViewFrame>,
+    pub back_stack: Vec<AgentViewFrame>,
 }

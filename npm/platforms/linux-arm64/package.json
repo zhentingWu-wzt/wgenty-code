@@ -1,0 +1,15 @@
+{
+  "name": "wgenty-code-linux-arm64",
+  "version": "0.1.0",
+  "description": "wgenty-code prebuilt binary for linux-arm64",
+  "license": "MIT",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "bin": "wgenty-code",
+  "files": ["wgenty-code"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zhentingWu-wzt/wgenty-code",
+    "directory": "npm/platforms/linux-arm64"
+  }
+}

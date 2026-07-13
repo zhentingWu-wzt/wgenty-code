@@ -81,6 +81,8 @@ impl CacheEntry {
 
 pub struct WebFetchTool {
     client: Client,
+    // These guards protect small in-memory values only. They are never held
+    // across `.await`, so a synchronous mutex avoids async lock overhead.
     settings: Mutex<Option<Settings>>,
     cache: Mutex<LruCache<String, CacheEntry>>,
     cache_ttl: Duration,
@@ -98,7 +100,9 @@ impl WebFetchTool {
                 .build()
                 .unwrap_or_default(),
             settings: Mutex::new(None),
-            cache: Mutex::new(LruCache::new(NonZeroUsize::new(64).unwrap())),
+            cache: Mutex::new(LruCache::new(
+                NonZeroUsize::new(64).expect("64 is non-zero"),
+            )),
             cache_ttl: Duration::from_secs(15 * 60),
         }
     }
@@ -106,7 +110,10 @@ impl WebFetchTool {
     /// Set API settings to enable Haiku-like summary layer.
     /// Without this, the tool falls back to raw text extraction.
     pub fn set_settings(&self, settings: Settings) {
-        let mut s = self.settings.lock().unwrap();
+        let mut s = self
+            .settings
+            .lock()
+            .expect("settings mutex should not be poisoned");
         *s = Some(settings);
     }
 
@@ -125,7 +132,10 @@ impl WebFetchTool {
 
     /// Check cache for a previously fetched URL.
     fn cache_get(&self, url: &str) -> Option<String> {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self
+            .cache
+            .lock()
+            .expect("cache mutex should not be poisoned");
         if let Some(entry) = cache.get(&Self::cache_key(url)) {
             if !entry.is_expired(self.cache_ttl) {
                 return Some(entry.text.clone());
@@ -138,11 +148,20 @@ impl WebFetchTool {
 
     /// Store fetched text in the cache.
     fn cache_put(&self, url: &str, text: &str) {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self
+            .cache
+            .lock()
+            .expect("cache mutex should not be poisoned");
         cache.put(Self::cache_key(url), CacheEntry::new(text.to_string()));
     }
 
     /// Validate URL: only allow http/https, reject private/file schemes.
+    ///
+    /// Checks the hostname against private/reserved IP ranges, including
+    /// alternate encodings that could bypass naive string matching:
+    /// decimal ("2130706433"), octal ("0177.0.0.1"), and hex ("0x7f.0.0.1").
+    /// Redirects are disabled at the client level to prevent DNS-rebinding
+    /// via HTTP redirects.
     fn validate_url(url: &str) -> Result<(), String> {
         let url_lower = url.to_lowercase();
 
@@ -166,7 +185,7 @@ impl WebFetchTool {
 
         // Parse and check the host IP against private/reserved ranges
         if let Some(host) = Self::extract_host(&url_lower) {
-            // Try parsing as IP address
+            // Try parsing as a standard IP address first.
             if let Ok(ip) = host.parse::<std::net::IpAddr>() {
                 if Self::is_private_ip(ip) {
                     return Err(format!(
@@ -175,19 +194,14 @@ impl WebFetchTool {
                     ));
                 }
             } else {
-                // Check IPv4-in-hostname (e.g., "127.0.0.1" in "http://127.0.0.1:8080/")
-                // Also check decimal/octal IP representations
                 let host_clean = host.trim_start_matches('[').trim_end_matches(']');
-                if host_clean.chars().all(|c| c.is_ascii_digit() || c == '.') {
-                    // Might be a decimal IP like "2130706433" (= 127.0.0.1)
-                    if let Ok(num) = host_clean.parse::<u32>() {
-                        let ip = std::net::Ipv4Addr::from(num);
-                        if Self::is_private_ip(std::net::IpAddr::V4(ip)) {
-                            return Err(format!(
-                                "Private/internal network URLs are not allowed: {}",
-                                url
-                            ));
-                        }
+                // Try alternate IPv4 encodings (decimal, octal, hex, mixed).
+                if let Some(ip) = Self::parse_obfuscated_ipv4(host_clean) {
+                    if Self::is_private_ip(std::net::IpAddr::V4(ip)) {
+                        return Err(format!(
+                            "Private/internal network URLs are not allowed: {}",
+                            url
+                        ));
                     }
                 }
             }
@@ -227,6 +241,77 @@ impl WebFetchTool {
                     || (v6.segments()[0] & 0xFE00) == 0xFC00
             }
         }
+    }
+
+    /// Try to parse a hostname as an obfuscated IPv4 address.
+    ///
+    /// Browsers accept several non-standard encodings for IPv4 in URLs.
+    /// This covers the common ones used in SSRF bypass attempts:
+    /// - Decimal: "2130706433" -> 127.0.0.1
+    /// - Octal:   "0177.0.0.1" -> 127.0.0.1
+    /// - Hex:     "0x7f.0.0.1" or "0x7f000001" -> 127.0.0.1
+    /// - Mixed:   "0x7f.0.0.1" -> 127.0.0.1
+    ///
+    /// Returns None if the string is not a valid IPv4 in any encoding.
+    fn parse_obfuscated_ipv4(host: &str) -> Option<std::net::Ipv4Addr> {
+        // Pure decimal (no dots, no 0x prefix): single-integer form.
+        if !host.contains('.') && !host.starts_with("0x") && !host.starts_with("0X") {
+            if let Ok(num) = host.parse::<u32>() {
+                return Some(std::net::Ipv4Addr::from(num));
+            }
+        }
+
+        // Hex single-integer form: "0x7f000001"
+        if host.starts_with("0x") || host.starts_with("0X") {
+            let hex_part = &host[2..];
+            if !hex_part.contains('.') {
+                if let Ok(num) = u32::from_str_radix(hex_part, 16) {
+                    return Some(std::net::Ipv4Addr::from(num));
+                }
+            }
+        }
+
+        // Dotted form with per-octet encoding (decimal, octal, or hex).
+        // Check octal/hex BEFORE decimal: "0177" should be parsed as octal
+        // (127), not decimal (177), to match browser behaviour and catch
+        // SSRF bypass attempts that rely on leading-zero obfuscation.
+        let parts: Vec<&str> = host.split('.').collect();
+        if parts.len() == 4 {
+            let mut octets = [0u8; 4];
+            let mut all_valid = true;
+            for (i, part) in parts.iter().enumerate() {
+                if (part.starts_with("0x") || part.starts_with("0X")) && part.len() > 2 {
+                    match u8::from_str_radix(&part[2..], 16) {
+                        Ok(v) => octets[i] = v,
+                        Err(_) => {
+                            all_valid = false;
+                            break;
+                        }
+                    }
+                } else if part.starts_with('0') && part.len() > 1 {
+                    // Leading-zero octal: "0177" -> 127
+                    match u8::from_str_radix(part, 8) {
+                        Ok(v) => octets[i] = v,
+                        Err(_) => {
+                            all_valid = false;
+                            break;
+                        }
+                    }
+                } else if let Ok(v) = part.parse::<u8>() {
+                    octets[i] = v;
+                } else {
+                    all_valid = false;
+                    break;
+                }
+            }
+            if all_valid {
+                return Some(std::net::Ipv4Addr::new(
+                    octets[0], octets[1], octets[2], octets[3],
+                ));
+            }
+        }
+
+        None
     }
 
     /// Extract readable text from HTML.
@@ -313,7 +398,10 @@ impl WebFetchTool {
         user_prompt: &str,
     ) -> Option<String> {
         let settings = {
-            let s = self.settings.lock().unwrap();
+            let s = self
+                .settings
+                .lock()
+                .expect("settings mutex should not be poisoned");
             s.clone()?
         };
 
@@ -563,6 +651,26 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_reject_obfuscated_private_ip() {
+        // Decimal encoding: 2130706433 = 127.0.0.1
+        assert!(WebFetchTool::validate_url("http://2130706433").is_err());
+        // Octal encoding: 0177.0.0.1 = 127.0.0.1
+        assert!(WebFetchTool::validate_url("http://0177.0.0.1").is_err());
+        // Hex encoding: 0x7f.0.0.1 = 127.0.0.1
+        assert!(WebFetchTool::validate_url("http://0x7f.0.0.1").is_err());
+        // Hex single-integer: 0x7f000001 = 127.0.0.1
+        assert!(WebFetchTool::validate_url("http://0x7f000001").is_err());
+        // Decimal encoding for 169.254.169.254 (cloud metadata endpoint)
+        assert!(WebFetchTool::validate_url("http://2852039166").is_err());
+    }
+
+    #[test]
+    fn test_validate_reject_link_local() {
+        assert!(WebFetchTool::validate_url("http://169.254.169.254").is_err());
+        assert!(WebFetchTool::validate_url("http://169.254.0.1").is_err());
+    }
+
+    #[test]
     fn test_extract_text() {
         let html = "<html><head><title>Test</title><script>var x=1;</script></head><body><p>Hello <b>World</b></p></body></html>";
         let text = WebFetchTool::extract_text(html);
@@ -634,7 +742,10 @@ mod tests {
         tool.cache_put("https://example.com", "stale content");
         // Artificially expire the entry by inserting a very old timestamp
         {
-            let mut cache = tool.cache.lock().unwrap();
+            let mut cache = tool
+                .cache
+                .lock()
+                .expect("cache mutex should not be poisoned");
             if let Some(entry) = cache.get_mut(&"https://example.com".to_string()) {
                 entry.inserted_at = Instant::now() - Duration::from_secs(16 * 60);
             }

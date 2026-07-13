@@ -73,9 +73,6 @@ impl Cli {
             Some(super::Commands::Skills { action }) => {
                 self.run_skills(action).await?;
             }
-            Some(super::Commands::Codegraph { action }) => {
-                self.run_codegraph(action)?;
-            }
             #[cfg(feature = "daemon")]
             Some(super::Commands::Daemon { port }) => {
                 crate::daemon::run(state, *port).await?;
@@ -104,7 +101,9 @@ impl Cli {
         println!(
             "  {:20} {}",
             "Working Directory:",
-            std::env::current_dir().unwrap().display()
+            std::env::current_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_else(|_| "<unknown>".to_string())
         );
         println!();
     }
@@ -115,8 +114,18 @@ impl Cli {
         state: crate::state::AppState,
         prompt: Option<String>,
     ) -> anyhow::Result<()> {
-        // Auto-install bundled skills on first run (silent, non-blocking)
-        crate::knowledge::embedded::auto_install();
+        // Auto-install bundled skills on first run. Skip the disk write entirely
+        // when already installed (the common case after first run); otherwise
+        // run the install in a background blocking task so it never delays
+        // terminal entry or the first rendered frame.
+        if !crate::knowledge::embedded::is_auto_installed() {
+            tokio::task::spawn_blocking(|| {
+                let installed = crate::knowledge::embedded::auto_install();
+                if !installed.is_empty() {
+                    tracing::info!(count = installed.len(), "auto-installed bundled skills");
+                }
+            });
+        }
 
         use crate::tui::app::{self, App};
         use crate::tui::client::DaemonClient;
@@ -137,21 +146,14 @@ impl Cli {
         let settings_handle: crate::config::watcher::SettingsHandle =
             std::sync::Arc::new(std::sync::RwLock::new(state.settings.clone()));
 
-        // Start daemon in background
-        let (base_url, shutdown_tx, daemon_handle) = app::start_daemon(state).await?;
-
-        // Set up terminal
+        // ── Terminal setup FIRST (render-first) ──────────────────────────
+        // Enter the alternate screen and enable raw mode *before* the blocking
+        // daemon startup so the user sees immediate visual feedback (splash)
+        // instead of a blank terminal during MCP connect / session load.
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
-        // Enable mouse capture so crossterm delivers ScrollUp/ScrollDown events
-        // for the chat area and the focus view timeline. Without this the
-        // input reader never sees Event::Mouse and mouse-wheel scrolling is
-        // dead. See spec subagent-focus-view: "scrollable only via mouse wheel".
         execute!(stdout, EnableMouseCapture)?;
 
-        // Install panic hook to restore terminal on crash.
-        // Without this, a panic leaves the terminal in raw mode with
-        // the alternate screen, causing overlapping/garbled display.
         let default_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let _ = disable_raw_mode();
@@ -162,26 +164,45 @@ impl Cli {
         }));
 
         enable_raw_mode()?;
-        // Enable the kitty keyboard protocol so crossterm receives modifier
-        // flags for otherwise-ambiguous keys. Without this, Shift+Enter is
-        // reported as a bare Enter (most terminals send a plain \r with no
-        // modifier bits), making multi-line input via Shift+Enter impossible.
-        // DISAMBIGUATE_ESCAPE_CODES is the required flag: it makes the
-        // terminal send CSI 'u' sequences carrying the modifier mask, so
-        // Shift+Enter arrives as Enter-with-SHIFT. Terminals that don't
-        // support the protocol (e.g. macOS Terminal.app) ignore the push and
-        // degrade gracefully - Shift+Enter keeps behaving as Enter. Popped on
-        // clean exit and in the panic hook so terminal state never leaks.
         execute!(
             io::stdout(),
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         )?;
-        let backend = CrosstermBackend::new(stdout);
 
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend)?;
+
+        // ── Splash screen ────────────────────────────────────────────────
+        terminal.draw(|f| {
+            use ratatui::layout::Alignment;
+            use ratatui::widgets::Paragraph;
+            let area = f.area();
+            f.render_widget(
+                Paragraph::new("Starting wgenty-code…").alignment(Alignment::Center),
+                area,
+            );
+        })?;
+        crate::utils::startup_timing::mark("splash rendered (first paint)");
+
+        // ── Start daemon (session load deferred to background) ───────────
+        let (base_url, shutdown_tx, daemon_handle) = match app::start_daemon(state).await {
+            Ok(result) => result,
+            Err(e) => {
+                let _ = disable_raw_mode();
+                let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+                let _ = execute!(io::stdout(), DisableMouseCapture);
+                let _ = execute!(io::stdout(), LeaveAlternateScreen);
+                let _ = std::panic::take_hook();
+                return Err(e);
+            }
+        };
+        crate::utils::startup_timing::mark("daemon started");
         // Create client and app
         let client = DaemonClient::new(base_url);
+        crate::utils::startup_timing::mark("daemon client created");
         let session_id = uuid::Uuid::new_v4().to_string();
         let mut app = App::new(client, session_id, settings_handle);
+        crate::utils::startup_timing::mark("app new returned");
 
         // Load plugin commands into completion engine
         {
@@ -218,12 +239,11 @@ impl Cli {
             let tx = app.event_sender();
             let _ = tx.send(crate::tui::app::AppEvent::Submit(p));
         }
+        crate::utils::startup_timing::mark("app initialized (entering run loop)");
 
-        // Run the TUI — terminal is dropped when this block ends, releasing stdout
-        let result = {
-            let mut terminal = Terminal::new(backend)?;
-            app.run(&mut terminal).await
-        };
+        // Run the TUI - the terminal was created above (before daemon start)
+        // so the splash was visible during daemon initialization.
+        let result = app.run(&mut terminal).await;
 
         // Restore terminal
         disable_raw_mode()?;
@@ -299,7 +319,7 @@ impl Cli {
             "temperature": 0.7
         });
 
-        let http_client = reqwest::Client::new();
+        let http_client = crate::utils::http::default_client();
         let url = format!("{}/v1/chat/completions", base_url);
 
         let response = http_client
@@ -953,62 +973,6 @@ impl Cli {
                     println!("Sandbox enabled ({}).", status.backend_name);
                 } else {
                     println!("Sandbox enabled (policy-only, {}).", status.backend_name);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn run_codegraph(&self, action: &super::CodegraphCommands) -> anyhow::Result<()> {
-        let project_root = std::env::current_dir()?;
-        match action {
-            super::CodegraphCommands::Index {} => {
-                println!("[codegraph] Building index for {:?}...", project_root);
-                let store = Arc::new(crate::tools::codegraph::store::IndexStore::open(
-                    &project_root,
-                )?);
-                let adapters: Vec<Box<dyn crate::tools::codegraph::adapters::LanguageAdapter>> = vec![
-                    Box::new(crate::tools::codegraph::adapters::rust::RustAdapter::new()),
-                    Box::new(crate::tools::codegraph::adapters::java::JavaAdapter::new()),
-                    Box::new(crate::tools::codegraph::adapters::python::PythonAdapter::new()),
-                ];
-                let indexer = crate::tools::codegraph::indexer::Indexer::new(store, adapters);
-                let summary = indexer.index_full(&project_root)?;
-                println!(
-                    "[codegraph] Done: {} files, {} symbols in {:.1}s ({}) warnings",
-                    summary.files_indexed,
-                    summary.symbols_extracted,
-                    summary.elapsed_secs,
-                    summary.warnings
-                );
-            }
-            super::CodegraphCommands::Query { symbol } => {
-                let store = Arc::new(crate::tools::codegraph::store::IndexStore::open(
-                    &project_root,
-                )?);
-                let engine = crate::tools::codegraph::query::QueryEngine::new(store);
-                let result = engine.codegraph_node(symbol)?;
-                if result.found {
-                    for sym in &result.symbols {
-                        println!(
-                            "{} ({}) at {}:{}",
-                            sym.name,
-                            sym.kind.as_str(),
-                            sym.file_path,
-                            sym.line
-                        );
-                    }
-                } else {
-                    println!("Symbol `{}` not found.", symbol);
-                }
-            }
-            super::CodegraphCommands::Clean {} => {
-                let db = project_root.join(".codegraph").join("index.db");
-                if db.exists() {
-                    std::fs::remove_file(&db)?;
-                    println!("[codegraph] Index removed: {:?}", db);
-                } else {
-                    println!("[codegraph] No index found to clean.");
                 }
             }
         }

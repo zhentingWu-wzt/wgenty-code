@@ -22,13 +22,12 @@ use tracing::info;
 
 /// Start the daemon HTTP server. Blocks until the server exits.
 pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
-    let daemon_state = Arc::new(DaemonState::new(app_state));
+    let daemon_state = Arc::new(DaemonState::new(app_state).await);
 
-    // Recover persisted sessions from disk so the `list_sessions` API returns
-    // historical sessions instead of an empty list after a restart. The
-    // SessionManager keeps an in-memory HashMap that starts empty; without
-    // this call, previously-saved session files are invisible.
-    if let Err(e) = daemon_state.session_manager.load_all().await {
+    // Recover persisted sessions as lightweight index entries so the
+    // `list_sessions` API returns historical sessions quickly. Full message
+    // history is hydrated on demand via `load(id)` / `get(id)`.
+    if let Err(e) = daemon_state.session_manager.load_index().await {
         tracing::warn!(error = %e, "Failed to load persisted sessions into daemon");
     }
 

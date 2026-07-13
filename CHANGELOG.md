@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed (Subagent Lifecycle)
+
+- `task` 工具统一为单一异步路径：每次调用立即生成一个 coordinator 拥有的子代理并返回结构化确认（`child_id` / `task_group_id` / `status:"running"`），移除 `background` 同步/后台模式开关。模型传入的 `background` 参数在兼容期内被忽略并在确认元数据中以 `ignored_arguments` 标注。
+- 父代理（非根）在返回最终结果前必须执行一轮子结果合成（`collect_children_for_synthesis` + `begin_finalizing`），已完成的直接子代理结果作为 `<child-results>` 系统消息注入下一轮。
+- 持久主代理永不为终态；已就绪的根直接子代理组通过 `POST /api/v1/agents/task-groups/claim` 原子领取（exactly-once），并由 TUI 以隐藏的合成续轮注入模型，不产生可见用户消息。
+- `/clear` 与应用关机通过 coordinator 取消过时的子代理子树并推进 generation（`POST /api/v1/agents/generation/reset`、`POST /api/v1/agents/session/cancel`），过时 generation 的结果不再可领取。
+- TUI 子代理导航改为基于短期 capability 的逐层下钻（Enter 下钻、Backspace 回退），不暴露后代/兄弟/全树。
+
 ### BREAKING
 
 - 项目说明（`AGENTS.md` / `WGENTY.md`）不再以 system message 形式注入 prompt 链。
@@ -19,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- 通用 MCP stdio client：支持 `initialize`、`tools/list`、`tools/call`，并将远程工具注册到主 Agent 与子 Agent 共用的 `ToolRegistry`。
+- 第三方本地 CodeGraph MCP 集成，默认尝试启动 `codegraph serve --mcp`；不可用时非致命降级到 grep/lsp。
 - `<system-reminder>` 注入通道（与 Claude Code 1:1 对齐：`# wgentyMd` 标题、双 preamble、`Contents of <abs-path> (<desc>):` 来源标注）。
 - 4 个文件源 reader：用户级 `~/.wgenty-code/WGENTY.md` + `~/.wgenty-code/rules/*.md`，项目级 `WGENTY.md` + `AGENTS.md`。
 - `HookAction::InjectContext` 端到端接通：`UserPromptSubmit` hook 的 `injected_content` + `priority` + `visibility` 现在通过 reminder 通道注入下一轮 user message。
@@ -28,7 +38,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- 移除项目内置 CodeGraph 索引器、`.codegraph/index.db` 格式和 `wgenty-code codegraph` CLI，统一使用第三方 CodeGraph MCP。
 - `UserPromptSubmit` hook 触发时机：从 `tui/app/input.rs` 的 `tokio::spawn` fire-and-forget 改为 `AgentLoop::process_input_inner` 内 `await`（10s 超时降级为空 outcomes）。
+
+### Fixed
+
+- 修复 scoped UI viewer 凭据缺失或 daemon 重启后失效时，主窗口 subagent selector 消失的问题。
+- 修复 scoped agent view 丢弃 subagent task label，导致 selector 名称显示为空的问题。
 
 ## [0.1.0] - Unreleased
 

@@ -2,9 +2,11 @@
 //!
 //! Non-domain utilities that don't fit into a specific harness mechanism.
 
+pub mod http;
 pub mod lenient_json;
 pub mod logging;
 pub mod project;
+pub mod startup_timing;
 pub mod stress_tests;
 pub mod stuck_detector;
 
