@@ -1,0 +1,39 @@
+{
+  "name": "wgenty-code",
+  "version": "0.1.0",
+  "description": "High-performance Rust implementation of Wgenty Code CLI",
+  "license": "MIT",
+  "author": "zhentingWu-wzt",
+  "homepage": "https://github.com/zhentingWu-wzt/wgenty-code",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zhentingWu-wzt/wgenty-code"
+  },
+  "bugs": {
+    "url": "https://github.com/zhentingWu-wzt/wgenty-code/issues"
+  },
+  "bin": {
+    "wgenty-code": "bin/wgenty-code.js"
+  },
+  "files": [
+    "bin/wgenty-code.js",
+    "README.md"
+  ],
+  "optionalDependencies": {
+    "wgenty-code-linux-x64": "0.1.0",
+    "wgenty-code-linux-arm64": "0.1.0",
+    "wgenty-code-darwin-x64": "0.1.0",
+    "wgenty-code-darwin-arm64": "0.1.0",
+    "wgenty-code-win32-x64": "0.1.0"
+  },
+  "engines": {
+    "node": ">=14"
+  },
+  "keywords": [
+    "cli",
+    "rust",
+    "ai",
+    "agent",
+    "coding-assistant"
+  ]
+}
