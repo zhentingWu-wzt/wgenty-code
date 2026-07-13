@@ -40,7 +40,8 @@ FROM debian:bookworm-slim
 
 LABEL maintainer="wgenty-code"
 LABEL description="High-performance Wgenty Code CLI - Rust Edition"
-LABEL version="0.1.0"
+ARG BUILD_VERSION=0.1.0
+LABEL version="${BUILD_VERSION}"
 
 # 安装必要的运行时依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
