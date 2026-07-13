@@ -11,11 +11,12 @@ const { platform, arch } = process;
 
 // Maps `process.platform`-`process.arch` to the platform subpackage name.
 const PLATFORM_SUPPORT = {
-  'linux-x64': 'wgenty-code-linux-x64',
-  'linux-arm64': 'wgenty-code-linux-arm64',
-  'darwin-x64': 'wgenty-code-darwin-x64',
-  'darwin-arm64': 'wgenty-code-darwin-arm64',
-  'win32-x64': 'wgenty-code-win32-x64',
+  'linux-x64': '@wuzhenting/linux-x64',
+  'linux-arm64': '@wuzhenting/linux-arm64',
+  'darwin-x64': '@wuzhenting/darwin-x64',
+  'darwin-arm64': '@wuzhenting/darwin-arm64',
+  'win32-x64': '@wuzhenting/win32-x64',
+  'win32-arm64': '@wuzhenting/win32-arm64',
 };
 
 const key = `${platform}-${arch}`;
@@ -24,7 +25,7 @@ const pkg = PLATFORM_SUPPORT[key];
 if (!pkg) {
   console.error(`wgenty-code: unsupported platform ${key}`);
   console.error(
-    'Supported: linux-x64, linux-arm64, darwin-x64, darwin-arm64, win32-x64'
+    'Supported: linux-x64, linux-arm64, darwin-x64, darwin-arm64, win32-x64, win32-arm64'
   );
   process.exit(1);
 }

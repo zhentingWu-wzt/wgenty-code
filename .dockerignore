@@ -29,7 +29,6 @@ assets/
 benchmark_results/
 benchmark.sh
 docs/
-locales/
 openspec/
 scripts/
 tests/

@@ -27,7 +27,7 @@ full CLI documentation.
 
 - linux-x64 / linux-arm64
 - darwin-x64 (macOS Intel) / darwin-arm64 (Apple Silicon)
-- win32-x64
+- win32-x64 / win32-arm64 (Windows on ARM)
 
 If your platform is unsupported, you’ll see a clear error at launch. Install
 the Rust toolchain and `cargo install wgenty_code` as a fallback.

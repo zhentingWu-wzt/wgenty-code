@@ -1,8 +1,9 @@
 {
-  "name": "wgenty-code-linux-x64",
+  "name": "@wuzhenting/linux-x64",
   "version": "0.1.0",
   "description": "wgenty-code prebuilt binary for linux-x64",
   "license": "MIT",
+  "author": "zhentingWu-wzt",
   "os": ["linux"],
   "cpu": ["x64"],
   "bin": "wgenty-code",

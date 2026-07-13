@@ -20,11 +20,12 @@
     "README.md"
   ],
   "optionalDependencies": {
-    "wgenty-code-linux-x64": "0.1.0",
-    "wgenty-code-linux-arm64": "0.1.0",
-    "wgenty-code-darwin-x64": "0.1.0",
-    "wgenty-code-darwin-arm64": "0.1.0",
-    "wgenty-code-win32-x64": "0.1.0"
+    "@wuzhenting/linux-x64": "0.1.0",
+    "@wuzhenting/linux-arm64": "0.1.0",
+    "@wuzhenting/darwin-x64": "0.1.0",
+    "@wuzhenting/darwin-arm64": "0.1.0",
+    "@wuzhenting/win32-x64": "0.1.0",
+    "@wuzhenting/win32-arm64": "0.1.0"
   },
   "engines": {
     "node": ">=14"
