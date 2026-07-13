@@ -64,6 +64,7 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         .route("/api/v1/tools/unapprove", post(handlers::unapprove_tool))
         // Tasks
         .route("/api/v1/tasks", get(handlers::list_tasks))
+        .route("/api/v1/tasks/progress", get(handlers::task_progress))
         // Todos (s03 TodoWrite state)
         .route("/api/v1/todos", get(handlers::get_todos))
         // Background tasks

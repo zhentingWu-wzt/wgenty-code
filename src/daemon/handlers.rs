@@ -380,6 +380,19 @@ pub async fn list_tasks(State(state): State<Arc<DaemonState>>) -> Json<ListTasks
     Json(ListTasksResponse { tasks })
 }
 
+/// `GET /api/v1/tasks/progress` - ready/blocked counts for agent-loop nudges.
+pub async fn task_progress(
+    State(state): State<Arc<DaemonState>>,
+) -> Json<crate::daemon::models::TaskProgressResponse> {
+    let store = state.task_manager.task_store();
+    let map = store.read().await;
+    let all: std::collections::HashMap<String, crate::tasks::Task> = map.clone();
+    drop(map);
+    let blocked = crate::tasks::blocked_tasks(&all).len();
+    let ready = crate::tasks::ready_tasks(&all).len();
+    Json(crate::daemon::models::TaskProgressResponse { blocked, ready })
+}
+
 // ── Todos (s03 TodoWrite) ────────────────────────────────────────────────────
 
 pub async fn get_todos(State(state): State<Arc<DaemonState>>) -> Json<GetTodosResponse> {

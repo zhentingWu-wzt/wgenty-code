@@ -400,7 +400,7 @@ struct FixedTaskProgress {
 
 #[async_trait::async_trait]
 impl TaskProgressPort for FixedTaskProgress {
-    fn blocked_and_ready(&self) -> (usize, usize) {
+    async fn blocked_and_ready(&self) -> (usize, usize) {
         (self.blocked, self.ready)
     }
 }

@@ -126,10 +126,12 @@ pub trait RoundObserver: Send + Sync {
 ///
 /// Implementations (daemon/CLI holding a `TaskManagementTool`) expose how many
 /// tasks are blocked vs ready so the loop can inject a gentle nudge when the
-/// model goes several rounds without acting on a ready task.
+/// model goes several rounds without acting on a ready task. Async because the
+/// TUI path fetches counts over HTTP from the daemon.
+#[async_trait]
 pub trait TaskProgressPort: Send + Sync {
     /// `(blocked_count, ready_count)` excluding completed/deleted tasks.
-    fn blocked_and_ready(&self) -> (usize, usize);
+    async fn blocked_and_ready(&self) -> (usize, usize);
 }
 
 /// Input to [`ToolPort::execute`].

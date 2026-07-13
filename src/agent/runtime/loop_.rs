@@ -631,7 +631,7 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
             };
             if let Some(tp) = hooks.task_progress {
                 if state.rounds_since_task_mgmt >= 3 {
-                    let (blocked, ready) = tp.blocked_and_ready();
+                    let (blocked, ready) = tp.blocked_and_ready().await;
                     if ready > 0 {
                         append_to_last_tool(
                             history,
