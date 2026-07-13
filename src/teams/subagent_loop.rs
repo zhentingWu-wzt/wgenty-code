@@ -179,9 +179,13 @@ impl ToolPort for FilteredToolPort<'_> {
             };
         }
 
+        let inv_id = req
+            .invocation_id
+            .clone()
+            .unwrap_or_else(|| format!("{}-inv", req.name));
         let tool_context = ToolContext {
             agent: self.context,
-            invocation_id: ToolInvocationId::new(req.name.clone() + "-inv"),
+            invocation_id: ToolInvocationId::new(inv_id),
             origin_turn_id: None,
         };
 
@@ -358,6 +362,10 @@ impl RoundObserver for SubagentObserver {
             None,
             messages.to_vec(),
         );
+    }
+
+    fn on_usage(&self, total_tokens: usize) {
+        *self.cumulative_tokens.lock().unwrap() += total_tokens;
     }
 
     fn on_tool_start(&self, round: usize, tool_name: &str, messages: &[ChatMessage]) {

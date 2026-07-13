@@ -70,6 +70,10 @@ impl StreamStyle {
     }
 }
 
+/// Max consecutive *irrecoverable* tool-arg JSON failures before aborting.
+/// Recoverable lenient-parse cases (some fields extracted) do not count.
+pub const MAX_CONSECUTIVE_PARSE_ERRORS: usize = 3;
+
 /// Mutable flags for one turn of the shared loop.
 #[derive(Debug, Default)]
 pub struct LoopTurnState {
@@ -78,6 +82,8 @@ pub struct LoopTurnState {
     pub preparing_tools_fired: bool,
     pub rounds_since_plan: usize,
     pub compacted_summary: String,
+    /// Consecutive tool rounds with irrecoverable JSON arg failures.
+    pub consecutive_parse_errors: usize,
 }
 
 /// Optional capabilities wired by each frontend.
@@ -244,26 +250,32 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
 
         llm_rounds += 1;
 
-        if let Some(counter) = hooks.token_counter {
-            if let Some(ref usage) = result.usage {
+        if let Some(ref usage) = result.usage {
+            if let Some(counter) = hooks.token_counter {
                 counter.add(usage.total_tokens);
                 counter.add_output(usage.completion_tokens);
                 counter.set_prompt_tokens(usage.prompt_tokens);
-            } else {
-                let input_est: usize = messages
+            }
+            if let Some(obs) = hooks.observer {
+                obs.on_usage(usage.total_tokens);
+            }
+        } else if let Some(counter) = hooks.token_counter {
+            let input_est: usize = messages
+                .iter()
+                .map(|m| m.content.as_deref().unwrap_or("").len())
+                .sum::<usize>()
+                / 4;
+            let output_est: usize = (result.content.len()
+                + result
+                    .tool_calls
                     .iter()
-                    .map(|m| m.content.as_deref().unwrap_or("").len())
-                    .sum::<usize>()
-                    / 4;
-                let output_est: usize = (result.content.len()
-                    + result
-                        .tool_calls
-                        .iter()
-                        .map(|tc| tc.function.arguments.len())
-                        .sum::<usize>())
-                    / 4;
-                counter.add(input_est + output_est);
-                counter.add_output(output_est);
+                    .map(|tc| tc.function.arguments.len())
+                    .sum::<usize>())
+                / 4;
+            counter.add(input_est + output_est);
+            counter.add_output(output_est);
+            if let Some(obs) = hooks.observer {
+                obs.on_usage(input_est + output_est);
             }
         }
 
@@ -379,6 +391,7 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
                                     arguments: args.clone(),
                                     session_id,
                                     turn_id,
+                                    invocation_id: Some(id.clone()),
                                     parallel: true,
                                 }),
                             )
@@ -405,30 +418,74 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
                     history.push(ChatMessage::tool(&id, content)).await;
                 }
             } else {
-                // Sequential path.
+                // Sequential path — supports recoverable lenient JSON (subagent).
+                let mut had_parse_error_this_round = false;
                 for tc in &result.tool_calls {
+                    let raw_args = &tc.function.arguments;
                     let (args, parse_err) =
-                        parse_tool_args_lenient(&tc.function.arguments, &tc.function.name);
+                        parse_tool_args_lenient(raw_args, &tc.function.name);
+
+                    // Classify parse outcomes like the historical subagent loop:
+                    // recoverable (some real fields) → still execute; irrecoverable
+                    // → skip execute, count toward abort threshold.
+                    let recovered = recovered_useful_fields(&args);
+
                     if let Some(ref e) = parse_err {
-                        tracing::warn!(
-                            tool = %tc.function.name,
-                            error = %e,
-                            "Tool call arguments parse issue"
+                        had_parse_error_this_round = true;
+                        if recovered {
+                            tracing::info!(
+                                tool = %tc.function.name,
+                                error = %e,
+                                consecutive = state.consecutive_parse_errors,
+                                "tool arguments recovered via lenient parser"
+                            );
+                        } else {
+                            state.consecutive_parse_errors =
+                                state.consecutive_parse_errors.saturating_add(1);
+                            tracing::warn!(
+                                tool = %tc.function.name,
+                                error = %e,
+                                consecutive = state.consecutive_parse_errors,
+                                "tool call arguments irrecoverable (no fields extracted)"
+                            );
+                        }
+                    } else {
+                        state.consecutive_parse_errors = 0;
+                    }
+
+                    if state.consecutive_parse_errors >= MAX_CONSECUTIVE_PARSE_ERRORS {
+                        let msg = format!(
+                            "Aborted: {} consecutive tool calls had irrecoverable JSON errors. \
+                             The model may be generating severely malformed tool arguments.",
+                            state.consecutive_parse_errors
                         );
-                        let msg = serde_json::json!({
-                            "success": false,
-                            "error": format!(
-                                "tool call arguments are invalid JSON (likely truncated by max_tokens): {e}. Please re-issue the tool call."
-                            ),
-                        })
-                        .to_string();
-                        events.emit(RuntimeEvent::ToolResult {
-                            name: tc.function.name.clone(),
-                            args: args.clone(),
-                            content: msg.clone(),
-                        });
-                        history.push(ChatMessage::tool(&tc.id, msg)).await;
-                        continue;
+                        events.emit(RuntimeEvent::StreamError(msg.clone()));
+                        if let Some(obs) = hooks.observer {
+                            let msgs = history.get().await;
+                            obs.on_failed(llm_rounds, &msg, &msgs);
+                        }
+                        return Err(RuntimeError::Stream(msg));
+                    }
+
+                    // Irrecoverable: don't execute with empty/garbage args.
+                    if let Some(ref e) = parse_err {
+                        if !recovered {
+                            let mut content = format!(
+                                "Error: tool call arguments are invalid JSON (likely truncated by max_tokens): {e}. Please re-issue the tool call."
+                            );
+                            content.push_str(&parse_error_guidance(
+                                &tc.function.name,
+                                e,
+                                raw_args,
+                            ));
+                            events.emit(RuntimeEvent::ToolResult {
+                                name: tc.function.name.clone(),
+                                args: args.clone(),
+                                content: content.clone(),
+                            });
+                            history.push(ChatMessage::tool(&tc.id, content)).await;
+                            continue;
+                        }
                     }
 
                     match tc.function.name.as_str() {
@@ -470,13 +527,14 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
                         &args,
                         config.subagent_timeout_secs,
                     );
-                    let exec_result = match tokio::time::timeout(
+                    let mut exec_result = match tokio::time::timeout(
                         tool_timeout,
                         tools.execute(ToolRequest {
                             name: tc.function.name.clone(),
                             arguments: args.clone(),
                             session_id: config.session_id.clone(),
                             turn_id: config.turn_id.clone(),
+                            invocation_id: Some(tc.id.clone()),
                             parallel: false,
                         }),
                     )
@@ -499,6 +557,16 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
                         }
                     };
 
+                    // Recoverable parse: still ran the tool; inject guidance so
+                    // the model can self-correct on the next attempt.
+                    if let Some(ref e) = parse_err {
+                        exec_result.push_str(&parse_error_guidance(
+                            &tc.function.name,
+                            e,
+                            raw_args,
+                        ));
+                    }
+
                     events.emit(RuntimeEvent::ToolResult {
                         name: tc.function.name.clone(),
                         args,
@@ -506,6 +574,29 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
                     });
                     history
                         .push(ChatMessage::tool(&tc.id, exec_result))
+                        .await;
+                }
+
+                if had_parse_error_this_round {
+                    history
+                        .push(ChatMessage::user(
+                            "<system-reminder>\n\
+                             Your previous tool call(s) had malformed JSON arguments. \
+                             This usually happens when special characters (backslashes, quotes) \
+                             in grep patterns, file paths, or code snippets are not properly JSON-escaped.\n\
+                             \n\
+                             **JSON escaping rules for regex patterns:**\n\
+                             - `\\d` → write as `\\\\d` (double the backslash)\n\
+                             - `\\w` → write as `\\\\w`\n\
+                             - `\\s` → write as `\\\\s`\n\
+                             - Backslash `\\` → write as `\\\\`\n\
+                             - Quote `\"` inside a string → write as `\\\"`\n\
+                             - Newline → write as `\\n`\n\
+                             \n\
+                             The system will attempt to auto-fix common escaping issues, \
+                             but please ensure your tool arguments are valid JSON.\n\
+                             </system-reminder>",
+                        ))
                         .await;
                 }
             }
@@ -720,6 +811,59 @@ async fn dispatch_ask(interaction: Option<&dyn InteractionPort>, args: &serde_js
             "error": "ask_user_question is not available on this path"
         })
         .to_string()
+    }
+}
+
+fn parse_error_guidance(tool_name: &str, err: &str, raw_args: &str) -> String {
+    let preview: String = raw_args.chars().take(500).collect();
+    format!(
+        "\n\n---\n## ⚠️ Tool Argument Parse Warning\n\
+         Your previous tool call to `{tool_name}` had malformed JSON arguments.\n\
+         **Parse error**: {err}\n\
+         **Raw arguments received** (may be truncated):\n```json\n{preview}\n```\n\
+         **Please retry** with properly escaped JSON. Common issues:\n\
+         - Regex patterns with backslashes: use `\\\\` instead of `\\`\n\
+         - Quotes inside patterns: use `\\\"` instead of `\"`\n\
+         - Ensure all strings are properly closed with `\"`"
+    )
+}
+
+/// Whether lenient-parse recovered at least one non-internal field.
+fn recovered_useful_fields(args: &serde_json::Value) -> bool {
+    args.as_object()
+        .map(|obj| obj.keys().any(|k| !k.starts_with('_')))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn recovered_useful_fields_true_when_real_keys_present() {
+        assert!(recovered_useful_fields(&json!({"path": "a.rs"})));
+        assert!(recovered_useful_fields(&json!({"pattern": "x", "_partial": true})));
+    }
+
+    #[test]
+    fn recovered_useful_fields_false_for_empty_or_internal_only() {
+        assert!(!recovered_useful_fields(&json!({})));
+        assert!(!recovered_useful_fields(&json!({"_error": "x"})));
+        assert!(!recovered_useful_fields(&json!(null)));
+    }
+
+    #[test]
+    fn parse_error_guidance_mentions_tool_and_error() {
+        let g = parse_error_guidance("grep", "expected `,`", r#"{"pattern":"\d"#);
+        assert!(g.contains("grep"));
+        assert!(g.contains("expected `,`"));
+        assert!(g.contains("Tool Argument Parse Warning"));
+    }
+
+    #[test]
+    fn max_consecutive_parse_errors_is_three() {
+        assert_eq!(MAX_CONSECUTIVE_PARSE_ERRORS, 3);
     }
 }
 

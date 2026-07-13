@@ -118,6 +118,8 @@ pub trait RoundObserver: Send + Sync {
     fn on_tool_start(&self, round: usize, tool_name: &str, messages: &[ChatMessage]);
     fn on_completed(&self, round: usize, messages: &[ChatMessage]);
     fn on_failed(&self, round: usize, error: &str, messages: &[ChatMessage]);
+    /// Optional: API-reported token usage for this round.
+    fn on_usage(&self, _total_tokens: usize) {}
 }
 
 /// Input to [`ToolPort::execute`].
@@ -127,6 +129,8 @@ pub struct ToolRequest {
     pub arguments: serde_json::Value,
     pub session_id: String,
     pub turn_id: Option<String>,
+    /// Model-issued tool_call id (used as trusted invocation id when present).
+    pub invocation_id: Option<String>,
     /// When true, the port must not block on interactive permission prompts.
     pub parallel: bool,
 }

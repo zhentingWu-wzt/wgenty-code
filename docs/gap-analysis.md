@@ -1,7 +1,7 @@
 # Gap Analysis: wgenty-code vs learn-wgenty-code
 
-> **更新日期**: 2026-06-14 — 根据当前代码状态修正 s04/s05/s06/s08 的结论。
-> TUI 路径 (`src/tui/agent/`) 已实现大部分机制；CLI/daemon 路径待移植。
+> **更新日期**: 2026-07-14 — unified `agent::runtime::run_agent_loop` 已落地；
+> TUI / CLI query / subagent 共用控制流。下表中 s09–s12 仍为未完成协作能力。
 
 ## learn-wgenty-code 的设计哲学
 
@@ -23,14 +23,14 @@
 
 | 层 | 机制 | learn-wgenty-code | wgenty-code 现状 | 差距 |
 |----|------|-------------------|----------------------|------|
-| s01 | Agent Loop (核心) | `agent_loop()` 最小循环，tool dispatch | `tui/agent/core.rs` 完整循环；`agent/core.rs` 共享 SSE 解析 | **已实现** |
+| s01 | Agent Loop (核心) | `agent_loop()` 最小循环，tool dispatch | `agent::runtime::run_agent_loop` 统一控制流；TUI/CLI/subagent 经 ports 接入 | **已实现** |
 | s02 | 工具分发表 | bash/read/write/edit 4 工具 | 25 个工具（filesystem/search/execution/meta/checkpoint） | **已实现** |
 | s03 | TodoWrite + 提醒注入 | 3 轮未更新则注入提醒 | `TodoWriteTool` + `rounds_since_todo` 提醒 | **已实现** |
-| s04 | 子代理（Subagent） | 独立 Agent 循环，隔离上下文，过滤工具（无递归 task） | `teams/subagent_loop.rs`（577 行）独立循环 + TUI 并行 `task` 执行，含 stuck-detector | **已实现** |
+| s04 | 子代理（Subagent） | 独立 Agent 循环，隔离上下文，过滤工具（无递归 task） | `teams/subagent_loop` 薄封装 → 共享 loop + `FilteredToolPort` + synthesis barrier | **已实现** |
 | s05 | 技能加载 | 两层注入：system prompt 列名称 → `load_skill` 工具按需加载完整 SKILL.md | `LoadSkillTool` 注册（daemon），`SkillLoader` 加载 `~/.wgenty-code/skills/`，Prompt Layer 6 注入 | **已实现** |
-| s06 | 上下文压缩（3 层） | 微压缩（替换旧 tool_result）+ 自动压缩（token 超阈值摘要）+ 手动压缩（compact 工具） | `tui/agent/compaction.rs`（170 行）：micro_compact + auto_compact + token 预算检查；transcript 持久化 | **已实现（TUI）**，CLI/daemon 待移植 |
+| s06 | 上下文压缩（3 层） | 微压缩（替换旧 tool_result）+ 自动压缩（token 超阈值摘要）+ 手动压缩（compact 工具） | micro 在 runtime 共享；auto-summary 经 `Compactor`（TUI 已接）；CLI headless 仅 micro | **TUI 完整；CLI micro-only** |
 | s07 | 任务系统（依赖图） | 文件持久化 + `blockedBy` 依赖图 | `TaskManagementTool` 有 CRUD 但**无 blockedBy 依赖** | **部分实现** |
-| s08 | 后台任务 | `BackgroundManager` + 通知队列 + 注入 agent loop | `background` 工具 + `inject_background_results()` 注入 TUI agent loop | **部分实现（TUI）**，CLI/daemon 待移植 |
+| s08 | 后台任务 | `BackgroundManager` + 通知队列 + 注入 agent loop | `background` 工具 + TUI `inject_background_results`；CLI 无后台会话 | **部分实现（TUI）** |
 | s09 | 代理团队 | 多线程 Agent 循环 + JSONL 邮箱通信 | `teams/` 仅定义数据结构，无邮箱、无多 agent 通信 | **未实现** |
 | s10 | 团队协议 | 关闭协议 + 计划审批协议（`request_id` 关联） | 无 | **未实现** |
 | s11 | 自主 Agent | 轮询任务板 + 自动认领 + 空闲超时关闭 | 无 | **未实现** |
@@ -40,13 +40,13 @@
 
 ## 关键架构差距（修订）
 
-### 1. 两套 Agent Loop 实现
+### 1. Agent Loop 已统一（2026-07-14）
 
-项目存在两套 agent 循环：
-- **TUI 路径** (`src/tui/agent/`) — 完整的 agent loop，包含压缩、技能加载、后台通知注入、并行子代理、token 预算检查
-- **CLI/daemon 路径** — 使用共享的 `agent/core.rs` StreamProcessor，**缺少**压缩和后台通知机制
-
-**现状**：TUI 路径功能完整，CLI/daemon 路径待移植压缩和后台通知机制。
+- **共享控制流**：`src/agent/runtime/loop_.rs`（`run_agent_loop`）
+- **TUI**：`tui/agent/adapters`（Daemon LLM/Tools、权限 UI、`TuiCompactor`）
+- **CLI query**：`cli/headless_runtime`（`ApiLlmPort` + `RegistryToolPort`，micro-compact）
+- **Subagent**：`teams/subagent_loop` → 同一 loop + 过滤工具 + synthesis/observer
+- **Daemon**：仍为 SSE/工具代理服务；循环在 client 侧（TUI）或 in-process（CLI/subagent）
 
 ### 2. 子代理系统已实现 ✅
 
