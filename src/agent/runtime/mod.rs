@@ -16,6 +16,9 @@ pub mod ports;
 pub mod stream;
 pub mod timeout;
 
+#[cfg(test)]
+mod loop_tests;
+
 pub use adapters::ApiLlmPort;
 pub use compaction::{
     assemble_post_compaction_history, micro_compact_messages, needs_compaction, request_size_chars,
