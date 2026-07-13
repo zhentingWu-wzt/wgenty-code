@@ -92,8 +92,10 @@ impl SandboxedChild {
                         let _ = std::fs::remove_dir_all(handle);
                     }
                     CleanupType::CloseJobObject => {
-                        // Windows Job Object handles are closed automatically
-                        // when the process exits. No explicit cleanup needed.
+                        // Explicitly close the Job Object handle. With
+                        // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE this also
+                        // terminates any remaining processes in the job.
+                        backends::windows::close_job_handle_token(handle);
                     }
                 }
             }
