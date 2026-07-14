@@ -134,6 +134,17 @@ pub trait TaskProgressPort: Send + Sync {
     async fn blocked_and_ready(&self) -> (usize, usize);
 }
 
+/// Optional async inbox drain run at the top of each loop round (s09 mailbox).
+///
+/// Returns a system message to inject into history before the LLM call, or
+/// `None` when the inbox is empty. Async so implementors can do file/HTTP I/O
+/// (JSONL mailbox, daemon endpoint) without blocking the runtime.
+#[async_trait]
+pub trait InboxPort: Send + Sync {
+    /// Drain pending inbound messages; return a system message to inject, if any.
+    async fn drain(&self) -> Option<String>;
+}
+
 /// Input to [`ToolPort::execute`].
 #[derive(Debug, Clone)]
 pub struct ToolRequest {

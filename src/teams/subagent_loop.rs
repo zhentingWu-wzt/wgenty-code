@@ -10,10 +10,11 @@ use crate::agent::progress::{
     SubagentProgress, SubagentStatus,
 };
 use crate::agent::runtime::{
-    run_agent_loop, ApiLlmPort, EventSink, HistoryStore, LoopHooks, LoopTurnState,
+    run_agent_loop, ApiLlmPort, EventSink, HistoryStore, InboxPort, LoopHooks, LoopTurnState,
     MutexHistoryStore, RoundObserver, RunLoopArgs, RuntimeConfig, RuntimeError, RuntimeEvent,
     StreamStyle, SynthesisPort, ToolPort, ToolRequest, ToolResponse,
 };
+use crate::teams::mailbox::{Mailbox, TeamMessage};
 use crate::agent::{
     AgentCoordinator, AgentExecutionContext, ChildResult, CoordinatorError, ToolContext,
     ToolInvocationId,
@@ -442,6 +443,92 @@ impl RoundObserver for SubagentObserver {
 
 // ── Public entry point ──────────────────────────────────────────────────────
 
+// ── Inbox (s09 mailbox drain) ────────────────────────────────────────────────
+
+/// [`InboxPort`] backed by this subagent's JSONL mailbox.
+///
+/// Path: `.team/inbox/{agent_id}.jsonl` under the current working directory
+/// (matches `TeamManager`'s project_root convention). Each round, pending
+/// peer messages are drained and folded into a single `<team-inbox>` system
+/// message. An empty inbox returns `None` (no history pollution).
+struct MailboxInbox {
+    mailbox: Mailbox,
+    name: String,
+}
+
+impl MailboxInbox {
+    /// Open (or create) the inbox for `agent_id`. Best-effort: if the path
+    /// cannot be resolved, returns None and the subagent runs without an inbox.
+    fn for_agent(agent_id: &str) -> Option<Self> {
+        let cwd = std::env::current_dir().ok()?;
+        let inbox_dir = cwd.join(".team").join("inbox");
+        let path = inbox_dir.join(format!("{}.jsonl", sanitize_mailbox_name(agent_id)));
+        Some(Self {
+            mailbox: Mailbox::new(path),
+            name: agent_id.to_string(),
+        })
+    }
+}
+
+#[async_trait]
+impl InboxPort for MailboxInbox {
+    async fn drain(&self) -> Option<String> {
+        let messages = match self.mailbox.receive_all().await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(error = %e, agent = %self.name, "mailbox drain failed");
+                return None;
+            }
+        };
+        if messages.is_empty() {
+            return None;
+        }
+        let body: Vec<String> = messages
+            .iter()
+            .map(|m| match m {
+                TeamMessage::Message { from, content, .. } => {
+                    format!("[from {from}] {content}")
+                }
+                TeamMessage::Broadcast { from, content, .. } => {
+                    format!("[broadcast from {from}] {content}")
+                }
+                TeamMessage::ShutdownRequest { from, request_id } => {
+                    format!("[shutdown request from {from} id={request_id}]")
+                }
+                TeamMessage::ShutdownResponse {
+                    from,
+                    request_id,
+                    approve,
+                } => {
+                    format!("[shutdown response from {from} id={request_id} approve={approve}]")
+                }
+            })
+            .collect();
+        Some(format!(
+            "<team-inbox>
+You received {} message(s) from teammates:
+{}
+</team-inbox>",
+            body.len(),
+            body.join("
+")
+        ))
+    }
+}
+
+/// Restrict mailbox file names to a safe subset (agent ids are UUIDs, but be defensive).
+fn sanitize_mailbox_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Run a subagent with an isolated agent loop via the shared runtime.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_subagent_loop(
@@ -530,6 +617,8 @@ pub async fn run_subagent_loop(
         stream_max_retries: 0,
     };
 
+    // s09: open this subagent's team mailbox (best-effort; None if unavailable).
+    let inbox = MailboxInbox::for_agent(context.agent_id.as_str());
     let mut state = LoopTurnState::default();
     let mut stuck = StuckDetector::new();
 
@@ -550,6 +639,7 @@ pub async fn run_subagent_loop(
             synthesis: Some(&synthesis),
             observer: Some(&observer),
             task_progress: None,
+            inbox: inbox.as_ref().map(|i| i as &dyn InboxPort),
         },
     });
 
