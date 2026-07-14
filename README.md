@@ -80,7 +80,7 @@ Settings live in `~/.wgenty-code/settings.json` (auto-generated). Key options:
 | `models.planner.name` | *(none)* | Dedicated model for plan generation |
 | `models.transport.max_tokens` | `4096` | Max tokens per request |
 | `agent.plan_mode` | `false` | Enable plan-before-execute mode |
-| `agent.subagent.max_depth` | `3` | Max recursion depth for nested sub-agents |
+| `agent.subagent.max_depth` | `1` | Max recursion depth for nested sub-agents (1 = subagents cannot spawn further subagents; raise to allow recursion) |
 | `agent.subagent.max_concurrent` | `5` | Max parallel sub-agents |
 | `agent.token_budget.main_k` | `0` | Cumulative token limit (0 = unlimited) |
 | `integrations.guardian.enabled` | `true` | Toggle command safety review |
