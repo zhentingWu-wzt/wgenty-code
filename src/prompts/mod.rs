@@ -21,10 +21,6 @@ use crate::api::ChatMessage;
 use crate::config::Settings;
 use crate::runtime::context::ContextAssembler;
 use crate::runtime::hooks::{InjectedFragment, LayerVisibility};
-use crate::utils::project::{
-    read_user_global_instructions, read_user_global_instructions_from, read_user_global_rules,
-    read_user_global_rules_from,
-};
 use chrono::Local;
 
 /// Pre-compiled base instructions (embedded at compile time).
@@ -44,8 +40,7 @@ const REMINDER_PREAMBLE_CLOSING: &str =
      \x20     You should not respond to this context unless it is highly relevant\n\
      \x20     to your task.";
 
-// Attribution description strings, one per source.
-const USER_INSTRUCTIONS_DESC: &str = "user's private global instructions for all projects";
+// Attribution description strings for project-level file-backed segments.
 const PROJECT_INSTRUCTIONS_DESC: &str = "project instructions, checked into the codebase";
 const PROJECT_AGENTS_DESC: &str = "project agent conventions, checked into the codebase";
 const HOOK_INJECTION_DESC: &str = "dynamic hook injection";
@@ -74,6 +69,12 @@ pub struct PromptContext {
     pub approval_policy: Option<String>,
     pub collaboration_mode: Option<String>,
     pub agents_md_sections: Vec<String>,
+    /// User-global instructions from `~/.wgenty-code/WGENTY.md`.
+    /// Read once at startup and cached here to avoid per-turn disk I/O.
+    pub user_global_instructions: Option<(PathBuf, String)>,
+    /// User-global rule files from `~/.wgenty-code/rules/*.md`, sorted by name.
+    /// Read once at startup and cached here to avoid per-turn disk I/O.
+    pub user_global_rules: Vec<(PathBuf, String)>,
     /// Skills discoverable by the agent. Layer 1: name + description only.
     pub skills_inventory: Vec<SkillEntry>,
     /// Sections from the project's WGENTY.md (split by `---`). Layer 8.
@@ -103,6 +104,11 @@ impl fmt::Debug for PromptContext {
             .field("approval_policy", &self.approval_policy)
             .field("collaboration_mode", &self.collaboration_mode)
             .field("agents_md_sections", &self.agents_md_sections)
+            .field(
+                "user_global_instructions",
+                &self.user_global_instructions.is_some(),
+            )
+            .field("user_global_rules", &self.user_global_rules.len())
             .field("skills_inventory", &self.skills_inventory)
             .field("wgenty_md_sections", &self.wgenty_md_sections)
             .field("project_root", &self.project_root)
@@ -131,6 +137,8 @@ impl PromptContext {
             approval_policy: None,
             collaboration_mode: None,
             agents_md_sections: Vec::new(),
+            user_global_instructions: None,
+            user_global_rules: Vec::new(),
             skills_inventory: Vec::new(),
             wgenty_md_sections: Vec::new(),
             project_root: None,
@@ -180,6 +188,21 @@ impl PromptContext {
         self
     }
 
+    /// Set cached user-global instructions (`~/.wgenty-code/WGENTY.md`).
+    pub fn with_user_global_instructions(
+        mut self,
+        instructions: Option<(PathBuf, String)>,
+    ) -> Self {
+        self.user_global_instructions = instructions;
+        self
+    }
+
+    /// Set cached user-global rule files (`~/.wgenty-code/rules/*.md`).
+    pub fn with_user_global_rules(mut self, rules: Vec<(PathBuf, String)>) -> Self {
+        self.user_global_rules = rules;
+        self
+    }
+
     pub fn with_project_root(mut self, path: PathBuf) -> Self {
         self.project_root = Some(path);
         self
@@ -224,7 +247,7 @@ pub fn build_user_turn_reminder(
     ctx: &PromptContext,
     hook_injections: &[InjectedFragment],
 ) -> Option<ReminderOutput> {
-    // ── Collect file-backed segments ───────────────────────────────────────
+    // ── Collect file-backed segments (project-level only; user globals are in Layers 7/8) ──
     struct Segment {
         path: PathBuf,
         description: &'static str,
@@ -232,30 +255,6 @@ pub fn build_user_turn_reminder(
     }
     let mut segments: Vec<Segment> = Vec::new();
 
-    let home_override = ctx.home_override.as_deref();
-
-    let user_instructions = match home_override {
-        Some(home) => read_user_global_instructions_from(home),
-        None => read_user_global_instructions(),
-    };
-    if let Some((path, content)) = user_instructions {
-        segments.push(Segment {
-            path,
-            description: USER_INSTRUCTIONS_DESC,
-            content,
-        });
-    }
-    let user_rules = match home_override {
-        Some(home) => read_user_global_rules_from(home),
-        None => read_user_global_rules(),
-    };
-    for (path, content) in user_rules {
-        segments.push(Segment {
-            path,
-            description: USER_INSTRUCTIONS_DESC,
-            content,
-        });
-    }
     if !ctx.wgenty_md_sections.is_empty() {
         let path = ctx
             .project_root
@@ -321,10 +320,9 @@ pub fn build_user_turn_reminder(
     to_transcript.push_str(REMINDER_PREAMBLE_CLOSING);
     to_transcript.push_str("\n</system-reminder>");
 
-    let transcript_has_content = transcript_has_hook;
     Some(ReminderOutput {
         to_model,
-        to_transcript: if transcript_has_content {
+        to_transcript: if transcript_has_hook {
             Some(to_transcript)
         } else {
             None
@@ -403,10 +401,23 @@ The following skills are available. Use the `load_skill` tool to read a skill's 
         )));
     }
 
-    // ── Layer 7/8 removed: AGENTS.md and WGENTY.md are now delivered via
-    // the per-turn <system-reminder> channel (see `build_user_turn_reminder`).
-    // PromptContext::{agents_md_sections, wgenty_md_sections} remain populated
-    // for the reminder builder to consume.
+    // ── Layer 7: User Global Instructions ──────────────────────────
+    if let Some((ref path, ref content)) = context.user_global_instructions {
+        system_messages.push(ChatMessage::system(format!(
+            "<user_global_instructions path=\"{}\">\n{}\n</user_global_instructions>",
+            path.display(),
+            content.trim()
+        )));
+    }
+
+    // ── Layer 8: User Global Rules ─────────────────────────────────
+    for (ref path, ref content) in &context.user_global_rules {
+        system_messages.push(ChatMessage::system(format!(
+            "<user_global_rules path=\"{}\">\n{}\n</user_global_rules>",
+            path.display(),
+            content.trim()
+        )));
+    }
 
     AssembledInstructions { system_messages }
 }
@@ -696,85 +707,101 @@ mod reminder_tests {
     }
 
     // ============================================================
-    // U1 — complete snapshot (4 sources)
+    // U1 — complete snapshot (2 project sources in reminder; user globals in Layers 7/8)
     // ============================================================
     #[test]
     #[serial]
     fn reminder_full_four_sources_snapshot() {
-        let home = make_fake_home(
-            Some("USER_WGENTY_CONTENT"),
-            &[("a.md", "RULE_A"), ("b.md", "RULE_B")],
-        );
         let project_root = TempDir::new().unwrap();
+        let ctx = PromptContext::new()
+            .with_user_global_instructions(Some((
+                PathBuf::from("/fake/home/.wgenty/instructions.md"),
+                "USER_WGENTY_CONTENT".to_string(),
+            )))
+            .with_user_global_rules(vec![
+                (
+                    PathBuf::from("/fake/home/.wgenty/rules/a.md"),
+                    "RULE_A".to_string(),
+                ),
+                (
+                    PathBuf::from("/fake/home/.wgenty/rules/b.md"),
+                    "RULE_B".to_string(),
+                ),
+            ])
+            .with_wgenty_md(vec!["PROJECT_WGENTY".to_string()])
+            .with_agents_md(vec!["PROJECT_AGENTS".to_string()])
+            .with_project_root(project_root.path().to_path_buf());
 
-        {
-            let ctx = PromptContext::new()
-                .with_home_override(home.path().to_path_buf())
-                .with_wgenty_md(vec!["PROJECT_WGENTY".to_string()])
-                .with_agents_md(vec!["PROJECT_AGENTS".to_string()])
-                .with_project_root(project_root.path().to_path_buf());
+        // ── System prompt: user instructions + rules in Layers 7/8 ─────
+        let settings = Settings::default();
+        let assembled = assemble_instructions(&settings, &ctx);
+        let sys_text = assembled
+            .system_messages
+            .iter()
+            .filter_map(|msg| msg.content.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            sys_text.contains("USER_WGENTY_CONTENT"),
+            "Layer 7: user instructions"
+        );
+        assert!(sys_text.contains("RULE_A"), "Layer 8: rule a.md");
+        assert!(sys_text.contains("RULE_B"), "Layer 8: rule b.md");
+        assert!(
+            sys_text.contains("<user_global_instructions"),
+            "Layer 7 tag"
+        );
+        assert!(sys_text.contains("<user_global_rules"), "Layer 8 tag");
 
-            let result = build_user_turn_reminder(&ctx, &[]).expect("reminder should be Some");
+        // ── Reminder: project WGENTY.md + AGENTS.md only ─────────────
+        let result = build_user_turn_reminder(&ctx, &[]).expect("reminder should be Some");
 
-            // Skeleton
-            assert!(
-                result.to_model.starts_with("<system-reminder>\n"),
-                "missing opener: {}",
-                &result.to_model[..50.min(result.to_model.len())]
-            );
-            assert!(
-                result.to_model.contains("# wgentyMd"),
-                "missing # wgentyMd marker"
-            );
-            assert!(
-                result
-                    .to_model
-                    .contains("IMPORTANT: These instructions OVERRIDE"),
-                "missing OVERRIDE preamble"
-            );
-            assert!(
-                result
-                    .to_model
-                    .contains("IMPORTANT: this context may or may not be relevant"),
-                "missing closing preamble"
-            );
-            assert!(
-                result.to_model.trim_end().ends_with("</system-reminder>"),
-                "missing closer"
-            );
-
-            // 4 content markers
-            assert!(result.to_model.contains("USER_WGENTY_CONTENT"));
-            assert!(result.to_model.contains("RULE_A"));
-            assert!(result.to_model.contains("RULE_B"));
-            assert!(result.to_model.contains("PROJECT_WGENTY"));
-            assert!(result.to_model.contains("PROJECT_AGENTS"));
-
-            // 4 description tags
-            assert!(result
+        // Skeleton
+        assert!(
+            result.to_model.starts_with("<system-reminder>\n"),
+            "missing opener: {}",
+            &result.to_model[..50.min(result.to_model.len())]
+        );
+        assert!(
+            result.to_model.contains("# wgentyMd"),
+            "missing # wgentyMd marker"
+        );
+        assert!(
+            result
                 .to_model
-                .contains("user's private global instructions for all projects"));
-            assert!(result
+                .contains("IMPORTANT: These instructions OVERRIDE"),
+            "missing OVERRIDE preamble"
+        );
+        assert!(
+            result
                 .to_model
-                .contains("project instructions, checked into the codebase"));
-            assert!(result
-                .to_model
-                .contains("project agent conventions, checked into the codebase"));
+                .contains("IMPORTANT: this context may or may not be relevant"),
+            "missing closing preamble"
+        );
+        assert!(
+            result.to_model.trim_end().ends_with("</system-reminder>"),
+            "missing closer"
+        );
 
-            // Ordering: user-global WGENTY → rules/a.md → rules/b.md → project WGENTY.md → project AGENTS.md
-            let pos_user_w = result.to_model.find("USER_WGENTY_CONTENT").unwrap();
-            let pos_a = result.to_model.find("RULE_A").unwrap();
-            let pos_b = result.to_model.find("RULE_B").unwrap();
-            let pos_proj_w = result.to_model.find("PROJECT_WGENTY").unwrap();
-            let pos_proj_a = result.to_model.find("PROJECT_AGENTS").unwrap();
-            assert!(pos_user_w < pos_a, "user WGENTY should precede rules");
-            assert!(pos_a < pos_b, "rules should be alphabetical");
-            assert!(pos_b < pos_proj_w, "rules should precede project WGENTY");
-            assert!(
-                pos_proj_w < pos_proj_a,
-                "project WGENTY should precede project AGENTS"
-            );
-        }
+        // 2 project content markers
+        assert!(result.to_model.contains("PROJECT_WGENTY"));
+        assert!(result.to_model.contains("PROJECT_AGENTS"));
+
+        // 2 description tags (project-level only; user globals now in Layers 7/8)
+        assert!(result
+            .to_model
+            .contains("project instructions, checked into the codebase"));
+        assert!(result
+            .to_model
+            .contains("project agent conventions, checked into the codebase"));
+
+        // Ordering: project WGENTY.md → project AGENTS.md
+        let pos_proj_w = result.to_model.find("PROJECT_WGENTY").unwrap();
+        let pos_proj_a = result.to_model.find("PROJECT_AGENTS").unwrap();
+        assert!(
+            pos_proj_w < pos_proj_a,
+            "project WGENTY should precede project AGENTS"
+        );
     }
 
     // ============================================================
@@ -875,24 +902,32 @@ mod reminder_tests {
     }
 
     // ============================================================
-    // U4 (Task 2.7) — Rules alphabetical order
+    // U4 (Task 2.7) — Rules alphabetical order (now in Layer 8 of system prompt)
     // ============================================================
     #[test]
-    #[serial]
     fn reminder_user_rules_alphabetical_order() {
-        // Insert in non-alpha order; build_user_turn_reminder must sort.
-        let home = make_fake_home(None, &[("b.md", "BBB"), ("a.md", "AAA"), ("c.md", "CCC")]);
+        // Rules are now cached and delivered via Layer 8 in assemble_instructions.
+        // Verify they appear in the same order as stored in user_global_rules.
+        let ctx = PromptContext::new().with_user_global_rules(vec![
+            (PathBuf::from("/fake/rules/a.md"), "AAA".to_string()),
+            (PathBuf::from("/fake/rules/b.md"), "BBB".to_string()),
+            (PathBuf::from("/fake/rules/c.md"), "CCC".to_string()),
+        ]);
 
-        {
-            let ctx = PromptContext::new().with_home_override(home.path().to_path_buf());
-            let result = build_user_turn_reminder(&ctx, &[]).expect("rules present → Some");
+        let settings = Settings::default();
+        let assembled = assemble_instructions(&settings, &ctx);
+        let sys_text = assembled
+            .system_messages
+            .iter()
+            .filter_map(|msg| msg.content.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n");
 
-            let pos_a = result.to_model.find("AAA").unwrap();
-            let pos_b = result.to_model.find("BBB").unwrap();
-            let pos_c = result.to_model.find("CCC").unwrap();
-            assert!(pos_a < pos_b, "a.md should precede b.md");
-            assert!(pos_b < pos_c, "b.md should precede c.md");
-        }
+        let pos_a = sys_text.find("AAA").unwrap();
+        let pos_b = sys_text.find("BBB").unwrap();
+        let pos_c = sys_text.find("CCC").unwrap();
+        assert!(pos_a < pos_b, "a.md should precede b.md in Layer 8");
+        assert!(pos_b < pos_c, "b.md should precede c.md in Layer 8");
     }
 
     // ============================================================

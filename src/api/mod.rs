@@ -354,8 +354,11 @@ impl ApiClient {
         messages: Vec<ChatMessage>,
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<ChatResponse> {
-        let (anthropic_msgs, system_prompt) = convert_messages_to_anthropic(&messages);
+        let (mut anthropic_msgs, system_prompt) = convert_messages_to_anthropic(&messages);
         let anthropic_tools = tools.as_ref().map(|t| convert_tools_to_anthropic(t));
+
+        // Cache the stable conversation prefix (system + tools + prior turns).
+        anthropic::apply_conversation_cache_breakpoint(&mut anthropic_msgs);
 
         let request = anthropic::AnthropicRequest {
             model: self
@@ -485,11 +488,17 @@ impl ApiClient {
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<reqwest::Response> {
         use anthropic::{
-            convert_messages_to_anthropic, convert_tools_to_anthropic, AnthropicRequest,
+            apply_conversation_cache_breakpoint, convert_messages_to_anthropic,
+            convert_tools_to_anthropic, AnthropicRequest,
         };
 
-        let (anthropic_msgs, system_prompt) = convert_messages_to_anthropic(&messages);
+        let (mut anthropic_msgs, system_prompt) = convert_messages_to_anthropic(&messages);
         let anthropic_tools = tools.as_ref().map(|t| convert_tools_to_anthropic(t));
+
+        // Mark the end of the stable conversation prefix so Anthropic can cache
+        // the entire history (system + tools + prior turns) and only process the
+        // new user message fresh.
+        apply_conversation_cache_breakpoint(&mut anthropic_msgs);
 
         let request = AnthropicRequest {
             model: self
