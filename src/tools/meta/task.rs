@@ -141,6 +141,11 @@ impl Tool for TaskTool {
                     "type": "string",
                     "description": "The detailed task for the subagent to perform"
                 },
+                "isolation": {
+                    "type": "string",
+                    "enum": ["shared", "worktree"],
+                    "description": "Working directory isolation: 'shared' (default, main checkout) or 'worktree' (dedicated git worktree on a new branch). Worktree isolation forces serial execution; the subagent is told to operate within the worktree path using absolute paths."
+                },
                 "comet_context": {
                     "type": "object",
                     "description": "Optional Comet workflow context for implementer subagents",
@@ -233,6 +238,31 @@ impl Tool for TaskTool {
 
         // Trusted session identity: derived from the execution context, never
         // from model-supplied JSON. `_session_id` in input is ignored.
+        // s12 worktree isolation: optional dedicated checkout for this subagent.
+        let isolation = input["isolation"].as_str().unwrap_or("shared");
+        let worktree_guard: Option<crate::teams::WorktreeIsolation> = if isolation == "worktree" {
+            let repo_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            match crate::teams::WorktreeIsolation::create(
+                &repo_root,
+                context.agent.agent_id.as_str(),
+                None,
+            ) {
+                Ok(wt) => {
+                    tracing::info!(
+                        worktree = %wt.path.display(),
+                        branch = %wt.branch,
+                        "task: created worktree isolation"
+                    );
+                    Some(wt)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "task: worktree creation failed; falling back to shared");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let session_id = context.agent.session_id.as_str().to_string();
 
         tracing::info!(
@@ -321,9 +351,16 @@ impl Tool for TaskTool {
         };
 
         // Build the full user prompt with context.
+        // If isolated, tell the subagent where to work (absolute paths).
+        let worktree_note = worktree_guard.as_ref().map(|wt| {
+            format!(
+                "\n\n<worktree-isolation>\nYou are running in an isolated git worktree at: {}\nAll file operations MUST use absolute paths within this directory. Do not touch the main checkout. When done, summarize changes; the parent will merge or discard.\n</worktree-isolation>\n",
+                wt.path.display()
+            )
+        }).unwrap_or_default();
         let full_prompt = format!(
-            "## Task Description\n{}\n\n## Task Details\n{}",
-            description, prompt
+            "## Task Description\n{}\n\n## Task Details\n{}{}",
+            description, prompt, worktree_note
         );
 
         // ── Guard: concurrency limit — queue until slot opens ───────────
@@ -444,7 +481,10 @@ impl Tool for TaskTool {
         // spawned future persists its own terminal through the coordinator so
         // root children become deliverable even when no parent joins them.
         let bg_child_context = child_context.clone();
+        let worktree_guard_bg = worktree_guard;
+
         let handle = tokio::spawn(async move {
+            let _worktree_guard = worktree_guard_bg;
             // Wrap the subagent loop in `catch_unwind` so a panic inside the
             // loop is converted to a `SubagentError` instead of aborting the
             // spawned future before `finish_child` can run. Without this, a
