@@ -134,7 +134,7 @@ learn 项目：文件即数据库（JSON 任务文件、JSONL 邮箱、SKILL.md 
 | **P2** | worktree 隔离（s12） | ✅ `WorktreeIsolation` + `task` isolation |
 | **P3** | 自主 Agent（s11） | ✅ `AutonomousWorker`（claim+通知；自主跑 loop 待做） |
 | **P1** | Daemon 内嵌完整 loop（`/agent/turn`） | 🔲 设计决策 |
-| **P2** | per-subagent cwd 工具层改造 | 🔲 s12 深化 |
+| **P2** | per-subagent cwd 工具层改造 | ✅ execute_command + file_read/write/edit/list_files 均接 workdir；run_subagent_loop/RLM 透传 |
 | **P2** | Linux seccomp-bpf syscall 白名单 | 🔲 |
 | **P2** | WASM 插件执行 | 🔲（仅 script hooks） |
 | **P2** | Windows Restricted Token | 🔲 |
