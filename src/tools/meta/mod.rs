@@ -10,13 +10,13 @@ pub mod team_message;
 pub mod think;
 
 pub use ask_user_question::AskUserQuestionTool;
+pub use team_message::TeamMessageTool;
 pub use compact::CompactTool;
 pub use load_skill::LoadSkillTool;
 pub use lsp::LspTool;
 pub use note_edit::NoteEditTool;
 pub use skill::SkillTool;
 pub use task::TaskTool;
-pub use team_message::TeamMessageTool;
 pub use think::ThinkTool;
 pub mod update_plan;
 pub use update_plan::UpdatePlanTool;

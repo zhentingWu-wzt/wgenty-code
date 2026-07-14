@@ -90,6 +90,7 @@ impl AgentLoop {
                 synthesis: None,
                 observer: None,
                 task_progress: Some(task_progress_ref),
+                inbox: None,
             },
         })
         .await;

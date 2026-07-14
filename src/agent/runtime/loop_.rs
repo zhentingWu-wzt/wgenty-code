@@ -5,8 +5,8 @@ use super::config::RuntimeConfig;
 use super::error::RuntimeError;
 use super::events::RuntimeEvent;
 use super::ports::{
-    Compactor, EventSink, HistoryStore, InteractionPort, LlmPort, PlannerPort, RoundObserver,
-    SynthesisPort, TaskProgressPort, ToolPort, ToolRequest,
+    Compactor, EventSink, HistoryStore, InboxPort, InteractionPort, LlmPort, PlannerPort,
+    RoundObserver, SynthesisPort, TaskProgressPort, ToolPort, ToolRequest,
 };
 use super::stream::{stream_with_retry, StreamRetryOpts};
 use super::timeout::resolve_tool_timeout;
@@ -99,6 +99,8 @@ pub struct LoopHooks<'a> {
     pub synthesis: Option<&'a dyn SynthesisPort>,
     pub observer: Option<&'a dyn RoundObserver>,
     pub task_progress: Option<&'a dyn TaskProgressPort>,
+    /// Async inbox drain (s09 mailbox) injected at the top of each round.
+    pub inbox: Option<&'a dyn InboxPort>,
 }
 
 /// Bundled arguments for [`run_agent_loop`] (keeps the free-function signature small).
@@ -154,6 +156,15 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
         let messages = micro_compact_messages(&raw);
         if let Some(obs) = hooks.observer {
             obs.on_round_start(llm_rounds + 1, &messages);
+        }
+
+        // s09 inbox: drain team mailbox at the top of each round so peer
+        // messages are visible to the model before it acts. Injected as a
+        // system message; an empty inbox is a no-op.
+        if let Some(inbox) = hooks.inbox {
+            if let Some(note) = inbox.drain().await {
+                history.push(ChatMessage::system(note)).await;
+            }
         }
 
         let want_compact = state.compact_requested
