@@ -5,6 +5,7 @@
 //! team protocols, autonomous agents, worktree isolation).
 
 pub mod approval_registry;
+pub mod worktree;
 pub mod mailbox;
 pub mod rollback;
 pub mod subagent;
@@ -14,6 +15,7 @@ pub mod subagent_mailbox;
 pub mod subagent_trace;
 
 pub use mailbox::{Mailbox, TeamConfig, TeamManager, TeamMember, TeamMessage};
+pub use worktree::WorktreeIsolation;
 pub use subagent::{
     AgentDefinition, AgentSession, AgentStatus, AgentStatusReport, AgentType, AgentsService,
 };
