@@ -183,7 +183,7 @@ async fn execute_command_respects_context_workdir() {
     let inner = tmp.path().join("inner");
     std::fs::create_dir_all(&inner).unwrap();
 
-    let tool = wgenty_code::tools::execution::execute_command::ExecuteCommandTool::default();
+    let tool = wgenty_code::tools::execution::execute_command::ExecuteCommandTool::new();
     let agent = AgentExecutionContext::root(SessionId::new("s"));
     let ctx = ToolContext {
         agent: &agent,
@@ -201,4 +201,62 @@ async fn execute_command_respects_context_workdir() {
         "pwd should run in workdir; got: {}",
         out.content
     );
+}
+
+/// s12 FS deepening: file_read resolves a relative path against
+/// ToolContext.workdir, so an isolated subagent reads its worktree copy.
+#[tokio::test]
+async fn file_read_resolves_relative_path_via_workdir() {
+    use wgenty_code::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
+    use wgenty_code::tools::Tool;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let inner = tmp.path().join("wt");
+    std::fs::create_dir_all(inner.join("src")).unwrap();
+    std::fs::write(inner.join("src/main.rs"), "fn main() {}").unwrap();
+
+    let tool = wgenty_code::tools::filesystem::file_read::FileReadTool;
+    let agent = AgentExecutionContext::root(SessionId::new("s"));
+    let ctx = ToolContext {
+        agent: &agent,
+        invocation_id: ToolInvocationId::new("inv"),
+        origin_turn_id: None,
+        workdir: Some(&inner),
+    };
+    let out = tool
+        .execute_with_context(&ctx, serde_json::json!({"path": "src/main.rs"}))
+        .await
+        .unwrap();
+    assert!(
+        out.content.contains("fn main()"),
+        "should read worktree-relative file; got: {}",
+        out.content
+    );
+}
+
+/// Absolute paths are unaffected by workdir (no double-join).
+#[tokio::test]
+async fn file_read_absolute_path_ignores_workdir() {
+    use wgenty_code::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
+    use wgenty_code::tools::Tool;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let abs = tmp.path().join("abs.txt");
+    std::fs::write(&abs, "absolute").unwrap();
+    let other_dir = tmp.path().join("other");
+    std::fs::create_dir_all(&other_dir).unwrap();
+
+    let tool = wgenty_code::tools::filesystem::file_read::FileReadTool;
+    let agent = AgentExecutionContext::root(SessionId::new("s"));
+    let ctx = ToolContext {
+        agent: &agent,
+        invocation_id: ToolInvocationId::new("inv"),
+        origin_turn_id: None,
+        workdir: Some(&other_dir),
+    };
+    let out = tool
+        .execute_with_context(&ctx, serde_json::json!({"path": abs.to_string_lossy()}))
+        .await
+        .unwrap();
+    assert!(out.content.contains("absolute"));
 }

@@ -1,5 +1,6 @@
 //! List Files Tool
 
+use crate::agent::ToolContext;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use serde_json;
@@ -48,6 +49,19 @@ impl Tool for ListFilesTool {
             },
             "required": ["path"]
         })
+    }
+
+    async fn execute_with_context(
+        &self,
+        context: &ToolContext<'_>,
+        mut input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        // s12: resolve relative paths against the per-agent workdir.
+        if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+            let resolved = crate::tools::resolve_path(path, context.workdir);
+            input["path"] = serde_json::Value::String(resolved.to_string_lossy().into_owned());
+        }
+        self.execute(input).await
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
