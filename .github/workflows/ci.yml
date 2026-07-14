@@ -97,4 +97,4 @@ jobs:
       - name: 构建并测试 (bundled SQLite)
         run: cargo test --lib --features bundled-sqlite
       - name: 沙箱与 runtime 重点测试
-        run: "cargo test --lib --features bundled-sqlite sandbox:: agent::runtime::"
+        run: "cargo test --lib --features bundled-sqlite -- sandbox:: agent::runtime::"
