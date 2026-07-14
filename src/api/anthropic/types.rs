@@ -4,13 +4,43 @@ use serde::{Deserialize, Serialize};
 
 // ── Anthropic Request Types ──────────────────────────────────────────────────
 
+/// Anthropic prompt-caching directive.  When placed on the last content block
+/// of a prefix region (system prompt, tools array, or a message), the API
+/// caches everything up to that point so subsequent requests with the same
+/// prefix pay only a cheap "cache read" instead of full reprocessing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheControl {
+    #[serde(rename = "type")]
+    pub cache_type: String,
+}
+
+impl CacheControl {
+    /// Create an ephemeral cache breakpoint (5-minute TTL).
+    pub fn ephemeral() -> Self {
+        Self {
+            cache_type: "ephemeral".to_string(),
+        }
+    }
+}
+
+/// A single block inside the top-level `system` field.  Anthropic requires the
+/// array form (rather than a plain string) to attach `cache_control`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnthropicSystemBlock {
+    #[serde(rename = "type")]
+    pub block_type: String,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AnthropicRequest {
     pub model: String,
     pub messages: Vec<AnthropicMessage>,
     pub max_tokens: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<String>,
+    pub system: Option<Vec<AnthropicSystemBlock>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<AnthropicToolDef>>,
     pub stream: bool,
@@ -33,28 +63,40 @@ pub enum AnthropicContentValue {
 #[serde(tag = "type")]
 pub enum AnthropicContentBlock {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        cache_control: Option<CacheControl>,
+    },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        cache_control: Option<CacheControl>,
     },
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
         content: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        cache_control: Option<CacheControl>,
     },
     #[serde(rename = "server_tool_use")]
     ServerToolUse {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        cache_control: Option<CacheControl>,
     },
     #[serde(rename = "web_search_tool_result")]
     WebSearchToolResult {
         tool_use_id: String,
         content: Vec<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        cache_control: Option<CacheControl>,
     },
 }
 
@@ -65,13 +107,19 @@ pub enum AnthropicContentBlock {
 pub enum AnthropicToolDef {
     /// Anthropic native server-side web search (no function definition needed).
     #[serde(rename = "web_search_20250305")]
-    WebSearch { name: String },
+    WebSearch {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        cache_control: Option<CacheControl>,
+    },
     /// Standard function/custom tool with description and input schema.
     #[serde(rename = "custom")]
     Custom {
         name: String,
         description: String,
         input_schema: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        cache_control: Option<CacheControl>,
     },
 }
 

@@ -226,7 +226,11 @@ impl App {
                 .unwrap_or_default(),
         );
 
-        // ── Skill discovery deferred to background (Task 4) ───────────────
+        // Cache user global instructions & rules for Layers 7/8 in system prompt
+        let prompt_ctx = prompt_ctx
+            .with_user_global_instructions(crate::utils::project::read_user_global_instructions());
+        let prompt_ctx =
+            prompt_ctx.with_user_global_rules(crate::utils::project::read_user_global_rules());
         // Skill discovery (SkillLoader + ExternalSkillRegistry) involves
         // synchronous disk I/O that can take 50-200ms on systems with many
         // skills. It is spawned in a background blocking task and delivered
@@ -342,16 +346,13 @@ impl App {
         let agents_sections = crate::utils::project::read_agents_md_sections(&project_root);
         crate::utils::startup_timing::mark("app new: wgenty/agents sections read");
 
-        // Warn if the per-turn <system-reminder> block exceeds the token budget.
-        // Estimated once at session startup using a preview PromptContext (preamble
-        // + 4 file sources). Hook injections are dynamic per-turn and not counted.
-        // Fires at most once per session (effectively, because session_init is
-        // called once).
+        // ── Per-turn <system-reminder> hook injection is dynamic per-turn.
+        // At startup there are no hooks, so the estimate is always 0.
+        // Token budget for system prompt (including Layers 7/8 user globals)
+        // is managed by the prompt assembler itself. The dev-log warning below
+        // is retained as a baseline guard; hook-heavy sessions may trigger it.
         let reminder_token_estimate = {
-            let preview_ctx = crate::prompts::PromptContext::new()
-                .with_wgenty_md(wgenty_sections.clone())
-                .with_agents_md(agents_sections.clone())
-                .with_project_root(project_root.clone());
+            let preview_ctx = crate::prompts::PromptContext::new();
             match crate::prompts::build_user_turn_reminder(&preview_ctx, &[]) {
                 Some(out) => crate::utils::estimate_tokens(&out.to_model),
                 None => 0,
@@ -386,7 +387,8 @@ impl App {
         let system_messages = assembled.system_messages;
         let conversation_history = Arc::new(TokioMutex::new(system_messages.clone()));
         // Share the prompt context with each AgentLoop so per-turn reminders
-        // can re-read file sources (WGENTY.md, AGENTS.md, project_root, …).
+        // can inject hook fragments. User global instructions/rules are cached
+        // at construction and delivered via Layers 7/8 in the system prompt.
         let prompt_context = Arc::new(prompt_ctx);
 
         // Initialize hook manager from settings
