@@ -3,7 +3,7 @@
 # ==========================================
 
 # 阶段 1: 构建阶段
-FROM rust:1.89-bookworm AS builder
+FROM rust:1.97-bookworm AS builder
 
 WORKDIR /build
 
