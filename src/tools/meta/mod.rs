@@ -6,11 +6,13 @@ pub mod note_edit;
 pub mod note_store;
 pub mod skill;
 pub mod task;
+pub mod request_approval;
 pub mod team_message;
 pub mod think;
 
 pub use ask_user_question::AskUserQuestionTool;
 pub use team_message::TeamMessageTool;
+pub use request_approval::RequestApprovalTool;
 pub use compact::CompactTool;
 pub use load_skill::LoadSkillTool;
 pub use lsp::LspTool;

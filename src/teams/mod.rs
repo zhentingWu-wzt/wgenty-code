@@ -4,6 +4,7 @@
 //! Corresponds to harness mechanisms s04, s09-s12 (subagents, agent teams,
 //! team protocols, autonomous agents, worktree isolation).
 
+pub mod approval_registry;
 pub mod mailbox;
 pub mod rollback;
 pub mod subagent;

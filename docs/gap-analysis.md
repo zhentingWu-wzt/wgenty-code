@@ -32,7 +32,7 @@
 | s07 | 任务系统（依赖图） | 文件持久化 + `blockedBy` 依赖图 | `TaskManagementTool`：`blockedBy` / `set_dependencies` / `blocked` / `ready` + 环检测 + 状态门闩；图算法在 `tasks/graph.rs` | **已实现** |
 | s08 | 后台任务 | `BackgroundManager` + 通知队列 + 注入 agent loop | `background` 工具 + TUI `inject_background_results`；CLI 无后台会话 | **部分实现（TUI）** |
 | s09 | 代理团队 | 多线程 Agent 循环 + JSONL 邮箱通信 | `MailboxInbox`（subagent 每轮 drain）+ `team_message` 工具（send/broadcast/shutdown_request）；多 agent 异步通信已通 | **部分实现**（运行时已通；多 agent 并行调度待 s11） |
-| s10 | 团队协议 | 关闭协议 + 计划审批协议（`request_id` 关联） | 无 | **未实现** |
+| s10 | 团队协议 | 关闭协议 + 计划审批协议（`request_id` 关联） | `ShutdownRequest` 经 mailbox 触发子代理 cooperative cancel；`ApprovalRequest/Response` + `request_approval` 工具（oneshot + 超时）；`approval_registry` 关联 `request_id` | **部分实现**（关闭+审批已通；父侧自动审批策略待 s11） |
 | s11 | 自主 Agent | 轮询任务板 + 自动认领 + 空闲超时关闭 | 无 | **未实现** |
 | s12 | 工作树隔离 | `WorktreeManager` + `EventBus` + `bind_worktree` | 仅 `teams/mod.rs` 提到 worktree，无实现 | **未实现** |
 
