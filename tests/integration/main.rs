@@ -20,5 +20,6 @@ mod strict_subagent_isolation;
 mod subagent_evaluation;
 mod system_reminder;
 mod tools_test;
+mod multiagent_collab;
 mod unified_subagent_lifecycle;
 mod workflow_comet_test;

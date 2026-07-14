@@ -62,8 +62,8 @@ impl AutonomousWorker {
         }
     }
 
-    pub fn status(&self) -> WorkerStatus {
-        self.status.blocking_lock().clone()
+    pub async fn status(&self) -> WorkerStatus {
+        self.status.lock().await.clone()
     }
 
     /// Run the poll loop until idle timeout or the daemon shuts down.
