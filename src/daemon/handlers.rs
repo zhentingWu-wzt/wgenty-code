@@ -225,6 +225,7 @@ pub async fn execute_tool(
                     uuid::Uuid::new_v4().to_string(),
                 ),
                 origin_turn_id: body.turn_id.as_deref(),
+                workdir: None,
             };
             // Execute directly with hooks
             let msg = state
@@ -269,6 +270,7 @@ pub async fn execute_tool(
                         uuid::Uuid::new_v4().to_string(),
                     ),
                     origin_turn_id: body.turn_id.as_deref(),
+                    workdir: None,
                 };
                 let msg = state
                     .tool_executor

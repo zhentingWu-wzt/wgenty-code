@@ -41,6 +41,7 @@ pub async fn run_rlm_pipeline(
     progress_store: Option<ProgressContext>, // (store, session_id)
     root_node_id: Option<String>,
     token_budget_k: Option<u64>,
+    workdir: Option<std::path::PathBuf>,
 ) -> Result<RlmResult, String> {
     tracing::info!(
         target: "rlm",
@@ -335,6 +336,7 @@ Context: {context}
                     None
                 };
             let sub_coordinator = coordinator.clone();
+            let sub_workdir = workdir.clone();
             let handle = tokio::spawn(async move {
                 let mut sub_system_prompt = "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.".to_string();
                 inject_format_instruction("analysis", &mut sub_system_prompt);
@@ -350,6 +352,7 @@ Context: {context}
                     timeout_secs,
                     sub_progress,
                     task_budget,
+                    sub_workdir,
                 )
                 .await;
                 // Persist the child's terminal through the coordinator so its

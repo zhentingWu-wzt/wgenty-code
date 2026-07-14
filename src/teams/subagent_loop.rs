@@ -166,6 +166,8 @@ struct FilteredToolPort<'a> {
     registry: &'a ToolRegistry,
     context: &'a AgentExecutionContext,
     allowed: HashSet<String>,
+    /// Per-subagent working directory (s12 worktree isolation). None = process cwd.
+    workdir: Option<std::path::PathBuf>,
 }
 
 #[async_trait]
@@ -189,6 +191,7 @@ impl ToolPort for FilteredToolPort<'_> {
             agent: self.context,
             invocation_id: ToolInvocationId::new(inv_id),
             origin_turn_id: None,
+            workdir: self.workdir.as_deref(),
         };
 
         match self
@@ -598,6 +601,7 @@ pub async fn run_subagent_loop(
     timeout_secs: u64,
     on_progress: Option<ProgressCallback>,
     token_budget_k: Option<u64>,
+    workdir: Option<std::path::PathBuf>,
 ) -> Result<String, SubagentError> {
     let timeout_duration = Duration::from_secs(timeout_secs);
     static SUBAGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -627,6 +631,7 @@ pub async fn run_subagent_loop(
         registry: tool_registry,
         context,
         allowed,
+        workdir,
     };
     let events = NullEventSink;
 

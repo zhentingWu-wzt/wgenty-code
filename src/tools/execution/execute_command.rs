@@ -1,6 +1,7 @@
 //! Execute Command Tool — runs shell commands with sandbox isolation.
 
 use crate::sandbox::{SandboxConfig, SandboxManager, SandboxProfile, SecurityLevel};
+use crate::agent::ToolContext;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use std::path::PathBuf;
@@ -22,8 +23,11 @@ impl ExecuteCommandTool {
     }
 
     /// Build a default sandbox profile for the current working directory.
-    fn default_profile(&self) -> SandboxProfile {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    fn default_profile(&self, workdir: Option<&std::path::Path>) -> SandboxProfile {
+        let cwd = workdir
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
         let mut profile = SandboxConfig::builder(cwd)
             .security_level(SecurityLevel::Minimal)
             .build();
@@ -73,12 +77,37 @@ impl Tool for ExecuteCommandTool {
             message: "command is required".to_string(),
             code: Some("missing_parameter".to_string()),
         })?;
-
         let user_timeout = input["timeout"].as_u64().unwrap_or(60);
+        self.run(command, user_timeout, None).await
+    }
 
+    async fn execute_with_context(
+        &self,
+        context: &ToolContext<'_>,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        let command = input["command"].as_str().ok_or_else(|| ToolError {
+            message: "command is required".to_string(),
+            code: Some("missing_parameter".to_string()),
+        })?;
+        let user_timeout = input["timeout"].as_u64().unwrap_or(60);
+        self.run(command, user_timeout, context.workdir).await
+    }
+}
+
+impl ExecuteCommandTool {
+    /// Core execution: sandbox first, direct fallback. `workdir` overrides the
+    /// process cwd (s12 worktree isolation) for both sandbox profile and the
+    /// fallback `sh -c` command.
+    async fn run(
+        &self,
+        command: &str,
+        user_timeout: u64,
+        workdir: Option<&std::path::Path>,
+    ) -> Result<ToolOutput, ToolError> {
         // Try sandbox execution first; fall back to direct execution
         if let Some(ref sb) = self.sandbox {
-            let mut profile = self.default_profile();
+            let mut profile = self.default_profile(workdir);
             profile.resources.max_wall_seconds = user_timeout;
 
             match sb.execute(command, &profile).await {
@@ -110,7 +139,6 @@ impl Tool for ExecuteCommandTool {
                         sb.status().backend_name,
                         e
                     );
-                    // Fall through to direct execution
                 }
             }
         }
@@ -118,10 +146,14 @@ impl Tool for ExecuteCommandTool {
         // Direct execution (fallback)
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(user_timeout),
-            tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(command)
-                .output(),
+            {
+                let mut cmd = tokio::process::Command::new("sh");
+                cmd.arg("-c").arg(command);
+                if let Some(dir) = workdir {
+                    cmd.current_dir(dir);
+                }
+                cmd.output()
+            },
         )
         .await;
 
@@ -129,7 +161,6 @@ impl Tool for ExecuteCommandTool {
             Ok(Ok(result)) => {
                 let stdout = String::from_utf8_lossy(&result.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&result.stderr).to_string();
-
                 if !result.status.success() {
                     return Err(ToolError {
                         message: format!(
@@ -139,7 +170,6 @@ impl Tool for ExecuteCommandTool {
                         code: Some("non_zero_exit".to_string()),
                     });
                 }
-
                 Ok(ToolOutput {
                     output_type: "text".to_string(),
                     content: stdout,

@@ -141,6 +141,7 @@ impl Tool for RlmDelegateTool {
             Some((self.progress_store.clone(), session_id)),
             Some(root_node_id),
             None,
+            None,
         )
         .await
         .map_err(|e| ToolError {

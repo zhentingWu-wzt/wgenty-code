@@ -117,7 +117,7 @@ impl Tool for RunScriptTool {
                     let result = run_subagent_loop(
                         &client, &reg, &child_context, coordinator.clone(),
                         "You are a sub-agent in a Rhai script. Execute the task precisely and return a concise result.",
-                        &prompt, &tools, 10, 120, None, None,
+                        &prompt, &tools, 10, 120, None, None, None,
                     ).await;
                     let (terminal, content) = match result {
                         Ok(r) => (
