@@ -23,7 +23,7 @@ pub fn read_user_global_instructions() -> Option<(PathBuf, String)> {
 
 /// Testable variant of [`read_user_global_instructions`] that accepts an
 /// explicit home directory (avoids polluting the real `HOME` env var in tests).
-fn read_user_global_instructions_from(home: &Path) -> Option<(PathBuf, String)> {
+pub(crate) fn read_user_global_instructions_from(home: &Path) -> Option<(PathBuf, String)> {
     let path = home.join(".wgenty-code").join("WGENTY.md");
     let content = std::fs::read_to_string(&path).ok()?;
     if content.is_empty() {
@@ -50,7 +50,7 @@ pub fn read_user_global_rules() -> Vec<(PathBuf, String)> {
 
 /// Testable variant of [`read_user_global_rules`] that accepts an explicit
 /// home directory (avoids polluting the real `HOME` env var in tests).
-fn read_user_global_rules_from(home: &Path) -> Vec<(PathBuf, String)> {
+pub(crate) fn read_user_global_rules_from(home: &Path) -> Vec<(PathBuf, String)> {
     let rules_dir = home.join(".wgenty-code").join("rules");
     let Ok(entries) = std::fs::read_dir(&rules_dir) else {
         return Vec::new();
