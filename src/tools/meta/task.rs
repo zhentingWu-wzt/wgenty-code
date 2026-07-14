@@ -526,6 +526,7 @@ impl Tool for TaskTool {
             // panicking child would leave its task-group slot unfilled forever,
             // causing the parent agent to wait for a delivery that never comes.
             let loop_future = async {
+                let workdir = _worktree_guard.as_ref().map(|w| w.path.clone());
                 if rlm_enabled {
                     let reason = format!(
                         "RLM pipeline: prompt_len={}, use_small={}",
@@ -548,6 +549,7 @@ impl Tool for TaskTool {
                         Some((progress_store_bg, sid_for_rlm)),
                         Some(node_id_for_rlm),
                         token_budget,
+                        workdir,
                     )
                     .await
                     .map(|r| r.aggregated)
@@ -565,6 +567,7 @@ impl Tool for TaskTool {
                         timeout_secs,
                         Some(cb),
                         token_budget,
+                        workdir,
                     )
                     .await
                 }

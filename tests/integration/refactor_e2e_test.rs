@@ -247,6 +247,7 @@ Return summary with files changed and remaining occurrences of "process_transact
         600,
         Some(progress_cb),
         None,
+        None,
     )
     .await;
     let elapsed = start.elapsed();

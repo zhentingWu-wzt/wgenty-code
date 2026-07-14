@@ -171,3 +171,34 @@ async fn autonomous_worker_disabled_is_noop() {
     .unwrap();
     assert!(!worker.status().await.running);
 }
+
+/// s12 deepening: execute_command honors ToolContext.workdir so a subagent
+/// scoped to a worktree runs `pwd` inside it (not the process cwd).
+#[tokio::test]
+async fn execute_command_respects_context_workdir() {
+    use wgenty_code::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
+    use wgenty_code::tools::Tool;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let inner = tmp.path().join("inner");
+    std::fs::create_dir_all(&inner).unwrap();
+
+    let tool = wgenty_code::tools::execution::execute_command::ExecuteCommandTool::default();
+    let agent = AgentExecutionContext::root(SessionId::new("s"));
+    let ctx = ToolContext {
+        agent: &agent,
+        invocation_id: ToolInvocationId::new("inv"),
+        origin_turn_id: None,
+        workdir: Some(&inner),
+    };
+    let out = tool
+        .execute_with_context(&ctx, serde_json::json!({"command": "pwd"}))
+        .await
+        .unwrap();
+    // pwd should resolve inside `inner`, not the process cwd.
+    assert!(
+        out.content.contains("inner"),
+        "pwd should run in workdir; got: {}",
+        out.content
+    );
+}

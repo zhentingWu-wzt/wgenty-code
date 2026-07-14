@@ -211,6 +211,7 @@ async fn root_task_fixture(
         agent: root_ref,
         invocation_id: ToolInvocationId::new("inv"),
         origin_turn_id: Some(origin_turn_id),
+        workdir: None,
     };
     (tool, registry, root, ctx)
 }
@@ -310,6 +311,7 @@ async fn forged_identity_fields_cannot_bypass_depth_limit() {
         agent: &root,
         invocation_id: ToolInvocationId::new("inv"),
         origin_turn_id: Some("turn-1"),
+        workdir: None,
     };
     let forged = serde_json::json!({
         "description": "nested work",

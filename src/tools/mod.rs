@@ -371,6 +371,7 @@ mod external_tool_tests {
             agent: &root,
             invocation_id,
             origin_turn_id: None,
+            workdir: None,
         };
 
         // Input carries forged identity fields; they must be ignored.
@@ -401,6 +402,7 @@ mod external_tool_tests {
             agent: &root,
             invocation_id: crate::agent::ToolInvocationId::new("inv-2"),
             origin_turn_id: None,
+            workdir: None,
         };
 
         let output = registry
