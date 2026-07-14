@@ -29,6 +29,40 @@ use tokio::sync::RwLock;
 mod heuristic;
 mod transcript;
 
+
+
+/// Convert a live `SubagentEvent` (progress timeline) into the persisted
+/// `SubagentEventRecord` (transcript) shape.
+fn convert_event(e: &crate::agent::progress::SubagentEvent) -> crate::transcript::SubagentEventRecord {
+    use crate::agent::progress::SubagentEventType;
+    let (event_type, tool_name, data) = match &e.event_type {
+        SubagentEventType::Thought { text } => ("thought".to_string(), None, text.clone()),
+        SubagentEventType::Action { tool_name, params_summary } => {
+            ("action".to_string(), Some(tool_name.clone()), params_summary.clone())
+        }
+        SubagentEventType::ToolResult { tool_name, success, summary } => (
+            "tool_result".to_string(),
+            Some(tool_name.clone()),
+            format!("success={success} {summary}"),
+        ),
+        SubagentEventType::Error { message, .. } => ("error".to_string(), None, message.clone()),
+        SubagentEventType::Completion { status, summary } => (
+            "completion".to_string(),
+            None,
+            format!("{status} {}", summary.as_deref().unwrap_or("")),
+        ),
+    };
+    crate::transcript::SubagentEventRecord {
+        round: 0,
+        event_type,
+        tool_name,
+        tool_params: None,
+        data,
+        elapsed_ms: e.elapsed_ms,
+        token_count: None,
+    }
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -471,6 +505,7 @@ impl Tool for TaskTool {
             && self.settings.agent.rlm.auto_routing
             && is_complex_task(&full_prompt, use_small);
         let progress_store_bg = self.progress_store.clone();
+        let progress_store_for_transcript = self.progress_store.clone();
         let sid_for_rlm = session_id.clone();
         let node_id_for_rlm = subagent_node_id.clone();
         let settings_bg = self.settings.clone();
@@ -635,6 +670,24 @@ impl Tool for TaskTool {
                 } else {
                     None
                 };
+                // Pull real token/event/round telemetry from the last progress
+                // callback the subagent loop emitted (defaults to 0/empty if
+                // it never reported - e.g. early API failure).
+                let (total_tokens, actual_rounds, events) = {
+                    let store = progress_store_for_transcript.read().await;
+                    store
+                        .get(&sid_bg)
+                        .and_then(|m| m.get(&bg_node_id))
+                        .map(|p| {
+                            let events: Vec<crate::transcript::SubagentEventRecord> = p
+                                .events
+                                .iter()
+                                .map(convert_event)
+                                .collect();
+                            (p.cumulative_tokens, p.round.unwrap_or(0) as u32, events)
+                        })
+                        .unwrap_or((0, 0, Vec::new()))
+                };
                 let transcript = build_transcript(
                     bg_node_id,
                     &sid_bg,
@@ -647,12 +700,12 @@ impl Tool for TaskTool {
                     Some(sys_prompt_bg),
                     prompt_bg,
                     started_at_bg,
-                    0, // total_tokens - not yet tracked from subagent loop
-                    0, // actual_rounds
+                    total_tokens,
+                    actual_rounds,
                     token_budget,
-                    None,   // error_message captured in content, not individual
-                    None,   // summary
-                    vec![], // events - not yet tracked from subagent loop
+                    None, // error_message captured in content, not individual
+                    None, // summary
+                    events,
                 );
                 let _ = store.save(&transcript, retention);
             }

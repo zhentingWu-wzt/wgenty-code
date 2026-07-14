@@ -149,6 +149,8 @@ pub enum AppEvent {
     CtrlCPressed,
     /// Structured plan updated via update_plan tool
     PlanUpdate(serde_json::Value),
+    /// User-visible system notice (e.g. per-turn reminder transcript portion).
+    SystemNotice(String),
     /// Sessions loaded from daemon
     SessionListLoaded(Vec<SessionInfo>),
     HistoryLoaded(Vec<ChatMessage>),

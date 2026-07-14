@@ -443,7 +443,8 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::AgentViewNavigated(_)
         | AppEvent::NavigateAgentBack
         | AppEvent::MemoriesReady(_)
-        | AppEvent::SkillsReady(_) => None,
+        | AppEvent::SkillsReady(_)
+        | AppEvent::SystemNotice(_) => None,
     }
 }
 

@@ -307,10 +307,12 @@ impl AgentLoop {
             history.push(ChatMessage::user(&user_content));
         }
 
-        // TODO(§4+): deliver reminder.to_transcript via a new AppEvent::SystemNotice
-        // channel so the TUI shows the user-visible portion. The model already sees
-        // the full reminder via to_model; visibility filtering already works for the
-        // model-facing path.
+        // Deliver the user-visible portion of the per-turn reminder to the
+        // transcript so the user sees context that was injected (file sources,
+        // hook injections) without it being buried in the model-facing prompt.
+        if let Some(transcript) = reminder.as_ref().and_then(|r| r.to_transcript.clone()) {
+            let _ = self.event_tx.send(AppEvent::SystemNotice(transcript));
+        }
 
         self.run_agent_loop().await
     }

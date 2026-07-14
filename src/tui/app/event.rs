@@ -675,6 +675,19 @@ impl App {
                     tool_metadata: None,
                 });
             }
+            AppEvent::SystemNotice(notice) => {
+                self.committed_messages.push(UIMessage {
+                    role: MessageRole::System,
+                    content: notice,
+                    tool_name: None,
+                    tool_args: None,
+                    content_collapsed: false,
+                    tool_collapsed: false,
+                    tool_running: false,
+                    diff_data: None,
+                    tool_metadata: None,
+                });
+            }
             AppEvent::AgentGenerationReset { generation } => {
                 if generation == u64::MAX {
                     // Reset failed on the daemon: surface an actionable

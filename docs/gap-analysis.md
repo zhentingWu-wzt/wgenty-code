@@ -124,18 +124,22 @@ learn 项目：文件即数据库（JSON 任务文件、JSONL 邮箱、SKILL.md 
 | **P1** | Windows CI test job | ✅ |
 | **P1** | Provider 质量矩阵文档 | ✅ `docs/PROVIDERS.md` |
 
-### 阶段 3：协作与扩展（未完成）
+### 阶段 3：协作与扩展
 
 | 优先级 | 功能 | 状态 |
 |--------|------|------|
-| **P1** | TUI task 提醒（daemon `/tasks/ready` 端点） | 🔲 |
+| **P1** | TUI task 提醒（daemon `/tasks/progress` 端点） | ✅ |
+| **P2** | 团队邮箱通信运行时（s09） | ✅ `MailboxInbox` + `team_message` |
+| **P2** | 团队协议：关闭 / 计划审批（s10） | ✅ `ShutdownRequest` + `request_approval` |
+| **P2** | worktree 隔离（s12） | ✅ `WorktreeIsolation` + `task` isolation |
+| **P3** | 自主 Agent（s11） | ✅ `AutonomousWorker`（claim+通知；自主跑 loop 待做） |
 | **P1** | Daemon 内嵌完整 loop（`/agent/turn`） | 🔲 设计决策 |
-| **P2** | 团队邮箱通信运行时（s09） | 🔲 仅数据结构 |
-| **P2** | 团队协议：关闭 / 计划审批（s10） | 🔲 |
-| **P2** | worktree 隔离（s12） | 🔲 |
-| **P3** | 自主 Agent（s11） | 🔲 |
+| **P2** | per-subagent cwd 工具层改造 | 🔲 s12 深化 |
 | **P2** | Linux seccomp-bpf syscall 白名单 | 🔲 |
 | **P2** | WASM 插件执行 | 🔲（仅 script hooks） |
+| **P2** | Windows Restricted Token | 🔲 |
+| **P3** | subagent token/events 追踪 | ✅ transcript 现读真实 progress |
+| **P3** | TUI reminder 可见性（`SystemNotice`） | ✅ |
 
 ---
 
