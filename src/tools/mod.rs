@@ -20,6 +20,23 @@ use std::sync::{Arc, RwLock};
 
 use crate::agent::ToolContext;
 
+/// Resolve a (possibly relative) file path against an optional per-agent workdir.
+///
+/// Absolute paths are returned unchanged. Relative paths join `workdir` when set
+/// (s12 worktree isolation), otherwise fall back to the process cwd. The
+/// returned path is owned so callers can use it directly in fs APIs.
+pub fn resolve_path(file_path: &str, workdir: Option<&std::path::Path>) -> std::path::PathBuf {
+    let p = std::path::Path::new(file_path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else if let Some(dir) = workdir {
+        dir.join(p)
+    } else {
+        p.to_path_buf()
+    }
+}
+
+
 /// Tool trait for all tools
 #[async_trait]
 pub trait Tool: Send + Sync {
