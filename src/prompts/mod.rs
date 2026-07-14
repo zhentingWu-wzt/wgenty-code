@@ -651,14 +651,23 @@ mod reminder_tests {
 
     /// Test helper: temporarily set $HOME, run closure, restore.
     /// Must be used with #[serial] to prevent races between tests.
+    ///
+    /// Sets both `HOME` (Unix) and `USERPROFILE` (Windows) because the `dirs`
+    /// crate resolves the home directory from `USERPROFILE` on Windows, not
+    /// `HOME` -- setting only `HOME` would leave the fake home invisible to
+    /// `dirs::home_dir()` on Windows runners.
     fn with_fake_home<F: FnOnce() -> R, R>(home: &Path, f: F) -> R {
-        let prev = std::env::var_os("HOME");
+        let restore = |var: &str, prev: Option<std::ffi::OsString>| match prev {
+            Some(v) => std::env::set_var(var, v),
+            None => std::env::remove_var(var),
+        };
+        let prev_home = std::env::var_os("HOME");
+        let prev_userprofile = std::env::var_os("USERPROFILE");
         std::env::set_var("HOME", home);
+        std::env::set_var("USERPROFILE", home);
         let result = f();
-        match prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+        restore("HOME", prev_home);
+        restore("USERPROFILE", prev_userprofile);
         result
     }
 
@@ -839,7 +848,8 @@ mod reminder_tests {
             let result = build_user_turn_reminder(&ctx, &[]).unwrap();
 
             // Every "Contents of <path> (...)" line must have an absolute path.
-            // On Unix this means the path starts with '/'.
+            // Use Path::is_absolute rather than starts_with('/') so this holds on
+            // Windows too, where absolute paths look like "C:\...".
             for line in result.to_model.lines() {
                 if let Some(rest) = line.strip_prefix("Contents of ") {
                     // Path is everything up to the last " ("
@@ -848,7 +858,7 @@ mod reminder_tests {
                         .expect("attribution line should contain ' ('");
                     let path = &rest[..path_end];
                     assert!(
-                        path.starts_with('/'),
+                        std::path::Path::new(path).is_absolute(),
                         "attribution path should be absolute, got: {path:?}"
                     );
                 }

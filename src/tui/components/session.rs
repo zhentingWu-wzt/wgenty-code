@@ -99,7 +99,7 @@ pub fn render(
                 let summary_trunc: String = if summary.len() > max_summary_len {
                     format!(
                         "{}…",
-                        &summary.chars().take(max_summary_len).collect::<String>()
+                        summary.chars().take(max_summary_len).collect::<String>()
                     )
                 } else {
                     summary.clone()

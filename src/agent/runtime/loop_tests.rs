@@ -8,10 +8,12 @@ use super::ports::{
     ChatCompletion, EventSink, HistoryStore, LlmPort, TaskProgressPort, ToolPort, ToolRequest,
     ToolResponse,
 };
-use super::{run_agent_loop, LoopHooks, LoopTurnState, RunLoopArgs, RuntimeConfig, RuntimeError,
-    RuntimeEvent, StreamStyle};
+use super::{
+    run_agent_loop, LoopHooks, LoopTurnState, RunLoopArgs, RuntimeConfig, RuntimeError,
+    RuntimeEvent, StreamStyle,
+};
 use crate::agent::runtime::MutexHistoryStore;
-use crate::api::{ChatMessage, ToolDefinition, ToolCall, ToolCallFunction, Usage};
+use crate::api::{ChatMessage, ToolCall, ToolCallFunction, ToolDefinition, Usage};
 use crate::utils::stuck_detector::StuckDetector;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -104,11 +106,9 @@ impl ToolPort for MockToolPort {
             .lock()
             .unwrap()
             .push((req.name.clone(), req.arguments.clone()));
-        let content = self
-            .results
-            .get(&req.name)
-            .cloned()
-            .unwrap_or_else(|| format!(r#"{{"success":false,"error":"no mock for {0}"}}"#, req.name));
+        let content = self.results.get(&req.name).cloned().unwrap_or_else(|| {
+            format!(r#"{{"success":false,"error":"no mock for {0}"}}"#, req.name)
+        });
         let success = content.contains("\"success\":true");
         ToolResponse { content, success }
     }
@@ -230,13 +230,19 @@ async fn final_text_turn_emits_content_and_save() {
     let llm = ScriptedLlm::new(vec![text_response("done")]);
     let tools = MockToolPort::new();
     let events = VecSink::new();
-    let history =
-        MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("hi")])));
+    let history = MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("hi")])));
 
     let mut state = LoopTurnState::default();
-    let out = run(&llm, &tools, &events, &history, &default_config(), &mut state)
-        .await
-        .unwrap();
+    let out = run(
+        &llm,
+        &tools,
+        &events,
+        &history,
+        &default_config(),
+        &mut state,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(out, "done");
     assert_eq!(llm.call_count(), 1);
@@ -252,18 +258,23 @@ async fn multi_round_tool_use_then_finalize() {
         tool_call_response("c1", "file_read", r#"{"path":"a"}"#),
         text_response("summary"),
     ]);
-    let tools = MockToolPort::new().with_result(
-        "file_read",
-        r#"{"success":true,"content":"hello"}"#,
-    );
+    let tools =
+        MockToolPort::new().with_result("file_read", r#"{"success":true,"content":"hello"}"#);
     let events = VecSink::new();
     let history =
         MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("read a")])));
 
     let mut state = LoopTurnState::default();
-    let out = run(&llm, &tools, &events, &history, &default_config(), &mut state)
-        .await
-        .unwrap();
+    let out = run(
+        &llm,
+        &tools,
+        &events,
+        &history,
+        &default_config(),
+        &mut state,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(out, "summary");
     assert_eq!(llm.call_count(), 2);
@@ -286,11 +297,18 @@ async fn irrecoverable_parse_errors_abort() {
     ]);
     let tools = MockToolPort::new();
     let events = VecSink::new();
-    let history =
-        MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("x")])));
+    let history = MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("x")])));
 
     let mut state = LoopTurnState::default();
-    let result = run(&llm, &tools, &events, &history, &default_config(), &mut state).await;
+    let result = run(
+        &llm,
+        &tools,
+        &events,
+        &history,
+        &default_config(),
+        &mut state,
+    )
+    .await;
 
     assert!(result.is_err());
     let snap = events.snapshot();
@@ -311,20 +329,19 @@ async fn max_rounds_exceeded_aborts() {
         ));
     }
     let llm = ScriptedLlm::new(responses);
-    let tools = MockToolPort::new().with_result(
-        "file_read",
-        r#"{"success":true,"content":"x"}"#,
-    );
+    let tools = MockToolPort::new().with_result("file_read", r#"{"success":true,"content":"x"}"#);
     let events = VecSink::new();
-    let history = MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![
-        ChatMessage::user("loop"),
-    ])));
+    let history =
+        MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("loop")])));
     let mut config = default_config();
     config.max_rounds = 3;
 
     let mut state = LoopTurnState::default();
     let result = run(&llm, &tools, &events, &history, &config, &mut state).await;
-    assert!(matches!(result, Err(RuntimeError::MaxRoundsExceeded { .. })));
+    assert!(matches!(
+        result,
+        Err(RuntimeError::MaxRoundsExceeded { .. })
+    ));
 }
 
 #[tokio::test]
@@ -339,14 +356,10 @@ async fn stuck_detector_aborts_on_repeat() {
         ));
     }
     let llm = ScriptedLlm::new(responses);
-    let tools = MockToolPort::new().with_result(
-        "file_read",
-        r#"{"success":true,"content":"x"}"#,
-    );
+    let tools = MockToolPort::new().with_result("file_read", r#"{"success":true,"content":"x"}"#);
     let events = VecSink::new();
-    let history = MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![
-        ChatMessage::user("stuck"),
-    ])));
+    let history =
+        MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("stuck")])));
     let mut stuck = StuckDetector::new();
 
     let mut state = LoopTurnState::default();
@@ -375,18 +388,23 @@ async fn recoverable_parse_still_executes_tool() {
         tool_call_response("c1", "file_read", r#"{"path":"a""#), // missing closing brace
         text_response("ok"),
     ]);
-    let tools = MockToolPort::new().with_result(
-        "file_read",
-        r#"{"success":true,"content":"data"}"#,
-    );
+    let tools =
+        MockToolPort::new().with_result("file_read", r#"{"success":true,"content":"data"}"#);
     let events = VecSink::new();
     let history =
         MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("read")])));
 
     let mut state = LoopTurnState::default();
-    let out = run(&llm, &tools, &events, &history, &default_config(), &mut state)
-        .await
-        .unwrap();
+    let out = run(
+        &llm,
+        &tools,
+        &events,
+        &history,
+        &default_config(),
+        &mut state,
+    )
+    .await
+    .unwrap();
     assert_eq!(out, "ok");
     assert_eq!(tools.recorded().len(), 1);
 }
@@ -419,15 +437,15 @@ async fn ready_task_nudge_injected_after_idle_rounds() {
     }
     responses.push(text_response("done"));
     let llm = ScriptedLlm::new(responses);
-    let tools = MockToolPort::new().with_result(
-        "file_read",
-        r#"{"success":true,"content":"x"}"#,
-    );
+    let tools = MockToolPort::new().with_result("file_read", r#"{"success":true,"content":"x"}"#);
     let events = VecSink::new();
     let history =
         MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("work")])));
 
-    let progress = FixedTaskProgress { blocked: 1, ready: 2 };
+    let progress = FixedTaskProgress {
+        blocked: 1,
+        ready: 2,
+    };
 
     let mut state = LoopTurnState::default();
     let _ = run_agent_loop(RunLoopArgs {
@@ -467,15 +485,15 @@ async fn no_nudge_when_nothing_ready() {
     }
     responses.push(text_response("done"));
     let llm = ScriptedLlm::new(responses);
-    let tools = MockToolPort::new().with_result(
-        "file_read",
-        r#"{"success":true,"content":"x"}"#,
-    );
+    let tools = MockToolPort::new().with_result("file_read", r#"{"success":true,"content":"x"}"#);
     let events = VecSink::new();
     let history =
         MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("work")])));
 
-    let progress = FixedTaskProgress { blocked: 3, ready: 0 };
+    let progress = FixedTaskProgress {
+        blocked: 3,
+        ready: 0,
+    };
 
     let mut state = LoopTurnState::default();
     let _ = run_agent_loop(RunLoopArgs {

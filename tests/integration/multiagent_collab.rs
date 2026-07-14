@@ -85,7 +85,9 @@ async fn worktree_isolation_parallel_checkouts() {
     let tmp = tempfile::TempDir::new().unwrap();
     let root = tmp.path();
     for (k, v) in [("user.name", "t"), ("user.email", "t@t.test")] {
-        let _ = std::process::Command::new("git").args(["config", "--global", k, v]).status();
+        let _ = std::process::Command::new("git")
+            .args(["config", "--global", k, v])
+            .status();
     }
     let _ = std::process::Command::new("git")
         .arg("init")
@@ -111,8 +113,14 @@ async fn worktree_isolation_parallel_checkouts() {
     // Each can modify its own checkout independently.
     std::fs::write(wt_a.path.join("file.txt"), "A").unwrap();
     std::fs::write(wt_b.path.join("file.txt"), "B").unwrap();
-    assert_eq!(std::fs::read_to_string(wt_a.path.join("file.txt")).unwrap(), "A");
-    assert_eq!(std::fs::read_to_string(wt_b.path.join("file.txt")).unwrap(), "B");
+    assert_eq!(
+        std::fs::read_to_string(wt_a.path.join("file.txt")).unwrap(),
+        "A"
+    );
+    assert_eq!(
+        std::fs::read_to_string(wt_b.path.join("file.txt")).unwrap(),
+        "B"
+    );
 
     // Main checkout untouched.
     assert!(!root.join("file.txt").exists());

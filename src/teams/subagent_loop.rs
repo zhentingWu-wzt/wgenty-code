@@ -14,13 +14,13 @@ use crate::agent::runtime::{
     MutexHistoryStore, RoundObserver, RunLoopArgs, RuntimeConfig, RuntimeError, RuntimeEvent,
     StreamStyle, SynthesisPort, ToolPort, ToolRequest, ToolResponse,
 };
-use crate::teams::approval_registry;
-use crate::teams::mailbox::{Mailbox, TeamMessage};
 use crate::agent::{
     AgentCoordinator, AgentExecutionContext, ChildResult, CoordinatorError, ToolContext,
     ToolInvocationId,
 };
 use crate::api::{ApiClient, ChatMessage, ToolDefinition};
+use crate::teams::approval_registry;
+use crate::teams::mailbox::{Mailbox, TeamMessage};
 use crate::tools::ToolRegistry;
 use crate::utils::stuck_detector::StuckDetector;
 use async_trait::async_trait;
@@ -568,8 +568,10 @@ You received {} message(s) from teammates:
 {}
 </team-inbox>",
             body.len(),
-            body.join("
-")
+            body.join(
+                "
+"
+            )
         ))
     }
 }

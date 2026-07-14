@@ -51,8 +51,7 @@ pub fn blocked_tasks(all: &HashMap<String, Task>) -> Vec<Task> {
 pub fn ready_tasks(all: &HashMap<String, Task>) -> Vec<Task> {
     all.values()
         .filter(|t| {
-            matches!(t.status, TaskStatus::Pending | TaskStatus::InProgress)
-                && !is_blocked(t, all)
+            matches!(t.status, TaskStatus::Pending | TaskStatus::InProgress) && !is_blocked(t, all)
         })
         .cloned()
         .collect()

@@ -37,7 +37,11 @@ impl RequestApprovalTool {
                 }
             })
             .collect();
-        Some(cwd.join(".team").join("inbox").join(format!("{safe}.jsonl")))
+        Some(
+            cwd.join(".team")
+                .join("inbox")
+                .join(format!("{safe}.jsonl")),
+        )
     }
 }
 
@@ -77,19 +81,31 @@ impl Tool for RequestApprovalTool {
         let from = input["from"].as_str().unwrap_or("unknown").to_string();
         let to = input["to"]
             .as_str()
-            .ok_or_else(|| ToolError { message: "to is required".into(), code: Some("missing_to".into()) })?
+            .ok_or_else(|| ToolError {
+                message: "to is required".into(),
+                code: Some("missing_to".into()),
+            })?
             .to_string();
         let kind = input["kind"]
             .as_str()
-            .ok_or_else(|| ToolError { message: "kind is required".into(), code: Some("missing_kind".into()) })?
+            .ok_or_else(|| ToolError {
+                message: "kind is required".into(),
+                code: Some("missing_kind".into()),
+            })?
             .to_string();
         let payload = input["payload"]
             .as_str()
-            .ok_or_else(|| ToolError { message: "payload is required".into(), code: Some("missing_payload".into()) })?
+            .ok_or_else(|| ToolError {
+                message: "payload is required".into(),
+                code: Some("missing_payload".into()),
+            })?
             .to_string();
         let request_id = input["request_id"]
             .as_str()
-            .ok_or_else(|| ToolError { message: "request_id is required".into(), code: Some("missing_request_id".into()) })?
+            .ok_or_else(|| ToolError {
+                message: "request_id is required".into(),
+                code: Some("missing_request_id".into()),
+            })?
             .to_string();
         let timeout_secs = input["timeout_secs"].as_u64().unwrap_or(60);
 
@@ -142,8 +158,10 @@ impl RequestApprovalTool {
         }
 
         // Send the request to the recipient's mailbox.
-        let path = Self::inbox_path(to)
-            .ok_or_else(|| ToolError { message: "cannot resolve cwd for mailbox".into(), code: Some("io_error".into()) })?;
+        let path = Self::inbox_path(to).ok_or_else(|| ToolError {
+            message: "cannot resolve cwd for mailbox".into(),
+            code: Some("io_error".into()),
+        })?;
         let mailbox = Mailbox::new(path);
         let msg = TeamMessage::ApprovalRequest {
             from: from.to_string(),
@@ -199,4 +217,3 @@ impl RequestApprovalTool {
         }
     }
 }
-

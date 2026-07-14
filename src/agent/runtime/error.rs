@@ -33,9 +33,8 @@ impl RuntimeError {
     /// Kept in one place so frontends don't re-implement substring matching.
     pub fn from_stream_failure(msg: impl Into<String>) -> Self {
         let msg = msg.into();
-        let is_timeout = msg.contains("timed out")
-            || msg.contains("Stream stalled")
-            || msg.contains("timeout");
+        let is_timeout =
+            msg.contains("timed out") || msg.contains("Stream stalled") || msg.contains("timeout");
         if is_timeout {
             Self::StreamTimeout(msg)
         } else {

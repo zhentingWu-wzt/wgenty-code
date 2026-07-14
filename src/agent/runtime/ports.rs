@@ -106,10 +106,7 @@ pub trait SynthesisPort: Send + Sync {
     /// - `Ok(None)` — accept the candidate and finish the loop.
     /// - `Ok(Some(system_msg))` — inject the system message and continue another round.
     /// - `Err(_)` — fail the loop.
-    async fn on_candidate_final(
-        &self,
-        candidate: &str,
-    ) -> Result<Option<String>, RuntimeError>;
+    async fn on_candidate_final(&self, candidate: &str) -> Result<Option<String>, RuntimeError>;
 }
 
 /// Per-round progress observer (subagent status bar / action log).

@@ -326,19 +326,15 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
                 for tc in &result.tool_calls {
                     match tc.function.name.as_str() {
                         "ask_user_question" => {
-                            let (args, _) = parse_tool_args_lenient(
-                                &tc.function.arguments,
-                                &tc.function.name,
-                            );
+                            let (args, _) =
+                                parse_tool_args_lenient(&tc.function.arguments, &tc.function.name);
                             let content = dispatch_ask(hooks.interaction, &args).await;
                             history.push(ChatMessage::tool(&tc.id, content)).await;
                         }
                         "update_plan" => {
                             used_plan = true;
-                            let (args, _) = parse_tool_args_lenient(
-                                &tc.function.arguments,
-                                &tc.function.name,
-                            );
+                            let (args, _) =
+                                parse_tool_args_lenient(&tc.function.arguments, &tc.function.name);
                             events.emit(RuntimeEvent::PlanUpdate(args));
                             history
                                 .push(ChatMessage::tool(
@@ -436,8 +432,7 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
                 let mut had_parse_error_this_round = false;
                 for tc in &result.tool_calls {
                     let raw_args = &tc.function.arguments;
-                    let (args, parse_err) =
-                        parse_tool_args_lenient(raw_args, &tc.function.name);
+                    let (args, parse_err) = parse_tool_args_lenient(raw_args, &tc.function.name);
 
                     // Classify parse outcomes like the historical subagent loop:
                     // recoverable (some real fields) → still execute; irrecoverable
@@ -487,11 +482,7 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
                             let mut content = format!(
                                 "Error: tool call arguments are invalid JSON (likely truncated by max_tokens): {e}. Please re-issue the tool call."
                             );
-                            content.push_str(&parse_error_guidance(
-                                &tc.function.name,
-                                e,
-                                raw_args,
-                            ));
+                            content.push_str(&parse_error_guidance(&tc.function.name, e, raw_args));
                             events.emit(RuntimeEvent::ToolResult {
                                 name: tc.function.name.clone(),
                                 args: args.clone(),
@@ -574,11 +565,7 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
                     // Recoverable parse: still ran the tool; inject guidance so
                     // the model can self-correct on the next attempt.
                     if let Some(ref e) = parse_err {
-                        exec_result.push_str(&parse_error_guidance(
-                            &tc.function.name,
-                            e,
-                            raw_args,
-                        ));
+                        exec_result.push_str(&parse_error_guidance(&tc.function.name, e, raw_args));
                     }
 
                     events.emit(RuntimeEvent::ToolResult {
@@ -586,9 +573,7 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
                         args,
                         content: exec_result.clone(),
                     });
-                    history
-                        .push(ChatMessage::tool(&tc.id, exec_result))
-                        .await;
+                    history.push(ChatMessage::tool(&tc.id, exec_result)).await;
                 }
 
                 if had_parse_error_this_round {
@@ -819,8 +804,7 @@ async fn complete_non_stream(
         .clone()
         .unwrap_or_default();
     let tool_calls = completion.message.tool_calls.clone().unwrap_or_default();
-    let has_tool_calls = !tool_calls.is_empty()
-        || completion.finish_reason == "tool_calls";
+    let has_tool_calls = !tool_calls.is_empty() || completion.finish_reason == "tool_calls";
 
     if !content.is_empty() {
         events.emit(RuntimeEvent::ContentDelta(content.clone()));
@@ -845,7 +829,10 @@ async fn complete_non_stream(
     })
 }
 
-async fn dispatch_ask(interaction: Option<&dyn InteractionPort>, args: &serde_json::Value) -> String {
+async fn dispatch_ask(
+    interaction: Option<&dyn InteractionPort>,
+    args: &serde_json::Value,
+) -> String {
     if let Some(port) = interaction {
         port.ask_user_question(args).await
     } else {
@@ -922,7 +909,9 @@ mod tests {
     #[test]
     fn recovered_useful_fields_true_when_real_keys_present() {
         assert!(recovered_useful_fields(&json!({"path": "a.rs"})));
-        assert!(recovered_useful_fields(&json!({"pattern": "x", "_partial": true})));
+        assert!(recovered_useful_fields(
+            &json!({"pattern": "x", "_partial": true})
+        ));
     }
 
     #[test]

@@ -1008,6 +1008,10 @@ mod tests {
             .join("subagent-transcripts.db")
             .to_string_lossy()
             .into_owned();
+        // This test exercises a root -> child -> grandchild chain (depth 3),
+        // but the product default disables subagent recursion (max_depth=1).
+        // Raise the limit here so the navigation scenario under test can run.
+        settings.agent.subagent.max_depth = 3;
         let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
         let root = state.root_context("session").await.unwrap();
         assert_eq!(

@@ -54,7 +54,11 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
                     enabled: true,
                 },
             ));
-            let session_id = daemon_state.app_state.settings.storage.working_dir
+            let session_id = daemon_state
+                .app_state
+                .settings
+                .storage
+                .working_dir
                 .to_string_lossy()
                 .to_string();
             let notify_id = "root".to_string();

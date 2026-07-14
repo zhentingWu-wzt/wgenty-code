@@ -29,18 +29,27 @@ use tokio::sync::RwLock;
 mod heuristic;
 mod transcript;
 
-
-
 /// Convert a live `SubagentEvent` (progress timeline) into the persisted
 /// `SubagentEventRecord` (transcript) shape.
-fn convert_event(e: &crate::agent::progress::SubagentEvent) -> crate::transcript::SubagentEventRecord {
+fn convert_event(
+    e: &crate::agent::progress::SubagentEvent,
+) -> crate::transcript::SubagentEventRecord {
     use crate::agent::progress::SubagentEventType;
     let (event_type, tool_name, data) = match &e.event_type {
         SubagentEventType::Thought { text } => ("thought".to_string(), None, text.clone()),
-        SubagentEventType::Action { tool_name, params_summary } => {
-            ("action".to_string(), Some(tool_name.clone()), params_summary.clone())
-        }
-        SubagentEventType::ToolResult { tool_name, success, summary } => (
+        SubagentEventType::Action {
+            tool_name,
+            params_summary,
+        } => (
+            "action".to_string(),
+            Some(tool_name.clone()),
+            params_summary.clone(),
+        ),
+        SubagentEventType::ToolResult {
+            tool_name,
+            success,
+            summary,
+        } => (
             "tool_result".to_string(),
             Some(tool_name.clone()),
             format!("success={success} {summary}"),
@@ -235,7 +244,7 @@ impl Tool for TaskTool {
         let token_budget: Option<u64> = input
             .get("token_budget")
             .and_then(|v| v.as_u64())
-            .and_then(|v| if v == 0 { None } else { Some(v) })
+            .filter(|&v| v != 0)
             .or_else(|| {
                 self.settings
                     .agent
@@ -275,7 +284,8 @@ impl Tool for TaskTool {
         // s12 worktree isolation: optional dedicated checkout for this subagent.
         let isolation = input["isolation"].as_str().unwrap_or("shared");
         let worktree_guard: Option<crate::teams::WorktreeIsolation> = if isolation == "worktree" {
-            let repo_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let repo_root =
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             match crate::teams::WorktreeIsolation::create(
                 &repo_root,
                 context.agent.agent_id.as_str(),
@@ -682,11 +692,8 @@ impl Tool for TaskTool {
                         .get(&sid_bg)
                         .and_then(|m| m.get(&bg_node_id))
                         .map(|p| {
-                            let events: Vec<crate::transcript::SubagentEventRecord> = p
-                                .events
-                                .iter()
-                                .map(convert_event)
-                                .collect();
+                            let events: Vec<crate::transcript::SubagentEventRecord> =
+                                p.events.iter().map(convert_event).collect();
                             (p.cumulative_tokens, p.round.unwrap_or(0) as u32, events)
                         })
                         .unwrap_or((0, 0, Vec::new()))

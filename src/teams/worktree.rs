@@ -137,26 +137,36 @@ impl Drop for WorktreeIsolation {
 mod tests {
     use super::*;
 
-    /// Init a bare-ish git repo in a temp dir with one commit on HEAD.
+    /// Init a git repo in a temp dir with one commit on HEAD.
+    ///
+    /// Uses `-b main` so the initial branch is created deterministically
+    /// regardless of the runner's `init.defaultBranch` (Windows CI images
+    /// sometimes leave it unset, which makes the unborn HEAD unresolvable by
+    /// `git worktree add ... HEAD` -> "invalid reference: HEAD"). Identity is
+    /// set per-repo (not `--global`) to avoid polluting the runner and to make
+    /// a failed commit surface as a test failure rather than a silent skip.
     fn init_repo() -> tempfile::TempDir {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
-        for (k, v) in [("user.name", "test"), ("user.email", "t@t.test")] {
-            let _ = Command::new("git").args(["config", "--global", k, v]).status();
-        }
-        let _ = Command::new("git")
-            .arg("init")
-            .current_dir(root)
-            .status();
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git should be installed");
+            assert!(
+                out.status.success(),
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        };
+        run(&["init", "-b", "main"]);
+        run(&["config", "user.name", "test"]);
+        run(&["config", "user.email", "t@t.test"]);
         std::fs::write(root.join("README.md"), "init").unwrap();
-        let _ = Command::new("git")
-            .args(["add", "."])
-            .current_dir(root)
-            .status();
-        let _ = Command::new("git")
-            .args(["commit", "-m", "init"])
-            .current_dir(root)
-            .status();
+        run(&["add", "."]);
+        run(&["commit", "-m", "init"]);
         tmp
     }
 
