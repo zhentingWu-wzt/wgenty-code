@@ -201,9 +201,10 @@ impl PromptContext {
 /// Output of [`build_user_turn_reminder`].
 ///
 /// `to_model` includes every collected segment and every injected fragment
-/// (regardless of visibility). `to_transcript` is `Some` only when there is
-/// any content suitable for transcript display — i.e. file-based segments
-/// were present OR at least one hook fragment was [`LayerVisibility::Visible`].
+/// (regardless of visibility). `to_transcript` is `Some` only when at least
+/// one injected hook fragment has [`LayerVisibility::Visible`] — file-backed
+/// segments (WGENTY.md / AGENTS.md / rules) are model instructions, never
+/// shown in the transcript.
 #[derive(Debug, Clone)]
 pub struct ReminderOutput {
     pub to_model: String,
@@ -296,7 +297,6 @@ pub fn build_user_turn_reminder(
         let header = render_attribution_header(&seg.path, seg.description);
         let block = format!("\n{}\n\n{}\n", header, seg.content);
         to_model.push_str(&block);
-        to_transcript.push_str(&block);
     }
 
     let mut transcript_has_hook = false;
@@ -321,7 +321,7 @@ pub fn build_user_turn_reminder(
     to_transcript.push_str(REMINDER_PREAMBLE_CLOSING);
     to_transcript.push_str("\n</system-reminder>");
 
-    let transcript_has_content = !segments.is_empty() || transcript_has_hook;
+    let transcript_has_content = transcript_has_hook;
     Some(ReminderOutput {
         to_model,
         to_transcript: if transcript_has_content {
@@ -945,14 +945,22 @@ mod reminder_tests {
     // ============================================================
     #[test]
     fn reminder_internal_visibility_excludes_transcript() {
-        let ctx = PromptContext::new().with_wgenty_md(vec!["P_CONTENT".to_string()]); // gives to_transcript a body
+        let ctx = PromptContext::new().with_wgenty_md(vec!["P_CONTENT".to_string()]);
 
-        let frags = vec![InjectedFragment {
-            content: "INTERNAL_PAYLOAD".into(),
-            priority: 50,
-            visibility: LayerVisibility::Internal,
-            source_label: "hook:UserPromptSubmit:0".into(),
-        }];
+        let frags = vec![
+            InjectedFragment {
+                content: "INTERNAL_PAYLOAD".into(),
+                priority: 50,
+                visibility: LayerVisibility::Internal,
+                source_label: "hook:UserPromptSubmit:0".into(),
+            },
+            InjectedFragment {
+                content: "VISIBLE_MAKER".into(),
+                priority: 60,
+                visibility: LayerVisibility::Visible,
+                source_label: "hook:UserPromptSubmit:1".into(),
+            },
+        ];
 
         let result = build_user_turn_reminder(&ctx, &frags).unwrap();
 
@@ -962,10 +970,14 @@ mod reminder_tests {
         );
         let transcript = result
             .to_transcript
-            .expect("project section → transcript Some");
+            .expect("visible hook → transcript Some");
         assert!(
             !transcript.contains("INTERNAL_PAYLOAD"),
             "to_transcript MUST NOT contain internal hook content"
+        );
+        assert!(
+            !transcript.contains("P_CONTENT"),
+            "to_transcript MUST NOT contain file-backed segments"
         );
     }
 
