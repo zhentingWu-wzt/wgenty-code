@@ -326,17 +326,28 @@ impl Tool for TaskTool {
 
         // Filter tools: exclude "task" when the trusted caller depth is at the
         // limit. Depth comes from the execution context, not model input.
+        //
+        // `explore` and `plan` subagents never spawn children: recursive
+        // `task`/`delegate` calls make a root task-group's ready condition
+        // depend on every transitively-spawned descendant terminating, so one
+        // slow/stuck grandchild blocks the parent's delivery indefinitely.
+        // Explore is a leaf search agent and plan is a leaf analysis agent --
+        // give them only leaf tools.
         let depth = context.agent.depth;
+        let is_leaf_agent = matches!(_subagent_type, "explore" | "plan");
         let allowed_tools: Vec<String> = tool_registry
             .list()
             .iter()
             .map(|t| t.name().to_string())
             .filter(|name| {
-                if name == "task" {
-                    depth < self.settings.agent.subagent.max_depth
-                } else {
-                    true
+                let is_spawn_tool = name == "task" || name == "delegate";
+                if is_spawn_tool {
+                    if is_leaf_agent {
+                        return false;
+                    }
+                    return depth < self.settings.agent.subagent.max_depth;
                 }
+                true
             })
             .collect();
 
