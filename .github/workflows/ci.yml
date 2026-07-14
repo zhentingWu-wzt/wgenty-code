@@ -2,9 +2,9 @@ name: CI - 构建、测试和质量检查
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
   check:
