@@ -14,6 +14,7 @@ use crate::agent::runtime::{
     MutexHistoryStore, RoundObserver, RunLoopArgs, RuntimeConfig, RuntimeError, RuntimeEvent,
     StreamStyle, SynthesisPort, ToolPort, ToolRequest, ToolResponse,
 };
+use crate::teams::approval_registry;
 use crate::teams::mailbox::{Mailbox, TeamMessage};
 use crate::agent::{
     AgentCoordinator, AgentExecutionContext, ChildResult, CoordinatorError, ToolContext,
@@ -23,7 +24,7 @@ use crate::api::{ApiClient, ChatMessage, ToolDefinition};
 use crate::tools::ToolRegistry;
 use crate::utils::stuck_detector::StuckDetector;
 use async_trait::async_trait;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -451,21 +452,37 @@ impl RoundObserver for SubagentObserver {
 /// (matches `TeamManager`'s project_root convention). Each round, pending
 /// peer messages are drained and folded into a single `<team-inbox>` system
 /// message. An empty inbox returns `None` (no history pollution).
+///
+/// s10 protocol handling:
+/// - `ShutdownRequest` -> cancels the subagent's `CancellationToken` (cooperative
+///   shutdown; the outer `run_subagent_loop` select observes it next).
+/// - `ApprovalResponse` -> delivered to the matching pending `request_approval`
+///   waiter via a oneshot, so the requesting tool unblocks.
 struct MailboxInbox {
     mailbox: Mailbox,
     name: String,
+    cancellation: tokio_util::sync::CancellationToken,
+    /// request_id -> pending approval waiter. Shared so the `request_approval`
+    /// tool can register a waiter and this drain can resolve it.
+    pending_approvals: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
 }
 
 impl MailboxInbox {
     /// Open (or create) the inbox for `agent_id`. Best-effort: if the path
     /// cannot be resolved, returns None and the subagent runs without an inbox.
-    fn for_agent(agent_id: &str) -> Option<Self> {
+    fn for_agent(
+        agent_id: &str,
+        cancellation: tokio_util::sync::CancellationToken,
+        pending_approvals: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>,
+    ) -> Option<Self> {
         let cwd = std::env::current_dir().ok()?;
         let inbox_dir = cwd.join(".team").join("inbox");
         let path = inbox_dir.join(format!("{}.jsonl", sanitize_mailbox_name(agent_id)));
         Some(Self {
             mailbox: Mailbox::new(path),
             name: agent_id.to_string(),
+            cancellation,
+            pending_approvals,
         })
     }
 }
@@ -483,27 +500,65 @@ impl InboxPort for MailboxInbox {
         if messages.is_empty() {
             return None;
         }
-        let body: Vec<String> = messages
-            .iter()
-            .map(|m| match m {
+
+        let mut body: Vec<String> = Vec::new();
+        let mut got_shutdown = false;
+        for m in &messages {
+            match m {
                 TeamMessage::Message { from, content, .. } => {
-                    format!("[from {from}] {content}")
+                    body.push(format!("[from {from}] {content}"));
                 }
                 TeamMessage::Broadcast { from, content, .. } => {
-                    format!("[broadcast from {from}] {content}")
+                    body.push(format!("[broadcast from {from}] {content}"));
                 }
                 TeamMessage::ShutdownRequest { from, request_id } => {
-                    format!("[shutdown request from {from} id={request_id}]")
+                    body.push(format!(
+                        "[shutdown request from {from} id={request_id}] - shutting down"
+                    ));
+                    got_shutdown = true;
                 }
                 TeamMessage::ShutdownResponse {
                     from,
                     request_id,
                     approve,
                 } => {
-                    format!("[shutdown response from {from} id={request_id} approve={approve}]")
+                    body.push(format!(
+                        "[shutdown response from {from} id={request_id} approve={approve}]"
+                    ));
                 }
-            })
-            .collect();
+                TeamMessage::ApprovalRequest {
+                    from,
+                    request_id,
+                    kind,
+                    payload,
+                } => {
+                    body.push(format!(
+                        "[approval request from {from} id={request_id} kind={kind}] {payload}"
+                    ));
+                }
+                TeamMessage::ApprovalResponse {
+                    from,
+                    request_id,
+                    approve,
+                    ..
+                } => {
+                    // Deliver to the waiting request_approval tool, if any.
+                    if let Some(tx) = self.pending_approvals.lock().unwrap().remove(request_id) {
+                        let _ = tx.send(*approve);
+                    }
+                    body.push(format!(
+                        "[approval response from {from} id={request_id} approve={approve}]"
+                    ));
+                }
+            }
+        }
+
+        // Cooperative shutdown: cancel the subagent. The outer select in
+        // run_subagent_loop observes the cancellation and returns Cancelled.
+        if got_shutdown {
+            self.cancellation.cancel();
+        }
+
         Some(format!(
             "<team-inbox>
 You received {} message(s) from teammates:
@@ -617,8 +672,16 @@ pub async fn run_subagent_loop(
         stream_max_retries: 0,
     };
 
-    // s09: open this subagent's team mailbox (best-effort; None if unavailable).
-    let inbox = MailboxInbox::for_agent(context.agent_id.as_str());
+    // s09/s10: open this subagent's team mailbox (best-effort). The shared
+    // pending-approvals map is also held by the `request_approval` tool so
+    // ApprovalResponse messages drain-observed here resolve its waiter.
+    let pending_approvals: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>> =
+        approval_registry::register_agent(context.agent_id.as_str());
+    let inbox = MailboxInbox::for_agent(
+        context.agent_id.as_str(),
+        context.cancellation.clone(),
+        pending_approvals.clone(),
+    );
     let mut state = LoopTurnState::default();
     let mut stuck = StuckDetector::new();
 

@@ -120,6 +120,7 @@ impl ToolRegistry {
         registry.register(Box::new(meta::update_plan::UpdatePlanTool::new()));
         registry.register(Box::new(meta::skill::SkillTool::new()));
         registry.register(Box::new(meta::team_message::TeamMessageTool::new()));
+        registry.register(Box::new(meta::request_approval::RequestApprovalTool::new()));
         // Filesystem tools
         registry.register(Box::new(filesystem::apply_patch::ApplyPatchTool::new()));
         registry.register(Box::new(filesystem::file_read::FileReadTool::new()));
