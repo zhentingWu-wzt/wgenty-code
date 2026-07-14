@@ -9,11 +9,13 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 pub mod auto_dream;
+pub mod autonomous_worker;
 pub mod marketplace_resolver;
 pub mod plugin_marketplace;
 pub mod team_memory_sync;
 
 pub use auto_dream::{AutoDreamConfig, AutoDreamService, AutoDreamStatus};
+pub use autonomous_worker::{AutonomousWorker, AutonomousWorkerConfig, WorkerStatus};
 pub use plugin_marketplace::{MarketplacePlugin, Plugin, PluginConfig, PluginMarketplaceService};
 pub use team_memory_sync::{
     ConflictResolution, TeamMemory, TeamMemoryConfig, TeamMemorySyncService, TeamMemorySyncStatus,
