@@ -24,7 +24,11 @@ impl TeamMessageTool {
     fn inbox_path(recipient: &str) -> Option<std::path::PathBuf> {
         let cwd = std::env::current_dir().ok()?;
         let safe = sanitize(recipient);
-        Some(cwd.join(".team").join("inbox").join(format!("{safe}.jsonl")))
+        Some(
+            cwd.join(".team")
+                .join("inbox")
+                .join(format!("{safe}.jsonl")),
+        )
     }
 
     fn now_rfc3339() -> String {
@@ -85,23 +89,33 @@ impl Tool for TeamMessageTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let operation = input["operation"]
-            .as_str()
-            .ok_or_else(|| ToolError { message: "operation is required".into(), code: Some("missing_operation".into()) })?;
+        let operation = input["operation"].as_str().ok_or_else(|| ToolError {
+            message: "operation is required".into(),
+            code: Some("missing_operation".into()),
+        })?;
         let from = input["from"]
             .as_str()
-            .ok_or_else(|| ToolError { message: "from is required".into(), code: Some("missing_from".into()) })?
+            .ok_or_else(|| ToolError {
+                message: "from is required".into(),
+                code: Some("missing_from".into()),
+            })?
             .to_string();
 
         match operation {
             "send" => {
                 let to = input["to"]
                     .as_str()
-                    .ok_or_else(|| ToolError { message: "to is required for send".into(), code: Some("missing_to".into()) })?
+                    .ok_or_else(|| ToolError {
+                        message: "to is required for send".into(),
+                        code: Some("missing_to".into()),
+                    })?
                     .to_string();
                 let content = input["content"]
                     .as_str()
-                    .ok_or_else(|| ToolError { message: "content is required for send".into(), code: Some("missing_content".into()) })?
+                    .ok_or_else(|| ToolError {
+                        message: "content is required for send".into(),
+                        code: Some("missing_content".into()),
+                    })?
                     .to_string();
                 let msg = TeamMessage::Message {
                     from: from.clone(),
@@ -115,11 +129,18 @@ impl Tool for TeamMessageTool {
             "broadcast" => {
                 let content = input["content"]
                     .as_str()
-                    .ok_or_else(|| ToolError { message: "content is required for broadcast".into(), code: Some("missing_content".into()) })?
+                    .ok_or_else(|| ToolError {
+                        message: "content is required for broadcast".into(),
+                        code: Some("missing_content".into()),
+                    })?
                     .to_string();
                 let recipients: Vec<String> = input["recipients"]
                     .as_array()
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let mut delivered = 0usize;
                 for r in &recipients {
@@ -140,18 +161,26 @@ impl Tool for TeamMessageTool {
             "shutdown_request" => {
                 let to = input["to"]
                     .as_str()
-                    .ok_or_else(|| ToolError { message: "to is required for shutdown_request".into(), code: Some("missing_to".into()) })?
+                    .ok_or_else(|| ToolError {
+                        message: "to is required for shutdown_request".into(),
+                        code: Some("missing_to".into()),
+                    })?
                     .to_string();
                 let request_id = input["request_id"]
                     .as_str()
-                    .ok_or_else(|| ToolError { message: "request_id is required for shutdown_request".into(), code: Some("missing_request_id".into()) })?
+                    .ok_or_else(|| ToolError {
+                        message: "request_id is required for shutdown_request".into(),
+                        code: Some("missing_request_id".into()),
+                    })?
                     .to_string();
                 let msg = TeamMessage::ShutdownRequest {
                     from: from.clone(),
                     request_id: request_id.clone(),
                 };
                 deliver(&to, &msg).await?;
-                Ok(ok(&format!("sent shutdown request to {to} (id={request_id})")))
+                Ok(ok(&format!(
+                    "sent shutdown request to {to} (id={request_id})"
+                )))
             }
             other => Err(ToolError {
                 message: format!("unknown operation: {other}"),
@@ -162,8 +191,10 @@ impl Tool for TeamMessageTool {
 }
 
 async fn deliver(recipient: &str, msg: &TeamMessage) -> Result<(), ToolError> {
-    let path = TeamMessageTool::inbox_path(recipient)
-        .ok_or_else(|| ToolError { message: "cannot resolve cwd for mailbox".into(), code: Some("io_error".into()) })?;
+    let path = TeamMessageTool::inbox_path(recipient).ok_or_else(|| ToolError {
+        message: "cannot resolve cwd for mailbox".into(),
+        code: Some("io_error".into()),
+    })?;
     let mailbox = Mailbox::new(path);
     mailbox.send(msg).await.map_err(|e| ToolError {
         message: format!("failed to write mailbox: {e}"),

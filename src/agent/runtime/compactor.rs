@@ -160,10 +160,7 @@ impl ApiCompactor {
         }
     }
 
-    pub fn with_status_sink(
-        mut self,
-        sink: impl Fn(String) + Send + Sync + 'static,
-    ) -> Self {
+    pub fn with_status_sink(mut self, sink: impl Fn(String) + Send + Sync + 'static) -> Self {
         self.on_status = Some(Arc::new(sink));
         self
     }
@@ -240,8 +237,7 @@ impl Compactor for ApiCompactor {
         {
             *self.last_summary.lock().await = summary.clone();
         }
-        let new_history =
-            assemble_post_compaction_history(&self.system_messages, &summary, &tail);
+        let new_history = assemble_post_compaction_history(&self.system_messages, &summary, &tail);
         history.replace(new_history).await;
 
         let summary_chars = summary.chars().count();

@@ -14,9 +14,9 @@
 
 use std::path::Path;
 
-use crate::sandbox::{SandboxBackend, SandboxError, SandboxProfile, SandboxedChild};
 #[cfg(windows)]
 use crate::sandbox::{CleanupType, SandboxCleanup};
+use crate::sandbox::{SandboxBackend, SandboxError, SandboxProfile, SandboxedChild};
 
 pub struct WindowsBackend;
 

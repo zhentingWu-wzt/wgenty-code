@@ -145,7 +145,11 @@ fn mailbox_path(agent_id: &str) -> Option<std::path::PathBuf> {
             }
         })
         .collect();
-    Some(cwd.join(".team").join("inbox").join(format!("{safe}.jsonl")))
+    Some(
+        cwd.join(".team")
+            .join("inbox")
+            .join(format!("{safe}.jsonl")),
+    )
 }
 
 #[cfg(test)]

@@ -40,10 +40,7 @@ impl AgentLoop {
             compacted_summary.clone(),
         );
 
-        let planner = self
-            .planner_client
-            .clone()
-            .map(ApiPlannerPort::new);
+        let planner = self.planner_client.clone().map(ApiPlannerPort::new);
 
         let config = RuntimeConfig {
             max_rounds: self.max_rounds,
@@ -67,7 +64,9 @@ impl AgentLoop {
             rounds_since_task_mgmt: 0,
         };
 
-        let planner_ref = planner.as_ref().map(|p| p as &dyn crate::agent::runtime::PlannerPort);
+        let planner_ref = planner
+            .as_ref()
+            .map(|p| p as &dyn crate::agent::runtime::PlannerPort);
 
         // Best-effort task-board nudge over the daemon. Holds its own client clone.
         let task_progress = DaemonTaskProgress::new(self.client.clone());

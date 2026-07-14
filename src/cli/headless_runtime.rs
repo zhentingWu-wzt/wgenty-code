@@ -213,16 +213,12 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
     let events = CliEventSink::new(std::env::var("WGENTY_VERBOSE").is_ok());
 
     let verbose = std::env::var("WGENTY_VERBOSE").is_ok();
-    let compactor = ApiCompactor::new(
-        llm_for_compact,
-        system_messages,
-        Some(memory_manager),
-    )
-    .with_status_sink(move |msg| {
-        // Always show compact status on stderr (not only when verbose).
-        eprintln!("[compact] {}", msg);
-        let _ = verbose; // silence unused when not verbose-gated
-    });
+    let compactor = ApiCompactor::new(llm_for_compact, system_messages, Some(memory_manager))
+        .with_status_sink(move |msg| {
+            // Always show compact status on stderr (not only when verbose).
+            eprintln!("[compact] {}", msg);
+            let _ = verbose; // silence unused when not verbose-gated
+        });
 
     let config = RuntimeConfig {
         max_rounds: settings.agent.max_rounds.unwrap_or(100),

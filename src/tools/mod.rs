@@ -36,7 +36,6 @@ pub fn resolve_path(file_path: &str, workdir: Option<&std::path::Path>) -> std::
     }
 }
 
-
 /// Tool trait for all tools
 #[async_trait]
 pub trait Tool: Send + Sync {

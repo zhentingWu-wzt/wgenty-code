@@ -131,7 +131,9 @@ impl DaemonState {
 
             // Team messaging (s09): always available; writes peer mailboxes directly.
             registry.register(Box::new(TeamMessageTool::new()));
-            registry.register(Box::new(crate::tools::meta::request_approval::RequestApprovalTool::new()));
+            registry.register(Box::new(
+                crate::tools::meta::request_approval::RequestApprovalTool::new(),
+            ));
 
             // Register load_skill tool if skills exist
             if !skill_loader.is_empty() {

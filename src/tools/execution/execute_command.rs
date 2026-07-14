@@ -1,7 +1,7 @@
 //! Execute Command Tool — runs shell commands with sandbox isolation.
 
-use crate::sandbox::{SandboxConfig, SandboxManager, SandboxProfile, SecurityLevel};
 use crate::agent::ToolContext;
+use crate::sandbox::{SandboxConfig, SandboxManager, SandboxProfile, SecurityLevel};
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use std::path::PathBuf;
@@ -144,17 +144,14 @@ impl ExecuteCommandTool {
         }
 
         // Direct execution (fallback)
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(user_timeout),
-            {
-                let mut cmd = tokio::process::Command::new("sh");
-                cmd.arg("-c").arg(command);
-                if let Some(dir) = workdir {
-                    cmd.current_dir(dir);
-                }
-                cmd.output()
-            },
-        )
+        let output = tokio::time::timeout(std::time::Duration::from_secs(user_timeout), {
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.arg("-c").arg(command);
+            if let Some(dir) = workdir {
+                cmd.current_dir(dir);
+            }
+            cmd.output()
+        })
         .await;
 
         match output {
