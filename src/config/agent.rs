@@ -71,7 +71,7 @@ pub struct SubagentLimits {
 impl Default for SubagentLimits {
     fn default() -> Self {
         Self {
-            max_depth: 3,
+            max_depth: 1,
             max_concurrent: 5,
             timeout_secs: 1800,
             token_budget_k: None,
