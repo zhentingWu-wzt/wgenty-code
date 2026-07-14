@@ -21,7 +21,10 @@ use crate::api::ChatMessage;
 use crate::config::Settings;
 use crate::runtime::context::ContextAssembler;
 use crate::runtime::hooks::{InjectedFragment, LayerVisibility};
-use crate::utils::project::{read_user_global_instructions, read_user_global_rules};
+use crate::utils::project::{
+    read_user_global_instructions, read_user_global_instructions_from, read_user_global_rules,
+    read_user_global_rules_from,
+};
 use chrono::Local;
 
 /// Pre-compiled base instructions (embedded at compile time).
@@ -83,6 +86,12 @@ pub struct PromptContext {
     /// Pre-formatted memory lines for cross-session recall.
     /// Each entry is a single system-message line (e.g. "- [decision] Use Jaccard for dedup").
     pub memories: Vec<String>,
+    /// Override the home directory used to locate user-global files
+    /// (`~/.wgenty-code/WGENTY.md` and `~/.wgenty-code/rules/*`). When `None`,
+    /// the real home is resolved via `dirs::home_dir()` (which does NOT honor
+    /// `USERPROFILE`/`HOME` env vars on Windows). Tests set this to a temp dir
+    /// so user-global content is deterministic and cross-platform.
+    pub home_override: Option<PathBuf>,
 }
 
 impl fmt::Debug for PromptContext {
@@ -102,6 +111,7 @@ impl fmt::Debug for PromptContext {
                 &self.context_assembler.as_ref().map(|_| "ContextAssembler"),
             )
             .field("memories", &self.memories)
+            .field("home_override", &self.home_override)
             .finish()
     }
 }
@@ -126,6 +136,7 @@ impl PromptContext {
             project_root: None,
             context_assembler: None,
             memories: Vec::new(),
+            home_override: None,
         }
     }
 
@@ -178,6 +189,13 @@ impl PromptContext {
         self.memories = memories;
         self
     }
+
+    /// Override the home directory used to locate user-global files. See
+    /// [`PromptContext::home_override`].
+    pub fn with_home_override(mut self, home: PathBuf) -> Self {
+        self.home_override = Some(home);
+        self
+    }
 }
 
 /// Output of [`build_user_turn_reminder`].
@@ -213,14 +231,24 @@ pub fn build_user_turn_reminder(
     }
     let mut segments: Vec<Segment> = Vec::new();
 
-    if let Some((path, content)) = read_user_global_instructions() {
+    let home_override = ctx.home_override.as_deref();
+
+    let user_instructions = match home_override {
+        Some(home) => read_user_global_instructions_from(home),
+        None => read_user_global_instructions(),
+    };
+    if let Some((path, content)) = user_instructions {
         segments.push(Segment {
             path,
             description: USER_INSTRUCTIONS_DESC,
             content,
         });
     }
-    for (path, content) in read_user_global_rules() {
+    let user_rules = match home_override {
+        Some(home) => read_user_global_rules_from(home),
+        None => read_user_global_rules(),
+    };
+    for (path, content) in user_rules {
         segments.push(Segment {
             path,
             description: USER_INSTRUCTIONS_DESC,
@@ -646,30 +674,7 @@ mod tests {
 mod reminder_tests {
     use super::*;
     use serial_test::serial;
-    use std::path::Path;
     use tempfile::TempDir;
-
-    /// Test helper: temporarily set $HOME, run closure, restore.
-    /// Must be used with #[serial] to prevent races between tests.
-    ///
-    /// Sets both `HOME` (Unix) and `USERPROFILE` (Windows) because the `dirs`
-    /// crate resolves the home directory from `USERPROFILE` on Windows, not
-    /// `HOME` -- setting only `HOME` would leave the fake home invisible to
-    /// `dirs::home_dir()` on Windows runners.
-    fn with_fake_home<F: FnOnce() -> R, R>(home: &Path, f: F) -> R {
-        let restore = |var: &str, prev: Option<std::ffi::OsString>| match prev {
-            Some(v) => std::env::set_var(var, v),
-            None => std::env::remove_var(var),
-        };
-        let prev_home = std::env::var_os("HOME");
-        let prev_userprofile = std::env::var_os("USERPROFILE");
-        std::env::set_var("HOME", home);
-        std::env::set_var("USERPROFILE", home);
-        let result = f();
-        restore("HOME", prev_home);
-        restore("USERPROFILE", prev_userprofile);
-        result
-    }
 
     /// Set up a fake home with .wgenty-code/WGENTY.md and rules/*.md files.
     /// Returns TempDir — keep alive for test duration.
@@ -702,8 +707,9 @@ mod reminder_tests {
         );
         let project_root = TempDir::new().unwrap();
 
-        with_fake_home(home.path(), || {
+        {
             let ctx = PromptContext::new()
+                .with_home_override(home.path().to_path_buf())
                 .with_wgenty_md(vec!["PROJECT_WGENTY".to_string()])
                 .with_agents_md(vec!["PROJECT_AGENTS".to_string()])
                 .with_project_root(project_root.path().to_path_buf());
@@ -768,7 +774,7 @@ mod reminder_tests {
                 pos_proj_w < pos_proj_a,
                 "project WGENTY should precede project AGENTS"
             );
-        });
+        }
     }
 
     // ============================================================
@@ -781,8 +787,9 @@ mod reminder_tests {
         let home = make_fake_home(None, &[]);
         let project_root = TempDir::new().unwrap();
 
-        with_fake_home(home.path(), || {
+        {
             let ctx = PromptContext::new()
+                .with_home_override(home.path().to_path_buf())
                 .with_wgenty_md(vec!["PROJECT_WGENTY".to_string()])
                 .with_agents_md(vec!["PROJECT_AGENTS".to_string()])
                 .with_project_root(project_root.path().to_path_buf());
@@ -810,7 +817,7 @@ mod reminder_tests {
                 !result.to_model.contains("Contents of  ("),
                 "orphan attribution header with empty path detected"
             );
-        });
+        }
     }
 
     // ============================================================
@@ -821,13 +828,13 @@ mod reminder_tests {
     fn reminder_all_missing_returns_none() {
         let home = make_fake_home(None, &[]);
 
-        with_fake_home(home.path(), || {
-            let ctx = PromptContext::new(); // no project sections, no project_root
+        {
+            let ctx = PromptContext::new().with_home_override(home.path().to_path_buf()); // no project sections, no project_root
             assert!(
                 build_user_turn_reminder(&ctx, &[]).is_none(),
                 "all-missing should return None"
             );
-        });
+        }
     }
 
     // ============================================================
@@ -839,8 +846,9 @@ mod reminder_tests {
         let home = make_fake_home(Some("X"), &[("a.md", "Y")]);
         let project_root = TempDir::new().unwrap();
 
-        with_fake_home(home.path(), || {
+        {
             let ctx = PromptContext::new()
+                .with_home_override(home.path().to_path_buf())
                 .with_wgenty_md(vec!["P".to_string()])
                 .with_agents_md(vec!["Q".to_string()])
                 .with_project_root(project_root.path().to_path_buf());
@@ -863,7 +871,7 @@ mod reminder_tests {
                     );
                 }
             }
-        });
+        }
     }
 
     // ============================================================
@@ -875,8 +883,8 @@ mod reminder_tests {
         // Insert in non-alpha order; build_user_turn_reminder must sort.
         let home = make_fake_home(None, &[("b.md", "BBB"), ("a.md", "AAA"), ("c.md", "CCC")]);
 
-        with_fake_home(home.path(), || {
-            let ctx = PromptContext::new();
+        {
+            let ctx = PromptContext::new().with_home_override(home.path().to_path_buf());
             let result = build_user_turn_reminder(&ctx, &[]).expect("rules present → Some");
 
             let pos_a = result.to_model.find("AAA").unwrap();
@@ -884,7 +892,7 @@ mod reminder_tests {
             let pos_c = result.to_model.find("CCC").unwrap();
             assert!(pos_a < pos_b, "a.md should precede b.md");
             assert!(pos_b < pos_c, "b.md should precede c.md");
-        });
+        }
     }
 
     // ============================================================
