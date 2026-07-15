@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 通用 MCP stdio client：支持 `initialize`、`tools/list`、`tools/call`，并将远程工具注册到主 Agent 与子 Agent 共用的 `ToolRegistry`。
 - 第三方本地 CodeGraph MCP 集成，默认尝试启动 `codegraph serve --mcp`；不可用时非致命降级到 grep/lsp。
+- CodeGraph 可用性差异化探测：区分未安装 / 未初始化 / 已就绪 / 已免打扰四态，启动时 stderr 一行通知 + prompt 环境层注入实时状态，引导用户 `npm i -g @colbymchenry/codegraph` 或 `codegraph init`。未安装/已免打扰时短路跳过 MCP spawn。按项目持久化免打扰通过 `dismiss_codegraph_guidance` 元工具。
 - `<system-reminder>` 注入通道（与 Claude Code 1:1 对齐：`# wgentyMd` 标题、双 preamble、`Contents of <abs-path> (<desc>):` 来源标注）。
 - 4 个文件源 reader：用户级 `~/.wgenty-code/WGENTY.md` + `~/.wgenty-code/rules/*.md`，项目级 `WGENTY.md` + `AGENTS.md`。
 - `HookAction::InjectContext` 端到端接通：`UserPromptSubmit` hook 的 `injected_content` + `priority` + `visibility` 现在通过 reminder 通道注入下一轮 user message。
