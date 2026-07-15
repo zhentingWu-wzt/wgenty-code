@@ -4,6 +4,7 @@ design-doc: openspec/changes/project-local-state/design.md
 base-ref: 9aab63cd7c01af14651e729977d3728cdbc319e8
 created: 2026-07-15
 status: draft
+archived-with: 2026-07-15-project-local-state
 ---
 
 # 项目本地状态存储与记忆分层 实现计划
@@ -29,6 +30,7 @@ status: draft
 - 性能约束：启动时间增量 ≤ 5%，内存增量 ≤ 2%，二进制增量 ≤ 500KB（AGENTS.md）。
 - Conventional Commits，英文 commit message。
 
+archived-with: 2026-07-15-project-local-state
 ---
 
 ## 文件结构
@@ -49,6 +51,7 @@ status: draft
 | `src/context/migration.rs` | 新建 | `migrate_legacy_sessions()` 幂等迁移函数 |
 | `WGENTY.md` | 修改 | 补充项目本地 `.wgenty-code/` 布局说明 |
 
+archived-with: 2026-07-15-project-local-state
 ---
 
 ## Task 1: 基础设施——项目本地路径工具函数
@@ -205,6 +208,7 @@ git add src/utils/mod.rs
 git commit -m "feat(utils): add project-local path helper functions"
 ```
 
+archived-with: 2026-07-15-project-local-state
 ---
 
 ## Task 2: Session 项目化
@@ -406,6 +410,7 @@ git add src/context/memory_session.rs src/context/mod.rs src/tui/app/mod.rs src/
 git commit -m "feat(session): project-local session storage with CWD-based root"
 ```
 
+archived-with: 2026-07-15-project-local-state
 ---
 
 ## Task 3: Memory 双源存储与 scope 追踪
@@ -492,6 +497,7 @@ git add src/context/mod.rs src/context/consolidation.rs src/agent/runtime/compac
 git commit -m "feat(memory): dual-source storage with project/global scope tracking"
 ```
 
+archived-with: 2026-07-15-project-local-state
 ---
 
 ## Task 4: 全局记忆每轮注入
@@ -570,6 +576,7 @@ git add src/context/inject.rs src/prompts/mod.rs src/tui/app/mod.rs src/cli/head
 git commit -m "feat(memory): inject global memories every turn as <global-memory> block"
 ```
 
+archived-with: 2026-07-15-project-local-state
 ---
 
 ## Task 5: Compaction 自动 scope 判定
@@ -611,6 +618,7 @@ git add src/agent/runtime/compactor.rs
 git commit -m "feat(memory): compaction scope classification with project/global routing"
 ```
 
+archived-with: 2026-07-15-project-local-state
 ---
 
 ## Task 6: 数据迁移
@@ -658,6 +666,7 @@ git add src/context/migration.rs src/context/mod.rs
 git commit -m "feat(context): idempotent legacy session migration to project-local storage"
 ```
 
+archived-with: 2026-07-15-project-local-state
 ---
 
 ## Task 7: CLI 与配置集成
@@ -692,6 +701,7 @@ git add src/cli/mod.rs WGENTY.md
 git commit -m "docs(cli): memory status shows project/global counts; document project-local layout"
 ```
 
+archived-with: 2026-07-15-project-local-state
 ---
 
 ## Task 8: 验证与收尾
@@ -744,6 +754,7 @@ git add -A
 git commit -m "test(context): verify project-local state and memory scoping"
 ```
 
+archived-with: 2026-07-15-project-local-state
 ---
 
 ## 并行执行机会

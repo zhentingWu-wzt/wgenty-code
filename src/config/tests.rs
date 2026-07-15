@@ -272,3 +272,69 @@ fn test_subagent_token_budget_fallback_chain() {
     // Level 1: caller-explicit beats everything
     assert_eq!(resolve_token_budget_k(&s, Some(7)), 7);
 }
+
+/// Expand leading `~/` path placeholders so the checked-in template can stay
+/// machine-independent while still matching `Settings::default()` paths.
+fn expand_tilde_paths(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) => {
+            if let Some(rest) = s.strip_prefix("~/") {
+                if let Some(home) = dirs::home_dir() {
+                    *s = home.join(rest).to_string_lossy().into_owned();
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                expand_tilde_paths(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values_mut() {
+                expand_tilde_paths(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `settings.json.template` is a human-readable snapshot of `Settings::default()`.
+/// It is NOT loaded at runtime (first-run still uses `Settings::default()`), but
+/// must stay structurally in sync so docs/onboarding do not drift.
+#[test]
+fn settings_json_template_matches_settings_default() {
+    let raw = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/settings.json.template"
+    ));
+    let mut template_val: serde_json::Value =
+        serde_json::from_str(raw).expect("settings.json.template must be valid JSON");
+    expand_tilde_paths(&mut template_val);
+
+    // Template must deserialize as Settings (schema check).
+    let template_settings: Settings = serde_json::from_value(template_val)
+        .expect("settings.json.template must deserialize as Settings");
+
+    // Compare against a sanitized Default: env-derived secrets/urls are not part
+    // of the checked-in template (always null). Re-serialize both Settings so
+    // f32 defaults (0.3 / 0.01) share the same binary representation.
+    let mut default_settings = Settings::default();
+    default_settings.models.main.api_key = None;
+    default_settings.models.main.base_url = None;
+    default_settings.models.main.provider = None;
+
+    let template_val =
+        serde_json::to_value(&template_settings).expect("serialize template Settings");
+    let default_val = serde_json::to_value(&default_settings).expect("serialize Settings::default");
+
+    assert_eq!(
+        template_val, default_val,
+        "settings.json.template drifted from Settings::default(); rewrite the template"
+    );
+
+    // Spot-check critical product defaults that previously drifted in docs/template.
+    assert_eq!(template_settings.agent.subagent.max_depth, 1);
+    assert_eq!(template_settings.agent.subagent.timeout_secs, 1800);
+    assert_eq!(template_settings.models.context_window, 200_000);
+    assert_eq!(template_settings.models.main.name, "sonnet");
+}

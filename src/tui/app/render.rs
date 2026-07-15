@@ -39,7 +39,7 @@ impl App {
         } else if has_permission {
             self.permission_state.height_needed()
         } else if has_plan {
-            self.plan_panel_state.height_needed()
+            self.plan_panel_state.height_needed(area.height)
         } else {
             0
         };
@@ -220,15 +220,52 @@ impl App {
             spans.extend(components::context_bar::spans(used, max));
         }
 
-        // CodeGraph MCP connection status indicator (right-aligned area)
+        // CodeGraph MCP connection status indicator
         if area.width >= 60 {
             spans.push(Span::raw(" "));
             spans.push(codegraph_status_span(&self.codegraph_status));
         }
 
-        let line = Line::from(spans);
-        let paragraph = Paragraph::new(line).alignment(ratatui::layout::Alignment::Left);
-        f.render_widget(paragraph, area);
+        // Footer: left = mode/status, right = cwd when the terminal is wide enough.
+        let cwd_display = compact_cwd_display();
+        let left_min = 28u16;
+        let min_cwd = 8u16;
+        let show_cwd = !cwd_display.is_empty()
+            && area.width >= left_min.saturating_add(min_cwd).saturating_add(2);
+
+        if show_cwd {
+            let gap = 2u16;
+            let available = area.width.saturating_sub(left_min + gap);
+            let cwd_chars = cwd_display.chars().count();
+            #[allow(clippy::cast_possible_truncation)]
+            let cwd_cols = cwd_chars.min(u16::MAX as usize) as u16;
+            let right_width = cwd_cols.min(available).max(min_cwd.min(available));
+            let left_width = area.width.saturating_sub(right_width + gap);
+            let split = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(left_width),
+                    Constraint::Length(gap),
+                    Constraint::Length(right_width),
+                ])
+                .split(area);
+
+            let left =
+                Paragraph::new(Line::from(spans)).alignment(ratatui::layout::Alignment::Left);
+            f.render_widget(left, split[0]);
+
+            let cwd_text = truncate_path_left(&cwd_display, right_width as usize);
+            let right = Paragraph::new(Line::from(Span::styled(
+                cwd_text,
+                Style::default().fg(theme::DIM),
+            )))
+            .alignment(ratatui::layout::Alignment::Right);
+            f.render_widget(right, split[2]);
+        } else {
+            let line = Line::from(spans);
+            let paragraph = Paragraph::new(line).alignment(ratatui::layout::Alignment::Left);
+            f.render_widget(paragraph, area);
+        }
     }
 
     /// Display queued user inputs waiting to be processed.
@@ -362,6 +399,73 @@ mod tests {
         // Cut on a char boundary -> keeps 57 chars, no panic.
         assert!(out.ends_with("..."));
         assert_eq!(out.trim_end_matches("...").chars().count(), 57);
+    }
+}
+
+/// Current working directory, with `$HOME` collapsed to `~` when possible.
+fn compact_cwd_display() -> String {
+    let Ok(cwd) = std::env::current_dir() else {
+        return String::new();
+    };
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(rest) = cwd.strip_prefix(&home) {
+            let rest = rest.to_string_lossy().replace('\\', "/");
+            if rest.is_empty() {
+                return "~".to_string();
+            }
+            return format!("~/{rest}");
+        }
+    }
+    cwd.to_string_lossy().replace('\\', "/")
+}
+
+/// Keep the path tail when truncating so the leaf directory remains visible.
+fn truncate_path_left(path: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let char_count = path.chars().count();
+    if char_count <= max_chars {
+        return path.to_string();
+    }
+    if max_chars <= 1 {
+        return "…".to_string();
+    }
+    let keep = max_chars - 1;
+    let start = path
+        .char_indices()
+        .nth(char_count - keep)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    format!("…{}", &path[start..])
+}
+
+#[cfg(test)]
+mod cwd_display_tests {
+    use super::*;
+
+    #[test]
+    fn truncate_path_left_keeps_tail() {
+        assert_eq!(truncate_path_left("~/workspace/project", 20), "~/workspace/project");
+        assert_eq!(truncate_path_left("~/workspace/project", 10), "…e/project");
+        assert_eq!(truncate_path_left("abc", 1), "…");
+        assert_eq!(truncate_path_left("abc", 0), "");
+    }
+
+    #[test]
+    fn truncate_path_left_respects_char_boundaries() {
+        let path = "~/项目/编码助手";
+        let out = truncate_path_left(path, 6);
+        assert!(out.starts_with('…'));
+        assert_eq!(out.chars().count(), 6);
+    }
+
+    #[test]
+    fn compact_cwd_display_is_non_empty() {
+        let cwd = compact_cwd_display();
+        assert!(!cwd.is_empty());
+        // Should never contain Windows backslashes after normalization.
+        assert!(!cwd.contains('\\'));
     }
 }
 

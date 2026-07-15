@@ -1,19 +1,21 @@
 {
   "models": {
-    "main": {
-      "name": "sonnet",
-      "api_key": null,
-      "base_url": null,
-      "appkey": null
-    },
-    "small": null,
-    "planner": null,
     "transport": {
       "max_tokens": 4096,
       "timeout": 120,
       "streaming": true,
       "beta_headers": []
-    }
+    },
+    "main": {
+      "name": "sonnet",
+      "base_url": null,
+      "api_key": null,
+      "appkey": null,
+      "provider": null
+    },
+    "small": null,
+    "planner": null,
+    "context_window": 200000
   },
   "agent": {
     "plan_mode": false,
@@ -23,9 +25,9 @@
       "subagent_default_k": 0
     },
     "subagent": {
-      "max_depth": 3,
+      "max_depth": 1,
       "max_concurrent": 5,
-      "timeout_secs": 240,
+      "timeout_secs": 1800,
       "token_budget_k": null,
       "max_rounds": null,
       "plan_mode": null,
@@ -46,7 +48,8 @@
           "skills": null
         },
         "developer_instructions": null,
-        "collaboration_mode": null
+        "collaboration_mode": null,
+        "model_instructions_file": null
       }
     },
     "rlm": {
@@ -56,6 +59,11 @@
       "retry_enabled": true,
       "max_replan_cycles": 2,
       "jaccard_threshold": 0.8
+    },
+    "autonomous": {
+      "enabled": false,
+      "poll_interval_secs": 2,
+      "max_idle_polls": 30
     }
   },
   "prompt": {
@@ -71,22 +79,46 @@
     "model_instructions_file": null
   },
   "plugins": {
-    "plugin_dir": null,
-    "enabled": {},
-    "disabled": []
+    "enabled": true,
+    "dir": "~/.wgenty-code/plugins",
+    "auto_update": true,
+    "enabled_map": {},
+    "marketplaces": null
   },
   "storage": {
+    "working_dir": ".",
+    "memory": {
+      "enabled": true,
+      "path": "~/.wgenty-code/memory.json",
+      "consolidation_interval": 24,
+      "max_memories": 1000,
+      "importance_threshold": 0.3,
+      "age_threshold_hours": 24,
+      "enable_auto_consolidation": true,
+      "recall_top_n": 5,
+      "recall_similarity_threshold": 0.3
+    },
     "transcript": {
-      "db_path": null,
-      "max_age_days": 30,
-      "max_size_mb": 500
+      "db_path": "~/.wgenty-code/subagent_transcripts.db",
+      "max_age_days": 30
     }
   },
   "integrations": {
+    "mcp_servers": [],
+    "hooks": null,
+    "voice": {
+      "enabled": false,
+      "push_to_talk": false,
+      "silence_threshold": 0.01,
+      "sample_rate": 16000
+    },
     "guardian": {
       "enabled": true,
       "llm_review": false,
       "auto_deny_critical": true
+    },
+    "codegraph": {
+      "dismissed_paths": []
     }
   },
   "verbose": false

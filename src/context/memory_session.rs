@@ -29,9 +29,22 @@ pub struct Session {
 impl Session {
     pub fn new(name: Option<&str>) -> Self {
         let id = uuid::Uuid::new_v4().to_string();
+        Self::with_id(id, name)
+    }
+
+    /// Create a session that must use a caller-supplied id (e.g. daemon upsert
+    /// via `PUT /sessions/:id` when the file does not yet exist).
+    ///
+    /// Unlike [`Session::new`], this never regenerates the id. Using `new()` on
+    /// the upsert path previously caused each save to write a *different*
+    /// `*.json` file while the TUI kept the original path id, flooding the
+    /// session panel with duplicate names.
+    pub fn with_id(id: impl Into<String>, name: Option<&str>) -> Self {
+        let id = id.into();
+        let name = name.unwrap_or(&id).to_string();
         Self {
             id: id.clone(),
-            name: name.unwrap_or(&id).to_string(),
+            name,
             project_path: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -158,11 +171,8 @@ impl SessionManager {
 
     pub async fn create(&self, name: Option<&str>) -> anyhow::Result<Session> {
         let session = Session::new(name);
+        // `save` both persists to disk and updates the in-memory index.
         self.save(&session).await?;
-
-        let mut sessions = self.sessions.write().await;
-        sessions.insert(session.id.clone(), session.clone());
-
         Ok(session)
     }
 
@@ -331,12 +341,23 @@ impl SessionManager {
     }
 
     pub async fn save(&self, session: &Session) -> anyhow::Result<()> {
-        tokio::fs::create_dir_all(&self.sessions_dir).await?;
+        self.persist_to_disk(session).await?;
 
+        // Keep the in-memory index coherent with disk so list()/get() reflect
+        // the latest name/message_count without waiting for a restart/load_index.
+        let mut sessions = self.sessions.write().await;
+        sessions.insert(session.id.clone(), session.clone());
+
+        Ok(())
+    }
+
+    /// Write session JSON to disk without touching the in-memory index.
+    /// Used by callers that already hold `sessions` write lock (e.g. add_message).
+    async fn persist_to_disk(&self, session: &Session) -> anyhow::Result<()> {
+        tokio::fs::create_dir_all(&self.sessions_dir).await?;
         let path = self.sessions_dir.join(format!("{}.json", session.id));
         let content = serde_json::to_string_pretty(session)?;
         tokio::fs::write(&path, content).await?;
-
         Ok(())
     }
 
@@ -418,10 +439,18 @@ impl SessionManager {
         if needs_hydrate {
             self.load(id).await?;
         }
-        let mut sessions = self.sessions.write().await;
-        if let Some(session) = sessions.get_mut(id) {
-            session.add_message(role, content);
-            self.save(session).await?;
+        // Mutate under the write lock, then persist without re-acquiring it.
+        let snapshot = {
+            let mut sessions = self.sessions.write().await;
+            if let Some(session) = sessions.get_mut(id) {
+                session.add_message(role, content);
+                Some(session.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(session) = snapshot {
+            self.persist_to_disk(&session).await?;
         }
         Ok(())
     }
@@ -438,10 +467,17 @@ impl SessionManager {
         if needs_hydrate {
             self.load(id).await?;
         }
-        let mut sessions = self.sessions.write().await;
-        if let Some(session) = sessions.get_mut(id) {
-            session.status = SessionStatus::Archived;
-            self.save(session).await?;
+        let snapshot = {
+            let mut sessions = self.sessions.write().await;
+            if let Some(session) = sessions.get_mut(id) {
+                session.status = SessionStatus::Archived;
+                Some(session.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(session) = snapshot {
+            self.persist_to_disk(&session).await?;
         }
         Ok(())
     }
@@ -596,5 +632,77 @@ mod tests {
             full.lazy_message_count.is_none(),
             "hydrated session should not be lazy"
         );
+    }
+
+    #[test]
+    fn with_id_preserves_caller_supplied_id() {
+        let session = Session::with_id("fixed-id-123", Some("named"));
+        assert_eq!(session.id, "fixed-id-123");
+        assert_eq!(session.name, "named");
+    }
+
+    #[tokio::test]
+    async fn save_upsert_reuses_same_id_and_file() {
+        // Regression: previously Session::new() on the upsert path minted a new
+        // UUID each save, so the same logical session produced many files with
+        // the same display name.
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::with_dir(tmp.path().to_path_buf());
+        let fixed_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+        for i in 0..3 {
+            let mut session = mgr
+                .load(fixed_id)
+                .await
+                .unwrap()
+                .unwrap_or_else(|| Session::with_id(fixed_id, None));
+            session.id = fixed_id.to_string();
+            session.name = "same-name".to_string();
+            session.messages.push(SessionMessage {
+                role: "user".to_string(),
+                content: format!("msg-{i}"),
+                timestamp: Utc::now(),
+                metadata: HashMap::new(),
+            });
+            session.updated_at = Utc::now();
+            session.lazy_message_count = None;
+            mgr.save(&session).await.unwrap();
+        }
+
+        // Exactly one file on disk, named after the fixed id.
+        let mut entries = tokio::fs::read_dir(tmp.path()).await.unwrap();
+        let mut files = Vec::new();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            files.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        assert_eq!(files, vec![format!("{fixed_id}.json")]);
+
+        let loaded = mgr.load(fixed_id).await.unwrap().unwrap();
+        assert_eq!(loaded.id, fixed_id);
+        assert_eq!(loaded.name, "same-name");
+        assert_eq!(loaded.messages.len(), 3);
+
+        // In-memory list also has a single entry.
+        let list = mgr.list().await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, fixed_id);
+        assert_eq!(list[0].message_count, 3);
+    }
+
+    #[tokio::test]
+    async fn save_updates_in_memory_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::with_dir(tmp.path().to_path_buf());
+
+        let mut session = Session::with_id("index-id", Some("before"));
+        mgr.save(&session).await.unwrap();
+        session.name = "after".to_string();
+        session.add_message("user", "hi");
+        mgr.save(&session).await.unwrap();
+
+        let list = mgr.list().await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "after");
+        assert_eq!(list[0].message_count, 1);
     }
 }

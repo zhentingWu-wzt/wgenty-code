@@ -183,7 +183,7 @@ $env:ANTHROPIC_API_KEY="sk-ant-..."
 | `models.transport.max_tokens` | number | 4096 | 单次请求最大 token |
 | `models.transport.timeout` | number | 120 | 请求超时（秒） |
 | `agent.plan_mode` | bool | false | Plan 模式开关 |
-| `agent.subagent.max_depth` | number | 3 | 子代理最大嵌套深度 |
+| `agent.subagent.max_depth` | number | 1 | 子代理最大嵌套深度 |
 | `agent.subagent.max_concurrent` | number | 5 | 最大并发子代理数 |
 | `agent.token_budget.main_k` | number | 0 | Token 预算（千），0=无限 |
 | `integrations.guardian.enabled` | bool | true | 命令安全审查开关 |
