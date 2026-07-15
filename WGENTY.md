@@ -174,15 +174,14 @@ Prompt 8 层：base_instructions → permissions → developer → environment �
 | serde + serde_json | 序列化 |
 | tracing 0.1 + tracing-subscriber 0.3 | 日志 |
 | fluent 0.16 + unic-langid 0.9 | 国际化 |
-| pulldown-cmark 0.10 | Markdown 解析 |
 | rusqlite 0.31 | SQLite 应用存储（默认系统库，`bundled-sqlite` feature 切换内置编译） |
 | walkdir 2.5 + glob 0.3 | 文件系统遍历 |
 | regex 1.10 + nom 7.1 | 解析 |
 | similar 2.5 | Diff 算法 |
 | thiserror 1.0 + anyhow 1.0 | 错误处理 |
-| dashmap 5.5 + lru 0.12 | 并发缓存 |
+| lru 0.12 | 并发缓存 |
 | config 0.14 + toml 0.8 + dirs 5.0 | 配置管理 |
-| sha2 0.10 + base64 0.22 + jsonwebtoken 9.3 | 加密鉴权 |
+| sha2 0.10 + jsonwebtoken 9.3 | 加密鉴权 |
 | async-trait 0.1 | 异步 trait |
 | uuid 1.8 + chrono 0.4 | UUID + 时间 |
 | which 6.0 + notify 6.1 | 进程查找 + 文件系统监控 |

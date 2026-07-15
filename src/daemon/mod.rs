@@ -83,10 +83,18 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
     let app = health_router.merge(protected_router).layer(
         CorsLayer::new()
             .allow_origin([
-                "http://localhost:3000".parse().unwrap(),
-                "http://localhost:5173".parse().unwrap(),
-                "http://127.0.0.1:3000".parse().unwrap(),
-                "http://127.0.0.1:5173".parse().unwrap(),
+                "http://localhost:3000"
+                    .parse()
+                    .expect("invalid hardcoded URL literal"),
+                "http://localhost:5173"
+                    .parse()
+                    .expect("invalid hardcoded URL literal"),
+                "http://127.0.0.1:3000"
+                    .parse()
+                    .expect("invalid hardcoded URL literal"),
+                "http://127.0.0.1:5173"
+                    .parse()
+                    .expect("invalid hardcoded URL literal"),
             ])
             .allow_methods([
                 http::Method::GET,

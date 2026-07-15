@@ -205,7 +205,10 @@ impl ToolRegistry {
         // typically don't have built-in search.
 
         if !PROVIDERS_WITHOUT_BUILTIN_SEARCH.contains(&provider.name()) {
-            self.tools.write().unwrap().remove("web_search");
+            self.tools
+                .write()
+                .expect("lock poisoned: tools")
+                .remove("web_search");
             tracing::info!(
                 "web_search tool skipped: {} has built-in search capability",
                 provider.name()
@@ -219,7 +222,10 @@ impl ToolRegistry {
     /// enabling runtime registration (e.g. background MCP tool connection).
     pub fn register(&self, tool: Box<dyn Tool>) {
         let name = tool.name().to_string();
-        self.tools.write().unwrap().insert(name, Arc::from(tool));
+        self.tools
+            .write()
+            .expect("lock poisoned: tools")
+            .insert(name, Arc::from(tool));
     }
 
     /// Register a remote tool, preserving its standard name when available and
@@ -227,7 +233,7 @@ impl ToolRegistry {
     /// built-in or remote tool.
     pub fn register_external(&self, server_name: &str, tool: Box<dyn Tool>) -> String {
         let original_name = tool.name().to_string();
-        let mut tools = self.tools.write().unwrap();
+        let mut tools = self.tools.write().expect("lock poisoned: tools");
         if !tools.contains_key(&original_name) {
             tools.insert(original_name.clone(), Arc::from(tool));
             return original_name;
@@ -250,16 +256,25 @@ impl ToolRegistry {
         ));
         self.tools
             .write()
-            .unwrap()
+            .expect("lock poisoned: tools")
             .insert("skill".to_string(), Arc::from(new_tool));
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.read().unwrap().get(name).cloned()
+        self.tools
+            .read()
+            .expect("lock poisoned: tools")
+            .get(name)
+            .cloned()
     }
 
     pub fn list(&self) -> Vec<Arc<dyn Tool>> {
-        self.tools.read().unwrap().values().cloned().collect()
+        self.tools
+            .read()
+            .expect("lock poisoned: tools")
+            .values()
+            .cloned()
+            .collect()
     }
 
     pub async fn execute(
@@ -267,7 +282,12 @@ impl ToolRegistry {
         name: &str,
         input: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
-        let tool = self.tools.read().unwrap().get(name).cloned();
+        let tool = self
+            .tools
+            .read()
+            .expect("lock poisoned: tools")
+            .get(name)
+            .cloned();
         match tool {
             Some(tool) => tool.execute(input).await,
             None => Err(ToolError {
@@ -290,7 +310,12 @@ impl ToolRegistry {
         name: &str,
         input: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
-        let tool = self.tools.read().unwrap().get(name).cloned();
+        let tool = self
+            .tools
+            .read()
+            .expect("lock poisoned: tools")
+            .get(name)
+            .cloned();
         match tool {
             Some(tool) => tool.execute_with_context(context, input).await,
             None => Err(ToolError {

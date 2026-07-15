@@ -217,7 +217,7 @@ impl App {
             .with_sandbox("workspace-write")
             .with_approval("never");
         let settings = {
-            let guard = settings_lock.read().unwrap();
+            let guard = settings_lock.read().expect("lock poisoned: settings");
             guard.clone()
         };
         let prompt_ctx = prompt_ctx.with_collaboration(

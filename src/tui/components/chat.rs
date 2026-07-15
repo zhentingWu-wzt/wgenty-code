@@ -84,7 +84,7 @@ pub fn render(
         }
     }
 
-    let total_lines = lines.len() as u16;
+    let total_lines = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let viewport = area.height;
 
     // Auto-scroll: always show newest content (bottom).

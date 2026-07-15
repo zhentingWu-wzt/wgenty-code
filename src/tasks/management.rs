@@ -586,7 +586,9 @@ impl TaskManagementTool {
         self.can_transition_to(&task, &TaskStatus::Completed, &tasks)?;
 
         // Now mutate
-        let task = tasks.get_mut(task_id).unwrap();
+        let task = tasks
+            .get_mut(task_id)
+            .expect("task_id verified by can_transition_to");
         task.status = TaskStatus::Completed;
         task.updated_at = chrono::Utc::now();
 
@@ -661,7 +663,9 @@ impl TaskManagementTool {
         self.validate_dependency_assignment(task_id, &blocked_by, &tasks)?;
 
         // Now mutate
-        let task = tasks.get_mut(task_id).unwrap();
+        let task = tasks
+            .get_mut(task_id)
+            .expect("task_id verified by validate_dependency_assignment");
         task.blocked_by = blocked_by;
         task.updated_at = chrono::Utc::now();
 

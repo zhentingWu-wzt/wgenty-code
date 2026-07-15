@@ -199,7 +199,7 @@ impl Tool for RunScriptTool {
             code: Some("rhai_runtime_error".to_string()),
         })?;
 
-        let log_output = output.lock().unwrap().clone();
+        let log_output = output.lock().expect("lock poisoned: script output").clone();
         let final_output = if log_output.is_empty() {
             result
         } else {

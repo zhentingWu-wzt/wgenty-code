@@ -31,6 +31,8 @@ impl MemoryContextInjector {
         let matched = manager.search_memories(&query).await;
 
         // Filter by importance >= threshold, sort descending, take top N.
+        #[allow(clippy::cast_possible_truncation)]
+        // threshold is a small integer; f32 precision is sufficient
         let threshold_f32 = threshold as f32;
         let mut sorted: Vec<_> = matched
             .into_iter()

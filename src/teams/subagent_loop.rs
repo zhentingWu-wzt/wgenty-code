@@ -243,7 +243,7 @@ impl SynthesisPort for SubagentSynthesis {
             })?;
 
         let fresh: Vec<ChildResult> = {
-            let synthesized = self.synthesized.lock().unwrap();
+            let synthesized = self.synthesized.lock().expect("lock poisoned: synthesized");
             child_results
                 .iter()
                 .filter(|r| !synthesized.contains(r.child_id.as_str()))
@@ -253,7 +253,7 @@ impl SynthesisPort for SubagentSynthesis {
 
         if !fresh.is_empty() {
             {
-                let mut synthesized = self.synthesized.lock().unwrap();
+                let mut synthesized = self.synthesized.lock().expect("lock poisoned: synthesized");
                 for r in &fresh {
                     synthesized.insert(r.child_id.as_str().to_string());
                 }
@@ -301,10 +301,19 @@ impl SubagentObserver {
             status,
             SubagentStatus::Completed | SubagentStatus::Failed | SubagentStatus::Cancelled
         );
-        let snapshot = self.text_snapshot.lock().unwrap().clone();
+        let snapshot = self
+            .text_snapshot
+            .lock()
+            .expect("lock poisoned: text_snapshot")
+            .clone();
         let metadata = if is_terminal || error_msg.is_some() {
             Some(SubagentMetadata {
-                token_count: Some(*self.cumulative_tokens.lock().unwrap()),
+                token_count: Some(
+                    *self
+                        .cumulative_tokens
+                        .lock()
+                        .expect("lock poisoned: cumulative_tokens"),
+                ),
                 error: error_msg.clone(),
                 depends_on: vec![],
             })
@@ -315,11 +324,19 @@ impl SubagentObserver {
             error_type: ErrorType::Unknown,
             message: msg.clone(),
             last_tool: current_tool.clone(),
-            last_params: self.current_params.lock().unwrap().clone(),
+            last_params: self
+                .current_params
+                .lock()
+                .expect("lock poisoned: current_params")
+                .clone(),
             round: round.unwrap_or(0) as u32,
             retryable: true,
         });
-        let action_log_snapshot = self.action_log.lock().unwrap().clone();
+        let action_log_snapshot = self
+            .action_log
+            .lock()
+            .expect("lock poisoned: action_log")
+            .clone();
         cb(SubagentProgress {
             node_id: self.trace_id.to_string(),
             parent_id: None,
@@ -328,7 +345,11 @@ impl SubagentObserver {
             round,
             max_rounds: Some(self.max_rounds),
             current_tool,
-            current_params: self.current_params.lock().unwrap().clone(),
+            current_params: self
+                .current_params
+                .lock()
+                .expect("lock poisoned: current_params")
+                .clone(),
             action_log: action_log_snapshot.clone(),
             text_snapshot: if is_terminal { None } else { snapshot },
             started_at: self.started_at_ms,
@@ -336,7 +357,10 @@ impl SubagentObserver {
             metadata,
             progress_delta: None,
             token_budget_k: self.token_budget_k,
-            cumulative_tokens: *self.cumulative_tokens.lock().unwrap() as u64,
+            cumulative_tokens: *self
+                .cumulative_tokens
+                .lock()
+                .expect("lock poisoned: cumulative_tokens") as u64,
             error_details,
             events: action_log_snapshot,
             messages,
@@ -350,13 +374,19 @@ impl RoundObserver for SubagentObserver {
         if let Some(last_asst) = messages.iter().rev().find(|m| m.role == "assistant") {
             if let Some(content) = last_asst.content.as_deref().map(str::trim) {
                 if !content.is_empty() {
-                    *self.text_snapshot.lock().unwrap() = Some(content.to_string());
-                    self.action_log.lock().unwrap().push(SubagentEvent {
-                        event_type: SubagentEventType::Thought {
-                            text: content.to_string(),
-                        },
-                        elapsed_ms: self.start.elapsed().as_millis() as u64,
-                    });
+                    *self
+                        .text_snapshot
+                        .lock()
+                        .expect("lock poisoned: text_snapshot") = Some(content.to_string());
+                    self.action_log
+                        .lock()
+                        .expect("lock poisoned: action_log")
+                        .push(SubagentEvent {
+                            event_type: SubagentEventType::Thought {
+                                text: content.to_string(),
+                            },
+                            elapsed_ms: self.start.elapsed().as_millis() as u64,
+                        });
                 }
             }
         }
@@ -370,7 +400,10 @@ impl RoundObserver for SubagentObserver {
     }
 
     fn on_usage(&self, total_tokens: usize) {
-        *self.cumulative_tokens.lock().unwrap() += total_tokens;
+        *self
+            .cumulative_tokens
+            .lock()
+            .expect("lock poisoned: cumulative_tokens") += total_tokens;
     }
 
     fn on_tool_start(&self, round: usize, tool_name: &str, messages: &[ChatMessage]) {
@@ -387,14 +420,20 @@ impl RoundObserver for SubagentObserver {
                     .map(|args| extract_params_summary(tool_name, &args))
             })
             .unwrap_or_default();
-        *self.current_params.lock().unwrap() = Some(params.clone());
-        self.action_log.lock().unwrap().push(SubagentEvent {
-            event_type: SubagentEventType::Action {
-                tool_name: tool_name.to_string(),
-                params_summary: params,
-            },
-            elapsed_ms: self.start.elapsed().as_millis() as u64,
-        });
+        *self
+            .current_params
+            .lock()
+            .expect("lock poisoned: current_params") = Some(params.clone());
+        self.action_log
+            .lock()
+            .expect("lock poisoned: action_log")
+            .push(SubagentEvent {
+                event_type: SubagentEventType::Action {
+                    tool_name: tool_name.to_string(),
+                    params_summary: params,
+                },
+                elapsed_ms: self.start.elapsed().as_millis() as u64,
+            });
         self.emit(
             SubagentStatus::Running,
             Some(round),
@@ -411,13 +450,16 @@ impl RoundObserver for SubagentObserver {
             .find(|m| m.role == "assistant")
             .and_then(|m| m.content.clone())
             .unwrap_or_default();
-        self.action_log.lock().unwrap().push(SubagentEvent {
-            event_type: SubagentEventType::Completion {
-                status: "completed".to_string(),
-                summary: Some(summary),
-            },
-            elapsed_ms: self.start.elapsed().as_millis() as u64,
-        });
+        self.action_log
+            .lock()
+            .expect("lock poisoned: action_log")
+            .push(SubagentEvent {
+                event_type: SubagentEventType::Completion {
+                    status: "completed".to_string(),
+                    summary: Some(summary),
+                },
+                elapsed_ms: self.start.elapsed().as_millis() as u64,
+            });
         self.emit(
             SubagentStatus::Completed,
             Some(round),
@@ -428,13 +470,16 @@ impl RoundObserver for SubagentObserver {
     }
 
     fn on_failed(&self, round: usize, error: &str, messages: &[ChatMessage]) {
-        self.action_log.lock().unwrap().push(SubagentEvent {
-            event_type: SubagentEventType::Error {
-                message: error.to_string(),
-                error_type: ErrorType::Unknown,
-            },
-            elapsed_ms: self.start.elapsed().as_millis() as u64,
-        });
+        self.action_log
+            .lock()
+            .expect("lock poisoned: action_log")
+            .push(SubagentEvent {
+                event_type: SubagentEventType::Error {
+                    message: error.to_string(),
+                    error_type: ErrorType::Unknown,
+                },
+                elapsed_ms: self.start.elapsed().as_millis() as u64,
+            });
         self.emit(
             SubagentStatus::Failed,
             Some(round),
@@ -546,7 +591,12 @@ impl InboxPort for MailboxInbox {
                     ..
                 } => {
                     // Deliver to the waiting request_approval tool, if any.
-                    if let Some(tx) = self.pending_approvals.lock().unwrap().remove(request_id) {
+                    if let Some(tx) = self
+                        .pending_approvals
+                        .lock()
+                        .expect("lock poisoned: pending_approvals")
+                        .remove(request_id)
+                    {
                         let _ = tx.send(*approve);
                     }
                     body.push(format!(
@@ -721,7 +771,7 @@ pub async fn run_subagent_loop(
     let result = tokio::select! {
         biased;
         _ = &mut cancelled => {
-            observer.action_log.lock().unwrap().push(SubagentEvent {
+            observer.action_log.lock().expect("lock poisoned: action_log").push(SubagentEvent {
                 event_type: SubagentEventType::Error {
                     message: "Subagent cancelled by parent scope".to_string(),
                     error_type: ErrorType::Cancelled,
@@ -744,7 +794,7 @@ pub async fn run_subagent_loop(
             Err(SubagentError {
                 message: "Subagent cancelled by parent scope".to_string(),
                 error_type: ErrorType::Cancelled,
-                partial_result: observer.text_snapshot.lock().unwrap().clone(),
+                partial_result: observer.text_snapshot.lock().expect("lock poisoned: text_snapshot").clone(),
             })
         }
         result = &mut timeout_future => match result {
@@ -776,11 +826,11 @@ pub async fn run_subagent_loop(
                 Err(SubagentError {
                     message,
                     error_type,
-                    partial_result: observer.text_snapshot.lock().unwrap().clone(),
+                    partial_result: observer.text_snapshot.lock().expect("lock poisoned: text_snapshot").clone(),
                 })
             }
             Err(_elapsed) => {
-                observer.action_log.lock().unwrap().push(SubagentEvent {
+                observer.action_log.lock().expect("lock poisoned: action_log").push(SubagentEvent {
                     event_type: SubagentEventType::Error {
                         message: format!("Timed out after {} seconds", timeout_duration.as_secs()),
                         error_type: ErrorType::Timeout,
@@ -810,7 +860,7 @@ pub async fn run_subagent_loop(
                         timeout_duration.as_secs()
                     ),
                     error_type: ErrorType::Timeout,
-                    partial_result: observer.text_snapshot.lock().unwrap().clone(),
+                    partial_result: observer.text_snapshot.lock().expect("lock poisoned: text_snapshot").clone(),
                 })
             }
         },

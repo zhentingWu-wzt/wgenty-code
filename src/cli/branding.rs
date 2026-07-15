@@ -38,13 +38,21 @@ pub fn for_each_icon_pixel(mut f: impl FnMut(u32, u32, [u8; 4])) {
 
         for (x, &byte) in bytes.iter().enumerate() {
             if let Some(color) = palette(byte) {
-                f(x as u32, y as u32, color);
+                f(
+                    u32::try_from(x).unwrap_or(u32::MAX),
+                    u32::try_from(y).unwrap_or(u32::MAX),
+                    color,
+                );
             }
         }
 
         for (x, &byte) in bytes.iter().rev().enumerate() {
             if let Some(color) = palette(byte) {
-                f((HALF_WIDTH + x) as u32, y as u32, color);
+                f(
+                    u32::try_from(HALF_WIDTH + x).unwrap_or(u32::MAX),
+                    u32::try_from(y).unwrap_or(u32::MAX),
+                    color,
+                );
             }
         }
     }
