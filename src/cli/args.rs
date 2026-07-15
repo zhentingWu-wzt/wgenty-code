@@ -424,7 +424,7 @@ impl Cli {
     }
 
     async fn run_memory(&self, action: &super::MemoryCommands) -> anyhow::Result<()> {
-        let manager = crate::context::MemoryManager::new();
+        let manager = crate::context::MemoryManager::new(crate::utils::current_project_root());
         manager.load().await?;
 
         match action {

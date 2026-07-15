@@ -197,7 +197,7 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
     seed.push(ChatMessage::user(&prompt));
 
     // Shared memory manager: recall at start + extract during auto-compact.
-    let memory_manager = Arc::new(MemoryManager::new());
+    let memory_manager = Arc::new(MemoryManager::new(crate::utils::current_project_root()));
     {
         if memory_manager.load().await.is_ok() {
             let recall_top_n = settings.storage.memory.recall_top_n;
