@@ -144,7 +144,9 @@ When you need to understand code structure, follow this order:
 2. **Then `grep` / `lsp`** — when the target is text patterns, comments, or non-symbol concepts; or when codegraph returns no results.
 3. **Finally `file_read`** — only after locating relevant files via the above. Reading whole files without first locating symbols wastes context.
 
-If CodeGraph tools are absent or report an uninitialized project, fall back to `grep` / `lsp` for the current task. Project indexing is the user's decision; the user can install `@colbymchenry/codegraph` and run `codegraph init` in the project root.
+If CodeGraph tools are absent or report an uninitialized project, fall back to `grep` / `lsp` for the current task. The live CodeGraph status is injected in `<environment_context>` as `<codegraph>...</codegraph>` (states: ready / not_installed / not_initialized / dismissed).
+
+When the status is `not_installed` or `not_initialized` and NOT `dismissed`, and you are about to perform code navigation (calling `codegraph_node` / `codegraph_explore`), first use `ask_user_question` to offer: (1) install/initialize now -- provide the command and, on approval, run it via `exec_command` then suggest `/mcp restart`; (2) don't remind again -- call `dismiss_codegraph_guidance` to persist; (3) skip this time -- use grep/lsp, no persistence. If `dismissed` or `ready`, do not ask. Project indexing is the user's decision; the user can install `@colbymchenry/codegraph` and run `codegraph init` in the project root.
 
 ## Subagents and tasks
 
