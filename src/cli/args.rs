@@ -164,10 +164,12 @@ impl Cli {
         }));
 
         enable_raw_mode()?;
-        execute!(
+        // Kitty keyboard protocol is ANSI-only; crossterm's WinAPI path always
+        // returns Unsupported. Best-effort so Windows consoles can still start.
+        let _ = execute!(
             io::stdout(),
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        )?;
+        );
 
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
@@ -247,7 +249,7 @@ impl Cli {
 
         // Restore terminal
         disable_raw_mode()?;
-        execute!(io::stdout(), PopKeyboardEnhancementFlags)?;
+        let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
         execute!(io::stdout(), DisableMouseCapture)?;
         execute!(io::stdout(), LeaveAlternateScreen)?;
         // Restore default panic hook
