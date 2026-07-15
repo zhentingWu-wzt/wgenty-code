@@ -7,6 +7,7 @@
 //! - Sampling support
 
 pub mod client;
+pub mod codegraph;
 pub mod prompts;
 pub mod proxy;
 pub mod resources;
@@ -27,6 +28,9 @@ use crate::mcp::proxy::{is_known_read_only_tool, McpToolCaller, McpToolProxy};
 use crate::tools::Tool;
 
 pub use crate::config::mcp_config::{McpConfig, McpServerStatus};
+pub use codegraph::{
+    install_state_notice, probe_install_state, CodegraphInstallState,
+};
 pub use prompts::{Prompt, PromptManager};
 pub use resources::{Resource, ResourceManager};
 pub use sampling::{SamplingManager, SamplingRequest};
