@@ -4,7 +4,7 @@
 
 # Wgenty Code 🦀
 
-Supports multiple AI providers: **Anthropic (Claude)**, **DeepSeek**, and **DashScope**.
+Supports multiple AI providers: **Anthropic (Claude)**, **Openai**.
 
 ---
 
@@ -56,8 +56,8 @@ export ANTHROPIC_API_KEY="sk-ant-..."    # Anthropic Claude
 # export DASHSCOPE_API_KEY="sk-..."      # DashScope (Alibaba Cloud)
 
 # Start coding
-wgenty-code repl                            # if installed via npm
-# ./target/release/wgenty-code repl         # if built from source
+wgenty-code                            # if installed via npm
+# ./target/release/wgenty-code         # if built from source
 ```
 
 > Alternatively, set `api_key` in `~/.wgenty-code/settings.json`. Environment variables take priority.
