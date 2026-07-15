@@ -173,6 +173,9 @@ impl ToolRegistry {
         registry.register(Box::new(meta::compact::CompactTool::new()));
         registry.register(Box::new(meta::lsp::LspTool::new()));
         registry.register(Box::new(meta::note_edit::NoteEditTool::new()));
+        registry.register(Box::new(
+            meta::dismiss_codegraph_guidance::DismissCodegraphGuidanceTool::new(),
+        ));
         registry.register(Box::new(crate::tasks::management::TaskManagementTool::new()));
         registry
     }
