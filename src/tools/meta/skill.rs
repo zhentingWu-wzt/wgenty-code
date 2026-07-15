@@ -141,7 +141,7 @@ impl Tool for SkillTool {
                     "count": skills_list.len(),
                     "hint": "Use skill with a specific name to load full instructions."
                 }))
-                .unwrap(),
+                .expect("serializing json! value is infallible"),
                 metadata: std::collections::HashMap::new(),
             });
         }

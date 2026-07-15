@@ -518,6 +518,20 @@ impl DaemonClient {
         let resp = self.http_tools().get(&url).send().await?;
         Ok(resp.json().await?)
     }
+
+    /// GET /api/v1/tasks/progress - ready/blocked counts for agent nudges.
+    pub async fn task_progress(&self) -> anyhow::Result<TaskProgressResponse> {
+        let url = format!("{}/api/v1/tasks/progress", self.base_url);
+        let resp = self.http_tools().get(&url).send().await?;
+        Ok(resp.json().await?)
+    }
+}
+
+/// `GET /api/v1/tasks/progress` response (mirrors daemon model).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct TaskProgressResponse {
+    pub blocked: usize,
+    pub ready: usize,
 }
 
 /// Simple percent-encode for URL path segments (only encode truly unsafe chars).

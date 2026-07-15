@@ -277,4 +277,20 @@ mod tests {
 
         store.delete("../../../etc/passwd").await.unwrap();
     }
+
+    #[tokio::test]
+    async fn test_blocked_by_round_trip() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = TaskStore::new(tmp.path().to_path_buf());
+
+        let mut task = make_task("task-dep", "Dep", "has blockers");
+        task.blocked_by = vec!["blocker-1".to_string(), "blocker-2".to_string()];
+        store.save(&task).await.unwrap();
+
+        let loaded = store.load("task-dep").await.unwrap().unwrap();
+        assert_eq!(
+            loaded.blocked_by,
+            vec!["blocker-1".to_string(), "blocker-2".to_string()]
+        );
+    }
 }

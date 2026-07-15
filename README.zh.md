@@ -134,7 +134,7 @@ docker run -it --rm -v ~/.wgenty-code:/root/.wgenty-code wgenty-code:latest repl
 | `models.main.name` | `sonnet` | 主模型别名（自动映射） |
 | `models.small.name` | *(无)* | 委托子任务的小型/廉价模型 |
 | `agent.plan_mode` | `false` | 启用先计划后执行模式 |
-| `agent.subagent.max_depth` | `3` | 嵌套子 agent 最大深度 |
+| `agent.subagent.max_depth` | `1` | 嵌套子 agent 最大深度（1=禁用递归；调大以允许） |
 | `agent.subagent.max_concurrent` | `5` | 并行子 agent 最大数量 |
 | `agent.token_budget.main_k` | `0` | 累计 token 限制（0 = 无限制） |
 

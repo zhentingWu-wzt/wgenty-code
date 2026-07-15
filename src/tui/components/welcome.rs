@@ -47,6 +47,11 @@ pub fn render(f: &mut Frame, area: Rect, model_name: &str) {
         ),
         Span::raw(" "),
         Span::styled(
+            format!("v{}", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(Color::Rgb(160, 150, 185)),
+        ),
+        Span::raw(" "),
+        Span::styled(
             "· Rust Edition",
             Style::default()
                 .fg(Color::Rgb(255, 140, 66))

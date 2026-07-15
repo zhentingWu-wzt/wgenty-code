@@ -59,7 +59,7 @@ impl AnthropicStreamState {
                 index,
                 content_block,
             } => match content_block {
-                AnthropicContentBlock::Text { text } => {
+                AnthropicContentBlock::Text { text, .. } => {
                     let delta = Delta {
                         role: Some("assistant".to_string()),
                         content: Some(text.clone()),
@@ -83,7 +83,7 @@ impl AnthropicStreamState {
                         serde_json::to_string(&chunk).unwrap_or_default()
                     ));
                 }
-                AnthropicContentBlock::ToolUse { id, name, input: _ } => {
+                AnthropicContentBlock::ToolUse { id, name, .. } => {
                     self.tool_use_accumulators.insert(
                         *index,
                         ToolUseAccumulator {
@@ -93,7 +93,7 @@ impl AnthropicStreamState {
                         },
                     );
                 }
-                AnthropicContentBlock::ServerToolUse { id, name, input: _ } => {
+                AnthropicContentBlock::ServerToolUse { id, name, .. } => {
                     self.tool_use_accumulators.insert(
                         *index,
                         ToolUseAccumulator {
@@ -262,7 +262,12 @@ mod tests {
             ChatMessage::user("hi"),
         ];
         let (anthropic_msgs, system) = convert_messages_to_anthropic(&msgs);
-        assert_eq!(system, Some("You are helpful.".to_string()));
+        assert_eq!(
+            system.as_ref().map(|b| &b[0].text),
+            Some(&"You are helpful.".to_string())
+        );
+        // System block should carry a cache_control breakpoint.
+        assert!(system.unwrap()[0].cache_control.is_some());
         assert_eq!(anthropic_msgs.len(), 1);
         assert_eq!(anthropic_msgs[0].role, "user");
     }
@@ -282,13 +287,11 @@ mod tests {
             ChatMessage::user("continue"),
         ];
         let (anthropic_msgs, system) = convert_messages_to_anthropic(&msgs);
+        let sys_text = &system.expect("system should be Some")[0].text;
         assert_eq!(
-            system,
-            Some(
-                "You are a coding agent.\n\n\
-                 <previous_conversation_summary>\nDid X.\n</previous_conversation_summary>"
-                    .to_string()
-            )
+            sys_text,
+            "You are a coding agent.\n\n\
+             <previous_conversation_summary>\nDid X.\n</previous_conversation_summary>"
         );
         // Only the non-system messages survive into anthropic_msgs.
         assert_eq!(anthropic_msgs.len(), 1);
@@ -305,11 +308,14 @@ mod tests {
             ChatMessage::user("hi"),
         ];
         let (_anthropic_msgs, system) = convert_messages_to_anthropic(&msgs);
-        assert_eq!(system, Some("Only this.".to_string()));
+        assert_eq!(
+            system.as_ref().map(|b| b[0].text.clone()),
+            Some("Only this.".to_string())
+        );
 
         let msgs_all_empty = vec![ChatMessage::system(""), ChatMessage::user("hi")];
         let (_anthropic_msgs, system) = convert_messages_to_anthropic(&msgs_all_empty);
-        assert_eq!(system, None);
+        assert!(system.is_none());
     }
 
     #[test]
@@ -325,6 +331,7 @@ mod tests {
                     AnthropicContentBlock::ToolResult {
                         tool_use_id,
                         content,
+                        ..
                     } => {
                         assert_eq!(tool_use_id, "call_123");
                         assert_eq!(content, "result text");
@@ -356,7 +363,9 @@ mod tests {
         assert_eq!(anthropic_msgs.len(), 1);
         match &anthropic_msgs[0].content {
             AnthropicContentValue::Blocks(blocks) => match &blocks[0] {
-                AnthropicContentBlock::ToolUse { id, name, input } => {
+                AnthropicContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
                     assert_eq!(id, "toolu_001");
                     assert_eq!(name, "get_weather");
                     assert_eq!(input["location"], "NYC");
@@ -382,7 +391,7 @@ mod tests {
         let anthropic_tools = convert_tools_to_anthropic(&tools);
         assert_eq!(anthropic_tools.len(), 1);
         match &anthropic_tools[0] {
-            AnthropicToolDef::WebSearch { name } => {
+            AnthropicToolDef::WebSearch { name, .. } => {
                 assert_eq!(name, "web_search");
             }
             _ => panic!("expected WebSearch variant"),
@@ -425,6 +434,7 @@ mod tests {
             model: "claude-sonnet-4-6".to_string(),
             content: vec![AnthropicContentBlock::Text {
                 text: "Hello!".to_string(),
+                cache_control: None,
             }],
             stop_reason: Some("end_turn".to_string()),
             stop_sequence: None,
@@ -455,6 +465,7 @@ mod tests {
                 id: "toolu_001".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"location": "NYC"}),
+                cache_control: None,
             }],
             stop_reason: Some("tool_use".to_string()),
             stop_sequence: None,
@@ -472,5 +483,65 @@ mod tests {
         assert_eq!(tool_calls.len(), 1);
         assert_eq!(tool_calls[0].id, "toolu_001");
         assert_eq!(tool_calls[0].function.name, "get_weather");
+    }
+
+    #[test]
+    fn test_tools_cache_control_on_last_only() {
+        // Only the last tool should carry a cache_control breakpoint.
+        let tools = vec![
+            ToolDefinition::new("tool_a", "desc a", serde_json::json!({})),
+            ToolDefinition::new("tool_b", "desc b", serde_json::json!({})),
+            ToolDefinition::new("tool_c", "desc c", serde_json::json!({})),
+        ];
+        let anthropic_tools = convert_tools_to_anthropic(&tools);
+        assert_eq!(anthropic_tools.len(), 3);
+
+        let cc = |t: &AnthropicToolDef| match t {
+            AnthropicToolDef::Custom { cache_control, .. }
+            | AnthropicToolDef::WebSearch { cache_control, .. } => cache_control.clone(),
+        };
+        assert!(cc(&anthropic_tools[0]).is_none());
+        assert!(cc(&anthropic_tools[1]).is_none());
+        assert!(cc(&anthropic_tools[2]).is_some());
+    }
+
+    #[test]
+    fn test_conversation_cache_breakpoint() {
+        // Two user messages: breakpoint should go on the first (second-to-last).
+        let msgs = vec![
+            ChatMessage::user("first turn"),
+            ChatMessage::user("second turn"),
+        ];
+        let (mut anthropic_msgs, _) = convert_messages_to_anthropic(&msgs);
+        apply_conversation_cache_breakpoint(&mut anthropic_msgs);
+
+        // The first message (idx 0) should have been converted to Blocks with
+        // cache_control; the second (idx 1, the new user input) should be
+        // untouched (plain String).
+        match &anthropic_msgs[0].content {
+            AnthropicContentValue::Blocks(blocks) => match &blocks[0] {
+                AnthropicContentBlock::Text { cache_control, .. } => {
+                    assert!(cache_control.is_some(), "first message should be cached");
+                }
+                _ => panic!("expected Text block"),
+            },
+            _ => panic!("expected Blocks for cached message"),
+        }
+        assert!(matches!(
+            &anthropic_msgs[1].content,
+            AnthropicContentValue::String(_)
+        ));
+    }
+
+    #[test]
+    fn test_conversation_cache_breakpoint_skipped_single_message() {
+        // With only one message there is no prefix to cache.
+        let msgs = vec![ChatMessage::user("only message")];
+        let (mut anthropic_msgs, _) = convert_messages_to_anthropic(&msgs);
+        apply_conversation_cache_breakpoint(&mut anthropic_msgs);
+        assert!(matches!(
+            &anthropic_msgs[0].content,
+            AnthropicContentValue::String(_)
+        ));
     }
 }

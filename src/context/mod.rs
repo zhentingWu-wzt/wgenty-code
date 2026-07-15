@@ -8,6 +8,7 @@ pub mod consolidation;
 pub mod history;
 pub mod inject;
 pub mod memory_session;
+pub mod migration;
 mod session;
 pub mod storage;
 
@@ -85,6 +86,15 @@ pub enum MemoryType {
     Decision,
 }
 
+/// Memory scope: determines physical storage location. Not serialized--
+/// the origin is decided at load time by which Storage the file was read
+/// from, and at write time by which Storage the caller routes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryOrigin {
+    Project,
+    Global,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryStatus {
     pub total_memories: usize,
@@ -93,6 +103,12 @@ pub struct MemoryStatus {
     pub knowledge_count: usize,
     pub last_consolidation: Option<DateTime<Utc>>,
     pub storage_size_bytes: u64,
+    /// Number of memories stored in the project-local pool.
+    #[serde(default)]
+    pub project_count: usize,
+    /// Number of memories stored in the global pool.
+    #[serde(default)]
+    pub global_count: usize,
 }
 
 // ── MemoryIndex: TF-IDF inverted index for memory retrieval ──────────
@@ -212,6 +228,47 @@ impl MemoryIndex {
             }
         }
     }
+
+    /// Replace the indexed content for the entry at `idx` with `entry`'s
+    /// content, in place.
+    ///
+    /// Removes all stale postings for `idx`, re-indexes from `entry`, and
+    /// recomputes IDF. `doc_count` is unchanged because no document is added
+    /// or removed. Used by `add_memory` after an in-place merge folds a
+    /// near-duplicate into an existing entry, so the TF-IDF index stays
+    /// consistent with the merged content.
+    fn replace_entry(&mut self, entry: &MemoryEntry, idx: usize) {
+        // Drop every posting that referenced the old content at `idx`.
+        for postings in self.inverted.values_mut() {
+            postings.retain(|(i, _)| *i != idx);
+        }
+        // Remove words that no longer have any postings.
+        self.inverted.retain(|_, postings| !postings.is_empty());
+
+        // Re-add postings from the new (merged) content.
+        let mut tf_counts: HashMap<String, u32> = HashMap::new();
+        for word in entry.content.split_whitespace() {
+            if crate::context::ConsolidationEngine::is_meaningful_token(word) {
+                *tf_counts.entry(word.to_lowercase()).or_insert(0) += 1;
+            }
+        }
+        for (word, tf) in tf_counts {
+            let tf_norm = 1.0 + (tf as f32).ln();
+            self.inverted
+                .entry(word.clone())
+                .or_default()
+                .push((idx, tf_norm));
+        }
+
+        // Recompute IDF for every word (doc_count is unchanged).
+        let n = self.doc_count as f32;
+        for (word, postings) in &self.inverted {
+            let df = postings.len() as f32;
+            self.idf.insert(word.clone(), (n / df).ln());
+        }
+        // Drop IDF entries for words that disappeared.
+        self.idf.retain(|w, _| self.inverted.contains_key(w));
+    }
 }
 
 // ── MemoryManager ────────────────────────────────────────────────────
@@ -219,9 +276,13 @@ impl MemoryIndex {
 pub struct MemoryManager {
     sessions: Arc<MemorySessionManager>,
     history: Arc<HistoryManager>,
-    storage: Arc<Storage>,
+    project_storage: Arc<Storage>,
+    global_storage: Arc<Storage>,
     consolidation: Arc<ConsolidationEngine>,
+    /// Project-local memories (indexed by TF-IDF for recall).
     memories: Arc<RwLock<Vec<MemoryEntry>>>,
+    /// Global memories (injected every turn, not indexed for recall).
+    global_memories: Arc<RwLock<Vec<MemoryEntry>>>,
     index: Arc<RwLock<MemoryIndex>>,
     /// Guards `consolidate()` so concurrent `add_memory()` calls wait
     /// until consolidation completes before proceeding.
@@ -229,24 +290,62 @@ pub struct MemoryManager {
 }
 
 impl MemoryManager {
-    pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let memory_path = home.join(".wgenty-code").join("memory");
+    /// Create project and global Storage instances with fallback.
+    ///
+    /// If the project root equals the home directory, or the project memory
+    /// directory cannot be created (e.g. read-only CWD), project_storage
+    /// falls back to the global memory directory so memories are not lost.
+    fn create_dual_storage(project_root: &std::path::Path) -> (Arc<Storage>, Arc<Storage>) {
+        let global_path = crate::utils::global_memory_dir();
+        let project_path = crate::utils::project_memory_dir(project_root);
 
-        if let Err(e) = std::fs::create_dir_all(&memory_path) {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let cwd_is_home = project_root == home.as_path();
+
+        let effective_project_path = if cwd_is_home {
             tracing::warn!(
-                path = %memory_path.display(),
+                "CWD is the home directory; project memories will be stored in the global pool"
+            );
+            global_path.clone()
+        } else {
+            match std::fs::create_dir_all(&project_path) {
+                Ok(()) => project_path,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %project_path.display(),
+                        error = %e,
+                        "Failed to create project memory directory; falling back to global pool"
+                    );
+                    global_path.clone()
+                }
+            }
+        };
+
+        if let Err(e) = std::fs::create_dir_all(&global_path) {
+            tracing::warn!(
+                path = %global_path.display(),
                 error = %e,
-                "Failed to create memory directory; storage operations may fail later"
+                "Failed to create global memory directory; storage operations may fail later"
             );
         }
 
+        (
+            Arc::new(Storage::new(effective_project_path)),
+            Arc::new(Storage::new(global_path)),
+        )
+    }
+
+    pub fn new(project_root: PathBuf) -> Self {
+        let (project_storage, global_storage) = Self::create_dual_storage(&project_root);
+
         Self {
-            sessions: Arc::new(MemorySessionManager::new()),
+            sessions: Arc::new(MemorySessionManager::with_project_root(project_root)),
             history: Arc::new(HistoryManager::new()),
-            storage: Arc::new(Storage::new(memory_path)),
+            project_storage,
+            global_storage,
             consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
             memories: Arc::new(RwLock::new(Vec::new())),
+            global_memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
             consolidating: Arc::new(AtomicBool::new(false)),
         }
@@ -258,27 +357,23 @@ impl MemoryManager {
     /// `age_threshold_hours`, etc.) are read from the `storage.memory` section
     /// of `settings.json`. Previously these were hardcoded in
     /// `ConsolidationConfig::default()` and could not be tuned by users.
-    pub fn with_settings(settings: &crate::config::Settings) -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let memory_path = home.join(".wgenty-code").join("memory");
-
-        if let Err(e) = std::fs::create_dir_all(&memory_path) {
-            tracing::warn!(
-                path = %memory_path.display(),
-                error = %e,
-                "Failed to create memory directory; storage operations may fail later"
-            );
-        }
+    ///
+    /// `project_root` determines where project-local sessions are stored
+    /// (`<project_root>/.wgenty-code/sessions/`).
+    pub fn with_settings(settings: &crate::config::Settings, project_root: PathBuf) -> Self {
+        let (project_storage, global_storage) = Self::create_dual_storage(&project_root);
 
         let consolidation_config =
             ConsolidationConfig::from_memory_settings(&settings.storage.memory);
 
         Self {
-            sessions: Arc::new(MemorySessionManager::new()),
+            sessions: Arc::new(MemorySessionManager::with_project_root(project_root)),
             history: Arc::new(HistoryManager::new()),
-            storage: Arc::new(Storage::new(memory_path)),
+            project_storage,
+            global_storage,
             consolidation: Arc::new(ConsolidationEngine::new(consolidation_config)),
             memories: Arc::new(RwLock::new(Vec::new())),
+            global_memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
             consolidating: Arc::new(AtomicBool::new(false)),
         }
@@ -286,28 +381,35 @@ impl MemoryManager {
 
     pub async fn status(&self) -> anyhow::Result<MemoryStatus> {
         let memories = self.memories.read().await;
-        let storage_size = self.storage.size().await.unwrap_or(0);
+        let global = self.global_memories.read().await;
+        let project_count = memories.len();
+        let global_count = global.len();
+        let storage_size = self.project_storage.size().await.unwrap_or(0)
+            + self.global_storage.size().await.unwrap_or(0);
+
+        let count_type = |t: MemoryType| {
+            memories
+                .iter()
+                .chain(global.iter())
+                .filter(|m| m.memory_type == t)
+                .count()
+        };
 
         Ok(MemoryStatus {
-            total_memories: memories.len(),
-            session_count: memories
-                .iter()
-                .filter(|m| m.memory_type == MemoryType::Session)
-                .count(),
-            conversation_count: memories
-                .iter()
-                .filter(|m| m.memory_type == MemoryType::Conversation)
-                .count(),
-            knowledge_count: memories
-                .iter()
-                .filter(|m| m.memory_type == MemoryType::Knowledge)
-                .count(),
+            total_memories: project_count + global_count,
+            session_count: count_type(MemoryType::Session),
+            conversation_count: count_type(MemoryType::Conversation),
+            knowledge_count: count_type(MemoryType::Knowledge),
             last_consolidation: self.consolidation.last_consolidation().await,
             storage_size_bytes: storage_size,
+            project_count,
+            global_count,
         })
     }
 
-    pub async fn add_memory(&self, entry: MemoryEntry) -> anyhow::Result<()> {
+    /// Add a memory to the specified scope. Dedup is performed within the
+    /// same scope only. Only project memories are indexed for TF-IDF recall.
+    pub async fn add_memory(&self, entry: MemoryEntry, scope: MemoryOrigin) -> anyhow::Result<()> {
         // Wait if consolidation is in progress to avoid reading
         // transitional state. Use tokio::time::sleep polling so the
         // tokio runtime is not blocked.
@@ -315,25 +417,78 @@ impl MemoryManager {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
 
-        let mut memories = self.memories.write().await;
-        let idx = memories.len();
-        memories.push(entry.clone());
-        self.storage.save_memory(&entry).await?;
+        let (storage, memories, is_project) = match scope {
+            MemoryOrigin::Project => (&self.project_storage, self.memories.clone(), true),
+            MemoryOrigin::Global => (&self.global_storage, self.global_memories.clone(), false),
+        };
+
+        let mut mem = memories.write().await;
+
+        // Dedup guard: context compaction asks the model to extract memories
+        // from the conversation being summarized, so the same fact is often
+        // re-extracted across rounds (and may even be tagged with a different
+        // `MemoryType` each time). `add_memory` previously appended a fresh
+        // entry every time, accumulating near-duplicate files that only
+        // consolidation could merge. Instead, fold a sufficiently similar
+        // existing entry into the incoming one (type-agnostic, relaxed
+        // threshold) and persist under the existing id, leaving no orphan.
+        const DEDUP_THRESHOLD: f32 = 0.6;
+        if let Some(existing_idx) =
+            self.consolidation
+                .find_similar(&entry, &mem, DEDUP_THRESHOLD, false)
+        {
+            let merged = ConsolidationEngine::merge_into(&mem[existing_idx], &entry);
+            // Persist under the existing id so the original file is overwritten
+            // and no duplicate file is created.
+            storage.save_memory(&merged).await?;
+            mem[existing_idx] = merged.clone();
+            // Keep the TF-IDF index in sync with the merged content. The
+            // positional idx is unchanged, but the token set changed, so the
+            // postings for this idx must be replaced. Only project memories
+            // are indexed.
+            if is_project {
+                self.index
+                    .write()
+                    .await
+                    .replace_entry(&merged, existing_idx);
+            }
+            return Ok(());
+        }
+
+        let idx = mem.len();
+        mem.push(entry.clone());
+        storage.save_memory(&entry).await?;
         // Incrementally update the index for the new entry.
-        self.index.write().await.add_entry(&entry, idx);
+        if is_project {
+            self.index.write().await.add_entry(&entry, idx);
+        }
         Ok(())
     }
 
     pub async fn get_memory(&self, id: &str) -> Option<MemoryEntry> {
         let memories = self.memories.read().await;
-        memories.iter().find(|m| m.id == id).cloned()
+        if let Some(m) = memories.iter().find(|m| m.id == id) {
+            return Some(m.clone());
+        }
+        drop(memories);
+        let global = self.global_memories.read().await;
+        global.iter().find(|m| m.id == id).cloned()
     }
 
     pub async fn search_memories(&self, query: &str) -> Vec<MemoryEntry> {
-        // Try TF-IDF index first. Falls back to substring scan if the index
-        // is empty (e.g., before load() was called).
-        let index = self.index.read().await;
-        let ranked = index.search(query, 10);
+        // Search only project memories via the TF-IDF index. Global memories
+        // are injected every turn and are not part of recall. Falls back to
+        // substring scan if the index is empty (e.g., before load()).
+        //
+        // The index read guard is dropped before acquiring the memories read
+        // guard so we never hold both locks at once. `add_memory` and
+        // `consolidate` acquire the memories *write* lock first and then the
+        // index lock; holding an index read guard across the memories read
+        // acquisition would invert that order and can deadlock.
+        let ranked = {
+            let index = self.index.read().await;
+            index.search(query, 10)
+        };
 
         let memories = self.memories.read().await;
         if !ranked.is_empty() {
@@ -359,26 +514,43 @@ impl MemoryManager {
 
     pub async fn get_memories_by_type(&self, memory_type: MemoryType) -> Vec<MemoryEntry> {
         let memories = self.memories.read().await;
-        memories
+        let mut result: Vec<MemoryEntry> = memories
             .iter()
             .filter(|m| m.memory_type == memory_type)
             .cloned()
-            .collect()
+            .collect();
+        drop(memories);
+        let global = self.global_memories.read().await;
+        result.extend(
+            global
+                .iter()
+                .filter(|m| m.memory_type == memory_type)
+                .cloned(),
+        );
+        result
     }
 
     pub async fn get_important_memories(&self, threshold: f32) -> Vec<MemoryEntry> {
         let memories = self.memories.read().await;
-        memories
+        let mut result: Vec<MemoryEntry> = memories
             .iter()
             .filter(|m| m.importance >= threshold)
             .cloned()
-            .collect()
+            .collect();
+        drop(memories);
+        let global = self.global_memories.read().await;
+        result.extend(global.iter().filter(|m| m.importance >= threshold).cloned());
+        result
     }
 
     pub async fn clear(&self) -> anyhow::Result<()> {
         let mut memories = self.memories.write().await;
         memories.clear();
-        self.storage.clear().await?;
+        self.project_storage.clear().await?;
+        drop(memories);
+        let mut global = self.global_memories.write().await;
+        global.clear();
+        self.global_storage.clear().await?;
         Ok(())
     }
 
@@ -406,7 +578,7 @@ impl MemoryManager {
                 tracing::debug!(id = %entry.id, "skipping duplicate memory during import");
                 continue;
             }
-            self.storage.save_memory(entry).await?;
+            self.project_storage.save_memory(entry).await?;
             memories.push(entry.clone());
         }
 
@@ -418,7 +590,7 @@ impl MemoryManager {
         // `wgenty-code memory dream` invocations (each with its own
         // MemoryManager instance) do not race on the same memory directory.
         // The in-process RwLock only protects within a single process.
-        let _guard = ConsolidationFileLock::acquire(&self.storage)
+        let _guard = ConsolidationFileLock::acquire(&self.project_storage)
             .await
             .context("failed to acquire consolidation lock")?;
 
@@ -441,18 +613,26 @@ impl MemoryManager {
         // wrote new files without deleting the old ones — causing
         // "consolidated away" memories to be resurrected on the next
         // `load_all()`.
-        self.storage.reconcile(&consolidated).await?;
+        self.project_storage.reconcile(&consolidated).await?;
+        // Rebuild the TF-IDF index to match the consolidated Vec. Previously
+        // the index kept stale positional postings from the pre-consolidation
+        // Vec (which may be shorter after TTL expiry and merging), so
+        // `search_memories()` could resolve indices to wrong or missing
+        // entries after a consolidation.
+        self.index.write().await.rebuild(&consolidated);
         *memories = consolidated;
         Ok(())
     }
 
     pub async fn load(&self) -> anyhow::Result<()> {
-        let memories = self.storage.load_all().await?;
-        // Rebuild the TF-IDF index from the loaded entries so that
-        // search_memories() can use it immediately.
-        self.index.write().await.rebuild(&memories);
-        let mut mem = self.memories.write().await;
-        *mem = memories;
+        // Load project memories and index them for TF-IDF recall.
+        let project = self.project_storage.load_all().await?;
+        self.index.write().await.rebuild(&project);
+        *self.memories.write().await = project;
+
+        // Load global memories (no indexing--injected verbatim every turn).
+        let global = self.global_storage.load_all().await?;
+        *self.global_memories.write().await = global;
 
         // Recover persisted sessions and history from disk so that
         // previously-saved records remain visible after a restart. Without
@@ -472,7 +652,10 @@ impl MemoryManager {
 
     pub async fn save(&self) -> anyhow::Result<()> {
         let memories = self.memories.read().await;
-        self.storage.save_all(&memories).await
+        self.project_storage.save_all(&memories).await?;
+        drop(memories);
+        let global = self.global_memories.read().await;
+        self.global_storage.save_all(&global).await
     }
 
     pub fn sessions(&self) -> Arc<MemorySessionManager> {
@@ -481,17 +664,29 @@ impl MemoryManager {
     pub fn history(&self) -> Arc<HistoryManager> {
         self.history.clone()
     }
+    /// Returns the project-local storage (backward-compatible alias).
     pub fn storage(&self) -> Arc<Storage> {
-        self.storage.clone()
+        self.project_storage.clone()
+    }
+    pub fn project_storage(&self) -> Arc<Storage> {
+        self.project_storage.clone()
+    }
+    pub fn global_storage(&self) -> Arc<Storage> {
+        self.global_storage.clone()
     }
     pub fn consolidation(&self) -> Arc<ConsolidationEngine> {
         self.consolidation.clone()
+    }
+
+    /// Return all global memories (injected every turn without filtering).
+    pub async fn global_memories(&self) -> Vec<MemoryEntry> {
+        self.global_memories.read().await.clone()
     }
 }
 
 impl Default for MemoryManager {
     fn default() -> Self {
-        Self::new()
+        Self::new(crate::utils::current_project_root())
     }
 }
 
@@ -674,7 +869,11 @@ mod tests {
         let mm = MemoryManager {
             sessions: Arc::new(MemorySessionManager::new()),
             history: Arc::new(HistoryManager::new()),
-            storage: storage.clone(),
+            project_storage: storage.clone(),
+            global_storage: Arc::new(crate::context::Storage::new(
+                tmp.path().join("global_memory"),
+            )),
+            global_memories: Arc::new(RwLock::new(Vec::new())),
             consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
             memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
@@ -684,7 +883,9 @@ mod tests {
         // Pre-populate with one memory.
         let existing = MemoryEntry::new(MemoryType::Knowledge, "existing");
         let existing_id = existing.id.clone();
-        mm.add_memory(existing).await.unwrap();
+        mm.add_memory(existing, MemoryOrigin::Project)
+            .await
+            .unwrap();
 
         // Import file contains the same ID + one new entry.
         let new_entry = MemoryEntry::new(MemoryType::Knowledge, "new");
@@ -713,7 +914,11 @@ mod tests {
         let mm = MemoryManager {
             sessions: Arc::new(MemorySessionManager::new()),
             history: Arc::new(HistoryManager::new()),
-            storage: storage.clone(),
+            project_storage: storage.clone(),
+            global_storage: Arc::new(crate::context::Storage::new(
+                tmp.path().join("global_memory"),
+            )),
+            global_memories: Arc::new(RwLock::new(Vec::new())),
             consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
             memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
@@ -725,9 +930,12 @@ mod tests {
         assert!(status.last_consolidation.is_none());
 
         // Add a memory and consolidate.
-        mm.add_memory(MemoryEntry::new(MemoryType::Knowledge, "test").with_importance(0.8))
-            .await
-            .unwrap();
+        mm.add_memory(
+            MemoryEntry::new(MemoryType::Knowledge, "test").with_importance(0.8),
+            MemoryOrigin::Project,
+        )
+        .await
+        .unwrap();
         mm.consolidate().await.unwrap();
 
         // After consolidation, last_consolidation should be Some.
@@ -776,7 +984,7 @@ mod tests {
             recall_similarity_threshold: 0.3,
         };
 
-        let mm = MemoryManager::with_settings(&settings);
+        let mm = MemoryManager::with_settings(&settings, std::path::PathBuf::from("/tmp"));
         let engine = mm.consolidation();
         let config = engine.config();
 
@@ -806,7 +1014,11 @@ mod tests {
         let mm = MemoryManager {
             sessions: Arc::new(MemorySessionManager::with_dir(sessions_dir.clone())),
             history: Arc::new(HistoryManager::with_path(history_path.clone())),
-            storage: storage.clone(),
+            project_storage: storage.clone(),
+            global_storage: Arc::new(crate::context::Storage::new(
+                tmp.path().join("global_memory"),
+            )),
+            global_memories: Arc::new(RwLock::new(Vec::new())),
             consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
             memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
@@ -826,9 +1038,13 @@ mod tests {
         let restarted = MemoryManager {
             sessions: Arc::new(MemorySessionManager::with_dir(sessions_dir)),
             history: Arc::new(HistoryManager::with_path(history_path)),
-            storage,
+            project_storage: storage,
+            global_storage: Arc::new(crate::context::Storage::new(
+                tmp.path().join("global_memory"),
+            )),
             consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
             memories: Arc::new(RwLock::new(Vec::new())),
+            global_memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
             consolidating: Arc::new(AtomicBool::new(false)),
         };
@@ -861,5 +1077,150 @@ mod tests {
             "load() should recover the persisted history entry"
         );
         assert_eq!(recent[0].content, "regression-cmd");
+    }
+
+    /// Dedup guard: adding a near-duplicate memory (same fact, different type
+    /// and terser wording, as happens across compaction rounds) must fold into
+    /// the existing entry instead of creating a new file.
+    #[tokio::test]
+    async fn add_memory_merges_near_duplicate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
+        let storage = Arc::new(crate::context::Storage::new(memory_dir));
+        let mm = MemoryManager {
+            sessions: Arc::new(MemorySessionManager::new()),
+            history: Arc::new(HistoryManager::new()),
+            project_storage: storage.clone(),
+            global_storage: Arc::new(crate::context::Storage::new(
+                tmp.path().join("global_memory"),
+            )),
+            global_memories: Arc::new(RwLock::new(Vec::new())),
+            consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
+            memories: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(RwLock::new(MemoryIndex::new())),
+            consolidating: Arc::new(AtomicBool::new(false)),
+        };
+
+        // First extraction: a decision captured during compaction.
+        mm.add_memory(
+            MemoryEntry::new(MemoryType::Decision, "use JWT for authentication"),
+            MemoryOrigin::Project,
+        )
+        .await
+        .unwrap();
+
+        // Second extraction (later compaction round): same fact, different
+        // type and terser wording. Without the dedup guard this would create a
+        // second file; with it, the existing entry is merged in place.
+        mm.add_memory(
+            MemoryEntry::new(MemoryType::Knowledge, "use JWT"),
+            MemoryOrigin::Project,
+        )
+        .await
+        .unwrap();
+
+        let memories = mm.memories.read().await;
+        assert_eq!(
+            memories.len(),
+            1,
+            "near-duplicate should merge into the existing entry, not append"
+        );
+        // Merged content keeps the richer (existing) text.
+        assert!(memories[0].content.contains("use JWT for authentication"));
+        // The existing id is preserved (file overwritten, no orphan).
+        let id = memories[0].id.clone();
+        drop(memories);
+
+        // Exactly one memory file on disk.
+        let mut files = 0;
+        let mut dir = tokio::fs::read_dir(mm.project_storage.path())
+            .await
+            .unwrap();
+        while let Some(entry) = dir.next_entry().await.unwrap() {
+            if entry.path().extension().is_some_and(|e| e == "json") {
+                files += 1;
+            }
+        }
+        assert_eq!(
+            files, 1,
+            "only the existing memory file should exist on disk"
+        );
+        // The persisted file still carries the existing id.
+        let on_disk: MemoryEntry = serde_json::from_str(
+            &tokio::fs::read_to_string(mm.project_storage.path().join(format!("{id}.json")))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(on_disk.id, id);
+    }
+
+    /// After `consolidate()` drops a stale low-importance entry, the TF-IDF
+    /// index must be rebuilt so a surviving memory that shifted position is
+    /// still searchable. Previously the index kept stale positional postings
+    /// and the survivor would silently disappear from recall results.
+    #[tokio::test]
+    async fn consolidate_rebuilds_index_so_search_resolves_survivors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
+        let storage = Arc::new(crate::context::Storage::new(memory_dir));
+        let mm = MemoryManager {
+            sessions: Arc::new(MemorySessionManager::new()),
+            history: Arc::new(HistoryManager::new()),
+            project_storage: storage.clone(),
+            global_storage: Arc::new(crate::context::Storage::new(
+                tmp.path().join("global_memory"),
+            )),
+            global_memories: Arc::new(RwLock::new(Vec::new())),
+            consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
+            memories: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(RwLock::new(MemoryIndex::new())),
+            consolidating: Arc::new(AtomicBool::new(false)),
+        };
+
+        // idx 0: survives consolidation (Knowledge is always kept).
+        mm.add_memory(
+            MemoryEntry::new(MemoryType::Knowledge, "alpha beta keepsake"),
+            MemoryOrigin::Project,
+        )
+        .await
+        .unwrap();
+        // idx 1: low-importance, old Session memory -> dropped by consolidate
+        // (age > age_threshold_hours=24, importance < 0.3).
+        let mut stale =
+            MemoryEntry::new(MemoryType::Session, "gamma delta transient").with_importance(0.1);
+        stale.timestamp = chrono::Utc::now() - chrono::Duration::hours(100);
+        mm.add_memory(stale, MemoryOrigin::Project).await.unwrap();
+        // idx 2: survives, but shifts to idx 1 after the stale entry is
+        // dropped. Its distinctive token "unobtainium" lets us search for it
+        // precisely.
+        mm.add_memory(
+            MemoryEntry::new(MemoryType::Knowledge, "unobtainium alpha rare"),
+            MemoryOrigin::Project,
+        )
+        .await
+        .unwrap();
+
+        mm.consolidate().await.unwrap();
+
+        let memories = mm.memories.read().await;
+        assert_eq!(
+            memories.len(),
+            2,
+            "stale low-importance Session memory should be dropped"
+        );
+        drop(memories);
+
+        // Search for the distinctive token of the shifted survivor. Before the
+        // index-rebuild fix the TF-IDF posting still pointed at the
+        // pre-consolidation idx 2, which is now out of range, so the memory
+        // would be silently missing from results.
+        let found = mm.search_memories("unobtainium").await;
+        assert!(
+            found.iter().any(|m| m.content.contains("unobtainium")),
+            "survivor that shifted index after consolidation must still be searchable"
+        );
     }
 }

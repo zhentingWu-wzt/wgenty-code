@@ -307,7 +307,10 @@ impl App {
                             .collaboration_mode
                             .clone()
                             .unwrap_or_default(),
-                    );
+                    )
+                    .with_codegraph_state(crate::mcp::codegraph::probe_install_state(
+                        &new_settings,
+                    ));
                 let project_root =
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let wgenty_sections = crate::utils::project::read_wgenty_md_sections(&project_root);
@@ -358,9 +361,11 @@ impl App {
                 let prompt_ctx = prompt_ctx
                     .with_skills(skill_inventory)
                     .with_wgenty_md(wgenty_sections)
-                    .with_agents_md(agents_sections);
+                    .with_agents_md(agents_sections)
+                    .with_global_memories(self.prompt_context.global_memories.clone());
                 let assembled = prompts::assemble_instructions(&new_settings, &prompt_ctx);
                 self.assembled_system_messages = assembled.system_messages;
+                self.codegraph_status = super::detect_codegraph_status(&new_settings);
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::System,
                     content: "Settings reloaded".to_string(),
@@ -464,14 +469,20 @@ impl App {
                 tracing::info!("🔐 App: showing permission panel for '{}'", rule);
                 // Yolo mode: auto-approve all permissions
                 if self.mode == AgentMode::Yolo {
-                    let _ = responder.0.unwrap().send(PermissionResponse::AllowOnce);
+                    let _ = responder
+                        .0
+                        .expect("responder exists in auto-approve mode")
+                        .send(PermissionResponse::AllowOnce);
                     return;
                 }
                 // AcceptEdits mode: auto-approve file-edit permissions
                 if self.mode == AgentMode::AcceptEdits
                     && (rule == "apply_patch" || rule == "file_edit" || rule == "file_write")
                 {
-                    let _ = responder.0.unwrap().send(PermissionResponse::AllowOnce);
+                    let _ = responder
+                        .0
+                        .expect("responder exists in auto-approve mode")
+                        .send(PermissionResponse::AllowOnce);
                     return;
                 }
                 self.permission_state.show(reason, rule, responder);
@@ -675,6 +686,19 @@ impl App {
                     tool_metadata: None,
                 });
             }
+            AppEvent::SystemNotice(notice) => {
+                self.committed_messages.push(UIMessage {
+                    role: MessageRole::System,
+                    content: notice,
+                    tool_name: None,
+                    tool_args: None,
+                    content_collapsed: false,
+                    tool_collapsed: false,
+                    tool_running: false,
+                    diff_data: None,
+                    tool_metadata: None,
+                });
+            }
             AppEvent::AgentGenerationReset { generation } => {
                 if generation == u64::MAX {
                     // Reset failed on the daemon: surface an actionable
@@ -812,6 +836,26 @@ impl App {
                 // (not appending) is correct: recall fires once per session.
                 self.startup_memories = lines;
             }
+            AppEvent::GlobalMemoriesReady(lines) => {
+                // Global memory loading completed in the background. Update
+                // the shared prompt_context so every subsequent turn includes
+                // the <global-memory> block in the system prompt, then
+                // re-assemble system messages to pick up the new block.
+                if lines.is_empty() {
+                    return;
+                }
+                let mut new_ctx = (*self.prompt_context).clone();
+                new_ctx.global_memories = lines;
+                let new_ctx = std::sync::Arc::new(new_ctx);
+                let settings = self
+                    .settings_lock
+                    .read()
+                    .expect("lock poisoned: settings")
+                    .clone();
+                let assembled = prompts::assemble_instructions(&settings, &new_ctx);
+                self.prompt_context = new_ctx;
+                self.assembled_system_messages = assembled.system_messages;
+            }
             AppEvent::SkillsReady(data) => {
                 // Skill discovery completed in the background at startup.
                 // Update the prompt context with the full skill inventory,
@@ -841,7 +885,11 @@ impl App {
                 new_ctx.skills_inventory = data.skill_inventory;
                 let new_ctx = std::sync::Arc::new(new_ctx);
 
-                let settings = self.settings_lock.read().unwrap().clone();
+                let settings = self
+                    .settings_lock
+                    .read()
+                    .expect("lock poisoned: settings")
+                    .clone();
                 let assembled = prompts::assemble_instructions(&settings, &new_ctx);
 
                 self.prompt_context = new_ctx;

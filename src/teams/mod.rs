@@ -4,6 +4,7 @@
 //! Corresponds to harness mechanisms s04, s09-s12 (subagents, agent teams,
 //! team protocols, autonomous agents, worktree isolation).
 
+pub mod approval_registry;
 pub mod mailbox;
 pub mod rollback;
 pub mod subagent;
@@ -11,6 +12,7 @@ pub mod subagent_health;
 pub mod subagent_loop;
 pub mod subagent_mailbox;
 pub mod subagent_trace;
+pub mod worktree;
 
 pub use mailbox::{Mailbox, TeamConfig, TeamManager, TeamMember, TeamMessage};
 pub use subagent::{
@@ -24,3 +26,4 @@ pub use subagent_mailbox::{
     StoredResult, SubagentResponse, SubagentResultMailbox, MAX_INLINE_RESULT_LEN,
 };
 pub use subagent_trace::SubagentTraceReporter;
+pub use worktree::WorktreeIsolation;

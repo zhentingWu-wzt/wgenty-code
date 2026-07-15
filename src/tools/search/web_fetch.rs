@@ -356,6 +356,43 @@ impl WebFetchTool {
         collapsed.join("\n")
     }
 
+    /// Truncate `raw_text` to at most `max_chars` Unicode characters for
+    /// summarization.
+    ///
+    /// The cut always lands on a UTF-8 char boundary: the previous byte-based
+    /// `&raw_text[..max_chars]` panicked when the index fell inside a
+    /// multi-byte sequence (e.g. CJK characters common in non-English pages).
+    fn truncate_raw_text(raw_text: &str, max_chars: usize) -> String {
+        // `char_indices().nth(max_chars)` returns the byte offset where the
+        // (max_chars+1)-th char begins, i.e. exactly where to cut to keep
+        // `max_chars` chars. `None` means the text already fits the limit.
+        match raw_text.char_indices().nth(max_chars) {
+            Some((end, _)) => format!(
+                "{}...\n[Truncated at {} chars]",
+                &raw_text[..end],
+                max_chars
+            ),
+            None => raw_text.to_string(),
+        }
+    }
+
+    /// Return the longest char-boundary-safe prefix of `s` that is at most
+    /// `max_bytes` bytes long.
+    ///
+    /// Caps payloads sent to the summarizer without panicking: a naive
+    /// `&s[..max_bytes]` panics when the byte index lands inside a multi-byte
+    /// UTF-8 sequence.
+    fn safe_byte_prefix(s: &str, max_bytes: usize) -> &str {
+        if s.len() <= max_bytes {
+            return s;
+        }
+        let mut end = max_bytes;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
+    }
+
     fn remove_blocks(text: &str, start_marker: &str, end_marker: &str) -> String {
         let mut result = String::with_capacity(text.len());
         let mut remaining = text;
@@ -423,7 +460,7 @@ impl WebFetchTool {
             "URL: {}\n\nUser is looking for: {}\n\n--- Page Content ---\n{}",
             url,
             user_prompt,
-            &raw_text[..raw_text.len().min(15000)]
+            Self::safe_byte_prefix(raw_text, 15000)
         );
 
         let api_client = ApiClient::new(settings);
@@ -574,16 +611,8 @@ impl Tool for WebFetchTool {
         let title = Self::extract_title(&body);
         let raw_text = Self::extract_text(&body);
 
-        // Truncate raw text before summarization
-        let truncated = if raw_text.len() > max_chars {
-            format!(
-                "{}...\n[Truncated at {} chars]",
-                &raw_text[..max_chars],
-                max_chars
-            )
-        } else {
-            raw_text.clone()
-        };
+        // Truncate raw text before summarization (char-boundary safe).
+        let truncated = Self::truncate_raw_text(&raw_text, max_chars);
 
         // Try Haiku-like summary via small model; fall back to raw truncated text
         let summary = self
@@ -695,6 +724,37 @@ mod tests {
         let text = WebFetchTool::extract_text(html);
         assert!(text.contains("&"));
         assert!(!text.contains("&amp;"));
+    }
+
+    #[test]
+    fn truncate_raw_text_keeps_short_text() {
+        assert_eq!(WebFetchTool::truncate_raw_text("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_raw_text_multibyte_does_not_panic_on_char_boundary() {
+        // Regression: the old byte-based `&raw_text[..max_chars]` panicked
+        // when max_chars landed inside a 3-byte CJK character. Here max_chars
+        // = 2 but byte index 2 falls inside the first '不' (bytes 0..3).
+        let text = "不不不"; // 3 chars, 9 bytes
+        let out = WebFetchTool::truncate_raw_text(text, 2);
+        assert!(out.starts_with("不不"));
+        assert!(out.contains("..."));
+        assert!(out.contains("[Truncated at 2 chars]"));
+    }
+
+    #[test]
+    fn safe_byte_prefix_returns_full_when_under_limit() {
+        assert_eq!(WebFetchTool::safe_byte_prefix("abc", 10), "abc");
+    }
+
+    #[test]
+    fn safe_byte_prefix_multibyte_snaps_to_char_boundary() {
+        // 5 CJK chars = 15 bytes. Capping at 7 bytes lands inside the 3rd
+        // char (bytes 6..9); the naive `&s[..7]` would panic. The safe prefix
+        // snaps back to byte 6 (end of the 2nd char).
+        let s = "不不不不不";
+        assert_eq!(WebFetchTool::safe_byte_prefix(s, 7), "不不");
     }
 
     #[test]

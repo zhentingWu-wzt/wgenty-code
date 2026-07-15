@@ -1,9 +1,11 @@
 pub mod ask_user_question;
 pub mod compact;
+pub mod dismiss_codegraph_guidance;
 pub mod load_skill;
 pub mod lsp;
 pub mod note_edit;
 pub mod note_store;
+pub mod request_approval;
 pub mod skill;
 pub mod task;
 pub mod team_message;
@@ -11,9 +13,11 @@ pub mod think;
 
 pub use ask_user_question::AskUserQuestionTool;
 pub use compact::CompactTool;
+pub use dismiss_codegraph_guidance::DismissCodegraphGuidanceTool;
 pub use load_skill::LoadSkillTool;
 pub use lsp::LspTool;
 pub use note_edit::NoteEditTool;
+pub use request_approval::RequestApprovalTool;
 pub use skill::SkillTool;
 pub use task::TaskTool;
 pub use team_message::TeamMessageTool;

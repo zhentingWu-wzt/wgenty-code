@@ -370,6 +370,11 @@ impl App {
                 }
             }
         }
+        // ESC interrupts a running turn instead of quitting.
+        if key.code == KeyCode::Esc && self.current_turn_handle.is_some() {
+            self.interrupt_running_turn();
+            return;
+        }
         // Scroll handling: PageUp/PageDown only. ↑↓ reserved for
         // status bar navigation. Scroll by mouse wheel instead.
         match key.code {
@@ -445,12 +450,8 @@ impl App {
             }
         }
         // Feed to tui-textarea for CJK/IME input.
-        // Returns true if tui-textarea consumed the key.
-        let handled = self.input_box.textarea.input(key);
+        self.input_box.textarea.input(key);
         self.input_box.update_style();
-        if !handled && key.code == KeyCode::Esc {
-            self.should_quit = true;
-        }
         // Update filter as user types more characters after @ or /
         if self
             .completion_state
@@ -488,5 +489,56 @@ impl App {
             diff_data: None,
             tool_metadata: None,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::watcher::SettingsHandle;
+    use crate::config::Settings;
+    use crate::tui::client::DaemonClient;
+    use std::sync::{Arc, RwLock};
+    use std::time::Duration;
+
+    fn build_app() -> App {
+        let client = DaemonClient::new("http://localhost:0".to_string());
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        App::new(client, "test-esc".to_string(), settings)
+    }
+
+    #[tokio::test]
+    async fn esc_interrupts_running_turn() {
+        let mut app = build_app();
+        app.current_turn_handle = Some(tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }));
+
+        app.handle_key_event(KeyCode::Esc.into());
+
+        assert!(
+            app.current_turn_handle.is_none(),
+            "ESC should interrupt the running turn"
+        );
+        assert!(
+            !app.should_quit,
+            "ESC should not quit when a turn is running"
+        );
+    }
+
+    #[tokio::test]
+    async fn esc_idle_does_not_quit() {
+        let mut app = build_app();
+        assert!(
+            app.current_turn_handle.is_none(),
+            "app should be idle initially"
+        );
+
+        app.handle_key_event(KeyCode::Esc.into());
+
+        assert!(
+            !app.should_quit,
+            "ESC should not quit when idle (fallback removed)"
+        );
     }
 }

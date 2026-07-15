@@ -3,7 +3,7 @@ use crate::tui::theme;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 pub struct SessionState {
@@ -87,11 +87,14 @@ pub fn render(
             } else {
                 &s.name
             };
+            // Short id suffix disambiguates sessions that share the same
+            // auto-name (first user message). Full UUID is too long for the row.
+            let id_short = short_session_id(&s.id);
             let created = format_timestamp(&s.created_at);
             let updated = format_timestamp(&s.updated_at);
             let mut line = format!(
-                "{}{}  {} msgs  created {}  updated {}",
-                prefix, name, s.message_count, created, updated
+                "{}{}  #{}  {} msgs  created {}  updated {}",
+                prefix, name, id_short, s.message_count, created, updated
             );
             // Append summary if present, truncated to fit
             if let Some(summary) = &s.summary {
@@ -99,7 +102,7 @@ pub fn render(
                 let summary_trunc: String = if summary.len() > max_summary_len {
                     format!(
                         "{}…",
-                        &summary.chars().take(max_summary_len).collect::<String>()
+                        summary.chars().take(max_summary_len).collect::<String>()
                     )
                 } else {
                     summary.clone()
@@ -148,7 +151,14 @@ pub fn render(
             .title(title),
     );
 
-    f.render_widget(list, chunks[0]);
+    // Stateful rendering lets ratatui track the selected index and
+    // auto-scroll the viewport so the cursor stays visible.
+    let mut list_state = ListState::default();
+    if !state.sessions.is_empty() {
+        list_state.select(Some(state.selected));
+    }
+
+    f.render_stateful_widget(list, chunks[0], &mut list_state);
     f.render_widget(footer, chunks[1]);
 }
 
@@ -161,5 +171,39 @@ fn format_timestamp(iso: &str) -> String {
         iso[..10].to_string()
     } else {
         iso.to_string()
+    }
+}
+
+/// First 8 chars of a session id (UUID prefix or raw id head).
+fn short_session_id(id: &str) -> &str {
+    if id.is_empty() {
+        return id;
+    }
+    // Prefer the UUID's first segment when present.
+    if let Some(head) = id.split('-').next() {
+        if head.len() >= 8 {
+            return &id[..8];
+        }
+    }
+    let end = id.char_indices().nth(8).map(|(i, _)| i).unwrap_or(id.len());
+    &id[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_session_id_uses_uuid_prefix() {
+        assert_eq!(
+            short_session_id("abcdef12-3456-7890-abcd-ef1234567890"),
+            "abcdef12"
+        );
+    }
+
+    #[test]
+    fn short_session_id_handles_short_ids() {
+        assert_eq!(short_session_id("abc"), "abc");
+        assert_eq!(short_session_id(""), "");
     }
 }

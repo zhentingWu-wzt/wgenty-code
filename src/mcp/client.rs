@@ -1,12 +1,17 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+
+/// Per-request timeout. If the MCP server doesn't respond within this
+/// duration, the call is aborted and the connection is treated as lost so
+/// that reconnection can kick in.
+const MCP_REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// Metadata advertised by a remote MCP server for one tool.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -37,10 +42,27 @@ pub struct McpJsonLineTransport<R, W> {
     next_id: AtomicI64,
 }
 
-/// Live MCP session backed by one stdio child process.
-pub struct McpClientSession {
+/// Inner state that can be atomically replaced during reconnection.
+struct SessionInner {
     transport: McpJsonLineTransport<ChildStdout, ChildStdin>,
-    child: Mutex<Child>,
+    child: Child,
+}
+
+/// Live MCP session backed by one stdio child process.
+///
+/// When the child process exits unexpectedly (OOM, crash, pipe break), the
+/// session automatically re-spawns and re-initializes on the next tool call,
+/// so callers see at most a brief delay instead of a permanent
+/// "connection lost" error.
+pub struct McpClientSession {
+    config: crate::config::McpConfig,
+    inner: RwLock<SessionInner>,
+    /// Serializes reconnection so only one task re-spawns at a time.
+    reconnect_lock: Mutex<()>,
+    /// Bumped on every successful reconnect. Callers record the generation
+    /// before waiting on `reconnect_lock`; if it changed, another task already
+    /// healed the connection and they can just retry.
+    generation: AtomicU64,
 }
 
 impl McpClientSession {
@@ -50,12 +72,24 @@ impl McpClientSession {
             anyhow::bail!("MCP server `{}` has an empty command", config.name);
         }
 
+        let inner = Self::spawn_inner(config).await?;
+        Ok(std::sync::Arc::new(Self {
+            config: config.clone(),
+            inner: RwLock::new(inner),
+            reconnect_lock: Mutex::new(()),
+            generation: AtomicU64::new(0),
+        }))
+    }
+
+    /// Spawn the child process, create the transport, and run the initialize
+    /// handshake. Shared by both initial spawn and reconnection.
+    async fn spawn_inner(config: &crate::config::McpConfig) -> Result<SessionInner> {
         let mut command = Command::new(&config.command);
         command
             .args(&config.args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
         if let Some(cwd) = &config.cwd {
             command.current_dir(cwd);
@@ -77,40 +111,121 @@ impl McpClientSession {
             .take()
             .with_context(|| format!("capture stdout for MCP server `{}`", config.name))?;
 
-        let session = std::sync::Arc::new(Self {
-            transport: McpJsonLineTransport::new(stdout, stdin),
-            child: Mutex::new(child),
-        });
-        session
-            .transport
+        let transport = McpJsonLineTransport::new(stdout, stdin);
+        transport
             .initialize()
             .await
             .with_context(|| format!("initialize MCP server `{}`", config.name))?;
-        Ok(session)
+
+        Ok(SessionInner { transport, child })
     }
 
     pub async fn list_tools(&self) -> Result<Vec<McpRemoteTool>> {
-        self.transport.list_tools().await
+        let inner = self.inner.read().await;
+        inner.transport.list_tools().await
     }
 
+    /// Invoke a remote tool, automatically reconnecting if the child process
+    /// has exited or the pipe is broken.
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value> {
-        self.transport.call_tool(name, arguments).await
+        match self.call_tool_inner(name, &arguments).await {
+            Ok(result) => Ok(result),
+            Err(ref error) if is_connection_error(error) => {
+                let gen_before = self.generation.load(Ordering::Relaxed);
+                let _guard = self.reconnect_lock.lock().await;
+                // Another task may have already reconnected while we waited
+                // for the lock. If so, skip the re-spawn and just retry.
+                if gen_before == self.generation.load(Ordering::Relaxed) {
+                    tracing::warn!(
+                        server = %self.config.name,
+                        error = %error,
+                        "MCP connection lost, attempting reconnect"
+                    );
+                    self.reconnect().await?;
+                    self.generation.fetch_add(1, Ordering::Relaxed);
+                }
+                drop(_guard);
+                self.call_tool_inner(name, &arguments).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Single attempt without reconnection logic. Bounded by a per-request
+    /// timeout so a hung process doesn't block the agent loop indefinitely.
+    async fn call_tool_inner(&self, name: &str, arguments: &Value) -> Result<Value> {
+        let inner = self.inner.read().await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(MCP_REQUEST_TIMEOUT_SECS),
+            inner.transport.call_tool(name, arguments.clone()),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "MCP server `{}` call `{}` timed out after {}s",
+                self.config.name,
+                name,
+                MCP_REQUEST_TIMEOUT_SECS
+            )
+        })?
+    }
+
+    /// Re-spawn the child process and rebuild the transport. The caller must
+    /// hold `reconnect_lock` to avoid concurrent re-spawns.
+    async fn reconnect(&self) -> Result<()> {
+        let mut inner = self.inner.write().await;
+        // Dropping the old `SessionInner` kills the dead child via
+        // `kill_on_drop` and releases the broken transport.
+        let new_inner = Self::spawn_inner(&self.config).await?;
+        *inner = new_inner;
+        tracing::info!(server = %self.config.name, "MCP server reconnected");
+        Ok(())
     }
 
     pub async fn shutdown(&self) -> Result<()> {
-        let mut child = self.child.lock().await;
-        match child
+        let mut inner = self.inner.write().await;
+        match inner
+            .child
             .try_wait()
             .context("check MCP server process status")?
         {
             Some(_) => Ok(()),
             None => {
-                child.kill().await.context("stop MCP server process")?;
-                child.wait().await.context("wait for MCP server process")?;
+                inner
+                    .child
+                    .kill()
+                    .await
+                    .context("stop MCP server process")?;
+                inner
+                    .child
+                    .wait()
+                    .await
+                    .context("wait for MCP server process")?;
                 Ok(())
             }
         }
     }
+}
+
+/// Heuristically determine whether an error indicates the child process or its
+/// stdio pipe is dead and a reconnection should be attempted.
+fn is_connection_error(error: &anyhow::Error) -> bool {
+    let msg = error.to_string();
+    if msg.contains("closed stdout") || msg.contains("timed out") {
+        return true;
+    }
+    for cause in error.chain() {
+        if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
+            match io_err.kind() {
+                std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::UnexpectedEof => return true,
+                _ => {}
+            }
+        }
+    }
+    false
 }
 
 impl<R, W> McpJsonLineTransport<R, W>
@@ -400,5 +515,26 @@ mod tests {
         assert!(error.contains("tools/list"));
         assert!(error.contains("missing method"));
         server.await.unwrap();
+    }
+
+    #[test]
+    fn connection_error_detection() {
+        // stdout EOF - our own bail message when the child closes stdout.
+        let err = anyhow::anyhow!("MCP server closed stdout while waiting for `tools/call`");
+        assert!(is_connection_error(&err));
+
+        // Per-request timeout.
+        let err = anyhow::anyhow!("MCP server `codegraph` call `explore` timed out after 30s");
+        assert!(is_connection_error(&err));
+
+        // Broken-pipe IO error (wrapped in anyhow).
+        let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pipe closed");
+        let err = anyhow::Error::from(io_err);
+        assert!(is_connection_error(&err));
+
+        // Non-connection error (JSON-RPC protocol error) - must NOT trigger
+        // reconnection.
+        let err = anyhow::anyhow!("MCP `tools/list` failed (-32601): missing method");
+        assert!(!is_connection_error(&err));
     }
 }

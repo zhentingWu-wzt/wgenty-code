@@ -96,7 +96,7 @@ fn test_token_budget_zero_is_unlimited() {
     let result: Option<u64> = input
         .get("token_budget")
         .and_then(|v| v.as_u64())
-        .and_then(|v| if v == 0 { None } else { Some(v) })
+        .filter(|&v| v != 0)
         .or(if default_k > 0 { Some(default_k) } else { None });
     assert_eq!(
         result, None,
@@ -111,7 +111,7 @@ fn test_token_budget_positive_is_preserved() {
     let result: Option<u64> = input
         .get("token_budget")
         .and_then(|v| v.as_u64())
-        .and_then(|v| if v == 0 { None } else { Some(v) })
+        .filter(|&v| v != 0)
         .or(if default_k > 0 { Some(default_k) } else { None });
     assert_eq!(result, Some(10), "token_budget=10 should produce Some(10)");
 }
@@ -123,7 +123,7 @@ fn test_token_budget_missing_defaults_to_none() {
     let result: Option<u64> = input
         .get("token_budget")
         .and_then(|v| v.as_u64())
-        .and_then(|v| if v == 0 { None } else { Some(v) })
+        .filter(|&v| v != 0)
         .or(if default_k > 0 { Some(default_k) } else { None });
     assert_eq!(
         result, None,
@@ -138,7 +138,7 @@ fn test_token_budget_uses_settings_default_when_missing() {
     let result: Option<u64> = input
         .get("token_budget")
         .and_then(|v| v.as_u64())
-        .and_then(|v| if v == 0 { None } else { Some(v) })
+        .filter(|&v| v != 0)
         .or(if default_k > 0 { Some(default_k) } else { None });
     assert_eq!(
         result,
@@ -156,7 +156,7 @@ fn test_token_budget_zero_with_nonzero_default_falls_back_to_default() {
     let result: Option<u64> = input
         .get("token_budget")
         .and_then(|v| v.as_u64())
-        .and_then(|v| if v == 0 { None } else { Some(v) })
+        .filter(|&v| v != 0)
         .or(if default_k > 0 { Some(default_k) } else { None });
     assert_eq!(
         result,
@@ -211,6 +211,7 @@ async fn root_task_fixture(
         agent: root_ref,
         invocation_id: ToolInvocationId::new("inv"),
         origin_turn_id: Some(origin_turn_id),
+        workdir: None,
     };
     (tool, registry, root, ctx)
 }
@@ -310,6 +311,7 @@ async fn forged_identity_fields_cannot_bypass_depth_limit() {
         agent: &root,
         invocation_id: ToolInvocationId::new("inv"),
         origin_turn_id: Some("turn-1"),
+        workdir: None,
     };
     let forged = serde_json::json!({
         "description": "nested work",

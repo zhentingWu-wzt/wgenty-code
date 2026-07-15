@@ -7,7 +7,8 @@
 
 use tempfile::TempDir;
 
-use wgenty_code::prompts::{build_user_turn_reminder, PromptContext};
+use wgenty_code::config::Settings;
+use wgenty_code::prompts::{assemble_instructions, build_user_turn_reminder, PromptContext};
 
 /// Test helper: scope a fake `$HOME` for one closure.
 /// Tests using this must be `#[serial]` to avoid races.
@@ -98,9 +99,9 @@ fn second_turn_reminder_reappears() {
     assert!(turn_b.to_model.contains("<system-reminder>"));
 }
 
-/// I3-prep — verifies runtime file modification path (deferred to Task 8.x manual test,
-/// but covered here cheaply by writing two different WGENTY.md contents and asserting
-/// reminder reflects the change.
+/// I3-prep — verifies user global instructions appear in system prompt Layers 7/8.
+/// User instructions/rules are now cached at construction time and delivered via
+/// `assemble_instructions`, not the per-turn `<system-reminder>` channel.
 #[test]
 #[serial_test::serial]
 fn reminder_reflects_runtime_file_change() {
@@ -109,22 +110,48 @@ fn reminder_reflects_runtime_file_change() {
     std::fs::create_dir_all(&wgenty_dir).unwrap();
     let user_wgenty = wgenty_dir.join("WGENTY.md");
 
-    let ctx = PromptContext::new();
-
     let (before, after) = with_fake_home(tmp.path(), || {
+        // Read VERSION_ONE from disk, cache it, and assemble
         std::fs::write(&user_wgenty, "VERSION_ONE").unwrap();
-        let r1 = build_user_turn_reminder(&ctx, &[]).expect("user WGENTY → Some");
+        let content_v1 = std::fs::read_to_string(&user_wgenty).unwrap();
+        let ctx1 = PromptContext::new()
+            .with_user_global_instructions(Some((user_wgenty.clone(), content_v1)));
+        let settings = Settings::default();
+        let r1 = assemble_instructions(&settings, &ctx1);
 
+        // Read VERSION_TWO from disk, cache it, and re-assemble
         std::fs::write(&user_wgenty, "VERSION_TWO").unwrap();
-        let r2 = build_user_turn_reminder(&ctx, &[]).expect("user WGENTY → Some");
+        let content_v2 = std::fs::read_to_string(&user_wgenty).unwrap();
+        let ctx2 = PromptContext::new()
+            .with_user_global_instructions(Some((user_wgenty.clone(), content_v2)));
+        let r2 = assemble_instructions(&settings, &ctx2);
 
         (r1, r2)
     });
 
-    assert!(before.to_model.contains("VERSION_ONE"));
-    assert!(!before.to_model.contains("VERSION_TWO"));
-    assert!(after.to_model.contains("VERSION_TWO"));
-    assert!(!after.to_model.contains("VERSION_ONE"));
+    let text1 = before
+        .system_messages
+        .iter()
+        .filter_map(|m| m.content.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text2 = after
+        .system_messages
+        .iter()
+        .filter_map(|m| m.content.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(text1.contains("VERSION_ONE"), "Layer 7: VERSION_ONE");
+    assert!(
+        !text1.contains("VERSION_TWO"),
+        "Layer 7: no VERSION_TWO in v1"
+    );
+    assert!(text2.contains("VERSION_TWO"), "Layer 7: VERSION_TWO");
+    assert!(
+        !text2.contains("VERSION_ONE"),
+        "Layer 7: no VERSION_ONE in v2"
+    );
 }
 
 // ── §5: Hook injection end-to-end ─────────────────────────────────────────

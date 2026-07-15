@@ -30,7 +30,7 @@ impl SubagentTranscriptStore {
     }
 
     fn run_migrations(&self) -> Result<(), TranscriptError> {
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock().expect("lock poisoned: transcript db");
         db.execute_batch("
             PRAGMA journal_mode=WAL;
             PRAGMA foreign_keys=ON;
@@ -85,7 +85,7 @@ impl SubagentTranscriptStore {
         transcript: &SubagentTranscript,
         retention_days: Option<u32>,
     ) -> Result<(), TranscriptError> {
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock().expect("lock poisoned: transcript db");
         let tx = db.unchecked_transaction()?;
 
         let status_str = match transcript.status {
@@ -161,7 +161,7 @@ impl SubagentTranscriptStore {
         round: u32,
         tokens: u64,
     ) -> Result<(), TranscriptError> {
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock().expect("lock poisoned: transcript db");
         let status_str = status.to_string();
         let rows_affected = db.execute(
             "UPDATE subagent_transcripts SET status = ?1, actual_rounds = ?2, total_tokens = ?3 WHERE id = ?4",
@@ -179,7 +179,7 @@ impl SubagentTranscriptStore {
         transcript_id: &str,
         events: &[SubagentEventRecord],
     ) -> Result<(), TranscriptError> {
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock().expect("lock poisoned: transcript db");
         let tx = db.unchecked_transaction()?;
         for event in events {
             tx.execute(
@@ -206,7 +206,7 @@ impl SubagentTranscriptStore {
         &self,
         session_id: &str,
     ) -> Result<Vec<SubagentTranscriptHeader>, TranscriptError> {
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock().expect("lock poisoned: transcript db");
         let mut stmt = db.prepare(
             "SELECT id, session_id, parent_id, label, status, started_at, finished_at,
                     total_tokens, actual_rounds, error_message, summary
@@ -238,7 +238,7 @@ impl SubagentTranscriptStore {
 
     /// Get full transcript by ID (with all events).
     pub fn get_by_id(&self, id: &str) -> Result<Option<SubagentTranscript>, TranscriptError> {
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock().expect("lock poisoned: transcript db");
         let mut stmt = db.prepare(
             "SELECT id, session_id, parent_id, label, status, system_prompt, user_prompt,
                     started_at, finished_at, total_tokens, max_rounds, actual_rounds,
@@ -312,7 +312,7 @@ impl SubagentTranscriptStore {
         if query.trim().is_empty() {
             return Ok(Vec::new());
         }
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock().expect("lock poisoned: transcript db");
         let pattern = format!("%{}%", query);
         let mut stmt = db.prepare(
             "SELECT id, session_id, parent_id, label, status, started_at, finished_at,
@@ -349,7 +349,7 @@ impl SubagentTranscriptStore {
         if retention_days == 0 {
             return Ok(0);
         }
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock().expect("lock poisoned: transcript db");
         let deleted = db.execute(
             "DELETE FROM subagent_transcripts WHERE started_at < (unixepoch('now') - ?1 * 86400) * 1000",
             params![retention_days],

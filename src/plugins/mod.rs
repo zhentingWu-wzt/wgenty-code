@@ -539,4 +539,30 @@ mod tests {
         assert_eq!(manifest.git_commit_sha, None);
         assert_eq!(manifest.source_format, None);
     }
+
+    #[test]
+    fn manifest_new_sets_defaults() {
+        let m = PluginManifest::new("test", "1.0.0", "main.js");
+        assert_eq!(m.name, "test");
+        assert_eq!(m.version, "1.0.0");
+        assert_eq!(m.main, "main.js");
+        assert_eq!(m.description, None);
+        assert_eq!(m.author, None);
+        assert!(m.commands.is_empty());
+        assert!(m.hooks.is_empty());
+        assert!(m.enabled);
+    }
+
+    #[test]
+    fn manifest_builder_sets_fields() {
+        let cmd = PluginCommandDef::new("greet", "Say hello");
+        let m = PluginManifest::new("test", "1.0.0", "main.js")
+            .with_description("A test plugin")
+            .with_author("tester")
+            .with_command(cmd);
+        assert_eq!(m.description.as_deref(), Some("A test plugin"));
+        assert_eq!(m.author.as_deref(), Some("tester"));
+        assert_eq!(m.commands.len(), 1);
+        assert_eq!(m.commands[0].name, "greet");
+    }
 }

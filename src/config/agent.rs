@@ -71,7 +71,7 @@ pub struct SubagentLimits {
 impl Default for SubagentLimits {
     fn default() -> Self {
         Self {
-            max_depth: 3,
+            max_depth: 1,
             max_concurrent: 5,
             timeout_secs: 1800,
             token_budget_k: None,
@@ -95,4 +95,36 @@ pub struct AgentConfig {
     pub subagent: SubagentLimits,
     #[serde(default)]
     pub rlm: RlmSettings,
+    /// Autonomous worker (s11): background claimer for ready task-groups.
+    #[serde(default)]
+    pub autonomous: AutonomousConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutonomousConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Poll interval in seconds (default 2).
+    #[serde(default = "default_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    /// Max consecutive idle polls before stopping (default 30).
+    #[serde(default = "default_max_idle_polls")]
+    pub max_idle_polls: u16,
+}
+
+fn default_poll_interval_secs() -> u64 {
+    2
+}
+fn default_max_idle_polls() -> u16 {
+    30
+}
+
+impl Default for AutonomousConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            poll_interval_secs: default_poll_interval_secs(),
+            max_idle_polls: default_max_idle_polls(),
+        }
+    }
 }

@@ -21,7 +21,6 @@ use crate::api::ChatMessage;
 use crate::config::Settings;
 use crate::runtime::context::ContextAssembler;
 use crate::runtime::hooks::{InjectedFragment, LayerVisibility};
-use crate::utils::project::{read_user_global_instructions, read_user_global_rules};
 use chrono::Local;
 
 /// Pre-compiled base instructions (embedded at compile time).
@@ -41,8 +40,7 @@ const REMINDER_PREAMBLE_CLOSING: &str =
      \x20     You should not respond to this context unless it is highly relevant\n\
      \x20     to your task.";
 
-// Attribution description strings, one per source.
-const USER_INSTRUCTIONS_DESC: &str = "user's private global instructions for all projects";
+// Attribution description strings for project-level file-backed segments.
 const PROJECT_INSTRUCTIONS_DESC: &str = "project instructions, checked into the codebase";
 const PROJECT_AGENTS_DESC: &str = "project agent conventions, checked into the codebase";
 const HOOK_INJECTION_DESC: &str = "dynamic hook injection";
@@ -71,6 +69,12 @@ pub struct PromptContext {
     pub approval_policy: Option<String>,
     pub collaboration_mode: Option<String>,
     pub agents_md_sections: Vec<String>,
+    /// User-global instructions from `~/.wgenty-code/WGENTY.md`.
+    /// Read once at startup and cached here to avoid per-turn disk I/O.
+    pub user_global_instructions: Option<(PathBuf, String)>,
+    /// User-global rule files from `~/.wgenty-code/rules/*.md`, sorted by name.
+    /// Read once at startup and cached here to avoid per-turn disk I/O.
+    pub user_global_rules: Vec<(PathBuf, String)>,
     /// Skills discoverable by the agent. Layer 1: name + description only.
     pub skills_inventory: Vec<SkillEntry>,
     /// Sections from the project's WGENTY.md (split by `---`). Layer 8.
@@ -83,6 +87,17 @@ pub struct PromptContext {
     /// Pre-formatted memory lines for cross-session recall.
     /// Each entry is a single system-message line (e.g. "- [decision] Use Jaccard for dedup").
     pub memories: Vec<String>,
+    /// Pre-formatted global memory lines injected every turn (soft cap 50).
+    /// Each entry is a single line like "- [Preference] 始终用中文回复".
+    pub global_memories: Vec<String>,
+    /// Override the home directory used to locate user-global files
+    /// (`~/.wgenty-code/WGENTY.md` and `~/.wgenty-code/rules/*`). When `None`,
+    /// the real home is resolved via `dirs::home_dir()` (which does NOT honor
+    /// `USERPROFILE`/`HOME` env vars on Windows). Tests set this to a temp dir
+    /// so user-global content is deterministic and cross-platform.
+    pub home_override: Option<PathBuf>,
+    /// CodeGraph availability (sync probe result) for guidance injection.
+    pub codegraph_state: Option<crate::mcp::codegraph::CodegraphInstallState>,
 }
 
 impl fmt::Debug for PromptContext {
@@ -94,6 +109,11 @@ impl fmt::Debug for PromptContext {
             .field("approval_policy", &self.approval_policy)
             .field("collaboration_mode", &self.collaboration_mode)
             .field("agents_md_sections", &self.agents_md_sections)
+            .field(
+                "user_global_instructions",
+                &self.user_global_instructions.is_some(),
+            )
+            .field("user_global_rules", &self.user_global_rules.len())
             .field("skills_inventory", &self.skills_inventory)
             .field("wgenty_md_sections", &self.wgenty_md_sections)
             .field("project_root", &self.project_root)
@@ -102,6 +122,9 @@ impl fmt::Debug for PromptContext {
                 &self.context_assembler.as_ref().map(|_| "ContextAssembler"),
             )
             .field("memories", &self.memories)
+            .field("global_memories", &self.global_memories)
+            .field("home_override", &self.home_override)
+            .field("codegraph_state", &self.codegraph_state)
             .finish()
     }
 }
@@ -121,11 +144,16 @@ impl PromptContext {
             approval_policy: None,
             collaboration_mode: None,
             agents_md_sections: Vec::new(),
+            user_global_instructions: None,
+            user_global_rules: Vec::new(),
             skills_inventory: Vec::new(),
             wgenty_md_sections: Vec::new(),
             project_root: None,
             context_assembler: None,
             memories: Vec::new(),
+            global_memories: Vec::new(),
+            home_override: None,
+            codegraph_state: None,
         }
     }
 
@@ -169,6 +197,21 @@ impl PromptContext {
         self
     }
 
+    /// Set cached user-global instructions (`~/.wgenty-code/WGENTY.md`).
+    pub fn with_user_global_instructions(
+        mut self,
+        instructions: Option<(PathBuf, String)>,
+    ) -> Self {
+        self.user_global_instructions = instructions;
+        self
+    }
+
+    /// Set cached user-global rule files (`~/.wgenty-code/rules/*.md`).
+    pub fn with_user_global_rules(mut self, rules: Vec<(PathBuf, String)>) -> Self {
+        self.user_global_rules = rules;
+        self
+    }
+
     pub fn with_project_root(mut self, path: PathBuf) -> Self {
         self.project_root = Some(path);
         self
@@ -178,14 +221,37 @@ impl PromptContext {
         self.memories = memories;
         self
     }
+
+    /// Set pre-formatted global memory lines (injected every turn).
+    pub fn with_global_memories(mut self, memories: Vec<String>) -> Self {
+        self.global_memories = memories;
+        self
+    }
+
+    /// Override the home directory used to locate user-global files. See
+    /// [`PromptContext::home_override`].
+    pub fn with_home_override(mut self, home: PathBuf) -> Self {
+        self.home_override = Some(home);
+        self
+    }
+
+    /// Set the CodeGraph availability state for guidance injection.
+    pub fn with_codegraph_state(
+        mut self,
+        state: crate::mcp::codegraph::CodegraphInstallState,
+    ) -> Self {
+        self.codegraph_state = Some(state);
+        self
+    }
 }
 
 /// Output of [`build_user_turn_reminder`].
 ///
 /// `to_model` includes every collected segment and every injected fragment
-/// (regardless of visibility). `to_transcript` is `Some` only when there is
-/// any content suitable for transcript display — i.e. file-based segments
-/// were present OR at least one hook fragment was [`LayerVisibility::Visible`].
+/// (regardless of visibility). `to_transcript` is `Some` only when at least
+/// one injected hook fragment has [`LayerVisibility::Visible`] — file-backed
+/// segments (WGENTY.md / AGENTS.md / rules) are model instructions, never
+/// shown in the transcript.
 #[derive(Debug, Clone)]
 pub struct ReminderOutput {
     pub to_model: String,
@@ -205,7 +271,7 @@ pub fn build_user_turn_reminder(
     ctx: &PromptContext,
     hook_injections: &[InjectedFragment],
 ) -> Option<ReminderOutput> {
-    // ── Collect file-backed segments ───────────────────────────────────────
+    // ── Collect file-backed segments (project-level only; user globals are in Layers 7/8) ──
     struct Segment {
         path: PathBuf,
         description: &'static str,
@@ -213,20 +279,6 @@ pub fn build_user_turn_reminder(
     }
     let mut segments: Vec<Segment> = Vec::new();
 
-    if let Some((path, content)) = read_user_global_instructions() {
-        segments.push(Segment {
-            path,
-            description: USER_INSTRUCTIONS_DESC,
-            content,
-        });
-    }
-    for (path, content) in read_user_global_rules() {
-        segments.push(Segment {
-            path,
-            description: USER_INSTRUCTIONS_DESC,
-            content,
-        });
-    }
     if !ctx.wgenty_md_sections.is_empty() {
         let path = ctx
             .project_root
@@ -268,7 +320,6 @@ pub fn build_user_turn_reminder(
         let header = render_attribution_header(&seg.path, seg.description);
         let block = format!("\n{}\n\n{}\n", header, seg.content);
         to_model.push_str(&block);
-        to_transcript.push_str(&block);
     }
 
     let mut transcript_has_hook = false;
@@ -293,10 +344,9 @@ pub fn build_user_turn_reminder(
     to_transcript.push_str(REMINDER_PREAMBLE_CLOSING);
     to_transcript.push_str("\n</system-reminder>");
 
-    let transcript_has_content = !segments.is_empty() || transcript_has_hook;
     Some(ReminderOutput {
         to_model,
-        to_transcript: if transcript_has_content {
+        to_transcript: if transcript_has_hook {
             Some(to_transcript)
         } else {
             None
@@ -358,6 +408,15 @@ pub fn assemble_instructions(
         )));
     }
 
+    // ── Layer 5c: Global Memories (injected every turn, soft cap 50) ──
+    if !context.global_memories.is_empty() {
+        let global_lines = context.global_memories.join("\n");
+        system_messages.push(ChatMessage::system(format!(
+            "<global-memory>\n{}\n</global-memory>",
+            global_lines
+        )));
+    }
+
     // ── Layer 6: Skills (discoverable + on-demand via load_skill tool) ──
     if settings.prompt.include.skills && !context.skills_inventory.is_empty() {
         let mut skills_lines = Vec::new();
@@ -375,10 +434,23 @@ The following skills are available. Use the `load_skill` tool to read a skill's 
         )));
     }
 
-    // ── Layer 7/8 removed: AGENTS.md and WGENTY.md are now delivered via
-    // the per-turn <system-reminder> channel (see `build_user_turn_reminder`).
-    // PromptContext::{agents_md_sections, wgenty_md_sections} remain populated
-    // for the reminder builder to consume.
+    // ── Layer 7: User Global Instructions ──────────────────────────
+    if let Some((ref path, ref content)) = context.user_global_instructions {
+        system_messages.push(ChatMessage::system(format!(
+            "<user_global_instructions path=\"{}\">\n{}\n</user_global_instructions>",
+            path.display(),
+            content.trim()
+        )));
+    }
+
+    // ── Layer 8: User Global Rules ─────────────────────────────────
+    for (ref path, ref content) in &context.user_global_rules {
+        system_messages.push(ChatMessage::system(format!(
+            "<user_global_rules path=\"{}\">\n{}\n</user_global_rules>",
+            path.display(),
+            content.trim()
+        )));
+    }
 
     AssembledInstructions { system_messages }
 }
@@ -437,9 +509,13 @@ fn build_environment_layer(ctx: &PromptContext) -> String {
     let now = Local::now();
     let date = now.format("%Y-%m-%d").to_string();
     let timezone = now.format("%Z").to_string();
+    let codegraph_line = ctx
+        .codegraph_state
+        .map(|s| format!("\n  <codegraph>{}</codegraph>", s.guidance_hint()))
+        .unwrap_or_default();
 
     format!(
-        "<environment_context>\n  <cwd>{cwd}</cwd>\n  <shell>{shell}</shell>\n  <current_date>{date}</current_date>\n  <timezone>{timezone}</timezone>\n</environment_context>",
+        "<environment_context>\n  <cwd>{cwd}</cwd>\n  <shell>{shell}</shell>\n  <current_date>{date}</current_date>\n  <timezone>{timezone}</timezone>{codegraph_line}\n</environment_context>",
         cwd = ctx.cwd,
         shell = ctx.shell,
     )
@@ -465,6 +541,73 @@ mod tests {
         assert!(instructions.system_messages.len() >= 2); // base + env
                                                           // First message is the base instructions
         assert_eq!(instructions.system_messages[0].role, "system");
+    }
+
+    #[test]
+    fn environment_layer_includes_codegraph_state() {
+        let settings = Settings::default();
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_codegraph_state(crate::mcp::CodegraphInstallState::NotInitialized);
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        // Match the real env layer (Layer 5) via a runtime-generated marker;
+        // base instructions also mention `<environment_context>` in prose.
+        let env = instructions
+            .system_messages
+            .iter()
+            .find(|m| {
+                m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("<current_date>"))
+            })
+            .expect("environment layer present");
+        let content = env.content.as_deref().unwrap();
+        assert!(content.contains("<codegraph>"), "got: {content}");
+        assert!(content.contains("not_initialized"));
+        assert!(content.contains("codegraph init"));
+    }
+
+    #[test]
+    fn environment_layer_omits_codegraph_when_none() {
+        let settings = Settings::default();
+        let ctx = PromptContext::new().with_cwd("/tmp").with_shell("zsh");
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let env = instructions
+            .system_messages
+            .iter()
+            .find(|m| {
+                m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("<current_date>"))
+            })
+            .expect("environment layer present");
+        let content = env.content.as_deref().unwrap();
+        assert!(!content.contains("<codegraph>"), "got: {content}");
+    }
+
+    #[test]
+    fn environment_layer_ready_state() {
+        let settings = Settings::default();
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_codegraph_state(crate::mcp::CodegraphInstallState::Ready);
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let env = instructions
+            .system_messages
+            .iter()
+            .find(|m| {
+                m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("<current_date>"))
+            })
+            .expect("environment layer present");
+        let content = env.content.as_deref().unwrap();
+        assert!(content.contains("<codegraph>ready"));
     }
 
     #[test]
@@ -548,6 +691,57 @@ mod tests {
         let mem_content = messages[mem_pos].content.as_deref().unwrap();
         assert!(mem_content.contains("Use Jaccard for dedup"));
         assert!(mem_content.contains("Project uses Rust"));
+    }
+
+    #[test]
+    fn test_assemble_with_empty_global_memories_no_injection() {
+        let settings = Settings::default();
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_global_memories(Vec::new());
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let has_global = instructions.system_messages.iter().any(|m| {
+            m.content
+                .as_deref()
+                .is_some_and(|c| c.contains("<global-memory>"))
+        });
+        assert!(
+            !has_global,
+            "empty global memories should not inject extra system message"
+        );
+    }
+
+    #[test]
+    fn test_assemble_with_global_memories_in_system_prompt() {
+        let settings = Settings::default();
+
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_global_memories(vec![
+                "- [preference] Always reply in Chinese".to_string(),
+                "- [knowledge] User works on Rust projects".to_string(),
+            ]);
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let messages = &instructions.system_messages;
+
+        let global_pos = messages
+            .iter()
+            .position(|m| {
+                m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("<global-memory>"))
+            })
+            .expect("Global memory block should be present when non-empty");
+
+        let content = messages[global_pos].content.as_deref().unwrap();
+        assert!(content.contains("Always reply in Chinese"));
+        assert!(content.contains("User works on Rust projects"));
+        assert!(content.contains("<global-memory>"));
+        assert!(content.contains("</global-memory>"));
     }
 
     #[test]
@@ -646,21 +840,7 @@ mod tests {
 mod reminder_tests {
     use super::*;
     use serial_test::serial;
-    use std::path::Path;
     use tempfile::TempDir;
-
-    /// Test helper: temporarily set $HOME, run closure, restore.
-    /// Must be used with #[serial] to prevent races between tests.
-    fn with_fake_home<F: FnOnce() -> R, R>(home: &Path, f: F) -> R {
-        let prev = std::env::var_os("HOME");
-        std::env::set_var("HOME", home);
-        let result = f();
-        match prev {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        result
-    }
 
     /// Set up a fake home with .wgenty-code/WGENTY.md and rules/*.md files.
     /// Returns TempDir — keep alive for test duration.
@@ -682,84 +862,101 @@ mod reminder_tests {
     }
 
     // ============================================================
-    // U1 — complete snapshot (4 sources)
+    // U1 — complete snapshot (2 project sources in reminder; user globals in Layers 7/8)
     // ============================================================
     #[test]
     #[serial]
     fn reminder_full_four_sources_snapshot() {
-        let home = make_fake_home(
-            Some("USER_WGENTY_CONTENT"),
-            &[("a.md", "RULE_A"), ("b.md", "RULE_B")],
-        );
         let project_root = TempDir::new().unwrap();
+        let ctx = PromptContext::new()
+            .with_user_global_instructions(Some((
+                PathBuf::from("/fake/home/.wgenty/instructions.md"),
+                "USER_WGENTY_CONTENT".to_string(),
+            )))
+            .with_user_global_rules(vec![
+                (
+                    PathBuf::from("/fake/home/.wgenty/rules/a.md"),
+                    "RULE_A".to_string(),
+                ),
+                (
+                    PathBuf::from("/fake/home/.wgenty/rules/b.md"),
+                    "RULE_B".to_string(),
+                ),
+            ])
+            .with_wgenty_md(vec!["PROJECT_WGENTY".to_string()])
+            .with_agents_md(vec!["PROJECT_AGENTS".to_string()])
+            .with_project_root(project_root.path().to_path_buf());
 
-        with_fake_home(home.path(), || {
-            let ctx = PromptContext::new()
-                .with_wgenty_md(vec!["PROJECT_WGENTY".to_string()])
-                .with_agents_md(vec!["PROJECT_AGENTS".to_string()])
-                .with_project_root(project_root.path().to_path_buf());
+        // ── System prompt: user instructions + rules in Layers 7/8 ─────
+        let settings = Settings::default();
+        let assembled = assemble_instructions(&settings, &ctx);
+        let sys_text = assembled
+            .system_messages
+            .iter()
+            .filter_map(|msg| msg.content.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            sys_text.contains("USER_WGENTY_CONTENT"),
+            "Layer 7: user instructions"
+        );
+        assert!(sys_text.contains("RULE_A"), "Layer 8: rule a.md");
+        assert!(sys_text.contains("RULE_B"), "Layer 8: rule b.md");
+        assert!(
+            sys_text.contains("<user_global_instructions"),
+            "Layer 7 tag"
+        );
+        assert!(sys_text.contains("<user_global_rules"), "Layer 8 tag");
 
-            let result = build_user_turn_reminder(&ctx, &[]).expect("reminder should be Some");
+        // ── Reminder: project WGENTY.md + AGENTS.md only ─────────────
+        let result = build_user_turn_reminder(&ctx, &[]).expect("reminder should be Some");
 
-            // Skeleton
-            assert!(
-                result.to_model.starts_with("<system-reminder>\n"),
-                "missing opener: {}",
-                &result.to_model[..50.min(result.to_model.len())]
-            );
-            assert!(
-                result.to_model.contains("# wgentyMd"),
-                "missing # wgentyMd marker"
-            );
-            assert!(
-                result
-                    .to_model
-                    .contains("IMPORTANT: These instructions OVERRIDE"),
-                "missing OVERRIDE preamble"
-            );
-            assert!(
-                result
-                    .to_model
-                    .contains("IMPORTANT: this context may or may not be relevant"),
-                "missing closing preamble"
-            );
-            assert!(
-                result.to_model.trim_end().ends_with("</system-reminder>"),
-                "missing closer"
-            );
-
-            // 4 content markers
-            assert!(result.to_model.contains("USER_WGENTY_CONTENT"));
-            assert!(result.to_model.contains("RULE_A"));
-            assert!(result.to_model.contains("RULE_B"));
-            assert!(result.to_model.contains("PROJECT_WGENTY"));
-            assert!(result.to_model.contains("PROJECT_AGENTS"));
-
-            // 4 description tags
-            assert!(result
+        // Skeleton
+        assert!(
+            result.to_model.starts_with("<system-reminder>\n"),
+            "missing opener: {}",
+            result.to_model.chars().take(50).collect::<String>()
+        );
+        assert!(
+            result.to_model.contains("# wgentyMd"),
+            "missing # wgentyMd marker"
+        );
+        assert!(
+            result
                 .to_model
-                .contains("user's private global instructions for all projects"));
-            assert!(result
+                .contains("IMPORTANT: These instructions OVERRIDE"),
+            "missing OVERRIDE preamble"
+        );
+        assert!(
+            result
                 .to_model
-                .contains("project instructions, checked into the codebase"));
-            assert!(result
-                .to_model
-                .contains("project agent conventions, checked into the codebase"));
+                .contains("IMPORTANT: this context may or may not be relevant"),
+            "missing closing preamble"
+        );
+        assert!(
+            result.to_model.trim_end().ends_with("</system-reminder>"),
+            "missing closer"
+        );
 
-            // Ordering: user-global WGENTY → rules/a.md → rules/b.md → project WGENTY.md → project AGENTS.md
-            let pos_user_w = result.to_model.find("USER_WGENTY_CONTENT").unwrap();
-            let pos_a = result.to_model.find("RULE_A").unwrap();
-            let pos_b = result.to_model.find("RULE_B").unwrap();
-            let pos_proj_w = result.to_model.find("PROJECT_WGENTY").unwrap();
-            let pos_proj_a = result.to_model.find("PROJECT_AGENTS").unwrap();
-            assert!(pos_user_w < pos_a, "user WGENTY should precede rules");
-            assert!(pos_a < pos_b, "rules should be alphabetical");
-            assert!(pos_b < pos_proj_w, "rules should precede project WGENTY");
-            assert!(
-                pos_proj_w < pos_proj_a,
-                "project WGENTY should precede project AGENTS"
-            );
-        });
+        // 2 project content markers
+        assert!(result.to_model.contains("PROJECT_WGENTY"));
+        assert!(result.to_model.contains("PROJECT_AGENTS"));
+
+        // 2 description tags (project-level only; user globals now in Layers 7/8)
+        assert!(result
+            .to_model
+            .contains("project instructions, checked into the codebase"));
+        assert!(result
+            .to_model
+            .contains("project agent conventions, checked into the codebase"));
+
+        // Ordering: project WGENTY.md → project AGENTS.md
+        let pos_proj_w = result.to_model.find("PROJECT_WGENTY").unwrap();
+        let pos_proj_a = result.to_model.find("PROJECT_AGENTS").unwrap();
+        assert!(
+            pos_proj_w < pos_proj_a,
+            "project WGENTY should precede project AGENTS"
+        );
     }
 
     // ============================================================
@@ -772,8 +969,9 @@ mod reminder_tests {
         let home = make_fake_home(None, &[]);
         let project_root = TempDir::new().unwrap();
 
-        with_fake_home(home.path(), || {
+        {
             let ctx = PromptContext::new()
+                .with_home_override(home.path().to_path_buf())
                 .with_wgenty_md(vec!["PROJECT_WGENTY".to_string()])
                 .with_agents_md(vec!["PROJECT_AGENTS".to_string()])
                 .with_project_root(project_root.path().to_path_buf());
@@ -801,7 +999,7 @@ mod reminder_tests {
                 !result.to_model.contains("Contents of  ("),
                 "orphan attribution header with empty path detected"
             );
-        });
+        }
     }
 
     // ============================================================
@@ -812,13 +1010,13 @@ mod reminder_tests {
     fn reminder_all_missing_returns_none() {
         let home = make_fake_home(None, &[]);
 
-        with_fake_home(home.path(), || {
-            let ctx = PromptContext::new(); // no project sections, no project_root
+        {
+            let ctx = PromptContext::new().with_home_override(home.path().to_path_buf()); // no project sections, no project_root
             assert!(
                 build_user_turn_reminder(&ctx, &[]).is_none(),
                 "all-missing should return None"
             );
-        });
+        }
     }
 
     // ============================================================
@@ -830,8 +1028,9 @@ mod reminder_tests {
         let home = make_fake_home(Some("X"), &[("a.md", "Y")]);
         let project_root = TempDir::new().unwrap();
 
-        with_fake_home(home.path(), || {
+        {
             let ctx = PromptContext::new()
+                .with_home_override(home.path().to_path_buf())
                 .with_wgenty_md(vec!["P".to_string()])
                 .with_agents_md(vec!["Q".to_string()])
                 .with_project_root(project_root.path().to_path_buf());
@@ -839,7 +1038,8 @@ mod reminder_tests {
             let result = build_user_turn_reminder(&ctx, &[]).unwrap();
 
             // Every "Contents of <path> (...)" line must have an absolute path.
-            // On Unix this means the path starts with '/'.
+            // Use Path::is_absolute rather than starts_with('/') so this holds on
+            // Windows too, where absolute paths look like "C:\...".
             for line in result.to_model.lines() {
                 if let Some(rest) = line.strip_prefix("Contents of ") {
                     // Path is everything up to the last " ("
@@ -848,33 +1048,41 @@ mod reminder_tests {
                         .expect("attribution line should contain ' ('");
                     let path = &rest[..path_end];
                     assert!(
-                        path.starts_with('/'),
+                        std::path::Path::new(path).is_absolute(),
                         "attribution path should be absolute, got: {path:?}"
                     );
                 }
             }
-        });
+        }
     }
 
     // ============================================================
-    // U4 (Task 2.7) — Rules alphabetical order
+    // U4 (Task 2.7) — Rules alphabetical order (now in Layer 8 of system prompt)
     // ============================================================
     #[test]
-    #[serial]
     fn reminder_user_rules_alphabetical_order() {
-        // Insert in non-alpha order; build_user_turn_reminder must sort.
-        let home = make_fake_home(None, &[("b.md", "BBB"), ("a.md", "AAA"), ("c.md", "CCC")]);
+        // Rules are now cached and delivered via Layer 8 in assemble_instructions.
+        // Verify they appear in the same order as stored in user_global_rules.
+        let ctx = PromptContext::new().with_user_global_rules(vec![
+            (PathBuf::from("/fake/rules/a.md"), "AAA".to_string()),
+            (PathBuf::from("/fake/rules/b.md"), "BBB".to_string()),
+            (PathBuf::from("/fake/rules/c.md"), "CCC".to_string()),
+        ]);
 
-        with_fake_home(home.path(), || {
-            let ctx = PromptContext::new();
-            let result = build_user_turn_reminder(&ctx, &[]).expect("rules present → Some");
+        let settings = Settings::default();
+        let assembled = assemble_instructions(&settings, &ctx);
+        let sys_text = assembled
+            .system_messages
+            .iter()
+            .filter_map(|msg| msg.content.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n");
 
-            let pos_a = result.to_model.find("AAA").unwrap();
-            let pos_b = result.to_model.find("BBB").unwrap();
-            let pos_c = result.to_model.find("CCC").unwrap();
-            assert!(pos_a < pos_b, "a.md should precede b.md");
-            assert!(pos_b < pos_c, "b.md should precede c.md");
-        });
+        let pos_a = sys_text.find("AAA").unwrap();
+        let pos_b = sys_text.find("BBB").unwrap();
+        let pos_c = sys_text.find("CCC").unwrap();
+        assert!(pos_a < pos_b, "a.md should precede b.md in Layer 8");
+        assert!(pos_b < pos_c, "b.md should precede c.md in Layer 8");
     }
 
     // ============================================================
@@ -927,14 +1135,22 @@ mod reminder_tests {
     // ============================================================
     #[test]
     fn reminder_internal_visibility_excludes_transcript() {
-        let ctx = PromptContext::new().with_wgenty_md(vec!["P_CONTENT".to_string()]); // gives to_transcript a body
+        let ctx = PromptContext::new().with_wgenty_md(vec!["P_CONTENT".to_string()]);
 
-        let frags = vec![InjectedFragment {
-            content: "INTERNAL_PAYLOAD".into(),
-            priority: 50,
-            visibility: LayerVisibility::Internal,
-            source_label: "hook:UserPromptSubmit:0".into(),
-        }];
+        let frags = vec![
+            InjectedFragment {
+                content: "INTERNAL_PAYLOAD".into(),
+                priority: 50,
+                visibility: LayerVisibility::Internal,
+                source_label: "hook:UserPromptSubmit:0".into(),
+            },
+            InjectedFragment {
+                content: "VISIBLE_MAKER".into(),
+                priority: 60,
+                visibility: LayerVisibility::Visible,
+                source_label: "hook:UserPromptSubmit:1".into(),
+            },
+        ];
 
         let result = build_user_turn_reminder(&ctx, &frags).unwrap();
 
@@ -944,10 +1160,14 @@ mod reminder_tests {
         );
         let transcript = result
             .to_transcript
-            .expect("project section → transcript Some");
+            .expect("visible hook → transcript Some");
         assert!(
             !transcript.contains("INTERNAL_PAYLOAD"),
             "to_transcript MUST NOT contain internal hook content"
+        );
+        assert!(
+            !transcript.contains("P_CONTENT"),
+            "to_transcript MUST NOT contain file-backed segments"
         );
     }
 

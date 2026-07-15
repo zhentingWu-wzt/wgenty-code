@@ -7,6 +7,7 @@
 pub mod args;
 pub mod branding;
 pub mod commands;
+pub mod headless_runtime;
 
 pub use args::Cli;
 

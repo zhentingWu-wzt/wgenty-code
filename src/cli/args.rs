@@ -146,6 +146,14 @@ impl Cli {
         let settings_handle: crate::config::watcher::SettingsHandle =
             std::sync::Arc::new(std::sync::RwLock::new(state.settings.clone()));
 
+        // CodeGraph availability notice. Printed before entering the alternate
+        // screen so it's visible; silent when installed+initialized or dismissed.
+        if let Some(msg) = crate::mcp::codegraph::install_state_notice(
+            crate::mcp::codegraph::probe_install_state(&state.settings),
+        ) {
+            eprintln!("{msg}");
+        }
+
         // ── Terminal setup FIRST (render-first) ──────────────────────────
         // Enter the alternate screen and enable raw mode *before* the blocking
         // daemon startup so the user sees immediate visual feedback (splash)
@@ -202,6 +210,10 @@ impl Cli {
         // Create client and app
         let client = DaemonClient::new(base_url);
         crate::utils::startup_timing::mark("daemon client created");
+        // Local id; first SaveSession upserts via PUT /sessions/:id and must
+        // preserve this id (see Session::with_id / update_session). Do not
+        // POST an empty session on startup — that would flood the panel with
+        // unused "New Session" entries for every REPL launch.
         let session_id = uuid::Uuid::new_v4().to_string();
         let mut app = App::new(client, session_id, settings_handle);
         crate::utils::startup_timing::mark("app new returned");
@@ -278,97 +290,9 @@ impl Cli {
     }
 
     async fn run_query(&self, state: crate::state::AppState, prompt: String) -> anyhow::Result<()> {
-        let client = crate::api::ApiClient::new(state.settings.clone());
-
-        let api_key = match client.get_api_key() {
-            Some(key) => key,
-            None => {
-                eprintln!("Error: API key not configured");
-                eprintln!("Set environment variable DEEPSEEK_API_KEY or run:");
-                eprintln!("  wgenty-code config set api_key \"your-api-key\"");
-                std::process::exit(1);
-            }
-        };
-
-        let mut messages = vec![crate::api::ChatMessage::user(&prompt)];
-
-        // Cross-session memory recall for headless query path
-        {
-            let manager = crate::context::MemoryManager::new();
-            if manager.load().await.is_ok() {
-                let recall_top_n = state.settings.storage.memory.recall_top_n;
-                let recall_threshold = state.settings.storage.memory.recall_similarity_threshold;
-                crate::context::inject::MemoryContextInjector::inject(
-                    &mut messages,
-                    &manager,
-                    &prompt,
-                    recall_top_n,
-                    recall_threshold as f64,
-                )
-                .await;
-            }
-        }
-
-        let base_url = client.get_base_url().to_string();
-        let model = client.get_model().to_string();
-        let max_tokens = state.settings.models.transport.max_tokens;
-
-        let request_body = serde_json::json!({
-            "model": model,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "stream": false,
-            "temperature": 0.7
-        });
-
-        let http_client = crate::utils::http::default_client();
-        let url = format!("{}/v1/chat/completions", base_url);
-
-        let response = http_client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .json(&request_body)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("API error ({}): {}", status, body));
-        }
-
-        let json: serde_json::Value = response.json().await?;
-
-        // Check for API error embedded in the response body
-        if let Some(error) = json
-            .get("error")
-            .and_then(|e| e.get("message"))
-            .and_then(|m| m.as_str())
-        {
-            return Err(anyhow::anyhow!("API error: {}", error));
-        }
-
-        let choices = json
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .ok_or_else(|| {
-                anyhow::anyhow!("API returned unexpected response: missing 'choices' field")
-            })?;
-
-        let choice = choices
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("API returned empty 'choices' array"))?;
-
-        let content = choice
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_str())
-            .ok_or_else(|| anyhow::anyhow!("API returned response with no content"))?;
-
-        println!("{}", content);
-
-        Ok(())
+        // Full agent loop (tools + micro-compaction + shared stream engine).
+        // Replaces the previous one-shot non-streaming HTTP call.
+        crate::cli::headless_runtime::run_oneshot(state.settings, prompt).await
     }
 
     fn run_config(&self, action: &super::ConfigCommands) -> anyhow::Result<()> {
@@ -506,7 +430,7 @@ impl Cli {
     }
 
     async fn run_memory(&self, action: &super::MemoryCommands) -> anyhow::Result<()> {
-        let manager = crate::context::MemoryManager::new();
+        let manager = crate::context::MemoryManager::new(crate::utils::current_project_root());
         manager.load().await?;
 
         match action {
@@ -514,7 +438,10 @@ impl Cli {
                 let status = manager.status().await?;
                 println!("Memory Status:");
                 println!("  Sessions: {}", status.session_count);
-                println!("  Memories: {}", status.total_memories);
+                println!(
+                    "  Memories: {} (project: {}, global: {})",
+                    status.total_memories, status.project_count, status.global_count
+                );
                 println!("  Last Consolidation: {:?}", status.last_consolidation);
             }
             super::MemoryCommands::Clear => {

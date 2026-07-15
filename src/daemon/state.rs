@@ -129,10 +129,11 @@ impl DaemonState {
             let registry = ToolRegistry::new().with_settings(&app_state.settings);
             registry.register(Box::new(BackgroundTool::new(bg_manager.clone())));
 
-            // Register team message tool if team is configured
-            if team_manager.is_some() {
-                registry.register(Box::new(TeamMessageTool::new(team_manager.clone())));
-            }
+            // Team messaging (s09): always available; writes peer mailboxes directly.
+            registry.register(Box::new(TeamMessageTool::new()));
+            registry.register(Box::new(
+                crate::tools::meta::request_approval::RequestApprovalTool::new(),
+            ));
 
             // Register load_skill tool if skills exist
             if !skill_loader.is_empty() {

@@ -239,14 +239,14 @@ impl TestClock {
 
     /// Advances the clock by a duration.
     pub fn advance(&self, dur: Duration) {
-        let mut guard = self.now.lock().unwrap();
+        let mut guard = self.now.lock().expect("lock poisoned: clock");
         *guard += dur;
     }
 }
 
 impl Clock for TestClock {
     fn now(&self) -> DateTime<Utc> {
-        *self.now.lock().unwrap()
+        *self.now.lock().expect("lock poisoned: clock")
     }
 }
 

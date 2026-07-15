@@ -36,6 +36,20 @@ pub enum TeamMessage {
         request_id: String,
         approve: bool,
     },
+    /// Request approval from a parent/peer before proceeding (s10).
+    ApprovalRequest {
+        from: String,
+        request_id: String,
+        kind: String,
+        payload: String,
+    },
+    /// Response to an approval request (s10).
+    ApprovalResponse {
+        from: String,
+        request_id: String,
+        approve: bool,
+        reason: Option<String>,
+    },
 }
 
 /// Configuration for the team

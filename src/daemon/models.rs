@@ -137,6 +137,13 @@ pub struct ListTasksResponse {
     pub tasks: Vec<TaskInfo>,
 }
 
+/// `GET /api/v1/tasks/progress` - ready vs blocked counts for agent nudges.
+#[derive(Debug, Serialize)]
+pub struct TaskProgressResponse {
+    pub blocked: usize,
+    pub ready: usize,
+}
+
 // ── Todos (s03 TodoWrite) ─────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]

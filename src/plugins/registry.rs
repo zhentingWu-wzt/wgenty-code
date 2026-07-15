@@ -299,4 +299,112 @@ mod tests {
         save_installed_registry(&registry, &path).unwrap();
         assert!(path.exists());
     }
+
+    // --- PluginRegistry in-memory operation tests ---
+
+    #[tokio::test]
+    async fn register_and_get() {
+        let registry = PluginRegistry::new();
+        let manifest = PluginManifest::new("test-plugin", "1.0.0", "main.js");
+        registry
+            .register(manifest)
+            .await
+            .expect("register should succeed");
+        let got = registry
+            .get("test-plugin")
+            .await
+            .expect("get should not error");
+        assert!(got.is_some());
+        assert_eq!(got.unwrap().name, "test-plugin");
+    }
+
+    #[tokio::test]
+    async fn register_duplicate_fails() {
+        let registry = PluginRegistry::new();
+        registry
+            .register(PluginManifest::new("dup", "1.0.0", "main.js"))
+            .await
+            .unwrap();
+        let result = registry
+            .register(PluginManifest::new("dup", "2.0.0", "main.js"))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn unregister_removes_plugin() {
+        let registry = PluginRegistry::new();
+        registry
+            .register(PluginManifest::new("temp", "1.0.0", "main.js"))
+            .await
+            .unwrap();
+        registry.unregister("temp").await.unwrap();
+        let got = registry.get("temp").await.unwrap();
+        assert!(got.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_enabled_toggles_state() {
+        let registry = PluginRegistry::new();
+        registry
+            .register(PluginManifest::new("toggle", "1.0.0", "main.js"))
+            .await
+            .unwrap();
+        assert!(registry.is_enabled("toggle").await);
+        registry.set_enabled("toggle", false).await.unwrap();
+        assert!(!registry.is_enabled("toggle").await);
+    }
+
+    #[tokio::test]
+    async fn count_returns_correct_counts() {
+        let registry = PluginRegistry::new();
+        registry
+            .register(PluginManifest::new("a", "1.0.0", "main.js"))
+            .await
+            .unwrap();
+        registry
+            .register(PluginManifest::new("b", "1.0.0", "main.js"))
+            .await
+            .unwrap();
+        let (manifests, loaded) = registry.count().await;
+        assert_eq!(manifests, 2);
+        assert_eq!(loaded, 0);
+    }
+
+    #[tokio::test]
+    async fn search_finds_by_name() {
+        let registry = PluginRegistry::new();
+        registry
+            .register(PluginManifest::new("search-tool", "1.0.0", "main.js"))
+            .await
+            .unwrap();
+        registry
+            .register(PluginManifest::new("other", "1.0.0", "main.js"))
+            .await
+            .unwrap();
+        let results = registry.search("search").await;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "search-tool");
+    }
+
+    #[tokio::test]
+    async fn is_loaded_after_set_loaded() {
+        let registry = PluginRegistry::new();
+        registry
+            .register(PluginManifest::new("loaded", "1.0.0", "main.js"))
+            .await
+            .unwrap();
+        assert!(!registry.is_loaded("loaded").await);
+        let loaded_plugin = LoadedPlugin {
+            name: "loaded".to_string(),
+            manifest: PluginManifest::new("loaded", "1.0.0", "main.js"),
+            status: PluginStatus::Loaded,
+            module: None,
+        };
+        registry.set_loaded("loaded", loaded_plugin).await.unwrap();
+        assert!(registry.is_loaded("loaded").await);
+        let (manifests, loaded) = registry.count().await;
+        assert_eq!(manifests, 1);
+        assert_eq!(loaded, 1);
+    }
 }

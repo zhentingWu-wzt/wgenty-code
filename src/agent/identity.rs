@@ -123,6 +123,10 @@ pub struct ToolContext<'a> {
     /// non-root agents and direct/test contexts; never accepted from model
     /// JSON.
     pub origin_turn_id: Option<&'a str>,
+    /// Per-agent working directory (s12 worktree isolation). When set, FS/exec
+    /// tools resolve relative paths against this instead of the process cwd.
+    /// `None` for the main agent / tests -> falls back to process cwd.
+    pub workdir: Option<&'a std::path::Path>,
 }
 
 #[cfg(test)]

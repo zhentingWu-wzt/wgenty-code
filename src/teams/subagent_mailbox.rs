@@ -462,11 +462,16 @@ mod tests {
 
     #[test]
     fn test_disk_persistence_failure_degrades_to_inline() {
-        // Use a path that cannot be created/written to simulate store() failure.
-        // On most Unix systems, writing under a non-existent root path fails.
-        let bad_mailbox = SubagentResultMailbox::new(PathBuf::from(
-            "/this/path/does/not/exist/wgenty_test_bad_mailbox",
-        ));
+        // Simulate store() failure in a cross-platform way: point the mailbox
+        // base_dir at an existing *file* rather than a directory. Then
+        // base_dir.join(filename) resolves to a path "inside" a file and
+        // std::fs::write fails with NotADirectory on every platform. (A
+        // non-existent root like "/this/path/..." is unreliable on Windows,
+        // where a leading "/" resolves against the current drive root and may
+        // be creatable, so store() would succeed and the test would not
+        // exercise the degradation path.)
+        let blocker = tempfile::NamedTempFile::new().unwrap();
+        let bad_mailbox = SubagentResultMailbox::new(blocker.path().to_path_buf());
         let very_large = "C".repeat(9000);
         let response = bad_mailbox.offload_if_large(
             "general-purpose",

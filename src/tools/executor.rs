@@ -287,6 +287,7 @@ mod tests {
             agent: &root,
             invocation_id: crate::agent::ToolInvocationId::new("test-1"),
             origin_turn_id: None,
+            workdir: None,
         };
         let result = executor
             .execute_with_hooks(
@@ -329,6 +330,7 @@ mod tests {
             agent: &root,
             invocation_id: crate::agent::ToolInvocationId::new("test-2"),
             origin_turn_id: None,
+            workdir: None,
         };
         let result = executor
             .execute_with_hooks(
