@@ -204,6 +204,9 @@ impl App {
         session_id: String,
         settings_lock: crate::config::watcher::SettingsHandle,
     ) -> Self {
+        // One-time legacy session migration (idempotent via marker file).
+        crate::context::migration::migrate_legacy_sessions();
+
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         // Build layered instructions from settings + context
         let prompt_ctx = PromptContext::new()
@@ -433,7 +436,10 @@ impl App {
         // ── Memory manager (created first so AutoDream can hold a ref) ────
         // Configured from settings so consolidation thresholds are tunable
         // via `storage.memory` in settings.json.
-        let mm = Arc::new(crate::context::MemoryManager::with_settings(&settings));
+        let mm = Arc::new(crate::context::MemoryManager::with_settings(
+            &settings,
+            crate::utils::current_project_root(),
+        ));
 
         // ── Detect CodeGraph MCP status from settings ─────────────────────
         let codegraph_status = detect_codegraph_status(&settings);
@@ -620,6 +626,19 @@ impl App {
                         "recalled cross-session memories at startup"
                     );
                     let _ = tx.send(AppEvent::MemoriesReady(lines));
+                }
+
+                // Format global memories for the system prompt <global-memory>
+                // block. Unlike project memories, these are injected every
+                // turn without relevance filtering (soft cap 50).
+                let global_lines =
+                    crate::context::inject::MemoryContextInjector::format_global(&mm).await;
+                if !global_lines.is_empty() {
+                    tracing::info!(
+                        count = global_lines.len(),
+                        "loaded global memories at startup"
+                    );
+                    let _ = tx.send(AppEvent::GlobalMemoriesReady(global_lines));
                 }
             });
         }

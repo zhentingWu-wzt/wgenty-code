@@ -87,6 +87,9 @@ pub struct PromptContext {
     /// Pre-formatted memory lines for cross-session recall.
     /// Each entry is a single system-message line (e.g. "- [decision] Use Jaccard for dedup").
     pub memories: Vec<String>,
+    /// Pre-formatted global memory lines injected every turn (soft cap 50).
+    /// Each entry is a single line like "- [Preference] 始终用中文回复".
+    pub global_memories: Vec<String>,
     /// Override the home directory used to locate user-global files
     /// (`~/.wgenty-code/WGENTY.md` and `~/.wgenty-code/rules/*`). When `None`,
     /// the real home is resolved via `dirs::home_dir()` (which does NOT honor
@@ -119,6 +122,7 @@ impl fmt::Debug for PromptContext {
                 &self.context_assembler.as_ref().map(|_| "ContextAssembler"),
             )
             .field("memories", &self.memories)
+            .field("global_memories", &self.global_memories)
             .field("home_override", &self.home_override)
             .field("codegraph_state", &self.codegraph_state)
             .finish()
@@ -147,6 +151,7 @@ impl PromptContext {
             project_root: None,
             context_assembler: None,
             memories: Vec::new(),
+            global_memories: Vec::new(),
             home_override: None,
             codegraph_state: None,
         }
@@ -214,6 +219,12 @@ impl PromptContext {
 
     pub fn with_memories(mut self, memories: Vec<String>) -> Self {
         self.memories = memories;
+        self
+    }
+
+    /// Set pre-formatted global memory lines (injected every turn).
+    pub fn with_global_memories(mut self, memories: Vec<String>) -> Self {
+        self.global_memories = memories;
         self
     }
 
@@ -394,6 +405,15 @@ pub fn assemble_instructions(
         system_messages.push(ChatMessage::system(format!(
             "<relevant_memories>\n{}\n</relevant_memories>",
             memory_lines
+        )));
+    }
+
+    // ── Layer 5c: Global Memories (injected every turn, soft cap 50) ──
+    if !context.global_memories.is_empty() {
+        let global_lines = context.global_memories.join("\n");
+        system_messages.push(ChatMessage::system(format!(
+            "<global-memory>\n{}\n</global-memory>",
+            global_lines
         )));
     }
 
@@ -671,6 +691,57 @@ mod tests {
         let mem_content = messages[mem_pos].content.as_deref().unwrap();
         assert!(mem_content.contains("Use Jaccard for dedup"));
         assert!(mem_content.contains("Project uses Rust"));
+    }
+
+    #[test]
+    fn test_assemble_with_empty_global_memories_no_injection() {
+        let settings = Settings::default();
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_global_memories(Vec::new());
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let has_global = instructions.system_messages.iter().any(|m| {
+            m.content
+                .as_deref()
+                .is_some_and(|c| c.contains("<global-memory>"))
+        });
+        assert!(
+            !has_global,
+            "empty global memories should not inject extra system message"
+        );
+    }
+
+    #[test]
+    fn test_assemble_with_global_memories_in_system_prompt() {
+        let settings = Settings::default();
+
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_global_memories(vec![
+                "- [preference] Always reply in Chinese".to_string(),
+                "- [knowledge] User works on Rust projects".to_string(),
+            ]);
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let messages = &instructions.system_messages;
+
+        let global_pos = messages
+            .iter()
+            .position(|m| {
+                m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("<global-memory>"))
+            })
+            .expect("Global memory block should be present when non-empty");
+
+        let content = messages[global_pos].content.as_deref().unwrap();
+        assert!(content.contains("Always reply in Chinese"));
+        assert!(content.contains("User works on Rust projects"));
+        assert!(content.contains("<global-memory>"));
+        assert!(content.contains("</global-memory>"));
     }
 
     #[test]
