@@ -227,6 +227,8 @@ impl App {
                 .clone()
                 .unwrap_or_default(),
         );
+        let prompt_ctx = prompt_ctx
+            .with_codegraph_state(crate::mcp::codegraph::probe_install_state(&settings));
 
         // Cache user global instructions & rules for Layers 7/8 in system prompt
         let prompt_ctx = prompt_ctx
