@@ -844,7 +844,7 @@ mod reminder_tests {
         assert!(
             result.to_model.starts_with("<system-reminder>\n"),
             "missing opener: {}",
-            &result.to_model[..50.min(result.to_model.len())]
+            result.to_model.chars().take(50).collect::<String>()
         );
         assert!(
             result.to_model.contains("# wgentyMd"),

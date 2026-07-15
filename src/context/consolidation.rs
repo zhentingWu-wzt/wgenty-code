@@ -175,26 +175,76 @@ impl ConsolidationEngine {
         if a.memory_type != b.memory_type {
             return 0.0;
         }
+        Self::content_similarity(a, b)
+    }
 
-        let a_words: std::collections::HashSet<&str> = a
+    /// Type-agnostic Jaccard similarity over meaningful content tokens.
+    ///
+    /// Unlike `calculate_similarity` (consolidation-time, which requires the
+    /// two memories to share a `MemoryType`), this compares pure text overlap.
+    /// It is used by `MemoryManager::add_memory` to catch the same fact being
+    /// re-extracted across separate compaction rounds even when the model tags
+    /// it with a different type (e.g. `Decision` once, `Knowledge` the next).
+    ///
+    /// A subset relation (one token set entirely contained in the other, with
+    /// at least two tokens on the smaller side) is treated as a full match so
+    /// that a terse memory such as "use jwt" merges into a richer one such as
+    /// "use jwt authentication". The `min_len` guard keeps single-token
+    /// memories from over-merging into anything that happens to mention them.
+    pub(crate) fn content_similarity(a: &MemoryEntry, b: &MemoryEntry) -> f32 {
+        // Tokens are lowercased so similarity is case-insensitive, matching the
+        // TF-IDF index (which also lowercases). Previously "Use JWT" and
+        // "use jwt" were disjoint token sets and never matched, so the same
+        // fact re-extracted with different capitalization would not dedup.
+        let a_words: std::collections::HashSet<String> = a
             .content
             .split_whitespace()
             .filter(|w| Self::is_meaningful_token(w))
+            .map(|w| w.to_lowercase())
             .collect();
-        let b_words: std::collections::HashSet<&str> = b
+        let b_words: std::collections::HashSet<String> = b
             .content
             .split_whitespace()
             .filter(|w| Self::is_meaningful_token(w))
+            .map(|w| w.to_lowercase())
             .collect();
 
         if a_words.is_empty() || b_words.is_empty() {
             return 0.0;
         }
 
+        let min_len = a_words.len().min(b_words.len());
+        if min_len >= 2 && (a_words.is_subset(&b_words) || b_words.is_subset(&a_words)) {
+            return 1.0;
+        }
+
         let intersection = a_words.intersection(&b_words).count();
         let union = a_words.union(&b_words).count();
-
         intersection as f32 / union as f32
+    }
+
+    /// Return the index of the first memory in `others` whose similarity to
+    /// `entry` exceeds `threshold`.
+    ///
+    /// When `require_same_type` is `true` only same-type memories are
+    /// considered (consolidation-time semantics via `calculate_similarity`);
+    /// when `false` the type is ignored (`content_similarity`), which is what
+    /// `add_memory` needs to fold cross-type duplicates.
+    pub fn find_similar(
+        &self,
+        entry: &MemoryEntry,
+        others: &[MemoryEntry],
+        threshold: f32,
+        require_same_type: bool,
+    ) -> Option<usize> {
+        others.iter().position(|other| {
+            let sim = if require_same_type {
+                self.calculate_similarity(entry, other)
+            } else {
+                Self::content_similarity(entry, other)
+            };
+            sim > threshold
+        })
     }
 
     /// Determine whether a whitespace token is meaningful for similarity
@@ -275,6 +325,43 @@ impl ConsolidationEngine {
                 "merged_latest",
                 latest_timestamp.map_or(serde_json::Value::Null, |t| t.to_rfc3339().into()),
             )
+    }
+
+    /// Merge `incoming` into `existing`, preserving `existing`'s id and type.
+    ///
+    /// Used by `MemoryManager::add_memory` to fold a near-duplicate into an
+    /// already-stored entry instead of writing a new file. Content is kept as
+    /// the richer of the two when one is a substring of the other (so "use
+    /// jwt" folds into "use jwt authentication" without duplication),
+    /// otherwise the texts are concatenated. Importance takes the max and tags
+    /// are unioned. Unlike `merge_memories` (consolidation-time, which mints a
+    /// fresh id), this keeps the existing id so `save_memory` overwrites the
+    /// original file and no orphaned duplicate is left behind.
+    pub fn merge_into(existing: &MemoryEntry, incoming: &MemoryEntry) -> MemoryEntry {
+        let combined = if existing.content.contains(incoming.content.as_str()) {
+            existing.content.clone()
+        } else if incoming.content.contains(existing.content.as_str()) {
+            incoming.content.clone()
+        } else {
+            format!("{}\n{}", existing.content, incoming.content)
+        };
+
+        let mut tags = existing.tags.clone();
+        tags.extend(incoming.tags.iter().cloned());
+        tags.sort();
+        tags.dedup();
+
+        let importance = existing.importance.max(incoming.importance).min(1.0);
+
+        MemoryEntry {
+            id: existing.id.clone(),
+            memory_type: existing.memory_type.clone(),
+            content: combined,
+            timestamp: existing.timestamp.min(incoming.timestamp),
+            importance,
+            tags,
+            metadata: existing.metadata.clone(),
+        }
     }
 
     fn extract_insights(
@@ -482,5 +569,89 @@ mod tests {
             consolidated.is_empty(),
             "extract_insights must not push MemoryEntry into consolidated"
         );
+    }
+
+    #[test]
+    fn content_similarity_subset_treats_as_full_match() {
+        // "use jwt" tokens are a subset of "use jwt authentication".
+        let a = MemoryEntry::new(MemoryType::Knowledge, "use jwt");
+        let b = MemoryEntry::new(MemoryType::Decision, "use jwt authentication");
+        // Type-agnostic and subset (min_len >= 2) -> full match.
+        assert!(ConsolidationEngine::content_similarity(&a, &b) >= 1.0);
+    }
+
+    #[test]
+    fn content_similarity_ignores_type() {
+        let a = MemoryEntry::new(MemoryType::Decision, "the auth uses jwt tokens");
+        let b = MemoryEntry::new(MemoryType::Knowledge, "the auth uses jwt tokens");
+        // calculate_similarity would return 0 (different types), but
+        // content_similarity is type-agnostic and sees full overlap.
+        assert!(
+            ConsolidationEngine::content_similarity(&a, &b) >= 0.99,
+            "type-agnostic similarity should be ~1.0 for identical content"
+        );
+    }
+
+    #[test]
+    fn content_similarity_is_case_insensitive() {
+        // "Use JWT" and "use jwt" must match despite different casing, so the
+        // same fact re-extracted with different capitalization still dedups.
+        let a = MemoryEntry::new(MemoryType::Knowledge, "Use JWT");
+        let b = MemoryEntry::new(MemoryType::Decision, "use jwt");
+        assert!(
+            ConsolidationEngine::content_similarity(&a, &b) >= 1.0,
+            "similarity should be case-insensitive"
+        );
+    }
+
+    #[test]
+    fn calculate_similarity_is_case_insensitive() {
+        // Consolidation-time similarity (same type) is also case-insensitive
+        // now that it delegates to content_similarity.
+        let engine = ConsolidationEngine::default();
+        let a = MemoryEntry::new(MemoryType::Knowledge, "Use JWT tokens");
+        let b = MemoryEntry::new(MemoryType::Knowledge, "use jwt tokens");
+        let sim = engine.calculate_similarity(&a, &b);
+        assert!(
+            sim >= 0.99,
+            "consolidation similarity should be case-insensitive, got {}",
+            sim
+        );
+    }
+
+    #[test]
+    fn find_similar_type_agnostic_when_requested() {
+        let engine = ConsolidationEngine::default();
+        let existing = vec![MemoryEntry::new(MemoryType::Decision, "use jwt auth")];
+        let incoming = MemoryEntry::new(MemoryType::Knowledge, "use jwt auth");
+        // require_same_type=false -> matches across types.
+        assert_eq!(
+            engine.find_similar(&incoming, &existing, 0.6, false),
+            Some(0)
+        );
+        // require_same_type=true -> no match (different types).
+        assert_eq!(engine.find_similar(&incoming, &existing, 0.6, true), None);
+    }
+
+    #[test]
+    fn merge_into_preserves_id_and_keeps_richer_content() {
+        let mut existing = MemoryEntry::new(MemoryType::Decision, "use jwt auth");
+        existing.id = "keep-me".to_string();
+        existing.importance = 0.4;
+        let incoming =
+            MemoryEntry::new(MemoryType::Knowledge, "use jwt auth tokens").with_importance(0.9);
+
+        let merged = ConsolidationEngine::merge_into(&existing, &incoming);
+
+        assert_eq!(merged.id, "keep-me", "existing id must be preserved");
+        assert_eq!(
+            merged.memory_type,
+            MemoryType::Decision,
+            "existing type must be preserved"
+        );
+        // incoming text is richer (superset) -> preferred over concatenation.
+        assert_eq!(merged.content, "use jwt auth tokens");
+        // importance takes the max.
+        assert!((merged.importance - 0.9).abs() < 1e-6);
     }
 }

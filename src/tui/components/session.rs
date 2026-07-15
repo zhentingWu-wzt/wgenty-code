@@ -3,7 +3,7 @@ use crate::tui::theme;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 pub struct SessionState {
@@ -148,7 +148,14 @@ pub fn render(
             .title(title),
     );
 
-    f.render_widget(list, chunks[0]);
+    // Stateful rendering lets ratatui track the selected index and
+    // auto-scroll the viewport so the cursor stays visible.
+    let mut list_state = ListState::default();
+    if !state.sessions.is_empty() {
+        list_state.select(Some(state.selected));
+    }
+
+    f.render_stateful_widget(list, chunks[0], &mut list_state);
     f.render_widget(footer, chunks[1]);
 }
 
