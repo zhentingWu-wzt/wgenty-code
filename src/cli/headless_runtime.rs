@@ -189,28 +189,40 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
     }
 
     let session_id = Uuid::new_v4().to_string();
-    let prompt_ctx = PromptContext::default()
+
+    // Shared memory manager: recall at start + extract during auto-compact.
+    // Created before prompt assembly so global memories can be injected into
+    // the system prompt's <global-memory> block.
+    let memory_manager = Arc::new(MemoryManager::new(crate::utils::current_project_root()));
+    let memories_loaded = memory_manager.load().await.is_ok();
+
+    let mut prompt_ctx = PromptContext::default()
         .with_codegraph_state(crate::mcp::codegraph::probe_install_state(&settings));
+    if memories_loaded {
+        let global_lines =
+            crate::context::inject::MemoryContextInjector::format_global(memory_manager.as_ref())
+                .await;
+        if !global_lines.is_empty() {
+            prompt_ctx = prompt_ctx.with_global_memories(global_lines);
+        }
+    }
+
     let assembled = prompts::assemble_instructions(&settings, &prompt_ctx);
     let system_messages = assembled.system_messages.clone();
     let mut seed = assembled.system_messages;
     seed.push(ChatMessage::user(&prompt));
 
-    // Shared memory manager: recall at start + extract during auto-compact.
-    let memory_manager = Arc::new(MemoryManager::new(crate::utils::current_project_root()));
-    {
-        if memory_manager.load().await.is_ok() {
-            let recall_top_n = settings.storage.memory.recall_top_n;
-            let recall_threshold = settings.storage.memory.recall_similarity_threshold;
-            crate::context::inject::MemoryContextInjector::inject(
-                &mut seed,
-                memory_manager.as_ref(),
-                &prompt,
-                recall_top_n,
-                recall_threshold as f64,
-            )
-            .await;
-        }
+    if memories_loaded {
+        let recall_top_n = settings.storage.memory.recall_top_n;
+        let recall_threshold = settings.storage.memory.recall_similarity_threshold;
+        crate::context::inject::MemoryContextInjector::inject(
+            &mut seed,
+            memory_manager.as_ref(),
+            &prompt,
+            recall_top_n,
+            recall_threshold as f64,
+        )
+        .await;
     }
 
     let history = MutexHistoryStore::new(Arc::new(Mutex::new(seed)));

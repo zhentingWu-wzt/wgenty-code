@@ -361,7 +361,8 @@ impl App {
                 let prompt_ctx = prompt_ctx
                     .with_skills(skill_inventory)
                     .with_wgenty_md(wgenty_sections)
-                    .with_agents_md(agents_sections);
+                    .with_agents_md(agents_sections)
+                    .with_global_memories(self.prompt_context.global_memories.clone());
                 let assembled = prompts::assemble_instructions(&new_settings, &prompt_ctx);
                 self.assembled_system_messages = assembled.system_messages;
                 self.codegraph_status = super::detect_codegraph_status(&new_settings);
@@ -834,6 +835,26 @@ impl App {
                 // turns inject them into the conversation context. Replacing
                 // (not appending) is correct: recall fires once per session.
                 self.startup_memories = lines;
+            }
+            AppEvent::GlobalMemoriesReady(lines) => {
+                // Global memory loading completed in the background. Update
+                // the shared prompt_context so every subsequent turn includes
+                // the <global-memory> block in the system prompt, then
+                // re-assemble system messages to pick up the new block.
+                if lines.is_empty() {
+                    return;
+                }
+                let mut new_ctx = (*self.prompt_context).clone();
+                new_ctx.global_memories = lines;
+                let new_ctx = std::sync::Arc::new(new_ctx);
+                let settings = self
+                    .settings_lock
+                    .read()
+                    .expect("lock poisoned: settings")
+                    .clone();
+                let assembled = prompts::assemble_instructions(&settings, &new_ctx);
+                self.prompt_context = new_ctx;
+                self.assembled_system_messages = assembled.system_messages;
             }
             AppEvent::SkillsReady(data) => {
                 // Skill discovery completed in the background at startup.
