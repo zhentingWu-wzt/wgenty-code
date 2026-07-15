@@ -180,6 +180,14 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
         );
     }
 
+    // CodeGraph availability notice (silent when installed+initialized or
+    // dismissed). Printed to stderr so it never pollutes query stdout.
+    if let Some(msg) = crate::mcp::codegraph::install_state_notice(
+        crate::mcp::codegraph::probe_install_state(&settings),
+    ) {
+        eprintln!("{msg}");
+    }
+
     let session_id = Uuid::new_v4().to_string();
     let prompt_ctx = PromptContext::default()
         .with_codegraph_state(crate::mcp::codegraph::probe_install_state(&settings));
