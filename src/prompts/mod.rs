@@ -93,6 +93,8 @@ pub struct PromptContext {
     /// `USERPROFILE`/`HOME` env vars on Windows). Tests set this to a temp dir
     /// so user-global content is deterministic and cross-platform.
     pub home_override: Option<PathBuf>,
+    /// CodeGraph availability (sync probe result) for guidance injection.
+    pub codegraph_state: Option<crate::mcp::codegraph::CodegraphInstallState>,
 }
 
 impl fmt::Debug for PromptContext {
@@ -118,6 +120,7 @@ impl fmt::Debug for PromptContext {
             )
             .field("memories", &self.memories)
             .field("home_override", &self.home_override)
+            .field("codegraph_state", &self.codegraph_state)
             .finish()
     }
 }
@@ -145,6 +148,7 @@ impl PromptContext {
             context_assembler: None,
             memories: Vec::new(),
             home_override: None,
+            codegraph_state: None,
         }
     }
 
@@ -217,6 +221,15 @@ impl PromptContext {
     /// [`PromptContext::home_override`].
     pub fn with_home_override(mut self, home: PathBuf) -> Self {
         self.home_override = Some(home);
+        self
+    }
+
+    /// Set the CodeGraph availability state for guidance injection.
+    pub fn with_codegraph_state(
+        mut self,
+        state: crate::mcp::codegraph::CodegraphInstallState,
+    ) -> Self {
+        self.codegraph_state = Some(state);
         self
     }
 }
@@ -476,9 +489,13 @@ fn build_environment_layer(ctx: &PromptContext) -> String {
     let now = Local::now();
     let date = now.format("%Y-%m-%d").to_string();
     let timezone = now.format("%Z").to_string();
+    let codegraph_line = ctx
+        .codegraph_state
+        .map(|s| format!("\n  <codegraph>{}</codegraph>", s.guidance_hint()))
+        .unwrap_or_default();
 
     format!(
-        "<environment_context>\n  <cwd>{cwd}</cwd>\n  <shell>{shell}</shell>\n  <current_date>{date}</current_date>\n  <timezone>{timezone}</timezone>\n</environment_context>",
+        "<environment_context>\n  <cwd>{cwd}</cwd>\n  <shell>{shell}</shell>\n  <current_date>{date}</current_date>\n  <timezone>{timezone}</timezone>{codegraph_line}\n</environment_context>",
         cwd = ctx.cwd,
         shell = ctx.shell,
     )
@@ -504,6 +521,59 @@ mod tests {
         assert!(instructions.system_messages.len() >= 2); // base + env
                                                           // First message is the base instructions
         assert_eq!(instructions.system_messages[0].role, "system");
+    }
+
+    #[test]
+    fn environment_layer_includes_codegraph_state() {
+        let settings = Settings::default();
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_codegraph_state(crate::mcp::CodegraphInstallState::NotInitialized);
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let env = instructions
+            .system_messages
+            .iter()
+            .find(|m| m.content.as_deref().is_some_and(|c| c.contains("<environment_context>")))
+            .expect("environment layer present");
+        let content = env.content.as_deref().unwrap();
+        assert!(content.contains("<codegraph>"), "got: {content}");
+        assert!(content.contains("not_initialized"));
+        assert!(content.contains("codegraph init"));
+    }
+
+    #[test]
+    fn environment_layer_omits_codegraph_when_none() {
+        let settings = Settings::default();
+        let ctx = PromptContext::new().with_cwd("/tmp").with_shell("zsh");
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let env = instructions
+            .system_messages
+            .iter()
+            .find(|m| m.content.as_deref().is_some_and(|c| c.contains("<environment_context>")))
+            .expect("environment layer present");
+        let content = env.content.as_deref().unwrap();
+        assert!(!content.contains("<codegraph>"), "got: {content}");
+    }
+
+    #[test]
+    fn environment_layer_ready_state() {
+        let settings = Settings::default();
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_codegraph_state(crate::mcp::CodegraphInstallState::Ready);
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let env = instructions
+            .system_messages
+            .iter()
+            .find(|m| m.content.as_deref().is_some_and(|c| c.contains("<environment_context>")))
+            .expect("environment layer present");
+        let content = env.content.as_deref().unwrap();
+        assert!(content.contains("<codegraph>ready"));
     }
 
     #[test]
