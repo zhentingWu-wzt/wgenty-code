@@ -532,10 +532,16 @@ mod tests {
             .with_codegraph_state(crate::mcp::CodegraphInstallState::NotInitialized);
 
         let instructions = assemble_instructions(&settings, &ctx);
+        // Match the real env layer (Layer 5) via a runtime-generated marker;
+        // base instructions also mention `<environment_context>` in prose.
         let env = instructions
             .system_messages
             .iter()
-            .find(|m| m.content.as_deref().is_some_and(|c| c.contains("<environment_context>")))
+            .find(|m| {
+                m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("<current_date>"))
+            })
             .expect("environment layer present");
         let content = env.content.as_deref().unwrap();
         assert!(content.contains("<codegraph>"), "got: {content}");
@@ -552,7 +558,11 @@ mod tests {
         let env = instructions
             .system_messages
             .iter()
-            .find(|m| m.content.as_deref().is_some_and(|c| c.contains("<environment_context>")))
+            .find(|m| {
+                m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("<current_date>"))
+            })
             .expect("environment layer present");
         let content = env.content.as_deref().unwrap();
         assert!(!content.contains("<codegraph>"), "got: {content}");
@@ -570,7 +580,11 @@ mod tests {
         let env = instructions
             .system_messages
             .iter()
-            .find(|m| m.content.as_deref().is_some_and(|c| c.contains("<environment_context>")))
+            .find(|m| {
+                m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("<current_date>"))
+            })
             .expect("environment layer present");
         let content = env.content.as_deref().unwrap();
         assert!(content.contains("<codegraph>ready"));

@@ -90,9 +90,9 @@ pub fn install_state_notice(state: CodegraphInstallState) -> Option<String> {
             "⚠ CodeGraph 未安装，代码导航已降级到 grep/lsp。安装: npm i -g @colbymchenry/codegraph"
                 .to_string(),
         ),
-        CodegraphInstallState::NotInitialized => Some(
-            "⚠ CodeGraph 已安装但当前仓库未初始化。在项目根运行: codegraph init".to_string(),
-        ),
+        CodegraphInstallState::NotInitialized => {
+            Some("⚠ CodeGraph 已安装但当前仓库未初始化。在项目根运行: codegraph init".to_string())
+        }
         CodegraphInstallState::Ready | CodegraphInstallState::Dismissed => None,
     }
 }
@@ -114,12 +114,13 @@ mod tests {
 
     /// Build a Settings whose working_dir points at `dir`.
     fn settings_in(dir: &Path) -> Settings {
-        let mut s = Settings::default();
-        s.storage = StorageConfig {
-            working_dir: dir.to_path_buf(),
-            ..Settings::default().storage
-        };
-        s
+        Settings {
+            storage: StorageConfig {
+                working_dir: dir.to_path_buf(),
+                ..Settings::default().storage
+            },
+            ..Default::default()
+        }
     }
 
     #[test]
