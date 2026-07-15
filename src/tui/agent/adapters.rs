@@ -552,8 +552,8 @@ impl Compactor for TuiCompactor {
             return false;
         }
 
-        for memory in &extracted_memories {
-            if let Err(e) = self.memory_manager.add_memory(memory.clone()).await {
+        for (memory, scope) in &extracted_memories {
+            if let Err(e) = self.memory_manager.add_memory(memory.clone(), *scope).await {
                 tracing::warn!(error = %e, memory_id = %memory.id, "failed to persist extracted memory");
             }
         }

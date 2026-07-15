@@ -7,7 +7,7 @@
 use super::compaction::{assemble_post_compaction_history, split_for_compaction};
 use super::ports::{Compactor, HistoryStore, LlmPort};
 use crate::api::ChatMessage;
-use crate::context::{MemoryEntry, MemoryManager, MemoryType};
+use crate::context::{MemoryEntry, MemoryManager, MemoryOrigin, MemoryType};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,11 +26,16 @@ Output format — respond with a single JSON object (no markdown fences, no extr
   \"memories\": [\n\
     {\n\
       \"type\": \"decision|error|preference|insight|knowledge|task\",\n\
+      \"scope\": \"project|global\",\n\
       \"content\": \"<what to remember>\",\n\
       \"importance\": <0.0 to 1.0>\n\
     }\n\
   ]\n\
 }\n\n\
+The \"scope\" field classifies where the memory should be stored:\n\
+- \"project\": specific to the current project (architecture decisions, file paths, bug fixes, project-specific conventions).\n\
+- \"global\": applies across all projects (user communication preferences, general workflow habits, cross-cutting insights about the user).\n\
+When uncertain, default to \"project\".\n\n\
 If there is nothing worth remembering, return an empty memories array.\n\
 Do NOT use any tools — just return the JSON as plain text.";
 
@@ -71,7 +76,7 @@ pub fn build_transcript_text(to_summarize: &[ChatMessage]) -> String {
 /// Parse summarizer output into `(summary, memories)`.
 ///
 /// Falls back to the full text as summary when JSON is missing or invalid.
-pub fn parse_compaction_response(full_text: &str) -> (String, Vec<MemoryEntry>) {
+pub fn parse_compaction_response(full_text: &str) -> (String, Vec<(MemoryEntry, MemoryOrigin)>) {
     match serde_json::from_str::<serde_json::Value>(full_text.trim()) {
         Ok(json) => {
             let summary = json
@@ -79,7 +84,7 @@ pub fn parse_compaction_response(full_text: &str) -> (String, Vec<MemoryEntry>) 
                 .and_then(|v| v.as_str())
                 .unwrap_or(full_text.trim())
                 .to_string();
-            let memories: Vec<MemoryEntry> = json
+            let memories: Vec<(MemoryEntry, MemoryOrigin)> = json
                 .get("memories")
                 .and_then(|v| v.as_array())
                 .map(|arr| {
@@ -101,10 +106,21 @@ pub fn parse_compaction_response(full_text: &str) -> (String, Vec<MemoryEntry>) 
                             let content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
                             let importance =
                                 m.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.5) as f32;
+                            let scope = match m
+                                .get("scope")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("project")
+                            {
+                                "global" => MemoryOrigin::Global,
+                                _ => MemoryOrigin::Project,
+                            };
                             if content.is_empty() {
                                 return None;
                             }
-                            Some(MemoryEntry::new(mem_type, content).with_importance(importance))
+                            Some((
+                                MemoryEntry::new(mem_type, content).with_importance(importance),
+                                scope,
+                            ))
                         })
                         .collect()
                 })
@@ -217,8 +233,8 @@ impl Compactor for ApiCompactor {
         }
 
         if let Some(ref mm) = self.memory_manager {
-            for memory in &extracted_memories {
-                if let Err(e) = mm.add_memory(memory.clone()).await {
+            for (memory, scope) in &extracted_memories {
+                if let Err(e) = mm.add_memory(memory.clone(), *scope).await {
                     tracing::warn!(
                         error = %e,
                         memory_id = %memory.id,
@@ -266,7 +282,27 @@ mod tests {
         let (summary, memories) = parse_compaction_response(raw);
         assert_eq!(summary, "User refactored auth.");
         assert_eq!(memories.len(), 2);
-        assert_eq!(memories[0].content, "Use JWT");
+        assert_eq!(memories[0].0.content, "Use JWT");
+        // Missing scope defaults to Project (conservative).
+        assert_eq!(memories[0].1, MemoryOrigin::Project);
+    }
+
+    #[test]
+    fn parse_scope_classification() {
+        let raw = r#"{
+            "summary": "Mixed work.",
+            "memories": [
+                {"type": "decision", "scope": "project", "content": "Use tokio", "importance": 0.8},
+                {"type": "preference", "scope": "global", "content": "Reply in Chinese", "importance": 0.9},
+                {"type": "knowledge", "scope": "unknown", "content": "Falls back to project", "importance": 0.5}
+            ]
+        }"#;
+        let (_summary, memories) = parse_compaction_response(raw);
+        assert_eq!(memories.len(), 3);
+        assert_eq!(memories[0].1, MemoryOrigin::Project);
+        assert_eq!(memories[1].1, MemoryOrigin::Global);
+        // Unknown scope string defaults to Project.
+        assert_eq!(memories[2].1, MemoryOrigin::Project);
     }
 
     #[test]

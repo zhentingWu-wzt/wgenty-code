@@ -424,7 +424,7 @@ impl Cli {
     }
 
     async fn run_memory(&self, action: &super::MemoryCommands) -> anyhow::Result<()> {
-        let manager = crate::context::MemoryManager::new();
+        let manager = crate::context::MemoryManager::new(crate::utils::current_project_root());
         manager.load().await?;
 
         match action {
@@ -432,7 +432,10 @@ impl Cli {
                 let status = manager.status().await?;
                 println!("Memory Status:");
                 println!("  Sessions: {}", status.session_count);
-                println!("  Memories: {}", status.total_memories);
+                println!(
+                    "  Memories: {} (project: {}, global: {})",
+                    status.total_memories, status.project_count, status.global_count
+                );
                 println!("  Last Consolidation: {:?}", status.last_consolidation);
             }
             super::MemoryCommands::Clear => {
