@@ -86,6 +86,18 @@ pub struct IntegrationsConfig {
     pub voice: VoiceSettings,
     #[serde(default)]
     pub guardian: GuardianSettings,
+    #[serde(default)]
+    pub codegraph: CodegraphSettings,
+}
+
+/// Per-project CodeGraph guidance state.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CodegraphSettings {
+    /// Working dirs (canonical absolute paths, deduped) where the user has
+    /// dismissed install/init guidance. Suppresses both the CLI startup notice
+    /// and the agent's on-demand ask.
+    #[serde(default)]
+    pub dismissed_paths: Vec<PathBuf>,
 }
 
 // ===== End new sub-config types =====
@@ -155,5 +167,44 @@ impl Default for VoiceSettings {
             silence_threshold: 0.01,
             sample_rate: 16000,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codegraph_settings_default_empty() {
+        assert!(CodegraphSettings::default().dismissed_paths.is_empty());
+    }
+
+    #[test]
+    fn integrations_default_has_codegraph() {
+        assert!(IntegrationsConfig::default()
+            .codegraph
+            .dismissed_paths
+            .is_empty());
+    }
+
+    #[test]
+    fn serde_roundtrip_preserves_paths() {
+        let mut cfg = IntegrationsConfig::default();
+        cfg.codegraph.dismissed_paths.push(PathBuf::from("/tmp/a"));
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: IntegrationsConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.codegraph.dismissed_paths,
+            vec![PathBuf::from("/tmp/a")]
+        );
+    }
+
+    #[test]
+    fn serde_old_config_without_codegraph_field() {
+        // A pre-existing settings.json carrying no `codegraph` key must still
+        // deserialize via #[serde(default)].
+        let json = r#"{"mcp_servers":[],"hooks":null}"#;
+        let cfg: IntegrationsConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.codegraph.dismissed_paths.is_empty());
     }
 }
