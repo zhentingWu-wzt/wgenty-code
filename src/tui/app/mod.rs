@@ -204,6 +204,9 @@ impl App {
         session_id: String,
         settings_lock: crate::config::watcher::SettingsHandle,
     ) -> Self {
+        // One-time legacy session migration (idempotent via marker file).
+        crate::context::migration::migrate_legacy_sessions();
+
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         // Build layered instructions from settings + context
         let prompt_ctx = PromptContext::new()

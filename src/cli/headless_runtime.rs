@@ -190,6 +190,9 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
 
     let session_id = Uuid::new_v4().to_string();
 
+    // One-time legacy session migration (idempotent via marker file).
+    crate::context::migration::migrate_legacy_sessions();
+
     // Shared memory manager: recall at start + extract during auto-compact.
     // Created before prompt assembly so global memories can be injected into
     // the system prompt's <global-memory> block.
