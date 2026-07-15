@@ -146,6 +146,14 @@ impl Cli {
         let settings_handle: crate::config::watcher::SettingsHandle =
             std::sync::Arc::new(std::sync::RwLock::new(state.settings.clone()));
 
+        // CodeGraph availability notice. Printed before entering the alternate
+        // screen so it's visible; silent when installed+initialized or dismissed.
+        if let Some(msg) = crate::mcp::codegraph::install_state_notice(
+            crate::mcp::codegraph::probe_install_state(&state.settings),
+        ) {
+            eprintln!("{msg}");
+        }
+
         // ── Terminal setup FIRST (render-first) ──────────────────────────
         // Enter the alternate screen and enable raw mode *before* the blocking
         // daemon startup so the user sees immediate visual feedback (splash)
