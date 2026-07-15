@@ -133,7 +133,7 @@ mod tests {
     use super::*;
     use crate::api::ChatMessage;
     use crate::context::{
-        ConsolidationEngine, HistoryManager, MemoryEntry, MemoryIndex, MemoryManager,
+        ConsolidationEngine, HistoryManager, MemoryEntry, MemoryIndex, MemoryManager, MemoryOrigin,
         MemorySessionManager, MemoryType, Storage,
     };
     use std::sync::atomic::AtomicBool;
@@ -144,12 +144,15 @@ mod tests {
         let memory_dir = temp_dir.path().join("memory");
         std::fs::create_dir_all(&memory_dir).unwrap();
         let storage = Arc::new(Storage::new(memory_dir));
+        let global_storage = Arc::new(Storage::new(temp_dir.path().join("global_memory")));
         MemoryManager {
             sessions: Arc::new(MemorySessionManager::new()),
             history: Arc::new(HistoryManager::new()),
-            storage,
+            project_storage: storage,
+            global_storage,
             consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
             memories: Arc::new(RwLock::new(Vec::new())),
+            global_memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
             consolidating: Arc::new(AtomicBool::new(false)),
         }
@@ -164,6 +167,7 @@ mod tests {
             MemoryEntry::new(MemoryType::Knowledge, "Rust async programming patterns")
                 .with_importance(0.9)
                 .with_tags(vec!["rust".into(), "async".into()]),
+            MemoryOrigin::Project,
         )
         .await
         .unwrap();
@@ -171,6 +175,7 @@ mod tests {
             MemoryEntry::new(MemoryType::Decision, "Use tokio for async runtime")
                 .with_importance(0.8)
                 .with_tags(vec!["tokio".into()]),
+            MemoryOrigin::Project,
         )
         .await
         .unwrap();
@@ -178,6 +183,7 @@ mod tests {
             MemoryEntry::new(MemoryType::Insight, "Python is better for data science")
                 .with_importance(0.3)
                 .with_tags(vec!["python".into()]),
+            MemoryOrigin::Project,
         )
         .await
         .unwrap();
@@ -258,12 +264,14 @@ mod tests {
         mm.add_memory(
             MemoryEntry::new(MemoryType::Knowledge, "Rust ownership and borrowing")
                 .with_importance(0.85),
+            MemoryOrigin::Project,
         )
         .await
         .unwrap();
         mm.add_memory(
             MemoryEntry::new(MemoryType::Knowledge, "Rust cargo build system")
                 .with_importance(0.75),
+            MemoryOrigin::Project,
         )
         .await
         .unwrap();

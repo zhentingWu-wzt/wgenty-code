@@ -225,7 +225,10 @@ mod project_local_path_tests {
         // ~/.wgenty-code/memory -> last component is "memory", parent is ".wgenty-code"
         assert!(global.ends_with("memory"));
         assert_eq!(
-            global.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()),
+            global
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str()),
             Some(".wgenty-code")
         );
     }
