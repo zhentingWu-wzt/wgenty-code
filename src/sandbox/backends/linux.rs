@@ -149,6 +149,9 @@ impl SandboxBackend for LinuxBackend {
             .arg("-c")
             .arg(command);
 
+        // Keep child output off the parent TUI console.
+        super::configure_captured_stdio(&mut cmd);
+
         // Apply working directory
         if let Some(dir) = workdir.or(profile.workdir.as_deref()) {
             cmd.current_dir(dir);

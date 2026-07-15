@@ -217,6 +217,7 @@ impl SandboxBackend for WindowsBackend {
         {
             let mut cmd = tokio::process::Command::new("cmd");
             cmd.arg("/C").arg(command);
+            super::configure_captured_stdio(&mut cmd);
             Self::apply_env(profile, &mut cmd);
             if let Some(dir) = workdir.or(profile.workdir.as_deref()) {
                 cmd.current_dir(dir);
@@ -245,7 +246,9 @@ impl WindowsBackend {
 
         let mut cmd = tokio::process::Command::new("cmd");
         cmd.arg("/C").arg(command);
-        cmd.kill_on_drop(true);
+        // Capture stdio + CREATE_NO_WINDOW so npm/node progress output cannot
+        // corrupt the parent REPL/TUI console on Windows.
+        super::configure_captured_stdio(&mut cmd);
 
         Self::apply_env(profile, &mut cmd);
 
@@ -331,13 +334,33 @@ mod tests {
             .spawn(&profile, "echo hello-sandbox", None)
             .expect("spawn");
         assert_eq!(child.backend_name, "job-object");
+        // stdout must be piped/captured — empty stdout previously passed because
+        // the assertion allowed exit_code == 0 while output leaked to the console.
+        let out = child.wait_with_output().await.expect("wait");
+        assert_eq!(out.exit_code, 0, "stderr={}", out.stderr);
+        assert!(
+            out.stdout.contains("hello-sandbox"),
+            "stdout must be captured (not inherited by parent console): stdout={:?} stderr={:?}",
+            out.stdout,
+            out.stderr
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn spawn_captures_stdout_not_empty_for_console_app() {
+        let backend = WindowsBackend::new();
+        let profile = SandboxProfile::default_for_workspace(Path::new("."));
+        // cmd's built-in echo is a classic console writer; CREATE_NO_WINDOW +
+        // pipes must still deliver the bytes to wait_with_output.
+        let child = backend
+            .spawn(&profile, "echo capture-check", None)
+            .expect("spawn");
         let out = child.wait_with_output().await.expect("wait");
         assert!(
-            out.stdout.contains("hello-sandbox") || out.exit_code == 0,
-            "stdout={} stderr={} code={}",
-            out.stdout,
-            out.stderr,
-            out.exit_code
+            out.stdout.to_ascii_lowercase().contains("capture-check"),
+            "expected captured stdout, got {:?}",
+            out.stdout
         );
     }
 }

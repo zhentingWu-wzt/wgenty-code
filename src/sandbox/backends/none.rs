@@ -33,8 +33,21 @@ impl SandboxBackend for NoneBackend {
         command: &str,
         workdir: Option<&Path>,
     ) -> Result<SandboxedChild, SandboxError> {
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c").arg(command);
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut c = tokio::process::Command::new("cmd");
+            c.arg("/C").arg(command);
+            c
+        };
+        #[cfg(not(windows))]
+        let mut cmd = {
+            let mut c = tokio::process::Command::new("sh");
+            c.arg("-c").arg(command);
+            c
+        };
+
+        // Always pipe stdio so child output never lands on the parent TUI console.
+        super::configure_captured_stdio(&mut cmd);
 
         // Filter environment to allowlist
         if !profile.env_allowlist.is_empty() && !profile.env_allowlist.iter().any(|v| v == "*") {
@@ -80,7 +93,7 @@ mod tests {
     #[tokio::test]
     async fn none_backend_spawn_succeeds() {
         let backend = NoneBackend;
-        let profile = SandboxConfig::builder("/tmp").build();
+        let profile = SandboxConfig::builder(std::env::temp_dir()).build();
         let mut child = backend
             .spawn(&profile, "echo hello", None)
             .expect("spawn should succeed");
@@ -90,14 +103,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn none_backend_captures_stdout() {
+        let backend = NoneBackend;
+        let profile = SandboxConfig::builder(std::env::temp_dir()).build();
+        let child = backend
+            .spawn(&profile, "echo hello-capture", None)
+            .expect("spawn should succeed");
+        let out = child.wait_with_output().await.expect("wait");
+        assert_eq!(out.exit_code, 0, "stderr={}", out.stderr);
+        assert!(
+            out.stdout.contains("hello-capture"),
+            "stdout must be piped/captured, got {:?}",
+            out.stdout
+        );
+    }
+
+    #[tokio::test]
     async fn none_backend_spawn_with_restricted_env() {
         let backend = NoneBackend;
-        let profile = SandboxConfig::builder("/tmp")
-            .env_allowlist(vec!["PATH".into()])
+        let profile = SandboxConfig::builder(std::env::temp_dir())
+            .env_allowlist(vec!["PATH".into(), "SystemRoot".into(), "COMSPEC".into()])
             .build();
-        // Should not panic even with a restricted env allowlist
+        // Portable no-op: `exit 0` works under both `sh -c` and `cmd /C`.
         let mut child = backend
-            .spawn(&profile, "true", None)
+            .spawn(&profile, "exit 0", None)
             .expect("spawn with env filter should succeed");
         let _ = child.child.wait().await;
     }
@@ -105,21 +134,20 @@ mod tests {
     #[tokio::test]
     async fn none_backend_spawn_with_workdir() {
         let backend = NoneBackend;
-        let profile = SandboxConfig::builder("/tmp").build();
-        let workdir = std::path::Path::new("/tmp");
+        let workdir = std::env::temp_dir();
+        let profile = SandboxConfig::builder(&workdir).build();
+        // Portable command that succeeds in the workdir under sh and cmd.
         let mut child = backend
-            .spawn(&profile, "pwd", Some(workdir))
+            .spawn(&profile, "exit 0", Some(workdir.as_path()))
             .expect("spawn with workdir should succeed");
         let _ = child.child.wait().await;
     }
 
     #[tokio::test]
     async fn none_backend_spawn_invalid_command_returns_error() {
-        // sh -c with a command that doesn't exist still spawns sh successfully;
-        // the error is in the exit code, not spawn. So this tests that spawn
-        // itself doesn't error for syntactically valid shell commands.
+        // Shell spawn succeeds; the non-zero exit is reported via wait status.
         let backend = NoneBackend;
-        let profile = SandboxConfig::builder("/tmp").build();
+        let profile = SandboxConfig::builder(std::env::temp_dir()).build();
         let mut child = backend
             .spawn(&profile, "exit 1", None)
             .expect("spawn should succeed even for failing commands");
