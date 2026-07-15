@@ -280,7 +280,9 @@ fn expand_tilde_paths(value: &mut serde_json::Value) {
         serde_json::Value::String(s) => {
             if let Some(rest) = s.strip_prefix("~/") {
                 if let Some(home) = dirs::home_dir() {
-                    *s = home.join(rest).to_string_lossy().into_owned();
+                    // Keep `/` separators so Windows PathBuf defaults and the
+                    // string-form `default_transcript_db_path` compare cleanly.
+                    *s = format!("{}/{}", home.to_string_lossy(), rest);
                 }
             }
         }
@@ -292,6 +294,27 @@ fn expand_tilde_paths(value: &mut serde_json::Value) {
         serde_json::Value::Object(map) => {
             for item in map.values_mut() {
                 expand_tilde_paths(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Normalize path separators in JSON strings so Windows `PathBuf` (`\`) and
+/// template/`format!` paths (`/`) compare as the same logical path.
+fn normalize_path_separators(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) if s.contains('\\') => {
+            *s = s.replace('\\', "/");
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                normalize_path_separators(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for item in map.values_mut() {
+                normalize_path_separators(item);
             }
         }
         _ => {}
@@ -323,9 +346,12 @@ fn settings_json_template_matches_settings_default() {
     default_settings.models.main.base_url = None;
     default_settings.models.main.provider = None;
 
-    let template_val =
+    let mut template_val =
         serde_json::to_value(&template_settings).expect("serialize template Settings");
-    let default_val = serde_json::to_value(&default_settings).expect("serialize Settings::default");
+    let mut default_val =
+        serde_json::to_value(&default_settings).expect("serialize Settings::default");
+    normalize_path_separators(&mut template_val);
+    normalize_path_separators(&mut default_val);
 
     assert_eq!(
         template_val, default_val,
