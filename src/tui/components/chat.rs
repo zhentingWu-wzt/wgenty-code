@@ -3,7 +3,7 @@ use crate::tui::components::diff;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 use textwrap::Options;
 
@@ -101,6 +101,17 @@ pub fn render(
     };
 
     let para = Paragraph::new(Text::from(lines)).scroll((actual_scroll, 0));
+    // Clear the entire chat area before rendering so the diff backend never
+    // leaves stale glyphs behind. ratatui's double-buffered `Terminal::draw`
+    // only repaints cells that differ from the previous frame, and `Paragraph`
+    // does NOT pad line tails with spaces (`render_text` writes only the
+    // graphemes that exist). When a shorter line is drawn over the position a
+    // longer line held last frame - which happens every time auto-scroll
+    // advances or a message is replaced - the trailing cells compare equal to
+    // the stale previous buffer, so they are skipped and old characters linger
+    // at the end of the new line. `Clear` resets the whole area to blank every
+    // frame, forcing those cells back to a consistent empty state.
+    f.render_widget(Clear, area);
     f.render_widget(para, area);
 }
 
