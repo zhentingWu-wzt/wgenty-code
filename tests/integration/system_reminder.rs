@@ -7,8 +7,8 @@
 
 use tempfile::TempDir;
 
-use wgenty_code::prompts::{assemble_instructions, build_user_turn_reminder, PromptContext};
 use wgenty_code::config::Settings;
+use wgenty_code::prompts::{assemble_instructions, build_user_turn_reminder, PromptContext};
 
 /// Test helper: scope a fake `$HOME` for one closure.
 /// Tests using this must be `#[serial]` to avoid races.
@@ -114,18 +114,16 @@ fn reminder_reflects_runtime_file_change() {
         // Read VERSION_ONE from disk, cache it, and assemble
         std::fs::write(&user_wgenty, "VERSION_ONE").unwrap();
         let content_v1 = std::fs::read_to_string(&user_wgenty).unwrap();
-        let ctx1 = PromptContext::new().with_user_global_instructions(
-            Some((user_wgenty.clone(), content_v1)),
-        );
+        let ctx1 = PromptContext::new()
+            .with_user_global_instructions(Some((user_wgenty.clone(), content_v1)));
         let settings = Settings::default();
         let r1 = assemble_instructions(&settings, &ctx1);
 
         // Read VERSION_TWO from disk, cache it, and re-assemble
         std::fs::write(&user_wgenty, "VERSION_TWO").unwrap();
         let content_v2 = std::fs::read_to_string(&user_wgenty).unwrap();
-        let ctx2 = PromptContext::new().with_user_global_instructions(
-            Some((user_wgenty.clone(), content_v2)),
-        );
+        let ctx2 = PromptContext::new()
+            .with_user_global_instructions(Some((user_wgenty.clone(), content_v2)));
         let r2 = assemble_instructions(&settings, &ctx2);
 
         (r1, r2)
@@ -145,9 +143,15 @@ fn reminder_reflects_runtime_file_change() {
         .join("\n");
 
     assert!(text1.contains("VERSION_ONE"), "Layer 7: VERSION_ONE");
-    assert!(!text1.contains("VERSION_TWO"), "Layer 7: no VERSION_TWO in v1");
+    assert!(
+        !text1.contains("VERSION_TWO"),
+        "Layer 7: no VERSION_TWO in v1"
+    );
     assert!(text2.contains("VERSION_TWO"), "Layer 7: VERSION_TWO");
-    assert!(!text2.contains("VERSION_ONE"), "Layer 7: no VERSION_ONE in v2");
+    assert!(
+        !text2.contains("VERSION_ONE"),
+        "Layer 7: no VERSION_ONE in v2"
+    );
 }
 
 // ── §5: Hook injection end-to-end ─────────────────────────────────────────

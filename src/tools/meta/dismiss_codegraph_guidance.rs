@@ -29,9 +29,9 @@ impl DismissCodegraphGuidanceTool {
 /// form so symlinks / `..` segments don't create duplicate entries.
 pub fn add_dismissed_path(paths: &mut Vec<PathBuf>, working_dir: &Path) -> PathBuf {
     let canon = std::fs::canonicalize(working_dir).unwrap_or_else(|_| working_dir.to_path_buf());
-    let already = paths.iter().any(|p| {
-        std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == canon
-    });
+    let already = paths
+        .iter()
+        .any(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == canon);
     if !already {
         paths.push(canon.clone());
     }
@@ -83,8 +83,7 @@ impl Tool for DismissCodegraphGuidanceTool {
             message: format!("failed to load settings: {e}"),
             code: Some("settings_load".to_string()),
         })?;
-        let canon =
-            add_dismissed_path(&mut settings.integrations.codegraph.dismissed_paths, &path);
+        let canon = add_dismissed_path(&mut settings.integrations.codegraph.dismissed_paths, &path);
         settings.save().map_err(|e| ToolError {
             message: format!("failed to save settings: {e}"),
             code: Some("settings_save".to_string()),
