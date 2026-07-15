@@ -2,7 +2,8 @@
 comet_change: project-local-state
 role: technical-design
 canonical_spec: openspec
-archived-with: TBD
+status: final
+archived-with: 2026-07-15-project-local-state
 status: final
 ---
 

@@ -208,6 +208,10 @@ impl Cli {
         // Create client and app
         let client = DaemonClient::new(base_url);
         crate::utils::startup_timing::mark("daemon client created");
+        // Local id; first SaveSession upserts via PUT /sessions/:id and must
+        // preserve this id (see Session::with_id / update_session). Do not
+        // POST an empty session on startup — that would flood the panel with
+        // unused "New Session" entries for every REPL launch.
         let session_id = uuid::Uuid::new_v4().to_string();
         let mut app = App::new(client, session_id, settings_handle);
         crate::utils::startup_timing::mark("app new returned");
