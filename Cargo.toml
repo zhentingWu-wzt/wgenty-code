@@ -59,11 +59,9 @@ anyhow = "1.0"
 
 # Memory & Cache
 lru = "0.12"
-dashmap = "5.5"
 
 # Crypto & Auth
 sha2 = "0.10"
-base64 = "0.22"
 
 # MCP Protocol
 async-trait = "0.1"
@@ -82,9 +80,6 @@ dirs = "5.0"
 
 # Diff
 similar = "2.5"
-
-# Markdown & Syntax Highlighting
-pulldown-cmark = "0.10"
 
 
 # File operations

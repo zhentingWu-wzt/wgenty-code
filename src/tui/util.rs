@@ -67,10 +67,18 @@ pub async fn start_daemon(
     let app = health.merge(protected).layer(
         tower_http::cors::CorsLayer::new()
             .allow_origin([
-                "http://localhost:3000".parse().unwrap(),
-                "http://localhost:5173".parse().unwrap(),
-                "http://127.0.0.1:3000".parse().unwrap(),
-                "http://127.0.0.1:5173".parse().unwrap(),
+                "http://localhost:3000"
+                    .parse()
+                    .expect("invalid hardcoded URL literal"),
+                "http://localhost:5173"
+                    .parse()
+                    .expect("invalid hardcoded URL literal"),
+                "http://127.0.0.1:3000"
+                    .parse()
+                    .expect("invalid hardcoded URL literal"),
+                "http://127.0.0.1:5173"
+                    .parse()
+                    .expect("invalid hardcoded URL literal"),
             ])
             .allow_methods([
                 http::Method::GET,

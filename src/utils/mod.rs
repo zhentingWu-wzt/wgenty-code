@@ -77,7 +77,10 @@ pub fn estimate_tokens(text: &str) -> usize {
     let cjk = text.chars().filter(|c| is_cjk(*c)).count();
     let non_cjk = chars - cjk;
     // CJK: ~1.5 chars/token, non-CJK: ~4 chars/token
-    (cjk as f64 / 1.5 + non_cjk as f64 / 4.0).ceil() as usize
+    #[allow(clippy::cast_possible_truncation)]
+    // token estimate: small value proportional to text length
+    let tokens = (cjk as f64 / 1.5 + non_cjk as f64 / 4.0).ceil() as usize;
+    tokens
 }
 
 fn is_cjk(c: char) -> bool {

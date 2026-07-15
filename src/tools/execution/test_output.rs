@@ -2,6 +2,10 @@
 //!
 //! Parses raw stdout/stderr from test runners into a unified TestOutput struct.
 
+// Duration conversions (f64 seconds → u64 ms) are bounded by realistic test
+// durations and never approach u64::MAX, so truncation is impossible.
+#![allow(clippy::cast_possible_truncation)]
+
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -40,7 +44,7 @@ impl TestOutput {
         // Extract "test result: ok. 12 passed; 0 failed; 2 ignored"
         static RE: LazyLock<Regex> = LazyLock::new(|| {
             Regex::new(r"test result:\s*(\w+)\.\s*(\d+) passed;\s*(\d+) failed;\s*(\d+) ignored")
-                .unwrap()
+                .expect("valid regex literal")
         });
 
         let (mut passed, mut failed, mut skipped) = (0usize, 0usize, 0usize);
@@ -64,7 +68,7 @@ impl TestOutput {
 
         // Extract duration
         static DURATION_RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"finished in ([\d.]+)s").unwrap());
+            LazyLock::new(|| Regex::new(r"finished in ([\d.]+)s").expect("valid regex literal"));
         let duration_ms = DURATION_RE
             .captures(output)
             .and_then(|c| c[1].parse::<f64>().ok())
@@ -89,7 +93,8 @@ impl TestOutput {
 
         // "Tests: 12 passed, 3 failed, 1 skipped, 16 total"
         static RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"Tests:\s*(\d+)\s*failed,\s*(\d+)\s*passed.*?(\d+)\s*total").unwrap()
+            Regex::new(r"Tests:\s*(\d+)\s*failed,\s*(\d+)\s*passed.*?(\d+)\s*total")
+                .expect("valid regex literal")
         });
 
         let (mut passed, mut failed) = (0usize, 0usize);
@@ -97,7 +102,7 @@ impl TestOutput {
         let summary;
 
         static PASSED_RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"(\d+)\s*passed").unwrap());
+            LazyLock::new(|| Regex::new(r"(\d+)\s*passed").expect("valid regex literal"));
 
         if let Some(caps) = RE.captures(output) {
             failed = caps[1].parse().unwrap_or(0);
@@ -130,7 +135,7 @@ impl TestOutput {
 
         // Duration: "Time: 3.4 s"
         static DURATION_RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"Time:\s*([\d.]+)\s*s").unwrap());
+            LazyLock::new(|| Regex::new(r"Time:\s*([\d.]+)\s*s").expect("valid regex literal"));
         let duration_ms = DURATION_RE
             .captures(output)
             .and_then(|c| c[1].parse::<f64>().ok())
@@ -155,7 +160,8 @@ impl TestOutput {
 
         // "12 passed, 3 failed, 1 skipped in 3.45s"
         static RE: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"(\d+)\s*passed.*?(\d+)\s*failed.*?(\d+)\s*skipped").unwrap()
+            Regex::new(r"(\d+)\s*passed.*?(\d+)\s*failed.*?(\d+)\s*skipped")
+                .expect("valid regex literal")
         });
 
         let (mut passed, mut failed, mut skipped) = (0usize, 0usize, 0usize);
@@ -184,7 +190,7 @@ impl TestOutput {
 
         // Duration: "in 3.45s"
         static DURATION_RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"in\s*([\d.]+)\s*s").unwrap());
+            LazyLock::new(|| Regex::new(r"in\s*([\d.]+)\s*s").expect("valid regex literal"));
         let duration_ms = DURATION_RE
             .captures(output)
             .and_then(|c| c[1].parse::<f64>().ok())
@@ -208,8 +214,9 @@ impl TestOutput {
         let success = exit_code == 0;
 
         // "Ran 12 tests in 0.123s" and "OK" or "FAILED (failures=3)"
-        static RAN_RE: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r"Ran\s*(\d+)\s*tests?\s*in\s*([\d.]+)\s*s").unwrap());
+        static RAN_RE: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r"Ran\s*(\d+)\s*tests?\s*in\s*([\d.]+)\s*s").expect("valid regex literal")
+        });
 
         let (mut passed, mut failed) = (0usize, 0usize);
         let summary;
@@ -231,7 +238,7 @@ impl TestOutput {
             } else {
                 // Try to extract failure count
                 static FAILURES_RE: LazyLock<Regex> =
-                    LazyLock::new(|| Regex::new(r"failures=(\d+)").unwrap());
+                    LazyLock::new(|| Regex::new(r"failures=(\d+)").expect("valid regex literal"));
                 if let Some(fail_caps) = FAILURES_RE.captures(output) {
                     failed = fail_caps[1].parse().unwrap_or(0);
                     passed = total.saturating_sub(failed);

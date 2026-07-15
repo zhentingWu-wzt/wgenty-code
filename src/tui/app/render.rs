@@ -43,7 +43,7 @@ impl App {
         } else {
             0
         };
-        let pending_height = self.pending_count().min(5) as u16;
+        let pending_height = self.pending_count().min(5).try_into().unwrap_or(5);
         let has_pending = pending_height > 0;
         // Status bar height must account for the Block's TOP border (1 row):
         // active_count lines of content + 1 border line. Without the +1 the
@@ -61,7 +61,12 @@ impl App {
                 Constraint::Length(1),
                 Constraint::Length(if has_status_bar { status_bar_height } else { 0 }),
                 Constraint::Length(if has_pending { pending_height } else { 0 }),
-                Constraint::Length((self.input_box.textarea.lines().len() + 3).clamp(6, 16) as u16),
+                Constraint::Length(
+                    (self.input_box.textarea.lines().len() + 3)
+                        .clamp(6, 16)
+                        .try_into()
+                        .unwrap_or(16),
+                ),
             ]
         } else {
             vec![
@@ -69,7 +74,12 @@ impl App {
                 Constraint::Length(1),
                 Constraint::Length(if has_status_bar { status_bar_height } else { 0 }),
                 Constraint::Length(if has_pending { pending_height } else { 0 }),
-                Constraint::Length((self.input_box.textarea.lines().len() + 3).clamp(6, 16) as u16),
+                Constraint::Length(
+                    (self.input_box.textarea.lines().len() + 3)
+                        .clamp(6, 16)
+                        .try_into()
+                        .unwrap_or(16),
+                ),
             ]
         };
         let layout = Layout::default()
@@ -99,7 +109,7 @@ impl App {
         let has_real_turn = !self.committed_messages.is_empty();
         if !has_real_turn && !self.streaming_active {
             let model_name = {
-                let s = self.settings_lock.read().unwrap();
+                let s = self.settings_lock.read().expect("lock poisoned: settings");
                 crate::config::ApiConfig::default().get_model_id(&s.models.main.name)
             };
             components::welcome::render(f, main_area, &model_name);
@@ -200,7 +210,12 @@ impl App {
         // Only show context bar + CodeGraph status when the terminal is wide enough
         if area.width >= 40 {
             let used = self.token_counter.last_prompt_tokens();
-            let max = self.settings_lock.read().unwrap().models.context_window;
+            let max = self
+                .settings_lock
+                .read()
+                .expect("lock poisoned: settings")
+                .models
+                .context_window;
             spans.push(Span::raw(" "));
             spans.extend(components::context_bar::spans(used, max));
         }

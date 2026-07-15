@@ -23,7 +23,11 @@ impl GrepTool {
 
         let include = parse_patterns(&input["include"]);
         let exclude = parse_patterns(&input["exclude"]);
-        let max_results = input["max_results"].as_u64().unwrap_or(200) as usize;
+        let max_results = input["max_results"]
+            .as_u64()
+            .unwrap_or(200)
+            .try_into()
+            .unwrap_or(usize::MAX);
         let files_with_matches = input["files_with_matches"].as_bool().unwrap_or(false);
 
         let base = Path::new(path);

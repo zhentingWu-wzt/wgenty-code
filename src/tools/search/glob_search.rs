@@ -55,7 +55,11 @@ impl Tool for GlobTool {
             message: "pattern is required".to_string(),
             code: Some("missing_parameter".to_string()),
         })?;
-        let max_results = input["max_results"].as_u64().unwrap_or(200) as usize;
+        let max_results = input["max_results"]
+            .as_u64()
+            .unwrap_or(200)
+            .try_into()
+            .unwrap_or(usize::MAX);
 
         let base = Path::new(path);
         if !base.exists() {

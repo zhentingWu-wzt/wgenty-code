@@ -468,14 +468,20 @@ impl App {
                 tracing::info!("🔐 App: showing permission panel for '{}'", rule);
                 // Yolo mode: auto-approve all permissions
                 if self.mode == AgentMode::Yolo {
-                    let _ = responder.0.unwrap().send(PermissionResponse::AllowOnce);
+                    let _ = responder
+                        .0
+                        .expect("responder exists in auto-approve mode")
+                        .send(PermissionResponse::AllowOnce);
                     return;
                 }
                 // AcceptEdits mode: auto-approve file-edit permissions
                 if self.mode == AgentMode::AcceptEdits
                     && (rule == "apply_patch" || rule == "file_edit" || rule == "file_write")
                 {
-                    let _ = responder.0.unwrap().send(PermissionResponse::AllowOnce);
+                    let _ = responder
+                        .0
+                        .expect("responder exists in auto-approve mode")
+                        .send(PermissionResponse::AllowOnce);
                     return;
                 }
                 self.permission_state.show(reason, rule, responder);
@@ -858,7 +864,11 @@ impl App {
                 new_ctx.skills_inventory = data.skill_inventory;
                 let new_ctx = std::sync::Arc::new(new_ctx);
 
-                let settings = self.settings_lock.read().unwrap().clone();
+                let settings = self
+                    .settings_lock
+                    .read()
+                    .expect("lock poisoned: settings")
+                    .clone();
                 let assembled = prompts::assemble_instructions(&settings, &new_ctx);
 
                 self.prompt_context = new_ctx;

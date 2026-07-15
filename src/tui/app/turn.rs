@@ -71,7 +71,7 @@ impl App {
         let plan_mode = self.mode == AgentMode::PlanMode;
         // Read agent config from settings
         let (planner_client, max_rounds, subagent_timeout_secs, context_window, max_tokens) = {
-            let s = self.settings_lock.read().unwrap();
+            let s = self.settings_lock.read().expect("lock poisoned: settings");
             let planner = if let Some(ref pm) = s.models.planner {
                 let mut planner_settings = s.clone();
                 planner_settings.models.main.name = pm.name.clone();
@@ -103,7 +103,7 @@ impl App {
 
         // Per-turn smart memory recall — runs inside the tokio task.
         let recall_top_n = {
-            let s = self.settings_lock.read().unwrap();
+            let s = self.settings_lock.read().expect("lock poisoned: settings");
             s.storage.memory.recall_top_n
         };
 
@@ -191,7 +191,7 @@ impl App {
         let sys_msgs = self.assembled_system_messages.clone();
         let plan_mode = self.mode == AgentMode::PlanMode;
         let (planner_client, max_rounds, subagent_timeout_secs, context_window, max_tokens) = {
-            let s = self.settings_lock.read().unwrap();
+            let s = self.settings_lock.read().expect("lock poisoned: settings");
             let planner = if let Some(ref pm) = s.models.planner {
                 let mut planner_settings = s.clone();
                 planner_settings.models.main.name = pm.name.clone();
@@ -275,7 +275,7 @@ impl App {
         let session_id = self.session_id.clone();
         let sys_msgs = self.assembled_system_messages.clone();
         let (max_rounds, subagent_timeout_secs, context_window, max_tokens) = {
-            let s = self.settings_lock.read().unwrap();
+            let s = self.settings_lock.read().expect("lock poisoned: settings");
             (
                 s.agent.max_rounds.unwrap_or(100),
                 s.agent.subagent.timeout_secs,

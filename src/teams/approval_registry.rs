@@ -19,7 +19,7 @@ fn global() -> &'static Mutex<AgentMap> {
 /// Get (or create) the pending-approvals handle for `agent_id`.
 /// Shared between the subagent's `MailboxInbox` and its `request_approval` tool.
 pub fn register_agent(agent_id: &str) -> Arc<Mutex<PendingMap>> {
-    let mut map = global().lock().unwrap();
+    let mut map = global().lock().expect("lock poisoned: approval registry");
     map.entry(agent_id.to_string())
         .or_insert_with(|| Arc::new(Mutex::new(HashMap::new())))
         .clone()
@@ -27,7 +27,7 @@ pub fn register_agent(agent_id: &str) -> Arc<Mutex<PendingMap>> {
 
 /// Drop an agent's entry when its subagent loop exits (best-effort cleanup).
 pub fn unregister_agent(agent_id: &str) {
-    let mut map = global().lock().unwrap();
+    let mut map = global().lock().expect("lock poisoned: approval registry");
     map.remove(agent_id);
 }
 

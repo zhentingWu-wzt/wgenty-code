@@ -71,7 +71,7 @@ impl Tool for LoadSkillTool {
                     "skills": skills_list,
                     "hint": "Use load_skill with a specific name to get full instructions."
                 }))
-                .unwrap(),
+                .expect("serializing json! value is infallible"),
                 metadata: std::collections::HashMap::new(),
             });
         }

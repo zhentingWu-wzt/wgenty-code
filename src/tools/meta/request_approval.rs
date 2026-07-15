@@ -153,7 +153,7 @@ impl RequestApprovalTool {
         let pending = approval_registry::register_agent(from);
         let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
         {
-            let mut map = pending.lock().unwrap();
+            let mut map = pending.lock().expect("lock poisoned: pending approvals");
             map.insert(request_id.to_string(), tx);
         }
 
@@ -177,7 +177,7 @@ impl RequestApprovalTool {
         // Wait for the response (driven by MailboxInbox::drain resolving the oneshot).
         let outcome = tokio::time::timeout(Duration::from_secs(timeout_secs), rx).await;
         // Clean up the waiter if it's still there (e.g. timeout).
-        let mut map = pending.lock().unwrap();
+        let mut map = pending.lock().expect("lock poisoned: pending approvals");
         map.remove(request_id);
 
         match outcome {

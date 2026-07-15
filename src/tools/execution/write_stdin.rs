@@ -58,7 +58,7 @@ impl Tool for WriteStdinTool {
         let yield_time_ms = input["yield_time_ms"].as_u64().unwrap_or(1000);
         let max_output_chars = input["max_output_chars"]
             .as_u64()
-            .map(|v| v as usize)
+            .map(|v| usize::try_from(v).unwrap_or(usize::MAX))
             .unwrap_or(4000);
 
         let chunk = self

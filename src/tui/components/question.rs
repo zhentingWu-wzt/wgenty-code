@@ -253,7 +253,7 @@ impl Component for QuestionState {
                     true
                 }
                 KeyCode::Char(c) if c.is_ascii_digit() => {
-                    let n = c.to_digit(10).unwrap() as usize;
+                    let n = c.to_digit(10).expect("ascii digit verified by guard") as usize;
                     self.just_submitted = self.select_number(n);
                     self.just_submitted
                 }

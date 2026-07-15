@@ -42,7 +42,8 @@ impl CompletionPanel {
         let has_tabs = state.prefix == '/' && !state.tabs.is_empty();
         let tab_rows = if has_tabs { TAB_ROWS } else { 0 };
         let visible_item_count = max_visible_items.min(visible_matches.len());
-        let panel_height = visible_item_count as u16 + tab_rows + HINT_ROWS + 2; // border top/bottom
+        let panel_height =
+            u16::try_from(visible_item_count).unwrap_or(u16::MAX) + tab_rows + HINT_ROWS + 2; // border top/bottom
 
         let panel_area = Rect {
             x: area.x,
