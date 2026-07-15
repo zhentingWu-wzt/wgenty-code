@@ -12,7 +12,7 @@ pub mod stuck_detector;
 
 pub use stress_tests::{run_stress_test, StressTestResult, StressTestRunner};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Get the home directory
 pub fn home_dir() -> PathBuf {
@@ -27,6 +27,50 @@ pub fn config_dir() -> PathBuf {
 /// Get the data directory
 pub fn data_dir() -> PathBuf {
     home_dir().join(".wgenty-code").join("data")
+}
+
+// ── Project-local state paths ──────────────────────────────────────────────
+//
+// Sessions and memories are split into project-local (under `<CWD>/.wgenty-code/`)
+// and global (under `~/.wgenty-code/`) scopes. The project root equals the
+// current working directory with no upward search.
+
+/// Project-local `.wgenty-code` directory: `<project_root>/.wgenty-code/`.
+pub fn project_local_dir(project_root: &Path) -> PathBuf {
+    project_root.join(".wgenty-code")
+}
+
+/// Project-local memory directory: `<project_root>/.wgenty-code/memory/`.
+pub fn project_memory_dir(project_root: &Path) -> PathBuf {
+    project_local_dir(project_root).join("memory")
+}
+
+/// Project-local sessions directory: `<project_root>/.wgenty-code/sessions/`.
+pub fn project_sessions_dir(project_root: &Path) -> PathBuf {
+    project_local_dir(project_root).join("sessions")
+}
+
+/// Global memory directory: `~/.wgenty-code/memory/`.
+pub fn global_memory_dir() -> PathBuf {
+    config_dir().join("memory")
+}
+
+/// Resolve the current project root from the process CWD.
+///
+/// Returns the current working directory. If CWD cannot be determined (e.g.
+/// the directory was deleted), falls back to the global config directory and
+/// logs a warning.
+pub fn current_project_root() -> PathBuf {
+    match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Failed to read CWD; falling back to global config dir as project root"
+            );
+            config_dir()
+        }
+    }
 }
 
 /// Ensure a directory exists
@@ -141,4 +185,67 @@ pub fn remove_daemon_token() -> anyhow::Result<()> {
         std::fs::remove_file(&path)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod project_local_path_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn project_local_dir_appends_wgenty_code() {
+        let root = Path::new("/home/user/myproject");
+        assert_eq!(
+            project_local_dir(root),
+            Path::new("/home/user/myproject/.wgenty-code")
+        );
+    }
+
+    #[test]
+    fn project_memory_dir_appends_memory() {
+        let root = Path::new("/home/user/myproject");
+        assert_eq!(
+            project_memory_dir(root),
+            Path::new("/home/user/myproject/.wgenty-code/memory")
+        );
+    }
+
+    #[test]
+    fn project_sessions_dir_appends_sessions() {
+        let root = Path::new("/tmp/work");
+        assert_eq!(
+            project_sessions_dir(root),
+            Path::new("/tmp/work/.wgenty-code/sessions")
+        );
+    }
+
+    #[test]
+    fn global_memory_dir_under_config_dir() {
+        let global = global_memory_dir();
+        // ~/.wgenty-code/memory -> last component is "memory", parent is ".wgenty-code"
+        assert!(global.ends_with("memory"));
+        assert_eq!(
+            global.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()),
+            Some(".wgenty-code")
+        );
+    }
+
+    #[test]
+    fn current_project_root_returns_cwd() {
+        let root = current_project_root();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| root.clone());
+        // When CWD is readable, current_project_root should match it.
+        if std::env::current_dir().is_ok() {
+            assert_eq!(root, cwd);
+        }
+    }
+
+    #[test]
+    fn project_local_dir_with_relative_path() {
+        let root = Path::new("relative/path");
+        assert_eq!(
+            project_local_dir(root),
+            Path::new("relative/path/.wgenty-code")
+        );
+    }
 }
