@@ -212,6 +212,47 @@ impl MemoryIndex {
             }
         }
     }
+
+    /// Replace the indexed content for the entry at `idx` with `entry`'s
+    /// content, in place.
+    ///
+    /// Removes all stale postings for `idx`, re-indexes from `entry`, and
+    /// recomputes IDF. `doc_count` is unchanged because no document is added
+    /// or removed. Used by `add_memory` after an in-place merge folds a
+    /// near-duplicate into an existing entry, so the TF-IDF index stays
+    /// consistent with the merged content.
+    fn replace_entry(&mut self, entry: &MemoryEntry, idx: usize) {
+        // Drop every posting that referenced the old content at `idx`.
+        for postings in self.inverted.values_mut() {
+            postings.retain(|(i, _)| *i != idx);
+        }
+        // Remove words that no longer have any postings.
+        self.inverted.retain(|_, postings| !postings.is_empty());
+
+        // Re-add postings from the new (merged) content.
+        let mut tf_counts: HashMap<String, u32> = HashMap::new();
+        for word in entry.content.split_whitespace() {
+            if crate::context::ConsolidationEngine::is_meaningful_token(word) {
+                *tf_counts.entry(word.to_lowercase()).or_insert(0) += 1;
+            }
+        }
+        for (word, tf) in tf_counts {
+            let tf_norm = 1.0 + (tf as f32).ln();
+            self.inverted
+                .entry(word.clone())
+                .or_default()
+                .push((idx, tf_norm));
+        }
+
+        // Recompute IDF for every word (doc_count is unchanged).
+        let n = self.doc_count as f32;
+        for (word, postings) in &self.inverted {
+            let df = postings.len() as f32;
+            self.idf.insert(word.clone(), (n / df).ln());
+        }
+        // Drop IDF entries for words that disappeared.
+        self.idf.retain(|w, _| self.inverted.contains_key(w));
+    }
 }
 
 // ── MemoryManager ────────────────────────────────────────────────────
@@ -316,6 +357,35 @@ impl MemoryManager {
         }
 
         let mut memories = self.memories.write().await;
+
+        // Dedup guard: context compaction asks the model to extract memories
+        // from the conversation being summarized, so the same fact is often
+        // re-extracted across rounds (and may even be tagged with a different
+        // `MemoryType` each time). `add_memory` previously appended a fresh
+        // entry every time, accumulating near-duplicate files that only
+        // consolidation could merge. Instead, fold a sufficiently similar
+        // existing entry into the incoming one (type-agnostic, relaxed
+        // threshold) and persist under the existing id, leaving no orphan.
+        const DEDUP_THRESHOLD: f32 = 0.6;
+        if let Some(existing_idx) =
+            self.consolidation
+                .find_similar(&entry, &memories, DEDUP_THRESHOLD, false)
+        {
+            let merged = ConsolidationEngine::merge_into(&memories[existing_idx], &entry);
+            // Persist under the existing id so the original file is overwritten
+            // and no duplicate file is created.
+            self.storage.save_memory(&merged).await?;
+            memories[existing_idx] = merged.clone();
+            // Keep the TF-IDF index in sync with the merged content. The
+            // positional idx is unchanged, but the token set changed, so the
+            // postings for this idx must be replaced.
+            self.index
+                .write()
+                .await
+                .replace_entry(&merged, existing_idx);
+            return Ok(());
+        }
+
         let idx = memories.len();
         memories.push(entry.clone());
         self.storage.save_memory(&entry).await?;
@@ -332,8 +402,16 @@ impl MemoryManager {
     pub async fn search_memories(&self, query: &str) -> Vec<MemoryEntry> {
         // Try TF-IDF index first. Falls back to substring scan if the index
         // is empty (e.g., before load() was called).
-        let index = self.index.read().await;
-        let ranked = index.search(query, 10);
+        //
+        // The index read guard is dropped before acquiring the memories read
+        // guard so we never hold both locks at once. `add_memory` and
+        // `consolidate` acquire the memories *write* lock first and then the
+        // index lock; holding an index read guard across the memories read
+        // acquisition would invert that order and can deadlock.
+        let ranked = {
+            let index = self.index.read().await;
+            index.search(query, 10)
+        };
 
         let memories = self.memories.read().await;
         if !ranked.is_empty() {
@@ -442,6 +520,12 @@ impl MemoryManager {
         // "consolidated away" memories to be resurrected on the next
         // `load_all()`.
         self.storage.reconcile(&consolidated).await?;
+        // Rebuild the TF-IDF index to match the consolidated Vec. Previously
+        // the index kept stale positional postings from the pre-consolidation
+        // Vec (which may be shorter after TTL expiry and merging), so
+        // `search_memories()` could resolve indices to wrong or missing
+        // entries after a consolidation.
+        self.index.write().await.rebuild(&consolidated);
         *memories = consolidated;
         Ok(())
     }
@@ -861,5 +945,137 @@ mod tests {
             "load() should recover the persisted history entry"
         );
         assert_eq!(recent[0].content, "regression-cmd");
+    }
+
+    /// Dedup guard: adding a near-duplicate memory (same fact, different type
+    /// and terser wording, as happens across compaction rounds) must fold into
+    /// the existing entry instead of creating a new file.
+    #[tokio::test]
+    async fn add_memory_merges_near_duplicate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
+        let storage = Arc::new(crate::context::Storage::new(memory_dir));
+        let mm = MemoryManager {
+            sessions: Arc::new(MemorySessionManager::new()),
+            history: Arc::new(HistoryManager::new()),
+            storage: storage.clone(),
+            consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
+            memories: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(RwLock::new(MemoryIndex::new())),
+            consolidating: Arc::new(AtomicBool::new(false)),
+        };
+
+        // First extraction: a decision captured during compaction.
+        mm.add_memory(MemoryEntry::new(
+            MemoryType::Decision,
+            "use JWT for authentication",
+        ))
+        .await
+        .unwrap();
+
+        // Second extraction (later compaction round): same fact, different
+        // type and terser wording. Without the dedup guard this would create a
+        // second file; with it, the existing entry is merged in place.
+        mm.add_memory(MemoryEntry::new(MemoryType::Knowledge, "use JWT"))
+            .await
+            .unwrap();
+
+        let memories = mm.memories.read().await;
+        assert_eq!(
+            memories.len(),
+            1,
+            "near-duplicate should merge into the existing entry, not append"
+        );
+        // Merged content keeps the richer (existing) text.
+        assert!(memories[0].content.contains("use JWT for authentication"));
+        // The existing id is preserved (file overwritten, no orphan).
+        let id = memories[0].id.clone();
+        drop(memories);
+
+        // Exactly one memory file on disk.
+        let mut files = 0;
+        let mut dir = tokio::fs::read_dir(mm.storage.path()).await.unwrap();
+        while let Some(entry) = dir.next_entry().await.unwrap() {
+            if entry.path().extension().is_some_and(|e| e == "json") {
+                files += 1;
+            }
+        }
+        assert_eq!(
+            files, 1,
+            "only the existing memory file should exist on disk"
+        );
+        // The persisted file still carries the existing id.
+        let on_disk: MemoryEntry = serde_json::from_str(
+            &tokio::fs::read_to_string(mm.storage.path().join(format!("{id}.json")))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(on_disk.id, id);
+    }
+
+    /// After `consolidate()` drops a stale low-importance entry, the TF-IDF
+    /// index must be rebuilt so a surviving memory that shifted position is
+    /// still searchable. Previously the index kept stale positional postings
+    /// and the survivor would silently disappear from recall results.
+    #[tokio::test]
+    async fn consolidate_rebuilds_index_so_search_resolves_survivors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
+        let storage = Arc::new(crate::context::Storage::new(memory_dir));
+        let mm = MemoryManager {
+            sessions: Arc::new(MemorySessionManager::new()),
+            history: Arc::new(HistoryManager::new()),
+            storage: storage.clone(),
+            consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
+            memories: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(RwLock::new(MemoryIndex::new())),
+            consolidating: Arc::new(AtomicBool::new(false)),
+        };
+
+        // idx 0: survives consolidation (Knowledge is always kept).
+        mm.add_memory(MemoryEntry::new(
+            MemoryType::Knowledge,
+            "alpha beta keepsake",
+        ))
+        .await
+        .unwrap();
+        // idx 1: low-importance, old Session memory -> dropped by consolidate
+        // (age > age_threshold_hours=24, importance < 0.3).
+        let mut stale =
+            MemoryEntry::new(MemoryType::Session, "gamma delta transient").with_importance(0.1);
+        stale.timestamp = chrono::Utc::now() - chrono::Duration::hours(100);
+        mm.add_memory(stale).await.unwrap();
+        // idx 2: survives, but shifts to idx 1 after the stale entry is
+        // dropped. Its distinctive token "unobtainium" lets us search for it
+        // precisely.
+        mm.add_memory(MemoryEntry::new(
+            MemoryType::Knowledge,
+            "unobtainium alpha rare",
+        ))
+        .await
+        .unwrap();
+
+        mm.consolidate().await.unwrap();
+
+        let memories = mm.memories.read().await;
+        assert_eq!(
+            memories.len(),
+            2,
+            "stale low-importance Session memory should be dropped"
+        );
+        drop(memories);
+
+        // Search for the distinctive token of the shifted survivor. Before the
+        // index-rebuild fix the TF-IDF posting still pointed at the
+        // pre-consolidation idx 2, which is now out of range, so the memory
+        // would be silently missing from results.
+        let found = mm.search_memories("unobtainium").await;
+        assert!(
+            found.iter().any(|m| m.content.contains("unobtainium")),
+            "survivor that shifted index after consolidation must still be searchable"
+        );
     }
 }

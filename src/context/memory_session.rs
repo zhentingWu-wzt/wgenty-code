@@ -319,7 +319,7 @@ impl SessionManager {
 
     pub async fn list(&self) -> anyhow::Result<Vec<SessionInfo>> {
         let sessions = self.sessions.read().await;
-        Ok(sessions
+        let mut items: Vec<SessionInfo> = sessions
             .values()
             .map(|s| SessionInfo {
                 id: s.id.clone(),
@@ -330,7 +330,12 @@ impl SessionManager {
                 message_count: s.lazy_message_count.unwrap_or(s.messages.len()),
                 status: s.status.clone(),
             })
-            .collect())
+            .collect();
+        drop(sessions);
+        // Sort by updated_at descending so the most recently active sessions
+        // appear first, matching the local SessionManager ordering.
+        items.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
+        Ok(items)
     }
 
     pub async fn get(&self, id: &str) -> Option<Session> {

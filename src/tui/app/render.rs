@@ -244,11 +244,7 @@ impl App {
         let mut lines: Vec<String> = Vec::new();
         for (i, input) in self.pending_inputs.iter().enumerate().take(max_show) {
             let first_line = input.display_text.lines().next().unwrap_or("");
-            let trunc = if first_line.len() > 60 {
-                format!("{}...", &first_line[..57])
-            } else {
-                first_line.to_string()
-            };
+            let trunc = truncate_preview(first_line, 60, 57);
             lines.push(format!("  {}. {}", i + 1, trunc));
         }
         let more = if pending_count > max_show {
@@ -282,6 +278,25 @@ fn status_bar_layout_height(active_count: usize) -> u16 {
     }
     // +1 border, +1 for "main" placeholder row, then capped subagent rows.
     (active_count.min(5) + 2) as u16
+}
+
+/// Truncate `text` for a one-line preview.
+///
+/// When the char count exceeds `max`, the text is cut to the first `keep`
+/// chars and an ellipsis (`...`) is appended. The cut always lands on a UTF-8
+/// char boundary: naive byte slicing (`&text[..keep]`) panics when the index
+/// falls inside a multi-byte sequence (e.g. CJK characters).
+fn truncate_preview(text: &str, max: usize, keep: usize) -> String {
+    if text.chars().count() > max {
+        let end = text
+            .char_indices()
+            .nth(keep)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len());
+        format!("{}...", &text[..end])
+    } else {
+        text.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -320,6 +335,33 @@ mod tests {
     #[test]
     fn test_status_bar_height_many_active_still_capped() {
         assert_eq!(status_bar_layout_height(50), 7);
+    }
+
+    #[test]
+    fn truncate_preview_keeps_short_text_intact() {
+        assert_eq!(truncate_preview("hello", 60, 57), "hello");
+    }
+
+    #[test]
+    fn truncate_preview_ascii_appends_ellipsis() {
+        let long = "a".repeat(61);
+        let out = truncate_preview(&long, 60, 57);
+        assert_eq!(out, format!("{}...", "a".repeat(57)));
+    }
+
+    #[test]
+    fn truncate_preview_multibyte_does_not_panic_on_char_boundary() {
+        // Regression: the old byte-based `&text[..57]` panicked with
+        // "end byte index 57 is not a char boundary; it is inside '不'".
+        // Construct input whose char count exceeds 60 and whose byte index 57
+        // lands inside a 3-byte CJK character: 2 ASCII bytes + CJK chars, the
+        // 19th CJK char (0-indexed 18) occupies bytes 56..59.
+        let mut input = String::from("ab");
+        input.push_str(&"不".repeat(59)); // 2 + 59 = 61 chars > 60
+        let out = truncate_preview(&input, 60, 57);
+        // Cut on a char boundary -> keeps 57 chars, no panic.
+        assert!(out.ends_with("..."));
+        assert_eq!(out.trim_end_matches("...").chars().count(), 57);
     }
 }
 
