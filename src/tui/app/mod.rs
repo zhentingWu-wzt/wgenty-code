@@ -624,6 +624,19 @@ impl App {
                     );
                     let _ = tx.send(AppEvent::MemoriesReady(lines));
                 }
+
+                // Format global memories for the system prompt <global-memory>
+                // block. Unlike project memories, these are injected every
+                // turn without relevance filtering (soft cap 50).
+                let global_lines =
+                    crate::context::inject::MemoryContextInjector::format_global(&mm).await;
+                if !global_lines.is_empty() {
+                    tracing::info!(
+                        count = global_lines.len(),
+                        "loaded global memories at startup"
+                    );
+                    let _ = tx.send(AppEvent::GlobalMemoriesReady(global_lines));
+                }
             });
         }
 
