@@ -279,6 +279,12 @@ impl McpManager {
             }
         }
 
+        // Probe CodeGraph availability. Skip the spawn entirely when the binary
+        // is absent or the user dismissed guidance -- `codegraph serve` would
+        // fail with "command not found" (fast but noisy) or run unwanted.
+        let skip_codegraph =
+            codegraph::should_skip_codegraph(codegraph::probe_install_state(settings));
+
         // Connect to all auto-start MCP servers concurrently. The slow part of
         // each connection (subprocess spawn + initialize + tools/list, each
         // bounded by a 15s timeout) runs in parallel, so total connect time
@@ -288,6 +294,7 @@ impl McpManager {
         let auto_start_configs: Vec<&McpConfig> = configs
             .iter()
             .filter(|config| config.auto_start && config.name != "filesystem")
+            .filter(|config| !(skip_codegraph && config.name.eq_ignore_ascii_case("codegraph")))
             .collect();
         let connect_futures: Vec<_> = auto_start_configs
             .iter()

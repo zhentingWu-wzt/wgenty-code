@@ -97,6 +97,16 @@ pub fn install_state_notice(state: CodegraphInstallState) -> Option<String> {
     }
 }
 
+/// Whether the MCP connect path should skip spawning the codegraph server.
+/// True when the binary is absent or the user dismissed guidance -- in both
+/// cases launching `codegraph serve --mcp` is pointless or unwanted.
+pub fn should_skip_codegraph(state: CodegraphInstallState) -> bool {
+    matches!(
+        state,
+        CodegraphInstallState::NotInstalled | CodegraphInstallState::Dismissed
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +201,19 @@ mod tests {
     fn notice_none_for_ready_and_dismissed() {
         assert!(install_state_notice(CodegraphInstallState::Ready).is_none());
         assert!(install_state_notice(CodegraphInstallState::Dismissed).is_none());
+    }
+
+    #[test]
+    fn should_skip_true_for_not_installed_and_dismissed() {
+        assert!(should_skip_codegraph(CodegraphInstallState::NotInstalled));
+        assert!(should_skip_codegraph(CodegraphInstallState::Dismissed));
+    }
+
+    #[test]
+    fn should_skip_false_for_ready_and_not_initialized() {
+        assert!(!should_skip_codegraph(CodegraphInstallState::Ready));
+        assert!(!should_skip_codegraph(
+            CodegraphInstallState::NotInitialized
+        ));
     }
 }
