@@ -289,6 +289,7 @@ mod tests {
         mm.add_memory(
             crate::context::MemoryEntry::new(crate::context::MemoryType::Knowledge, "test memory")
                 .with_importance(0.8),
+            crate::context::MemoryOrigin::Project,
         )
         .await
         .unwrap();

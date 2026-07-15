@@ -218,7 +218,10 @@ impl Compactor for ApiCompactor {
 
         if let Some(ref mm) = self.memory_manager {
             for memory in &extracted_memories {
-                if let Err(e) = mm.add_memory(memory.clone()).await {
+                if let Err(e) = mm
+                    .add_memory(memory.clone(), crate::context::MemoryOrigin::Project)
+                    .await
+                {
                     tracing::warn!(
                         error = %e,
                         memory_id = %memory.id,

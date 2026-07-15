@@ -553,7 +553,11 @@ impl Compactor for TuiCompactor {
         }
 
         for memory in &extracted_memories {
-            if let Err(e) = self.memory_manager.add_memory(memory.clone()).await {
+            if let Err(e) = self
+                .memory_manager
+                .add_memory(memory.clone(), crate::context::MemoryOrigin::Project)
+                .await
+            {
                 tracing::warn!(error = %e, memory_id = %memory.id, "failed to persist extracted memory");
             }
         }
