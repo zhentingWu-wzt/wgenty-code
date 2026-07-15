@@ -1,7 +1,7 @@
 //! Rendering methods for the TUI application.
 
 use super::App;
-use crate::config::mcp_config::McpServerStatus;
+use crate::mcp::codegraph::CodegraphInstallState;
 use crate::tui::components;
 use crate::tui::theme;
 use crate::tui::util::centered_rect;
@@ -308,17 +308,46 @@ mod tests {
     }
 }
 
-/// Build a styled span for the CodeGraph MCP connection status indicator.
-fn codegraph_status_span(status: &McpServerStatus) -> Span<'static> {
+/// Build a styled span for the CodeGraph availability indicator.
+fn codegraph_status_span(status: &CodegraphInstallState) -> Span<'static> {
     let (icon, color, label) = match status {
-        McpServerStatus::Running => ("●", theme::SUCCESS, "CG"),
-        McpServerStatus::Starting => ("◌", theme::WARNING, "CG"),
-        McpServerStatus::Error => ("✗", theme::ERROR, "CG"),
-        McpServerStatus::Stopped => ("○", theme::DIM, "CG"),
-        McpServerStatus::Unknown => ("○", theme::DIM, "CG"),
+        CodegraphInstallState::Ready => ("●", theme::SUCCESS, "CG"),
+        CodegraphInstallState::NotInstalled => ("⚠", theme::WARNING, "CG"),
+        CodegraphInstallState::NotInitialized => ("⚠", theme::WARNING, "CG"),
+        CodegraphInstallState::Dismissed => ("○", theme::DIM, "CG"),
     };
     Span::styled(
         format!("{} {}", icon, label),
         ratatui::style::Style::default().fg(color),
     )
+}
+
+#[cfg(test)]
+mod codegraph_span_tests {
+    use super::*;
+    use crate::mcp::codegraph::CodegraphInstallState;
+
+    #[test]
+    fn span_ready_shows_filled_dot() {
+        let s = codegraph_status_span(&CodegraphInstallState::Ready);
+        assert!(s.content.contains("●"));
+    }
+
+    #[test]
+    fn span_not_installed_shows_warning() {
+        let s = codegraph_status_span(&CodegraphInstallState::NotInstalled);
+        assert!(s.content.contains("⚠"));
+    }
+
+    #[test]
+    fn span_not_initialized_shows_warning() {
+        let s = codegraph_status_span(&CodegraphInstallState::NotInitialized);
+        assert!(s.content.contains("⚠"));
+    }
+
+    #[test]
+    fn span_dismissed_shows_dim_circle() {
+        let s = codegraph_status_span(&CodegraphInstallState::Dismissed);
+        assert!(s.content.contains("○"));
+    }
 }
