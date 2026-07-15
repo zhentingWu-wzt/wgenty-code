@@ -307,7 +307,10 @@ impl App {
                             .collaboration_mode
                             .clone()
                             .unwrap_or_default(),
-                    );
+                    )
+                    .with_codegraph_state(crate::mcp::codegraph::probe_install_state(
+                        &new_settings,
+                    ));
                 let project_root =
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let wgenty_sections = crate::utils::project::read_wgenty_md_sections(&project_root);

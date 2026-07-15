@@ -181,7 +181,8 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
     }
 
     let session_id = Uuid::new_v4().to_string();
-    let prompt_ctx = PromptContext::default();
+    let prompt_ctx = PromptContext::default()
+        .with_codegraph_state(crate::mcp::codegraph::probe_install_state(&settings));
     let assembled = prompts::assemble_instructions(&settings, &prompt_ctx);
     let system_messages = assembled.system_messages.clone();
     let mut seed = assembled.system_messages;
