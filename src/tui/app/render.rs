@@ -446,7 +446,10 @@ mod cwd_display_tests {
 
     #[test]
     fn truncate_path_left_keeps_tail() {
-        assert_eq!(truncate_path_left("~/workspace/project", 20), "~/workspace/project");
+        assert_eq!(
+            truncate_path_left("~/workspace/project", 20),
+            "~/workspace/project"
+        );
         assert_eq!(truncate_path_left("~/workspace/project", 10), "…e/project");
         assert_eq!(truncate_path_left("abc", 1), "…");
         assert_eq!(truncate_path_left("abc", 0), "");

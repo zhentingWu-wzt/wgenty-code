@@ -83,9 +83,7 @@ impl AnthropicStreamState {
                         serde_json::to_string(&chunk).unwrap_or_default()
                     ));
                 }
-                AnthropicContentBlock::ToolUse {
-                    id, name, input: _, ..
-                } => {
+                AnthropicContentBlock::ToolUse { id, name, .. } => {
                     self.tool_use_accumulators.insert(
                         *index,
                         ToolUseAccumulator {
@@ -95,9 +93,7 @@ impl AnthropicStreamState {
                         },
                     );
                 }
-                AnthropicContentBlock::ServerToolUse {
-                    id, name, input: _, ..
-                } => {
+                AnthropicContentBlock::ServerToolUse { id, name, .. } => {
                     self.tool_use_accumulators.insert(
                         *index,
                         ToolUseAccumulator {
