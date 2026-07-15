@@ -137,6 +137,19 @@ ls -lh ./target/release/wgenty_code
 
 ---
 
+# 代码导航
+
+本项目已配置 CodeGraph（`codegraph serve --mcp`），代码导航优先级：
+
+1. **符号查找 / 调用链 / 模块结构** -> 优先 `codegraph_explore` 或 `codegraph_node`，一次调用返回源码 + 调用方 + 被调用方，替代多次 grep + Read 循环。
+2. **多文件改动前** -> 用 `codegraph_explore` 评估爆炸半径（谁依赖被改的符号），确认不影响调用方的错误处理契约。
+3. **纯文本模式匹配**（`.unwrap()`、`TODO`、字符串字面量）-> 用 `grep`，这是 grep 的主场。
+4. CodeGraph 不可用时 -> 降级到 `grep` / `lsp`，不阻塞工作。
+
+原则：能一次 codegraph 调用解决的问题，不要拆成 3-4 次 grep + file_read。
+
+---
+
 # 模块依赖原则
 
 - `tools/` 不应依赖 `agent/`（工具是独立的执行单元）。

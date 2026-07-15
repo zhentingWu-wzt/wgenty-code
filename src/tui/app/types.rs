@@ -149,6 +149,8 @@ pub enum AppEvent {
     CtrlCPressed,
     /// Structured plan updated via update_plan tool
     PlanUpdate(serde_json::Value),
+    /// User-visible system notice (e.g. per-turn reminder transcript portion).
+    SystemNotice(String),
     /// Sessions loaded from daemon
     SessionListLoaded(Vec<SessionInfo>),
     HistoryLoaded(Vec<ChatMessage>),
@@ -194,6 +196,9 @@ pub enum AppEvent {
     /// Cross-session memory recall completed in the background at startup.
     /// Carries formatted memory lines to inject into the conversation context.
     MemoriesReady(Vec<String>),
+    /// Global memory loading completed in the background at startup.
+    /// Carries formatted global memory lines for the system prompt block.
+    GlobalMemoriesReady(Vec<String>),
     /// Skill discovery completed in the background at startup.
     /// Carries the merged skill inventory, external skill registry, and
     /// comet workflow entry commands for the command router / completion engine.

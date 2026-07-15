@@ -2,9 +2,9 @@ name: CI - 构建、测试和质量检查
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
   check:
@@ -87,3 +87,14 @@ jobs:
         with:
           name: ${{ matrix.os }}-binary
           path: target/${{ matrix.target }}/release/${{ matrix.binary_name }}
+
+  test-windows:
+    name: 单元测试 (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: 构建并测试 (bundled SQLite)
+        run: cargo test --lib --features bundled-sqlite
+      - name: 沙箱与 runtime 重点测试
+        run: "cargo test --lib --features bundled-sqlite -- sandbox:: agent::runtime::"

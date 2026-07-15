@@ -225,6 +225,7 @@ pub async fn execute_tool(
                     uuid::Uuid::new_v4().to_string(),
                 ),
                 origin_turn_id: body.turn_id.as_deref(),
+                workdir: None,
             };
             // Execute directly with hooks
             let msg = state
@@ -269,6 +270,7 @@ pub async fn execute_tool(
                         uuid::Uuid::new_v4().to_string(),
                     ),
                     origin_turn_id: body.turn_id.as_deref(),
+                    workdir: None,
                 };
                 let msg = state
                     .tool_executor
@@ -378,6 +380,19 @@ pub async fn list_tasks(State(state): State<Arc<DaemonState>>) -> Json<ListTasks
         .collect();
 
     Json(ListTasksResponse { tasks })
+}
+
+/// `GET /api/v1/tasks/progress` - ready/blocked counts for agent-loop nudges.
+pub async fn task_progress(
+    State(state): State<Arc<DaemonState>>,
+) -> Json<crate::daemon::models::TaskProgressResponse> {
+    let store = state.task_manager.task_store();
+    let map = store.read().await;
+    let all: std::collections::HashMap<String, crate::tasks::Task> = map.clone();
+    drop(map);
+    let blocked = crate::tasks::blocked_tasks(&all).len();
+    let ready = crate::tasks::ready_tasks(&all).len();
+    Json(crate::daemon::models::TaskProgressResponse { blocked, ready })
 }
 
 // ── Todos (s03 TodoWrite) ────────────────────────────────────────────────────
@@ -506,12 +521,19 @@ pub async fn update_session(
     Path(id): Path<String>,
     Json(body): Json<UpdateSessionRequest>,
 ) -> Result<Json<SessionResponse>, StatusCode> {
+    // Upsert must preserve the path id. Session::new() mints a fresh UUID and
+    // previously caused every SaveSession to write a new file (duplicate names
+    // in the session panel) while the TUI continued using the original id.
     let mut session = state
         .session_manager
         .load(&id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .unwrap_or_else(|| crate::context::memory_session::Session::new(Some(&id)));
+        .unwrap_or_else(|| crate::context::memory_session::Session::with_id(id.clone(), None));
+
+    // Defense in depth: even if a future constructor changes, never let the
+    // on-disk / response id diverge from the request path.
+    session.id = id;
 
     if let Some(name) = &body.name {
         session.name = name.clone();
@@ -520,6 +542,8 @@ pub async fn update_session(
         session.messages = messages;
     }
     session.updated_at = chrono::Utc::now();
+    // Fully materialised write — clear any lazy index marker.
+    session.lazy_message_count = None;
 
     state
         .session_manager
@@ -978,6 +1002,64 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn update_session_upsert_preserves_path_id_across_saves() {
+        use crate::config::Settings;
+        use crate::daemon::models::{SessionResponse, UpdateSessionRequest};
+        use crate::state::AppState;
+        use axum::extract::{Path, State};
+        use axum::Json;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        // Isolate session files for this test before wrapping in Arc.
+        let sessions_dir = temp.path().join("sessions-test");
+        let mut state = DaemonState::new(AppState::new(settings)).await;
+        state.session_manager =
+            crate::context::memory_session::SessionManager::with_dir(sessions_dir.clone());
+        let state = Arc::new(state);
+
+        let fixed_id = "11111111-2222-3333-4444-555555555555".to_string();
+        for i in 0..3 {
+            let body = UpdateSessionRequest {
+                name: Some("duplicate-name".to_string()),
+                messages: Some(vec![crate::context::memory_session::SessionMessage {
+                    role: "user".to_string(),
+                    content: format!("turn-{i}"),
+                    timestamp: chrono::Utc::now(),
+                    metadata: Default::default(),
+                }]),
+            };
+            let Json(resp): Json<SessionResponse> =
+                update_session(State(state.clone()), Path(fixed_id.clone()), Json(body))
+                    .await
+                    .expect("update_session should succeed");
+            assert_eq!(resp.id, fixed_id, "response id must match path id");
+            assert_eq!(resp.name, "duplicate-name");
+        }
+
+        let mut entries = tokio::fs::read_dir(&sessions_dir).await.unwrap();
+        let mut files = Vec::new();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            files.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        assert_eq!(
+            files,
+            vec![format!("{fixed_id}.json")],
+            "must not mint a new file per save"
+        );
+
+        let loaded = state
+            .session_manager
+            .load(&fixed_id)
+            .await
+            .unwrap()
+            .expect("session file exists");
+        assert_eq!(loaded.id, fixed_id);
+        assert_eq!(loaded.messages.len(), 1); // last write replaces messages
+    }
+
+    #[tokio::test]
     async fn agent_routes_support_recursive_generation_bound_navigation() {
         use crate::agent::capability::CapabilityGrant;
         use crate::agent::SpawnChildRequest;
@@ -993,6 +1075,10 @@ mod tests {
             .join("subagent-transcripts.db")
             .to_string_lossy()
             .into_owned();
+        // This test exercises a root -> child -> grandchild chain (depth 3),
+        // but the product default disables subagent recursion (max_depth=1).
+        // Raise the limit here so the navigation scenario under test can run.
+        settings.agent.subagent.max_depth = 3;
         let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
         let root = state.root_context("session").await.unwrap();
         assert_eq!(

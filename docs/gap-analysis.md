@@ -1,7 +1,7 @@
 # Gap Analysis: wgenty-code vs learn-wgenty-code
 
-> **更新日期**: 2026-06-14 — 根据当前代码状态修正 s04/s05/s06/s08 的结论。
-> TUI 路径 (`src/tui/agent/`) 已实现大部分机制；CLI/daemon 路径待移植。
+> **更新日期**: 2026-07-14 — unified `agent::runtime::run_agent_loop` 已落地；
+> TUI / CLI query / subagent 共用控制流。下表中 s09–s12 仍为未完成协作能力。
 
 ## learn-wgenty-code 的设计哲学
 
@@ -23,30 +23,30 @@
 
 | 层 | 机制 | learn-wgenty-code | wgenty-code 现状 | 差距 |
 |----|------|-------------------|----------------------|------|
-| s01 | Agent Loop (核心) | `agent_loop()` 最小循环，tool dispatch | `tui/agent/core.rs` 完整循环；`agent/core.rs` 共享 SSE 解析 | **已实现** |
+| s01 | Agent Loop (核心) | `agent_loop()` 最小循环，tool dispatch | `agent::runtime::run_agent_loop` 统一控制流；TUI/CLI/subagent 经 ports 接入 | **已实现** |
 | s02 | 工具分发表 | bash/read/write/edit 4 工具 | 25 个工具（filesystem/search/execution/meta/checkpoint） | **已实现** |
 | s03 | TodoWrite + 提醒注入 | 3 轮未更新则注入提醒 | `TodoWriteTool` + `rounds_since_todo` 提醒 | **已实现** |
-| s04 | 子代理（Subagent） | 独立 Agent 循环，隔离上下文，过滤工具（无递归 task） | `teams/subagent_loop.rs`（577 行）独立循环 + TUI 并行 `task` 执行，含 stuck-detector | **已实现** |
+| s04 | 子代理（Subagent） | 独立 Agent 循环，隔离上下文，过滤工具（无递归 task） | `teams/subagent_loop` 薄封装 → 共享 loop + `FilteredToolPort` + synthesis barrier | **已实现** |
 | s05 | 技能加载 | 两层注入：system prompt 列名称 → `load_skill` 工具按需加载完整 SKILL.md | `LoadSkillTool` 注册（daemon），`SkillLoader` 加载 `~/.wgenty-code/skills/`，Prompt Layer 6 注入 | **已实现** |
-| s06 | 上下文压缩（3 层） | 微压缩（替换旧 tool_result）+ 自动压缩（token 超阈值摘要）+ 手动压缩（compact 工具） | `tui/agent/compaction.rs`（170 行）：micro_compact + auto_compact + token 预算检查；transcript 持久化 | **已实现（TUI）**，CLI/daemon 待移植 |
-| s07 | 任务系统（依赖图） | 文件持久化 + `blockedBy` 依赖图 | `TaskManagementTool` 有 CRUD 但**无 blockedBy 依赖** | **部分实现** |
-| s08 | 后台任务 | `BackgroundManager` + 通知队列 + 注入 agent loop | `background` 工具 + `inject_background_results()` 注入 TUI agent loop | **部分实现（TUI）**，CLI/daemon 待移植 |
-| s09 | 代理团队 | 多线程 Agent 循环 + JSONL 邮箱通信 | `teams/` 仅定义数据结构，无邮箱、无多 agent 通信 | **未实现** |
-| s10 | 团队协议 | 关闭协议 + 计划审批协议（`request_id` 关联） | 无 | **未实现** |
-| s11 | 自主 Agent | 轮询任务板 + 自动认领 + 空闲超时关闭 | 无 | **未实现** |
+| s06 | 上下文压缩（3 层） | 微压缩（替换旧 tool_result）+ 自动压缩（token 超阈值摘要）+ 手动压缩（compact 工具） | micro 在 runtime 共享；auto-summary 经 `Compactor`（TUI `TuiCompactor` + CLI `ApiCompactor`） | **已实现（TUI + CLI）** |
+| s07 | 任务系统（依赖图） | 文件持久化 + `blockedBy` 依赖图 | `TaskManagementTool`：`blockedBy` / `set_dependencies` / `blocked` / `ready` + 环检测 + 状态门闩；图算法在 `tasks/graph.rs` | **已实现** |
+| s08 | 后台任务 | `BackgroundManager` + 通知队列 + 注入 agent loop | `background` 工具 + TUI `inject_background_results`；CLI 无后台会话 | **部分实现（TUI）** |
+| s09 | 代理团队 | 多线程 Agent 循环 + JSONL 邮箱通信 | `MailboxInbox`（subagent 每轮 drain）+ `team_message` 工具（send/broadcast/shutdown_request）；多 agent 异步通信已通 | **部分实现**（运行时已通；多 agent 并行调度待 s11） |
+| s10 | 团队协议 | 关闭协议 + 计划审批协议（`request_id` 关联） | `ShutdownRequest` 经 mailbox 触发子代理 cooperative cancel；`ApprovalRequest/Response` + `request_approval` 工具（oneshot + 超时）；`approval_registry` 关联 `request_id` | **部分实现**（关闭+审批已通；父侧自动审批策略待 s11） |
+| s11 | 自主 Agent | 轮询任务板 + 自动认领 + 空闲超时关闭 | `AutonomousWorker` daemon service：定时 `claim_ready_root_group` + mailbox 通知 root；空闲超时停止；`settings.agent.autonomous` 配置 | **部分实现**（claim+通知已通；daemon 自主跑 loop 待做） |
 | s12 | 工作树隔离 | `WorktreeManager` + `EventBus` + `bind_worktree` | 仅 `teams/mod.rs` 提到 worktree，无实现 | **未实现** |
 
 ---
 
 ## 关键架构差距（修订）
 
-### 1. 两套 Agent Loop 实现
+### 1. Agent Loop 已统一（2026-07-14）
 
-项目存在两套 agent 循环：
-- **TUI 路径** (`src/tui/agent/`) — 完整的 agent loop，包含压缩、技能加载、后台通知注入、并行子代理、token 预算检查
-- **CLI/daemon 路径** — 使用共享的 `agent/core.rs` StreamProcessor，**缺少**压缩和后台通知机制
-
-**现状**：TUI 路径功能完整，CLI/daemon 路径待移植压缩和后台通知机制。
+- **共享控制流**：`src/agent/runtime/loop_.rs`（`run_agent_loop`）
+- **TUI**：`tui/agent/adapters`（Daemon LLM/Tools、权限 UI、`TuiCompactor`）
+- **CLI query**：`cli/headless_runtime`（`ApiLlmPort` + `RegistryToolPort`，micro-compact）
+- **Subagent**：`teams/subagent_loop` → 同一 loop + 过滤工具 + synthesis/observer
+- **Daemon**：仍为 SSE/工具代理服务；循环在 client 侧（TUI）或 in-process（CLI/subagent）
 
 ### 2. 子代理系统已实现 ✅
 
@@ -104,31 +104,42 @@ learn 项目：文件即数据库（JSON 任务文件、JSONL 邮箱、SKILL.md 
 
 ---
 
-## 实现优先级建议（修订）
+## 实现优先级建议（2026-07-14 修订）
 
-### 阶段 1：移植 TUI 机制到其他路径
+### 阶段 1：统一 runtime（已完成）
 
-| 优先级 | 功能 | 原因 |
+| 优先级 | 功能 | 状态 |
 |--------|------|------|
-| **P0** | CLI/daemon 移植上下文压缩（s06） | TUI 已验证可行，CLI/daemon 长对话仍会崩溃 |
-| **P0** | CLI/daemon 移植后台通知注入（s08） | 后台任务完成通知在 CLI/daemon 路径无效 |
-| **P1** | CLI/daemon 移植 skill 加载 | 当前仅 TUI 路径加载 skills 并注入 prompt |
+| **P0** | 统一 `run_agent_loop`（TUI/CLI/subagent） | ✅ `agent::runtime` |
+| **P0** | CLI auto-compact | ✅ `ApiCompactor` |
+| **P0** | 任务依赖图 `blockedBy` + 环检测 + ready | ✅ `tasks/graph.rs` |
+| **P1** | ready-task 提醒注入 | ✅ `TaskProgressPort`（TUI 待 daemon 端点） |
 
-### 阶段 2：完善协作与扩展机制
+### 阶段 2：安全与可验证
 
-| 优先级 | 功能 | 原因 |
+| 优先级 | 功能 | 状态 |
 |--------|------|------|
-| **P1** | Hook/事件系统 | 权限管理、工具执行监控的基础设施 |
-| **P1** | 任务依赖图（blockedBy，s07） | 当前任务系统有 CRUD 无依赖 |
-| **P2** | 团队邮箱通信（s09） | 多 Agent 协作的基础 |
+| **P0** | 共享 loop mock 回归网 | ✅ `loop_tests` |
+| **P0** | Windows Job Object 沙箱 | ✅（Restricted Token 待做） |
+| **P1** | Windows CI test job | ✅ |
+| **P1** | Provider 质量矩阵文档 | ✅ `docs/PROVIDERS.md` |
 
-### 阶段 3：高级协作（按需）
+### 阶段 3：协作与扩展
 
-| 优先级 | 功能 | 原因 |
+| 优先级 | 功能 | 状态 |
 |--------|------|------|
-| **P2** | 团队协议（s10） | 计划审批在实际使用中很有价值 |
-| **P3** | 工作树隔离（s12） | Git 工作树管理 |
-| **P3** | 自主 Agent（s11） | 后台自主工作 |
+| **P1** | TUI task 提醒（daemon `/tasks/progress` 端点） | ✅ |
+| **P2** | 团队邮箱通信运行时（s09） | ✅ `MailboxInbox` + `team_message` |
+| **P2** | 团队协议：关闭 / 计划审批（s10） | ✅ `ShutdownRequest` + `request_approval` |
+| **P2** | worktree 隔离（s12） | ✅ `WorktreeIsolation` + `task` isolation |
+| **P3** | 自主 Agent（s11） | ✅ `AutonomousWorker`（claim+通知；自主跑 loop 待做） |
+| **P1** | Daemon 内嵌完整 loop（`/agent/turn`） | 🔲 设计决策 |
+| **P2** | per-subagent cwd 工具层改造 | ✅ execute_command + file_read/write/edit/list_files 均接 workdir；run_subagent_loop/RLM 透传 |
+| **P2** | Linux seccomp-bpf syscall 白名单 | 🔲 |
+| **P2** | WASM 插件执行 | 🔲（仅 script hooks） |
+| **P2** | Windows Restricted Token | 🔲 |
+| **P3** | subagent token/events 追踪 | ✅ transcript 现读真实 progress |
+| **P3** | TUI reminder 可见性（`SystemNotice`） | ✅ |
 
 ---
 

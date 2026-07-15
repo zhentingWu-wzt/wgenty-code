@@ -37,6 +37,10 @@ settings.json
 # CodeGraph index
 .codegraph/
 
+# Project-local runtime state (memory, sessions) - not skill definitions
+.wgenty-code/memory/
+.wgenty-code/sessions/
+
 # Worktrees
 .claude/worktrees/
 .worktrees/

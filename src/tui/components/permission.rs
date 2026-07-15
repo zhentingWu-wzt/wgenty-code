@@ -56,7 +56,8 @@ impl PermissionState {
     pub fn take_decision(&mut self) -> Option<(String, String, PermissionResponse)> {
         let (reason, _rule) = self.dismiss();
         self.responder.take().map(|r| {
-            let _ = r.0.unwrap(); // note: actual send happens in caller
+            let _ =
+                r.0.expect("responder sender exists when permission panel active"); // note: actual send happens in caller
             (
                 reason,
                 "Allowed once".to_string(),

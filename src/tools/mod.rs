@@ -20,6 +20,22 @@ use std::sync::{Arc, RwLock};
 
 use crate::agent::ToolContext;
 
+/// Resolve a (possibly relative) file path against an optional per-agent workdir.
+///
+/// Absolute paths are returned unchanged. Relative paths join `workdir` when set
+/// (s12 worktree isolation), otherwise fall back to the process cwd. The
+/// returned path is owned so callers can use it directly in fs APIs.
+pub fn resolve_path(file_path: &str, workdir: Option<&std::path::Path>) -> std::path::PathBuf {
+    let p = std::path::Path::new(file_path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else if let Some(dir) = workdir {
+        dir.join(p)
+    } else {
+        p.to_path_buf()
+    }
+}
+
 /// Tool trait for all tools
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -119,6 +135,8 @@ impl ToolRegistry {
         registry.register(Box::new(meta::ask_user_question::AskUserQuestionTool::new()));
         registry.register(Box::new(meta::update_plan::UpdatePlanTool::new()));
         registry.register(Box::new(meta::skill::SkillTool::new()));
+        registry.register(Box::new(meta::team_message::TeamMessageTool::new()));
+        registry.register(Box::new(meta::request_approval::RequestApprovalTool::new()));
         // Filesystem tools
         registry.register(Box::new(filesystem::apply_patch::ApplyPatchTool::new()));
         registry.register(Box::new(filesystem::file_read::FileReadTool::new()));
@@ -155,6 +173,9 @@ impl ToolRegistry {
         registry.register(Box::new(meta::compact::CompactTool::new()));
         registry.register(Box::new(meta::lsp::LspTool::new()));
         registry.register(Box::new(meta::note_edit::NoteEditTool::new()));
+        registry.register(Box::new(
+            meta::dismiss_codegraph_guidance::DismissCodegraphGuidanceTool::new(),
+        ));
         registry.register(Box::new(crate::tasks::management::TaskManagementTool::new()));
         registry
     }
@@ -184,7 +205,10 @@ impl ToolRegistry {
         // typically don't have built-in search.
 
         if !PROVIDERS_WITHOUT_BUILTIN_SEARCH.contains(&provider.name()) {
-            self.tools.write().unwrap().remove("web_search");
+            self.tools
+                .write()
+                .expect("lock poisoned: tools")
+                .remove("web_search");
             tracing::info!(
                 "web_search tool skipped: {} has built-in search capability",
                 provider.name()
@@ -198,7 +222,10 @@ impl ToolRegistry {
     /// enabling runtime registration (e.g. background MCP tool connection).
     pub fn register(&self, tool: Box<dyn Tool>) {
         let name = tool.name().to_string();
-        self.tools.write().unwrap().insert(name, Arc::from(tool));
+        self.tools
+            .write()
+            .expect("lock poisoned: tools")
+            .insert(name, Arc::from(tool));
     }
 
     /// Register a remote tool, preserving its standard name when available and
@@ -206,7 +233,7 @@ impl ToolRegistry {
     /// built-in or remote tool.
     pub fn register_external(&self, server_name: &str, tool: Box<dyn Tool>) -> String {
         let original_name = tool.name().to_string();
-        let mut tools = self.tools.write().unwrap();
+        let mut tools = self.tools.write().expect("lock poisoned: tools");
         if !tools.contains_key(&original_name) {
             tools.insert(original_name.clone(), Arc::from(tool));
             return original_name;
@@ -229,16 +256,25 @@ impl ToolRegistry {
         ));
         self.tools
             .write()
-            .unwrap()
+            .expect("lock poisoned: tools")
             .insert("skill".to_string(), Arc::from(new_tool));
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.read().unwrap().get(name).cloned()
+        self.tools
+            .read()
+            .expect("lock poisoned: tools")
+            .get(name)
+            .cloned()
     }
 
     pub fn list(&self) -> Vec<Arc<dyn Tool>> {
-        self.tools.read().unwrap().values().cloned().collect()
+        self.tools
+            .read()
+            .expect("lock poisoned: tools")
+            .values()
+            .cloned()
+            .collect()
     }
 
     pub async fn execute(
@@ -246,7 +282,12 @@ impl ToolRegistry {
         name: &str,
         input: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
-        let tool = self.tools.read().unwrap().get(name).cloned();
+        let tool = self
+            .tools
+            .read()
+            .expect("lock poisoned: tools")
+            .get(name)
+            .cloned();
         match tool {
             Some(tool) => tool.execute(input).await,
             None => Err(ToolError {
@@ -269,7 +310,12 @@ impl ToolRegistry {
         name: &str,
         input: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
-        let tool = self.tools.read().unwrap().get(name).cloned();
+        let tool = self
+            .tools
+            .read()
+            .expect("lock poisoned: tools")
+            .get(name)
+            .cloned();
         match tool {
             Some(tool) => tool.execute_with_context(context, input).await,
             None => Err(ToolError {
@@ -369,6 +415,7 @@ mod external_tool_tests {
             agent: &root,
             invocation_id,
             origin_turn_id: None,
+            workdir: None,
         };
 
         // Input carries forged identity fields; they must be ignored.
@@ -399,6 +446,7 @@ mod external_tool_tests {
             agent: &root,
             invocation_id: crate::agent::ToolInvocationId::new("inv-2"),
             origin_turn_id: None,
+            workdir: None,
         };
 
         let output = registry

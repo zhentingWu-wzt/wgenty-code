@@ -33,7 +33,8 @@ pub fn parse_tool_args_lenient(raw: &str, _tool_name: &str) -> (serde_json::Valu
     }
 
     // Step 3: partial field extraction as last resort
-    let e = serde_json::from_str::<serde_json::Value>(raw).unwrap_err();
+    let e = serde_json::from_str::<serde_json::Value>(raw)
+        .expect_err("expected JSON parse failure for lenient extraction");
     let partial = extract_partial_fields(raw);
     let mut obj = if let serde_json::Value::Object(m) = partial {
         m

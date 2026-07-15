@@ -31,6 +31,8 @@ impl MemoryContextInjector {
         let matched = manager.search_memories(&query).await;
 
         // Filter by importance >= threshold, sort descending, take top N.
+        #[allow(clippy::cast_possible_truncation)]
+        // threshold is a small integer; f32 precision is sufficient
         let threshold_f32 = threshold as f32;
         let mut sorted: Vec<_> = matched
             .into_iter()
@@ -61,6 +63,25 @@ impl MemoryContextInjector {
         block.push_str("</memory-context>");
 
         block
+    }
+
+    /// Format global memories into lines for the `<global-memory>` system
+    /// prompt block. Returns at most 50 entries (soft cap), sorted by
+    /// importance descending. Unlike `recall()`, this does NOT filter by
+    /// relevance — all global memories are injected every turn.
+    pub async fn format_global(manager: &MemoryManager) -> Vec<String> {
+        let mut globals = manager.global_memories().await;
+        globals.sort_by(|a, b| {
+            b.importance
+                .partial_cmp(&a.importance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        const SOFT_CAP: usize = 50;
+        globals
+            .into_iter()
+            .take(SOFT_CAP)
+            .map(|m| format!("- [{}] {}", format_memory_type(&m.memory_type), m.content))
+            .collect()
     }
 
     /// Search for relevant memories and prepend a `<memory-context>` block
@@ -131,7 +152,7 @@ mod tests {
     use super::*;
     use crate::api::ChatMessage;
     use crate::context::{
-        ConsolidationEngine, HistoryManager, MemoryEntry, MemoryIndex, MemoryManager,
+        ConsolidationEngine, HistoryManager, MemoryEntry, MemoryIndex, MemoryManager, MemoryOrigin,
         MemorySessionManager, MemoryType, Storage,
     };
     use std::sync::atomic::AtomicBool;
@@ -142,12 +163,17 @@ mod tests {
         let memory_dir = temp_dir.path().join("memory");
         std::fs::create_dir_all(&memory_dir).unwrap();
         let storage = Arc::new(Storage::new(memory_dir));
+        let global_memory_dir = temp_dir.path().join("global_memory");
+        std::fs::create_dir_all(&global_memory_dir).unwrap();
+        let global_storage = Arc::new(Storage::new(global_memory_dir));
         MemoryManager {
             sessions: Arc::new(MemorySessionManager::new()),
             history: Arc::new(HistoryManager::new()),
-            storage,
+            project_storage: storage,
+            global_storage,
             consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
             memories: Arc::new(RwLock::new(Vec::new())),
+            global_memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
             consolidating: Arc::new(AtomicBool::new(false)),
         }
@@ -162,6 +188,7 @@ mod tests {
             MemoryEntry::new(MemoryType::Knowledge, "Rust async programming patterns")
                 .with_importance(0.9)
                 .with_tags(vec!["rust".into(), "async".into()]),
+            MemoryOrigin::Project,
         )
         .await
         .unwrap();
@@ -169,6 +196,7 @@ mod tests {
             MemoryEntry::new(MemoryType::Decision, "Use tokio for async runtime")
                 .with_importance(0.8)
                 .with_tags(vec!["tokio".into()]),
+            MemoryOrigin::Project,
         )
         .await
         .unwrap();
@@ -176,6 +204,7 @@ mod tests {
             MemoryEntry::new(MemoryType::Insight, "Python is better for data science")
                 .with_importance(0.3)
                 .with_tags(vec!["python".into()]),
+            MemoryOrigin::Project,
         )
         .await
         .unwrap();
@@ -256,12 +285,14 @@ mod tests {
         mm.add_memory(
             MemoryEntry::new(MemoryType::Knowledge, "Rust ownership and borrowing")
                 .with_importance(0.85),
+            MemoryOrigin::Project,
         )
         .await
         .unwrap();
         mm.add_memory(
             MemoryEntry::new(MemoryType::Knowledge, "Rust cargo build system")
                 .with_importance(0.75),
+            MemoryOrigin::Project,
         )
         .await
         .unwrap();
@@ -384,5 +415,78 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("<memory-context>"));
+    }
+
+    // ── format_global() tests ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn format_global_returns_empty_when_no_global_memories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = make_manager(&tmp);
+        mm.load().await.unwrap();
+
+        let result = MemoryContextInjector::format_global(&mm).await;
+        assert!(result.is_empty(), "no global memories should yield empty");
+    }
+
+    #[tokio::test]
+    async fn format_global_returns_all_global_memories_sorted_by_importance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = make_manager(&tmp);
+
+        // Add global memories with varying importance.
+        mm.add_memory(
+            MemoryEntry::new(MemoryType::Preference, "Always reply in Chinese")
+                .with_importance(0.9),
+            MemoryOrigin::Global,
+        )
+        .await
+        .unwrap();
+        mm.add_memory(
+            MemoryEntry::new(MemoryType::Knowledge, "User works on Rust projects")
+                .with_importance(0.5),
+            MemoryOrigin::Global,
+        )
+        .await
+        .unwrap();
+        // Add a project memory that should NOT appear in global output.
+        mm.add_memory(
+            MemoryEntry::new(MemoryType::Decision, "Use tokio runtime").with_importance(0.95),
+            MemoryOrigin::Project,
+        )
+        .await
+        .unwrap();
+
+        mm.load().await.unwrap();
+
+        let result = MemoryContextInjector::format_global(&mm).await;
+
+        // Should have exactly 2 global memories (not the project one).
+        assert_eq!(result.len(), 2, "should return only global memories");
+
+        // Higher importance should come first.
+        assert!(
+            result[0].contains("Always reply in Chinese"),
+            "higher importance global memory should be first: {:?}",
+            result
+        );
+        assert!(
+            result[1].contains("User works on Rust projects"),
+            "lower importance global memory should be second: {:?}",
+            result
+        );
+
+        // Each line should be formatted with the memory type prefix.
+        assert!(
+            result[0].starts_with("- [preference]"),
+            "first line should have preference type prefix: {}",
+            result[0]
+        );
+
+        // Project memory should NOT appear.
+        assert!(
+            !result.iter().any(|l| l.contains("tokio")),
+            "project memories should not appear in global output"
+        );
     }
 }

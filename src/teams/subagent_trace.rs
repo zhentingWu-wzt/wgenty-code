@@ -166,7 +166,9 @@ impl SubagentTraceReporter {
                 continue;
             }
             let pid = headers[i].parent_id.clone();
-            if pid.is_none() || !node_map.contains_key(pid.as_ref().unwrap()) {
+            if pid.is_none()
+                || !node_map.contains_key(pid.as_ref().expect("pid is Some due to short-circuit"))
+            {
                 // Root node
                 processed[i] = true;
                 attach_children(&mut nodes, &children_map, i, &mut processed);

@@ -12,6 +12,7 @@
 mod codegraph_mcp_e2e;
 mod comet_integration_test;
 mod integration_test;
+mod multiagent_collab;
 mod package_json_test;
 mod plugin_loading_test;
 mod refactor_e2e_test;

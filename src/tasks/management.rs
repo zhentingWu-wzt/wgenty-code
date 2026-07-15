@@ -11,6 +11,10 @@
 //! - get: Get task details
 
 // Re-export types for backward compatibility (e.g., daemon/handlers.rs imports from this module)
+use super::graph::{
+    blocked_tasks, is_blocked, open_blockers, ready_tasks, validate_blockers_exist,
+    would_create_cycle,
+};
 use super::store::TaskStore;
 pub use super::types::{Task, TaskPriority, TaskStatus};
 use crate::tools::{Tool, ToolError, ToolOutput};
@@ -223,20 +227,47 @@ impl TaskManagementTool {
         new_status: &TaskStatus,
         all_tasks: &HashMap<String, Task>,
     ) -> Result<(), ToolError> {
-        if *new_status == TaskStatus::InProgress || *new_status == TaskStatus::Completed {
-            for blocker_id in &task.blocked_by {
-                if let Some(blocker) = all_tasks.get(blocker_id) {
-                    if blocker.status != TaskStatus::Completed {
-                        return Err(ToolError {
-                            message: format!(
-                                "Cannot set status to {:?}: task is blocked by '{}' (status: {:?})",
-                                new_status, blocker.subject, blocker.status
-                            ),
-                            code: Some("task_blocked".to_string()),
-                        });
-                    }
-                }
-            }
+        if (*new_status == TaskStatus::InProgress || *new_status == TaskStatus::Completed)
+            && is_blocked(task, all_tasks)
+        {
+            let open = open_blockers(task, all_tasks);
+            let details: Vec<String> = open
+                .iter()
+                .map(|id| match all_tasks.get(id) {
+                    Some(b) => format!("{} ({:?})", b.subject, b.status),
+                    None => format!("{id} (missing)"),
+                })
+                .collect();
+            return Err(ToolError {
+                message: format!(
+                    "Cannot set status to {:?}: task is blocked by: {}",
+                    new_status,
+                    details.join(", ")
+                ),
+                code: Some("task_blocked".to_string()),
+            });
+        }
+        Ok(())
+    }
+
+    /// Validate `blockedBy` IDs exist, are not deleted, and would not form a cycle.
+    fn validate_dependency_assignment(
+        &self,
+        task_id: &str,
+        blocked_by: &[String],
+        all_tasks: &HashMap<String, Task>,
+    ) -> Result<(), ToolError> {
+        validate_blockers_exist(blocked_by, all_tasks).map_err(|message| ToolError {
+            message,
+            code: Some("blocker_not_found".to_string()),
+        })?;
+        if would_create_cycle(task_id, blocked_by, all_tasks) {
+            return Err(ToolError {
+                message: format!(
+                    "Setting blockedBy on '{task_id}' would create a dependency cycle"
+                ),
+                code: Some("dependency_cycle".to_string()),
+            });
         }
         Ok(())
     }
@@ -249,7 +280,9 @@ impl Tool for TaskManagementTool {
     }
 
     fn description(&self) -> &str {
-        "Manage tasks with create, update, delete, list, complete, set_dependencies, and blocked operations"
+        "Manage tasks with create, update, delete, list, complete, set_dependencies, blocked, and ready operations. \
+         Use blockedBy on create/set_dependencies to declare prerequisites; a task cannot move to \
+         in_progress/completed until every blocker is completed."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -258,8 +291,8 @@ impl Tool for TaskManagementTool {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "description": "Task operation: create, update, delete, list, complete, get",
-                    "enum": ["create", "update", "delete", "list", "complete", "get", "set_dependencies", "blocked"]
+                    "description": "Task operation: create, update, delete, list, complete, get, set_dependencies, blocked, ready",
+                    "enum": ["create", "update", "delete", "list", "complete", "get", "set_dependencies", "blocked", "ready"]
                 },
                 "task_id": {
                     "type": "string",
@@ -348,6 +381,7 @@ impl Tool for TaskManagementTool {
             "get" => self.handle_get(input).await,
             "set_dependencies" => self.handle_set_dependencies(input).await,
             "blocked" => self.handle_blocked_tasks().await,
+            "ready" => self.handle_ready_tasks().await,
             _ => Err(ToolError {
                 message: format!("Unknown task operation: {}", operation),
                 code: Some("invalid_operation".to_string()),
@@ -360,6 +394,12 @@ impl TaskManagementTool {
     async fn handle_create(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let task = self.create_task(&input).await?;
         let task_id = task.id.clone();
+
+        // Validate blockers exist and would not cycle (task not in map yet).
+        {
+            let tasks = self.tasks.read().await;
+            self.validate_dependency_assignment(&task_id, &task.blocked_by, &tasks)?;
+        }
 
         // Persist to disk if store is present
         if let Some(ref store) = self.store {
@@ -546,7 +586,9 @@ impl TaskManagementTool {
         self.can_transition_to(&task, &TaskStatus::Completed, &tasks)?;
 
         // Now mutate
-        let task = tasks.get_mut(task_id).unwrap();
+        let task = tasks
+            .get_mut(task_id)
+            .expect("task_id verified by can_transition_to");
         task.status = TaskStatus::Completed;
         task.updated_at = chrono::Utc::now();
 
@@ -618,18 +660,12 @@ impl TaskManagementTool {
             });
         }
 
-        // Validate all referenced blocker tasks exist
-        for blocker_id in &blocked_by {
-            if !tasks.contains_key(blocker_id) {
-                return Err(ToolError {
-                    message: format!("Blocker task not found: {}", blocker_id),
-                    code: Some("blocker_not_found".to_string()),
-                });
-            }
-        }
+        self.validate_dependency_assignment(task_id, &blocked_by, &tasks)?;
 
         // Now mutate
-        let task = tasks.get_mut(task_id).unwrap();
+        let task = tasks
+            .get_mut(task_id)
+            .expect("task_id verified by validate_dependency_assignment");
         task.blocked_by = blocked_by;
         task.updated_at = chrono::Utc::now();
 
@@ -652,21 +688,42 @@ impl TaskManagementTool {
 
     async fn handle_blocked_tasks(&self) -> Result<ToolOutput, ToolError> {
         let tasks = self.tasks.read().await;
-        let blocked: Vec<&Task> = tasks
-            .values()
-            .filter(|t| {
-                !t.blocked_by.is_empty()
-                    && t.status != TaskStatus::Completed
-                    && t.status != TaskStatus::Deleted
+        let blocked = blocked_tasks(&tasks);
+        // Enrich with open blocker IDs for agent readability.
+        let payload: Vec<serde_json::Value> = blocked
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "task": t,
+                    "open_blockers": open_blockers(t, &tasks),
+                })
             })
             .collect();
+        let count = payload.len();
 
         Ok(ToolOutput {
             output_type: "json".to_string(),
             content: serde_json::json!({
                 "success": true,
-                "tasks": blocked,
-                "count": blocked.len()
+                "tasks": payload,
+                "count": count
+            })
+            .to_string(),
+            metadata: std::collections::HashMap::new(),
+        })
+    }
+
+    async fn handle_ready_tasks(&self) -> Result<ToolOutput, ToolError> {
+        let tasks = self.tasks.read().await;
+        let ready = ready_tasks(&tasks);
+        let count = ready.len();
+
+        Ok(ToolOutput {
+            output_type: "json".to_string(),
+            content: serde_json::json!({
+                "success": true,
+                "tasks": ready,
+                "count": count
             })
             .to_string(),
             metadata: std::collections::HashMap::new(),

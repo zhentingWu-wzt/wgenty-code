@@ -41,6 +41,34 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
         }
     });
 
+    // s11 autonomous worker: background claimer for ready task-groups.
+    // Disabled by default; enabled via settings.agent.autonomous.enabled.
+    {
+        let cfg = &daemon_state.app_state.settings.agent.autonomous;
+        if cfg.enabled {
+            let worker = std::sync::Arc::new(crate::services::AutonomousWorker::new(
+                daemon_state.coordinator.clone(),
+                crate::services::AutonomousWorkerConfig {
+                    poll_interval: std::time::Duration::from_secs(cfg.poll_interval_secs),
+                    max_idle_polls: cfg.max_idle_polls,
+                    enabled: true,
+                },
+            ));
+            let session_id = daemon_state
+                .app_state
+                .settings
+                .storage
+                .working_dir
+                .to_string_lossy()
+                .to_string();
+            let notify_id = "root".to_string();
+            tokio::spawn(async move {
+                worker.run(&session_id, &notify_id).await;
+            });
+            info!("autonomous worker enabled (s11)");
+        }
+    }
+
     // Generate a random API token — saved to a restricted-permission file.
     let api_token = auth::generate_api_token();
     crate::utils::write_daemon_token(&api_token)?;
@@ -55,10 +83,18 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
     let app = health_router.merge(protected_router).layer(
         CorsLayer::new()
             .allow_origin([
-                "http://localhost:3000".parse().unwrap(),
-                "http://localhost:5173".parse().unwrap(),
-                "http://127.0.0.1:3000".parse().unwrap(),
-                "http://127.0.0.1:5173".parse().unwrap(),
+                "http://localhost:3000"
+                    .parse()
+                    .expect("invalid hardcoded URL literal"),
+                "http://localhost:5173"
+                    .parse()
+                    .expect("invalid hardcoded URL literal"),
+                "http://127.0.0.1:3000"
+                    .parse()
+                    .expect("invalid hardcoded URL literal"),
+                "http://127.0.0.1:5173"
+                    .parse()
+                    .expect("invalid hardcoded URL literal"),
             ])
             .allow_methods([
                 http::Method::GET,

@@ -1,12 +1,18 @@
 //! Linux sandbox backend.
 //!
-//! Composes three kernel mechanisms:
-//!   1. Namespace isolation (mount, network, pid) via clone(2) or unshare(2)
-//!   2. seccomp-bpf syscall filtering via libseccomp
-//!   3. cgroups v2 resource limits (memory, cpu, pids)
+//! Current enforcement:
+//!   1. Namespace isolation (mount, network, pid) via `unshare`
+//!   2. cgroups v2 resource limits (memory, cpu, pids)
 //!
-//! Falls back gracefully: if namespaces are unavailable, only seccomp is used;
-//! if seccomp is unavailable, only cgroups are used. If nothing works, the
+//! NOTE: seccomp-bpf syscall filtering is documented in the backend name
+//! (`seccomp+ns`) and capabilities (`syscall-filter`) but is NOT yet wired to
+//! libseccomp - the `unshare` wrapper provides namespace isolation only. A
+//! real seccomp whitelist requires the `libseccomp` C dependency and a syscall
+//! allowlist; tracked as a follow-up (see docs/SANDBOX.md). Until then,
+//! `is_hardware_enforced` reflects namespace+cgroup enforcement, not syscall
+//! filtering.
+//!
+//! Falls back gracefully: if `unshare`/cgroups are unavailable, the
 //! NoneBackend takes over.
 
 use std::path::Path;

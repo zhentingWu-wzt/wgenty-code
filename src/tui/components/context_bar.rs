@@ -20,7 +20,9 @@ pub fn spans(used: usize, max: usize) -> Vec<Span<'static>> {
         used as f64 / max as f64
     };
     let clamped = ratio.clamp(0.0, 1.0);
+    #[allow(clippy::cast_possible_truncation)] // clamped ∈ 0.0..=1.0, result ≤ 100
     let pct = (clamped * 100.0).round() as usize;
+    #[allow(clippy::cast_possible_truncation)] // clamped ∈ 0.0..=1.0, result ≤ BAR_WIDTH
     let filled = (clamped * BAR_WIDTH as f64).round() as usize;
     let empty = BAR_WIDTH - filled;
 

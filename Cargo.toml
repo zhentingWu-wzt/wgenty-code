@@ -59,11 +59,9 @@ anyhow = "1.0"
 
 # Memory & Cache
 lru = "0.12"
-dashmap = "5.5"
 
 # Crypto & Auth
 sha2 = "0.10"
-base64 = "0.22"
 
 # MCP Protocol
 async-trait = "0.1"
@@ -82,9 +80,6 @@ dirs = "5.0"
 
 # Diff
 similar = "2.5"
-
-# Markdown & Syntax Highlighting
-pulldown-cmark = "0.10"
 
 
 # File operations
@@ -113,6 +108,15 @@ fluent = { version = "0.16", optional = true }
 fluent-bundle = { version = "0.15", optional = true }
 unic-langid = { version = "0.9", optional = true, features = ["macros"] }
 rust-embed = { version = "8.5", optional = true }
+
+# Windows sandbox (Job Objects). Only linked on Windows targets.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_Security",
+] }
 
 [dev-dependencies]
 tempfile = "3.10"

@@ -76,9 +76,22 @@ impl Tool for ViewTool {
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let path = input["path"].as_str().unwrap_or(".");
-        let depth = input["depth"].as_u64().unwrap_or(3).min(10) as usize;
-        let offset = input["offset"].as_u64().unwrap_or(0) as usize;
-        let limit = input["limit"].as_u64().unwrap_or(200) as usize;
+        let depth = input["depth"]
+            .as_u64()
+            .unwrap_or(3)
+            .min(10)
+            .try_into()
+            .unwrap_or(3);
+        let offset = input["offset"]
+            .as_u64()
+            .unwrap_or(0)
+            .try_into()
+            .unwrap_or(0);
+        let limit = input["limit"]
+            .as_u64()
+            .unwrap_or(200)
+            .try_into()
+            .unwrap_or(usize::MAX);
 
         let base = PathBuf::from(path);
         if !base.exists() {

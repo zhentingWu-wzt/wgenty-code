@@ -284,11 +284,12 @@ mod tests {
     #[tokio::test]
     async fn test_autodream_delegates_to_memory_manager() {
         use crate::context::MemoryManager;
-        let mm = std::sync::Arc::new(MemoryManager::new());
+        let mm = std::sync::Arc::new(MemoryManager::new(crate::utils::current_project_root()));
         // Add some test memories
         mm.add_memory(
             crate::context::MemoryEntry::new(crate::context::MemoryType::Knowledge, "test memory")
                 .with_importance(0.8),
+            crate::context::MemoryOrigin::Project,
         )
         .await
         .unwrap();
