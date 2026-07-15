@@ -168,6 +168,9 @@ impl SandboxBackend for MacOSBackend {
             .arg("-c")
             .arg(command);
 
+        // Keep child output off the parent TUI console.
+        super::configure_captured_stdio(&mut cmd);
+
         if !profile.env_allowlist.is_empty() && !profile.env_allowlist.iter().any(|v| v == "*") {
             cmd.env_clear();
             for var in &profile.env_allowlist {
