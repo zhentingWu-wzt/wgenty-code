@@ -186,6 +186,8 @@ pub struct App {
     pub memory_manager: std::sync::Arc<crate::context::MemoryManager>,
     /// Memories recalled at session startup; injected into compact turns' PromptContext.
     pub(crate) startup_memories: Vec<String>,
+    /// CodeGraph MCP server connection status, refreshed from settings.
+    pub codegraph_status: crate::config::mcp_config::McpServerStatus,
     /// AutoDream service for time-gated memory consolidation.
     pub auto_dream_service: Option<Arc<crate::services::AutoDreamService>>,
     /// Command router for slash command dispatch (replaces Comet-specific routing).
@@ -431,6 +433,9 @@ impl App {
         // via `storage.memory` in settings.json.
         let mm = Arc::new(crate::context::MemoryManager::with_settings(&settings));
 
+        // ── Detect CodeGraph MCP status from settings ─────────────────────
+        let codegraph_status = detect_codegraph_status(&settings);
+
         // ── AutoDream service for time-gated memory consolidation ────────
         let auto_dream = {
             let state = Arc::new(tokio::sync::RwLock::new(crate::state::AppState::default()));
@@ -518,6 +523,7 @@ impl App {
             prompt_context,
             memory_manager: mm,
             startup_memories: Vec::new(),
+            codegraph_status,
             auto_dream_service: Some(Arc::new(auto_dream)),
             command_router: Some(command_router),
             interaction_service,
@@ -962,4 +968,17 @@ fn format_startup_memories(matched: &[crate::context::MemoryEntry]) -> Vec<Strin
             )
         })
         .collect()
+}
+
+/// Detect the CodeGraph MCP server status from settings.
+pub fn detect_codegraph_status(
+    settings: &crate::config::Settings,
+) -> crate::config::mcp_config::McpServerStatus {
+    settings
+        .integrations
+        .mcp_servers
+        .iter()
+        .find(|c| c.name.eq_ignore_ascii_case("codegraph"))
+        .map(|c| c.status.clone())
+        .unwrap_or(crate::config::mcp_config::McpServerStatus::Unknown)
 }

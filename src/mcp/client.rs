@@ -89,7 +89,7 @@ impl McpClientSession {
             .args(&config.args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
         if let Some(cwd) = &config.cwd {
             command.current_dir(cwd);

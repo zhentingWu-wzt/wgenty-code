@@ -361,6 +361,7 @@ impl App {
                     .with_agents_md(agents_sections);
                 let assembled = prompts::assemble_instructions(&new_settings, &prompt_ctx);
                 self.assembled_system_messages = assembled.system_messages;
+                self.codegraph_status = super::detect_codegraph_status(&new_settings);
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::System,
                     content: "Settings reloaded".to_string(),

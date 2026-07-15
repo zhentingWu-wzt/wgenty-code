@@ -1,6 +1,7 @@
 //! Rendering methods for the TUI application.
 
 use super::App;
+use crate::config::mcp_config::McpServerStatus;
 use crate::tui::components;
 use crate::tui::theme;
 use crate::tui::util::centered_rect;
@@ -190,12 +191,24 @@ impl App {
 
         let mut spans: Vec<Span<'_>> = vec![mode_span];
 
-        // Only show context bar when the terminal is wide enough
+        // Shift+Tab mode switch hint (always visible, dim style)
+        spans.push(Span::styled(
+            " Shift+Tab 切换模式",
+            Style::default().fg(theme::DIM),
+        ));
+
+        // Only show context bar + CodeGraph status when the terminal is wide enough
         if area.width >= 40 {
             let used = self.token_counter.last_prompt_tokens();
             let max = self.settings_lock.read().unwrap().models.context_window;
             spans.push(Span::raw(" "));
             spans.extend(components::context_bar::spans(used, max));
+        }
+
+        // CodeGraph MCP connection status indicator (right-aligned area)
+        if area.width >= 60 {
+            spans.push(Span::raw(" "));
+            spans.push(codegraph_status_span(&self.codegraph_status));
         }
 
         let line = Line::from(spans);
@@ -293,4 +306,19 @@ mod tests {
     fn test_status_bar_height_many_active_still_capped() {
         assert_eq!(status_bar_layout_height(50), 7);
     }
+}
+
+/// Build a styled span for the CodeGraph MCP connection status indicator.
+fn codegraph_status_span(status: &McpServerStatus) -> Span<'static> {
+    let (icon, color, label) = match status {
+        McpServerStatus::Running => ("●", theme::SUCCESS, "CG"),
+        McpServerStatus::Starting => ("◌", theme::WARNING, "CG"),
+        McpServerStatus::Error => ("✗", theme::ERROR, "CG"),
+        McpServerStatus::Stopped => ("○", theme::DIM, "CG"),
+        McpServerStatus::Unknown => ("○", theme::DIM, "CG"),
+    };
+    Span::styled(
+        format!("{} {}", icon, label),
+        ratatui::style::Style::default().fg(color),
+    )
 }
