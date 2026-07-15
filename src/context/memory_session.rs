@@ -109,9 +109,45 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    /// Create a SessionManager using the global sessions directory
+    /// (`~/.wgenty-code/sessions/`). Prefer [`with_project_root`](Self::with_project_root)
+    /// for production use so sessions are stored per-project.
     pub fn new() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let sessions_dir = home.join(".wgenty-code").join("sessions");
+
+        Self {
+            sessions_dir,
+            active_session: Arc::new(RwLock::new(None)),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Create a SessionManager scoped to a project root.
+    ///
+    /// Sessions are stored at `<project_root>/.wgenty-code/sessions/`. If that
+    /// directory cannot be created (e.g. the project root is unwritable or has
+    /// been deleted), storage falls back to the global `~/.wgenty-code/sessions/`
+    /// and a warning is logged.
+    pub fn with_project_root(project_root: PathBuf) -> Self {
+        use crate::utils::{config_dir, project_sessions_dir};
+
+        let project_sessions = project_sessions_dir(&project_root);
+
+        // Try to create the project-local sessions directory. On failure,
+        // degrade to the global sessions directory.
+        let sessions_dir = if std::fs::create_dir_all(&project_sessions).is_ok() {
+            project_sessions
+        } else {
+            let fallback = config_dir().join("sessions");
+            tracing::warn!(
+                project_root = %project_root.display(),
+                fallback = %fallback.display(),
+                "Failed to create project-local sessions directory; falling back to global"
+            );
+            let _ = std::fs::create_dir_all(&fallback);
+            fallback
+        };
 
         Self {
             sessions_dir,

@@ -433,7 +433,10 @@ impl App {
         // ── Memory manager (created first so AutoDream can hold a ref) ────
         // Configured from settings so consolidation thresholds are tunable
         // via `storage.memory` in settings.json.
-        let mm = Arc::new(crate::context::MemoryManager::with_settings(&settings));
+        let mm = Arc::new(crate::context::MemoryManager::with_settings(
+            &settings,
+            crate::utils::current_project_root(),
+        ));
 
         // ── Detect CodeGraph MCP status from settings ─────────────────────
         let codegraph_status = detect_codegraph_status(&settings);

@@ -350,7 +350,7 @@ mod tests {
     fn agent_loop_accepts_memory_manager() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let client = DaemonClient::new("http://localhost:8080".to_string());
-        let mm = Arc::new(MemoryManager::new());
+        let mm = Arc::new(MemoryManager::new(crate::utils::current_project_root()));
 
         // Construct AgentLoop with memory_manager — must compile.
         let loop_instance = AgentLoop::new(

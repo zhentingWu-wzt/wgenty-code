@@ -270,7 +270,7 @@ pub struct MemoryManager {
 }
 
 impl MemoryManager {
-    pub fn new() -> Self {
+    pub fn new(project_root: PathBuf) -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let memory_path = home.join(".wgenty-code").join("memory");
 
@@ -283,7 +283,7 @@ impl MemoryManager {
         }
 
         Self {
-            sessions: Arc::new(MemorySessionManager::new()),
+            sessions: Arc::new(MemorySessionManager::with_project_root(project_root)),
             history: Arc::new(HistoryManager::new()),
             storage: Arc::new(Storage::new(memory_path)),
             consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
@@ -299,7 +299,10 @@ impl MemoryManager {
     /// `age_threshold_hours`, etc.) are read from the `storage.memory` section
     /// of `settings.json`. Previously these were hardcoded in
     /// `ConsolidationConfig::default()` and could not be tuned by users.
-    pub fn with_settings(settings: &crate::config::Settings) -> Self {
+    ///
+    /// `project_root` determines where project-local sessions are stored
+    /// (`<project_root>/.wgenty-code/sessions/`).
+    pub fn with_settings(settings: &crate::config::Settings, project_root: PathBuf) -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let memory_path = home.join(".wgenty-code").join("memory");
 
@@ -315,7 +318,7 @@ impl MemoryManager {
             ConsolidationConfig::from_memory_settings(&settings.storage.memory);
 
         Self {
-            sessions: Arc::new(MemorySessionManager::new()),
+            sessions: Arc::new(MemorySessionManager::with_project_root(project_root)),
             history: Arc::new(HistoryManager::new()),
             storage: Arc::new(Storage::new(memory_path)),
             consolidation: Arc::new(ConsolidationEngine::new(consolidation_config)),
@@ -575,7 +578,7 @@ impl MemoryManager {
 
 impl Default for MemoryManager {
     fn default() -> Self {
-        Self::new()
+        Self::new(crate::utils::current_project_root())
     }
 }
 
@@ -860,7 +863,7 @@ mod tests {
             recall_similarity_threshold: 0.3,
         };
 
-        let mm = MemoryManager::with_settings(&settings);
+        let mm = MemoryManager::with_settings(&settings, std::path::PathBuf::from("/tmp"));
         let engine = mm.consolidation();
         let config = engine.config();
 
