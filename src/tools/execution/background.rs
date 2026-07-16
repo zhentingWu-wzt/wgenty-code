@@ -2,6 +2,7 @@
 //! and receive their results via a notification queue that gets injected
 //! into the agent loop on the next iteration.
 
+use crate::sandbox::shell_command_captured;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use serde::Serialize;
@@ -51,13 +52,8 @@ impl BackgroundManager {
             // for the fallback after the move into the timeout closure.
             let cmd_inner = command_clone.clone();
             let result = tokio::time::timeout(timeout, async {
-                let output = tokio::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&cmd_inner)
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .output()
-                    .await;
+                // Platform shell + captured stdio (CREATE_NO_WINDOW on Windows).
+                let output = shell_command_captured(&cmd_inner).output().await;
 
                 match output {
                     Ok(out) => BackgroundResult {

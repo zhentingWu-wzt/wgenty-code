@@ -1,7 +1,6 @@
 use crate::tools::{ToolError, ToolOutput};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -10,7 +9,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{Mutex, RwLock};
 
-use crate::sandbox::{SandboxConfig, SandboxManager, SandboxProfile, SecurityLevel};
+use crate::sandbox::{
+    shell_command_captured, SandboxConfig, SandboxManager, SandboxProfile, SecurityLevel,
+};
 
 pub struct CommandSessionManager {
     sandbox: Option<Arc<SandboxManager>>,
@@ -76,7 +77,10 @@ impl CommandSessionManager {
         let session_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let cwd = workdir.unwrap_or_else(|| PathBuf::from("."));
 
-        // Try sandbox spawn first; fall back to direct spawn on error
+        // Prefer sandbox spawn. On spawn failure only, fall back to direct
+        // spawn that still uses platform shell + captured stdio so Windows TUI
+        // cannot be corrupted. Immediate exit (including signal-killed) is
+        // treated as a real session result — do not re-run outside the sandbox.
         let mut child = if let Some(ref sb) = self.sandbox {
             let profile = self
                 .sandbox_profile
@@ -84,28 +88,13 @@ impl CommandSessionManager {
                 .unwrap_or_else(|| self.default_profile(&cwd));
 
             match sb.spawn(command, &profile) {
-                Ok(sandboxed) => {
-                    // Quick health check: wait 200ms, if the process was already
-                    // killed by the sandbox, fall back to direct execution.
-                    let mut child = sandboxed.child;
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    match child.try_wait() {
-                        Ok(Some(status)) if status.code().is_none() => {
-                            // Process was killed by signal (likely sandbox violation)
-                            tracing::warn!(
-                                "Sandbox killed process immediately ({}), falling back to direct",
-                                sb.status().backend_name
-                            );
-                            self.spawn_direct(command, &cwd)?
-                        }
-                        _ => child, // Still running or exited normally, use sandboxed child
-                    }
-                }
+                Ok(sandboxed) => sandboxed.child,
                 Err(e) => {
                     tracing::warn!(
-                        "Sandbox spawn failed ({}), falling back to direct: {:?}",
-                        sb.status().backend_name,
-                        e
+                        command = %command,
+                        backend = %sb.status().backend_name,
+                        error = %e,
+                        "Sandbox spawn failed; falling back to direct (captured stdio)"
                     );
                     self.spawn_direct(command, &cwd)?
                 }
@@ -147,18 +136,16 @@ impl CommandSessionManager {
     }
 
     /// Direct spawn without sandbox (fallback / no-sandbox mode).
+    ///
+    /// Always uses the shared platform shell helper with captured stdio so
+    /// Windows console apps cannot write into the parent TUI.
     fn spawn_direct(
         &self,
         command: &str,
         cwd: &PathBuf,
     ) -> Result<tokio::process::Child, ToolError> {
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c")
-            .arg(command)
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let mut cmd = shell_command_captured(command);
+        cmd.current_dir(cwd);
 
         cmd.spawn().map_err(|e| ToolError {
             message: format!("Failed to spawn command: {}", e),

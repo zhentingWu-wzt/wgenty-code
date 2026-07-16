@@ -323,10 +323,11 @@ impl App {
     /// Spawn a bang command (`! <command>`) for direct local execution.
     ///
     /// Shows an immediate "running" system message, then runs the command via
-    /// `sh -c` in the current working directory with a 120s timeout. The
-    /// result is delivered back to the UI as a `BackgroundTaskResult` system
-    /// message (the existing channel for background-task notifications), so no
-    /// new event variant or render branch is needed.
+    /// the platform shell (with captured stdio) in the current working
+    /// directory with a 120s timeout. The result is delivered back to the UI
+    /// as a `BackgroundTaskResult` system message (the existing channel for
+    /// background-task notifications), so no new event variant or render
+    /// branch is needed.
     fn run_bang_command(&mut self, command: String) {
         // Immediate feedback so the user sees the command was accepted. The
         // command line is shown here once; the result message below carries
@@ -336,13 +337,11 @@ impl App {
         let tx = self.event_tx.clone();
         tokio::spawn(async move {
             let cwd = std::env::current_dir().unwrap_or_default();
+            let mut cmd = crate::sandbox::shell_command_captured(&command);
+            cmd.current_dir(&cwd);
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(BANG_COMMAND_TIMEOUT_SECS),
-                tokio::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&command)
-                    .current_dir(&cwd)
-                    .output(),
+                cmd.output(),
             )
             .await;
 
@@ -503,9 +502,7 @@ mod tests {
     /// subprocesses so the tests work cross-platform without requiring
     /// `ExitStatusExt` (which is Unix-only).
     fn shell_output(command: &str) -> std::process::Output {
-        std::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
+        crate::sandbox::std_shell_command(command)
             .output()
             .expect("test helper shell command should succeed")
     }

@@ -16,7 +16,10 @@ pub mod profile;
 
 use std::path::Path;
 
-pub use backends::create_backend;
+pub use backends::{
+    configure_captured_stdio, create_backend, shell_command, shell_command_captured,
+    std_shell_command,
+};
 pub use config::{SandboxConfig, SecurityLevel};
 pub use error::SandboxError;
 pub use platform::Platform;

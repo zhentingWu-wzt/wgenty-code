@@ -33,21 +33,8 @@ impl SandboxBackend for NoneBackend {
         command: &str,
         workdir: Option<&Path>,
     ) -> Result<SandboxedChild, SandboxError> {
-        #[cfg(windows)]
-        let mut cmd = {
-            let mut c = tokio::process::Command::new("cmd");
-            c.arg("/C").arg(command);
-            c
-        };
-        #[cfg(not(windows))]
-        let mut cmd = {
-            let mut c = tokio::process::Command::new("sh");
-            c.arg("-c").arg(command);
-            c
-        };
-
-        // Always pipe stdio so child output never lands on the parent TUI console.
-        super::configure_captured_stdio(&mut cmd);
+        // Platform shell + piped stdio / CREATE_NO_WINDOW via shared helper.
+        let mut cmd = super::shell_command_captured(command);
 
         // Filter environment to allowlist
         if !profile.env_allowlist.is_empty() && !profile.env_allowlist.iter().any(|v| v == "*") {

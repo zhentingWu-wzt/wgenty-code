@@ -209,13 +209,7 @@ impl HookManager {
 
         let ctx_json = serde_json::to_string(ctx).unwrap_or_default();
 
-        let child = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(&expanded_command)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
+        let child = crate::sandbox::shell_command_captured(&expanded_command).spawn();
 
         let result = match child {
             Ok(mut child) => {
