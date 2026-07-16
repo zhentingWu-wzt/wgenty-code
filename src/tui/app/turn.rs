@@ -13,7 +13,7 @@ impl App {
         if let Some(pending) = self.pending_inputs.pop_front() {
             if pending.is_continuation() {
                 // Synthetic continuation: inject the delivered child results
-                // as a system message with no visible user row.
+                // as a `user` message with no visible user row.
                 let delivery = pending
                     .continuation
                     .clone()
@@ -172,7 +172,7 @@ impl App {
 
     /// Spawn a synthetic continuation turn that consumes a claimed task-group
     /// delivery. No visible user row is added; the delivery is injected as a
-    /// structured system message inside `process_continuation`.
+    /// structured `user` message inside `process_continuation`.
     pub(super) fn spawn_continuation_turn(
         &mut self,
         delivery: crate::tui::client::TaskGroupDeliveryResponse,

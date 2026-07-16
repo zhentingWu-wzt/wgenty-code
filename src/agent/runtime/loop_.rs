@@ -772,8 +772,11 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
         // Non-root subagent synthesis barrier: inject child results and continue.
         if let Some(synth) = hooks.synthesis {
             match synth.on_candidate_final(&result.content).await {
-                Ok(Some(system_msg)) => {
-                    history.push(ChatMessage::system(system_msg)).await;
+                Ok(Some(synthesis_msg)) => {
+                    // Inject as a `user` message: mid-conversation `system`
+                    // messages are not reliably surfaced by OpenAI-compatible
+                    // providers, so child results would never reach the model.
+                    history.push(ChatMessage::user(synthesis_msg)).await;
                     continue;
                 }
                 Ok(None) => {}
