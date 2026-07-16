@@ -1,6 +1,8 @@
 //! Shared multi-round agent loop (stream → tools → compact → repeat).
 
-use super::compaction::{micro_compact_messages, needs_compaction, request_size_chars};
+use super::compaction::{
+    estimate_prompt_tokens, micro_compact_messages, needs_compaction, request_size_chars,
+};
 use super::config::RuntimeConfig;
 use super::error::RuntimeError;
 use super::events::RuntimeEvent;
@@ -180,10 +182,18 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
                     let compacted = micro_compact_messages(&compacted_raw);
                     let before = request_size_chars(&compacted_raw);
                     let after = request_size_chars(&compacted);
-                    if after < before {
+                    let final_msgs = if after < before {
                         history.replace(compacted.clone()).await;
+                        compacted
+                    } else {
+                        compacted_raw
+                    };
+                    // Refresh context-bar estimate immediately — API usage only
+                    // arrives on the next model round.
+                    if let Some(tc) = hooks.token_counter {
+                        tc.set_prompt_tokens(estimate_prompt_tokens(&final_msgs));
                     }
-                    if needs_compaction(&compacted, config.context_window, config.max_tokens) {
+                    if needs_compaction(&final_msgs, config.context_window, config.max_tokens) {
                         tracing::warn!(
                             "compaction succeeded but history still exceeds the threshold; \
                              stopping retries to avoid an infinite compaction loop"
@@ -203,7 +213,10 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
                 let snap = history.get().await;
                 let micro = micro_compact_messages(&snap);
                 if request_size_chars(&micro) < request_size_chars(&snap) {
-                    history.replace(micro).await;
+                    history.replace(micro.clone()).await;
+                    if let Some(tc) = hooks.token_counter {
+                        tc.set_prompt_tokens(estimate_prompt_tokens(&micro));
+                    }
                     tracing::info!(
                         "compaction summary failed; applied micro-compact before continuing"
                     );

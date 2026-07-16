@@ -30,6 +30,22 @@ impl MacOSBackend {
         sb.push_str("(version 1)\n");
         sb.push_str("(deny default)\n\n");
 
+        // Common development tool directories under the user's home.
+        // Cargo (registry cache, bin, git checkouts), rustup (toolchains,
+        // std library), and other language runtimes need to be readable
+        // and executable for build commands (cargo, npm, node, etc.) to
+        // work inside the sandbox.
+        let home_tool_paths: Vec<String> = dirs::home_dir()
+            .map(|home| {
+                [
+                    ".cargo", ".rustup", ".nvm", ".bun", ".volta", ".deno", ".local",
+                ]
+                .iter()
+                .map(|d| home.join(d).to_string_lossy().into_owned())
+                .collect()
+            })
+            .unwrap_or_default();
+
         sb.push_str(";; Allow reading from approved paths and system libraries\n");
         sb.push_str("(allow file-read*\n");
         for path in &profile.readable_paths {
@@ -40,6 +56,10 @@ impl MacOSBackend {
         sb.push_str("    (subpath \"/Library\")\n");
         sb.push_str("    (subpath \"/private/var/db/dyld\")\n");
         sb.push_str("    (subpath \"/dev/dtracehelper\")\n");
+        // Development tool paths: cargo registry, rustup toolchains, etc.
+        for path in &home_tool_paths {
+            sb.push_str(&format!("    (subpath \"{}\")\n", path));
+        }
         sb.push_str(")\n\n");
 
         sb.push_str(";; Allow writing to approved paths\n");
@@ -65,8 +85,14 @@ impl MacOSBackend {
         sb.push_str("    (subpath \"/sbin\")\n");
         sb.push_str("    (subpath \"/usr/local/bin\")\n");
         sb.push_str("    (subpath \"/opt/homebrew/bin\")\n");
+        // Xcode Command Line Tools: cc, ld, etc. for native compilation/linking
+        sb.push_str("    (subpath \"/Library/Developer/CommandLineTools\")\n");
         for path in &profile.writable_paths {
             sb.push_str(&format!("    (subpath \"{}\")\n", path.display()));
+        }
+        // Development tool binaries: cargo, rustc, node, npm, etc.
+        for path in &home_tool_paths {
+            sb.push_str(&format!("    (subpath \"{}\")\n", path));
         }
         sb.push_str(")\n\n");
 
@@ -199,5 +225,38 @@ impl SandboxBackend for MacOSBackend {
             backend_name: "seatbelt".into(),
             cleanup: Some(cleanup),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_includes_dev_tool_home_paths() {
+        let profile = SandboxProfile::default_for_workspace(Path::new("/tmp/test-ws"));
+        let sb = MacOSBackend::generate_profile(&profile);
+
+        // The generated seatbelt profile must allow reading from and executing
+        // binaries in common development tool directories under $HOME.
+        let home = dirs::home_dir().expect("home dir");
+        for sub in [".cargo", ".rustup"] {
+            let p = home.join(sub).to_string_lossy().into_owned();
+            assert!(
+                sb.contains(&p),
+                "seatbelt profile should include {} for dev tools",
+                p
+            );
+        }
+    }
+
+    #[test]
+    fn profile_includes_xcode_clt_for_exec() {
+        let profile = SandboxProfile::default_for_workspace(Path::new("/tmp/test-ws"));
+        let sb = MacOSBackend::generate_profile(&profile);
+        assert!(
+            sb.contains("/Library/Developer/CommandLineTools"),
+            "seatbelt profile should allow exec from Xcode CLT for native linking"
+        );
     }
 }

@@ -21,8 +21,8 @@ mod loop_tests;
 
 pub use adapters::ApiLlmPort;
 pub use compaction::{
-    assemble_post_compaction_history, micro_compact_messages, needs_compaction, request_size_chars,
-    split_for_compaction,
+    assemble_post_compaction_history, estimate_prompt_tokens, micro_compact_messages,
+    needs_compaction, request_size_chars, split_for_compaction,
 };
 pub use compactor::{
     archive_transcript, build_transcript_text, fallback_micro_compact, is_payload_too_large_error,

@@ -83,6 +83,15 @@ pub fn request_size_chars(messages: &[ChatMessage]) -> usize {
         .sum()
 }
 
+/// Rough prompt-token estimate for UI progress (`chars / 4`).
+///
+/// Matches the same heuristic used by [`needs_compaction`]. Used after
+/// successful compaction so the context bar reflects the rewritten history
+/// before the next API `usage.prompt_tokens` arrives.
+pub fn estimate_prompt_tokens(messages: &[ChatMessage]) -> usize {
+    request_size_chars(messages) / 4
+}
+
 /// Whether `messages` exceed the compaction threshold for the given window.
 ///
 /// Compaction fires when the rough token estimate (`request_size_chars / 4`)
@@ -95,7 +104,7 @@ pub fn needs_compaction(
     max_tokens: usize,
 ) -> bool {
     let threshold = (context_window * 4 / 5).saturating_sub(max_tokens);
-    request_size_chars(messages) / 4 > threshold
+    estimate_prompt_tokens(messages) > threshold
 }
 
 /// Micro-compaction: replace old tool results with short markers.
@@ -303,6 +312,13 @@ mod tests {
             ChatMessage::assistant_with_tools(vec![]), // all None/empty -> 0
         ];
         assert_eq!(request_size_chars(&msgs), 3);
+    }
+
+    #[test]
+    fn test_estimate_prompt_tokens_is_chars_div_4() {
+        let msgs = vec![ChatMessage::user("abcd".repeat(10))]; // 40 chars
+        assert_eq!(request_size_chars(&msgs), 40);
+        assert_eq!(estimate_prompt_tokens(&msgs), 10);
     }
 
     #[test]

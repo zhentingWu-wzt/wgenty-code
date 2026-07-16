@@ -5,14 +5,15 @@
 //! canned tool results, and a [`VecSink`] records emitted events.
 
 use super::ports::{
-    ChatCompletion, EventSink, HistoryStore, LlmPort, TaskProgressPort, ToolPort, ToolRequest,
-    ToolResponse,
+    ChatCompletion, Compactor, EventSink, HistoryStore, LlmPort, TaskProgressPort, ToolPort,
+    ToolRequest, ToolResponse,
 };
 use super::{
-    run_agent_loop, LoopHooks, LoopTurnState, RunLoopArgs, RuntimeConfig, RuntimeError,
-    RuntimeEvent, StreamStyle,
+    estimate_prompt_tokens, run_agent_loop, LoopHooks, LoopTurnState, RunLoopArgs, RuntimeConfig,
+    RuntimeError, RuntimeEvent, StreamStyle,
 };
 use crate::agent::runtime::MutexHistoryStore;
+use crate::api::token_counter::TokenCounter;
 use crate::api::{ChatMessage, ToolCall, ToolCallFunction, ToolDefinition, Usage};
 use crate::utils::stuck_detector::StuckDetector;
 use async_trait::async_trait;
@@ -519,4 +520,81 @@ async fn no_nudge_when_nothing_ready() {
         .filter_map(|m| m.content.as_deref())
         .any(|c| c.contains("ready") && c.contains("task_management"));
     assert!(!nudged, "no ready-task reminder when ready==0");
+}
+
+/// Compactor that rewrites history to a small fixed set of messages.
+struct ShrinkCompactor;
+
+#[async_trait]
+impl Compactor for ShrinkCompactor {
+    async fn compact(&self, history: &dyn HistoryStore) -> bool {
+        history
+            .replace(vec![
+                ChatMessage::system("sys"),
+                ChatMessage::user("summary: short"),
+            ])
+            .await;
+        true
+    }
+}
+
+#[tokio::test]
+async fn successful_compaction_updates_last_prompt_tokens() {
+    // No usage in the post-compact LLM response so last_prompt_tokens keeps the
+    // estimate written immediately after history rewrite.
+    let llm = ScriptedLlm::new(vec![ChatCompletion {
+        message: ChatMessage::assistant("ok"),
+        finish_reason: "stop".to_string(),
+        usage: None,
+    }]);
+    let tools = MockToolPort::new();
+    let events = VecSink::new();
+    let bulky = "x".repeat(400);
+    let history = MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![
+        ChatMessage::system("sys"),
+        ChatMessage::user(bulky),
+    ])));
+    let counter = TokenCounter::new();
+    // Stale pre-compact estimate the UI would still show without the fix.
+    counter.set_prompt_tokens(50_000);
+
+    let mut state = LoopTurnState {
+        compact_requested: true,
+        ..LoopTurnState::default()
+    };
+    let compactor = ShrinkCompactor;
+    let _ = run_agent_loop(RunLoopArgs {
+        llm: &llm,
+        tools: &tools,
+        events: &events,
+        history: &history,
+        config: &default_config(),
+        state: &mut state,
+        stream_style: StreamStyle::subagent(),
+        hooks: LoopHooks {
+            compactor: Some(&compactor),
+            token_counter: Some(&counter),
+            ..LoopHooks::default()
+        },
+    })
+    .await
+    .unwrap();
+
+    // Estimate is taken right after rewrite (before the next assistant reply).
+    let expected = estimate_prompt_tokens(&[
+        ChatMessage::system("sys"),
+        ChatMessage::user("summary: short"),
+    ]);
+    assert_eq!(
+        counter.last_prompt_tokens(),
+        expected,
+        "context bar must refresh from post-compact history estimate"
+    );
+    assert!(counter.last_prompt_tokens() < 50_000);
+    let hist = history.get().await;
+    assert!(
+        hist.iter()
+            .any(|m| m.content.as_deref() == Some("summary: short")),
+        "history should contain the compacted summary"
+    );
 }

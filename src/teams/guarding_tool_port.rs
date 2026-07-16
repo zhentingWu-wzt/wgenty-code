@@ -5,7 +5,7 @@
 use crate::agent::runtime::ports::{ToolPort, ToolRequest, ToolResponse};
 use crate::agent::{AgentExecutionContext, ToolContext, ToolInvocationId};
 use crate::api::ToolDefinition;
-use crate::config::{SubagentAskStrategy, TimeoutDecision};
+use crate::config::{RootPermissionMode, SubagentAskStrategy, TimeoutDecision};
 use crate::permissions::policy::{PermissionRequest, PolicyDecision, ToolPermissionPolicy};
 use crate::runtime::guardian::Guardian;
 use crate::teams::mailbox::TeamMessage;
@@ -31,6 +31,10 @@ pub struct SubagentPermissionContext {
     pub timeout_decision: TimeoutDecision,
     pub guardian: Guardian,
     pub agent_id: String,
+    /// Root agent's runtime permission mode, mirrored from the TUI so subagents
+    /// can short-circuit policy `Ask` (Yolo/AcceptEdits) without blocking on
+    /// the approval bridge. Defaults to `Normal` (escalate/deny per ask_strategy).
+    pub root_mode: RootPermissionMode,
     /// Shared denial reasons for finish summary.
     pub denial_log: Arc<Mutex<Vec<String>>>,
     /// Shared permission lifecycle events for progress/action_log.
@@ -52,6 +56,7 @@ impl SubagentPermissionContext {
             timeout_decision: TimeoutDecision::Deny,
             guardian: Guardian::default(),
             agent_id: agent_id.into(),
+            root_mode: RootPermissionMode::Normal,
             denial_log: Arc::new(Mutex::new(Vec::new())),
             event_log: Arc::new(Mutex::new(Vec::new())),
         }
@@ -126,6 +131,20 @@ impl<'a> GuardingToolPort<'a> {
             if rules.contains(&perm.session_rule) {
                 return Ok(());
             }
+        }
+
+        // Root agent runtime mode bypass: when the root agent is in Yolo or
+        // AcceptEdits mode, auto-approve matching tools without blocking on the
+        // approval bridge. Guardian still runs afterward for exec tools.
+        if self.permission.root_mode.auto_approves(&perm.tool_name) {
+            self.record_event(
+                "root_mode_bypass",
+                format!(
+                    "tool={} mode={:?}",
+                    perm.tool_name, self.permission.root_mode
+                ),
+            );
+            return Ok(());
         }
 
         match self.permission.ask_strategy {
@@ -580,6 +599,82 @@ mod tests {
         let summary = format_permission_summary(&reasons);
         assert!(summary.contains("denials"));
         assert!(summary.contains("tool_not_allowed"));
+    }
+
+    #[tokio::test]
+    async fn yolo_mode_bypasses_ask_without_bridge() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let outside = temp.path().join("yolo-outside.txt");
+
+        let registry = ToolRegistry::new();
+        let root = AgentExecutionContext::root(SessionId::new("s"));
+        let mut allowed = HashSet::new();
+        allowed.insert("file_write".to_string());
+
+        // Headless (no bridge) but with root_mode = Yolo: Ask is bypassed.
+        let mut perm = SubagentPermissionContext::headless(&workspace, "child");
+        perm.root_mode = RootPermissionMode::Yolo;
+        let event_log = Arc::clone(&perm.event_log);
+        let port = GuardingToolPort::new(&registry, &root, allowed, None, perm);
+
+        let resp = port
+            .execute(write_req(outside.to_str().expect("utf8 path")))
+            .await;
+
+        // The Ask was bypassed - no approval_unavailable error.
+        assert!(
+            !resp.content.contains("approval_unavailable"),
+            "Yolo mode should bypass Ask, got: {}",
+            resp.content
+        );
+
+        // Verify the bypass event was recorded.
+        let events = event_log.lock().expect("event_log");
+        assert!(
+            events.iter().any(|(k, _)| k == "root_mode_bypass"),
+            "expected root_mode_bypass event, got: {:?}",
+            events
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_edits_mode_bypasses_ask_for_file_tools_only() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let outside = temp.path().join("edits-outside.txt");
+
+        let registry = ToolRegistry::new();
+        let root = AgentExecutionContext::root(SessionId::new("s"));
+        let mut allowed = HashSet::new();
+        allowed.insert("file_write".to_string());
+        allowed.insert("file_edit".to_string());
+
+        // Headless (no bridge) with root_mode = AcceptEdits: file_write Ask is bypassed.
+        let mut perm = SubagentPermissionContext::headless(&workspace, "child");
+        perm.root_mode = RootPermissionMode::AcceptEdits;
+        let event_log = Arc::clone(&perm.event_log);
+        let port = GuardingToolPort::new(&registry, &root, allowed, None, perm);
+
+        let resp = port
+            .execute(write_req(outside.to_str().expect("utf8 path")))
+            .await;
+
+        // The Ask was bypassed for file_write - no approval_unavailable error.
+        assert!(
+            !resp.content.contains("approval_unavailable"),
+            "AcceptEdits should bypass Ask for file_write, got: {}",
+            resp.content
+        );
+
+        let events = event_log.lock().expect("event_log");
+        assert!(
+            events.iter().any(|(k, _)| k == "root_mode_bypass"),
+            "expected root_mode_bypass event, got: {:?}",
+            events
+        );
     }
 
     #[test]

@@ -70,6 +70,11 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             "/api/v1/tools/resolve-permission",
             post(handlers::resolve_subagent_permission),
         )
+        // Permission mode (root agent runtime mode: Yolo/AcceptEdits/Normal)
+        .route(
+            "/api/v1/permission-mode",
+            get(handlers::get_permission_mode).post(handlers::set_permission_mode),
+        )
         // Tasks
         .route("/api/v1/tasks", get(handlers::list_tasks))
         .route("/api/v1/tasks/progress", get(handlers::task_progress))

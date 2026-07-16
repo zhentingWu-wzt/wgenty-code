@@ -388,6 +388,29 @@ pub async fn resolve_subagent_permission(
     }))
 }
 
+/// POST /api/v1/permission-mode - update the root agent's runtime permission
+/// mode (Yolo/AcceptEdits/Normal). Subagents snapshot the current value at
+/// spawn time, so this affects all subsequently spawned subagents.
+pub async fn set_permission_mode(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<crate::daemon::models::SetPermissionModeRequest>,
+) -> Json<serde_json::Value> {
+    *state.root_mode.write().unwrap() = body.mode;
+    tracing::info!(mode = ?body.mode, "root permission mode updated");
+    Json(serde_json::json!({
+        "success": true,
+        "mode": body.mode,
+    }))
+}
+
+/// GET /api/v1/permission-mode - get the current root agent permission mode.
+pub async fn get_permission_mode(State(state): State<Arc<DaemonState>>) -> Json<serde_json::Value> {
+    let mode = *state.root_mode.read().unwrap();
+    Json(serde_json::json!({
+        "mode": mode,
+    }))
+}
+
 // ── Tasks ────────────────────────────────────────────────────────────────────
 
 pub async fn list_tasks(State(state): State<Arc<DaemonState>>) -> Json<ListTasksResponse> {
