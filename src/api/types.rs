@@ -186,6 +186,66 @@ pub fn sanitize_tool_call_pairing(messages: &mut Vec<ChatMessage>) {
     *messages = result;
 }
 
+/// Demote `role="tool"` messages whose `tool_call_id` has no matching
+/// preceding assistant `tool_calls` entry.
+///
+/// Sessions persisted by older builds dropped both `tool_call_id` and
+/// `tool_calls` during save (the `SessionMessage` struct lacked those
+/// fields). On restore the `tool` result arrives with `tool_call_id = None`
+/// while the preceding assistant message lost its `tool_calls`, so replaying
+/// the history verbatim makes the provider reject the request with
+/// `MissingParameter: missing messages.tool_call_id` - and even if the id
+/// were present, "tool message must follow a tool call". Demoting such an
+/// orphan to a `user` message preserves the tool output as plain context
+/// without breaking the call/result pairing contract the API enforces.
+///
+/// Well-formed histories (every `tool` message matches a preceding assistant
+/// `tool_call`) are left untouched - this is a no-op for new sessions.
+pub fn demote_orphan_tool_results(messages: &mut Vec<ChatMessage>) {
+    use std::collections::HashSet;
+
+    let original = std::mem::take(messages);
+    let mut result: Vec<ChatMessage> = Vec::with_capacity(original.len());
+    // tool_call ids emitted by preceding assistant messages still awaiting a
+    // matching tool result. A tool message is "paired" iff its id is in here.
+    let mut pending: HashSet<String> = HashSet::new();
+    for msg in original {
+        if msg.role == "assistant" {
+            if let Some(calls) = &msg.tool_calls {
+                for tc in calls {
+                    pending.insert(tc.id.clone());
+                }
+            }
+            result.push(msg);
+            continue;
+        }
+        if msg.role == "tool" {
+            let paired = msg
+                .tool_call_id
+                .as_ref()
+                .is_some_and(|id| pending.remove(id));
+            if paired {
+                result.push(msg);
+            } else {
+                let content = msg.content.unwrap_or_default();
+                tracing::warn!(
+                    tool_call_id = ?msg.tool_call_id,
+                    content_len = content.len(),
+                    "demote orphan tool result to user message so the replayed \
+                     history stays API-compliant (likely a session saved by an \
+                     older build that lost tool_call_id/tool_calls)"
+                );
+                result.push(ChatMessage::user(format!(
+                    "[Previous tool result, pairing lost on restore: {content}]"
+                )));
+            }
+            continue;
+        }
+        result.push(msg);
+    }
+    *messages = result;
+}
+
 // ── Request types ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -428,5 +488,92 @@ mod tests {
         assert_eq!(msgs[1].role, "tool");
         assert_eq!(msgs[1].tool_call_id.as_deref(), Some("a"));
         assert_eq!(msgs[2].role, "assistant");
+    }
+
+    /// Build a `role="tool"` message with NO `tool_call_id` - the exact shape a
+    /// session saved by an older build (which dropped tool_call_id/tool_calls)
+    /// produces on restore.
+    fn tool_result_no_id(content: &str) -> ChatMessage {
+        ChatMessage {
+            role: "tool".to_string(),
+            content: Some(content.to_string()),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    #[test]
+    fn demote_old_session_orphan_tool_without_id_becomes_user() {
+        // Old-session shape: the assistant lost its tool_calls and the tool
+        // result lost its tool_call_id during save by an older build.
+        let mut msgs = vec![
+            ChatMessage::assistant(""),
+            tool_result_no_id("file contents"),
+        ];
+        demote_orphan_tool_results(&mut msgs);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1].role, "user", "orphan tool demoted to user");
+        assert!(
+            msgs[1]
+                .content
+                .as_deref()
+                .unwrap()
+                .contains("file contents"),
+            "tool output preserved as context"
+        );
+        assert!(
+            msgs.iter().all(|m| m.role != "tool"),
+            "no role=tool messages remain (would fail API validation)"
+        );
+    }
+
+    #[test]
+    fn demote_paired_tool_result_untouched() {
+        let mut msgs = vec![
+            ChatMessage::assistant_with_tools(vec![tool_call("a", "file_read")]),
+            ChatMessage::tool("a", "file content"),
+        ];
+        let before = msgs.clone();
+        demote_orphan_tool_results(&mut msgs);
+        assert_eq!(msgs.len(), before.len());
+        assert_eq!(msgs[1].role, "tool", "paired tool result kept");
+        assert_eq!(msgs[1].tool_call_id.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn demote_tool_with_unmatched_id_becomes_user() {
+        // tool_call_id present but no preceding assistant tool_call matches it.
+        let mut msgs = vec![
+            ChatMessage::assistant("hi"),
+            ChatMessage::tool("ghost_id", "result"),
+        ];
+        demote_orphan_tool_results(&mut msgs);
+        assert_eq!(msgs[1].role, "user", "unmatched-id tool demoted");
+        assert!(msgs.iter().all(|m| m.role != "tool"));
+    }
+
+    #[test]
+    fn demote_then_sanitize_yields_api_compliant_history() {
+        // Full old-session repair pipeline: demote orphans, then backfill any
+        // remaining assistant tool_calls missing results. After both passes no
+        // role=tool message may lack a tool_call_id.
+        let mut msgs = vec![
+            ChatMessage::user("read the file"),
+            // assistant that lost its tool_calls on save
+            ChatMessage::assistant(""),
+            // tool result that lost its tool_call_id on save
+            tool_result_no_id("the file contents"),
+        ];
+        demote_orphan_tool_results(&mut msgs);
+        sanitize_tool_call_pairing(&mut msgs);
+        for m in &msgs {
+            if m.role == "tool" {
+                assert!(
+                    m.tool_call_id.is_some(),
+                    "tool message must have tool_call_id after repair"
+                );
+            }
+        }
     }
 }
