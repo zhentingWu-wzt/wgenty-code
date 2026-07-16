@@ -1,3 +1,8 @@
+---
+archived-with: 2026-07-16-subagent-permission-hardening
+status: final
+status: final
+---
 # Subagent 权限闭环加固 — Design Doc
 
 **Change**: `subagent-permission-hardening`  
