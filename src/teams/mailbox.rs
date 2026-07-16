@@ -37,11 +37,29 @@ pub enum TeamMessage {
         approve: bool,
     },
     /// Request approval from a parent/peer before proceeding (s10).
+    ///
+    /// `payload` remains the free-text / human-readable body for backward
+    /// compatibility. Structured policy-Ask fields are optional and may be
+    /// absent on legacy free-text requests.
     ApprovalRequest {
         from: String,
         request_id: String,
         kind: String,
         payload: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        policy_reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_rule: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        paths: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        risk: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        human_summary: Option<String>,
     },
     /// Response to an approval request (s10).
     ApprovalResponse {
@@ -50,6 +68,39 @@ pub enum TeamMessage {
         approve: bool,
         reason: Option<String>,
     },
+}
+
+impl TeamMessage {
+    /// Build an ApprovalRequest from a structured policy-Ask payload.
+    ///
+    /// Free-text `payload` is filled from `human_summary` (or a tool/reason
+    /// fallback) so legacy consumers still see a readable body.
+    pub fn approval_request_from_structured(
+        approval: &crate::teams::permission_bridge::StructuredApproval,
+    ) -> Self {
+        let payload = if approval.human_summary.is_empty() {
+            format!("{}: {}", approval.tool, approval.policy_reason)
+        } else {
+            approval.human_summary.clone()
+        };
+        TeamMessage::ApprovalRequest {
+            from: approval.from.clone(),
+            request_id: approval.request_id.clone(),
+            kind: approval.kind.clone(),
+            payload,
+            tool: Some(approval.tool.clone()),
+            policy_reason: Some(approval.policy_reason.clone()),
+            session_rule: Some(approval.session_rule.clone()),
+            paths: approval.paths.clone(),
+            command: approval.command.clone(),
+            risk: approval.risk.clone(),
+            human_summary: if approval.human_summary.is_empty() {
+                None
+            } else {
+                Some(approval.human_summary.clone())
+            },
+        }
+    }
 }
 
 /// Configuration for the team

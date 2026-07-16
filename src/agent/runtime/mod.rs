@@ -21,12 +21,13 @@ mod loop_tests;
 
 pub use adapters::ApiLlmPort;
 pub use compaction::{
-    assemble_post_compaction_history, micro_compact_messages, needs_compaction, request_size_chars,
-    split_for_compaction,
+    assemble_post_compaction_history, estimate_prompt_tokens, micro_compact_messages,
+    needs_compaction, request_size_chars, split_for_compaction,
 };
 pub use compactor::{
-    archive_transcript, build_transcript_text, parse_compaction_response, ApiCompactor,
-    COMPACTION_SYSTEM_PROMPT,
+    archive_transcript, build_transcript_text, fallback_micro_compact, is_payload_too_large_error,
+    parse_compaction_response, prepare_compaction_transcript, truncate_transcript_text,
+    ApiCompactor, COMPACTION_SYSTEM_PROMPT, COMPACTION_TRANSCRIPT_CHAR_CAP,
 };
 pub use config::RuntimeConfig;
 pub use error::RuntimeError;

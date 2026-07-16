@@ -31,6 +31,11 @@
       "token_budget_k": null,
       "max_rounds": null,
       "plan_mode": null,
+      "permission_mode": null,
+      "ask_strategy": "escalate_to_user",
+      "explore_readonly": true,
+      "approval_timeout_secs": 60,
+      "timeout_decision": "deny",
       "rlm": {
         "enabled": null,
         "delegate_tool": null,

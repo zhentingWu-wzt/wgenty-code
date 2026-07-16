@@ -121,7 +121,9 @@ impl ExecuteCommandTool {
                         return Err(ToolError {
                             message: format!(
                                 "command killed by sandbox ({})\nstdout:\n{}\nstderr:\n{}",
-                                sb.status().backend_name, output.stdout, output.stderr
+                                sb.status().backend_name,
+                                output.stdout,
+                                output.stderr
                             ),
                             code: Some("sandbox_killed".to_string()),
                         });

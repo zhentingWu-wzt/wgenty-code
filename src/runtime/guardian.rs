@@ -202,6 +202,7 @@ impl Default for GuardianConfig {
 }
 
 /// Guardian instance for checking tool executions.
+#[derive(Debug, Clone)]
 pub struct Guardian {
     config: GuardianConfig,
 }

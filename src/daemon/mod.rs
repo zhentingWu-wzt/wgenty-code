@@ -14,11 +14,16 @@ pub mod routes;
 pub mod state;
 
 use crate::state::AppState;
+use axum::extract::DefaultBodyLimit;
 use state::DaemonState;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tracing::info;
+
+// No explicit body-size ceiling: the daemon listens on loopback only and chat
+// / compaction requests legitimately carry full conversation history. Axum's
+// default 2 MiB limit previously caused `413 Payload Too Large` on long sessions.
 
 /// Start the daemon HTTP server. Blocks until the server exits.
 pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
@@ -80,30 +85,35 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
     // Split the router: health stays public, everything else requires auth.
     let (health_router, protected_router) = routes::create_routers(daemon_state, api_token);
 
-    let app = health_router.merge(protected_router).layer(
-        CorsLayer::new()
-            .allow_origin([
-                "http://localhost:3000"
-                    .parse()
-                    .expect("invalid hardcoded URL literal"),
-                "http://localhost:5173"
-                    .parse()
-                    .expect("invalid hardcoded URL literal"),
-                "http://127.0.0.1:3000"
-                    .parse()
-                    .expect("invalid hardcoded URL literal"),
-                "http://127.0.0.1:5173"
-                    .parse()
-                    .expect("invalid hardcoded URL literal"),
-            ])
-            .allow_methods([
-                http::Method::GET,
-                http::Method::POST,
-                http::Method::PUT,
-                http::Method::DELETE,
-            ])
-            .allow_headers([http::header::AUTHORIZATION, http::header::CONTENT_TYPE]),
-    );
+    let app = health_router
+        .merge(protected_router)
+        // Localhost daemon: disable Axum's default 2 MiB request body cap so
+        // long-session chat/compaction POSTs are not rejected with 413.
+        .layer(DefaultBodyLimit::disable())
+        .layer(
+            CorsLayer::new()
+                .allow_origin([
+                    "http://localhost:3000"
+                        .parse()
+                        .expect("invalid hardcoded URL literal"),
+                    "http://localhost:5173"
+                        .parse()
+                        .expect("invalid hardcoded URL literal"),
+                    "http://127.0.0.1:3000"
+                        .parse()
+                        .expect("invalid hardcoded URL literal"),
+                    "http://127.0.0.1:5173"
+                        .parse()
+                        .expect("invalid hardcoded URL literal"),
+                ])
+                .allow_methods([
+                    http::Method::GET,
+                    http::Method::POST,
+                    http::Method::PUT,
+                    http::Method::DELETE,
+                ])
+                .allow_headers([http::header::AUTHORIZATION, http::header::CONTENT_TYPE]),
+        );
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     info!("daemon listening on http://{}", addr);

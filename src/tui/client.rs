@@ -413,6 +413,79 @@ impl DaemonClient {
         Ok(())
     }
 
+    /// GET /api/v1/tools/pending-permissions
+    pub async fn list_pending_permissions(&self) -> anyhow::Result<Vec<PendingSubagentPermission>> {
+        let url = format!("{}/api/v1/tools/pending-permissions", self.base_url);
+        let resp = self.http_tools().get(&url).send().await?;
+        if !resp.status().is_success() {
+            return Ok(Vec::new());
+        }
+        let body: ListPendingPermissionsResponse = resp.json().await?;
+        Ok(body.pending)
+    }
+
+    /// POST /api/v1/tools/resolve-permission
+    pub async fn resolve_subagent_permission(
+        &self,
+        request_id: &str,
+        approved: bool,
+        always: bool,
+        session_rule: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        let url = format!("{}/api/v1/tools/resolve-permission", self.base_url);
+        let resp = self
+            .http_tools()
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({
+                "request_id": request_id,
+                "approved": approved,
+                "always": always,
+                "session_rule": session_rule,
+            }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("resolve-permission failed ({})", resp.status());
+        }
+        let v: serde_json::Value = resp.json().await?;
+        Ok(v.get("resolved").and_then(|x| x.as_bool()).unwrap_or(false))
+    }
+
+    /// POST /api/v1/permission-mode - update root agent runtime permission mode.
+    pub async fn set_permission_mode(
+        &self,
+        mode: crate::config::agent::RootPermissionMode,
+    ) -> anyhow::Result<()> {
+        let url = format!("{}/api/v1/permission-mode", self.base_url);
+        let resp = self
+            .http_tools()
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "mode": mode }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("set-permission-mode failed ({})", resp.status());
+        }
+        Ok(())
+    }
+
+    /// GET /api/v1/permission-mode - fetch current root agent permission mode.
+    pub async fn get_permission_mode(
+        &self,
+    ) -> anyhow::Result<crate::config::agent::RootPermissionMode> {
+        let url = format!("{}/api/v1/permission-mode", self.base_url);
+        let resp = self.http_tools().get(&url).send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("get-permission-mode failed ({})", resp.status());
+        }
+        let v: serde_json::Value = resp.json().await?;
+        Ok(serde_json::from_value(
+            v.get("mode").cloned().unwrap_or(serde_json::Value::Null),
+        )?)
+    }
+
     /// GET /api/v1/undo — undo most recent checkpoint
     pub async fn undo(&self) -> anyhow::Result<String> {
         let url = format!("{}/api/v1/tools/undo", self.base_url);
@@ -614,6 +687,22 @@ pub struct ExecuteToolResponse {
 pub struct PermissionRequiredInfo {
     pub reason: String,
     pub session_rule: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PendingSubagentPermission {
+    pub request_id: String,
+    pub from: String,
+    pub kind: String,
+    pub tool: String,
+    pub policy_reason: String,
+    pub session_rule: String,
+    pub human_summary: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListPendingPermissionsResponse {
+    pending: Vec<PendingSubagentPermission>,
 }
 
 #[derive(Debug, Deserialize)]

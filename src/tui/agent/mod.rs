@@ -206,8 +206,15 @@ impl AgentLoop {
             self.memory_manager.clone(),
             summary_slot.clone(),
         );
-        let _ = compactor.compact(&history).await;
+        let rewritten = compactor.compact(&history).await;
         self.compacted_summary = summary_slot.lock().await.clone();
+        // Keep the context progress bar in sync without waiting for the next
+        // API usage report (same chars/4 heuristic as auto-compaction).
+        if rewritten {
+            let snap = self.conversation_history.lock().await;
+            self.token_counter
+                .set_prompt_tokens(crate::agent::runtime::estimate_prompt_tokens(&snap));
+        }
         Ok(())
     }
 

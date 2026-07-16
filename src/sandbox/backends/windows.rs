@@ -169,8 +169,7 @@ mod win {
     /// so we snapshot threads and call `ResumeThread` on each owned by `pid`.
     pub(super) fn resume_process_threads(pid: u32) -> Result<(), SandboxError> {
         use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD,
-            THREADENTRY32,
+            CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
         };
         use windows_sys::Win32::System::Threading::{
             OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
@@ -194,8 +193,7 @@ mod win {
         let mut ok = unsafe { Thread32First(snap, &mut entry) };
         while ok != 0 {
             if entry.th32OwnerProcessID == pid {
-                let thread =
-                    unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
                 if !thread.is_null() && thread != INVALID_HANDLE_VALUE {
                     // ResumeThread returns previous suspend count, or u32::MAX on error.
                     let prev = unsafe { ResumeThread(thread) };

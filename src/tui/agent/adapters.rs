@@ -3,10 +3,9 @@
 //! Lives under `tui` so `agent::runtime` never depends on TUI or DaemonClient.
 
 use crate::agent::runtime::{
-    archive_transcript, assemble_post_compaction_history, build_transcript_text,
-    parse_compaction_response, split_for_compaction, Compactor, EventSink, HistoryStore,
-    InteractionPort, LlmPort, PlannerPort, RuntimeError, RuntimeEvent, ToolPort, ToolRequest,
-    ToolResponse, COMPACTION_SYSTEM_PROMPT,
+    archive_transcript, assemble_post_compaction_history, parse_compaction_response, Compactor,
+    EventSink, HistoryStore, InteractionPort, LlmPort, PlannerPort, RuntimeError, RuntimeEvent,
+    ToolPort, ToolRequest, ToolResponse, COMPACTION_SYSTEM_PROMPT,
 };
 use crate::agent::{StreamEvent, StreamProcessor};
 use crate::api::{ApiClient, ChatMessage, ToolDefinition};
@@ -154,11 +153,58 @@ impl DaemonToolPort {
         let generation = self.agent_generation;
         tokio::spawn(async move {
             let start = tokio::time::Instant::now();
+            // Track which subagent permission requests we've already prompted for.
+            let mut prompted: std::collections::HashSet<String> = std::collections::HashSet::new();
             loop {
                 if start.elapsed() > max_duration {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(500)).await;
+
+                // Drain subagent policy-Ask approvals into the existing PermissionRequired UI.
+                if let Ok(pending) = client.list_pending_permissions().await {
+                    for item in pending {
+                        if !prompted.insert(item.request_id.clone()) {
+                            continue;
+                        }
+                        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                        let reason = if item.human_summary.is_empty() {
+                            format!(
+                                "Subagent `{}` needs permission for `{}`: {}",
+                                item.from, item.tool, item.policy_reason
+                            )
+                        } else {
+                            format!("Subagent `{}`: {}", item.from, item.human_summary)
+                        };
+                        let _ = tx.send(AppEvent::PermissionRequired {
+                            reason,
+                            rule: item.session_rule.clone(),
+                            responder: crate::tui::app::PermissionResponder(Some(resp_tx)),
+                        });
+                        let client2 = client.clone();
+                        let request_id = item.request_id.clone();
+                        let session_rule = item.session_rule.clone();
+                        tokio::spawn(async move {
+                            let decision = resp_rx
+                                .await
+                                .unwrap_or(crate::tui::app::PermissionResponse::Deny);
+                            let (approved, always) = match decision {
+                                crate::tui::app::PermissionResponse::AllowOnce => (true, false),
+                                crate::tui::app::PermissionResponse::AlwaysAllow => (true, true),
+                                crate::tui::app::PermissionResponse::Deny => (false, false),
+                            };
+                            let _ = client2
+                                .resolve_subagent_permission(
+                                    &request_id,
+                                    approved,
+                                    always,
+                                    Some(session_rule.as_str()),
+                                )
+                                .await;
+                        });
+                    }
+                }
+
                 match client.get_root_agent_view(&session_id).await {
                     Ok(view) => {
                         let all_terminal = !view.children.is_empty()
@@ -476,8 +522,8 @@ impl Compactor for TuiCompactor {
         let history_snapshot = history.get().await;
         archive_transcript(&history_snapshot).await;
 
-        let (to_summarize, tail) = split_for_compaction(&history_snapshot);
-        let transcript_text = build_transcript_text(&to_summarize);
+        let (tail, transcript_text) =
+            crate::agent::runtime::compactor::prepare_compaction_transcript(&history_snapshot);
 
         let summary_messages = vec![
             ChatMessage::system(COMPACTION_SYSTEM_PROMPT),
@@ -496,7 +542,17 @@ impl Compactor for TuiCompactor {
         {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(error = %e, "compaction summary request failed");
+                let err = e.to_string();
+                tracing::warn!(error = %err, "compaction summary request failed");
+                if crate::agent::runtime::compactor::is_payload_too_large_error(&err)
+                    && crate::agent::runtime::compactor::fallback_micro_compact(history).await
+                {
+                    let _ = self.event_tx.send(AppEvent::StreamError(
+                        "Compaction summary hit a size limit; applied micro-compact fallback."
+                            .to_string(),
+                    ));
+                    return true;
+                }
                 let _ = self.event_tx.send(AppEvent::StreamError(
                     "Compaction failed; continuing with full history.".to_string(),
                 ));
@@ -529,6 +585,15 @@ impl Compactor for TuiCompactor {
         }
         if let Some(reason) = stream_error {
             tracing::warn!(reason = %reason, "compaction summary stream errored");
+            if crate::agent::runtime::compactor::is_payload_too_large_error(&reason)
+                && crate::agent::runtime::compactor::fallback_micro_compact(history).await
+            {
+                let _ = self.event_tx.send(AppEvent::StreamError(
+                    "Compaction summary stream hit a size limit; applied micro-compact fallback."
+                        .to_string(),
+                ));
+                return true;
+            }
             let _ = self.event_tx.send(AppEvent::StreamError(
                 "Compaction failed; continuing with full history.".to_string(),
             ));
@@ -546,6 +611,15 @@ impl Compactor for TuiCompactor {
 
         if summary.trim().is_empty() {
             tracing::warn!("compaction produced an empty summary; leaving history intact");
+            // Empty summary after a large request: still try micro-compact so we
+            // make progress instead of permanently disabling compaction.
+            if crate::agent::runtime::compactor::fallback_micro_compact(history).await {
+                let _ = self.event_tx.send(AppEvent::StreamError(
+                    "Compaction produced an empty summary; applied micro-compact fallback."
+                        .to_string(),
+                ));
+                return true;
+            }
             let _ = self.event_tx.send(AppEvent::StreamError(
                 "Compaction produced an empty summary; continuing with full history.".to_string(),
             ));
