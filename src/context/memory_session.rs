@@ -1,5 +1,6 @@
 //! Session Management - Session lifecycle management
 
+use crate::api::ToolCall;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -64,6 +65,8 @@ impl Session {
         self.messages.push(SessionMessage {
             role: role.to_string(),
             content: content.to_string(),
+            tool_call_id: None,
+            tool_calls: None,
             timestamp: Utc::now(),
             metadata: HashMap::new(),
         });
@@ -83,6 +86,21 @@ pub struct SessionMessage {
     /// assistant messages that only carry tool_calls).
     #[serde(default)]
     pub content: String,
+    /// Tool call id carried by `role="tool"` result messages. Persisted so a
+    /// restored history keeps the assistant `tool_calls` <-> `tool` pairing;
+    /// without it the replayed `tool` message is missing `tool_call_id` and
+    /// the provider rejects the request (`MissingParameter`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// Assistant tool calls. Persisted for the same pairing reason as
+    /// `tool_call_id`; dropping them orphans the following `tool` results.
+    /// Deserialized leniently so a malformed/legacy entry can't block loading.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_tool_calls_lenient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(default = "default_timestamp")]
     pub timestamp: DateTime<Utc>,
     #[serde(default)]
@@ -93,6 +111,25 @@ pub struct SessionMessage {
 /// on individual messages.
 fn default_timestamp() -> DateTime<Utc> {
     Utc::now()
+}
+
+/// Lenient deserializer for `tool_calls`: parses strictly when the payload is
+/// well-formed, but falls back to `None` for missing/null/malformed entries
+/// (e.g. legacy or truncated `{"id":".."}` objects that predate this field).
+/// A single bad message must never prevent an entire session from loading.
+fn deserialize_tool_calls_lenient<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<ToolCall>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match opt {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => serde_json::from_value::<Vec<ToolCall>>(v)
+            .map(Some)
+            .or_else(|_| Ok(None)),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -661,6 +698,8 @@ mod tests {
             session.messages.push(SessionMessage {
                 role: "user".to_string(),
                 content: format!("msg-{i}"),
+                tool_call_id: None,
+                tool_calls: None,
                 timestamp: Utc::now(),
                 metadata: HashMap::new(),
             });
@@ -704,5 +743,90 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "after");
         assert_eq!(list[0].message_count, 1);
+    }
+
+    /// Regression: restoring a session must preserve `tool_call_id` and
+    /// `tool_calls` so the replayed history keeps the assistant `tool_calls`
+    /// <-> `tool` pairing. Previously `SessionMessage` had no such fields, so
+    /// serde silently dropped them on save; the restored `role="tool"` message
+    /// arrived with `tool_call_id = None`, the provider rejected the next
+    /// request with `MissingParameter: missing messages.tool_call_id`.
+    ///
+    /// This simulates the full wire round-trip the daemon/TUI perform:
+    ///   save:  ChatMessage  --serialize--> JSON --deserialize--> SessionMessage
+    ///   load:  SessionMessage --serialize--> JSON --deserialize--> ChatMessage
+    #[test]
+    fn session_message_round_trip_preserves_tool_call_pairing() {
+        use crate::api::{ChatMessage, ToolCall, ToolCallFunction};
+
+        let assistant = ChatMessage {
+            role: "assistant".to_string(),
+            content: None,
+            reasoning_content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "call_abc".to_string(),
+                r#type: "function".to_string(),
+                function: ToolCallFunction {
+                    name: "file_read".to_string(),
+                    arguments: r#"{"path":"x.rs"}"#.to_string(),
+                },
+            }]),
+            tool_call_id: None,
+        };
+        let tool_result = ChatMessage::tool("call_abc", "file contents");
+
+        // Save leg: ChatMessage -> SessionMessage (daemon receives the PUT body).
+        let saved: Vec<SessionMessage> =
+            serde_json::from_str(&serde_json::to_string(&vec![assistant, tool_result]).unwrap())
+                .expect("ChatMessage JSON must deserialize into SessionMessage");
+
+        // tool_calls survive on the assistant message.
+        assert_eq!(saved[0].role, "assistant");
+        let tc = saved[0]
+            .tool_calls
+            .as_ref()
+            .expect("assistant tool_calls must be preserved on save")
+            .first()
+            .unwrap();
+        assert_eq!(tc.id, "call_abc");
+        // tool_call_id survives on the tool result message.
+        assert_eq!(saved[1].role, "tool");
+        assert_eq!(
+            saved[1].tool_call_id.as_deref(),
+            Some("call_abc"),
+            "tool_call_id must be preserved on save"
+        );
+
+        // Load leg: SessionMessage -> ChatMessage (TUI decodes the GET response).
+        let restored: Vec<ChatMessage> =
+            serde_json::from_str(&serde_json::to_string(&saved).unwrap())
+                .expect("SessionMessage JSON must deserialize back into ChatMessage");
+
+        // After the full round-trip the pairing is intact and - critically -
+        // the `tool` message still carries its `tool_call_id`, so the replayed
+        // request is no longer missing the parameter the provider requires.
+        assert_eq!(restored[1].role, "tool");
+        assert_eq!(
+            restored[1].tool_call_id.as_deref(),
+            Some("call_abc"),
+            "tool_call_id must survive the save+load round-trip"
+        );
+        assert_eq!(
+            restored[0]
+                .tool_calls
+                .as_ref()
+                .and_then(|cs| cs.first())
+                .map(|c| c.id.as_str()),
+            Some("call_abc"),
+            "assistant tool_calls must survive the round-trip"
+        );
+
+        // The serialized `tool` message must actually emit `tool_call_id`
+        // (not be skipped), which is what the provider validation checks.
+        let wire = serde_json::to_string(&restored[1]).unwrap();
+        assert!(
+            wire.contains("\"tool_call_id\":\"call_abc\""),
+            "serialized tool message must include tool_call_id, got: {wire}"
+        );
     }
 }

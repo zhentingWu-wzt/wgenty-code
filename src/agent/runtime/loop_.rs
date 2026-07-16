@@ -227,7 +227,14 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
         // Re-fetch after possible compaction.
         let raw = history.get().await;
         let mut messages = micro_compact_messages(&raw);
-        // Defensive boundary: guarantee every assistant `tool_calls` block is
+        // Defensive boundary 1: demote `role="tool"` messages whose
+        // `tool_call_id` has no matching preceding assistant `tool_calls`
+        // entry. This happens for sessions saved by older builds that dropped
+        // `tool_call_id`/`tool_calls` during persistence - replaying them
+        // verbatim fails with `missing messages.tool_call_id`. No-op for
+        // well-formed histories.
+        crate::api::types::demote_orphan_tool_results(&mut messages);
+        // Defensive boundary 2: guarantee every assistant `tool_calls` block is
         // followed by matching `tool_result`s. Repairs histories orphaned by a
         // mid-execution interrupt (Esc) that aborts after the assistant message
         // is pushed but before tool results are appended - otherwise the next

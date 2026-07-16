@@ -1026,6 +1026,8 @@ mod tests {
                 messages: Some(vec![crate::context::memory_session::SessionMessage {
                     role: "user".to_string(),
                     content: format!("turn-{i}"),
+                    tool_call_id: None,
+                    tool_calls: None,
                     timestamp: chrono::Utc::now(),
                     metadata: Default::default(),
                 }]),
