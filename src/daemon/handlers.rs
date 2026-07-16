@@ -345,6 +345,49 @@ pub async fn unapprove_tool(
     Json(serde_json::json!({"success": true}))
 }
 
+/// GET /api/v1/tools/pending-permissions — subagent policy Ask waiters.
+pub async fn list_pending_permissions(
+    State(state): State<Arc<DaemonState>>,
+) -> Json<crate::daemon::models::ListPendingPermissionsResponse> {
+    let pending = state
+        .permission_bridge
+        .pending()
+        .await
+        .into_iter()
+        .map(|a| crate::daemon::models::PendingSubagentPermission {
+            request_id: a.request_id,
+            from: a.from,
+            kind: a.kind,
+            tool: a.tool,
+            policy_reason: a.policy_reason,
+            session_rule: a.session_rule,
+            human_summary: a.human_summary,
+        })
+        .collect();
+    Json(crate::daemon::models::ListPendingPermissionsResponse { pending })
+}
+
+/// POST /api/v1/tools/resolve-permission — unblock a subagent Ask waiter.
+pub async fn resolve_subagent_permission(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<crate::daemon::models::ResolveSubagentPermissionRequest>,
+) -> Json<serde_json::Value> {
+    if body.approved && body.always {
+        if let Some(rule) = body.session_rule.clone() {
+            state.tool_executor.approve_rule(rule.clone()).await;
+            state.approve_rule("default", rule).await;
+        }
+    }
+    let ok = state
+        .permission_bridge
+        .resolve(&body.request_id, body.approved)
+        .await;
+    Json(serde_json::json!({
+        "success": ok,
+        "resolved": ok,
+    }))
+}
+
 // ── Tasks ────────────────────────────────────────────────────────────────────
 
 pub async fn list_tasks(State(state): State<Arc<DaemonState>>) -> Json<ListTasksResponse> {
@@ -1000,6 +1043,59 @@ pub async fn cancel_agent_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn daemon_state_saves_sessions_under_project_local_dir() {
+        use crate::config::Settings;
+        use crate::daemon::models::{SessionResponse, UpdateSessionRequest};
+        use crate::state::AppState;
+        use crate::utils::project_sessions_dir;
+        use axum::extract::{Path, State};
+        use axum::Json;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        // Do not override session_manager — this asserts DaemonState::new wires
+        // MemorySessionManager::with_project_root(working_dir).
+        let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+
+        let fixed_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string();
+        let body = UpdateSessionRequest {
+            name: Some("project-local".to_string()),
+            messages: Some(vec![crate::context::memory_session::SessionMessage {
+                role: "user".to_string(),
+                content: "hello".to_string(),
+                tool_call_id: None,
+                tool_calls: None,
+                timestamp: chrono::Utc::now(),
+                metadata: Default::default(),
+            }]),
+        };
+        let Json(resp): Json<SessionResponse> =
+            update_session(State(state.clone()), Path(fixed_id.clone()), Json(body))
+                .await
+                .expect("update_session should succeed");
+        assert_eq!(resp.id, fixed_id);
+
+        let expected_path = project_sessions_dir(temp.path()).join(format!("{fixed_id}.json"));
+        assert!(
+            expected_path.is_file(),
+            "session must be written under project-local dir, expected {}",
+            expected_path.display()
+        );
+
+        // Must not land only in the global home sessions dir for this working_dir.
+        let home_sessions = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".wgenty-code")
+            .join("sessions")
+            .join(format!("{fixed_id}.json"));
+        assert!(
+            !home_sessions.is_file(),
+            "session must not be written to global ~/.wgenty-code/sessions when project dir is writable"
+        );
+    }
 
     #[tokio::test]
     async fn update_session_upsert_preserves_path_id_across_saves() {

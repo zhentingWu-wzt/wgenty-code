@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn explore_readonly_filters_mutating_fs_tools() {
+    let all = vec![
+        "file_read".into(),
+        "file_write".into(),
+        "file_edit".into(),
+        "apply_patch".into(),
+        "grep".into(),
+        "exec_command".into(),
+        "task".into(),
+        "delegate".into(),
+    ];
+    let filtered = filter_allowed_tools(all, "explore", 0, 1, true);
+    assert!(filtered.contains(&"file_read".to_string()));
+    assert!(filtered.contains(&"grep".to_string()));
+    assert!(filtered.contains(&"exec_command".to_string()));
+    assert!(!filtered.contains(&"file_write".to_string()));
+    assert!(!filtered.contains(&"file_edit".to_string()));
+    assert!(!filtered.contains(&"apply_patch".to_string()));
+    assert!(!filtered.contains(&"task".to_string()));
+    assert!(!filtered.contains(&"delegate".to_string()));
+}
+
+#[test]
+fn explore_readonly_false_keeps_mutating_tools() {
+    let all = vec!["file_write".into(), "task".into()];
+    let filtered = filter_allowed_tools(all, "explore", 0, 1, false);
+    assert!(filtered.contains(&"file_write".to_string()));
+    assert!(!filtered.contains(&"task".to_string()));
+}
+
+#[test]
 fn test_simple_prompt_not_complex() {
     assert!(!is_complex_task(
         "create a file called config.json with default settings",

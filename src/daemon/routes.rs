@@ -62,6 +62,14 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         .route("/api/v1/tools/execute", post(handlers::execute_tool))
         .route("/api/v1/tools/approve", post(handlers::approve_tool))
         .route("/api/v1/tools/unapprove", post(handlers::unapprove_tool))
+        .route(
+            "/api/v1/tools/pending-permissions",
+            get(handlers::list_pending_permissions),
+        )
+        .route(
+            "/api/v1/tools/resolve-permission",
+            post(handlers::resolve_subagent_permission),
+        )
         // Tasks
         .route("/api/v1/tasks", get(handlers::list_tasks))
         .route("/api/v1/tasks/progress", get(handlers::task_progress))
