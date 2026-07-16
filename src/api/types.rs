@@ -119,6 +119,73 @@ impl ChatMessage {
     }
 }
 
+/// Synthetic tool result injected when a tool call's execution was interrupted
+/// (e.g. the user pressed Esc / Ctrl-C) so the message sequence stays
+/// API-compliant: every assistant `tool_calls` block must be followed by a
+/// matching `tool_result` for each call id.
+pub const INTERRUPTED_TOOL_RESULT: &str = "[Tool execution interrupted by user]";
+
+/// Ensure every assistant `tool_calls` block is followed by a matching
+/// `tool_result` (role `"tool"` carrying the same `tool_call_id`).
+///
+/// A turn aborted mid-execution (Esc / Ctrl-C) leaves the shared
+/// `conversation_history` with an orphaned assistant message whose
+/// `tool_calls` have no results yet. If that history is saved to a session
+/// and later restored, the next API request fails with
+/// `MissingParameter: missing messages.tool_call_id`. This function repairs
+/// such sequences by appending a synthetic [`INTERRUPTED_TOOL_RESULT`] for
+/// every tool call id that lacks a result.
+///
+/// The scan is a single O(n) pass and is safe to run on every request as a
+/// defensive boundary; it is a no-op for already well-formed histories.
+pub fn sanitize_tool_call_pairing(messages: &mut Vec<ChatMessage>) {
+    use std::collections::HashSet;
+
+    let original = std::mem::take(messages);
+    let mut result: Vec<ChatMessage> = Vec::with_capacity(original.len());
+    let mut i = 0;
+    while i < original.len() {
+        let has_tool_calls = original[i]
+            .tool_calls
+            .as_ref()
+            .is_some_and(|tc| !tc.is_empty());
+        if original[i].role == "assistant" && has_tool_calls {
+            let tool_calls = original[i].tool_calls.as_ref().unwrap();
+            result.push(original[i].clone());
+
+            // Collect tool_call_ids answered between this assistant and the
+            // next assistant (inclusive of any role="tool" messages).
+            let mut answered: HashSet<String> = HashSet::new();
+            let mut j = i + 1;
+            while j < original.len() && original[j].role != "assistant" {
+                if original[j].role == "tool" {
+                    if let Some(id) = &original[j].tool_call_id {
+                        answered.insert(id.clone());
+                    }
+                }
+                j += 1;
+            }
+
+            // Preserve the intervening messages verbatim.
+            for msg in original.iter().take(j).skip(i + 1) {
+                result.push(msg.clone());
+            }
+
+            // Backfill synthetic results for any unanswered tool call.
+            for tc in tool_calls {
+                if !answered.contains(&tc.id) {
+                    result.push(ChatMessage::tool(&tc.id, INTERRUPTED_TOOL_RESULT));
+                }
+            }
+            i = j;
+        } else {
+            result.push(original[i].clone());
+            i += 1;
+        }
+    }
+    *messages = result;
+}
+
 // ── Request types ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -274,5 +341,92 @@ mod tests {
         assert!(json.contains(r#""content":"hello""#));
         assert!(!json.contains(r#"tool_calls"#));
         assert!(!json.contains(r#"tool_call_id"#));
+    }
+
+    fn tool_call(id: &str, name: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            r#type: "function".to_string(),
+            function: ToolCallFunction {
+                name: name.to_string(),
+                arguments: "{}".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn sanitize_trailing_orphan_assistant_gets_synthetic_results() {
+        let mut msgs = vec![
+            ChatMessage::user("please read the file"),
+            ChatMessage::assistant_with_tools(vec![
+                tool_call("a", "file_read"),
+                tool_call("b", "grep"),
+            ]),
+        ];
+        sanitize_tool_call_pairing(&mut msgs);
+        assert_eq!(msgs.len(), 4, "two synthetic results appended");
+        assert_eq!(msgs[2].role, "tool");
+        assert_eq!(msgs[2].tool_call_id.as_deref(), Some("a"));
+        assert_eq!(msgs[3].role, "tool");
+        assert_eq!(msgs[3].tool_call_id.as_deref(), Some("b"));
+        assert!(
+            msgs[2].content.as_deref().unwrap().contains("interrupted"),
+            "synthetic result should mention interruption"
+        );
+    }
+
+    #[test]
+    fn sanitize_partial_results_completed() {
+        let mut msgs = vec![
+            ChatMessage::assistant_with_tools(vec![
+                tool_call("a", "file_read"),
+                tool_call("b", "grep"),
+            ]),
+            ChatMessage::tool("a", "file content"),
+        ];
+        sanitize_tool_call_pairing(&mut msgs);
+        assert_eq!(msgs.len(), 3, "only the missing 'b' result is added");
+        assert_eq!(msgs[2].role, "tool");
+        assert_eq!(msgs[2].tool_call_id.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn sanitize_fully_paired_untouched() {
+        let mut msgs = vec![
+            ChatMessage::assistant_with_tools(vec![tool_call("a", "file_read")]),
+            ChatMessage::tool("a", "file content"),
+            ChatMessage::assistant("done"),
+        ];
+        let before = msgs.clone();
+        sanitize_tool_call_pairing(&mut msgs);
+        assert_eq!(msgs.len(), before.len(), "well-formed history unchanged");
+        assert_eq!(msgs[0].role, "assistant");
+        assert_eq!(msgs[1].role, "tool");
+        assert_eq!(msgs[2].role, "assistant");
+    }
+
+    #[test]
+    fn sanitize_no_tool_calls_untouched() {
+        let mut msgs = vec![ChatMessage::user("hi"), ChatMessage::assistant("hello")];
+        sanitize_tool_call_pairing(&mut msgs);
+        assert_eq!(msgs.len(), 2);
+    }
+
+    #[test]
+    fn sanitize_middle_orphan_between_assistants() {
+        let mut msgs = vec![
+            ChatMessage::assistant_with_tools(vec![tool_call("a", "file_read")]),
+            // missing tool result for "a" before the next assistant turn
+            ChatMessage::assistant("next turn"),
+        ];
+        sanitize_tool_call_pairing(&mut msgs);
+        assert_eq!(
+            msgs.len(),
+            3,
+            "synthetic result inserted between assistants"
+        );
+        assert_eq!(msgs[1].role, "tool");
+        assert_eq!(msgs[1].tool_call_id.as_deref(), Some("a"));
+        assert_eq!(msgs[2].role, "assistant");
     }
 }

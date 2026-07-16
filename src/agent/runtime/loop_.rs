@@ -226,7 +226,14 @@ pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeErro
 
         // Re-fetch after possible compaction.
         let raw = history.get().await;
-        let messages = micro_compact_messages(&raw);
+        let mut messages = micro_compact_messages(&raw);
+        // Defensive boundary: guarantee every assistant `tool_calls` block is
+        // followed by matching `tool_result`s. Repairs histories orphaned by a
+        // mid-execution interrupt (Esc) that aborts after the assistant message
+        // is pushed but before tool results are appended - otherwise the next
+        // request fails with `missing messages.tool_call_id`. No-op for
+        // well-formed histories.
+        crate::api::types::sanitize_tool_call_pairing(&mut messages);
 
         let result = if stream_style.prefer_non_stream {
             match complete_non_stream(llm, events, &messages, tool_defs).await {

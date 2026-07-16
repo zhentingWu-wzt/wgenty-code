@@ -403,6 +403,19 @@ impl App {
                 }
             }
         });
+        // Repair the shared conversation history: an interrupt may have aborted
+        // the agent loop after it pushed the assistant tool_calls message but
+        // before appending tool results. Without this, the orphaned tool_calls
+        // would make the next API request fail with `missing messages.tool_call_id`,
+        // and the broken history would be persisted to the session. Sanitize
+        // backfills a synthetic result for every unanswered tool call.
+        {
+            let history = self.conversation_history.clone();
+            tokio::spawn(async move {
+                let mut h = history.lock().await;
+                crate::api::types::sanitize_tool_call_pairing(&mut h);
+            });
+        }
         // User-facing feedback.
         self.push_system_message("\u{23F9} Interrupted by user");
     }
