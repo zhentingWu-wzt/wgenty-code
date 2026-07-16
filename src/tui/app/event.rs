@@ -795,7 +795,16 @@ impl App {
                 let history = self.conversation_history.clone();
                 tokio::spawn(async move {
                     let h = history.lock().await.clone();
-                    let _ = client.save_session(&id, &name, &h).await;
+                    if let Err(e) = client.save_session(&id, &name, &h).await {
+                        // Previously `let _ =` swallowed failures, so missing
+                        // sessions looked like "never saved". Surface for logs.
+                        tracing::error!(
+                            session_id = %id,
+                            session_name = %name,
+                            error = %e,
+                            "Failed to save session to daemon"
+                        );
+                    }
                 });
             }
             AppEvent::CtrlCPressed => {
