@@ -124,6 +124,7 @@ impl App {
                 .unwrap_or(false)
         {
             self.mode = self.mode.next();
+            self.sync_permission_mode_to_daemon();
             return;
         }
         // Ctrl+P: toggle plan mode (restores previous mode when leaving PlanMode)
@@ -142,6 +143,7 @@ impl App {
             } else {
                 "Plan mode disabled"
             };
+            self.sync_permission_mode_to_daemon();
             self.committed_messages.push(UIMessage {
                 role: MessageRole::System,
                 content: msg.to_string(),
@@ -488,6 +490,18 @@ impl App {
             tool_args: None,
             diff_data: None,
             tool_metadata: None,
+        });
+    }
+
+    /// Fire-and-forget: push the current agent mode to the daemon so subagents
+    /// inherit the root agent's runtime permission mode (Yolo/AcceptEdits/Normal).
+    fn sync_permission_mode_to_daemon(&self) {
+        let client = self.daemon_client.clone();
+        let mode = self.mode.to_root_permission_mode();
+        tokio::spawn(async move {
+            if let Err(e) = client.set_permission_mode(mode).await {
+                tracing::warn!(error = ?e, "failed to sync permission mode to daemon");
+            }
         });
     }
 }

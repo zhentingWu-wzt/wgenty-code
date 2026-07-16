@@ -1,5 +1,6 @@
 //! DaemonState -- shared state for the HTTP API server.
 
+use crate::config::agent::RootPermissionMode;
 use crate::context::memory_session::SessionManager as MemorySessionManager;
 use crate::knowledge::loader::SkillLoader;
 use crate::permissions::ToolPermissionPolicy;
@@ -7,6 +8,7 @@ use crate::runtime::hooks::HookManager;
 use crate::state::AppState;
 use crate::tasks::{TaskManagementTool, TodoState};
 use crate::teams::mailbox::TeamManager;
+use crate::teams::permission_bridge::PermissionBridge;
 use crate::tools::execution::background::{BackgroundManager, BackgroundTool};
 use crate::tools::meta::team_message::TeamMessageTool;
 use crate::tools::{CheckpointManager, ToolExecutor, ToolRegistry};
@@ -61,6 +63,11 @@ pub struct DaemonState {
     root_contexts: Arc<RwLock<HashMap<String, crate::agent::AgentExecutionContext>>>,
     /// Secret used to digest viewer bearer tokens.
     daemon_viewer_secret: [u8; 32],
+    /// Shared subagent policy-Ask bridge (TUI/daemon drains pending approvals).
+    pub permission_bridge: Arc<PermissionBridge>,
+    /// Shared root agent permission mode (Yolo/AcceptEdits/Normal).
+    /// Updated by the TUI at runtime; subagents snapshot at spawn time.
+    pub root_mode: Arc<std::sync::RwLock<RootPermissionMode>>,
 }
 
 impl DaemonState {
@@ -122,6 +129,11 @@ impl DaemonState {
         // The MCP connection itself is deferred to a background task so it never
         // blocks the first rendered frame.
 
+        let approval_timeout = app_state.settings.agent.subagent.approval_timeout_secs;
+        let permission_bridge = Arc::new(PermissionBridge::with_timeout_secs(approval_timeout));
+        let shared_session_rules = Arc::new(RwLock::new(HashSet::<String>::new()));
+        let root_mode = Arc::new(std::sync::RwLock::new(RootPermissionMode::Normal));
+
         // Use Arc::new_cyclic so the TaskTool holds a valid Weak<ToolRegistry>
         // that points to the *final* Arc allocation — not a temporary one that
         // gets dropped (which would leave a dangling weak reference).
@@ -162,7 +174,10 @@ impl DaemonState {
                 coordinator.clone(),
                 progress_store.clone(),
                 transcript_store.clone(),
-            );
+            )
+            .with_permission_bridge(permission_bridge.clone())
+            .with_session_rules(shared_session_rules.clone())
+            .with_root_mode(root_mode.clone());
             registry.register(Box::new(task_tool));
 
             // Register subagent trace tool (read-only visualization for subagent transcripts)
@@ -258,12 +273,19 @@ impl DaemonState {
             .cloned()
             .unwrap_or(serde_json::Value::Null);
         let hook_manager = Arc::new(HookManager::from_settings(&hooks_config));
-        let session_manager = MemorySessionManager::new();
+        // Project-local sessions: `<working_dir>/.wgenty-code/sessions/`
+        // (falls back to ~/.wgenty-code/sessions if the project dir is unwritable).
+        // Do not use SessionManager::new() here — that always writes to the global
+        // home directory and diverges from WGENTY.md / historical project sessions.
+        let session_manager =
+            MemorySessionManager::with_project_root(app_state.settings.storage.working_dir.clone());
+        let tool_executor = ToolExecutor::new(tool_registry.clone(), policy)
+            .with_hooks(hook_manager.clone())
+            .with_shared_session_rules(shared_session_rules);
 
         Self {
             app_state,
-            tool_executor: ToolExecutor::new(tool_registry.clone(), policy)
-                .with_hooks(hook_manager.clone()),
+            tool_executor,
             tool_registry,
             checkpoint_manager,
             task_manager,
@@ -281,6 +303,8 @@ impl DaemonState {
             viewer_tokens: Arc::new(RwLock::new(HashMap::new())),
             root_contexts: Arc::new(RwLock::new(HashMap::new())),
             daemon_viewer_secret,
+            permission_bridge,
+            root_mode,
         }
     }
 

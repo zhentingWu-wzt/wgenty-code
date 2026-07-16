@@ -19,6 +19,21 @@ pub struct ToolExecutor {
     pub state_handle: Option<Arc<RwLock<String>>>,
 }
 
+/// Shared policy validation used by root `ToolExecutor` and subagent `GuardingToolPort`.
+pub fn validate_tool_call_shared(
+    registry: &ToolRegistry,
+    policy: &ToolPermissionPolicy,
+    session_rules: &HashSet<String>,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Result<PolicyDecision, crate::tools::ToolError> {
+    match registry.get(tool_name) {
+        Some(t) => policy.validate_tool_call(t.as_ref(), tool_name, args, session_rules),
+        // Unknown tools are left to the registry execute path for a normal not-found error.
+        None => Ok(PolicyDecision::Allow),
+    }
+}
+
 impl ToolExecutor {
     pub fn new(registry: Arc<ToolRegistry>, policy: ToolPermissionPolicy) -> Self {
         Self {
@@ -31,6 +46,15 @@ impl ToolExecutor {
         }
     }
 
+    /// Replace session rules with a shared handle (root + children).
+    pub fn with_shared_session_rules(
+        mut self,
+        session_rules: Arc<RwLock<HashSet<String>>>,
+    ) -> Self {
+        self.session_rules = session_rules;
+        self
+    }
+
     pub fn with_hooks(mut self, hook_manager: Arc<HookManager>) -> Self {
         self.hook_manager = hook_manager;
         self
@@ -39,6 +63,26 @@ impl ToolExecutor {
     /// Set the workflow state handle (e.g., from the Comet subsystem or TUI app).
     pub fn set_state_handle(&mut self, handle: Option<Arc<RwLock<String>>>) {
         self.state_handle = handle;
+    }
+
+    /// Shared session approval rules for root and subagents.
+    pub fn session_rules_handle(&self) -> Arc<RwLock<HashSet<String>>> {
+        Arc::clone(&self.session_rules)
+    }
+
+    /// Whether `rule` is currently approved for this session.
+    pub async fn session_rules_contains(&self, rule: &str) -> bool {
+        self.session_rules.read().await.contains(rule)
+    }
+
+    /// Borrow the permission policy (for constructing subagent ports).
+    pub fn policy(&self) -> &ToolPermissionPolicy {
+        &self.policy
+    }
+
+    /// Clone the guardian configuration used for exec checks.
+    pub fn guardian(&self) -> Guardian {
+        self.guardian.clone()
     }
 
     pub fn tool_definitions(&self) -> Vec<crate::api::ToolDefinition> {
@@ -55,14 +99,14 @@ impl ToolExecutor {
         tool_name: &str,
         args: &serde_json::Value,
     ) -> Result<PolicyDecision, crate::tools::ToolError> {
-        let tool = self.registry.get(tool_name);
         let session_rules = self.session_rules.read().await;
-        match tool {
-            Some(t) => self
-                .policy
-                .validate_tool_call(t.as_ref(), tool_name, args, &session_rules),
-            None => Ok(PolicyDecision::Allow),
-        }
+        validate_tool_call_shared(
+            self.registry.as_ref(),
+            &self.policy,
+            &session_rules,
+            tool_name,
+            args,
+        )
     }
 
     /// Record an approved session rule so future calls skip the prompt.
@@ -240,6 +284,20 @@ mod tests {
     use crate::runtime::hooks::{HookAction, HookDefinition, HookEvent, HookManager};
     use std::sync::Arc;
     use tokio::sync::RwLock;
+
+    #[tokio::test]
+    async fn session_rules_are_shareable_via_arc() {
+        let exec = ToolExecutor::new(
+            Arc::new(ToolRegistry::new()),
+            ToolPermissionPolicy::new(std::path::PathBuf::from(".")),
+        );
+        let rules = exec.session_rules_handle();
+        {
+            let mut g = rules.write().await;
+            g.insert("tool:file_write".into());
+        }
+        assert!(exec.session_rules_contains("tool:file_write").await);
+    }
 
     fn make_executor(hook_manager: Arc<HookManager>) -> ToolExecutor {
         let registry = Arc::new(ToolRegistry::new());

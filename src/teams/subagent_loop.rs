@@ -1,7 +1,7 @@
 //! Subagent Loop — isolated agent loop for subagent execution.
 //!
 //! Control flow is [`crate::agent::runtime::run_agent_loop`]. This module
-//! provides subagent-specific ports (filtered tools, progress observer,
+//! provides subagent-specific ports (guarding tools, progress observer,
 //! non-root synthesis barrier) and preserves the historical
 //! [`run_subagent_loop`] signature for `task` / RLM / run_script callers.
 
@@ -12,14 +12,14 @@ use crate::agent::progress::{
 use crate::agent::runtime::{
     run_agent_loop, ApiLlmPort, EventSink, HistoryStore, InboxPort, LoopHooks, LoopTurnState,
     MutexHistoryStore, RoundObserver, RunLoopArgs, RuntimeConfig, RuntimeError, RuntimeEvent,
-    StreamStyle, SynthesisPort, ToolPort, ToolRequest, ToolResponse,
+    StreamStyle, SynthesisPort,
 };
-use crate::agent::{
-    AgentCoordinator, AgentExecutionContext, ChildResult, CoordinatorError, ToolContext,
-    ToolInvocationId,
-};
-use crate::api::{ApiClient, ChatMessage, ToolDefinition};
+use crate::agent::{AgentCoordinator, AgentExecutionContext, ChildResult, CoordinatorError};
+use crate::api::{ApiClient, ChatMessage};
 use crate::teams::approval_registry;
+use crate::teams::guarding_tool_port::{
+    format_permission_summary, GuardingToolPort, SubagentPermissionContext,
+};
 use crate::teams::mailbox::{Mailbox, TeamMessage};
 use crate::tools::ToolRegistry;
 use crate::utils::stuck_detector::StuckDetector;
@@ -162,64 +162,6 @@ impl EventSink for NullEventSink {
     }
 }
 
-struct FilteredToolPort<'a> {
-    registry: &'a ToolRegistry,
-    context: &'a AgentExecutionContext,
-    allowed: HashSet<String>,
-    /// Per-subagent working directory (s12 worktree isolation). None = process cwd.
-    workdir: Option<std::path::PathBuf>,
-}
-
-#[async_trait]
-impl ToolPort for FilteredToolPort<'_> {
-    async fn execute(&self, req: ToolRequest) -> ToolResponse {
-        if !self.allowed.contains(&req.name) {
-            return ToolResponse {
-                content: format!(
-                    "Error: tool '{}' is not in the allowed tool set for this subagent",
-                    req.name
-                ),
-                success: false,
-            };
-        }
-
-        let inv_id = req
-            .invocation_id
-            .clone()
-            .unwrap_or_else(|| format!("{}-inv", req.name));
-        let tool_context = ToolContext {
-            agent: self.context,
-            invocation_id: ToolInvocationId::new(inv_id),
-            origin_turn_id: None,
-            workdir: self.workdir.as_deref(),
-        };
-
-        match self
-            .registry
-            .execute_with_context(&tool_context, &req.name, req.arguments)
-            .await
-        {
-            Ok(output) => ToolResponse {
-                content: output.content,
-                success: true,
-            },
-            Err(e) => ToolResponse {
-                content: format!("Error: {}", e.message),
-                success: false,
-            },
-        }
-    }
-
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        self.registry
-            .list()
-            .into_iter()
-            .filter(|t| self.allowed.contains(t.name()))
-            .map(|t| ToolDefinition::new(t.name(), t.description(), t.input_schema()))
-            .collect()
-    }
-}
-
 struct SubagentSynthesis {
     coordinator: Arc<AgentCoordinator>,
     context: AgentExecutionContext,
@@ -282,9 +224,32 @@ struct SubagentObserver {
     text_snapshot: Mutex<Option<String>>,
     current_params: Mutex<Option<String>>,
     cumulative_tokens: Mutex<usize>,
+    /// Shared with GuardingToolPort — drained into action_log on emit.
+    permission_events: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 impl SubagentObserver {
+    fn drain_permission_events_into_log(&self) {
+        let pending = {
+            let mut log = self
+                .permission_events
+                .lock()
+                .expect("lock poisoned: permission_events");
+            std::mem::take(&mut *log)
+        };
+        if pending.is_empty() {
+            return;
+        }
+        let mut action_log = self.action_log.lock().expect("lock poisoned: action_log");
+        let elapsed_ms = self.start.elapsed().as_millis() as u64;
+        for (kind, detail) in pending {
+            action_log.push(SubagentEvent {
+                event_type: SubagentEventType::Permission { kind, detail },
+                elapsed_ms,
+            });
+        }
+    }
+
     fn emit(
         &self,
         status: SubagentStatus,
@@ -293,6 +258,9 @@ impl SubagentObserver {
         error_msg: Option<String>,
         messages: Vec<ChatMessage>,
     ) {
+        // Fold any permission lifecycle events into the action log first.
+        self.drain_permission_events_into_log();
+
         let Some(ref cb) = self.on_progress else {
             return;
         };
@@ -579,9 +547,23 @@ impl InboxPort for MailboxInbox {
                     request_id,
                     kind,
                     payload,
+                    tool,
+                    policy_reason,
+                    session_rule,
+                    ..
                 } => {
+                    let structured = match (
+                        tool.as_deref(),
+                        policy_reason.as_deref(),
+                        session_rule.as_deref(),
+                    ) {
+                        (Some(t), Some(reason), Some(rule)) => {
+                            format!(" tool={t} reason={reason} rule={rule}")
+                        }
+                        _ => String::new(),
+                    };
                     body.push(format!(
-                        "[approval request from {from} id={request_id} kind={kind}] {payload}"
+                        "[approval request from {from} id={request_id} kind={kind}{structured}] {payload}"
                     ));
                 }
                 TeamMessage::ApprovalResponse {
@@ -655,9 +637,54 @@ pub async fn run_subagent_loop(
     token_budget_k: Option<u64>,
     workdir: Option<std::path::PathBuf>,
 ) -> Result<String, SubagentError> {
+    // Headless default: shared workspace policy, no approval bridge (Ask fail closed).
+    // Call sites that own a root ToolExecutor should pass a richer context via
+    // `run_subagent_loop_with_permissions` once fully wired.
+    let permission = SubagentPermissionContext::headless(
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        context.agent_id.as_str(),
+    );
+    run_subagent_loop_with_permissions(
+        api_client,
+        tool_registry,
+        context,
+        coordinator,
+        system_prompt,
+        user_prompt,
+        allowed_tools,
+        max_rounds,
+        timeout_secs,
+        on_progress,
+        token_budget_k,
+        workdir,
+        permission,
+    )
+    .await
+}
+
+/// Same as [`run_subagent_loop`] but with an explicit permission context
+/// (shared session_rules / optional approval bridge / guardian).
+#[allow(clippy::too_many_arguments)]
+pub async fn run_subagent_loop_with_permissions(
+    api_client: &ApiClient,
+    tool_registry: &ToolRegistry,
+    context: &AgentExecutionContext,
+    coordinator: Arc<AgentCoordinator>,
+    system_prompt: &str,
+    user_prompt: &str,
+    allowed_tools: &[String],
+    max_rounds: usize,
+    timeout_secs: u64,
+    on_progress: Option<ProgressCallback>,
+    token_budget_k: Option<u64>,
+    workdir: Option<std::path::PathBuf>,
+    permission: SubagentPermissionContext,
+) -> Result<String, SubagentError> {
     let timeout_duration = Duration::from_secs(timeout_secs);
     static SUBAGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
     let trace_id = SUBAGENT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let denial_log = Arc::clone(&permission.denial_log);
+    let event_log = Arc::clone(&permission.event_log);
 
     tracing::info!(
         prompt_len = user_prompt.len(),
@@ -665,7 +692,7 @@ pub async fn run_subagent_loop(
         max_rounds = max_rounds,
         timeout_secs = timeout_secs,
         trace_id = trace_id,
-        "Subagent: starting agent loop (shared runtime)"
+        "Subagent: starting agent loop (shared runtime, guarding tools)"
     );
 
     let start = Instant::now();
@@ -679,12 +706,7 @@ pub async fn run_subagent_loop(
 
     let llm = ApiLlmPort::new(api_client.clone());
     let allowed: HashSet<String> = allowed_tools.iter().cloned().collect();
-    let tools = FilteredToolPort {
-        registry: tool_registry,
-        context,
-        allowed,
-        workdir,
-    };
+    let tools = GuardingToolPort::new(tool_registry, context, allowed, workdir, permission);
     let events = NullEventSink;
 
     let is_non_root = context.parent_id.is_some();
@@ -706,6 +728,7 @@ pub async fn run_subagent_loop(
         text_snapshot: Mutex::new(None),
         current_params: Mutex::new(None),
         cumulative_tokens: Mutex::new(0),
+        permission_events: event_log,
     };
 
     // Initial Running emit.
@@ -804,7 +827,18 @@ pub async fn run_subagent_loop(
                     elapsed_secs = start.elapsed().as_secs(),
                     "Subagent: completed successfully"
                 );
-                Ok(text)
+                let reasons = denial_log
+                    .lock()
+                    .expect("lock poisoned: denial_log")
+                    .clone();
+                let suffix = format_permission_summary(&reasons);
+                if suffix.is_empty() {
+                    Ok(text)
+                } else if text.trim().is_empty() {
+                    Ok(suffix)
+                } else {
+                    Ok(format!("{text}\n\n{suffix}"))
+                }
             }
             Ok(Err(e)) => {
                 let (error_type, message) = match &e {

@@ -168,6 +168,13 @@ impl RequestApprovalTool {
             request_id: request_id.to_string(),
             kind: kind.to_string(),
             payload: payload.to_string(),
+            tool: None,
+            policy_reason: None,
+            session_rule: None,
+            paths: Vec::new(),
+            command: None,
+            risk: None,
+            human_summary: None,
         };
         mailbox.send(&msg).await.map_err(|e| ToolError {
             message: format!("failed to write mailbox: {e}"),

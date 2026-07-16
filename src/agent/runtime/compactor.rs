@@ -4,13 +4,22 @@
 //! goes through [`LlmPort::chat_completion`] with tools disabled so the model
 //! cannot answer with a tool_call (which would leave content empty).
 
-use super::compaction::{assemble_post_compaction_history, split_for_compaction};
+use super::compaction::{
+    assemble_post_compaction_history, micro_compact_messages, request_size_chars,
+    split_for_compaction,
+};
 use super::ports::{Compactor, HistoryStore, LlmPort};
 use crate::api::ChatMessage;
 use crate::context::{MemoryEntry, MemoryManager, MemoryOrigin, MemoryType};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// Soft cap on summarizer transcript text (characters).
+///
+/// Keeps the compaction chat request well under reverse-proxy / daemon body
+/// limits and model context budgets. Head + tail are retained when truncated.
+pub const COMPACTION_TRANSCRIPT_CHAR_CAP: usize = 100_000;
 
 /// System prompt for the summarizer (JSON dual-output: summary + memories).
 pub const COMPACTION_SYSTEM_PROMPT: &str = "\
@@ -57,13 +66,30 @@ pub fn build_transcript_text(to_summarize: &[ChatMessage]) -> String {
                 ));
             }
             if let Some(c) = m.content.as_ref().filter(|s| !s.is_empty()) {
-                parts.push(c.clone());
+                // Cap per-message content so a single huge tool result cannot
+                // dominate the summarizer payload.
+                const CONTENT_CAP: usize = 8_000;
+                let mut chars = c.chars();
+                let snippet: String = chars.by_ref().take(CONTENT_CAP).collect();
+                let truncated = chars.next().is_some();
+                parts.push(if truncated {
+                    format!("{snippet}…(truncated)")
+                } else {
+                    snippet
+                });
             }
             if let Some(tcs) = m.tool_calls.as_ref() {
                 for tc in tcs {
+                    const ARG_CAP: usize = 2_000;
+                    let args = &tc.function.arguments;
+                    let mut chars = args.chars();
+                    let snippet: String = chars.by_ref().take(ARG_CAP).collect();
+                    let truncated = chars.next().is_some();
                     parts.push(format!(
-                        "tool_call: {}({})",
-                        tc.function.name, tc.function.arguments
+                        "tool_call: {}({}{})",
+                        tc.function.name,
+                        snippet,
+                        if truncated { "…(truncated)" } else { "" }
                     ));
                 }
             }
@@ -71,6 +97,72 @@ pub fn build_transcript_text(to_summarize: &[ChatMessage]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// Truncate a transcript to at most `max_chars`, keeping head + tail.
+pub fn truncate_transcript_text(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_string();
+    }
+    if max_chars < 64 {
+        return text.chars().take(max_chars).collect();
+    }
+    let marker = "\n\n…[transcript truncated for compaction request size]…\n\n";
+    let marker_len = marker.chars().count();
+    let budget = max_chars.saturating_sub(marker_len);
+    let head_len = budget * 2 / 3;
+    let tail_len = budget - head_len;
+    let head: String = text.chars().take(head_len).collect();
+    let tail: String = text
+        .chars()
+        .rev()
+        .take(tail_len)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("{head}{marker}{tail}")
+}
+
+/// Whether an error string looks like HTTP 413 / body-size rejection.
+pub fn is_payload_too_large_error(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("413")
+        || lower.contains("payload too large")
+        || lower.contains("length limit exceeded")
+        || lower.contains("body limit")
+        || lower.contains("request body too large")
+}
+
+/// Micro-compact in place when LLM summary cannot run (e.g. 413).
+///
+/// Returns `true` if history was rewritten to a smaller form.
+pub async fn fallback_micro_compact(history: &dyn HistoryStore) -> bool {
+    let snap = history.get().await;
+    let before = request_size_chars(&snap);
+    let micro = micro_compact_messages(&snap);
+    let after = request_size_chars(&micro);
+    if after < before {
+        history.replace(micro).await;
+        tracing::info!(
+            before_chars = before,
+            after_chars = after,
+            "compaction fallback: applied micro-compact after summary failure"
+        );
+        true
+    } else {
+        false
+    }
+}
+
+/// Prepare summarizer input: micro-compact first, split tail, build + truncate transcript.
+pub fn prepare_compaction_transcript(history: &[ChatMessage]) -> (Vec<ChatMessage>, String) {
+    let micro = micro_compact_messages(history);
+    let (to_summarize, tail) = split_for_compaction(&micro);
+    let raw = build_transcript_text(&to_summarize);
+    let transcript = truncate_transcript_text(&raw, COMPACTION_TRANSCRIPT_CHAR_CAP);
+    (tail, transcript)
 }
 
 /// Parse summarizer output into `(summary, memories)`.
@@ -194,8 +286,7 @@ impl Compactor for ApiCompactor {
         let history_snapshot = history.get().await;
         archive_transcript(&history_snapshot).await;
 
-        let (to_summarize, tail) = split_for_compaction(&history_snapshot);
-        let transcript_text = build_transcript_text(&to_summarize);
+        let (tail, transcript_text) = prepare_compaction_transcript(&history_snapshot);
 
         let summary_messages = vec![
             ChatMessage::system(COMPACTION_SYSTEM_PROMPT),
@@ -209,7 +300,14 @@ impl Compactor for ApiCompactor {
         let completion = match self.llm.chat_completion(summary_messages, None).await {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(error = %e, "compaction summary request failed");
+                let err = e.to_string();
+                tracing::warn!(error = %err, "compaction summary request failed");
+                if is_payload_too_large_error(&err) && fallback_micro_compact(history).await {
+                    self.status(
+                        "Compaction summary hit a size limit; applied micro-compact fallback.",
+                    );
+                    return true;
+                }
                 self.status("Compaction failed; continuing with full history.");
                 return false;
             }
@@ -228,6 +326,12 @@ impl Compactor for ApiCompactor {
 
         if summary.trim().is_empty() {
             tracing::warn!("compaction produced an empty summary; leaving history intact");
+            if fallback_micro_compact(history).await {
+                self.status(
+                    "Compaction produced an empty summary; applied micro-compact fallback.",
+                );
+                return true;
+            }
             self.status("Compaction produced an empty summary; continuing with full history.");
             return false;
         }
@@ -331,5 +435,39 @@ mod tests {
         let text = build_transcript_text(&msgs);
         assert!(text.contains("tool_call: file_read"));
         assert!(text.contains("a.rs"));
+    }
+
+    #[test]
+    fn truncate_transcript_keeps_head_and_tail() {
+        let text: String = (0..10_000).map(|_| 'x').collect();
+        let out = truncate_transcript_text(&text, 200);
+        assert!(out.chars().count() <= 200);
+        assert!(out.contains("truncated"));
+        assert!(out.starts_with('x'));
+        assert!(out.ends_with('x'));
+    }
+
+    #[test]
+    fn truncate_noop_when_under_cap() {
+        let text = "short";
+        assert_eq!(truncate_transcript_text(text, 100), "short");
+    }
+
+    #[test]
+    fn detects_413_payload_errors() {
+        assert!(is_payload_too_large_error(
+            "API error (413 Payload Too Large): Failed to buffer the request body: length limit exceeded"
+        ));
+        assert!(is_payload_too_large_error("request body too large"));
+        assert!(!is_payload_too_large_error("timeout connecting to host"));
+    }
+
+    #[test]
+    fn build_transcript_caps_huge_content() {
+        let huge: String = (0..20_000).map(|_| 'a').collect();
+        let msgs = vec![ChatMessage::tool("id1", &huge)];
+        let text = build_transcript_text(&msgs);
+        assert!(text.contains("truncated"));
+        assert!(text.chars().count() < huge.chars().count());
     }
 }

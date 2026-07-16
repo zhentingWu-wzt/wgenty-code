@@ -14,16 +14,21 @@ use crate::agent::{
     AgentCoordinator, ChildTerminal, CoordinatorError, SpawnChildRequest, ToolContext,
 };
 use crate::api::ApiClient;
+use crate::config::agent::RootPermissionMode;
 use crate::config::Settings;
-use crate::teams::subagent_loop::{run_subagent_loop, SubagentError};
+use crate::permissions::policy::ToolPermissionPolicy;
+use crate::runtime::guardian::Guardian;
+use crate::teams::guarding_tool_port::SubagentPermissionContext;
+use crate::teams::permission_bridge::PermissionBridge;
+use crate::teams::subagent_loop::{run_subagent_loop_with_permissions, SubagentError};
 use crate::teams::subagent_mailbox::SubagentResultMailbox;
 use crate::tools::{Tool, ToolError, ToolOutput};
 use crate::transcript::TranscriptStatus;
 use async_trait::async_trait;
 use futures::FutureExt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 
 mod heuristic;
@@ -60,6 +65,9 @@ fn convert_event(
             None,
             format!("{status} {}", summary.as_deref().unwrap_or("")),
         ),
+        SubagentEventType::Permission { kind, detail } => {
+            ("permission".to_string(), None, format!("{kind}: {detail}"))
+        }
     };
     crate::transcript::SubagentEventRecord {
         round: 0,
@@ -91,6 +99,14 @@ pub struct TaskTool {
     progress_store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
     /// Optional transcript store for persisting subagent execution transcripts to SQLite.
     transcript_store: Option<Arc<crate::transcript::SubagentTranscriptStore>>,
+    /// Optional shared approval bridge for subagent policy Ask.
+    permission_bridge: Option<Arc<PermissionBridge>>,
+    /// Optional shared session rules with the root ToolExecutor.
+    session_rules: Option<Arc<RwLock<HashSet<String>>>>,
+    /// Shared root agent permission mode (Yolo/AcceptEdits/Normal).
+    /// Subagents snapshot the current value at spawn time. Uses std::sync so
+    /// `build_permission_context` can read it without an async context.
+    root_mode: Arc<std::sync::RwLock<RootPermissionMode>>,
 }
 
 impl TaskTool {
@@ -108,6 +124,53 @@ impl TaskTool {
             progress_store,
             mailbox: SubagentResultMailbox::default_location(),
             transcript_store,
+            permission_bridge: None,
+            session_rules: None,
+            root_mode: Arc::new(std::sync::RwLock::new(RootPermissionMode::Normal)),
+        }
+    }
+
+    pub fn with_permission_bridge(mut self, bridge: Arc<PermissionBridge>) -> Self {
+        self.permission_bridge = Some(bridge);
+        self
+    }
+
+    pub fn with_session_rules(mut self, rules: Arc<RwLock<HashSet<String>>>) -> Self {
+        self.session_rules = Some(rules);
+        self
+    }
+
+    /// Set the shared root permission mode signal. The TUI/daemon updates this
+    /// at runtime; each subagent snapshots the current value at spawn time.
+    pub fn with_root_mode(mut self, mode: Arc<std::sync::RwLock<RootPermissionMode>>) -> Self {
+        self.root_mode = mode;
+        self
+    }
+
+    /// Update the root permission mode at runtime.
+    pub fn set_root_mode(&self, mode: RootPermissionMode) {
+        *self.root_mode.write().unwrap() = mode;
+    }
+
+    fn build_permission_context(&self, agent_id: &str) -> SubagentPermissionContext {
+        let workspace = self.settings.storage.working_dir.clone();
+        let limits = &self.settings.agent.subagent;
+        let root_mode = *self.root_mode.read().unwrap_or_else(|e| e.into_inner());
+        SubagentPermissionContext {
+            policy: ToolPermissionPolicy::new(workspace),
+            session_rules: self
+                .session_rules
+                .clone()
+                .unwrap_or_else(|| Arc::new(RwLock::new(HashSet::new()))),
+            bridge: self.permission_bridge.clone(),
+            ask_strategy: limits.ask_strategy,
+            approval_timeout_secs: limits.approval_timeout_secs,
+            timeout_decision: limits.timeout_decision,
+            guardian: Guardian::default(),
+            agent_id: agent_id.to_string(),
+            root_mode,
+            denial_log: Arc::new(Mutex::new(Vec::new())),
+            event_log: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -334,22 +397,14 @@ impl Tool for TaskTool {
         // Explore is a leaf search agent and plan is a leaf analysis agent --
         // give them only leaf tools.
         let depth = context.agent.depth;
-        let is_leaf_agent = matches!(_subagent_type, "explore" | "plan");
-        let allowed_tools: Vec<String> = tool_registry
-            .list()
-            .iter()
-            .map(|t| t.name().to_string())
-            .filter(|name| {
-                let is_spawn_tool = name == "task" || name == "delegate";
-                if is_spawn_tool {
-                    if is_leaf_agent {
-                        return false;
-                    }
-                    return depth < self.settings.agent.subagent.max_depth;
-                }
-                true
-            })
-            .collect();
+        let explore_readonly = self.settings.agent.subagent.explore_readonly;
+        let allowed_tools: Vec<String> = filter_allowed_tools(
+            tool_registry.list().iter().map(|t| t.name().to_string()),
+            _subagent_type,
+            depth,
+            self.settings.agent.subagent.max_depth,
+            explore_readonly,
+        );
 
         // Build system prompt based on subagent type.
         let base_system_prompt: &str = match _subagent_type {
@@ -531,6 +586,7 @@ impl Tool for TaskTool {
         let node_id_for_rlm = subagent_node_id.clone();
         let settings_bg = self.settings.clone();
         let coordinator_bg = self.coordinator.clone();
+        let permission_ctx = self.build_permission_context(child_context.agent_id.as_str());
 
         // The coordinator-owned child context moves into the spawned task so
         // the loop runs as the child agent and cancellation propagates. The
@@ -576,7 +632,7 @@ impl Tool for TaskTool {
                     .map(|r| r.aggregated)
                     .map_err(SubagentError::from)
                 } else {
-                    run_subagent_loop(
+                    run_subagent_loop_with_permissions(
                         &api_client,
                         &reg,
                         &bg_child_context,
@@ -589,6 +645,7 @@ impl Tool for TaskTool {
                         Some(cb),
                         token_budget,
                         workdir,
+                        permission_ctx,
                     )
                     .await
                 }
@@ -778,6 +835,38 @@ impl Tool for TaskTool {
             metadata,
         })
     }
+}
+
+/// Mutating filesystem tools removed from explore/plan when `explore_readonly`.
+const MUTATING_FS_TOOLS: &[&str] = &["file_write", "file_edit", "apply_patch"];
+
+/// Filter the registry tool list for a subagent type.
+///
+/// - `explore` / `plan` never get spawn tools (`task` / `delegate`).
+/// - When `explore_readonly`, those types also lose mutating FS tools.
+/// - `general-purpose` may spawn only when `depth < max_depth`.
+/// - `exec_command` remains visible (still gated by policy + guardian).
+pub(crate) fn filter_allowed_tools(
+    names: impl IntoIterator<Item = String>,
+    subagent_type: &str,
+    depth: usize,
+    max_depth: usize,
+    explore_readonly: bool,
+) -> Vec<String> {
+    let is_leaf = matches!(subagent_type, "explore" | "plan");
+    names
+        .into_iter()
+        .filter(|name| {
+            let is_spawn = name == "task" || name == "delegate";
+            if is_spawn {
+                return !is_leaf && depth < max_depth;
+            }
+            if explore_readonly && is_leaf && MUTATING_FS_TOOLS.contains(&name.as_str()) {
+                return false;
+            }
+            true
+        })
+        .collect()
 }
 
 /// Maps a coordinator error to a user-facing `ToolError`.
