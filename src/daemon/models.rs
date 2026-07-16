@@ -91,6 +91,35 @@ pub struct ApproveToolRequest {
     pub session_rule: String,
 }
 
+/// Pending subagent policy-Ask approval (structured).
+#[derive(Debug, Serialize, Clone)]
+pub struct PendingSubagentPermission {
+    pub request_id: String,
+    pub from: String,
+    pub kind: String,
+    pub tool: String,
+    pub policy_reason: String,
+    pub session_rule: String,
+    pub human_summary: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListPendingPermissionsResponse {
+    pub pending: Vec<PendingSubagentPermission>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResolveSubagentPermissionRequest {
+    pub request_id: String,
+    pub approved: bool,
+    /// When true and approved, also record `session_rule` for future matches.
+    #[serde(default)]
+    pub always: bool,
+    /// Required when `always` is true (or recommended always for AlwaysAllow).
+    #[serde(default)]
+    pub session_rule: Option<String>,
+}
+
 // ── MCP ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]

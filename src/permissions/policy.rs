@@ -3,6 +3,7 @@ use crate::tools::{Tool, ToolError};
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
+#[derive(Debug, Clone)]
 pub struct ToolPermissionPolicy {
     workspace_root: PathBuf,
 }
@@ -212,7 +213,8 @@ impl ToolPermissionPolicy {
         Ok(PolicyDecision::Allow)
     }
 
-    fn path_rule_key(&self, raw_path: &str) -> Result<Option<String>, ToolError> {
+    /// Public for shared validation tests (root + subagent paths).
+    pub(crate) fn path_rule_key(&self, raw_path: &str) -> Result<Option<String>, ToolError> {
         let resolved = self.resolve_path(raw_path);
 
         if !resolved.starts_with(&self.workspace_root) {

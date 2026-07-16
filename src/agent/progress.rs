@@ -44,6 +44,11 @@ pub enum SubagentEventType {
         status: String,
         summary: Option<String>,
     },
+    /// Permission / approval lifecycle event for parent observability.
+    ///
+    /// `kind` is one of: `permission_denied`, `approval_requested`,
+    /// `approval_resolved`.
+    Permission { kind: String, detail: String },
 }
 
 /// Categorized error types for subagent execution.
