@@ -43,6 +43,18 @@ impl AgentMode {
             AgentMode::Yolo => AgentMode::Normal,
         }
     }
+
+    /// Map to the daemon-side `RootPermissionMode`. `PlanMode` maps to `Normal`
+    /// (no auto-approve); the TUI enforces plan-mode restrictions locally.
+    pub fn to_root_permission_mode(&self) -> crate::config::agent::RootPermissionMode {
+        match self {
+            AgentMode::Normal | AgentMode::PlanMode => {
+                crate::config::agent::RootPermissionMode::Normal
+            }
+            AgentMode::AcceptEdits => crate::config::agent::RootPermissionMode::AcceptEdits,
+            AgentMode::Yolo => crate::config::agent::RootPermissionMode::Yolo,
+        }
+    }
 }
 
 /// Wraps a oneshot sender for returning question answers.

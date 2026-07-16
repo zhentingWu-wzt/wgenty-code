@@ -452,6 +452,40 @@ impl DaemonClient {
         Ok(v.get("resolved").and_then(|x| x.as_bool()).unwrap_or(false))
     }
 
+    /// POST /api/v1/permission-mode - update root agent runtime permission mode.
+    pub async fn set_permission_mode(
+        &self,
+        mode: crate::config::agent::RootPermissionMode,
+    ) -> anyhow::Result<()> {
+        let url = format!("{}/api/v1/permission-mode", self.base_url);
+        let resp = self
+            .http_tools()
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "mode": mode }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("set-permission-mode failed ({})", resp.status());
+        }
+        Ok(())
+    }
+
+    /// GET /api/v1/permission-mode - fetch current root agent permission mode.
+    pub async fn get_permission_mode(
+        &self,
+    ) -> anyhow::Result<crate::config::agent::RootPermissionMode> {
+        let url = format!("{}/api/v1/permission-mode", self.base_url);
+        let resp = self.http_tools().get(&url).send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("get-permission-mode failed ({})", resp.status());
+        }
+        let v: serde_json::Value = resp.json().await?;
+        Ok(serde_json::from_value(
+            v.get("mode").cloned().unwrap_or(serde_json::Value::Null),
+        )?)
+    }
+
     /// GET /api/v1/undo — undo most recent checkpoint
     pub async fn undo(&self) -> anyhow::Result<String> {
         let url = format!("{}/api/v1/tools/undo", self.base_url);

@@ -67,6 +67,41 @@ pub enum TimeoutDecision {
     Deny,
 }
 
+/// Root agent's runtime permission mode, mirrored to subagents so they can
+/// short-circuit policy `Ask` without blocking on the approval bridge.
+///
+/// This is a runtime (TUI) concept, not a static setting: the TUI pushes its
+/// current mode to the daemon, which forwards it to each spawned subagent's
+/// [`crate::teams::guarding_tool_port::SubagentPermissionContext`].
+///
+/// - `Normal`: no short-circuit; `Ask` follows `ask_strategy` (escalate/deny).
+/// - `AcceptEdits`: auto-approve `Ask` for mutating filesystem tools only.
+/// - `Yolo`: auto-approve every `Ask` (guardian still runs afterwards).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RootPermissionMode {
+    #[default]
+    Normal,
+    AcceptEdits,
+    Yolo,
+}
+
+impl RootPermissionMode {
+    /// Whether this mode auto-approves a policy `Ask` for the given tool.
+    ///
+    /// `Yolo` approves everything; `AcceptEdits` approves only mutating
+    /// filesystem tools; `Normal` approves nothing.
+    pub fn auto_approves(&self, tool_name: &str) -> bool {
+        match self {
+            RootPermissionMode::Yolo => true,
+            RootPermissionMode::AcceptEdits => {
+                matches!(tool_name, "file_write" | "file_edit" | "apply_patch")
+            }
+            RootPermissionMode::Normal => false,
+        }
+    }
+}
+
 fn default_explore_readonly() -> bool {
     true
 }
@@ -206,5 +241,42 @@ mod tests {
         assert_eq!(limits.approval_timeout_secs, 60);
         assert_eq!(limits.timeout_decision, TimeoutDecision::Deny);
         assert!(limits.permission_mode.is_none());
+    }
+
+    #[test]
+    fn root_permission_mode_auto_approves() {
+        // Normal: never auto-approves.
+        assert!(!RootPermissionMode::Normal.auto_approves("file_write"));
+        assert!(!RootPermissionMode::Normal.auto_approves("execute_command"));
+
+        // AcceptEdits: only mutating filesystem tools.
+        assert!(RootPermissionMode::AcceptEdits.auto_approves("file_write"));
+        assert!(RootPermissionMode::AcceptEdits.auto_approves("file_edit"));
+        assert!(RootPermissionMode::AcceptEdits.auto_approves("apply_patch"));
+        assert!(!RootPermissionMode::AcceptEdits.auto_approves("execute_command"));
+        assert!(!RootPermissionMode::AcceptEdits.auto_approves("file_read"));
+
+        // Yolo: everything.
+        assert!(RootPermissionMode::Yolo.auto_approves("file_write"));
+        assert!(RootPermissionMode::Yolo.auto_approves("execute_command"));
+        assert!(RootPermissionMode::Yolo.auto_approves("anything"));
+    }
+
+    #[test]
+    fn root_permission_mode_serde_roundtrip() {
+        for mode in [
+            RootPermissionMode::Normal,
+            RootPermissionMode::AcceptEdits,
+            RootPermissionMode::Yolo,
+        ] {
+            let json = serde_json::to_string(&mode).expect("serialize");
+            let back: RootPermissionMode = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(mode, back);
+        }
+        // Snake-case serialization.
+        assert_eq!(
+            serde_json::to_string(&RootPermissionMode::AcceptEdits).unwrap(),
+            "\"accept_edits\""
+        );
     }
 }

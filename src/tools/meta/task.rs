@@ -14,6 +14,7 @@ use crate::agent::{
     AgentCoordinator, ChildTerminal, CoordinatorError, SpawnChildRequest, ToolContext,
 };
 use crate::api::ApiClient;
+use crate::config::agent::RootPermissionMode;
 use crate::config::Settings;
 use crate::permissions::policy::ToolPermissionPolicy;
 use crate::runtime::guardian::Guardian;
@@ -102,6 +103,10 @@ pub struct TaskTool {
     permission_bridge: Option<Arc<PermissionBridge>>,
     /// Optional shared session rules with the root ToolExecutor.
     session_rules: Option<Arc<RwLock<HashSet<String>>>>,
+    /// Shared root agent permission mode (Yolo/AcceptEdits/Normal).
+    /// Subagents snapshot the current value at spawn time. Uses std::sync so
+    /// `build_permission_context` can read it without an async context.
+    root_mode: Arc<std::sync::RwLock<RootPermissionMode>>,
 }
 
 impl TaskTool {
@@ -121,6 +126,7 @@ impl TaskTool {
             transcript_store,
             permission_bridge: None,
             session_rules: None,
+            root_mode: Arc::new(std::sync::RwLock::new(RootPermissionMode::Normal)),
         }
     }
 
@@ -134,9 +140,22 @@ impl TaskTool {
         self
     }
 
+    /// Set the shared root permission mode signal. The TUI/daemon updates this
+    /// at runtime; each subagent snapshots the current value at spawn time.
+    pub fn with_root_mode(mut self, mode: Arc<std::sync::RwLock<RootPermissionMode>>) -> Self {
+        self.root_mode = mode;
+        self
+    }
+
+    /// Update the root permission mode at runtime.
+    pub fn set_root_mode(&self, mode: RootPermissionMode) {
+        *self.root_mode.write().unwrap() = mode;
+    }
+
     fn build_permission_context(&self, agent_id: &str) -> SubagentPermissionContext {
         let workspace = self.settings.storage.working_dir.clone();
         let limits = &self.settings.agent.subagent;
+        let root_mode = *self.root_mode.read().unwrap_or_else(|e| e.into_inner());
         SubagentPermissionContext {
             policy: ToolPermissionPolicy::new(workspace),
             session_rules: self
@@ -149,6 +168,7 @@ impl TaskTool {
             timeout_decision: limits.timeout_decision,
             guardian: Guardian::default(),
             agent_id: agent_id.to_string(),
+            root_mode,
             denial_log: Arc::new(Mutex::new(Vec::new())),
             event_log: Arc::new(Mutex::new(Vec::new())),
         }

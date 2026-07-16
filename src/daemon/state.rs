@@ -1,5 +1,6 @@
 //! DaemonState -- shared state for the HTTP API server.
 
+use crate::config::agent::RootPermissionMode;
 use crate::context::memory_session::SessionManager as MemorySessionManager;
 use crate::knowledge::loader::SkillLoader;
 use crate::permissions::ToolPermissionPolicy;
@@ -64,6 +65,9 @@ pub struct DaemonState {
     daemon_viewer_secret: [u8; 32],
     /// Shared subagent policy-Ask bridge (TUI/daemon drains pending approvals).
     pub permission_bridge: Arc<PermissionBridge>,
+    /// Shared root agent permission mode (Yolo/AcceptEdits/Normal).
+    /// Updated by the TUI at runtime; subagents snapshot at spawn time.
+    pub root_mode: Arc<std::sync::RwLock<RootPermissionMode>>,
 }
 
 impl DaemonState {
@@ -128,6 +132,7 @@ impl DaemonState {
         let approval_timeout = app_state.settings.agent.subagent.approval_timeout_secs;
         let permission_bridge = Arc::new(PermissionBridge::with_timeout_secs(approval_timeout));
         let shared_session_rules = Arc::new(RwLock::new(HashSet::<String>::new()));
+        let root_mode = Arc::new(std::sync::RwLock::new(RootPermissionMode::Normal));
 
         // Use Arc::new_cyclic so the TaskTool holds a valid Weak<ToolRegistry>
         // that points to the *final* Arc allocation — not a temporary one that
@@ -171,7 +176,8 @@ impl DaemonState {
                 transcript_store.clone(),
             )
             .with_permission_bridge(permission_bridge.clone())
-            .with_session_rules(shared_session_rules.clone());
+            .with_session_rules(shared_session_rules.clone())
+            .with_root_mode(root_mode.clone());
             registry.register(Box::new(task_tool));
 
             // Register subagent trace tool (read-only visualization for subagent transcripts)
@@ -298,6 +304,7 @@ impl DaemonState {
             root_contexts: Arc::new(RwLock::new(HashMap::new())),
             daemon_viewer_secret,
             permission_bridge,
+            root_mode,
         }
     }
 

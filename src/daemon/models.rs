@@ -1,6 +1,7 @@
 //! API request/response models for the daemon HTTP API.
 
 use crate::api::ChatMessage;
+use crate::config::agent::RootPermissionMode;
 use crate::context::memory_session::SessionMessage;
 use serde::{Deserialize, Serialize};
 
@@ -118,6 +119,13 @@ pub struct ResolveSubagentPermissionRequest {
     /// Required when `always` is true (or recommended always for AlwaysAllow).
     #[serde(default)]
     pub session_rule: Option<String>,
+}
+
+// ── Permission Mode ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct SetPermissionModeRequest {
+    pub mode: RootPermissionMode,
 }
 
 // ── MCP ──────────────────────────────────────────────────────────────────────
