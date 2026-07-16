@@ -155,24 +155,29 @@ impl GitOperationsTool {
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-        let content = if output.status.success() {
-            if stdout.is_empty() && !stderr.is_empty() {
+        if output.status.success() {
+            // 成功: 优先 stdout; 某些 git 命令（如 clone）把进度信息写到 stderr。
+            let content = if stdout.is_empty() && !stderr.is_empty() {
                 stderr
             } else {
                 stdout
-            }
+            };
+            Ok(ToolOutput {
+                output_type: "text".to_string(),
+                content,
+                metadata: std::collections::HashMap::new(),
+            })
         } else {
-            format!(
-                "Git command failed with status {}\n{}\n{}",
-                output.status, stdout, stderr
-            )
-        };
-
-        Ok(ToolOutput {
-            output_type: "text".to_string(),
-            content,
-            metadata: std::collections::HashMap::new(),
-        })
+            // 非零退出码: 返回 Err，message 透传退出码 + stdout + stderr，
+            // 让模型能看到 git 真实错误（冲突/rejected/参数错误等）并据此修正。
+            Err(ToolError {
+                message: format!(
+                    "Git command failed with status {}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                    output.status, stdout, stderr
+                ),
+                code: Some("git_command_failed".to_string()),
+            })
+        }
     }
 
     async fn git_status(&self, repo_path: &Path, args: &[String]) -> Result<ToolOutput, ToolError> {
@@ -431,6 +436,96 @@ mod tests {
         assert!(
             properties.contains_key("force"),
             "schema must include force property"
+        );
+    }
+
+    /// 辅助: 在临时目录初始化一个可提交的 git 仓库（配置 user.name/email）。
+    fn init_test_repo() -> tempfile::TempDir {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap();
+            assert!(status.status.success(), "git {:?} failed", args);
+        };
+        run(&["init"]);
+        run(&["config", "user.name", "test"]);
+        run(&["config", "user.email", "test@test.com"]);
+        tmp
+    }
+
+    /// 成功路径: status 在已初始化仓库应返回 Ok。
+    #[tokio::test]
+    async fn git_status_succeeds_in_init_repo() {
+        let tmp = init_test_repo();
+        let tool = GitOperationsTool::new();
+        tool.execute(serde_json::json!({
+            "operation": "status",
+            "path": tmp.path().to_string_lossy(),
+        }))
+        .await
+        .expect("git status 在已初始化仓库应成功");
+    }
+
+    /// 改进 1 验证: 非零退出码返回 Err，且 message 含 stdout/stderr。
+    /// 空仓库执行 git log -> 退出码 128 -> Err(git_command_failed)。
+    #[tokio::test]
+    async fn git_nonzero_exit_returns_error_with_output() {
+        let tmp = init_test_repo();
+        let tool = GitOperationsTool::new();
+        let err = tool
+            .execute(serde_json::json!({
+                "operation": "log",
+                "path": tmp.path().to_string_lossy(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code.as_deref(), Some("git_command_failed"));
+        assert!(
+            err.message.contains("Git command failed"),
+            "got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("stderr"),
+            "错误信息应含 stderr 段: {}",
+            err.message
+        );
+    }
+
+    /// 端到端: add -> commit -> log 流程应全部成功。
+    #[tokio::test]
+    async fn git_add_commit_log_flow() {
+        let tmp = init_test_repo();
+        std::fs::write(tmp.path().join("a.txt"), "hello").unwrap();
+        let tool = GitOperationsTool::new();
+        tool.execute(serde_json::json!({
+            "operation": "add",
+            "path": tmp.path().to_string_lossy(),
+            "files": ["a.txt"],
+        }))
+        .await
+        .expect("git add 应成功");
+        tool.execute(serde_json::json!({
+            "operation": "commit",
+            "path": tmp.path().to_string_lossy(),
+            "message": "initial commit",
+        }))
+        .await
+        .expect("git commit 应成功");
+        let log = tool
+            .execute(serde_json::json!({
+                "operation": "log",
+                "path": tmp.path().to_string_lossy(),
+            }))
+            .await
+            .expect("git log 应成功");
+        assert!(
+            log.content.contains("initial commit"),
+            "got: {}",
+            log.content
         );
     }
 }
