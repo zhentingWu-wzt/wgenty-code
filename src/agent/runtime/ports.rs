@@ -104,7 +104,7 @@ pub trait SynthesisPort: Send + Sync {
     /// Called when the model returns a final candidate (no tool calls).
     ///
     /// - `Ok(None)` — accept the candidate and finish the loop.
-    /// - `Ok(Some(system_msg))` — inject the system message and continue another round.
+    /// - `Ok(Some(msg))` — inject the message as a `user` turn and continue another round.
     /// - `Err(_)` — fail the loop.
     async fn on_candidate_final(&self, candidate: &str) -> Result<Option<String>, RuntimeError>;
 }

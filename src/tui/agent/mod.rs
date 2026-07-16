@@ -212,9 +212,9 @@ impl AgentLoop {
     }
 
     /// Run a synthetic continuation turn that consumes a claimed task-group
-    /// delivery. The child results are injected as a structured system message
-    /// (no visible user row, no `ChatMessage::user`), then the loop runs so the
-    /// main agent can synthesize the completed subagent work into a response.
+    /// delivery. The child results are injected as a structured `user` message
+    /// (no visible user row), then the loop runs so the main agent can
+    /// synthesize the completed subagent work into a response.
     pub async fn process_continuation(
         &mut self,
         delivery: crate::tui::client::TaskGroupDeliveryResponse,
@@ -224,8 +224,12 @@ impl AgentLoop {
         // Command-background results are still injected here (subagent results
         // are NOT -- they arrive through the delivery).
         self.inject_background_results().await;
-        // Inject the delivered child-result batch as a system message so the
-        // model sees the completed subagent work without a fabricated user turn.
+        // Inject the delivered child-result batch as a `user` message so the
+        // model sees the completed subagent work inline. Mid-conversation
+        // `system` messages are not reliably surfaced by OpenAI-compatible
+        // providers, so child results injected as `system` never reached the
+        // model (the continuation fired but the agent only saw the bare
+        // "Continue from..." prompt with no actual results).
         let batch = format!(
             "<child-results>\n{}\n</child-results>\n\nA background subagent group \
              completed. Synthesize these results into your current work and \
@@ -235,11 +239,11 @@ impl AgentLoop {
         );
         {
             let mut history = self.conversation_history.lock().await;
-            history.push(ChatMessage::system(batch));
+            history.push(ChatMessage::user(batch));
         }
-        // Run the loop with an empty user prompt: the system message above is
-        // the continuation signal. process_input_inner requires a non-empty
-        // input in some paths, so pass a minimal continuation marker.
+        // Run the loop: the `user` message above carries the child results.
+        // process_input_inner requires a non-empty input in some paths, so pass
+        // a minimal continuation marker as the turn prompt.
         self.process_input_inner("Continue from the delivered subagent results.".to_string())
             .await
     }
