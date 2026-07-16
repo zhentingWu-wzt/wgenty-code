@@ -81,15 +81,19 @@ impl Tool for ApplyPatchTool {
         let mut diffs_json = serde_json::Map::new();
         for op in &operations {
             if let PatchOperation::Update { path, hunks } = op {
-                let original = std::fs::read_to_string(path).unwrap_or_default();
-                let modified = apply_hunks(&original, hunks, path).unwrap_or_default();
-                diffs_json.insert(
-                    path.display().to_string(),
-                    serde_json::json!({
-                        "old_content": original,
-                        "new_content": modified,
-                    }),
-                );
+                // H5: 不用 unwrap_or_default 吞错误；读取/匹配失败时跳过 diff 收集，
+                // apply_operations 会再次执行并返回真实错误。
+                if let Ok(original) = std::fs::read_to_string(path) {
+                    if let Ok(modified) = apply_hunks(&original, hunks, path) {
+                        diffs_json.insert(
+                            path.display().to_string(),
+                            serde_json::json!({
+                                "old_content": original,
+                                "new_content": modified,
+                            }),
+                        );
+                    }
+                }
             }
         }
 
@@ -186,6 +190,10 @@ fn parse_patch(patch: &str, workdir: &Path) -> Result<Vec<PatchOperation>, ToolE
                             hunk_lines.push(HunkLine::Remove(rest.to_string()));
                         } else if let Some(rest) = current.strip_prefix('+') {
                             hunk_lines.push(HunkLine::Add(rest.to_string()));
+                        } else if current.is_empty() {
+                            // H4: 空行视作空 context 行（模型常把空行 context
+                            // 写成零字符，否则会被当作非法行报错）。
+                            hunk_lines.push(HunkLine::Context(String::new()));
                         } else {
                             return Err(ToolError {
                                 message: format!("Invalid hunk line: {}", current),
@@ -307,18 +315,34 @@ fn apply_hunks(original: &str, hunks: &[UpdateHunk], path: &Path) -> Result<Stri
         let old_text = join_lines(old_block);
         let new_text = join_lines(new_block);
 
-        if !content.contains(&old_text) {
-            return Err(ToolError {
-                message: format!(
-                    "Patch context not found in {}: {}",
-                    path.display(),
-                    old_text
-                ),
-                code: Some("context_not_found".to_string()),
-            });
-        }
+        // H3: 优先精确匹配；失败时若文件为 CRLF，将 hunk 行尾转为 CRLF 重试，
+        // 写入保留原文件行尾风格（join_lines 用 "\n" 拼接，CRLF 文件需适配）。
+        let (match_old, match_new) = match resolve_match(&content, &old_text, &new_text) {
+            Some(pair) => pair,
+            None => {
+                // 诊断日志: 记录 hunk 匹配失败的关键上下文，便于定位 CRLF/行尾/缩进差异。
+                // 运行时通过 RUST_LOG=wgenty_code::tools::filesystem::apply_patch=debug 可见。
+                tracing::debug!(
+                    target: "apply_patch",
+                    path = %path.display(),
+                    file_lines = content.lines().count(),
+                    file_has_crlf = content.contains('\r'),
+                    old_text_len = old_text.len(),
+                    old_text_has_crlf = old_text.contains('\r'),
+                    "patch context not found (exact substring match failed)"
+                );
+                return Err(ToolError {
+                    message: format!(
+                        "Patch context not found in {}: {}",
+                        path.display(),
+                        old_text
+                    ),
+                    code: Some("context_not_found".to_string()),
+                });
+            }
+        };
 
-        content = content.replacen(&old_text, &new_text, 1);
+        content = content.replacen(&match_old, &match_new, 1);
     }
 
     Ok(content)
@@ -330,6 +354,22 @@ fn join_lines(lines: Vec<String>) -> String {
     } else {
         lines.join("\n")
     }
+}
+
+/// 尝试在 content 中匹配 old_text。精确匹配失败时，若文件含 CRLF，
+/// 则将 old_text/new_text 的行尾转为 CRLF 重试，保留原文件行尾风格。
+/// old_text 由 join_lines 用 "\n" 拼接，对 CRLF 文件需做行尾适配。
+fn resolve_match(content: &str, old_text: &str, new_text: &str) -> Option<(String, String)> {
+    if content.contains(old_text) {
+        return Some((old_text.to_string(), new_text.to_string()));
+    }
+    if content.contains("\r\n") {
+        let crlf_old = old_text.replace('\n', "\r\n");
+        if content.contains(&crlf_old) {
+            return Some((crlf_old, new_text.replace('\n', "\r\n")));
+        }
+    }
+    None
 }
 
 /// Resolve a patch file path relative to the workspace root.
@@ -378,5 +418,88 @@ fn resolve_patch_path(workdir: &Path, raw_path: &str) -> PathBuf {
 impl Default for ApplyPatchTool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 基线: 正常 LF 文件 update 应成功（确认 patch 格式与路径解析正确）。
+    #[tokio::test]
+    async fn apply_patch_lf_baseline() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("base.txt"), "alpha\nbeta\n").unwrap();
+        let tool = ApplyPatchTool::new();
+        let patch =
+            "*** Begin Patch\n*** Update File: base.txt\n@@\n alpha\n-beta\n+beta2\n*** End Patch";
+        tool.execute(serde_json::json!({
+            "patch": patch,
+            "workdir": tmp.path().to_string_lossy(),
+        }))
+        .await
+        .expect("LF 基线应成功");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("base.txt")).unwrap(),
+            "alpha\nbeta2\n"
+        );
+    }
+
+    /// H3 修复: CRLF 行尾文件用 LF hunk，归一化重试后成功，保留 CRLF 行尾。
+    #[tokio::test]
+    async fn h3_apply_patch_handles_crlf_line_endings() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("h3.txt"), "alpha\r\nbeta\r\n").unwrap();
+        let tool = ApplyPatchTool::new();
+        let patch =
+            "*** Begin Patch\n*** Update File: h3.txt\n@@\n alpha\n-beta\n+beta2\n*** End Patch";
+        tool.execute(serde_json::json!({
+            "patch": patch,
+            "workdir": tmp.path().to_string_lossy(),
+        }))
+        .await
+        .expect("CRLF 文件应容错成功");
+        // 保留原 CRLF 行尾。
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("h3.txt")).unwrap(),
+            "alpha\r\nbeta2\r\n"
+        );
+    }
+
+    /// H4 修复: 空行 context 写成零字符时，视作空 context 行，patch 成功。
+    #[tokio::test]
+    async fn h4_apply_patch_accepts_blank_context_line() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("h4.txt"), "a\n\nb\n").unwrap();
+        let tool = ApplyPatchTool::new();
+        // hunk 中第二行为零字符空行，模拟模型常见写法。
+        let patch = "*** Begin Patch\n*** Update File: h4.txt\n@@\n a\n\n-b\n+c\n*** End Patch";
+        tool.execute(serde_json::json!({
+            "patch": patch,
+            "workdir": tmp.path().to_string_lossy(),
+        }))
+        .await
+        .expect("空行 context 应容错成功");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("h4.txt")).unwrap(),
+            "a\n\nc\n"
+        );
+    }
+
+    /// H5: 验证 `execute` 内 `unwrap_or_default()` 不会导致匹配失败时静默成功。
+    /// 预期: 整体返回 Err（apply_operations 会再次调用 apply_hunks 并报错）。
+    #[tokio::test]
+    async fn h5_apply_patch_mismatch_returns_error_not_silent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("h5.txt"), "only line\n").unwrap();
+        let tool = ApplyPatchTool::new();
+        let patch = "*** Begin Patch\n*** Update File: h5.txt\n@@\n context-not-in-file\n+new\n*** End Patch";
+        let result = tool
+            .execute(serde_json::json!({
+                "patch": patch,
+                "workdir": tmp.path().to_string_lossy(),
+            }))
+            .await;
+        assert!(result.is_err(), "应返回错误而非静默成功");
     }
 }
