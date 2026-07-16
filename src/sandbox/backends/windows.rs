@@ -5,6 +5,10 @@
 //!   - Memory limit (`max_memory_bytes`)
 //!   - Kill-on-job-close (process tree dies when the job handle is closed)
 //!
+//! Processes are created with `CREATE_SUSPENDED`, assigned to the job, then
+//! resumed — closing the spawn→assign race where grandchildren could escape
+//! the job before assignment completed.
+//!
 //! Restricted Tokens (filesystem deny-only SIDs) are a planned follow-up;
 //! this backend still enforces resource limits and process-tree kill when
 //! Job Objects are available.
@@ -159,6 +163,77 @@ mod win {
         Ok(())
     }
 
+    /// Resume every thread in `pid` after a `CREATE_SUSPENDED` spawn.
+    ///
+    /// tokio does not expose the primary thread handle from `Command::spawn`,
+    /// so we snapshot threads and call `ResumeThread` on each owned by `pid`.
+    pub(super) fn resume_process_threads(pid: u32) -> Result<(), SandboxError> {
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD,
+            THREADENTRY32,
+        };
+        use windows_sys::Win32::System::Threading::{
+            OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+        };
+
+        // SAFETY: TH32CS_SNAPTHREAD with process id 0 snapshots all threads.
+        let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+        if snap.is_null() || snap == INVALID_HANDLE_VALUE {
+            return Err(SandboxError::Spawn {
+                io_error: format!(
+                    "CreateToolhelp32Snapshot failed (GetLastError={})",
+                    std::io::Error::last_os_error()
+                ),
+            });
+        }
+
+        let mut entry: THREADENTRY32 = unsafe { zeroed() };
+        entry.dwSize = size_of::<THREADENTRY32>() as u32;
+
+        let mut resumed = 0u32;
+        let mut ok = unsafe { Thread32First(snap, &mut entry) };
+        while ok != 0 {
+            if entry.th32OwnerProcessID == pid {
+                let thread =
+                    unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                if !thread.is_null() && thread != INVALID_HANDLE_VALUE {
+                    // ResumeThread returns previous suspend count, or u32::MAX on error.
+                    let prev = unsafe { ResumeThread(thread) };
+                    unsafe {
+                        CloseHandle(thread);
+                    }
+                    if prev == u32::MAX {
+                        unsafe {
+                            CloseHandle(snap);
+                        }
+                        return Err(SandboxError::Spawn {
+                            io_error: format!(
+                                "ResumeThread({}) failed (GetLastError={})",
+                                entry.th32ThreadID,
+                                std::io::Error::last_os_error()
+                            ),
+                        });
+                    }
+                    resumed += 1;
+                }
+            }
+            ok = unsafe { Thread32Next(snap, &mut entry) };
+        }
+
+        unsafe {
+            CloseHandle(snap);
+        }
+
+        if resumed == 0 {
+            return Err(SandboxError::Spawn {
+                io_error: format!(
+                    "no threads found to resume for pid {pid} after CREATE_SUSPENDED spawn"
+                ),
+            });
+        }
+        Ok(())
+    }
+
     pub(super) fn close_job_token(token: &str) {
         if let Ok(raw) = token.parse::<usize>() {
             if raw != 0 {
@@ -215,9 +290,7 @@ impl SandboxBackend for WindowsBackend {
         }
         #[cfg(not(windows))]
         {
-            let mut cmd = tokio::process::Command::new("cmd");
-            cmd.arg("/C").arg(command);
-            super::configure_captured_stdio(&mut cmd);
+            let mut cmd = super::shell_command_captured(command);
             Self::apply_env(profile, &mut cmd);
             if let Some(dir) = workdir.or(profile.workdir.as_deref()) {
                 cmd.current_dir(dir);
@@ -244,11 +317,13 @@ impl WindowsBackend {
     ) -> Result<SandboxedChild, SandboxError> {
         let job = win::create_job(profile)?;
 
-        let mut cmd = tokio::process::Command::new("cmd");
-        cmd.arg("/C").arg(command);
-        // Capture stdio + CREATE_NO_WINDOW so npm/node progress output cannot
-        // corrupt the parent REPL/TUI console on Windows.
-        super::configure_captured_stdio(&mut cmd);
+        // Platform shell + piped stdio / CREATE_NO_WINDOW.
+        let mut cmd = super::shell_command_captured(command);
+        // CREATE_SUSPENDED (0x4) must be OR'd with CREATE_NO_WINDOW: tokio's
+        // creation_flags replaces the whole mask, so re-set both after the helper.
+        const CREATE_SUSPENDED: u32 = 0x0000_0004;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
 
         Self::apply_env(profile, &mut cmd);
 
@@ -260,18 +335,32 @@ impl WindowsBackend {
             io_error: format!("{}", e),
         })?;
 
-        if let Some(pid) = child.id() {
-            if let Err(e) = win::assign_pid_to_job(job.as_raw(), pid) {
-                tracing::error!(
-                    error = %e,
-                    pid,
-                    "failed to assign process to Job Object; terminating child"
-                );
-                drop(child);
-                return Err(e);
-            }
-        } else {
-            tracing::warn!("child has no pid; Job Object limits will not apply");
+        let Some(pid) = child.id() else {
+            // Suspended child with no pid cannot be assigned or resumed safely.
+            drop(child); // kill_on_drop
+            return Err(SandboxError::Spawn {
+                io_error: "child has no pid after CREATE_SUSPENDED spawn".into(),
+            });
+        };
+
+        if let Err(e) = win::assign_pid_to_job(job.as_raw(), pid) {
+            tracing::error!(
+                error = %e,
+                pid,
+                "failed to assign suspended process to Job Object; terminating child"
+            );
+            drop(child); // kill_on_drop
+            return Err(e);
+        }
+
+        if let Err(e) = win::resume_process_threads(pid) {
+            tracing::error!(
+                error = %e,
+                pid,
+                "failed to resume process after Job Object assignment; terminating child"
+            );
+            drop(child); // kill_on_drop
+            return Err(e);
         }
 
         let token = job.to_cleanup_token();

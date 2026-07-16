@@ -158,10 +158,7 @@ impl Tool for RunScriptTool {
 
         // register exec(cmd) -> String
         engine.register_fn("exec", move |cmd: String| -> String {
-            let output = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(&cmd)
-                .output();
+            let output = crate::sandbox::std_shell_command(&cmd).output();
             match output {
                 Ok(o) => {
                     let stdout = String::from_utf8_lossy(&o.stdout).to_string();

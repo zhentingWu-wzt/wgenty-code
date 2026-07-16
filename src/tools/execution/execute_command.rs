@@ -1,7 +1,9 @@
 //! Execute Command Tool — runs shell commands with sandbox isolation.
 
 use crate::agent::ToolContext;
-use crate::sandbox::{SandboxConfig, SandboxManager, SandboxProfile, SecurityLevel};
+use crate::sandbox::{
+    shell_command_captured, SandboxConfig, SandboxManager, SandboxProfile, SecurityLevel,
+};
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use std::path::PathBuf;
@@ -98,14 +100,17 @@ impl Tool for ExecuteCommandTool {
 impl ExecuteCommandTool {
     /// Core execution: sandbox first, direct fallback. `workdir` overrides the
     /// process cwd (s12 worktree isolation) for both sandbox profile and the
-    /// fallback `sh -c` command.
+    /// fallback platform shell command.
     async fn run(
         &self,
         command: &str,
         user_timeout: u64,
         workdir: Option<&std::path::Path>,
     ) -> Result<ToolOutput, ToolError> {
-        // Try sandbox execution first; fall back to direct execution
+        // Try sandbox execution first. Only fall back on sandbox infrastructure
+        // failure (spawn/wait error). Sandbox-killed or non-zero exits are real
+        // results — re-running them outside the sandbox would bypass isolation
+        // and (on Windows) risk console corruption.
         if let Some(ref sb) = self.sandbox {
             let mut profile = self.default_profile(workdir);
             profile.resources.max_wall_seconds = user_timeout;
@@ -113,11 +118,15 @@ impl ExecuteCommandTool {
             match sb.execute(command, &profile).await {
                 Ok(output) => {
                     if output.killed_by_sandbox {
-                        tracing::warn!(
-                            "Sandbox ({}) killed process, falling back to direct execution.",
-                            sb.status().backend_name
-                        );
-                    } else if output.exit_code != 0 {
+                        return Err(ToolError {
+                            message: format!(
+                                "command killed by sandbox ({})\nstdout:\n{}\nstderr:\n{}",
+                                sb.status().backend_name, output.stdout, output.stderr
+                            ),
+                            code: Some("sandbox_killed".to_string()),
+                        });
+                    }
+                    if output.exit_code != 0 {
                         return Err(ToolError {
                             message: format!(
                                 "exit code: {}\nstdout:\n{}\nstderr:\n{}",
@@ -125,28 +134,27 @@ impl ExecuteCommandTool {
                             ),
                             code: Some("non_zero_exit".to_string()),
                         });
-                    } else {
-                        return Ok(ToolOutput {
-                            output_type: "text".to_string(),
-                            content: output.stdout,
-                            metadata: std::collections::HashMap::new(),
-                        });
                     }
+                    return Ok(ToolOutput {
+                        output_type: "text".to_string(),
+                        content: output.stdout,
+                        metadata: std::collections::HashMap::new(),
+                    });
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "Sandbox execution failed ({}): {}. Falling back to direct execution.",
-                        sb.status().backend_name,
-                        e
+                        command = %command,
+                        backend = %sb.status().backend_name,
+                        error = %e,
+                        "Sandbox execution failed; falling back to direct (captured stdio)"
                     );
                 }
             }
         }
 
-        // Direct execution (fallback)
+        // Direct execution (no sandbox / infrastructure fallback)
         let output = tokio::time::timeout(std::time::Duration::from_secs(user_timeout), {
-            let mut cmd = tokio::process::Command::new("sh");
-            cmd.arg("-c").arg(command);
+            let mut cmd = shell_command_captured(command);
             if let Some(dir) = workdir {
                 cmd.current_dir(dir);
             }
