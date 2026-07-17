@@ -233,6 +233,9 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
     // Same client for summarization (tools omitted in chat_completion call).
     let llm_for_compact: Arc<dyn crate::agent::runtime::LlmPort> = Arc::new(llm.clone());
     let registry = Arc::new(ToolRegistry::new().with_settings(&settings));
+    registry.register(Box::new(crate::tools::meta::MemoryAddTool::new(
+        memory_manager.clone(),
+    )));
     let tools = RegistryToolPort::new(registry, &session_id);
     let events = CliEventSink::new(std::env::var("WGENTY_VERBOSE").is_ok());
 
