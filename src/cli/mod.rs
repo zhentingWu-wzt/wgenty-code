@@ -285,6 +285,19 @@ pub enum MemoryCommands {
 
     /// Force AutoDream consolidation
     AutoDream,
+
+    /// Prune low-value / expired memories (project + global)
+    Prune,
+
+    /// List memories (sorted by importance desc)
+    List {
+        /// Only show memories at or above this importance (0.0–1.0)
+        #[arg(long)]
+        min_importance: Option<f32>,
+        /// Max entries to print (default 50)
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand, Debug)]

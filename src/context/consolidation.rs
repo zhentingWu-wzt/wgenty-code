@@ -19,9 +19,9 @@ pub struct ConsolidationConfig {
 impl Default for ConsolidationConfig {
     fn default() -> Self {
         Self {
-            max_memories: 10000,
-            importance_threshold: 0.3,
-            age_threshold_hours: 24,
+            max_memories: 200,
+            importance_threshold: 0.6,
+            age_threshold_hours: 48,
             consolidation_interval_hours: 6,
             enable_auto_consolidation: true,
         }
@@ -136,33 +136,26 @@ impl ConsolidationEngine {
             return true;
         }
 
-        // Type-specific retention policy. Previously a single global
-        // `age_threshold_hours` applied to every type — meaning a low-
-        // importance Error memory and a low-importance Knowledge memory
-        // were treated identically. Now:
-        //   - Knowledge/Preference: always kept (durable facts/user prefs).
-        //   - Error: short TTL (half the configured threshold) so stale
-        //     error context decays quickly.
-        //   - Everything else (Session, Conversation, Task, Insight,
-        //     Decision): the configured `age_threshold_hours`.
-        match memory.memory_type {
-            MemoryType::Knowledge | MemoryType::Preference => true,
-            MemoryType::Error => {
-                let age_hours = (Utc::now() - memory.timestamp).num_hours();
-                let age = age_hours.max(0) as u64;
-                // Errors expire faster — half the normal threshold.
-                let error_ttl = self.config.age_threshold_hours / 2;
-                let error_ttl = if error_ttl == 0 { 1 } else { error_ttl };
-                age < error_ttl
-            }
-            _ => {
-                // Guard against future timestamps (clock skew) which would
-                // produce a negative i64 that wraps to a huge u64.
-                let age_hours = (Utc::now() - memory.timestamp).num_hours();
-                let age = age_hours.max(0) as u64;
-                age < self.config.age_threshold_hours
-            }
-        }
+        // Type-specific retention for low-importance memories.
+        // Knowledge/Preference used to be immortal, which let low-value
+        // "facts" accumulate forever. They now get a longer TTL (4× base)
+        // instead of permanent retention. Ephemeral types expire faster.
+        let age_hours = (Utc::now() - memory.timestamp).num_hours();
+        let age = age_hours.max(0) as u64;
+        let base = self.config.age_threshold_hours.max(1);
+
+        let ttl = match memory.memory_type {
+            // Durable but not immortal: low-value knowledge eventually decays.
+            MemoryType::Knowledge | MemoryType::Preference => base.saturating_mul(4),
+            // Stable decisions / insights last longer than session noise.
+            MemoryType::Decision | MemoryType::Insight => base.saturating_mul(2),
+            // Errors go stale quickly.
+            MemoryType::Error => (base / 2).max(1),
+            // Session/task/conversation noise expires at the base TTL.
+            MemoryType::Session | MemoryType::Conversation | MemoryType::Task => base,
+        };
+
+        age < ttl
     }
 
     fn is_similar_to_any(&self, memory: &MemoryEntry, others: &[MemoryEntry]) -> bool {
@@ -520,23 +513,38 @@ mod tests {
     }
 
     #[test]
-    fn should_keep_knowledge_and_preference_always() {
+    fn should_keep_recent_low_importance_knowledge() {
         let engine = ConsolidationEngine::default();
-        let old_knowledge =
-            MemoryEntry::new(MemoryType::Knowledge, "old fact").with_importance(0.1);
-        let mut entry = old_knowledge;
-        entry.timestamp = chrono::Utc::now() - chrono::Duration::hours(100);
+        // Knowledge TTL is 4 * age_threshold_hours (default 48h * 4 = 192h).
+        let mut entry = MemoryEntry::new(MemoryType::Knowledge, "recent fact").with_importance(0.1);
+        entry.timestamp = chrono::Utc::now() - chrono::Duration::hours(24);
         assert!(
             engine.should_keep(&entry),
-            "Knowledge should always be kept"
+            "recent low-importance Knowledge should be kept within durable TTL"
         );
+    }
 
-        let old_pref = MemoryEntry::new(MemoryType::Preference, "old pref").with_importance(0.1);
-        let mut entry = old_pref;
-        entry.timestamp = chrono::Utc::now() - chrono::Duration::hours(100);
+    #[test]
+    fn should_drop_stale_low_importance_knowledge() {
+        let engine = ConsolidationEngine::default();
+        // Knowledge TTL is 4 * 48h = 192h. Age well past that.
+        let mut entry = MemoryEntry::new(MemoryType::Knowledge, "stale fact").with_importance(0.1);
+        entry.timestamp = chrono::Utc::now() - chrono::Duration::hours(300);
+        assert!(
+            !engine.should_keep(&entry),
+            "stale low-importance Knowledge should eventually expire"
+        );
+    }
+
+    #[test]
+    fn should_keep_high_importance_regardless_of_age() {
+        let engine = ConsolidationEngine::default();
+        let mut entry =
+            MemoryEntry::new(MemoryType::Knowledge, "important fact").with_importance(0.9);
+        entry.timestamp = chrono::Utc::now() - chrono::Duration::hours(10_000);
         assert!(
             engine.should_keep(&entry),
-            "Preference should always be kept"
+            "high-importance memories must never expire by age alone"
         );
     }
 
@@ -544,8 +552,8 @@ mod tests {
     fn should_drop_old_low_importance_error() {
         let engine = ConsolidationEngine::default();
         let mut err = MemoryEntry::new(MemoryType::Error, "stale error").with_importance(0.1);
-        // Error TTL is age_threshold/2 = 12h. Set age to 20h.
-        err.timestamp = chrono::Utc::now() - chrono::Duration::hours(20);
+        // Error TTL is age_threshold/2 = 24h with default 48h base. Set age to 30h.
+        err.timestamp = chrono::Utc::now() - chrono::Duration::hours(30);
         assert!(
             !engine.should_keep(&err),
             "stale low-importance error should be dropped"

@@ -28,7 +28,7 @@ Your task is to:\n\
 1. Summarize the conversation history, preserving key details: \
 project context, files modified, decisions made, bugs found, \
 commands executed, and any pending tasks.\n\
-2. Extract key memories from the conversation as structured JSON.\n\n\
+2. Extract only durable, high-value memories as structured JSON.\n\n\
 Output format — respond with a single JSON object (no markdown fences, no extra text):\n\
 {\n\
   \"summary\": \"<concise summary string>\",\n\
@@ -42,9 +42,17 @@ Output format — respond with a single JSON object (no markdown fences, no extr
   ]\n\
 }\n\n\
 The \"scope\" field classifies where the memory should be stored:\n\
-- \"project\": specific to the current project (architecture decisions, file paths, bug fixes, project-specific conventions).\n\
+- \"project\": specific to the current project (architecture decisions, stable conventions, non-obvious bug conclusions).\n\
 - \"global\": applies across all projects (user communication preferences, general workflow habits, cross-cutting insights about the user).\n\
 When uncertain, default to \"project\".\n\n\
+Memory quality rules (strict):\n\
+- Prefer 0–3 memories. Empty is better than noise.\n\
+- Only extract facts that will still matter in a future session.\n\
+- importance >= 0.7 for durable decisions/preferences; use lower scores only when unsure.\n\
+- DO NOT remember: current todo/task progress, one-off commands, temporary file paths, \
+tool outputs, in-progress work, session chronology, or information already obvious from the repo.\n\
+- DO remember: stable architecture choices, user long-term preferences, project conventions, \
+non-obvious bug root causes and their fixes.\n\
 If there is nothing worth remembering, return an empty memories array.\n\
 Do NOT use any tools — just return the JSON as plain text.";
 
@@ -165,9 +173,76 @@ pub fn prepare_compaction_transcript(history: &[ChatMessage]) -> (Vec<ChatMessag
     (tail, transcript)
 }
 
+/// Default write-time importance gate for extracted memories.
+pub const DEFAULT_WRITE_IMPORTANCE_THRESHOLD: f32 = 0.6;
+
+/// Default cap on memories accepted from one compaction extract.
+pub const DEFAULT_MAX_EXTRACT_PER_COMPACTION: usize = 3;
+
+/// Filter + rank extracted memories before persistence.
+///
+/// Drops empty/low-importance entries and ephemeral task noise, then keeps at
+/// most `max_extract` highest-importance memories.
+pub fn filter_extracted_memories(
+    memories: Vec<(MemoryEntry, MemoryOrigin)>,
+    write_importance_threshold: f32,
+    max_extract: usize,
+) -> Vec<(MemoryEntry, MemoryOrigin)> {
+    let mut kept: Vec<(MemoryEntry, MemoryOrigin)> = memories
+        .into_iter()
+        .filter(|(memory, _)| {
+            if memory.content.trim().is_empty() {
+                return false;
+            }
+            if memory.importance < write_importance_threshold {
+                return false;
+            }
+            // Task-type extracts are almost always session-ephemeral noise.
+            if memory.memory_type == MemoryType::Task {
+                return false;
+            }
+            !is_ephemeral_memory_content(&memory.content)
+        })
+        .collect();
+
+    kept.sort_by(|a, b| {
+        b.0.importance
+            .partial_cmp(&a.0.importance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if max_extract == 0 {
+        return Vec::new();
+    }
+    kept.truncate(max_extract);
+    kept
+}
+
+/// Heuristic noise detector for common ephemeral extracts.
+fn is_ephemeral_memory_content(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    const NOISE_MARKERS: &[&str] = &[
+        "todo list",
+        "todo:",
+        "in_progress",
+        "in progress",
+        "current task",
+        "this session",
+        "user asked",
+        "user wants me to",
+        "pending tasks",
+        "working on",
+        "next step",
+        "i will now",
+        "going to run",
+    ];
+    NOISE_MARKERS.iter().any(|marker| lower.contains(marker))
+}
+
 /// Parse summarizer output into `(summary, memories)`.
 ///
 /// Falls back to the full text as summary when JSON is missing or invalid.
+/// Does **not** apply write-time quality filters — callers should pass the
+/// result through [`filter_extracted_memories`] before persisting.
 pub fn parse_compaction_response(full_text: &str) -> (String, Vec<(MemoryEntry, MemoryOrigin)>) {
     match serde_json::from_str::<serde_json::Value>(full_text.trim()) {
         Ok(json) => {
@@ -337,7 +412,12 @@ impl Compactor for ApiCompactor {
         }
 
         if let Some(ref mm) = self.memory_manager {
-            for (memory, scope) in &extracted_memories {
+            let filtered = filter_extracted_memories(
+                extracted_memories,
+                mm.write_importance_threshold(),
+                mm.max_extract_per_compaction(),
+            );
+            for (memory, scope) in &filtered {
                 if let Err(e) = mm.add_memory(memory.clone(), *scope).await {
                     tracing::warn!(
                         error = %e,
@@ -346,11 +426,8 @@ impl Compactor for ApiCompactor {
                     );
                 }
             }
-            if !extracted_memories.is_empty() {
-                tracing::info!(
-                    count = extracted_memories.len(),
-                    "extracted memories from compaction"
-                );
+            if !filtered.is_empty() {
+                tracing::info!(count = filtered.len(), "extracted memories from compaction");
             }
         }
 
@@ -414,6 +491,48 @@ mod tests {
         let (summary, memories) = parse_compaction_response("just a plain summary");
         assert_eq!(summary, "just a plain summary");
         assert!(memories.is_empty());
+    }
+
+    #[test]
+    fn filter_extracted_memories_drops_noise_and_caps() {
+        let raw = vec![
+            (
+                MemoryEntry::new(MemoryType::Task, "current task: fix bug").with_importance(0.95),
+                MemoryOrigin::Project,
+            ),
+            (
+                MemoryEntry::new(MemoryType::Knowledge, "this session user asked for help")
+                    .with_importance(0.9),
+                MemoryOrigin::Project,
+            ),
+            (
+                MemoryEntry::new(MemoryType::Knowledge, "noise low").with_importance(0.2),
+                MemoryOrigin::Project,
+            ),
+            (
+                MemoryEntry::new(MemoryType::Decision, "use dual-scope memory")
+                    .with_importance(0.9),
+                MemoryOrigin::Project,
+            ),
+            (
+                MemoryEntry::new(MemoryType::Preference, "reply in Chinese").with_importance(0.85),
+                MemoryOrigin::Global,
+            ),
+            (
+                MemoryEntry::new(MemoryType::Insight, "keep prompts lean").with_importance(0.7),
+                MemoryOrigin::Project,
+            ),
+            (
+                MemoryEntry::new(MemoryType::Knowledge, "extra fact").with_importance(0.65),
+                MemoryOrigin::Project,
+            ),
+        ];
+        let kept = filter_extracted_memories(raw, 0.6, 3);
+        assert_eq!(kept.len(), 3);
+        assert!(kept.iter().all(|(m, _)| m.importance >= 0.6));
+        assert!(kept.iter().all(|(m, _)| m.memory_type != MemoryType::Task));
+        assert!(kept[0].0.importance >= kept[1].0.importance);
+        assert!(kept.iter().any(|(m, _)| m.content.contains("dual-scope")));
     }
 
     #[test]

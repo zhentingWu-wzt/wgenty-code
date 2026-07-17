@@ -430,7 +430,13 @@ impl Cli {
     }
 
     async fn run_memory(&self, action: &super::MemoryCommands) -> anyhow::Result<()> {
-        let manager = crate::context::MemoryManager::new(crate::utils::current_project_root());
+        // Prefer settings-backed thresholds so `memory prune/dream` honour
+        // `storage.memory.*` from settings.json instead of hardcoded defaults.
+        let settings = crate::config::Settings::load().unwrap_or_default();
+        let manager = crate::context::MemoryManager::with_settings(
+            &settings,
+            crate::utils::current_project_root(),
+        );
         manager.load().await?;
 
         match action {
@@ -468,6 +474,53 @@ impl Cli {
                 println!("Forcing AutoDream consolidation...");
                 service.force_consolidation().await?;
                 println!("AutoDream consolidation completed");
+            }
+            super::MemoryCommands::Prune => {
+                println!("Pruning low-value / expired memories...");
+                let result = manager.prune().await?;
+                println!(
+                    "Prune complete: {} -> {} (removed {})",
+                    result.before, result.after, result.removed
+                );
+                println!(
+                    "  project: {} -> {}",
+                    result.project_before, result.project_after
+                );
+                println!(
+                    "  global:  {} -> {}",
+                    result.global_before, result.global_after
+                );
+            }
+            super::MemoryCommands::List {
+                min_importance,
+                limit,
+            } => {
+                let entries = manager.list_memories(*min_importance, *limit).await;
+                if entries.is_empty() {
+                    println!("No memories matched.");
+                } else {
+                    println!(
+                        "Showing {} memor{}{}:",
+                        entries.len(),
+                        if entries.len() == 1 { "y" } else { "ies" },
+                        min_importance
+                            .map(|t| format!(" (importance >= {:.2})", t))
+                            .unwrap_or_default()
+                    );
+                    for (scope, m) in entries {
+                        let scope_label = match scope {
+                            crate::context::MemoryOrigin::Project => "project",
+                            crate::context::MemoryOrigin::Global => "global",
+                        };
+                        let preview: String = m.content.chars().take(120).collect();
+                        println!(
+                            "[{scope_label}] {imp:.2} {ty:?} {ts} | {preview}",
+                            imp = m.importance,
+                            ty = m.memory_type,
+                            ts = m.timestamp.format("%Y-%m-%d"),
+                        );
+                    }
+                }
             }
         }
         Ok(())

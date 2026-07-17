@@ -310,7 +310,14 @@ mod tests {
         let mut profile = SandboxProfile::default_for_workspace(Path::new("/tmp/test-ws"));
         profile.full_disk_read = false;
         let sb = MacOSBackend::generate_profile(&profile);
-        for path in ["/bin", "/usr/bin", "/usr/sbin", "/sbin", "/usr/local", "/opt/homebrew"] {
+        for path in [
+            "/bin",
+            "/usr/bin",
+            "/usr/sbin",
+            "/sbin",
+            "/usr/local",
+            "/opt/homebrew",
+        ] {
             assert!(
                 sb.contains(&format!("(subpath \"{path}\")")),
                 "path-scoped seatbelt must file-read* {path} so process-exec can map binaries"

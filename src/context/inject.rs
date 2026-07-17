@@ -176,6 +176,8 @@ mod tests {
             global_memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
             consolidating: Arc::new(AtomicBool::new(false)),
+            write_importance_threshold: 0.6,
+            max_extract_per_compaction: 3,
         }
     }
 

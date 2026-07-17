@@ -64,12 +64,14 @@ impl Default for StorageConfig {
                 enabled: true,
                 path: config_dir.join("memory.json"),
                 consolidation_interval: 24,
-                max_memories: 1000,
+                max_memories: default_max_memories(),
                 importance_threshold: default_importance_threshold(),
                 age_threshold_hours: default_age_threshold_hours(),
                 enable_auto_consolidation: default_enable_auto_consolidation(),
                 recall_top_n: default_recall_top_n(),
                 recall_similarity_threshold: default_recall_similarity_threshold(),
+                write_importance_threshold: default_write_importance_threshold(),
+                max_extract_per_compaction: default_max_extract_per_compaction(),
             },
             transcript: TranscriptConfig::default(),
         }
@@ -113,41 +115,59 @@ pub struct MemorySettings {
     pub path: PathBuf,
     /// Auto-consolidation interval (hours)
     pub consolidation_interval: u64,
-    /// Maximum memories to keep
+    /// Maximum memories to keep after consolidation.
+    #[serde(default = "default_max_memories")]
     pub max_memories: usize,
     /// Minimum importance for a memory to survive consolidation (0.0–1.0).
+    /// High-importance memories are retained regardless of age.
     #[serde(default = "default_importance_threshold")]
     pub importance_threshold: f32,
-    /// Memories older than this (in hours) and below the importance threshold
-    /// are eligible for removal during consolidation.
+    /// Base TTL (hours) for low-importance ephemeral memories during
+    /// consolidation. Durable types use a multiple of this value.
     #[serde(default = "default_age_threshold_hours")]
     pub age_threshold_hours: u64,
     /// Whether auto-consolidation is enabled.
     #[serde(default = "default_enable_auto_consolidation")]
     pub enable_auto_consolidation: bool,
-    /// Top-N memories to inject per recall (default 5).
+    /// Top-N memories to inject per recall (default 3).
     #[serde(default = "default_recall_top_n")]
     pub recall_top_n: usize,
     /// Topic overlap threshold (Jaccard) for triggering re-retrieval
     /// during per-turn smart recall. Range 0.0–1.0, default 0.3.
     #[serde(default = "default_recall_similarity_threshold")]
     pub recall_similarity_threshold: f32,
+    /// Minimum importance required to persist a newly extracted memory
+    /// from context compaction (0.0–1.0). Filters low-value noise at write time.
+    #[serde(default = "default_write_importance_threshold")]
+    pub write_importance_threshold: f32,
+    /// Maximum memories accepted from a single compaction extract.
+    #[serde(default = "default_max_extract_per_compaction")]
+    pub max_extract_per_compaction: usize,
 }
 
+fn default_max_memories() -> usize {
+    200
+}
 fn default_importance_threshold() -> f32 {
-    0.3
+    0.6
 }
 fn default_age_threshold_hours() -> u64 {
-    24
+    48
 }
 fn default_enable_auto_consolidation() -> bool {
     true
 }
 fn default_recall_top_n() -> usize {
-    5
+    3
 }
 fn default_recall_similarity_threshold() -> f32 {
     0.3
+}
+fn default_write_importance_threshold() -> f32 {
+    0.6
+}
+fn default_max_extract_per_compaction() -> usize {
+    3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

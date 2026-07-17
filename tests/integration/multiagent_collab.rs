@@ -192,9 +192,8 @@ async fn execute_command_respects_context_workdir() {
     std::fs::create_dir_all(&inner).unwrap();
 
     let sandbox = std::sync::Arc::new(wgenty_code::sandbox::SandboxManager::new());
-    let tool = wgenty_code::tools::execution::execute_command::ExecuteCommandTool::with_sandbox(
-        sandbox,
-    );
+    let tool =
+        wgenty_code::tools::execution::execute_command::ExecuteCommandTool::with_sandbox(sandbox);
     let agent = AgentExecutionContext::root(SessionId::new("s"));
     let ctx = ToolContext {
         agent: &agent,

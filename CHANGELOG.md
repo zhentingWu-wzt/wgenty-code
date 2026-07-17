@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed (Memory Quality)
+
+- Compact 抽取改为“少而精”：收紧 system prompt，写入前按
+  `write_importance_threshold` / `max_extract_per_compaction` 过滤，并丢弃
+  task 类型与常见会话噪声（todo/进度/this session 等）。
+- 默认阈值更严格：`max_memories=200`、`importance_threshold=0.6`、
+  `age_threshold_hours=48`、`recall_top_n=3`；写入门槛默认 0.6、单次最多 3 条。
+- 低价值 `Knowledge`/`Preference` 不再永久保留，改为 4× 基础 TTL 衰减；
+  high-importance 仍不受年龄限制。
+- 新增 CLI：`memory prune`（project+global）、`memory list [--min-importance] [--limit]`。
+- `memory` 子命令读取 `settings.json` 的 `storage.memory.*` 阈值。
+
 ### BREAKING (Sandbox)
 
 - Shell tools no longer default to Minimal + silent bare exec on sandbox failure.

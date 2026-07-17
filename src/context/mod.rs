@@ -96,6 +96,17 @@ pub enum MemoryOrigin {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PruneResult {
+    pub before: usize,
+    pub after: usize,
+    pub removed: usize,
+    pub project_before: usize,
+    pub project_after: usize,
+    pub global_before: usize,
+    pub global_after: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryStatus {
     pub total_memories: usize,
     pub session_count: usize,
@@ -287,6 +298,10 @@ pub struct MemoryManager {
     /// Guards `consolidate()` so concurrent `add_memory()` calls wait
     /// until consolidation completes before proceeding.
     consolidating: Arc<AtomicBool>,
+    /// Minimum importance required to accept a newly extracted memory.
+    write_importance_threshold: f32,
+    /// Maximum memories accepted from a single compaction extract.
+    max_extract_per_compaction: usize,
 }
 
 impl MemoryManager {
@@ -348,15 +363,18 @@ impl MemoryManager {
             global_memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
             consolidating: Arc::new(AtomicBool::new(false)),
+            write_importance_threshold: 0.6,
+            max_extract_per_compaction: 3,
         }
     }
 
     /// Create a MemoryManager configured from user settings.
     ///
     /// The consolidation thresholds (`max_memories`, `importance_threshold`,
-    /// `age_threshold_hours`, etc.) are read from the `storage.memory` section
-    /// of `settings.json`. Previously these were hardcoded in
-    /// `ConsolidationConfig::default()` and could not be tuned by users.
+    /// `age_threshold_hours`, etc.) and write-time extract gates are read from
+    /// the `storage.memory` section of `settings.json`. Previously these were
+    /// hardcoded in `ConsolidationConfig::default()` and could not be tuned
+    /// by users.
     ///
     /// `project_root` determines where project-local sessions are stored
     /// (`<project_root>/.wgenty-code/sessions/`).
@@ -365,6 +383,7 @@ impl MemoryManager {
 
         let consolidation_config =
             ConsolidationConfig::from_memory_settings(&settings.storage.memory);
+        let mem = &settings.storage.memory;
 
         Self {
             sessions: Arc::new(MemorySessionManager::with_project_root(project_root)),
@@ -376,7 +395,19 @@ impl MemoryManager {
             global_memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
             consolidating: Arc::new(AtomicBool::new(false)),
+            write_importance_threshold: mem.write_importance_threshold,
+            max_extract_per_compaction: mem.max_extract_per_compaction,
         }
+    }
+
+    /// Write-time importance gate used by compaction extract.
+    pub fn write_importance_threshold(&self) -> f32 {
+        self.write_importance_threshold
+    }
+
+    /// Cap on memories accepted from a single compaction extract.
+    pub fn max_extract_per_compaction(&self) -> usize {
+        self.max_extract_per_compaction
     }
 
     pub async fn status(&self) -> anyhow::Result<MemoryStatus> {
@@ -583,6 +614,78 @@ impl MemoryManager {
         }
 
         Ok(())
+    }
+
+    /// Prune memories using the consolidation retention policy.
+    ///
+    /// This is the same engine as `dream`, but returns how many entries were
+    /// removed so CLI callers can report progress. Both project and global
+    /// pools are pruned independently.
+    pub async fn prune(&self) -> anyhow::Result<PruneResult> {
+        let before_project = self.memories.read().await.len();
+        let before_global = self.global_memories.read().await.len();
+
+        // Project pool (uses consolidate lock + index rebuild).
+        self.consolidate().await?;
+
+        // Global pool: apply the same consolidation rules, no TF-IDF index.
+        let _guard = ConsolidationFileLock::acquire(&self.global_storage)
+            .await
+            .context("failed to acquire global consolidation lock")?;
+        self.consolidating.store(true, Ordering::SeqCst);
+        let _consolidating_guard = ConsolidatingGuard {
+            flag: self.consolidating.clone(),
+        };
+        let mut global = self.global_memories.write().await;
+        let consolidated_global = self.consolidation.consolidate(&global).await?;
+        self.global_storage.reconcile(&consolidated_global).await?;
+        *global = consolidated_global;
+        drop(global);
+
+        let after_project = self.memories.read().await.len();
+        let after_global = self.global_memories.read().await.len();
+
+        Ok(PruneResult {
+            before: before_project + before_global,
+            after: after_project + after_global,
+            removed: (before_project + before_global).saturating_sub(after_project + after_global),
+            project_before: before_project,
+            project_after: after_project,
+            global_before: before_global,
+            global_after: after_global,
+        })
+    }
+
+    /// List memories with optional filters (for CLI inspection).
+    pub async fn list_memories(
+        &self,
+        min_importance: Option<f32>,
+        limit: usize,
+    ) -> Vec<(MemoryOrigin, MemoryEntry)> {
+        let mut out: Vec<(MemoryOrigin, MemoryEntry)> = Vec::new();
+        let project = self.memories.read().await;
+        for m in project.iter() {
+            if min_importance.map(|t| m.importance >= t).unwrap_or(true) {
+                out.push((MemoryOrigin::Project, m.clone()));
+            }
+        }
+        drop(project);
+        let global = self.global_memories.read().await;
+        for m in global.iter() {
+            if min_importance.map(|t| m.importance >= t).unwrap_or(true) {
+                out.push((MemoryOrigin::Global, m.clone()));
+            }
+        }
+        out.sort_by(|a, b| {
+            b.1.importance
+                .partial_cmp(&a.1.importance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.1.timestamp.cmp(&a.1.timestamp))
+        });
+        if limit > 0 {
+            out.truncate(limit);
+        }
+        out
     }
 
     pub async fn consolidate(&self) -> anyhow::Result<()> {
@@ -878,6 +981,8 @@ mod tests {
             memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
             consolidating: Arc::new(AtomicBool::new(false)),
+            write_importance_threshold: 0.6,
+            max_extract_per_compaction: 3,
         };
 
         // Pre-populate with one memory.
@@ -923,6 +1028,8 @@ mod tests {
             memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
             consolidating: Arc::new(AtomicBool::new(false)),
+            write_importance_threshold: 0.6,
+            max_extract_per_compaction: 3,
         };
 
         // Before consolidation, last_consolidation should be None.
@@ -982,6 +1089,8 @@ mod tests {
             enable_auto_consolidation: false,
             recall_top_n: 5,
             recall_similarity_threshold: 0.3,
+            write_importance_threshold: 0.65,
+            max_extract_per_compaction: 2,
         };
 
         let mm = MemoryManager::with_settings(&settings, std::path::PathBuf::from("/tmp"));
@@ -993,6 +1102,8 @@ mod tests {
         assert_eq!(config.age_threshold_hours, 12);
         assert_eq!(config.consolidation_interval_hours, 48);
         assert!(!config.enable_auto_consolidation);
+        assert!((mm.write_importance_threshold() - 0.65).abs() < f32::EPSILON);
+        assert_eq!(mm.max_extract_per_compaction(), 2);
     }
 
     /// Regression test: `MemoryManager::load()` must recover persisted
@@ -1023,6 +1134,8 @@ mod tests {
             memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
             consolidating: Arc::new(AtomicBool::new(false)),
+            write_importance_threshold: 0.6,
+            max_extract_per_compaction: 3,
         };
 
         // Pre-populate a session and a history entry on disk.
@@ -1047,6 +1160,8 @@ mod tests {
             global_memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
             consolidating: Arc::new(AtomicBool::new(false)),
+            write_importance_threshold: 0.6,
+            max_extract_per_compaction: 3,
         };
 
         // Before load(), the in-memory caches are empty.
@@ -1100,6 +1215,8 @@ mod tests {
             memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
             consolidating: Arc::new(AtomicBool::new(false)),
+            write_importance_threshold: 0.6,
+            max_extract_per_compaction: 3,
         };
 
         // First extraction: a decision captured during compaction.
@@ -1178,6 +1295,8 @@ mod tests {
             memories: Arc::new(RwLock::new(Vec::new())),
             index: Arc::new(RwLock::new(MemoryIndex::new())),
             consolidating: Arc::new(AtomicBool::new(false)),
+            write_importance_threshold: 0.6,
+            max_extract_per_compaction: 3,
         };
 
         // idx 0: survives consolidation (Knowledge is always kept).
