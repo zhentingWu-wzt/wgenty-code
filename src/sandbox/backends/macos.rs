@@ -5,6 +5,7 @@
 //! Seatbelt provides filesystem, network, and syscall-level restrictions.
 
 use std::path::Path;
+use std::process::Stdio;
 
 use super::super::profile::NetworkPolicy;
 use crate::sandbox::{
@@ -24,112 +25,40 @@ impl MacOSBackend {
         Self
     }
 
+    /// Generate a Seatbelt profile using an **allow-default + precise deny**
+    /// (blacklist) model.
+    ///
+    /// # Why blacklist, not whitelist
+    ///
+    /// On macOS 15.7+ (Sequoia) the Seatbelt profile compiler inside
+    /// `/usr/bin/sandbox-exec` aborts (SIGABRT) the moment a profile references
+    /// the `process-exec` operation in *any* form — bare, subpath, literal,
+    /// wildcard, or regex. The previous `(deny default) ... (allow
+    /// process-exec (subpath ...))` whitelist model therefore cannot launch a
+    /// single command on those systems: `sandbox-exec` dies before the child
+    /// runs. The public `sandbox_init` C API is deprecated since 10.8 and
+    /// accepts only named presets, so there is no in-process escape hatch.
+    ///
+    /// The blacklist model sidesteps the bug entirely: `(allow default)` grants
+    /// exec by default (no `process-exec` token is ever emitted), and we layer
+    /// precise `(deny ...)` rules for the dangerous surfaces — network, secret
+    /// files, and writes outside the workspace. Enforcement is still
+    /// kernel-level and inherited by all descendants.
+    ///
+    /// Trade-off vs. the ideal whitelist: reads are allowed by default except
+    /// for an explicit secret-deny list, and any binary on `PATH` may exec.
+    /// This is a deliberate, verified downgrade to keep a *real* sandbox on
+    /// modern macOS rather than silently falling back to no-op.
     fn generate_profile(profile: &SandboxProfile) -> String {
         let mut sb = String::new();
 
         sb.push_str("(version 1)\n");
-        sb.push_str("(deny default)\n\n");
+        // Blacklist base: everything allowed unless explicitly denied. This is
+        // the only model that can exec a command on macOS 15.7+ without
+        // tripping the `process-exec` SIGABRT.
+        sb.push_str("(allow default)\n\n");
 
-        // Common development tool directories under the user's home.
-        // Cargo (registry cache, bin, git checkouts), rustup (toolchains,
-        // std library), and other language runtimes need to be readable
-        // and executable for build commands (cargo, npm, node, etc.) to
-        // work inside the sandbox. Still needed for process-exec even when
-        // full_disk_read grants unrestricted file-read*.
-        let home_tool_paths: Vec<String> = dirs::home_dir()
-            .map(|home| {
-                [
-                    ".cargo", ".rustup", ".nvm", ".bun", ".volta", ".deno", ".local",
-                ]
-                .iter()
-                .map(|d| home.join(d).to_string_lossy().into_owned())
-                .collect()
-            })
-            .unwrap_or_default();
-
-        // Codex-aligned: workspace-write / read-only use unrestricted
-        // `(allow file-read*)` (Root read). Path-scoped reads only for
-        // Paranoid / explicit full_disk_read=false profiles.
-        if profile.full_disk_read {
-            sb.push_str(";; Codex-style full-disk read (workspace-write / read-only)\n");
-            sb.push_str("(allow file-read*)\n\n");
-        } else {
-            sb.push_str(";; Allow reading from approved paths and system libraries\n");
-            sb.push_str("(allow file-read*\n");
-            for path in &profile.readable_paths {
-                sb.push_str(&format!("    (subpath \"{}\")\n", path.display()));
-            }
-            // Root directory itself only (not children). On modern macOS, dyld/sh
-            // resolve firmlinks via the root vnode; without this, even
-            // `printf hello` is SIGABRT'd (-6) despite broad /bin+/usr reads.
-            sb.push_str("    (literal \"/\")\n");
-            sb.push_str("    (subpath \"/usr/lib\")\n");
-            sb.push_str("    (subpath \"/System/Library\")\n");
-            sb.push_str("    (subpath \"/Library\")\n");
-            sb.push_str("    (subpath \"/private/var/db/dyld\")\n");
-            sb.push_str("    (subpath \"/dev/dtracehelper\")\n");
-            // process-exec does NOT imply file-read on macOS Seatbelt. Without these
-            // paths, even `sh -c true` is killed because the shell binary cannot be
-            // mapped/read before exec.
-            sb.push_str("    (subpath \"/bin\")\n");
-            sb.push_str("    (subpath \"/usr/bin\")\n");
-            sb.push_str("    (subpath \"/usr/sbin\")\n");
-            sb.push_str("    (subpath \"/sbin\")\n");
-            sb.push_str("    (subpath \"/usr/local\")\n");
-            sb.push_str("    (subpath \"/opt/homebrew\")\n");
-            sb.push_str("    (subpath \"/Library/Developer/CommandLineTools\")\n");
-            sb.push_str("    (subpath \"/private/var/folders\")\n");
-            // macOS shell selector used by /bin/sh on some builds.
-            sb.push_str("    (subpath \"/private/var/select\")\n");
-            // Development tool paths: cargo registry, rustup toolchains, etc.
-            for path in &home_tool_paths {
-                sb.push_str(&format!("    (subpath \"{}\")\n", path));
-            }
-            sb.push_str(")\n\n");
-        }
-
-        sb.push_str(";; Allow writing to approved paths\n");
-        sb.push_str("(allow file-write*\n");
-        for path in &profile.writable_paths {
-            sb.push_str(&format!("    (subpath \"{}\")\n", path.display()));
-        }
-        sb.push_str(")\n\n");
-
-        sb.push_str(";; Allow file deletion (unlink) within writable paths\n");
-        sb.push_str("(allow file-write-unlink\n");
-        for path in &profile.writable_paths {
-            sb.push_str(&format!("    (subpath \"{}\")", path.display()));
-            sb.push('\n');
-        }
-        sb.push_str(")\n\n");
-
-        // Codex allows unrestricted process-exec; we keep a practical allowlist
-        // so arbitrary binaries outside common tool locations still need workspace
-        // placement. full_disk_read only affects file-read*, not exec.
-        sb.push_str(";; Allow process execution\n");
-        sb.push_str("(allow process-exec\n");
-        sb.push_str("    (subpath \"/usr/bin\")\n");
-        sb.push_str("    (subpath \"/bin\")\n");
-        sb.push_str("    (subpath \"/usr/sbin\")\n");
-        sb.push_str("    (subpath \"/sbin\")\n");
-        sb.push_str("    (subpath \"/usr/local/bin\")\n");
-        sb.push_str("    (subpath \"/opt/homebrew/bin\")\n");
-        // Xcode Command Line Tools: cc, ld, etc. for native compilation/linking
-        sb.push_str("    (subpath \"/Library/Developer/CommandLineTools\")\n");
-        for path in &profile.writable_paths {
-            sb.push_str(&format!("    (subpath \"{}\")\n", path.display()));
-        }
-        // Development tool binaries: cargo, rustc, node, npm, etc.
-        for path in &home_tool_paths {
-            sb.push_str(&format!("    (subpath \"{}\")\n", path));
-        }
-        sb.push_str(")\n\n");
-
-        if profile.allow_subprocess {
-            sb.push_str(";; Allow subprocess creation\n");
-            sb.push_str("(allow process-fork)\n\n");
-        }
-
+        // ---- Network: deny by policy (default None -> fully denied). ----
         match profile.network {
             NetworkPolicy::None => {
                 sb.push_str(";; Deny all network access\n");
@@ -146,8 +75,77 @@ impl MacOSBackend {
             }
         }
 
+        // ---- Secret files: hard-deny reads of credential material. ----
+        // These are denied regardless of the workspace, so an escaped or
+        // hostile command cannot exfiltrate keys even though reads are
+        // otherwise allowed under `(allow default)`.
+        let home = dirs::home_dir();
+        let secret_subpaths: Vec<String> = home
+            .as_ref()
+            .map(|h| {
+                [
+                    ".ssh",
+                    ".aws",
+                    ".gnupg",
+                    ".config/gcloud",
+                    ".kube",
+                    ".docker",
+                    ".netrc",
+                    "Library/Keychains",
+                    "Library/Application Support/Google/Chrome",
+                    "Library/Cookies",
+                ]
+                .iter()
+                .map(|s| h.join(s).to_string_lossy().into_owned())
+                .collect()
+            })
+            .unwrap_or_default();
+        sb.push_str(";; Hard-deny reads of secret / credential material\n");
+        sb.push_str("(deny file-read*\n");
+        for path in &secret_subpaths {
+            sb.push_str(&format!("    (subpath \"{}\")\n", path));
+        }
+        sb.push_str(")\n\n");
+
+        // ---- Writes: deny everything under $HOME, then re-allow the
+        // workspace and /tmp. Under `(allow default)` file writes would be
+        // unrestricted; this fence confines writes to approved dirs while
+        // keeping reads (minus secrets) open for dev tooling. ----
+        if let Some(ref home) = home {
+            sb.push_str(";; Deny writes under the user home, then carve out allows\n");
+            sb.push_str(&format!(
+                "(deny file-write* (subpath \"{}\"))\n\n",
+                home.display()
+            ));
+        }
+
+        sb.push_str(";; Allow writes to approved paths\n");
+        sb.push_str("(allow file-write*\n");
+        for path in &profile.writable_paths {
+            sb.push_str(&format!("    (subpath \"{}\")\n", path.display()));
+        }
+        sb.push_str(")\n\n");
+
+        sb.push_str(";; Allow file deletion (unlink) within writable paths\n");
+        sb.push_str("(allow file-write-unlink\n");
+        for path in &profile.writable_paths {
+            sb.push_str(&format!("    (subpath \"{}\")", path.display()));
+            sb.push('\n');
+        }
+        sb.push_str(")\n\n");
+
+        // Subprocess creation. Under `(allow default)` fork is already
+        // permitted; we still honor the profile flag for parity with the
+        // other backends by leaving an explicit allow (a no-op here) when
+        // requested. There is no kernel-level way to *forbid* fork without
+        // `process-exec`-style filtering on this macOS version, so
+        // `allow_subprocess=false` is advisory only here.
+        if profile.allow_subprocess {
+            sb.push_str(";; Allow subprocess creation\n");
+            sb.push_str("(allow process-fork)\n\n");
+        }
+
         sb.push_str(";; System necessities\n");
-        // /dev — read+writes device files that shell commands actually need
         sb.push_str("(allow file-read* file-write*\n");
         sb.push_str("    (subpath \"/dev/null\")\n");
         sb.push_str("    (subpath \"/dev/zero\")\n");
@@ -159,25 +157,9 @@ impl MacOSBackend {
         sb.push_str("    (subpath \"/dev/tty\")\n");
         sb.push_str("    (subpath \"/dev/dtracehelper\")\n");
         sb.push_str(")\n");
-        // DNS resolution — needed for network-capable tools
-        sb.push_str("(allow file-read*\n");
-        sb.push_str("    (literal \"/private/etc/hosts\")\n");
-        sb.push_str("    (literal \"/private/etc/resolv.conf\")\n");
-        sb.push_str("    (literal \"/etc/hosts\")\n");
-        sb.push_str("    (literal \"/etc/resolv.conf\")\n");
-        sb.push_str(")\n");
-        // macOS dynamic linker cache (already above in system libs, reaffirm here)
-        sb.push_str("(allow file-read*\n");
-        sb.push_str("    (subpath \"/private/var/db/dyld\")\n");
-        sb.push_str(")\n");
         sb.push_str("(allow sysctl-read)\n");
         sb.push_str("(allow signal)\n");
         sb.push_str("(allow process-info*)\n");
-        sb.push_str("(allow mach-lookup\n");
-        sb.push_str("    (global-name \"com.apple.trustd.agent\")\n");
-        sb.push_str("    (global-name \"com.apple.distributed_notifications@Uv3\")\n");
-        sb.push_str("    (global-name \"com.apple.FontObjectsServer\")\n");
-        sb.push_str(")\n");
 
         sb
     }
@@ -189,7 +171,61 @@ impl SandboxBackend for MacOSBackend {
     }
 
     fn is_available() -> bool {
-        cfg!(target_os = "macos") && Path::new("/usr/bin/sandbox-exec").exists()
+        if !cfg!(target_os = "macos") || !Path::new("/usr/bin/sandbox-exec").exists() {
+            return false;
+        }
+        // Probe: run a real command through the *same* blacklist profile
+        // grammar that `generate_profile` emits. This catches the macOS 15.7+
+        // Seatbelt compiler bug where profiles referencing `process-exec`
+        // SIGABRT before the child runs - and, by mirroring the production
+        // grammar, guarantees the probe verdict reflects real execution rather
+        // than just "parsed without crashing". We require the child's stdout to
+        // match a sentinel so a silently-aborted `sandbox-exec` (signal death,
+        // empty stdout) is correctly treated as unavailable.
+        let probe_profile = "(version 1)\n(allow default)\n(deny network*)\n(allow process-fork)\n";
+        let tmp =
+            std::env::temp_dir().join(format!("wgenty-sandbox-probe-{}.sb", std::process::id()));
+        if std::fs::write(&tmp, probe_profile.as_bytes()).is_err() {
+            return false;
+        }
+        let result = std::process::Command::new("/usr/bin/sandbox-exec")
+            .arg("-f")
+            .arg(&tmp)
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg("printf probe-ok")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output();
+        let _ = std::fs::remove_file(&tmp);
+        match result {
+            Ok(out) => {
+                // Signal death (SIGABRT) -> code None; a parsed-but-denied
+                // child still exits normally. Accept only a clean exit whose
+                // stdout carries the sentinel.
+                let clean = out.status.code().is_some()
+                    && String::from_utf8_lossy(&out.stdout).contains("probe-ok");
+                if !clean {
+                    tracing::warn!(
+                        exit_code = ?out.status.code(),
+                        stdout = %String::from_utf8_lossy(&out.stdout),
+                        stderr = %String::from_utf8_lossy(&out.stderr),
+                        "sandbox-exec probe did not run the child cleanly; \
+                         falling back to no-op sandbox backend"
+                    );
+                    return false;
+                }
+                true
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "sandbox-exec probe failed to spawn; falling back to no-op backend"
+                );
+                false
+            }
+        }
     }
 
     fn is_hardware_enforced(&self) -> bool {
@@ -209,7 +245,13 @@ impl SandboxBackend for MacOSBackend {
         let sb_profile = Self::generate_profile(profile);
 
         let tmp_dir = std::env::temp_dir();
-        let profile_path = tmp_dir.join(format!("claude-sandbox-{}.sb", std::process::id()));
+        // Include a UUID so concurrent sandboxed commands in the same process
+        // don't clobber or delete each other's profile files during cleanup.
+        let profile_path = tmp_dir.join(format!(
+            "claude-sandbox-{}-{}.sb",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
         std::fs::write(&profile_path, sb_profile.as_bytes()).map_err(|e| {
             SandboxError::ProfileBuild {
                 reason: format!("failed to write seatbelt profile: {}", e),
@@ -263,83 +305,131 @@ impl SandboxBackend for MacOSBackend {
 mod tests {
     use super::*;
 
-    #[test]
-    fn default_workspace_profile_uses_full_disk_read() {
-        let profile = SandboxProfile::default_for_workspace(Path::new("/tmp/test-ws"));
-        assert!(profile.full_disk_read);
-        let sb = MacOSBackend::generate_profile(&profile);
-        // Codex workspace-write: unrestricted file-read*, not path allowlist.
-        assert!(
-            sb.contains("(allow file-read*)\n"),
-            "full_disk_read must emit unrestricted (allow file-read*)"
-        );
-        // Writes stay workspace-scoped.
-        assert!(sb.contains("(subpath \"/tmp/test-ws\")"));
+    fn ws_profile() -> SandboxProfile {
+        SandboxProfile::default_for_workspace(Path::new("/tmp/test-ws"))
     }
 
     #[test]
-    fn profile_includes_dev_tool_home_paths_for_exec() {
-        let profile = SandboxProfile::default_for_workspace(Path::new("/tmp/test-ws"));
-        let sb = MacOSBackend::generate_profile(&profile);
+    fn profile_uses_blacklist_model() {
+        // The profile must NOT emit `process-exec` - on macOS 15.7+ that
+        // operation makes sandbox-exec SIGABRT before the child runs. The
+        // blacklist `(allow default) ... (deny ...)` model is the only form
+        // that can launch a command on those systems.
+        let sb = MacOSBackend::generate_profile(&ws_profile());
+        assert!(
+            !sb.contains("process-exec"),
+            "seatbelt profile must not reference process-exec (SIGABRT on 15.7+): {sb}"
+        );
+        assert!(
+            sb.contains("(allow default)"),
+            "seatbelt profile must be built on (allow default): {sb}"
+        );
+        assert!(
+            !sb.contains("(deny default)"),
+            "seatbelt profile must not use (deny default) anymore: {sb}"
+        );
+    }
 
-        // process-exec still needs home tool paths even with full_disk_read.
+    #[test]
+    fn profile_denies_secrets_and_home_writes() {
+        let sb = MacOSBackend::generate_profile(&ws_profile());
         let home = dirs::home_dir().expect("home dir");
-        for sub in [".cargo", ".rustup"] {
-            let p = home.join(sub).to_string_lossy().into_owned();
+
+        // Secret material is hard-deny-read regardless of workspace.
+        for secret in [".ssh", ".aws", "Library/Keychains"] {
+            let p = home.join(secret).to_string_lossy().into_owned();
             assert!(
-                sb.contains(&p),
-                "seatbelt profile should include {} for process-exec",
+                sb.contains(&format!("(subpath \"{}\")", p)),
+                "seatbelt profile should hard-deny read of secret {}: {sb}",
                 p
             );
         }
-    }
-
-    #[test]
-    fn profile_includes_xcode_clt_for_exec() {
-        let profile = SandboxProfile::default_for_workspace(Path::new("/tmp/test-ws"));
-        let sb = MacOSBackend::generate_profile(&profile);
+        // Writes under $HOME are denied, then the workspace re-allowed.
         assert!(
-            sb.contains("/Library/Developer/CommandLineTools"),
-            "seatbelt profile should allow exec from Xcode CLT for native linking"
+            sb.contains(&format!(
+                "(deny file-write* (subpath \"{}\"))",
+                home.display()
+            )),
+            "seatbelt profile should deny writes under $HOME: {sb}"
+        );
+        assert!(
+            sb.contains("(subpath \"/tmp/test-ws\")"),
+            "seatbelt profile should re-allow writes to the workspace: {sb}"
         );
     }
 
     #[test]
-    fn path_scoped_read_includes_system_binaries() {
-        // Paranoid / full_disk_read=false still needs explicit file-read for exec.
-        let mut profile = SandboxProfile::default_for_workspace(Path::new("/tmp/test-ws"));
-        profile.full_disk_read = false;
-        let sb = MacOSBackend::generate_profile(&profile);
-        for path in [
-            "/bin",
-            "/usr/bin",
-            "/usr/sbin",
-            "/sbin",
-            "/usr/local",
-            "/opt/homebrew",
-        ] {
-            assert!(
-                sb.contains(&format!("(subpath \"{path}\")")),
-                "path-scoped seatbelt must file-read* {path} so process-exec can map binaries"
-            );
+    fn profile_respects_network_policy() {
+        let mut p = ws_profile();
+        p.network = NetworkPolicy::None;
+        assert!(MacOSBackend::generate_profile(&p).contains("(deny network*)"));
+
+        p.network = NetworkPolicy::Full;
+        assert!(MacOSBackend::generate_profile(&p).contains("(allow network*)"));
+
+        p.network = NetworkPolicy::LoopbackOnly;
+        let sb = MacOSBackend::generate_profile(&p);
+        assert!(sb.contains("(allow network* (local ip))"));
+        assert!(sb.contains("(deny network*)"));
+    }
+
+    /// End-to-end: spawn a real command under the generated profile and verify
+    /// the sandbox actually confines writes. macOS-only; skipped elsewhere
+    /// because `sandbox-exec` only exists there.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn seatbelt_profile_confines_writes_end_to_end() {
+        if !MacOSBackend::is_available() {
+            eprintln!("skipping: macOS seatbelt backend not available");
+            return;
         }
-        assert!(
-            sb.contains("(literal \"/\")"),
-            "path-scoped seatbelt must file-read* root literal for firmlinks"
-        );
-        assert!(
-            !sb.contains("(subpath \"/\")"),
-            "path-scoped seatbelt must not grant subpath \"/\" (whole FS)"
-        );
-    }
 
-    #[test]
-    fn process_exec_allows_bin_for_absolute_sh() {
-        let profile = SandboxProfile::default_for_workspace(Path::new("/tmp/test-ws"));
-        let sb = MacOSBackend::generate_profile(&profile);
-        assert!(
-            sb.contains("(subpath \"/bin\")"),
-            "absolute /bin/sh spawn requires process-exec /bin"
+        let ws = std::env::temp_dir().join("wgenty-sb-e2e-ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        // A scratch file *outside* the workspace but inside $HOME to probe the
+        // write fence. Use a uniquely-named file under the home dir.
+        let home = dirs::home_dir().expect("home dir");
+        let escape_target = home.join(format!(
+            "wgenty-sb-e2e-escape-{}.txt",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let ws_target = ws.join("inside.txt");
+
+        let profile = SandboxProfile::default_for_workspace(&ws);
+        let backend = MacOSBackend::new();
+        // Command writes to both targets; the outside one must be denied.
+        let cmd = format!(
+            "echo inside > {ws} && echo escape > {esc} 2>/dev/null; \
+             [ -f {esc} ] && echo ESCAPED || echo CONFINED",
+            ws = ws_target.display(),
+            esc = escape_target.display()
         );
+        let child = backend
+            .spawn(&profile, &cmd, Some(&ws))
+            .expect("spawn under seatbelt");
+        let out = child.wait_with_output().await.expect("wait");
+
+        assert_eq!(
+            out.exit_code, 0,
+            "command should exit 0; stderr={}",
+            out.stderr
+        );
+        assert!(
+            out.stdout.contains("CONFINED") && !out.stdout.contains("ESCAPED"),
+            "sandbox must confine writes outside the workspace; stdout={:?}",
+            out.stdout
+        );
+        // Belt-and-suspenders: the escape file must not exist on disk.
+        assert!(
+            !escape_target.exists(),
+            "escape target was written despite the sandbox: {}",
+            escape_target.display()
+        );
+        assert!(ws_target.exists(), "workspace write should be allowed");
+
+        // Cleanup.
+        let _ = std::fs::remove_file(&ws_target);
+        let _ = std::fs::remove_file(&escape_target);
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }

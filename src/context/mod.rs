@@ -74,6 +74,14 @@ impl MemoryEntry {
     }
 }
 
+/// Result of adding a memory: the stored entry's id and whether it was
+/// merged into an existing entry via dedup.
+#[derive(Debug, Clone)]
+pub struct MemoryAddResult {
+    pub id: String,
+    pub merged: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum MemoryType {
     Session,
@@ -440,7 +448,11 @@ impl MemoryManager {
 
     /// Add a memory to the specified scope. Dedup is performed within the
     /// same scope only. Only project memories are indexed for TF-IDF recall.
-    pub async fn add_memory(&self, entry: MemoryEntry, scope: MemoryOrigin) -> anyhow::Result<()> {
+    pub async fn add_memory(
+        &self,
+        entry: MemoryEntry,
+        scope: MemoryOrigin,
+    ) -> anyhow::Result<MemoryAddResult> {
         // Wait if consolidation is in progress to avoid reading
         // transitional state. Use tokio::time::sleep polling so the
         // tokio runtime is not blocked.
@@ -483,7 +495,10 @@ impl MemoryManager {
                     .await
                     .replace_entry(&merged, existing_idx);
             }
-            return Ok(());
+            return Ok(MemoryAddResult {
+                id: merged.id.clone(),
+                merged: true,
+            });
         }
 
         let idx = mem.len();
@@ -493,7 +508,10 @@ impl MemoryManager {
         if is_project {
             self.index.write().await.add_entry(&entry, idx);
         }
-        Ok(())
+        Ok(MemoryAddResult {
+            id: entry.id.clone(),
+            merged: false,
+        })
     }
 
     pub async fn get_memory(&self, id: &str) -> Option<MemoryEntry> {
@@ -1271,6 +1289,79 @@ mod tests {
         )
         .unwrap();
         assert_eq!(on_disk.id, id);
+    }
+
+    #[tokio::test]
+    async fn add_memory_returns_result_for_new_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
+        let storage = Arc::new(crate::context::Storage::new(memory_dir));
+        let mm = MemoryManager {
+            sessions: Arc::new(MemorySessionManager::new()),
+            history: Arc::new(HistoryManager::new()),
+            project_storage: storage.clone(),
+            global_storage: Arc::new(crate::context::Storage::new(
+                tmp.path().join("global_memory"),
+            )),
+            global_memories: Arc::new(RwLock::new(Vec::new())),
+            consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
+            memories: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(RwLock::new(MemoryIndex::new())),
+            consolidating: Arc::new(AtomicBool::new(false)),
+            write_importance_threshold: 0.6,
+            max_extract_per_compaction: 3,
+        };
+
+        let entry = MemoryEntry::new(MemoryType::Knowledge, "a brand new fact");
+        let expected_id = entry.id.clone();
+        let result = mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
+
+        assert!(!result.merged, "new entry should not be merged");
+        assert_eq!(
+            result.id, expected_id,
+            "returned id should match the new entry's id"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_memory_returns_result_for_merged_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
+        let storage = Arc::new(crate::context::Storage::new(memory_dir));
+        let mm = MemoryManager {
+            sessions: Arc::new(MemorySessionManager::new()),
+            history: Arc::new(HistoryManager::new()),
+            project_storage: storage.clone(),
+            global_storage: Arc::new(crate::context::Storage::new(
+                tmp.path().join("global_memory"),
+            )),
+            global_memories: Arc::new(RwLock::new(Vec::new())),
+            consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
+            memories: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(RwLock::new(MemoryIndex::new())),
+            consolidating: Arc::new(AtomicBool::new(false)),
+            write_importance_threshold: 0.6,
+            max_extract_per_compaction: 3,
+        };
+
+        // First entry.
+        let existing = MemoryEntry::new(MemoryType::Decision, "use JWT for authentication");
+        let existing_id = existing.id.clone();
+        mm.add_memory(existing, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        // Similar entry triggers dedup merge.
+        let similar = MemoryEntry::new(MemoryType::Knowledge, "use JWT");
+        let result = mm.add_memory(similar, MemoryOrigin::Project).await.unwrap();
+
+        assert!(result.merged, "similar entry should be merged");
+        assert_eq!(
+            result.id, existing_id,
+            "returned id should be the existing entry's id, not the new one"
+        );
     }
 
     /// After `consolidate()` drops a stale low-importance entry, the TF-IDF

@@ -35,8 +35,16 @@ pub struct SandboxOutput {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
-    /// True if the process was killed by a sandbox violation or resource limit.
+    /// True if the process was terminated by a signal (no normal exit code).
+    ///
+    /// This is *not* a definitive sandbox-violation verdict: any signal
+    /// (seatbelt SIGKILL, external `kill -9`, OOM, self-crash) sets this.
+    /// Callers should inspect [`Self::signal`] and stderr before attributing
+    /// the kill to the sandbox.
     pub killed_by_sandbox: bool,
+    /// Signal number that terminated the process, if any (Unix only).
+    /// `None` on Windows or when the process exited normally.
+    pub signal: Option<i32>,
 }
 
 /// Handle to a running sandboxed child process.
@@ -79,11 +87,20 @@ impl SandboxedChild {
         // Run cleanup if needed
         Self::perform_cleanup(&cleanup);
 
+        #[cfg(unix)]
+        let signal = {
+            use std::os::unix::process::ExitStatusExt;
+            output.status.signal()
+        };
+        #[cfg(not(unix))]
+        let signal: Option<i32> = None;
+
         Ok(SandboxOutput {
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             exit_code: output.status.code().unwrap_or(-1),
             killed_by_sandbox: output.status.code().is_none(),
+            signal,
         })
     }
 
