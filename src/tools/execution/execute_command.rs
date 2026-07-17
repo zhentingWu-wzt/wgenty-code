@@ -115,13 +115,29 @@ impl ExecuteCommandTool {
             let mut profile = self.default_profile(workdir);
             profile.resources.max_wall_seconds = user_timeout;
 
-            match sb.execute(command, &profile).await {
-                Ok(output) => {
+            // Seatbelt does not translate max_wall_seconds into a profile
+            // rule, so enforce the wall-clock timeout here. The 30s buffer
+            // mirrors the documented "agent adds a 30s buffer" behavior and
+            // keeps the sandbox path consistent with the direct-execution
+            // fallback below.
+            let timeout_secs = user_timeout.saturating_add(30);
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(timeout_secs),
+                sb.execute(command, &profile),
+            )
+            .await
+            {
+                Ok(Ok(output)) => {
                     if output.killed_by_sandbox {
+                        let signal_info = output
+                            .signal
+                            .map(|s| format!(", signal {}", s))
+                            .unwrap_or_default();
                         return Err(ToolError {
                             message: format!(
-                                "command killed by sandbox ({})\nstdout:\n{}\nstderr:\n{}",
+                                "command terminated by sandbox (backend: {}{})\nstdout:\n{}\nstderr:\n{}",
                                 sb.status().backend_name,
+                                signal_info,
                                 output.stdout,
                                 output.stderr
                             ),
@@ -143,13 +159,19 @@ impl ExecuteCommandTool {
                         metadata: std::collections::HashMap::new(),
                     });
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::warn!(
                         command = %command,
                         backend = %sb.status().backend_name,
                         error = %e,
                         "Sandbox execution failed; falling back to direct (captured stdio)"
                     );
+                }
+                Err(_) => {
+                    return Err(ToolError {
+                        message: "Command timed out".to_string(),
+                        code: Some("timeout".to_string()),
+                    });
                 }
             }
         }

@@ -1,3 +1,7 @@
+---
+archived-with: 2026-07-17-add-memory-tool
+status: final
+---
 # Implementation Plan: add-memory-tool
 
 ---
