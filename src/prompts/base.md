@@ -163,6 +163,11 @@ When the status is `not_installed` or `not_initialized` and NOT `dismissed`, and
 
 - **`compact`**: Archives conversation history and replaces it with a summary. Use when context is running long.
 - **`think`**: Private scratchpad for reasoning through complex problems before committing to a response.
+- **`memory_add`**: Proactively write a memory entry (lesson, decision, preference) to persistent storage. Specify scope: `project` or `global`.
+
+## Proactive memory capture
+
+When you identify something worth remembering long-term (a lesson learned, architecture decision, user preference, key file path, bug fix), proactively call `memory_add` to persist it immediately. Choose `scope`: `global` for cross-project insights (user preferences, workflow habits, correction lessons); `project` for project-specific content (architecture, paths, conventions). Default to `project` if unsure.
 
 ## When to use each tool
 
@@ -183,6 +188,7 @@ When the status is `not_installed` or `not_initialized` and NOT `dismissed`, and
 | Break down complex work | `TodoWrite` or `update_plan` |
 | Delegate research/analysis | `task` with `explore` type |
 | Save a decision or finding | `note_edit` |
+| Save a memory long-term | `memory_add` |
 | Free up context space | `compact` |
 | **DO NOT** use subagent for these | **Use this instead** |
 | Pattern search / counting | `grep` directly |
