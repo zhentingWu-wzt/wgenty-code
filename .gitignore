@@ -54,6 +54,8 @@ openspec/changes/
 
 # Benchmark output
 benchmark_results/
+.team
+.tmp-target
 
 # Install scripts (self-contained, don't ignore)
 # install.ps1 and install-unix.sh are part of the repo
