@@ -124,6 +124,11 @@
     },
     "codegraph": {
       "dismissed_paths": []
+    },
+    "sandbox": {
+      "enabled": true,
+      "defaults_by_mode": {},
+      "fail_mode_by_mode": {}
     }
   },
   "verbose": false

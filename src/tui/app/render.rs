@@ -180,6 +180,7 @@ impl App {
             output_tokens,
             mode,
             Some(&self.subagent_tree),
+            self.sandbox_bypassed_session,
         );
     }
 

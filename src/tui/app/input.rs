@@ -44,6 +44,7 @@ impl App {
             self.streaming_active = false;
             self.scroll_offset = 0;
             self.user_scrolled = false;
+            self.sandbox_bypassed_session = false;
             self.cancel_current_turn();
             // Reset phase immediately and suppress stale events from the
             // just-aborted turn so the status bar shows "Ready" instead of

@@ -88,6 +88,9 @@ pub struct IntegrationsConfig {
     pub guardian: GuardianSettings,
     #[serde(default)]
     pub codegraph: CodegraphSettings,
+    /// Mode-linked OS sandbox defaults and fail policy.
+    #[serde(default)]
+    pub sandbox: super::SandboxSettings,
 }
 
 /// Per-project CodeGraph guidance state.

@@ -401,6 +401,7 @@ impl App {
             self.streaming_content.clear();
             self.scroll_offset = 0;
             self.user_scrolled = false;
+            self.sandbox_bypassed_session = false;
             return;
         }
         // Handle Enter/Shift+Enter/Ctrl+J BEFORE tui-textarea consumes
@@ -494,12 +495,14 @@ impl App {
     }
 
     /// Fire-and-forget: push the current agent mode to the daemon so subagents
-    /// inherit the root agent's runtime permission mode (Yolo/AcceptEdits/Normal).
+    /// inherit root permission mode and shell tools use the correct sandbox
+    /// EffectiveMode (Plan stays Plan).
     fn sync_permission_mode_to_daemon(&self) {
         let client = self.daemon_client.clone();
         let mode = self.mode.to_root_permission_mode();
+        let effective_mode = self.mode.to_effective_mode();
         tokio::spawn(async move {
-            if let Err(e) = client.set_permission_mode(mode).await {
+            if let Err(e) = client.set_permission_mode(mode, effective_mode).await {
                 tracing::warn!(error = ?e, "failed to sync permission mode to daemon");
             }
         });

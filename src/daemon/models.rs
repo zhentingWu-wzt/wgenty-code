@@ -126,6 +126,9 @@ pub struct ResolveSubagentPermissionRequest {
 #[derive(Debug, Deserialize)]
 pub struct SetPermissionModeRequest {
     pub mode: RootPermissionMode,
+    /// Sandbox effective mode including Plan. When omitted, derived from `mode`.
+    #[serde(default)]
+    pub effective_mode: Option<crate::sandbox::EffectiveMode>,
 }
 
 // ── MCP ──────────────────────────────────────────────────────────────────────

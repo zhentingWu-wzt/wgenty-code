@@ -200,9 +200,15 @@ impl App {
             } => {
                 let diff_data = extract_diff_data(&name, &args, &content);
                 let tool_metadata = extract_tool_metadata(&content);
+                let just_bypassed = tool_metadata
+                    .as_ref()
+                    .and_then(|m| m.get("sandbox_bypassed"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 // Tool completed, clear running state for spinner
                 self.has_running_tool = false;
                 // Replace the placeholder ToolStart message with the result
+                // BEFORE any system notice so `last` still points at the tool row.
                 if let Some(last) = self.committed_messages.last_mut() {
                     if last.role == MessageRole::Tool
                         && last.tool_running
@@ -233,6 +239,24 @@ impl App {
                             tool_metadata,
                         });
                     }
+                }
+                // Sticky session badge when shell ran outside OS sandbox.
+                if just_bypassed && !self.sandbox_bypassed_session {
+                    self.sandbox_bypassed_session = true;
+                    self.committed_messages.push(UIMessage {
+                        role: MessageRole::System,
+                        content: "⚠ Sandbox bypassed — command ran outside OS isolation \
+                                  (Yolo degrade, settings disabled, or backend unavailable). \
+                                  Status bar shows ⚠ SANDBOX BYPASS for this session."
+                            .to_string(),
+                        tool_name: None,
+                        content_collapsed: false,
+                        tool_collapsed: true,
+                        tool_running: false,
+                        tool_args: None,
+                        diff_data: None,
+                        tool_metadata: None,
+                    });
                 }
             }
             AppEvent::Connecting { .. } => {
@@ -549,6 +573,7 @@ impl App {
 
                 // Second pass: convert ChatMessage to UIMessage, filtering system messages
                 self.committed_messages.clear();
+                self.sandbox_bypassed_session = false;
                 for msg in &messages {
                     match msg.role.as_str() {
                         "system" => continue,

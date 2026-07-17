@@ -51,6 +51,56 @@ wgenty-code sandbox status
 
 输出 `backend_name`、`is_hardware_enforced`、`capabilities`。
 
+## 权限模式 ↔ 沙箱矩阵（Profile Matrix）
+
+Shell 工具（`execute_command` / `exec_command` / `run_test`）按 **EffectiveMode**
+解析 `SecurityLevel` + **FailMode**。模式只经 `ToolContext.effective_mode` 传递，
+**不是**进程全局锁。
+
+| EffectiveMode | 默认 SecurityLevel | Network（level 默认） | 默认 FailMode |
+|---------------|-------------------|----------------------|---------------|
+| Plan | High | None | HardFail |
+| Normal | Standard | **Full**（cargo/npm/git 可用；FS 仍 workspace 范围） | HardFail |
+| AcceptEdits | Standard（仅 shell；写文件工具不走 OS 沙箱） | **Full** | HardFail |
+| Yolo | Minimal | Full | DegradeWithMark |
+
+- **HardFail**：沙箱 spawn/基础设施失败 → `ToolError` `sandbox_spawn_failed`，**绝不**裸跑。
+- **DegradeWithMark**：允许直接 spawn，结果 metadata 必含 `sandbox_bypassed=true`；TUI 会话状态栏显示 `⚠ SANDBOX BYPASS`。
+- `run_test.allow_network=true` 只保证 `NetworkPolicy::Full`（Standard 已是 Full 时无变化），**不**降低 SecurityLevel。
+- `Paranoid` 仅能通过 settings 覆盖获得，不在默认矩阵中。
+- **Enforcement fidelity**（metadata `sandbox_enforcement_fidelity`）：`full`（如 macOS seatbelt）/ `partial`（Linux ns、Windows job）/ `none`（NoneBackend 或 bypass）。Level 是 profile 意图，不是跨平台隔离强度保证。
+
+### 设置 `integrations.sandbox`
+
+```json
+{
+  "integrations": {
+    "sandbox": {
+      "enabled": true,
+      "defaults_by_mode": {},
+      "fail_mode_by_mode": {}
+    }
+  }
+}
+```
+
+- `enabled: false`：所有模式强制 DegradeWithMark + bypass 标记（用户明确关闭 OS 沙箱）。
+- `defaults_by_mode`：可选，按 `plan` / `normal` / `accept_edits` / `yolo` 覆盖 level
+  （`minimal` | `standard` | `high` | `paranoid`）。
+- `fail_mode_by_mode`：可选，覆盖 `hard_fail` | `degrade_with_mark`。
+
+**Breaking（相对旧版默认 Minimal + 失败即裸跑）：** Normal/AcceptEdits shell 默认
+**Standard + Full 网络 + HardFail**；Plan 默认 **High + 无网络 + HardFail**。需要更松
+时用 Yolo 或 `defaults_by_mode` / `fail_mode_by_mode` 覆盖。
+
+### CLI
+
+```bash
+wgenty-code sandbox status   # backend、fidelity、settings.enabled、各 mode 解析结果
+wgenty-code sandbox enable   # 持久化 integrations.sandbox.enabled=true
+wgenty-code sandbox disable  # 持久化 enabled=false → 全模式 DegradeWithMark + bypass 标记
+```
+
 ## 路线图
 
 | 优先级 | 项 |

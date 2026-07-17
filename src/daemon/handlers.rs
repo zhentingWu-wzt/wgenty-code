@@ -219,6 +219,7 @@ pub async fn execute_tool(
                 .root_context(session_id)
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let effective_mode = *state.effective_mode.read().unwrap();
             let tool_context = crate::agent::ToolContext {
                 agent: &root_context,
                 invocation_id: crate::agent::ToolInvocationId::new(
@@ -226,6 +227,7 @@ pub async fn execute_tool(
                 ),
                 origin_turn_id: body.turn_id.as_deref(),
                 workdir: None,
+                effective_mode,
             };
             // Execute directly with hooks
             let msg = state
@@ -264,6 +266,7 @@ pub async fn execute_tool(
                     .root_context(session_id)
                     .await
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                let effective_mode = *state.effective_mode.read().unwrap();
                 let tool_context = crate::agent::ToolContext {
                     agent: &root_context,
                     invocation_id: crate::agent::ToolInvocationId::new(
@@ -271,6 +274,7 @@ pub async fn execute_tool(
                     ),
                     origin_turn_id: body.turn_id.as_deref(),
                     workdir: None,
+                    effective_mode,
                 };
                 let msg = state
                     .tool_executor
@@ -389,25 +393,36 @@ pub async fn resolve_subagent_permission(
 }
 
 /// POST /api/v1/permission-mode - update the root agent's runtime permission
-/// mode (Yolo/AcceptEdits/Normal). Subagents snapshot the current value at
-/// spawn time, so this affects all subsequently spawned subagents.
+/// mode (Yolo/AcceptEdits/Normal) and optional sandbox effective mode (Plan).
+/// Subagents snapshot values at spawn time.
 pub async fn set_permission_mode(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<crate::daemon::models::SetPermissionModeRequest>,
 ) -> Json<serde_json::Value> {
     *state.root_mode.write().unwrap() = body.mode;
-    tracing::info!(mode = ?body.mode, "root permission mode updated");
+    let effective = body
+        .effective_mode
+        .unwrap_or_else(|| crate::sandbox::EffectiveMode::from_root_permission_mode(body.mode));
+    *state.effective_mode.write().unwrap() = effective;
+    tracing::info!(
+        mode = ?body.mode,
+        effective_mode = ?effective,
+        "root permission / effective mode updated"
+    );
     Json(serde_json::json!({
         "success": true,
         "mode": body.mode,
+        "effective_mode": effective,
     }))
 }
 
 /// GET /api/v1/permission-mode - get the current root agent permission mode.
 pub async fn get_permission_mode(State(state): State<Arc<DaemonState>>) -> Json<serde_json::Value> {
     let mode = *state.root_mode.read().unwrap();
+    let effective_mode = *state.effective_mode.read().unwrap();
     Json(serde_json::json!({
         "mode": mode,
+        "effective_mode": effective_mode,
     }))
 }
 

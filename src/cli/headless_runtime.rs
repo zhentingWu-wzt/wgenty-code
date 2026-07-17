@@ -125,6 +125,7 @@ impl ToolPort for RegistryToolPort {
             invocation_id: ToolInvocationId::new(inv_id),
             origin_turn_id: req.turn_id.as_deref(),
             workdir: None,
+            effective_mode: crate::sandbox::EffectiveMode::default(),
         };
         match self
             .registry

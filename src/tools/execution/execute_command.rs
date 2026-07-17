@@ -1,12 +1,12 @@
 //! Execute Command Tool — runs shell commands with sandbox isolation.
 
 use crate::agent::ToolContext;
-use crate::sandbox::{
-    shell_command_captured, SandboxConfig, SandboxManager, SandboxProfile, SecurityLevel,
+use crate::sandbox::{shell_command_captured, EffectiveMode, SandboxManager};
+use crate::tools::execution::sandbox_exec::{
+    resolve_for_context, sandbox_infra_tool_error, sandbox_metadata, should_degrade_to_direct,
 };
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
-use std::path::PathBuf;
 
 pub struct ExecuteCommandTool {
     sandbox: Option<std::sync::Arc<SandboxManager>>,
@@ -22,22 +22,6 @@ impl ExecuteCommandTool {
         Self {
             sandbox: Some(sandbox),
         }
-    }
-
-    /// Build a default sandbox profile for the current working directory.
-    fn default_profile(&self, workdir: Option<&std::path::Path>) -> SandboxProfile {
-        let cwd = workdir
-            .map(std::path::PathBuf::from)
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        let mut profile = SandboxConfig::builder(cwd)
-            .security_level(SecurityLevel::Minimal)
-            .build();
-        // Add home directory so tools (cargo, node, etc.) can read configs/caches
-        if let Ok(home) = std::env::var("HOME") {
-            profile.readable_paths.push(PathBuf::from(home));
-        }
-        profile
     }
 }
 
@@ -80,7 +64,8 @@ impl Tool for ExecuteCommandTool {
             code: Some("missing_parameter".to_string()),
         })?;
         let user_timeout = input["timeout"].as_u64().unwrap_or(60);
-        self.run(command, user_timeout, None).await
+        self.run(command, user_timeout, None, EffectiveMode::default())
+            .await
     }
 
     async fn execute_with_context(
@@ -93,68 +78,113 @@ impl Tool for ExecuteCommandTool {
             code: Some("missing_parameter".to_string()),
         })?;
         let user_timeout = input["timeout"].as_u64().unwrap_or(60);
-        self.run(command, user_timeout, context.workdir).await
+        self.run(
+            command,
+            user_timeout,
+            context.workdir,
+            context.effective_mode,
+        )
+        .await
     }
 }
 
 impl ExecuteCommandTool {
-    /// Core execution: sandbox first, direct fallback. `workdir` overrides the
-    /// process cwd (s12 worktree isolation) for both sandbox profile and the
-    /// fallback platform shell command.
+    /// Core execution: resolve mode policy, sandbox first, HardFail vs Degrade.
+    /// `workdir` overrides the process cwd (s12 worktree isolation).
     async fn run(
         &self,
         command: &str,
         user_timeout: u64,
         workdir: Option<&std::path::Path>,
+        mode: EffectiveMode,
     ) -> Result<ToolOutput, ToolError> {
-        // Try sandbox execution first. Only fall back on sandbox infrastructure
-        // failure (spawn/wait error). Sandbox-killed or non-zero exits are real
-        // results — re-running them outside the sandbox would bypass isolation
-        // and (on Windows) risk console corruption.
-        if let Some(ref sb) = self.sandbox {
-            let mut profile = self.default_profile(workdir);
-            profile.resources.max_wall_seconds = user_timeout;
+        let mut policy = resolve_for_context(mode, workdir, None);
+        policy.profile.resources.max_wall_seconds = user_timeout;
 
-            match sb.execute(command, &profile).await {
-                Ok(output) => {
-                    if output.killed_by_sandbox {
-                        return Err(ToolError {
-                            message: format!(
-                                "command killed by sandbox ({})\nstdout:\n{}\nstderr:\n{}",
-                                sb.status().backend_name,
-                                output.stdout,
-                                output.stderr
-                            ),
-                            code: Some("sandbox_killed".to_string()),
+        let backend_name = self
+            .sandbox
+            .as_ref()
+            .map(|sb| sb.status().backend_name.clone())
+            .unwrap_or_else(|| "none".to_string());
+        let hardware_enforced = self
+            .sandbox
+            .as_ref()
+            .map(|sb| sb.status().is_hardware_enforced)
+            .unwrap_or(false);
+
+        // Attempt sandboxed execution when manager present and sandbox enabled.
+        if policy.enabled {
+            if let Some(ref sb) = self.sandbox {
+                match sb.execute(command, &policy.profile).await {
+                    Ok(output) => {
+                        if output.killed_by_sandbox {
+                            return Err(ToolError {
+                                message: format!(
+                                    "command killed by sandbox ({})\nstdout:\n{}\nstderr:\n{}",
+                                    sb.status().backend_name,
+                                    output.stdout,
+                                    output.stderr
+                                ),
+                                code: Some("sandbox_killed".to_string()),
+                            });
+                        }
+                        if output.exit_code != 0 {
+                            return Err(ToolError {
+                                message: format!(
+                                    "exit code: {}\nstdout:\n{}\nstderr:\n{}",
+                                    output.exit_code, output.stdout, output.stderr
+                                ),
+                                code: Some("non_zero_exit".to_string()),
+                            });
+                        }
+                        let metadata = sandbox_metadata(
+                            mode,
+                            policy.level,
+                            &sb.status().backend_name,
+                            false,
+                            sb.status().is_hardware_enforced,
+                            policy.fail_mode,
+                        );
+                        return Ok(ToolOutput {
+                            output_type: "text".to_string(),
+                            content: output.stdout,
+                            metadata,
                         });
                     }
-                    if output.exit_code != 0 {
-                        return Err(ToolError {
-                            message: format!(
-                                "exit code: {}\nstdout:\n{}\nstderr:\n{}",
-                                output.exit_code, output.stdout, output.stderr
-                            ),
-                            code: Some("non_zero_exit".to_string()),
-                        });
+                    Err(e) => {
+                        if !should_degrade_to_direct(policy.fail_mode) {
+                            return Err(sandbox_infra_tool_error(&sb.status().backend_name, e));
+                        }
+                        tracing::warn!(
+                            command = %command,
+                            backend = %sb.status().backend_name,
+                            error = %e,
+                            "Sandbox execution failed; degrading to direct (captured stdio)"
+                        );
                     }
-                    return Ok(ToolOutput {
-                        output_type: "text".to_string(),
-                        content: output.stdout,
-                        metadata: std::collections::HashMap::new(),
-                    });
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        command = %command,
-                        backend = %sb.status().backend_name,
-                        error = %e,
-                        "Sandbox execution failed; falling back to direct (captured stdio)"
-                    );
+            } else {
+                // No manager installed: treat as infrastructure missing.
+                if !should_degrade_to_direct(policy.fail_mode) {
+                    return Err(sandbox_infra_tool_error(
+                        "none",
+                        "sandbox manager not attached",
+                    ));
                 }
             }
         }
 
-        // Direct execution (no sandbox / infrastructure fallback)
+        // Direct execution (settings disabled, DegradeWithMark, or missing manager under degrade).
+        let bypassed = true;
+        let metadata = sandbox_metadata(
+            mode,
+            policy.level,
+            &backend_name,
+            bypassed,
+            hardware_enforced && !bypassed,
+            policy.fail_mode,
+        );
+
         let output = tokio::time::timeout(std::time::Duration::from_secs(user_timeout), {
             let mut cmd = shell_command_captured(command);
             if let Some(dir) = workdir {
@@ -180,7 +210,7 @@ impl ExecuteCommandTool {
                 Ok(ToolOutput {
                     output_type: "text".to_string(),
                     content: stdout,
-                    metadata: std::collections::HashMap::new(),
+                    metadata,
                 })
             }
             Ok(Err(e)) => Err(ToolError {
@@ -192,5 +222,51 @@ impl ExecuteCommandTool {
                 code: Some("timeout".to_string()),
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::{AgentExecutionContext, SessionId, ToolInvocationId};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn normal_without_sandbox_manager_hard_fails() {
+        let tool = ExecuteCommandTool::new();
+        let err = tool
+            .execute(json!({"command": "echo hi"}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code.as_deref(), Some("sandbox_spawn_failed"));
+    }
+
+    #[tokio::test]
+    async fn yolo_without_sandbox_manager_degrades() {
+        let tool = ExecuteCommandTool::new();
+        let root = AgentExecutionContext::root(SessionId::new("test-session"));
+        let ctx = ToolContext {
+            agent: &root,
+            invocation_id: ToolInvocationId::new("inv"),
+            origin_turn_id: None,
+            workdir: None,
+            effective_mode: EffectiveMode::Yolo,
+        };
+        let out = tool
+            .execute_with_context(&ctx, json!({"command": "echo hi"}))
+            .await
+            .expect("yolo should degrade to direct");
+        assert_eq!(
+            out.metadata
+                .get("sandbox_bypassed")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            out.metadata
+                .get("permission_mode")
+                .and_then(|v| v.as_str()),
+            Some("yolo")
+        );
     }
 }
