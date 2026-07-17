@@ -34,7 +34,8 @@ impl MacOSBackend {
         // Cargo (registry cache, bin, git checkouts), rustup (toolchains,
         // std library), and other language runtimes need to be readable
         // and executable for build commands (cargo, npm, node, etc.) to
-        // work inside the sandbox.
+        // work inside the sandbox. Still needed for process-exec even when
+        // full_disk_read grants unrestricted file-read*.
         let home_tool_paths: Vec<String> = dirs::home_dir()
             .map(|home| {
                 [
@@ -46,21 +47,46 @@ impl MacOSBackend {
             })
             .unwrap_or_default();
 
-        sb.push_str(";; Allow reading from approved paths and system libraries\n");
-        sb.push_str("(allow file-read*\n");
-        for path in &profile.readable_paths {
-            sb.push_str(&format!("    (subpath \"{}\")\n", path.display()));
+        // Codex-aligned: workspace-write / read-only use unrestricted
+        // `(allow file-read*)` (Root read). Path-scoped reads only for
+        // Paranoid / explicit full_disk_read=false profiles.
+        if profile.full_disk_read {
+            sb.push_str(";; Codex-style full-disk read (workspace-write / read-only)\n");
+            sb.push_str("(allow file-read*)\n\n");
+        } else {
+            sb.push_str(";; Allow reading from approved paths and system libraries\n");
+            sb.push_str("(allow file-read*\n");
+            for path in &profile.readable_paths {
+                sb.push_str(&format!("    (subpath \"{}\")\n", path.display()));
+            }
+            // Root directory itself only (not children). On modern macOS, dyld/sh
+            // resolve firmlinks via the root vnode; without this, even
+            // `printf hello` is SIGABRT'd (-6) despite broad /bin+/usr reads.
+            sb.push_str("    (literal \"/\")\n");
+            sb.push_str("    (subpath \"/usr/lib\")\n");
+            sb.push_str("    (subpath \"/System/Library\")\n");
+            sb.push_str("    (subpath \"/Library\")\n");
+            sb.push_str("    (subpath \"/private/var/db/dyld\")\n");
+            sb.push_str("    (subpath \"/dev/dtracehelper\")\n");
+            // process-exec does NOT imply file-read on macOS Seatbelt. Without these
+            // paths, even `sh -c true` is killed because the shell binary cannot be
+            // mapped/read before exec.
+            sb.push_str("    (subpath \"/bin\")\n");
+            sb.push_str("    (subpath \"/usr/bin\")\n");
+            sb.push_str("    (subpath \"/usr/sbin\")\n");
+            sb.push_str("    (subpath \"/sbin\")\n");
+            sb.push_str("    (subpath \"/usr/local\")\n");
+            sb.push_str("    (subpath \"/opt/homebrew\")\n");
+            sb.push_str("    (subpath \"/Library/Developer/CommandLineTools\")\n");
+            sb.push_str("    (subpath \"/private/var/folders\")\n");
+            // macOS shell selector used by /bin/sh on some builds.
+            sb.push_str("    (subpath \"/private/var/select\")\n");
+            // Development tool paths: cargo registry, rustup toolchains, etc.
+            for path in &home_tool_paths {
+                sb.push_str(&format!("    (subpath \"{}\")\n", path));
+            }
+            sb.push_str(")\n\n");
         }
-        sb.push_str("    (subpath \"/usr/lib\")\n");
-        sb.push_str("    (subpath \"/System/Library\")\n");
-        sb.push_str("    (subpath \"/Library\")\n");
-        sb.push_str("    (subpath \"/private/var/db/dyld\")\n");
-        sb.push_str("    (subpath \"/dev/dtracehelper\")\n");
-        // Development tool paths: cargo registry, rustup toolchains, etc.
-        for path in &home_tool_paths {
-            sb.push_str(&format!("    (subpath \"{}\")\n", path));
-        }
-        sb.push_str(")\n\n");
 
         sb.push_str(";; Allow writing to approved paths\n");
         sb.push_str("(allow file-write*\n");
@@ -77,6 +103,9 @@ impl MacOSBackend {
         }
         sb.push_str(")\n\n");
 
+        // Codex allows unrestricted process-exec; we keep a practical allowlist
+        // so arbitrary binaries outside common tool locations still need workspace
+        // placement. full_disk_read only affects file-read*, not exec.
         sb.push_str(";; Allow process execution\n");
         sb.push_str("(allow process-exec\n");
         sb.push_str("    (subpath \"/usr/bin\")\n");
@@ -187,10 +216,12 @@ impl SandboxBackend for MacOSBackend {
             }
         })?;
 
+        // Absolute paths only: after env_clear, bare `sh` can ENOENT if PATH is
+        // missing/wrong. Codex also pins sandbox-exec to /usr/bin.
         let mut cmd = tokio::process::Command::new("/usr/bin/sandbox-exec");
         cmd.arg("-f")
             .arg(&profile_path)
-            .arg("sh")
+            .arg("/bin/sh")
             .arg("-c")
             .arg(command);
 
@@ -233,18 +264,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn profile_includes_dev_tool_home_paths() {
+    fn default_workspace_profile_uses_full_disk_read() {
+        let profile = SandboxProfile::default_for_workspace(Path::new("/tmp/test-ws"));
+        assert!(profile.full_disk_read);
+        let sb = MacOSBackend::generate_profile(&profile);
+        // Codex workspace-write: unrestricted file-read*, not path allowlist.
+        assert!(
+            sb.contains("(allow file-read*)\n"),
+            "full_disk_read must emit unrestricted (allow file-read*)"
+        );
+        // Writes stay workspace-scoped.
+        assert!(sb.contains("(subpath \"/tmp/test-ws\")"));
+    }
+
+    #[test]
+    fn profile_includes_dev_tool_home_paths_for_exec() {
         let profile = SandboxProfile::default_for_workspace(Path::new("/tmp/test-ws"));
         let sb = MacOSBackend::generate_profile(&profile);
 
-        // The generated seatbelt profile must allow reading from and executing
-        // binaries in common development tool directories under $HOME.
+        // process-exec still needs home tool paths even with full_disk_read.
         let home = dirs::home_dir().expect("home dir");
         for sub in [".cargo", ".rustup"] {
             let p = home.join(sub).to_string_lossy().into_owned();
             assert!(
                 sb.contains(&p),
-                "seatbelt profile should include {} for dev tools",
+                "seatbelt profile should include {} for process-exec",
                 p
             );
         }
@@ -257,6 +301,38 @@ mod tests {
         assert!(
             sb.contains("/Library/Developer/CommandLineTools"),
             "seatbelt profile should allow exec from Xcode CLT for native linking"
+        );
+    }
+
+    #[test]
+    fn path_scoped_read_includes_system_binaries() {
+        // Paranoid / full_disk_read=false still needs explicit file-read for exec.
+        let mut profile = SandboxProfile::default_for_workspace(Path::new("/tmp/test-ws"));
+        profile.full_disk_read = false;
+        let sb = MacOSBackend::generate_profile(&profile);
+        for path in ["/bin", "/usr/bin", "/usr/sbin", "/sbin", "/usr/local", "/opt/homebrew"] {
+            assert!(
+                sb.contains(&format!("(subpath \"{path}\")")),
+                "path-scoped seatbelt must file-read* {path} so process-exec can map binaries"
+            );
+        }
+        assert!(
+            sb.contains("(literal \"/\")"),
+            "path-scoped seatbelt must file-read* root literal for firmlinks"
+        );
+        assert!(
+            !sb.contains("(subpath \"/\")"),
+            "path-scoped seatbelt must not grant subpath \"/\" (whole FS)"
+        );
+    }
+
+    #[test]
+    fn process_exec_allows_bin_for_absolute_sh() {
+        let profile = SandboxProfile::default_for_workspace(Path::new("/tmp/test-ws"));
+        let sb = MacOSBackend::generate_profile(&profile);
+        assert!(
+            sb.contains("(subpath \"/bin\")"),
+            "absolute /bin/sh spawn requires process-exec /bin"
         );
     }
 }

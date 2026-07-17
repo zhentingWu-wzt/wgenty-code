@@ -926,7 +926,7 @@ impl Cli {
                 }
             }
             super::SandboxCommands::Disable => {
-                let mut settings = Settings::load().unwrap_or_default();
+                let mut settings = Settings::load_from_disk().unwrap_or_default();
                 settings.integrations.sandbox.enabled = false;
                 settings.save()?;
                 println!(
@@ -935,7 +935,7 @@ impl Cli {
                 );
             }
             super::SandboxCommands::Enable => {
-                let mut settings = Settings::load().unwrap_or_default();
+                let mut settings = Settings::load_from_disk().unwrap_or_default();
                 settings.integrations.sandbox.enabled = true;
                 settings.save()?;
                 if status.is_hardware_enforced {

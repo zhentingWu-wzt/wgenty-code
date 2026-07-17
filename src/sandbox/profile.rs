@@ -6,10 +6,18 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct SandboxProfile {
     /// Paths the process may read from.
+    ///
+    /// Ignored for FS enforcement when [`Self::full_disk_read`] is true (Codex
+    /// `workspace-write` / `read-only` style: unrestricted file-read*).
     pub readable_paths: Vec<PathBuf>,
 
     /// Paths the process may write to.
     pub writable_paths: Vec<PathBuf>,
+
+    /// When true, backends grant unrestricted filesystem reads (Codex-aligned
+    /// for Plan/Normal/AcceptEdits). Writes remain limited to
+    /// [`Self::writable_paths`].
+    pub full_disk_read: bool,
 
     /// Network access policy.
     pub network: NetworkPolicy,
@@ -67,12 +75,16 @@ impl Default for ResourceLimits {
 
 impl SandboxProfile {
     /// Create a default profile scoped to a workspace directory.
-    /// The process can read/write within the workspace and /tmp, but has no network access.
+    ///
+    /// Codex-aligned: full-disk **read**, write limited to workspace + /tmp,
+    /// no network.
     pub fn default_for_workspace(root: &Path) -> Self {
         let tmp = std::env::temp_dir();
         Self {
             readable_paths: vec![root.to_path_buf(), tmp.clone()],
             writable_paths: vec![root.to_path_buf(), tmp],
+            // Match Codex workspace-write / read-only: unrestricted reads.
+            full_disk_read: true,
             network: NetworkPolicy::None,
             resources: ResourceLimits::default(),
             env_allowlist: vec![
@@ -96,6 +108,7 @@ impl SandboxProfile {
         Self {
             readable_paths: vec![root.to_path_buf(), home, tmp.clone()],
             writable_paths: vec![root.to_path_buf(), tmp],
+            full_disk_read: true,
             network: NetworkPolicy::Full,
             resources: ResourceLimits {
                 max_memory_bytes: 2 * 1024 * 1024 * 1024, // 2 GB

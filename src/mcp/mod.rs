@@ -169,7 +169,7 @@ impl McpManager {
     }
 
     pub async fn add_server(&self, config: McpConfig) -> anyhow::Result<()> {
-        let mut settings = crate::config::Settings::load()?;
+        let mut settings = crate::config::Settings::load_from_disk()?;
         settings.integrations.mcp_servers.push(config);
         settings.save()?;
         Ok(())
@@ -178,7 +178,7 @@ impl McpManager {
     pub async fn remove_server(&self, name: &str) -> anyhow::Result<()> {
         self.stop_server(name).await?;
 
-        let mut settings = crate::config::Settings::load()?;
+        let mut settings = crate::config::Settings::load_from_disk()?;
         settings.integrations.mcp_servers.retain(|s| s.name != name);
         settings.save()?;
         Ok(())

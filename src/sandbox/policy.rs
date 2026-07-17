@@ -111,7 +111,9 @@ impl SandboxPolicyResolver {
     ) -> ResolvedSandboxPolicy {
         let workspace = workspace.into();
 
-        if !settings.enabled {
+        // Global off OR Yolo (Codex Full Access): never wrap with OS sandbox.
+        // Yolo still auto-approves policy Asks; isolation is intentionally off.
+        if !settings.enabled || mode == EffectiveMode::Yolo {
             let level = Self::default_level(mode);
             let profile = Self::build_profile(level, &workspace, network);
             return ResolvedSandboxPolicy {
@@ -150,14 +152,19 @@ impl SandboxPolicyResolver {
 
     fn default_level(mode: EffectiveMode) -> SecurityLevel {
         match mode {
+            // Plan ≈ Codex read-only / tighter isolation.
             EffectiveMode::Plan => SecurityLevel::High,
+            // Normal + AcceptEdits ≈ Codex workspace-write (approval differs).
             EffectiveMode::Normal | EffectiveMode::AcceptEdits => SecurityLevel::Standard,
+            // Metadata only when disabled: Yolo skips OS sandbox entirely.
             EffectiveMode::Yolo => SecurityLevel::Minimal,
         }
     }
 
     fn default_fail_mode(mode: EffectiveMode) -> FailMode {
         match mode {
+            // Unreachable for resolve() when Yolo short-circuits to disabled,
+            // kept for documentation / any direct callers of this helper.
             EffectiveMode::Yolo => FailMode::DegradeWithMark,
             _ => FailMode::HardFail,
         }
@@ -231,6 +238,21 @@ mod tests {
         assert_eq!(p.fail_mode, FailMode::HardFail);
         // Package managers under Normal: Standard defaults to Full network.
         assert_eq!(p.profile.network, NetworkPolicy::Full);
+        // Codex workspace-write: unrestricted reads, workspace writes.
+        assert!(p.profile.full_disk_read);
+    }
+
+    #[test]
+    fn resolve_plan_has_full_disk_read() {
+        let p = SandboxPolicyResolver::resolve(
+            EffectiveMode::Plan,
+            &SandboxSettings::default(),
+            PathBuf::from("/tmp/ws"),
+        );
+        assert!(
+            p.profile.full_disk_read,
+            "Plan matches Codex read-only: full-disk read"
+        );
     }
 
     #[test]
@@ -245,14 +267,32 @@ mod tests {
     }
 
     #[test]
-    fn resolve_yolo_is_minimal_degrade() {
+    fn resolve_yolo_disables_os_sandbox() {
+        // Codex Full Access: approval never + OS sandbox off (not Minimal seatbelt).
         let p = SandboxPolicyResolver::resolve(
             EffectiveMode::Yolo,
             &SandboxSettings::default(),
             PathBuf::from("/tmp/ws"),
         );
-        assert_eq!(p.level, SecurityLevel::Minimal);
+        assert!(!p.enabled, "Yolo must not wrap commands in OS sandbox");
+        assert_eq!(p.source, PolicySource::Disabled);
         assert_eq!(p.fail_mode, FailMode::DegradeWithMark);
+        assert_eq!(p.level, SecurityLevel::Minimal);
+    }
+
+    #[test]
+    fn resolve_yolo_ignores_settings_level_override() {
+        // Even if settings ask for High under yolo, OS sandbox stays off.
+        let mut s = SandboxSettings::default();
+        s.defaults_by_mode
+            .insert(ModeKey::Yolo, SandboxLevelSetting::High);
+        let p = SandboxPolicyResolver::resolve(
+            EffectiveMode::Yolo,
+            &s,
+            PathBuf::from("/tmp/ws"),
+        );
+        assert!(!p.enabled);
+        assert_eq!(p.source, PolicySource::Disabled);
     }
 
     #[test]

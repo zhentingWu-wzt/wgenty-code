@@ -88,16 +88,17 @@ Output of `SandboxPolicyResolver::resolve(...)`:
 Applies to `execute_command`, `exec_command` (session manager), and analogous shell spawns.  
 `run_test` keeps network toggle but **base level must not be looser than mode default** (see below).
 
-| EffectiveMode | Default SecurityLevel | Network (from level) | Shell FailMode |
-|---------------|----------------------|----------------------|----------------|
-| **Plan** | High | None | HardFail |
-| **Normal** | Standard | **Full** (package managers; FS still workspace-scoped) | HardFail |
-| **AcceptEdits** | Standard (for **shell**) | **Full** | HardFail |
-| **Yolo** | Minimal | Full | DegradeWithMark |
+| EffectiveMode | Default SecurityLevel | Network (from level) | FS read/write | Shell FailMode |
+|---------------|----------------------|----------------------|---------------|----------------|
+| **Plan** | High | None | Full-disk **read** + workspace write | HardFail |
+| **Normal** | Standard | **Full** (package managers) | Full-disk **read** + workspace write (Codex workspace-write) | HardFail |
+| **AcceptEdits** | Standard (for **shell**) | **Full** | same as Normal | HardFail |
+| **Yolo** | Minimal (metadata) | Full | **OS sandbox off** (not Minimal seatbelt) | DegradeWithMark |
 
 > **Implementation note (post-review):** Standard network was raised from `None` →
 > `Full` so Normal/AcceptEdits can run cargo/npm/git remotes without forcing Yolo.
-> Isolation vs Minimal is path + env allowlist + HardFail, not “no net + 60s kill”.
+> Isolation vs Yolo is **write roots + env allowlist + HardFail + OS sandbox on**,
+> not “workspace-only read”. Reads match Codex: unrestricted `(allow file-read*)`.
 
 ### AcceptEdits nuance
 

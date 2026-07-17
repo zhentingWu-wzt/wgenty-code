@@ -99,6 +99,8 @@ impl App {
             } else {
                 "Plan mode disabled"
             };
+            self.sync_permission_mode_to_daemon();
+            self.apply_mode_to_prompt_permissions();
             self.phase = AgentPhase::Idle;
             self.committed_messages.push(UIMessage {
                 role: MessageRole::System,

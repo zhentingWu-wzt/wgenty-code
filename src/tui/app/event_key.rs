@@ -125,6 +125,7 @@ impl App {
         {
             self.mode = self.mode.next();
             self.sync_permission_mode_to_daemon();
+            self.apply_mode_to_prompt_permissions();
             return;
         }
         // Ctrl+P: toggle plan mode (restores previous mode when leaving PlanMode)
@@ -144,6 +145,7 @@ impl App {
                 "Plan mode disabled"
             };
             self.sync_permission_mode_to_daemon();
+            self.apply_mode_to_prompt_permissions();
             self.committed_messages.push(UIMessage {
                 role: MessageRole::System,
                 content: msg.to_string(),
@@ -497,7 +499,7 @@ impl App {
     /// Fire-and-forget: push the current agent mode to the daemon so subagents
     /// inherit root permission mode and shell tools use the correct sandbox
     /// EffectiveMode (Plan stays Plan).
-    fn sync_permission_mode_to_daemon(&self) {
+    pub(super) fn sync_permission_mode_to_daemon(&self) {
         let client = self.daemon_client.clone();
         let mode = self.mode.to_root_permission_mode();
         let effective_mode = self.mode.to_effective_mode();
@@ -506,6 +508,71 @@ impl App {
                 tracing::warn!(error = ?e, "failed to sync permission mode to daemon");
             }
         });
+    }
+
+    /// Keep system-prompt permissions layer in sync with Shift+Tab / Plan toggle.
+    ///
+    /// Always updates `prompt_context` + `assembled_system_messages`. When no
+    /// turn is running, also rewrites the leading `system` prefix of
+    /// `conversation_history` so the next turn sees the new policy. Mid-turn
+    /// history is left alone (in-flight loop already holds the old prefix).
+    pub(super) fn apply_mode_to_prompt_permissions(&mut self) {
+        let sandbox = self.mode.prompt_sandbox_mode().to_string();
+        let approval = self.mode.prompt_approval_policy().to_string();
+        if self.prompt_context.sandbox_mode.as_deref() == Some(sandbox.as_str())
+            && self.prompt_context.approval_policy.as_deref() == Some(approval.as_str())
+        {
+            return;
+        }
+        let mut new_ctx = (*self.prompt_context).clone();
+        new_ctx.sandbox_mode = Some(sandbox);
+        new_ctx.approval_policy = Some(approval);
+        let new_ctx = std::sync::Arc::new(new_ctx);
+        let settings = self
+            .settings_lock
+            .read()
+            .expect("lock poisoned: settings")
+            .clone();
+        let assembled = crate::prompts::assemble_instructions(&settings, &new_ctx);
+        self.prompt_context = new_ctx;
+        self.assembled_system_messages = assembled.system_messages.clone();
+        tracing::info!(
+            mode = ?self.mode,
+            sandbox = self.prompt_context.sandbox_mode.as_deref().unwrap_or("?"),
+            approval = self.prompt_context.approval_policy.as_deref().unwrap_or("?"),
+            "agent mode changed; system prompt permissions re-assembled"
+        );
+
+        // Idle: rewrite leading system prefix so the next turn sees new policy.
+        // Prefer try_lock so a subsequent Submit in the same tick cannot race a
+        // spawned task still waiting on the mutex.
+        if self.current_turn_handle.is_none() {
+            let sys_msgs = assembled.system_messages;
+            match self.conversation_history.try_lock() {
+                Ok(mut h) => {
+                    let rest: Vec<_> = h
+                        .iter()
+                        .skip_while(|m| m.role == "system")
+                        .cloned()
+                        .collect();
+                    *h = sys_msgs;
+                    h.extend(rest);
+                }
+                Err(_) => {
+                    let history = self.conversation_history.clone();
+                    tokio::spawn(async move {
+                        let mut h = history.lock().await;
+                        let rest: Vec<_> = h
+                            .iter()
+                            .skip_while(|m| m.role == "system")
+                            .cloned()
+                            .collect();
+                        *h = sys_msgs;
+                        h.extend(rest);
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -556,6 +623,117 @@ mod tests {
         assert!(
             !app.should_quit,
             "ESC should not quit when idle (fallback removed)"
+        );
+    }
+
+    #[tokio::test]
+    async fn mode_cycle_rebuilds_prompt_permissions() {
+        let mut app = build_app();
+        // Cycle: Normal → Plan → AcceptEdits → Yolo → Normal
+        assert_eq!(app.mode, AgentMode::Normal);
+        assert_eq!(
+            app.prompt_context.sandbox_mode.as_deref(),
+            Some("workspace-write")
+        );
+        assert_eq!(
+            app.prompt_context.approval_policy.as_deref(),
+            Some("on-request")
+        );
+
+        // → Plan: read-only / on-request
+        app.handle_key_event(crossterm::event::KeyEvent::new(
+            KeyCode::BackTab,
+            KeyModifiers::SHIFT,
+        ));
+        assert_eq!(app.mode, AgentMode::PlanMode);
+        assert_eq!(
+            app.prompt_context.sandbox_mode.as_deref(),
+            Some("read-only")
+        );
+        assert_eq!(
+            app.prompt_context.approval_policy.as_deref(),
+            Some("on-request")
+        );
+
+        // → AcceptEdits: workspace-write / on-request
+        app.handle_key_event(crossterm::event::KeyEvent::new(
+            KeyCode::BackTab,
+            KeyModifiers::SHIFT,
+        ));
+        assert_eq!(app.mode, AgentMode::AcceptEdits);
+        assert_eq!(
+            app.prompt_context.sandbox_mode.as_deref(),
+            Some("workspace-write")
+        );
+
+        // → Yolo: disabled + never
+        app.handle_key_event(crossterm::event::KeyEvent::new(
+            KeyCode::BackTab,
+            KeyModifiers::SHIFT,
+        ));
+        assert_eq!(app.mode, AgentMode::Yolo);
+        assert_eq!(app.prompt_context.sandbox_mode.as_deref(), Some("disabled"));
+        assert_eq!(
+            app.prompt_context.approval_policy.as_deref(),
+            Some("never")
+        );
+        let yolo_perm = app
+            .assembled_system_messages
+            .iter()
+            .find_map(|m| {
+                m.content
+                    .as_deref()
+                    .filter(|c| c.contains("<permissions_instructions>"))
+            })
+            .expect("Yolo should inject permissions layer");
+        assert!(yolo_perm.contains("disabled"), "{yolo_perm}");
+        assert!(yolo_perm.contains("never"), "{yolo_perm}");
+
+        // → Normal again
+        app.handle_key_event(crossterm::event::KeyEvent::new(
+            KeyCode::BackTab,
+            KeyModifiers::SHIFT,
+        ));
+        assert_eq!(app.mode, AgentMode::Normal);
+        assert_eq!(
+            app.prompt_context.sandbox_mode.as_deref(),
+            Some("workspace-write")
+        );
+        assert_eq!(
+            app.prompt_context.approval_policy.as_deref(),
+            Some("on-request")
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_toggle_sets_read_only_sandbox_prompt() {
+        let mut app = build_app();
+        app.handle_key_event(crossterm::event::KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL,
+        ));
+        assert_eq!(app.mode, AgentMode::PlanMode);
+        assert_eq!(
+            app.prompt_context.sandbox_mode.as_deref(),
+            Some("read-only")
+        );
+        assert_eq!(
+            app.prompt_context.approval_policy.as_deref(),
+            Some("on-request")
+        );
+        let perm = app
+            .assembled_system_messages
+            .iter()
+            .find_map(|m| {
+                m.content
+                    .as_deref()
+                    .filter(|c| c.contains("<permissions_instructions>"))
+            })
+            .expect("Plan should inject permissions layer");
+        assert!(perm.contains("read-only"), "{perm}");
+        assert!(
+            perm.contains("across the disk"),
+            "Plan read-only copy should describe full-disk read: {perm}"
         );
     }
 }

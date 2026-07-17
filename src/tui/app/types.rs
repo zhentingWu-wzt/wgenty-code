@@ -65,6 +65,30 @@ impl AgentMode {
             AgentMode::Yolo => crate::sandbox::EffectiveMode::Yolo,
         }
     }
+
+    /// Prompt `sandbox_mode` string (permissions layer / Codex-aligned labels).
+    ///
+    /// - Plan → `read-only` (full-disk read; write tools policy-gated; net off)
+    /// - Normal / AcceptEdits → `workspace-write` (full-disk read; workspace write)
+    /// - Yolo → `disabled` (no OS sandbox; Full Access)
+    pub fn prompt_sandbox_mode(&self) -> &'static str {
+        match self {
+            AgentMode::PlanMode => "read-only",
+            AgentMode::Normal | AgentMode::AcceptEdits => "workspace-write",
+            AgentMode::Yolo => "disabled",
+        }
+    }
+
+    /// Prompt `approval_policy` string.
+    ///
+    /// - Yolo → `never` (auto-approve all policy Asks)
+    /// - others → `on-request` (AcceptEdits still auto-approves edit tools in UI)
+    pub fn prompt_approval_policy(&self) -> &'static str {
+        match self {
+            AgentMode::Yolo => "never",
+            AgentMode::Normal | AgentMode::PlanMode | AgentMode::AcceptEdits => "on-request",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -72,6 +96,18 @@ mod agent_mode_effective_tests {
     use super::*;
     use crate::config::agent::RootPermissionMode;
     use crate::sandbox::EffectiveMode;
+
+    #[test]
+    fn accept_edits_auto_approves_by_tool_name_not_path_rule() {
+        // session_rule for writes is typically `path:…`, not the tool name.
+        // AcceptEdits must key off tool_name via RootPermissionMode.
+        let mode = AgentMode::AcceptEdits.to_root_permission_mode();
+        assert!(mode.auto_approves("file_edit"));
+        assert!(mode.auto_approves("file_write"));
+        assert!(mode.auto_approves("apply_patch"));
+        assert!(!mode.auto_approves("path:/tmp/foo"));
+        assert!(!mode.auto_approves("exec_command"));
+    }
 
     #[test]
     fn agent_mode_plan_to_effective_plan() {
@@ -89,6 +125,70 @@ mod agent_mode_effective_tests {
             AgentMode::Yolo.to_root_permission_mode(),
             RootPermissionMode::Yolo
         );
+        assert_eq!(AgentMode::Yolo.prompt_sandbox_mode(), "disabled");
+        assert_eq!(AgentMode::Yolo.prompt_approval_policy(), "never");
+    }
+
+    #[test]
+    fn agent_mode_prompt_permissions_normal_and_plan() {
+        assert_eq!(AgentMode::Normal.prompt_sandbox_mode(), "workspace-write");
+        assert_eq!(AgentMode::Normal.prompt_approval_policy(), "on-request");
+        assert_eq!(AgentMode::PlanMode.prompt_sandbox_mode(), "read-only");
+        assert_eq!(AgentMode::PlanMode.prompt_approval_policy(), "on-request");
+        assert_eq!(
+            AgentMode::AcceptEdits.prompt_sandbox_mode(),
+            "workspace-write"
+        );
+        assert_eq!(
+            AgentMode::AcceptEdits.prompt_approval_policy(),
+            "on-request"
+        );
+    }
+
+    #[test]
+    fn agent_mode_labels_assemble_into_permissions_layer() {
+        // End-to-end: mode → PromptContext → permissions system message content.
+        use crate::config::Settings;
+        use crate::prompts::{assemble_instructions, PromptContext};
+
+        let settings = Settings::default();
+        for mode in [
+            AgentMode::Normal,
+            AgentMode::PlanMode,
+            AgentMode::AcceptEdits,
+            AgentMode::Yolo,
+        ] {
+            let ctx = PromptContext::new()
+                .with_cwd("/tmp")
+                .with_shell("zsh")
+                .with_sandbox(mode.prompt_sandbox_mode())
+                .with_approval(mode.prompt_approval_policy());
+            let assembled = assemble_instructions(&settings, &ctx);
+            let perm = assembled
+                .system_messages
+                .iter()
+                .find_map(|m| {
+                    m.content
+                        .as_deref()
+                        .filter(|c| c.contains("<permissions_instructions>"))
+                })
+                .unwrap_or_else(|| panic!("{mode:?} should inject permissions layer"));
+
+            match mode {
+                AgentMode::PlanMode => {
+                    assert!(perm.contains("read-only"), "{mode:?}: {perm}");
+                    assert!(perm.contains("on-request"), "{mode:?}: {perm}");
+                }
+                AgentMode::Normal | AgentMode::AcceptEdits => {
+                    assert!(perm.contains("workspace-write"), "{mode:?}: {perm}");
+                    assert!(perm.contains("on-request"), "{mode:?}: {perm}");
+                }
+                AgentMode::Yolo => {
+                    assert!(perm.contains("disabled"), "{mode:?}: {perm}");
+                    assert!(perm.contains("never"), "{mode:?}: {perm}");
+                }
+            }
+        }
     }
 }
 
@@ -146,7 +246,10 @@ pub enum AppEvent {
     },
     /// Permission is needed
     PermissionRequired {
+        /// Canonical tool name (`file_edit`, `exec_command`, …) for mode auto-approve.
+        tool_name: String,
         reason: String,
+        /// Session rule key (`path:…`, `command:…`, `tool:…`) for AlwaysAllow storage.
         rule: String,
         responder: PermissionResponder,
     },

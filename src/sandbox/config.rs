@@ -10,13 +10,13 @@ use super::profile::{NetworkPolicy, ResourceLimits, SandboxProfile};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SecurityLevel {
-    /// Yolo / loose: workspace + broad env, full network, 2GB, 300s.
+    /// Yolo / loose metadata: full network, 2GB, 300s. (Yolo disables OS sandbox.)
     Minimal,
-    /// Normal day-to-day: workspace-scoped FS, full network, 2GB, 300s wall.
+    /// Normal day-to-day: full-disk **read**, workspace write, full network, 2GB, 300s.
     Standard,
-    /// Plan / tighter: workspace-scoped FS, no network, 1GB, 120s wall.
+    /// Plan / tighter: full-disk **read**, workspace write, no network, 1GB, 120s.
     High,
-    /// Untrusted plugins: tight limits, no network, no subprocess.
+    /// Untrusted plugins: path-scoped reads (no full-disk read), tight limits, no net/subprocess.
     Paranoid,
 }
 
@@ -129,6 +129,9 @@ impl SandboxConfig {
         SandboxProfile {
             readable_paths: readable,
             writable_paths: writable,
+            // Codex workspace-write / read-only: unrestricted file-read*, write roots only.
+            // Paranoid keeps path-scoped reads for untrusted plugins.
+            full_disk_read: defaults.full_disk_read,
             network: self.network.unwrap_or(defaults.network),
             resources: ResourceLimits {
                 max_memory_bytes: self.memory_limit_mb.unwrap_or(defaults.memory_mb) * 1024 * 1024,
@@ -155,11 +158,11 @@ impl SandboxConfig {
                 processes: 32,
                 file_size_mb: 500,
                 subprocess: true,
+                full_disk_read: true,
                 env_vars: vec!["*".into()],
             },
-            // Standard: day-to-day agent work. FS stays workspace-scoped; network is Full so
-            // cargo/npm/git remotes work without forcing Yolo. Isolation vs Minimal is
-            // path + env allowlist, not "no net + 60s kill".
+            // Standard: Codex workspace-write style. Full-disk read + workspace write;
+            // network Full so cargo/npm/git remotes work without forcing Yolo.
             SecurityLevel::Standard => LevelDefaults {
                 network: NetworkPolicy::Full,
                 memory_mb: 2048,
@@ -168,6 +171,7 @@ impl SandboxConfig {
                 processes: 32,
                 file_size_mb: 500,
                 subprocess: true,
+                full_disk_read: true,
                 env_vars: vec![
                     "PATH".into(),
                     "HOME".into(),
@@ -187,8 +191,9 @@ impl SandboxConfig {
                     "no_proxy".into(),
                 ],
             },
-            // High: Plan / tighter modes. Still long enough for light shell probes;
-            // network stays off so planning cannot reach the open internet by default.
+            // High: Plan / Codex read-only style for network (off). Still full-disk read;
+            // writes stay workspace-scoped (shell may still write workspace under Plan —
+            // permission layer blocks file tools separately).
             SecurityLevel::High => LevelDefaults {
                 network: NetworkPolicy::None,
                 memory_mb: 1024,
@@ -197,6 +202,7 @@ impl SandboxConfig {
                 processes: 16,
                 file_size_mb: 100,
                 subprocess: true,
+                full_disk_read: true,
                 env_vars: vec![
                     "PATH".into(),
                     "HOME".into(),
@@ -215,6 +221,7 @@ impl SandboxConfig {
                 processes: 0,
                 file_size_mb: 10,
                 subprocess: false,
+                full_disk_read: false,
                 env_vars: vec!["PATH".into()],
             },
         }
@@ -229,6 +236,7 @@ struct LevelDefaults {
     processes: u32,
     file_size_mb: u64,
     subprocess: bool,
+    full_disk_read: bool,
     env_vars: Vec<String>,
 }
 
@@ -261,8 +269,9 @@ mod tests {
         let profile = SandboxConfig::builder("/tmp/ws")
             .security_level(SecurityLevel::Standard)
             .build();
-        // Full network: package managers under Normal; FS still workspace-scoped.
+        // Full network + full-disk read (Codex workspace-write); writes workspace-scoped.
         assert_eq!(profile.network, NetworkPolicy::Full);
+        assert!(profile.full_disk_read);
         assert_eq!(profile.resources.max_memory_bytes, 2048 * 1024 * 1024);
         assert_eq!(profile.resources.max_wall_seconds, 300);
         assert_eq!(profile.resources.max_cpu_seconds, 120);
@@ -280,6 +289,10 @@ mod tests {
             .security_level(SecurityLevel::High)
             .build();
         assert_eq!(profile.network, NetworkPolicy::None);
+        assert!(
+            profile.full_disk_read,
+            "Plan/High matches Codex read-only: unrestricted reads"
+        );
         assert_eq!(profile.resources.max_memory_bytes, 1024 * 1024 * 1024);
         assert_eq!(profile.resources.max_wall_seconds, 120);
         assert_eq!(profile.resources.max_cpu_seconds, 60);
@@ -296,6 +309,10 @@ mod tests {
             .security_level(SecurityLevel::Paranoid)
             .build();
         assert_eq!(profile.network, NetworkPolicy::None);
+        assert!(
+            !profile.full_disk_read,
+            "Paranoid keeps path-scoped reads for untrusted plugins"
+        );
         assert_eq!(profile.resources.max_memory_bytes, 128 * 1024 * 1024);
         assert_eq!(profile.resources.max_wall_seconds, 10);
         assert_eq!(profile.resources.max_cpu_seconds, 5);

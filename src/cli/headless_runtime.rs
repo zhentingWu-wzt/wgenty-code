@@ -200,7 +200,11 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
     let memory_manager = Arc::new(MemoryManager::new(crate::utils::current_project_root()));
     let memories_loaded = memory_manager.load().await.is_ok();
 
+    // Headless defaults to Normal (Codex workspace-write + on-request), not YOLO.
+    // Labels match AgentMode::Normal.prompt_sandbox_mode / prompt_approval_policy.
     let mut prompt_ctx = PromptContext::default()
+        .with_sandbox("workspace-write")
+        .with_approval("on-request")
         .with_codegraph_state(crate::mcp::codegraph::probe_install_state(&settings));
     if memories_loaded {
         let global_lines =

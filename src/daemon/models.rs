@@ -83,6 +83,9 @@ pub struct ExecuteToolResponse {
 
 #[derive(Debug, Serialize)]
 pub struct PermissionRequiredInfo {
+    /// Canonical tool name used for AcceptEdits / mode auto-approve matching.
+    /// Distinct from `session_rule`, which may be a path/command-scoped key.
+    pub tool_name: String,
     pub reason: String,
     pub session_rule: String,
 }

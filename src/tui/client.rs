@@ -690,6 +690,9 @@ pub struct ExecuteToolResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct PermissionRequiredInfo {
+    /// Canonical tool name for AcceptEdits matching (not the session_rule).
+    #[serde(default)]
+    pub tool_name: String,
     pub reason: String,
     pub session_rule: String,
 }
