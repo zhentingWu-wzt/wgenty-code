@@ -79,7 +79,8 @@ impl Tool for DismissCodegraphGuidanceTool {
                 code: Some("no_cwd".to_string()),
             })?;
 
-        let mut settings = crate::config::Settings::load().map_err(|e| ToolError {
+        // Disk form so runtime-resolved absolute working_dir is not persisted.
+        let mut settings = crate::config::Settings::load_from_disk().map_err(|e| ToolError {
             message: format!("failed to load settings: {e}"),
             code: Some("settings_load".to_string()),
         })?;

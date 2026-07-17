@@ -3,7 +3,9 @@
 # ==========================================
 
 # 阶段 1: 构建阶段
-FROM rust:1.97-bookworm AS builder
+# Pin to the rolling stable bookworm image. Specific minors like 1.97 may not
+# exist on Docker Hub yet (or ever); `1-bookworm` tracks current stable Rust.
+FROM rust:1-bookworm AS builder
 
 WORKDIR /build
 

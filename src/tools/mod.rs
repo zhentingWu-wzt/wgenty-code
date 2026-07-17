@@ -416,6 +416,7 @@ mod external_tool_tests {
             invocation_id,
             origin_turn_id: None,
             workdir: None,
+            effective_mode: crate::sandbox::EffectiveMode::default(),
         };
 
         // Input carries forged identity fields; they must be ignored.
@@ -447,6 +448,7 @@ mod external_tool_tests {
             invocation_id: crate::agent::ToolInvocationId::new("inv-2"),
             origin_turn_id: None,
             workdir: None,
+            effective_mode: crate::sandbox::EffectiveMode::default(),
         };
 
         let output = registry

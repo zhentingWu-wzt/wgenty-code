@@ -452,17 +452,22 @@ impl DaemonClient {
         Ok(v.get("resolved").and_then(|x| x.as_bool()).unwrap_or(false))
     }
 
-    /// POST /api/v1/permission-mode - update root agent runtime permission mode.
+    /// POST /api/v1/permission-mode - update root agent runtime permission mode
+    /// and sandbox effective mode (Plan included).
     pub async fn set_permission_mode(
         &self,
         mode: crate::config::agent::RootPermissionMode,
+        effective_mode: crate::sandbox::EffectiveMode,
     ) -> anyhow::Result<()> {
         let url = format!("{}/api/v1/permission-mode", self.base_url);
         let resp = self
             .http_tools()
             .post(&url)
             .header("Content-Type", "application/json")
-            .json(&serde_json::json!({ "mode": mode }))
+            .json(&serde_json::json!({
+                "mode": mode,
+                "effective_mode": effective_mode,
+            }))
             .send()
             .await?;
         if !resp.status().is_success() {
@@ -685,6 +690,9 @@ pub struct ExecuteToolResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct PermissionRequiredInfo {
+    /// Canonical tool name for AcceptEdits matching (not the session_rule).
+    #[serde(default)]
+    pub tool_name: String,
     pub reason: String,
     pub session_rule: String,
 }

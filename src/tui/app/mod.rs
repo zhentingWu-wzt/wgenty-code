@@ -188,6 +188,9 @@ pub struct App {
     pub(crate) startup_memories: Vec<String>,
     /// CodeGraph availability (sync probe result), refreshed from settings.
     pub codegraph_status: crate::mcp::codegraph::CodegraphInstallState,
+    /// Sticky session flag: shell ran outside OS sandbox (degrade / disabled).
+    /// Cleared on `/clear` / new session reset paths that rebuild App state.
+    pub sandbox_bypassed_session: bool,
     /// AutoDream service for time-gated memory consolidation.
     pub auto_dream_service: Option<Arc<crate::services::AutoDreamService>>,
     /// Command router for slash command dispatch (replaces Comet-specific routing).
@@ -209,6 +212,16 @@ impl App {
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         // Build layered instructions from settings + context
+        let settings = {
+            let guard = settings_lock.read().expect("lock poisoned: settings");
+            guard.clone()
+        };
+        // Initial mode mirrors settings.agent.plan_mode (same as Self fields below).
+        let initial_mode = if settings.agent.plan_mode {
+            AgentMode::PlanMode
+        } else {
+            AgentMode::Normal
+        };
         let prompt_ctx = PromptContext::new()
             .with_cwd(
                 std::env::current_dir()
@@ -217,12 +230,8 @@ impl App {
                     .to_string(),
             )
             .with_shell(std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string()))
-            .with_sandbox("workspace-write")
-            .with_approval("never");
-        let settings = {
-            let guard = settings_lock.read().expect("lock poisoned: settings");
-            guard.clone()
-        };
+            .with_sandbox(initial_mode.prompt_sandbox_mode())
+            .with_approval(initial_mode.prompt_approval_policy());
         let prompt_ctx = prompt_ctx.with_collaboration(
             settings
                 .prompt
@@ -532,6 +541,7 @@ impl App {
             memory_manager: mm,
             startup_memories: Vec::new(),
             codegraph_status,
+            sandbox_bypassed_session: false,
             auto_dream_service: Some(Arc::new(auto_dream)),
             command_router: Some(command_router),
             interaction_service,

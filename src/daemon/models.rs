@@ -83,6 +83,9 @@ pub struct ExecuteToolResponse {
 
 #[derive(Debug, Serialize)]
 pub struct PermissionRequiredInfo {
+    /// Canonical tool name used for AcceptEdits / mode auto-approve matching.
+    /// Distinct from `session_rule`, which may be a path/command-scoped key.
+    pub tool_name: String,
     pub reason: String,
     pub session_rule: String,
 }
@@ -126,6 +129,9 @@ pub struct ResolveSubagentPermissionRequest {
 #[derive(Debug, Deserialize)]
 pub struct SetPermissionModeRequest {
     pub mode: RootPermissionMode,
+    /// Sandbox effective mode including Plan. When omitted, derived from `mode`.
+    #[serde(default)]
+    pub effective_mode: Option<crate::sandbox::EffectiveMode>,
 }
 
 // ── MCP ──────────────────────────────────────────────────────────────────────

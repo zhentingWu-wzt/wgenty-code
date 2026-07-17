@@ -40,8 +40,11 @@
   依赖 + syscall allowlist，列为后续（见路线图）。
 
 ### macOS（`seatbelt`）
-- 运行时生成 `.sb` profile，按 `readable_paths`/`writable_paths`/`NetworkPolicy`
+- 运行时生成 `.sb` profile，按 `full_disk_read` / `writable_paths` / `NetworkPolicy`
   生成 allow/deny 规则
+- **Codex 对齐读策略**：`full_disk_read=true`（Plan/Normal/AcceptEdits 默认）时发
+  出无路径限制的 `(allow file-read*)`；写仍限 `writable_paths`（workspace + tmp）
+- `full_disk_read=false`（Paranoid）时回退到 `readable_paths` + 系统路径白名单
 
 ## 如何查看当前后端
 
@@ -50,6 +53,56 @@ wgenty-code sandbox status
 ```
 
 输出 `backend_name`、`is_hardware_enforced`、`capabilities`。
+
+## 权限模式 ↔ 沙箱矩阵（Profile Matrix）
+
+Shell 工具（`execute_command` / `exec_command` / `run_test`）按 **EffectiveMode**
+解析 `SecurityLevel` + **FailMode**。模式只经 `ToolContext.effective_mode` 传递，
+**不是**进程全局锁。
+
+| EffectiveMode | 默认 SecurityLevel | Network（level 默认） | FS 读/写 | 默认 FailMode |
+|---------------|-------------------|----------------------|----------|---------------|
+| Plan | High | None | **全盘读** + workspace 写（Codex read-only 读策略） | HardFail |
+| Normal | Standard | **Full**（cargo/npm/git） | **全盘读** + workspace 写（Codex workspace-write） | HardFail |
+| AcceptEdits | Standard（仅 shell；写文件工具不走 OS 沙箱） | **Full** | 同上 | HardFail |
+| Yolo | Minimal（metadata） | Full | **OS 沙箱关闭**（非 Minimal seatbelt） | DegradeWithMark |
+
+- **HardFail**：沙箱 spawn/基础设施失败 → `ToolError` `sandbox_spawn_failed`，**绝不**裸跑。
+- **DegradeWithMark**：允许直接 spawn，结果 metadata 必含 `sandbox_bypassed=true`；TUI 会话状态栏显示 `⚠ SANDBOX BYPASS`。
+- `run_test.allow_network=true` 只保证 `NetworkPolicy::Full`（Standard 已是 Full 时无变化），**不**降低 SecurityLevel。
+- `Paranoid` 仅能通过 settings 覆盖获得，不在默认矩阵中。
+- **Enforcement fidelity**（metadata `sandbox_enforcement_fidelity`）：`full`（如 macOS seatbelt）/ `partial`（Linux ns、Windows job）/ `none`（NoneBackend 或 bypass）。Level 是 profile 意图，不是跨平台隔离强度保证。
+
+### 设置 `integrations.sandbox`
+
+```json
+{
+  "integrations": {
+    "sandbox": {
+      "enabled": true,
+      "defaults_by_mode": {},
+      "fail_mode_by_mode": {}
+    }
+  }
+}
+```
+
+- `enabled: false`：所有模式强制 DegradeWithMark + bypass 标记（用户明确关闭 OS 沙箱）。
+- `defaults_by_mode`：可选，按 `plan` / `normal` / `accept_edits` / `yolo` 覆盖 level
+  （`minimal` | `standard` | `high` | `paranoid`）。
+- `fail_mode_by_mode`：可选，覆盖 `hard_fail` | `degrade_with_mark`。
+
+**Breaking（相对旧版默认 Minimal + 失败即裸跑）：** Normal/AcceptEdits shell 默认
+**Standard + Full 网络 + HardFail**；Plan 默认 **High + 无网络 + HardFail**。需要更松
+时用 Yolo 或 `defaults_by_mode` / `fail_mode_by_mode` 覆盖。
+
+### CLI
+
+```bash
+wgenty-code sandbox status   # backend、fidelity、settings.enabled、各 mode 解析结果
+wgenty-code sandbox enable   # 持久化 integrations.sandbox.enabled=true
+wgenty-code sandbox disable  # 持久化 enabled=false → 全模式 DegradeWithMark + bypass 标记
+```
 
 ## 路线图
 

@@ -885,23 +885,69 @@ impl Cli {
     }
 
     async fn run_sandbox(&self, action: &super::SandboxCommands) -> anyhow::Result<()> {
-        let sandbox = crate::sandbox::SandboxManager::new();
+        use crate::config::Settings;
+        use crate::sandbox::{EffectiveMode, SandboxManager, SandboxPolicyResolver};
+        use crate::tools::execution::sandbox_exec::enforcement_fidelity;
+
+        let sandbox = SandboxManager::new();
         let status = sandbox.status();
         match action {
             super::SandboxCommands::Status => {
+                let settings = Settings::load().unwrap_or_default();
+                let sb = &settings.integrations.sandbox;
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 println!("Sandbox Status:");
                 println!("  Backend: {}", status.backend_name);
                 println!("  Hardware-enforced: {}", status.is_hardware_enforced);
+                println!(
+                    "  Enforcement fidelity: {}",
+                    enforcement_fidelity(
+                        &status.backend_name,
+                        status.is_hardware_enforced,
+                        !sb.enabled
+                    )
+                );
                 println!("  Capabilities: {:?}", status.capabilities);
+                println!("  Settings enabled: {}", sb.enabled);
+                println!("  Mode → level / fail_mode (resolved):");
+                for mode in [
+                    EffectiveMode::Plan,
+                    EffectiveMode::Normal,
+                    EffectiveMode::AcceptEdits,
+                    EffectiveMode::Yolo,
+                ] {
+                    let p = SandboxPolicyResolver::resolve(mode, sb, &cwd);
+                    println!(
+                        "    {:12} → {:8} / {}",
+                        mode.as_str(),
+                        p.level.as_str(),
+                        p.fail_mode.as_str()
+                    );
+                }
             }
             super::SandboxCommands::Disable => {
-                println!("Sandbox disabled for this session.");
+                let mut settings = Settings::load_from_disk().unwrap_or_default();
+                settings.integrations.sandbox.enabled = false;
+                settings.save()?;
+                println!(
+                    "Sandbox disabled in settings (integrations.sandbox.enabled=false).\n\
+                     All modes force DegradeWithMark + sandbox_bypassed marks until re-enabled."
+                );
             }
             super::SandboxCommands::Enable => {
+                let mut settings = Settings::load_from_disk().unwrap_or_default();
+                settings.integrations.sandbox.enabled = true;
+                settings.save()?;
                 if status.is_hardware_enforced {
-                    println!("Sandbox enabled ({}).", status.backend_name);
+                    println!(
+                        "Sandbox enabled in settings (backend: {}).",
+                        status.backend_name
+                    );
                 } else {
-                    println!("Sandbox enabled (policy-only, {}).", status.backend_name);
+                    println!(
+                        "Sandbox enabled in settings (policy-only backend: {}).",
+                        status.backend_name
+                    );
                 }
             }
         }

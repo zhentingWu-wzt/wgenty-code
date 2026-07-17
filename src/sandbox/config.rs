@@ -2,18 +2,21 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use super::profile::{NetworkPolicy, ResourceLimits, SandboxProfile};
 
 /// Predefined security levels for common use cases.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SecurityLevel {
-    /// Interactive REPL: workspace + home r/w, full network, 2GB, 300s.
+    /// Yolo / loose metadata: full network, 2GB, 300s. (Yolo disables OS sandbox.)
     Minimal,
-    /// Build tasks: workspace r/w, /tmp r/w, no network, 1GB, 60s.
+    /// Normal day-to-day: full-disk **read**, workspace write, full network, 2GB, 300s.
     Standard,
-    /// Code analysis: workspace r/o, /tmp r/w, no network, 512MB, 30s.
+    /// Plan / tighter: full-disk **read**, workspace write, no network, 1GB, 120s.
     High,
-    /// Untrusted plugins: /tmp only r/w, no network, 128MB, 10s, no subprocess.
+    /// Untrusted plugins: path-scoped reads (no full-disk read), tight limits, no net/subprocess.
     Paranoid,
 }
 
@@ -126,6 +129,9 @@ impl SandboxConfig {
         SandboxProfile {
             readable_paths: readable,
             writable_paths: writable,
+            // Codex workspace-write / read-only: unrestricted file-read*, write roots only.
+            // Paranoid keeps path-scoped reads for untrusted plugins.
+            full_disk_read: defaults.full_disk_read,
             network: self.network.unwrap_or(defaults.network),
             resources: ResourceLimits {
                 max_memory_bytes: self.memory_limit_mb.unwrap_or(defaults.memory_mb) * 1024 * 1024,
@@ -152,16 +158,51 @@ impl SandboxConfig {
                 processes: 32,
                 file_size_mb: 500,
                 subprocess: true,
+                full_disk_read: true,
                 env_vars: vec!["*".into()],
             },
+            // Standard: Codex workspace-write style. Full-disk read + workspace write;
+            // network Full so cargo/npm/git remotes work without forcing Yolo.
             SecurityLevel::Standard => LevelDefaults {
+                network: NetworkPolicy::Full,
+                memory_mb: 2048,
+                wall_secs: 300,
+                cpu_secs: 120,
+                processes: 32,
+                file_size_mb: 500,
+                subprocess: true,
+                full_disk_read: true,
+                env_vars: vec![
+                    "PATH".into(),
+                    "HOME".into(),
+                    "USER".into(),
+                    "LANG".into(),
+                    "TMPDIR".into(),
+                    "TEMP".into(),
+                    "TMP".into(),
+                    "CARGO_HOME".into(),
+                    "RUSTUP_HOME".into(),
+                    "NPM_CONFIG_CACHE".into(),
+                    "HTTP_PROXY".into(),
+                    "HTTPS_PROXY".into(),
+                    "NO_PROXY".into(),
+                    "http_proxy".into(),
+                    "https_proxy".into(),
+                    "no_proxy".into(),
+                ],
+            },
+            // High: Plan / Codex read-only style for network (off). Still full-disk read;
+            // writes stay workspace-scoped (shell may still write workspace under Plan —
+            // permission layer blocks file tools separately).
+            SecurityLevel::High => LevelDefaults {
                 network: NetworkPolicy::None,
                 memory_mb: 1024,
-                wall_secs: 60,
-                cpu_secs: 30,
+                wall_secs: 120,
+                cpu_secs: 60,
                 processes: 16,
                 file_size_mb: 100,
                 subprocess: true,
+                full_disk_read: true,
                 env_vars: vec![
                     "PATH".into(),
                     "HOME".into(),
@@ -172,16 +213,6 @@ impl SandboxConfig {
                     "TMP".into(),
                 ],
             },
-            SecurityLevel::High => LevelDefaults {
-                network: NetworkPolicy::None,
-                memory_mb: 512,
-                wall_secs: 30,
-                cpu_secs: 15,
-                processes: 8,
-                file_size_mb: 50,
-                subprocess: true,
-                env_vars: vec!["PATH".into(), "HOME".into(), "LANG".into(), "TMPDIR".into()],
-            },
             SecurityLevel::Paranoid => LevelDefaults {
                 network: NetworkPolicy::None,
                 memory_mb: 128,
@@ -190,6 +221,7 @@ impl SandboxConfig {
                 processes: 0,
                 file_size_mb: 10,
                 subprocess: false,
+                full_disk_read: false,
                 env_vars: vec!["PATH".into()],
             },
         }
@@ -204,6 +236,7 @@ struct LevelDefaults {
     processes: u32,
     file_size_mb: u64,
     subprocess: bool,
+    full_disk_read: bool,
     env_vars: Vec<String>,
 }
 
@@ -236,15 +269,18 @@ mod tests {
         let profile = SandboxConfig::builder("/tmp/ws")
             .security_level(SecurityLevel::Standard)
             .build();
-        assert_eq!(profile.network, NetworkPolicy::None);
-        assert_eq!(profile.resources.max_memory_bytes, 1024 * 1024 * 1024);
-        assert_eq!(profile.resources.max_wall_seconds, 60);
-        assert_eq!(profile.resources.max_cpu_seconds, 30);
-        assert_eq!(profile.resources.max_processes, 16);
-        assert_eq!(profile.resources.max_file_size_bytes, 100 * 1024 * 1024);
+        // Full network + full-disk read (Codex workspace-write); writes workspace-scoped.
+        assert_eq!(profile.network, NetworkPolicy::Full);
+        assert!(profile.full_disk_read);
+        assert_eq!(profile.resources.max_memory_bytes, 2048 * 1024 * 1024);
+        assert_eq!(profile.resources.max_wall_seconds, 300);
+        assert_eq!(profile.resources.max_cpu_seconds, 120);
+        assert_eq!(profile.resources.max_processes, 32);
+        assert_eq!(profile.resources.max_file_size_bytes, 500 * 1024 * 1024);
         assert!(profile.allow_subprocess);
         assert!(profile.env_allowlist.contains(&"PATH".to_string()));
         assert!(profile.env_allowlist.contains(&"HOME".to_string()));
+        assert!(profile.env_allowlist.contains(&"CARGO_HOME".to_string()));
     }
 
     #[test]
@@ -253,15 +289,18 @@ mod tests {
             .security_level(SecurityLevel::High)
             .build();
         assert_eq!(profile.network, NetworkPolicy::None);
-        assert_eq!(profile.resources.max_memory_bytes, 512 * 1024 * 1024);
-        assert_eq!(profile.resources.max_wall_seconds, 30);
-        assert_eq!(profile.resources.max_cpu_seconds, 15);
-        assert_eq!(profile.resources.max_processes, 8);
-        assert_eq!(profile.resources.max_file_size_bytes, 50 * 1024 * 1024);
-        assert_eq!(
-            profile.env_allowlist,
-            vec!["PATH", "HOME", "LANG", "TMPDIR"]
+        assert!(
+            profile.full_disk_read,
+            "Plan/High matches Codex read-only: unrestricted reads"
         );
+        assert_eq!(profile.resources.max_memory_bytes, 1024 * 1024 * 1024);
+        assert_eq!(profile.resources.max_wall_seconds, 120);
+        assert_eq!(profile.resources.max_cpu_seconds, 60);
+        assert_eq!(profile.resources.max_processes, 16);
+        assert_eq!(profile.resources.max_file_size_bytes, 100 * 1024 * 1024);
+        assert!(profile.env_allowlist.contains(&"PATH".to_string()));
+        assert!(profile.env_allowlist.contains(&"HOME".to_string()));
+        assert!(profile.env_allowlist.contains(&"USER".to_string()));
     }
 
     #[test]
@@ -270,6 +309,10 @@ mod tests {
             .security_level(SecurityLevel::Paranoid)
             .build();
         assert_eq!(profile.network, NetworkPolicy::None);
+        assert!(
+            !profile.full_disk_read,
+            "Paranoid keeps path-scoped reads for untrusted plugins"
+        );
         assert_eq!(profile.resources.max_memory_bytes, 128 * 1024 * 1024);
         assert_eq!(profile.resources.max_wall_seconds, 10);
         assert_eq!(profile.resources.max_cpu_seconds, 5);

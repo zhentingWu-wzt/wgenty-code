@@ -12,6 +12,7 @@ pub mod backends;
 pub mod config;
 pub mod error;
 pub mod platform;
+pub mod policy;
 pub mod profile;
 
 use std::path::Path;
@@ -23,7 +24,10 @@ pub use backends::{
 pub use config::{SandboxConfig, SecurityLevel};
 pub use error::SandboxError;
 pub use platform::Platform;
-pub use profile::SandboxProfile;
+pub use policy::{
+    EffectiveMode, FailMode, PolicySource, ResolvedSandboxPolicy, SandboxPolicyResolver,
+};
+pub use profile::{NetworkPolicy, SandboxProfile};
 
 /// Result of a sandboxed command execution.
 #[derive(Debug, Clone)]

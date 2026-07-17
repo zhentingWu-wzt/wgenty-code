@@ -15,6 +15,7 @@ const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 /// Render a status line:
 ///   ⠋ Subagent 3 active · 5/8 done (12s · ↓ 4.5k tokens · NORMAL)
 ///   ● Ready (↓ 1.2k tokens)
+/// When `sandbox_bypassed`, appends a visible ⚠ SANDBOX BYPASS badge.
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     f: &mut Frame,
@@ -26,6 +27,7 @@ pub fn render(
     output_tokens: usize,
     mode_label: &str,
     subagent_tree: Option<&SubagentTree>,
+    sandbox_bypassed: bool,
 ) {
     if area.width < 5 {
         return;
@@ -98,7 +100,18 @@ pub fn render(
             .add_modifier(Modifier::BOLD),
     );
 
-    let line = Line::from(vec![Span::raw("  "), status]);
+    let mut spans = vec![Span::raw("  "), status];
+    if sandbox_bypassed {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            "⚠ SANDBOX BYPASS",
+            Style::default()
+                .fg(Color::Rgb(255, 180, 50))
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    let line = Line::from(spans);
 
     f.render_widget(Paragraph::new(line), area);
 
