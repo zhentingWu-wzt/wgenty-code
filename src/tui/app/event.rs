@@ -314,7 +314,8 @@ impl App {
                 }
             }
             AppEvent::ConfigChanged(new_settings) => {
-                // Rebuild system messages from new settings
+                // Rebuild system messages from new settings; keep runtime mode's
+                // sandbox/approval (Shift+Tab), not hard-coded workspace-write/never.
                 let prompt_ctx = PromptContext::new()
                     .with_cwd(
                         std::env::current_dir()
@@ -323,8 +324,8 @@ impl App {
                             .to_string(),
                     )
                     .with_shell(std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string()))
-                    .with_sandbox("workspace-write")
-                    .with_approval("never")
+                    .with_sandbox(self.mode.prompt_sandbox_mode())
+                    .with_approval(self.mode.prompt_approval_policy())
                     .with_collaboration(
                         new_settings
                             .prompt
@@ -486,11 +487,16 @@ impl App {
                 self.turn_started_at = None;
             }
             AppEvent::PermissionRequired {
+                tool_name,
                 reason,
                 rule,
                 responder,
             } => {
-                tracing::info!("🔐 App: showing permission panel for '{}'", rule);
+                tracing::info!(
+                    "🔐 App: showing permission panel for tool '{}' (rule: '{}')",
+                    tool_name,
+                    rule
+                );
                 // Yolo mode: auto-approve all permissions
                 if self.mode == AgentMode::Yolo {
                     let _ = responder
@@ -499,9 +505,13 @@ impl App {
                         .send(PermissionResponse::AllowOnce);
                     return;
                 }
-                // AcceptEdits mode: auto-approve file-edit permissions
+                // AcceptEdits: match on tool_name, not session_rule.
+                // session_rule is often `path:…` / `command:…` and never equals a tool name.
                 if self.mode == AgentMode::AcceptEdits
-                    && (rule == "apply_patch" || rule == "file_edit" || rule == "file_write")
+                    && self
+                        .mode
+                        .to_root_permission_mode()
+                        .auto_approves(&tool_name)
                 {
                     let _ = responder
                         .0

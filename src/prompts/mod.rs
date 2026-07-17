@@ -463,6 +463,9 @@ fn build_permissions_layer(ctx: &PromptContext) -> Option<String> {
         let sandbox_text = match mode.as_str() {
             "workspace-write" => include_str!("permissions/sandbox_workspace_write.md").to_string(),
             "read-only" => include_str!("permissions/sandbox_read_only.md").to_string(),
+            "disabled" | "danger-full-access" => {
+                include_str!("permissions/sandbox_disabled.md").to_string()
+            }
             other => format!("Sandbox mode: {other}"),
         };
         parts.push(sandbox_text);
@@ -755,6 +758,172 @@ mod tests {
 
         let instructions = assemble_instructions(&settings, &ctx);
         assert!(instructions.system_messages.len() >= 3); // base + permissions + env
+        let perm = permissions_layer_text(&instructions)
+            .expect("permissions layer should be present when sandbox/approval set");
+        assert!(perm.contains("workspace-write"));
+        assert!(perm.contains("Approval policy is currently never"));
+    }
+
+    /// Extract the permissions system-message body, if any.
+    fn permissions_layer_text(instructions: &AssembledInstructions) -> Option<&str> {
+        instructions.system_messages.iter().find_map(|m| {
+            m.content.as_deref().filter(|c| c.contains("<permissions_instructions>"))
+        })
+    }
+
+    #[test]
+    fn permissions_layer_normal_workspace_write_on_request() {
+        // Normal / AcceptEdits prompt labels.
+        let settings = Settings::default();
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_sandbox("workspace-write")
+            .with_approval("on-request");
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let perm = permissions_layer_text(&instructions).expect("permissions layer");
+        assert!(
+            perm.contains("`sandbox_mode` is `workspace-write`"),
+            "expected workspace-write sandbox copy, got: {perm}"
+        );
+        assert!(
+            perm.contains("Approval policy is currently on-request"),
+            "expected on-request approval copy, got: {perm}"
+        );
+        assert!(!perm.contains("Approval policy is currently never"));
+    }
+
+    #[test]
+    fn permissions_layer_plan_read_only_on_request() {
+        let settings = Settings::default();
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_sandbox("read-only")
+            .with_approval("on-request");
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let perm = permissions_layer_text(&instructions).expect("permissions layer");
+        assert!(
+            perm.contains("`sandbox_mode` is `read-only`") || perm.contains("read-only"),
+            "expected read-only sandbox copy, got: {perm}"
+        );
+        assert!(
+            perm.contains("across the disk")
+                || perm.contains("File writes and edits via tools are blocked")
+                || perm.contains("read-only"),
+            "expected Codex-aligned read-only body (full-disk read), got: {perm}"
+        );
+        assert!(perm.contains("Approval policy is currently on-request"));
+    }
+
+    #[test]
+    fn permissions_layer_workspace_write_describes_full_disk_read() {
+        // Codex workspace-write: unrestricted reads, workspace-scoped writes.
+        let settings = Settings::default();
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_sandbox("workspace-write")
+            .with_approval("on-request");
+        let instructions = assemble_instructions(&settings, &ctx);
+        let perm = permissions_layer_text(&instructions).expect("permissions layer");
+        assert!(
+            perm.contains("across the disk") || perm.contains("outside the workspace"),
+            "workspace-write copy must not claim workspace-only reads: {perm}"
+        );
+        assert!(
+            !perm.contains("Reading files outside the workspace requires approval"),
+            "stale path-scoped-read copy still present: {perm}"
+        );
+    }
+
+    #[test]
+    fn permissions_layer_yolo_disabled_never() {
+        // Yolo / Full Access: OS sandbox off + auto-approve.
+        let settings = Settings::default();
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_sandbox("disabled")
+            .with_approval("never");
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let perm = permissions_layer_text(&instructions).expect("permissions layer");
+        assert!(
+            perm.contains("disabled") || perm.contains("danger-full-access"),
+            "expected disabled sandbox copy, got: {perm}"
+        );
+        assert!(
+            perm.contains("without OS-level seatbelt")
+                || perm.contains("sandboxing is disabled"),
+            "expected full-access body, got: {perm}"
+        );
+        assert!(perm.contains("Approval policy is currently never"));
+    }
+
+    #[test]
+    fn permissions_layer_danger_full_access_alias() {
+        // Codex-style alias should reuse the same disabled copy.
+        let settings = Settings::default();
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_sandbox("danger-full-access")
+            .with_approval("never");
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let perm = permissions_layer_text(&instructions).expect("permissions layer");
+        assert!(
+            perm.contains("disabled") || perm.contains("danger-full-access"),
+            "danger-full-access should map to disabled template, got: {perm}"
+        );
+        assert!(perm.contains("Approval policy is currently never"));
+    }
+
+    #[test]
+    fn permissions_layer_unknown_sandbox_and_approval_fallback() {
+        let settings = Settings::default();
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_sandbox("custom-mode")
+            .with_approval("custom-policy");
+
+        let instructions = assemble_instructions(&settings, &ctx);
+        let perm = permissions_layer_text(&instructions).expect("permissions layer");
+        assert!(perm.contains("Sandbox mode: custom-mode"));
+        assert!(perm.contains("Approval policy: custom-policy"));
+    }
+
+    #[test]
+    fn build_permissions_layer_none_when_unset() {
+        let ctx = PromptContext::new().with_cwd("/tmp").with_shell("zsh");
+        assert!(build_permissions_layer(&ctx).is_none());
+    }
+
+    #[test]
+    fn build_permissions_layer_sandbox_only() {
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_sandbox("workspace-write");
+        let text = build_permissions_layer(&ctx).expect("sandbox alone is enough");
+        assert!(text.contains("<permissions_instructions>"));
+        assert!(text.contains("workspace-write"));
+        assert!(!text.contains("Approval policy"));
+    }
+
+    #[test]
+    fn build_permissions_layer_approval_only() {
+        let ctx = PromptContext::new()
+            .with_cwd("/tmp")
+            .with_shell("zsh")
+            .with_approval("on-request");
+        let text = build_permissions_layer(&ctx).expect("approval alone is enough");
+        assert!(text.contains("Approval policy is currently on-request"));
+        assert!(!text.contains("sandbox_mode"));
     }
 
     #[test]

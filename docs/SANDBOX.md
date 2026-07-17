@@ -40,8 +40,11 @@
   依赖 + syscall allowlist，列为后续（见路线图）。
 
 ### macOS（`seatbelt`）
-- 运行时生成 `.sb` profile，按 `readable_paths`/`writable_paths`/`NetworkPolicy`
+- 运行时生成 `.sb` profile，按 `full_disk_read` / `writable_paths` / `NetworkPolicy`
   生成 allow/deny 规则
+- **Codex 对齐读策略**：`full_disk_read=true`（Plan/Normal/AcceptEdits 默认）时发
+  出无路径限制的 `(allow file-read*)`；写仍限 `writable_paths`（workspace + tmp）
+- `full_disk_read=false`（Paranoid）时回退到 `readable_paths` + 系统路径白名单
 
 ## 如何查看当前后端
 
@@ -57,12 +60,12 @@ Shell 工具（`execute_command` / `exec_command` / `run_test`）按 **Effective
 解析 `SecurityLevel` + **FailMode**。模式只经 `ToolContext.effective_mode` 传递，
 **不是**进程全局锁。
 
-| EffectiveMode | 默认 SecurityLevel | Network（level 默认） | 默认 FailMode |
-|---------------|-------------------|----------------------|---------------|
-| Plan | High | None | HardFail |
-| Normal | Standard | **Full**（cargo/npm/git 可用；FS 仍 workspace 范围） | HardFail |
-| AcceptEdits | Standard（仅 shell；写文件工具不走 OS 沙箱） | **Full** | HardFail |
-| Yolo | Minimal | Full | DegradeWithMark |
+| EffectiveMode | 默认 SecurityLevel | Network（level 默认） | FS 读/写 | 默认 FailMode |
+|---------------|-------------------|----------------------|----------|---------------|
+| Plan | High | None | **全盘读** + workspace 写（Codex read-only 读策略） | HardFail |
+| Normal | Standard | **Full**（cargo/npm/git） | **全盘读** + workspace 写（Codex workspace-write） | HardFail |
+| AcceptEdits | Standard（仅 shell；写文件工具不走 OS 沙箱） | **Full** | 同上 | HardFail |
+| Yolo | Minimal（metadata） | Full | **OS 沙箱关闭**（非 Minimal seatbelt） | DegradeWithMark |
 
 - **HardFail**：沙箱 spawn/基础设施失败 → `ToolError` `sandbox_spawn_failed`，**绝不**裸跑。
 - **DegradeWithMark**：允许直接 spawn，结果 metadata 必含 `sandbox_bypassed=true`；TUI 会话状态栏显示 `⚠ SANDBOX BYPASS`。

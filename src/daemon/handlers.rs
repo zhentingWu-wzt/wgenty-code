@@ -250,8 +250,23 @@ pub async fn execute_tool(
             }))
         }
         Ok(PolicyDecision::Ask(req)) => {
-            // Check if rule was already approved for this session
-            if state.is_rule_approved(session_id, &req.session_rule).await {
+            // Check if rule was already approved for this session, OR root mode
+            // auto-approves this tool (AcceptEdits / Yolo). Without the mode
+            // bypass, AcceptEdits still bounced every write through the TUI.
+            let mode_auto = state
+                .root_mode
+                .read()
+                .map(|m| m.auto_approves(tool_name))
+                .unwrap_or(false);
+            let already = state.is_rule_approved(session_id, &req.session_rule).await;
+            if already || mode_auto {
+                if mode_auto && !already {
+                    tracing::info!(
+                        "🔐 Daemon: root_mode auto-approved '{}' (rule: {})",
+                        tool_name,
+                        req.session_rule
+                    );
+                }
                 let mutating = matches!(
                     tool_name.as_str(),
                     "apply_patch" | "file_edit" | "file_write" | "exec_command"
@@ -310,6 +325,7 @@ pub async fn execute_tool(
                 error: None,
                 metadata: None,
                 permission_required: Some(PermissionRequiredInfo {
+                    tool_name: tool_name.clone(),
                     reason: req.reason,
                     session_rule: req.session_rule,
                 }),

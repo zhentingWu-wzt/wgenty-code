@@ -177,6 +177,7 @@ impl DaemonToolPort {
                             format!("Subagent `{}`: {}", item.from, item.human_summary)
                         };
                         let _ = tx.send(AppEvent::PermissionRequired {
+                            tool_name: item.tool.clone(),
                             reason,
                             rule: item.session_rule.clone(),
                             responder: crate::tui::app::PermissionResponder(Some(resp_tx)),
@@ -347,7 +348,15 @@ impl ToolPort for DaemonToolPort {
             }
 
             let (tx, rx) = tokio::sync::oneshot::channel();
+            // Prefer daemon-provided tool_name; fall back to the request name
+            // for older daemon payloads that omit the field.
+            let tool_name = if perm.tool_name.is_empty() {
+                req.name.clone()
+            } else {
+                perm.tool_name.clone()
+            };
             let _ = self.event_tx.send(AppEvent::PermissionRequired {
+                tool_name,
                 reason: perm.reason.clone(),
                 rule: perm.session_rule.clone(),
                 responder: crate::tui::app::PermissionResponder(Some(tx)),

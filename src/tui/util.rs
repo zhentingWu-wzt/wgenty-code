@@ -408,9 +408,18 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
             Some(AgentPhase::ExecutingTool { name: name.clone() })
         }
         AppEvent::ToolResult { .. } => Some(AgentPhase::Thinking),
-        AppEvent::PermissionRequired { reason, rule, .. } => Some(AgentPhase::AwaitingPermission {
-            tool: rule.clone(),
-            rule: reason.clone(),
+        AppEvent::PermissionRequired {
+            tool_name,
+            reason,
+            rule,
+            ..
+        } => Some(AgentPhase::AwaitingPermission {
+            tool: tool_name.clone(),
+            rule: if rule.is_empty() {
+                reason.clone()
+            } else {
+                format!("{rule}: {reason}")
+            },
         }),
         AppEvent::QuestionAsked { question, .. } => Some(AgentPhase::AwaitingUserInput {
             question: question.clone(),

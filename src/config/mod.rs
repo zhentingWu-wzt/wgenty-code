@@ -22,7 +22,7 @@ pub use services::*;
 
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Main configuration structure (top-level grouped form).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -49,20 +49,62 @@ impl Settings {
         home.join(".wgenty-code").join("settings.json")
     }
 
-    /// Load settings from file. No backward-compatibility migration: an old
-    /// settings.json containing flat fields will fail to deserialize.
-    pub fn load() -> anyhow::Result<Self> {
+    /// Load settings from file (disk form, no runtime path resolution).
+    ///
+    /// Prefer this for mutate-then-save paths so a runtime-resolved absolute
+    /// `working_dir` is not persisted. For process use, call [`Self::load`].
+    ///
+    /// No backward-compatibility migration: an old settings.json containing
+    /// flat fields will fail to deserialize.
+    pub fn load_from_disk() -> anyhow::Result<Self> {
         let path = Self::config_path();
         if path.exists() {
             let content = std::fs::read_to_string(&path)
                 .context(format!("Failed to read config file: {}", path.display()))?;
-            Ok(serde_json::from_str(&content)
-                .context(format!("Failed to parse config file: {}", path.display()))?)
+            serde_json::from_str(&content)
+                .context(format!("Failed to parse config file: {}", path.display()))
         } else {
             let s = Settings::default();
             s.save()?;
             Ok(s)
         }
+    }
+
+    /// Load settings for process use. After disk load, [`Self::resolve_working_dir`]
+    /// rewrites `storage.working_dir` to an absolute project root so permission
+    /// policy and team paths do not keep a fragile `"."` relative root.
+    ///
+    /// Disk mutation paths ([`Self::set`], [`Self::reset`]) use
+    /// [`Self::load_from_disk`] so relative `"."` is preserved on disk.
+    pub fn load() -> anyhow::Result<Self> {
+        let mut settings = Self::load_from_disk()?;
+        settings.resolve_working_dir();
+        Ok(settings)
+    }
+
+    /// Bind `storage.working_dir` to a stable absolute project root.
+    ///
+    /// - `"."` / empty → current process CWD (project root)
+    /// - relative path → resolved against CWD
+    /// - absolute path → canonicalized when possible
+    ///
+    /// This is runtime-only. Do not call before `save()` if you need to keep
+    /// the on-disk default `"."` portable across machines.
+    pub fn resolve_working_dir(&mut self) {
+        let raw = &self.storage.working_dir;
+        let candidate = if raw.as_os_str().is_empty() || raw.as_path() == Path::new(".") {
+            crate::utils::current_project_root()
+        } else if raw.is_relative() {
+            match std::env::current_dir() {
+                Ok(cwd) => cwd.join(raw),
+                Err(_) => raw.clone(),
+            }
+        } else {
+            raw.clone()
+        };
+        self.storage.working_dir = candidate
+            .canonicalize()
+            .unwrap_or_else(|_| crate::utils::current_project_root());
     }
 
     /// Save settings to file (~/.wgenty-code/settings.json) as pretty JSON.
@@ -82,6 +124,7 @@ impl Settings {
 
     /// Reload settings from file, returning a new instance.
     /// This is intentionally a full reload rather than merge to avoid stale partial state.
+    /// Working dir is re-resolved against the current process CWD.
     pub fn reload() -> anyhow::Result<Self> {
         Self::load()
     }
@@ -196,7 +239,8 @@ impl Settings {
     /// and the on-disk settings.json is left unchanged.
     pub fn set(key: &str, value: &str) -> anyhow::Result<()> {
         use serde_json::Value;
-        let settings = Self::load()?;
+        // Load disk form so runtime-resolved absolute working_dir is not written back.
+        let settings = Self::load_from_disk()?;
         let mut json = serde_json::to_value(&settings)?;
 
         let parsed: Value =
