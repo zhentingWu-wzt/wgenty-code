@@ -55,6 +55,41 @@ impl AgentMode {
             AgentMode::Yolo => crate::config::agent::RootPermissionMode::Yolo,
         }
     }
+
+    /// Map to sandbox [`crate::sandbox::EffectiveMode`] (Plan stays Plan).
+    pub fn to_effective_mode(&self) -> crate::sandbox::EffectiveMode {
+        match self {
+            AgentMode::PlanMode => crate::sandbox::EffectiveMode::Plan,
+            AgentMode::Normal => crate::sandbox::EffectiveMode::Normal,
+            AgentMode::AcceptEdits => crate::sandbox::EffectiveMode::AcceptEdits,
+            AgentMode::Yolo => crate::sandbox::EffectiveMode::Yolo,
+        }
+    }
+}
+
+#[cfg(test)]
+mod agent_mode_effective_tests {
+    use super::*;
+    use crate::config::agent::RootPermissionMode;
+    use crate::sandbox::EffectiveMode;
+
+    #[test]
+    fn agent_mode_plan_to_effective_plan() {
+        assert_eq!(AgentMode::PlanMode.to_effective_mode(), EffectiveMode::Plan);
+        assert_eq!(
+            AgentMode::PlanMode.to_root_permission_mode(),
+            RootPermissionMode::Normal
+        );
+    }
+
+    #[test]
+    fn agent_mode_yolo_maps_both() {
+        assert_eq!(AgentMode::Yolo.to_effective_mode(), EffectiveMode::Yolo);
+        assert_eq!(
+            AgentMode::Yolo.to_root_permission_mode(),
+            RootPermissionMode::Yolo
+        );
+    }
 }
 
 /// Wraps a oneshot sender for returning question answers.

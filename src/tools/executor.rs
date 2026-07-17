@@ -346,6 +346,7 @@ mod tests {
             invocation_id: crate::agent::ToolInvocationId::new("test-1"),
             origin_turn_id: None,
             workdir: None,
+            effective_mode: crate::sandbox::EffectiveMode::default(),
         };
         let result = executor
             .execute_with_hooks(
@@ -389,6 +390,7 @@ mod tests {
             invocation_id: crate::agent::ToolInvocationId::new("test-2"),
             origin_turn_id: None,
             workdir: None,
+            effective_mode: crate::sandbox::EffectiveMode::default(),
         };
         let result = executor
             .execute_with_hooks(

@@ -107,6 +107,9 @@ pub struct TaskTool {
     /// Subagents snapshot the current value at spawn time. Uses std::sync so
     /// `build_permission_context` can read it without an async context.
     root_mode: Arc<std::sync::RwLock<RootPermissionMode>>,
+    /// Sandbox effective mode (includes Plan). Snapshotted into
+    /// SubagentPermissionContext at spawn.
+    effective_mode: Arc<std::sync::RwLock<crate::sandbox::EffectiveMode>>,
 }
 
 impl TaskTool {
@@ -127,6 +130,9 @@ impl TaskTool {
             permission_bridge: None,
             session_rules: None,
             root_mode: Arc::new(std::sync::RwLock::new(RootPermissionMode::Normal)),
+            effective_mode: Arc::new(std::sync::RwLock::new(
+                crate::sandbox::EffectiveMode::Normal,
+            )),
         }
     }
 
@@ -147,6 +153,15 @@ impl TaskTool {
         self
     }
 
+    /// Share the daemon's effective mode lock (includes Plan).
+    pub fn with_effective_mode(
+        mut self,
+        mode: Arc<std::sync::RwLock<crate::sandbox::EffectiveMode>>,
+    ) -> Self {
+        self.effective_mode = mode;
+        self
+    }
+
     /// Update the root permission mode at runtime.
     pub fn set_root_mode(&self, mode: RootPermissionMode) {
         *self.root_mode.write().unwrap() = mode;
@@ -156,6 +171,10 @@ impl TaskTool {
         let workspace = self.settings.storage.working_dir.clone();
         let limits = &self.settings.agent.subagent;
         let root_mode = *self.root_mode.read().unwrap_or_else(|e| e.into_inner());
+        let effective_mode = *self
+            .effective_mode
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         SubagentPermissionContext {
             policy: ToolPermissionPolicy::new(workspace),
             session_rules: self
@@ -169,6 +188,7 @@ impl TaskTool {
             guardian: Guardian::default(),
             agent_id: agent_id.to_string(),
             root_mode,
+            effective_mode,
             denial_log: Arc::new(Mutex::new(Vec::new())),
             event_log: Arc::new(Mutex::new(Vec::new())),
         }

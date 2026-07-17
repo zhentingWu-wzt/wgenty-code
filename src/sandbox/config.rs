@@ -2,18 +2,21 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use super::profile::{NetworkPolicy, ResourceLimits, SandboxProfile};
 
 /// Predefined security levels for common use cases.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SecurityLevel {
-    /// Interactive REPL: workspace + home r/w, full network, 2GB, 300s.
+    /// Yolo / loose: workspace + broad env, full network, 2GB, 300s.
     Minimal,
-    /// Build tasks: workspace r/w, /tmp r/w, no network, 1GB, 60s.
+    /// Normal day-to-day: workspace-scoped FS, full network, 2GB, 300s wall.
     Standard,
-    /// Code analysis: workspace r/o, /tmp r/w, no network, 512MB, 30s.
+    /// Plan / tighter: workspace-scoped FS, no network, 1GB, 120s wall.
     High,
-    /// Untrusted plugins: /tmp only r/w, no network, 128MB, 10s, no subprocess.
+    /// Untrusted plugins: tight limits, no network, no subprocess.
     Paranoid,
 }
 
@@ -154,11 +157,43 @@ impl SandboxConfig {
                 subprocess: true,
                 env_vars: vec!["*".into()],
             },
+            // Standard: day-to-day agent work. FS stays workspace-scoped; network is Full so
+            // cargo/npm/git remotes work without forcing Yolo. Isolation vs Minimal is
+            // path + env allowlist, not "no net + 60s kill".
             SecurityLevel::Standard => LevelDefaults {
+                network: NetworkPolicy::Full,
+                memory_mb: 2048,
+                wall_secs: 300,
+                cpu_secs: 120,
+                processes: 32,
+                file_size_mb: 500,
+                subprocess: true,
+                env_vars: vec![
+                    "PATH".into(),
+                    "HOME".into(),
+                    "USER".into(),
+                    "LANG".into(),
+                    "TMPDIR".into(),
+                    "TEMP".into(),
+                    "TMP".into(),
+                    "CARGO_HOME".into(),
+                    "RUSTUP_HOME".into(),
+                    "NPM_CONFIG_CACHE".into(),
+                    "HTTP_PROXY".into(),
+                    "HTTPS_PROXY".into(),
+                    "NO_PROXY".into(),
+                    "http_proxy".into(),
+                    "https_proxy".into(),
+                    "no_proxy".into(),
+                ],
+            },
+            // High: Plan / tighter modes. Still long enough for light shell probes;
+            // network stays off so planning cannot reach the open internet by default.
+            SecurityLevel::High => LevelDefaults {
                 network: NetworkPolicy::None,
                 memory_mb: 1024,
-                wall_secs: 60,
-                cpu_secs: 30,
+                wall_secs: 120,
+                cpu_secs: 60,
                 processes: 16,
                 file_size_mb: 100,
                 subprocess: true,
@@ -171,16 +206,6 @@ impl SandboxConfig {
                     "TEMP".into(),
                     "TMP".into(),
                 ],
-            },
-            SecurityLevel::High => LevelDefaults {
-                network: NetworkPolicy::None,
-                memory_mb: 512,
-                wall_secs: 30,
-                cpu_secs: 15,
-                processes: 8,
-                file_size_mb: 50,
-                subprocess: true,
-                env_vars: vec!["PATH".into(), "HOME".into(), "LANG".into(), "TMPDIR".into()],
             },
             SecurityLevel::Paranoid => LevelDefaults {
                 network: NetworkPolicy::None,
@@ -236,15 +261,17 @@ mod tests {
         let profile = SandboxConfig::builder("/tmp/ws")
             .security_level(SecurityLevel::Standard)
             .build();
-        assert_eq!(profile.network, NetworkPolicy::None);
-        assert_eq!(profile.resources.max_memory_bytes, 1024 * 1024 * 1024);
-        assert_eq!(profile.resources.max_wall_seconds, 60);
-        assert_eq!(profile.resources.max_cpu_seconds, 30);
-        assert_eq!(profile.resources.max_processes, 16);
-        assert_eq!(profile.resources.max_file_size_bytes, 100 * 1024 * 1024);
+        // Full network: package managers under Normal; FS still workspace-scoped.
+        assert_eq!(profile.network, NetworkPolicy::Full);
+        assert_eq!(profile.resources.max_memory_bytes, 2048 * 1024 * 1024);
+        assert_eq!(profile.resources.max_wall_seconds, 300);
+        assert_eq!(profile.resources.max_cpu_seconds, 120);
+        assert_eq!(profile.resources.max_processes, 32);
+        assert_eq!(profile.resources.max_file_size_bytes, 500 * 1024 * 1024);
         assert!(profile.allow_subprocess);
         assert!(profile.env_allowlist.contains(&"PATH".to_string()));
         assert!(profile.env_allowlist.contains(&"HOME".to_string()));
+        assert!(profile.env_allowlist.contains(&"CARGO_HOME".to_string()));
     }
 
     #[test]
@@ -253,15 +280,14 @@ mod tests {
             .security_level(SecurityLevel::High)
             .build();
         assert_eq!(profile.network, NetworkPolicy::None);
-        assert_eq!(profile.resources.max_memory_bytes, 512 * 1024 * 1024);
-        assert_eq!(profile.resources.max_wall_seconds, 30);
-        assert_eq!(profile.resources.max_cpu_seconds, 15);
-        assert_eq!(profile.resources.max_processes, 8);
-        assert_eq!(profile.resources.max_file_size_bytes, 50 * 1024 * 1024);
-        assert_eq!(
-            profile.env_allowlist,
-            vec!["PATH", "HOME", "LANG", "TMPDIR"]
-        );
+        assert_eq!(profile.resources.max_memory_bytes, 1024 * 1024 * 1024);
+        assert_eq!(profile.resources.max_wall_seconds, 120);
+        assert_eq!(profile.resources.max_cpu_seconds, 60);
+        assert_eq!(profile.resources.max_processes, 16);
+        assert_eq!(profile.resources.max_file_size_bytes, 100 * 1024 * 1024);
+        assert!(profile.env_allowlist.contains(&"PATH".to_string()));
+        assert!(profile.env_allowlist.contains(&"HOME".to_string()));
+        assert!(profile.env_allowlist.contains(&"USER".to_string()));
     }
 
     #[test]

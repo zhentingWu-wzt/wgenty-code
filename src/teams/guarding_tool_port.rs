@@ -35,6 +35,9 @@ pub struct SubagentPermissionContext {
     /// can short-circuit policy `Ask` (Yolo/AcceptEdits) without blocking on
     /// the approval bridge. Defaults to `Normal` (escalate/deny per ask_strategy).
     pub root_mode: RootPermissionMode,
+    /// Sandbox effective mode for this subagent (includes Plan). Used when
+    /// building ToolContext for shell tools.
+    pub effective_mode: crate::sandbox::EffectiveMode,
     /// Shared denial reasons for finish summary.
     pub denial_log: Arc<Mutex<Vec<String>>>,
     /// Shared permission lifecycle events for progress/action_log.
@@ -57,6 +60,7 @@ impl SubagentPermissionContext {
             guardian: Guardian::default(),
             agent_id: agent_id.into(),
             root_mode: RootPermissionMode::Normal,
+            effective_mode: crate::sandbox::EffectiveMode::Normal,
             denial_log: Arc::new(Mutex::new(Vec::new())),
             event_log: Arc::new(Mutex::new(Vec::new())),
         }
@@ -310,6 +314,7 @@ impl ToolPort for GuardingToolPort<'_> {
             invocation_id: ToolInvocationId::new(inv_id),
             origin_turn_id: None,
             workdir: self.workdir.as_deref(),
+            effective_mode: self.permission.effective_mode,
         };
 
         match self

@@ -4,6 +4,7 @@ pub mod execute_command;
 pub mod git_operations;
 pub mod kill_session;
 pub mod run_test;
+pub mod sandbox_exec;
 pub mod session_manager;
 pub mod test_output;
 pub mod write_stdin;

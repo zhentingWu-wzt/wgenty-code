@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### BREAKING (Sandbox)
+
+- Shell tools no longer default to Minimal + silent bare exec on sandbox failure.
+  - **Normal / AcceptEdits:** Standard + **Full network** (package managers) + **HardFail**.
+  - **Plan:** High + **no network** + **HardFail**.
+  - **Yolo:** Minimal + Full network + DegradeWithMark (marked bypass if direct spawn).
+- Use **Yolo**, or `integrations.sandbox.defaults_by_mode` / `fail_mode_by_mode`, or
+  `integrations.sandbox.enabled: false` (forces DegradeWithMark + UI/metadata marks).
+- `run_test.allow_network` only forces `NetworkPolicy::Full` within the mode's security
+  level; it no longer drops the level to Minimal.
+- CLI `sandbox enable|disable` now persists `integrations.sandbox.enabled`.
+
+### Added (Sandbox ↔ Permission Mode)
+
+- Profile matrix via `SandboxPolicyResolver` (`src/sandbox/policy.rs`) and
+  `ToolContext.effective_mode` (includes Plan; not a process-global lock).
+- Settings block `integrations.sandbox` (`enabled`, `defaults_by_mode`,
+  `fail_mode_by_mode`).
+- Shared exec helper `sandbox_exec` with fail-closed / degrade-with-mark metadata
+  (`permission_mode`, `sandbox_level`, `sandbox_bypassed`,
+  `sandbox_enforcement_fidelity`, …).
+- TUI sticky session badge `⚠ SANDBOX BYPASS` when shell runs outside OS isolation.
+- `sandbox status` shows enforcement fidelity and resolved mode → level / fail_mode.
+
 ### Changed (Subagent Lifecycle)
 
 - `task` 工具统一为单一异步路径：每次调用立即生成一个 coordinator 拥有的子代理并返回结构化确认（`child_id` / `task_group_id` / `status:"running"`），移除 `background` 同步/后台模式开关。模型传入的 `background` 参数在兼容期内被忽略并在确认元数据中以 `ignored_arguments` 标注。

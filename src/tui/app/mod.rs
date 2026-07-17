@@ -188,6 +188,9 @@ pub struct App {
     pub(crate) startup_memories: Vec<String>,
     /// CodeGraph availability (sync probe result), refreshed from settings.
     pub codegraph_status: crate::mcp::codegraph::CodegraphInstallState,
+    /// Sticky session flag: shell ran outside OS sandbox (degrade / disabled).
+    /// Cleared on `/clear` / new session reset paths that rebuild App state.
+    pub sandbox_bypassed_session: bool,
     /// AutoDream service for time-gated memory consolidation.
     pub auto_dream_service: Option<Arc<crate::services::AutoDreamService>>,
     /// Command router for slash command dispatch (replaces Comet-specific routing).
@@ -532,6 +535,7 @@ impl App {
             memory_manager: mm,
             startup_memories: Vec::new(),
             codegraph_status,
+            sandbox_bypassed_session: false,
             auto_dream_service: Some(Arc::new(auto_dream)),
             command_router: Some(command_router),
             interaction_service,

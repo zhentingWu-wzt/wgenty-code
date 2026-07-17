@@ -7,6 +7,7 @@ pub mod guardian;
 pub mod mcp_config;
 pub mod models;
 pub mod prompts;
+pub mod sandbox_settings;
 pub mod services;
 pub mod watcher;
 
@@ -16,6 +17,7 @@ pub use guardian::*;
 pub use mcp_config::{McpConfig, McpServerStatus};
 pub use models::*;
 pub use prompts::*;
+pub use sandbox_settings::*;
 pub use services::*;
 
 use anyhow::Context as _;
