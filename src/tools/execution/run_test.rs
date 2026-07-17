@@ -83,7 +83,11 @@ impl RunTestTool {
                 "node-npm" => vec!["npm".to_string(), "test".to_string()],
                 "python-pytest" => vec!["pytest".to_string()],
                 "python-unittest" => {
-                    vec!["python".to_string(), "-m".to_string(), "unittest".to_string()]
+                    vec![
+                        "python".to_string(),
+                        "-m".to_string(),
+                        "unittest".to_string(),
+                    ]
                 }
                 "go" => vec!["go".to_string(), "test".to_string(), "./...".to_string()],
                 other => {

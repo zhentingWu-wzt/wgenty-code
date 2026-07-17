@@ -635,16 +635,18 @@ impl Compactor for TuiCompactor {
             return false;
         }
 
-        for (memory, scope) in &extracted_memories {
+        let filtered = crate::agent::runtime::compactor::filter_extracted_memories(
+            extracted_memories,
+            self.memory_manager.write_importance_threshold(),
+            self.memory_manager.max_extract_per_compaction(),
+        );
+        for (memory, scope) in &filtered {
             if let Err(e) = self.memory_manager.add_memory(memory.clone(), *scope).await {
                 tracing::warn!(error = %e, memory_id = %memory.id, "failed to persist extracted memory");
             }
         }
-        if !extracted_memories.is_empty() {
-            tracing::info!(
-                count = extracted_memories.len(),
-                "extracted memories from compaction"
-            );
+        if !filtered.is_empty() {
+            tracing::info!(count = filtered.len(), "extracted memories from compaction");
         }
 
         {
