@@ -276,11 +276,20 @@ async fn run_direct(
     .map_err(|_| "Test execution timed out".to_string())?
     .map_err(|e| format!("Test execution failed: {}", e))?;
 
+    #[cfg(unix)]
+    let signal = {
+        use std::os::unix::process::ExitStatusExt;
+        output.status.signal()
+    };
+    #[cfg(not(unix))]
+    let signal: Option<i32> = None;
+
     Ok(crate::sandbox::SandboxOutput {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         exit_code: output.status.code().unwrap_or(-1),
         killed_by_sandbox: false,
+        signal,
     })
 }
 
