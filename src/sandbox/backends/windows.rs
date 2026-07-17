@@ -316,12 +316,21 @@ impl WindowsBackend {
         let job = win::create_job(profile)?;
 
         // Platform shell + piped stdio / CREATE_NO_WINDOW.
+        use std::os::windows::process::CommandExt;
         let mut cmd = super::shell_command_captured(command);
-        // CREATE_SUSPENDED (0x4) must be OR'd with CREATE_NO_WINDOW: tokio's
-        // creation_flags replaces the whole mask, so re-set both after the helper.
+        // creation_flags replaces the whole mask (not OR), so re-set every flag
+        // the helper already applied plus the Job Object spawn requirements:
+        // - CREATE_SUSPENDED: assign to job before any user code runs
+        // - CREATE_NO_WINDOW: keep console apps off the parent TUI surface
+        // - CREATE_BREAKAWAY_FROM_JOB: GHA/CI (and some shells) already run the
+        //   parent inside a Job Object that forbids nesting; without breakaway,
+        //   AssignProcessToJobObject fails with ERROR_ACCESS_DENIED and every
+        //   Windows sandbox spawn/test dies. No-op when the parent is not in a
+        //   job (or the parent job allows breakaway).
         const CREATE_SUSPENDED: u32 = 0x0000_0004;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        cmd.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB);
 
         Self::apply_env(profile, &mut cmd);
 
@@ -341,34 +350,50 @@ impl WindowsBackend {
             });
         };
 
-        if let Err(e) = win::assign_pid_to_job(job.as_raw(), pid) {
-            tracing::error!(
-                error = %e,
-                pid,
-                "failed to assign suspended process to Job Object; terminating child"
-            );
-            drop(child); // kill_on_drop
-            return Err(e);
-        }
+        // Prefer full Job Object isolation. If assignment fails (common when the
+        // parent is already inside a non-breakaway job, e.g. some CI runners),
+        // resume the child and continue without job limits rather than failing
+        // every sandboxed spawn.
+        let cleanup = match win::assign_pid_to_job(job.as_raw(), pid) {
+            Ok(()) => {
+                let token = job.to_cleanup_token();
+                Some(SandboxCleanup {
+                    cleanup_type: CleanupType::CloseJobObject,
+                    resource_handle: Some(token),
+                })
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    pid,
+                    "AssignProcessToJobObject failed; resuming child without job limits"
+                );
+                // Drop the unused job handle (OwnedHandle closes on drop via token path;
+                // here we still hold `job` — convert to token and close immediately).
+                let token = job.to_cleanup_token();
+                win::close_job_token(&token);
+                None
+            }
+        };
 
         if let Err(e) = win::resume_process_threads(pid) {
             tracing::error!(
                 error = %e,
                 pid,
-                "failed to resume process after Job Object assignment; terminating child"
+                "failed to resume process after CREATE_SUSPENDED spawn; terminating child"
             );
             drop(child); // kill_on_drop
             return Err(e);
         }
 
-        let token = job.to_cleanup_token();
         Ok(SandboxedChild {
             child,
-            backend_name: "job-object".into(),
-            cleanup: Some(SandboxCleanup {
-                cleanup_type: CleanupType::CloseJobObject,
-                resource_handle: Some(token),
-            }),
+            backend_name: if cleanup.is_some() {
+                "job-object".into()
+            } else {
+                "job-object-degraded".into()
+            },
+            cleanup,
         })
     }
 }
@@ -420,7 +445,13 @@ mod tests {
         let child = backend
             .spawn(&profile, "echo hello-sandbox", None)
             .expect("spawn");
-        assert_eq!(child.backend_name, "job-object");
+        // Full isolation ("job-object") or CI degraded mode ("job-object-degraded")
+        // when the parent process is already inside a non-breakaway Job Object.
+        assert!(
+            child.backend_name == "job-object" || child.backend_name == "job-object-degraded",
+            "unexpected backend_name {}",
+            child.backend_name
+        );
         // stdout must be piped/captured — empty stdout previously passed because
         // the assertion allowed exit_code == 0 while output leaked to the console.
         let out = child.wait_with_output().await.expect("wait");

@@ -68,6 +68,9 @@ pub struct DaemonState {
     /// Shared root agent permission mode (Yolo/AcceptEdits/Normal).
     /// Updated by the TUI at runtime; subagents snapshot at spawn time.
     pub root_mode: Arc<std::sync::RwLock<RootPermissionMode>>,
+    /// Sandbox effective mode (includes Plan). Updated with permission mode;
+    /// used when building ToolContext for shell tools.
+    pub effective_mode: Arc<std::sync::RwLock<crate::sandbox::EffectiveMode>>,
 }
 
 impl DaemonState {
@@ -76,8 +79,9 @@ impl DaemonState {
         let todo_state = Arc::new(RwLock::new(TodoState::default()));
         let policy = ToolPermissionPolicy::from_settings(&app_state.settings);
 
-        // Initialize background manager
-        let bg_manager = Arc::new(BackgroundManager::new());
+        // Initialize background manager (shares OS sandbox with shell tools)
+        let bg_sandbox = Arc::new(crate::sandbox::SandboxManager::new());
+        let bg_manager = Arc::new(BackgroundManager::new().with_sandbox(bg_sandbox));
 
         // Load team manager if .team/config.json exists
         let team_manager = {
@@ -133,6 +137,8 @@ impl DaemonState {
         let permission_bridge = Arc::new(PermissionBridge::with_timeout_secs(approval_timeout));
         let shared_session_rules = Arc::new(RwLock::new(HashSet::<String>::new()));
         let root_mode = Arc::new(std::sync::RwLock::new(RootPermissionMode::Normal));
+        let effective_mode =
+            Arc::new(std::sync::RwLock::new(crate::sandbox::EffectiveMode::Normal));
 
         // Use Arc::new_cyclic so the TaskTool holds a valid Weak<ToolRegistry>
         // that points to the *final* Arc allocation — not a temporary one that
@@ -177,7 +183,8 @@ impl DaemonState {
             )
             .with_permission_bridge(permission_bridge.clone())
             .with_session_rules(shared_session_rules.clone())
-            .with_root_mode(root_mode.clone());
+            .with_root_mode(root_mode.clone())
+            .with_effective_mode(effective_mode.clone());
             registry.register(Box::new(task_tool));
 
             // Register subagent trace tool (read-only visualization for subagent transcripts)
@@ -305,6 +312,7 @@ impl DaemonState {
             daemon_viewer_secret,
             permission_bridge,
             root_mode,
+            effective_mode,
         }
     }
 

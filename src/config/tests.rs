@@ -364,3 +364,18 @@ fn settings_json_template_matches_settings_default() {
     assert_eq!(template_settings.models.context_window, 200_000);
     assert_eq!(template_settings.models.main.name, "sonnet");
 }
+
+#[test]
+fn resolve_working_dir_makes_dot_absolute() {
+    let mut s = Settings::default();
+    assert_eq!(s.storage.working_dir, PathBuf::from("."));
+    s.resolve_working_dir();
+    assert!(
+        s.storage.working_dir.is_absolute(),
+        "resolve_working_dir should bind '.' to an absolute project root"
+    );
+    assert!(
+        s.storage.working_dir != PathBuf::from("."),
+        "resolved working_dir must not remain relative '.'"
+    );
+}

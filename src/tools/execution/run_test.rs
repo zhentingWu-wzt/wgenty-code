@@ -7,8 +7,12 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::path::Path;
 
+use super::sandbox_exec::{
+    resolve_for_context, sandbox_infra_tool_error, sandbox_metadata, should_degrade_to_direct,
+};
 use super::test_output::TestOutput;
-use crate::sandbox::{SandboxConfig, SandboxManager, SecurityLevel};
+use crate::agent::ToolContext;
+use crate::sandbox::{shell_command_captured, EffectiveMode, NetworkPolicy, SandboxManager};
 use crate::tools::{Tool, ToolError, ToolOutput};
 
 pub struct RunTestTool {
@@ -50,6 +54,239 @@ impl RunTestTool {
 
         ("unknown", vec!["cargo".to_string(), "test".to_string()])
     }
+
+    async fn run(
+        &self,
+        input: serde_json::Value,
+        workdir: Option<&Path>,
+        mode: EffectiveMode,
+    ) -> Result<ToolOutput, ToolError> {
+        let cwd = workdir
+            .map(|p| p.to_path_buf())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| Path::new(".").to_path_buf());
+        let framework = input["framework"].as_str().unwrap_or("auto");
+        let filter = input["filter"].as_str();
+        let file = input["file"].as_str();
+        let timeout = input["timeout_secs"].as_u64().unwrap_or(120);
+        let allow_network = input["allow_network"].as_bool().unwrap_or(false);
+        let verbose = input["verbose"].as_bool().unwrap_or(false);
+
+        // Detect or override framework
+        let (fw_name, mut base_cmd) = if framework == "auto" {
+            self.detect_framework(&cwd)
+        } else {
+            let cmd = match framework {
+                "rust-cargo" => vec!["cargo".to_string(), "test".to_string()],
+                "node-jest" => vec!["npx".to_string(), "jest".to_string()],
+                "node-vitest" => vec!["npx".to_string(), "vitest".to_string(), "run".to_string()],
+                "node-npm" => vec!["npm".to_string(), "test".to_string()],
+                "python-pytest" => vec!["pytest".to_string()],
+                "python-unittest" => {
+                    vec!["python".to_string(), "-m".to_string(), "unittest".to_string()]
+                }
+                "go" => vec!["go".to_string(), "test".to_string(), "./...".to_string()],
+                other => {
+                    return Ok(ToolOutput {
+                        output_type: "test_result".to_string(),
+                        content: json!({
+                            "success": false,
+                            "error": format!("Unknown framework: {}", other),
+                        })
+                        .to_string(),
+                        metadata: std::collections::HashMap::new(),
+                    });
+                }
+            };
+            (framework, cmd)
+        };
+
+        // Apply filter and file arguments (match prior run_test behavior)
+        if let Some(f) = filter {
+            match fw_name {
+                "rust-cargo" => {
+                    base_cmd.push(f.to_string());
+                    base_cmd.push("--".to_string());
+                    base_cmd.push("--nocapture".to_string());
+                }
+                "node-jest" | "node-vitest" => {
+                    base_cmd.push("-t".to_string());
+                    base_cmd.push(f.to_string());
+                }
+                "python-pytest" => {
+                    base_cmd.push("-k".to_string());
+                    base_cmd.push(f.to_string());
+                }
+                _ => base_cmd.push(f.to_string()),
+            }
+        }
+
+        if let Some(f) = file {
+            base_cmd.push(f.to_string());
+        }
+
+        let command = base_cmd.join(" ");
+
+        let network = if allow_network {
+            Some(NetworkPolicy::Full)
+        } else {
+            None
+        };
+        let mut policy = resolve_for_context(mode, Some(cwd.as_path()), network);
+        policy.profile.resources.max_wall_seconds = timeout;
+
+        let status = self.sandbox.status();
+        let mut metadata = sandbox_metadata(
+            mode,
+            policy.level,
+            &status.backend_name,
+            false,
+            status.is_hardware_enforced,
+            policy.fail_mode,
+        );
+
+        // Execute via sandbox (or degrade when allowed)
+        let output = if policy.enabled {
+            match self.sandbox.execute(&command, &policy.profile).await {
+                Ok(out) => out,
+                Err(e) => {
+                    if !should_degrade_to_direct(policy.fail_mode) {
+                        let err = sandbox_infra_tool_error(&status.backend_name, &e);
+                        return Ok(ToolOutput {
+                            output_type: "test_result".to_string(),
+                            content: json!({
+                                "success": false,
+                                "error": err.message,
+                                "framework": fw_name,
+                                "command": command,
+                                "code": "sandbox_spawn_failed",
+                            })
+                            .to_string(),
+                            metadata,
+                        });
+                    }
+                    tracing::warn!(
+                        command = %command,
+                        backend = %status.backend_name,
+                        error = %e,
+                        "Sandbox test execution failed; degrading to direct"
+                    );
+                    metadata = sandbox_metadata(
+                        mode,
+                        policy.level,
+                        &status.backend_name,
+                        true,
+                        false,
+                        policy.fail_mode,
+                    );
+                    match run_direct(&command, &cwd, timeout).await {
+                        Ok(out) => out,
+                        Err(err_msg) => {
+                            return Ok(ToolOutput {
+                                output_type: "test_result".to_string(),
+                                content: json!({
+                                    "success": false,
+                                    "error": err_msg,
+                                    "framework": fw_name,
+                                    "command": command,
+                                })
+                                .to_string(),
+                                metadata,
+                            });
+                        }
+                    }
+                }
+            }
+        } else {
+            metadata = sandbox_metadata(
+                mode,
+                policy.level,
+                &status.backend_name,
+                true,
+                false,
+                policy.fail_mode,
+            );
+            match run_direct(&command, &cwd, timeout).await {
+                Ok(out) => out,
+                Err(err_msg) => {
+                    return Ok(ToolOutput {
+                        output_type: "test_result".to_string(),
+                        content: json!({
+                            "success": false,
+                            "error": err_msg,
+                            "framework": fw_name,
+                            "command": command,
+                        })
+                        .to_string(),
+                        metadata,
+                    });
+                }
+            }
+        };
+
+        let parsed = TestOutput::parse(fw_name, &output.stdout, &output.stderr, output.exit_code);
+
+        let result = json!({
+            "success": parsed.success,
+            "framework": fw_name,
+            "command": command,
+            "passed": parsed.passed,
+            "failed": parsed.failed,
+            "skipped": parsed.skipped,
+            "timed_out": parsed.timed_out,
+            "duration_ms": parsed.duration_ms,
+            "exit_code": output.exit_code,
+            "summary": parsed.summary,
+            "failures": parsed.failures,
+        });
+
+        metadata.insert("framework".to_string(), json!(fw_name));
+        metadata.insert("passed".to_string(), json!(parsed.passed));
+        metadata.insert("failed".to_string(), json!(parsed.failed));
+
+        if verbose {
+            metadata.insert("stdout".to_string(), json!(output.stdout));
+            metadata.insert("stderr".to_string(), json!(output.stderr));
+        }
+
+        Ok(ToolOutput {
+            output_type: "test_result".to_string(),
+            content: result.to_string(),
+            metadata,
+        })
+    }
+}
+
+/// Direct test run used only under DegradeWithMark / disabled sandbox.
+async fn run_direct(
+    command: &str,
+    cwd: &Path,
+    timeout: u64,
+) -> Result<crate::sandbox::SandboxOutput, String> {
+    let output = tokio::time::timeout(std::time::Duration::from_secs(timeout), {
+        let mut cmd = shell_command_captured(command);
+        cmd.current_dir(cwd);
+        cmd.output()
+    })
+    .await
+    .map_err(|_| "Test execution timed out".to_string())?
+    .map_err(|e| format!("Test execution failed: {}", e))?;
+
+    #[cfg(unix)]
+    let signal = {
+        use std::os::unix::process::ExitStatusExt;
+        output.status.signal()
+    };
+    #[cfg(not(unix))]
+    let signal: Option<i32> = None;
+
+    Ok(crate::sandbox::SandboxOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        exit_code: output.status.code().unwrap_or(-1),
+        killed_by_sandbox: false,
+        signal,
+    })
 }
 
 #[async_trait]
@@ -95,7 +332,7 @@ impl Tool for RunTestTool {
                 "allow_network": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Allow network access for integration tests. Uses Minimal sandbox level."
+                    "description": "Allow network access for integration tests within the mode's security level (does not lower the level)."
                 },
                 "verbose": {
                     "type": "boolean",
@@ -108,128 +345,16 @@ impl Tool for RunTestTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
-        let framework = input["framework"].as_str().unwrap_or("auto");
-        let filter = input["filter"].as_str();
-        let file = input["file"].as_str();
-        let timeout = input["timeout_secs"].as_u64().unwrap_or(120);
-        let allow_network = input["allow_network"].as_bool().unwrap_or(false);
-        let verbose = input["verbose"].as_bool().unwrap_or(false);
+        self.run(input, None, EffectiveMode::default()).await
+    }
 
-        // Detect or override framework
-        let (fw_name, mut base_cmd) = if framework == "auto" {
-            self.detect_framework(&cwd)
-        } else {
-            let cmd = match framework {
-                "rust-cargo" => vec!["cargo".to_string(), "test".to_string()],
-                "node-jest" => vec!["npx".to_string(), "jest".to_string()],
-                "node-vitest" => vec!["npx".to_string(), "vitest".to_string(), "run".to_string()],
-                "node-npm" => vec!["npm".to_string(), "test".to_string()],
-                "python-pytest" => vec!["pytest".to_string()],
-                "python-unittest" => vec![
-                    "python".to_string(),
-                    "-m".to_string(),
-                    "unittest".to_string(),
-                ],
-                "go" => vec!["go".to_string(), "test".to_string(), "./...".to_string()],
-                _ => vec!["cargo".to_string(), "test".to_string()],
-            };
-            (framework, cmd)
-        };
-
-        // Apply filter and file arguments
-        if let Some(f) = filter {
-            match fw_name {
-                "rust-cargo" | "go" => base_cmd.push(f.to_string()),
-                "node-jest" | "node-vitest" => {
-                    base_cmd.push("-t".to_string());
-                    base_cmd.push(f.to_string());
-                }
-                "python-pytest" => {
-                    base_cmd.push("-k".to_string());
-                    base_cmd.push(f.to_string());
-                }
-                _ => base_cmd.push(f.to_string()),
-            }
-        }
-
-        if let Some(f) = file {
-            base_cmd.push(f.to_string());
-        }
-
-        // Build shell command
-        let command = base_cmd.join(" ");
-
-        // Build sandbox profile
-        let security = if allow_network {
-            SecurityLevel::Minimal
-        } else {
-            SecurityLevel::Standard
-        };
-        let profile = SandboxConfig::builder(&cwd)
-            .security_level(security)
-            .wall_timeout_secs(timeout)
-            .build();
-
-        // Execute via sandbox
-        let sb = self.sandbox.as_ref();
-        let output = match sb.execute(&command, &profile).await {
-            Ok(out) => out,
-            Err(e) => {
-                let error_msg = format!("Test execution failed: {}", e);
-                return Ok(ToolOutput {
-                    output_type: "test_result".to_string(),
-                    content: json!({
-                        "success": false,
-                        "error": error_msg,
-                        "framework": fw_name,
-                        "command": command,
-                    })
-                    .to_string(),
-                    metadata: std::collections::HashMap::new(),
-                });
-            }
-        };
-
-        // Parse output
-        let parsed = TestOutput::parse(fw_name, &output.stdout, &output.stderr, output.exit_code);
-
-        // Build structured result
-        let result = json!({
-            "success": parsed.success,
-            "framework": fw_name,
-            "command": command,
-            "passed": parsed.passed,
-            "failed": parsed.failed,
-            "skipped": parsed.skipped,
-            "timed_out": parsed.timed_out,
-            "duration_ms": parsed.duration_ms,
-            "exit_code": output.exit_code,
-            "summary": parsed.summary,
-            "failures": parsed.failures,
-        });
-
-        let mut metadata = std::collections::HashMap::new();
-        metadata.insert("framework".to_string(), json!(fw_name));
-        metadata.insert("passed".to_string(), json!(parsed.passed));
-        metadata.insert("failed".to_string(), json!(parsed.failed));
-
-        if verbose {
-            let mut m = metadata;
-            m.insert("stdout".to_string(), json!(output.stdout));
-            m.insert("stderr".to_string(), json!(output.stderr));
-            return Ok(ToolOutput {
-                output_type: "test_result".to_string(),
-                content: result.to_string(),
-                metadata: m,
-            });
-        }
-
-        Ok(ToolOutput {
-            output_type: "test_result".to_string(),
-            content: result.to_string(),
-            metadata,
-        })
+    async fn execute_with_context(
+        &self,
+        context: &ToolContext<'_>,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        self.run(input, context.workdir, context.effective_mode)
+            .await
     }
 }
 
@@ -253,5 +378,9 @@ mod tests {
         let schema = tool.input_schema();
         assert!(schema["properties"]["filter"].is_object());
         assert!(schema["properties"]["timeout_secs"].is_object());
+        let desc = schema["properties"]["allow_network"]["description"]
+            .as_str()
+            .unwrap_or("");
+        assert!(!desc.contains("Minimal sandbox level"));
     }
 }

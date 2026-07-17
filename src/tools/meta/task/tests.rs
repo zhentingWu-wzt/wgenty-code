@@ -243,6 +243,7 @@ async fn root_task_fixture(
         invocation_id: ToolInvocationId::new("inv"),
         origin_turn_id: Some(origin_turn_id),
         workdir: None,
+        effective_mode: crate::sandbox::EffectiveMode::default(),
     };
     (tool, registry, root, ctx)
 }
@@ -343,6 +344,7 @@ async fn forged_identity_fields_cannot_bypass_depth_limit() {
         invocation_id: ToolInvocationId::new("inv"),
         origin_turn_id: Some("turn-1"),
         workdir: None,
+        effective_mode: crate::sandbox::EffectiveMode::default(),
     };
     let forged = serde_json::json!({
         "description": "nested work",

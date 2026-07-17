@@ -1,1 +1,1 @@
-Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The sandbox permits reading files. All file writes and edits are blocked.
+Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The sandbox permits reading files across the disk. File writes and edits via tools are blocked by policy; shell network access is restricted (Plan defaults to no network). Prefer investigation and planning over mutation.

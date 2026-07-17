@@ -9,8 +9,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin};
 use tokio::sync::{Mutex, RwLock};
 
-use crate::sandbox::{
-    shell_command_captured, SandboxConfig, SandboxManager, SandboxProfile, SecurityLevel,
+use crate::sandbox::{shell_command_captured, EffectiveMode, SandboxManager, SandboxProfile};
+use crate::tools::execution::sandbox_exec::{
+    resolve_for_context, sandbox_infra_tool_error, should_degrade_to_direct,
 };
 
 pub struct CommandSessionManager {
@@ -66,38 +67,59 @@ impl CommandSessionManager {
         self
     }
 
-    /// Build a Default sandbox profile for the given workspace.
-    fn default_profile(&self, cwd: &std::path::Path) -> SandboxProfile {
-        SandboxConfig::builder(cwd.to_path_buf())
-            .security_level(SecurityLevel::Minimal)
-            .build()
+    /// Backend status for tool metadata (or a synthetic "none" when unattached).
+    pub fn sandbox_status(&self) -> crate::sandbox::SandboxStatus {
+        self.sandbox
+            .as_ref()
+            .map(|sb| sb.status())
+            .unwrap_or_else(|| crate::sandbox::SandboxStatus {
+                backend_name: "none".to_string(),
+                is_hardware_enforced: false,
+                capabilities: vec![],
+            })
     }
 
-    pub async fn spawn(&self, command: &str, workdir: Option<PathBuf>) -> Result<u64, ToolError> {
+    pub async fn spawn(
+        &self,
+        command: &str,
+        workdir: Option<PathBuf>,
+        mode: EffectiveMode,
+    ) -> Result<u64, ToolError> {
         let session_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let cwd = workdir.unwrap_or_else(|| PathBuf::from("."));
+        let policy = resolve_for_context(mode, Some(cwd.as_path()), None);
 
-        // Prefer sandbox spawn. On spawn failure only, fall back to direct
-        // spawn that still uses platform shell + captured stdio so Windows TUI
-        // cannot be corrupted. Immediate exit (including signal-killed) is
-        // treated as a real session result — do not re-run outside the sandbox.
-        let mut child = if let Some(ref sb) = self.sandbox {
-            let profile = self
-                .sandbox_profile
-                .clone()
-                .unwrap_or_else(|| self.default_profile(&cwd));
+        // Prefer sandbox spawn when enabled. HardFail never direct-spawns.
+        // DegradeWithMark / disabled → direct with captured stdio.
+        let mut child = if policy.enabled {
+            if let Some(ref sb) = self.sandbox {
+                let profile = self
+                    .sandbox_profile
+                    .clone()
+                    .unwrap_or_else(|| policy.profile.clone());
 
-            match sb.spawn(command, &profile) {
-                Ok(sandboxed) => sandboxed.child,
-                Err(e) => {
-                    tracing::warn!(
-                        command = %command,
-                        backend = %sb.status().backend_name,
-                        error = %e,
-                        "Sandbox spawn failed; falling back to direct (captured stdio)"
-                    );
-                    self.spawn_direct(command, &cwd)?
+                match sb.spawn(command, &profile) {
+                    Ok(sandboxed) => sandboxed.child,
+                    Err(e) => {
+                        if !should_degrade_to_direct(policy.fail_mode) {
+                            return Err(sandbox_infra_tool_error(&sb.status().backend_name, e));
+                        }
+                        tracing::warn!(
+                            command = %command,
+                            backend = %sb.status().backend_name,
+                            error = %e,
+                            "Sandbox spawn failed; degrading to direct (captured stdio)"
+                        );
+                        self.spawn_direct(command, &cwd)?
+                    }
                 }
+            } else if should_degrade_to_direct(policy.fail_mode) {
+                self.spawn_direct(command, &cwd)?
+            } else {
+                return Err(sandbox_infra_tool_error(
+                    "none",
+                    "sandbox manager not attached",
+                ));
             }
         } else {
             self.spawn_direct(command, &cwd)?

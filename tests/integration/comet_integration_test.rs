@@ -88,6 +88,7 @@ async fn test_no_state_handle_skips_hook_blocking() {
         invocation_id: ToolInvocationId::new("test-no-state"),
         origin_turn_id: None,
         workdir: None,
+        effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
     };
     let result = executor
         .execute_with_hooks(
@@ -127,6 +128,7 @@ async fn test_build_phase_allows_write_tools() {
         invocation_id: ToolInvocationId::new("test-build"),
         origin_turn_id: None,
         workdir: None,
+        effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
     };
     let result = executor
         .execute_with_hooks(
@@ -164,6 +166,7 @@ async fn test_open_phase_blocks_write_tools() {
         invocation_id: ToolInvocationId::new("test-open"),
         origin_turn_id: None,
         workdir: None,
+        effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
     };
     let result = executor
         .execute_with_hooks(
@@ -201,6 +204,7 @@ async fn test_read_tools_not_blocked_in_open_phase() {
         invocation_id: ToolInvocationId::new("test-read-open"),
         origin_turn_id: None,
         workdir: None,
+        effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
     };
     let result = executor
         .execute_with_hooks(
@@ -238,6 +242,7 @@ async fn test_exec_command_blocked_in_open_phase() {
         invocation_id: ToolInvocationId::new("test-cmd-open"),
         origin_turn_id: None,
         workdir: None,
+        effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
     };
     let result = executor
         .execute_with_hooks(
@@ -275,6 +280,7 @@ async fn test_exec_command_allowed_in_build_phase() {
         invocation_id: ToolInvocationId::new("test-cmd-build"),
         origin_turn_id: None,
         workdir: None,
+        effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
     };
     let result = executor
         .execute_with_hooks(
@@ -323,6 +329,7 @@ async fn test_notification_hook_fires_on_block() {
         invocation_id: ToolInvocationId::new("test-notif"),
         origin_turn_id: None,
         workdir: None,
+        effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
     };
     let result = executor
         .execute_with_hooks(
@@ -363,6 +370,7 @@ async fn test_hook_state_mismatch_allows() {
         invocation_id: ToolInvocationId::new("test-mismatch"),
         origin_turn_id: None,
         workdir: None,
+        effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
     };
     let result = executor
         .execute_with_hooks(

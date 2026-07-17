@@ -127,6 +127,10 @@ pub struct ToolContext<'a> {
     /// tools resolve relative paths against this instead of the process cwd.
     /// `None` for the main agent / tests -> falls back to process cwd.
     pub workdir: Option<&'a std::path::Path>,
+    /// Sandbox / isolation effective mode for this call (ToolContext-only;
+    /// not a process-global lock). Defaults to [`EffectiveMode::Normal`]
+    /// at construction sites that omit an explicit mode.
+    pub effective_mode: crate::sandbox::EffectiveMode,
 }
 
 #[cfg(test)]

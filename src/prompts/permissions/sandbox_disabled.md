@@ -1,0 +1,1 @@
+Filesystem sandboxing is disabled (`sandbox_mode` is `disabled` / danger-full-access). Commands run without OS-level seatbelt/landlock isolation. Prefer careful, reversible changes; the user chose full access for this session.

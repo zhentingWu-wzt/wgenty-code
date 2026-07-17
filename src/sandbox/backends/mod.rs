@@ -79,9 +79,10 @@ pub fn configure_captured_stdio(cmd: &mut tokio::process::Command) {
 
     // Prevent console subsystem children (cmd.exe, node, npm) from allocating
     // or writing to a console window that shares the parent's TUI surface.
-    // tokio::process::Command exposes creation_flags on Windows targets.
+    // tokio::process::Command implements std::os::windows::process::CommandExt.
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }

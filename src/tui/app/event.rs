@@ -200,9 +200,15 @@ impl App {
             } => {
                 let diff_data = extract_diff_data(&name, &args, &content);
                 let tool_metadata = extract_tool_metadata(&content);
+                let just_bypassed = tool_metadata
+                    .as_ref()
+                    .and_then(|m| m.get("sandbox_bypassed"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 // Tool completed, clear running state for spinner
                 self.has_running_tool = false;
                 // Replace the placeholder ToolStart message with the result
+                // BEFORE any system notice so `last` still points at the tool row.
                 if let Some(last) = self.committed_messages.last_mut() {
                     if last.role == MessageRole::Tool
                         && last.tool_running
@@ -233,6 +239,24 @@ impl App {
                             tool_metadata,
                         });
                     }
+                }
+                // Sticky session badge when shell ran outside OS sandbox.
+                if just_bypassed && !self.sandbox_bypassed_session {
+                    self.sandbox_bypassed_session = true;
+                    self.committed_messages.push(UIMessage {
+                        role: MessageRole::System,
+                        content: "⚠ Sandbox bypassed — command ran outside OS isolation \
+                                  (Yolo degrade, settings disabled, or backend unavailable). \
+                                  Status bar shows ⚠ SANDBOX BYPASS for this session."
+                            .to_string(),
+                        tool_name: None,
+                        content_collapsed: false,
+                        tool_collapsed: true,
+                        tool_running: false,
+                        tool_args: None,
+                        diff_data: None,
+                        tool_metadata: None,
+                    });
                 }
             }
             AppEvent::Connecting { .. } => {
@@ -290,7 +314,8 @@ impl App {
                 }
             }
             AppEvent::ConfigChanged(new_settings) => {
-                // Rebuild system messages from new settings
+                // Rebuild system messages from new settings; keep runtime mode's
+                // sandbox/approval (Shift+Tab), not hard-coded workspace-write/never.
                 let prompt_ctx = PromptContext::new()
                     .with_cwd(
                         std::env::current_dir()
@@ -299,8 +324,8 @@ impl App {
                             .to_string(),
                     )
                     .with_shell(std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string()))
-                    .with_sandbox("workspace-write")
-                    .with_approval("never")
+                    .with_sandbox(self.mode.prompt_sandbox_mode())
+                    .with_approval(self.mode.prompt_approval_policy())
                     .with_collaboration(
                         new_settings
                             .prompt
@@ -462,11 +487,16 @@ impl App {
                 self.turn_started_at = None;
             }
             AppEvent::PermissionRequired {
+                tool_name,
                 reason,
                 rule,
                 responder,
             } => {
-                tracing::info!("🔐 App: showing permission panel for '{}'", rule);
+                tracing::info!(
+                    "🔐 App: showing permission panel for tool '{}' (rule: '{}')",
+                    tool_name,
+                    rule
+                );
                 // Yolo mode: auto-approve all permissions
                 if self.mode == AgentMode::Yolo {
                     let _ = responder
@@ -475,9 +505,13 @@ impl App {
                         .send(PermissionResponse::AllowOnce);
                     return;
                 }
-                // AcceptEdits mode: auto-approve file-edit permissions
+                // AcceptEdits: match on tool_name, not session_rule.
+                // session_rule is often `path:…` / `command:…` and never equals a tool name.
                 if self.mode == AgentMode::AcceptEdits
-                    && (rule == "apply_patch" || rule == "file_edit" || rule == "file_write")
+                    && self
+                        .mode
+                        .to_root_permission_mode()
+                        .auto_approves(&tool_name)
                 {
                     let _ = responder
                         .0
@@ -549,6 +583,7 @@ impl App {
 
                 // Second pass: convert ChatMessage to UIMessage, filtering system messages
                 self.committed_messages.clear();
+                self.sandbox_bypassed_session = false;
                 for msg in &messages {
                     match msg.role.as_str() {
                         "system" => continue,

@@ -258,10 +258,12 @@ impl SandboxBackend for MacOSBackend {
             }
         })?;
 
+        // Absolute paths only: after env_clear, bare `sh` can ENOENT if PATH is
+        // missing/wrong. Codex also pins sandbox-exec to /usr/bin.
         let mut cmd = tokio::process::Command::new("/usr/bin/sandbox-exec");
         cmd.arg("-f")
             .arg(&profile_path)
-            .arg("sh")
+            .arg("/bin/sh")
             .arg("-c")
             .arg(command);
 
