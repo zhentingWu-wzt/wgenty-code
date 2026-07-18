@@ -4,10 +4,7 @@
 //! goes through [`LlmPort::chat_completion`] with tools disabled so the model
 //! cannot answer with a tool_call (which would leave content empty).
 
-use super::compaction::{
-    assemble_post_compaction_history, micro_compact_messages, request_size_chars,
-    split_for_compaction,
-};
+use super::compaction::{micro_compact_messages, request_size_chars, split_for_compaction};
 use super::ports::{Compactor, HistoryStore, LlmPort};
 use crate::api::ChatMessage;
 use crate::context::{MemoryEntry, MemoryManager, MemoryOrigin, MemoryType};
@@ -320,7 +317,6 @@ pub async fn archive_transcript(history: &[ChatMessage]) {
 /// In-process auto-compactor for CLI / any path with a direct [`LlmPort`].
 pub struct ApiCompactor {
     llm: Arc<dyn LlmPort>,
-    system_messages: Vec<ChatMessage>,
     memory_manager: Option<Arc<MemoryManager>>,
     /// Last successful summary (chars available via this field).
     pub last_summary: Arc<tokio::sync::Mutex<String>>,
@@ -329,14 +325,9 @@ pub struct ApiCompactor {
 }
 
 impl ApiCompactor {
-    pub fn new(
-        llm: Arc<dyn LlmPort>,
-        system_messages: Vec<ChatMessage>,
-        memory_manager: Option<Arc<MemoryManager>>,
-    ) -> Self {
+    pub fn new(llm: Arc<dyn LlmPort>, memory_manager: Option<Arc<MemoryManager>>) -> Self {
         Self {
             llm,
-            system_messages,
             memory_manager,
             last_summary: Arc::new(tokio::sync::Mutex::new(String::new())),
             on_status: None,
@@ -357,11 +348,11 @@ impl ApiCompactor {
 
 #[async_trait]
 impl Compactor for ApiCompactor {
-    async fn compact(&self, history: &dyn HistoryStore) -> bool {
+    async fn compact(&self, history: &dyn HistoryStore) -> Option<String> {
         let history_snapshot = history.get().await;
         archive_transcript(&history_snapshot).await;
 
-        let (tail, transcript_text) = prepare_compaction_transcript(&history_snapshot);
+        let (_tail, transcript_text) = prepare_compaction_transcript(&history_snapshot);
 
         let summary_messages = vec![
             ChatMessage::system(COMPACTION_SYSTEM_PROMPT),
@@ -375,16 +366,9 @@ impl Compactor for ApiCompactor {
         let completion = match self.llm.chat_completion(summary_messages, None).await {
             Ok(c) => c,
             Err(e) => {
-                let err = e.to_string();
-                tracing::warn!(error = %err, "compaction summary request failed");
-                if is_payload_too_large_error(&err) && fallback_micro_compact(history).await {
-                    self.status(
-                        "Compaction summary hit a size limit; applied micro-compact fallback.",
-                    );
-                    return true;
-                }
+                tracing::warn!(error = %e, "compaction summary request failed");
                 self.status("Compaction failed; continuing with full history.");
-                return false;
+                return None;
             }
         };
 
@@ -401,14 +385,8 @@ impl Compactor for ApiCompactor {
 
         if summary.trim().is_empty() {
             tracing::warn!("compaction produced an empty summary; leaving history intact");
-            if fallback_micro_compact(history).await {
-                self.status(
-                    "Compaction produced an empty summary; applied micro-compact fallback.",
-                );
-                return true;
-            }
             self.status("Compaction produced an empty summary; continuing with full history.");
-            return false;
+            return None;
         }
 
         if let Some(ref mm) = self.memory_manager {
@@ -434,15 +412,13 @@ impl Compactor for ApiCompactor {
         {
             *self.last_summary.lock().await = summary.clone();
         }
-        let new_history = assemble_post_compaction_history(&self.system_messages, &summary, &tail);
-        history.replace(new_history).await;
 
         let summary_chars = summary.chars().count();
         self.status(format!(
             "Context compacted (summary ~{} chars).",
             summary_chars
         ));
-        true
+        Some(summary)
     }
 }
 
