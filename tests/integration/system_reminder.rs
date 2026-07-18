@@ -9,6 +9,10 @@ use tempfile::TempDir;
 
 use wgenty_code::config::Settings;
 use wgenty_code::prompts::{assemble_instructions, build_user_turn_reminder, PromptContext};
+use wgenty_code::runtime::hooks::{
+    collect_injections, ContextSource, HookAction, HookContext, HookDefinition, HookEvent,
+    HookManager, HookOutcome, InjectedFragment, LayerVisibility,
+};
 
 /// Test helper: scope a fake `$HOME` for one closure.
 /// Tests using this must be `#[serial]` to avoid races.
@@ -23,21 +27,22 @@ fn with_fake_home<F: FnOnce() -> R, R>(home: &std::path::Path, f: F) -> R {
     r
 }
 
-/// I1 — first turn user message contains the reminder block.
+/// I1 — first turn user message contains the reminder block (hook-only channel).
+///
+/// Static project WGENTY/AGENTS content now lives in the system cascade; the
+/// per-turn `<system-reminder>` is emitted only when hook injections exist.
 #[test]
-#[serial_test::serial]
 fn first_turn_user_message_contains_reminder() {
-    let tmp = TempDir::new().unwrap();
-    let project_root = tmp.path().join("proj");
-    std::fs::create_dir_all(&project_root).unwrap();
+    let ctx = PromptContext::new();
+    let injections = vec![InjectedFragment {
+        content: "HOOK-PAYLOAD".into(),
+        priority: 50,
+        visibility: LayerVisibility::Visible,
+        source_label: "hook:UserPromptSubmit:0".into(),
+    }];
 
-    let ctx = PromptContext::new()
-        .with_wgenty_md(vec!["PROJECT-WGENTY".into()])
-        .with_project_root(project_root);
-
-    let reminder = with_fake_home(tmp.path(), || {
-        build_user_turn_reminder(&ctx, &[]).expect("project section present → reminder Some")
-    });
+    let reminder = build_user_turn_reminder(&ctx, &injections)
+        .expect("hook injection present → reminder Some");
 
     // Simulate AgentLoop's prepend: reminder + "\n\n" + user input.
     let user_input = "What is 2 + 2?";
@@ -49,12 +54,12 @@ fn first_turn_user_message_contains_reminder() {
         "user message must start with reminder opener"
     );
     assert!(
-        user_content.contains("# wgentyMd"),
-        "reminder must contain # wgentyMd marker"
+        user_content.contains("# injectedContext"),
+        "reminder must contain # injectedContext marker"
     );
     assert!(
-        user_content.contains("PROJECT-WGENTY"),
-        "reminder must contain project WGENTY content"
+        user_content.contains("HOOK-PAYLOAD"),
+        "reminder must contain hook payload"
     );
     assert!(
         user_content.contains("</system-reminder>"),
@@ -74,29 +79,36 @@ fn first_turn_user_message_contains_reminder() {
     );
 }
 
+/// I1b — no hook injections → no per-turn reminder (static files are system-cascade).
+#[test]
+fn no_hooks_yields_no_reminder() {
+    let ctx = PromptContext::new().with_wgenty_md(vec!["PROJECT-WGENTY".into()]);
+    assert!(
+        build_user_turn_reminder(&ctx, &[]).is_none(),
+        "file-only context must not produce a user-turn reminder"
+    );
+}
+
 /// I2 — second turn reminder reappears (per-turn injection, no caching).
 #[test]
-#[serial_test::serial]
 fn second_turn_reminder_reappears() {
-    let tmp = TempDir::new().unwrap();
-    let project_root = tmp.path().join("proj");
-    std::fs::create_dir_all(&project_root).unwrap();
-    let ctx = PromptContext::new()
-        .with_wgenty_md(vec!["P".into()])
-        .with_project_root(project_root);
+    let ctx = PromptContext::new();
+    let injections = vec![InjectedFragment {
+        content: "P".into(),
+        priority: 50,
+        visibility: LayerVisibility::Visible,
+        source_label: "hook:UserPromptSubmit:0".into(),
+    }];
 
-    let (turn_a, turn_b) = with_fake_home(tmp.path(), || {
-        let a = build_user_turn_reminder(&ctx, &[]).expect("turn1 → Some");
-        let b = build_user_turn_reminder(&ctx, &[]).expect("turn2 → Some");
-        (a, b)
-    });
+    let a = build_user_turn_reminder(&ctx, &injections).expect("turn1 → Some");
+    let b = build_user_turn_reminder(&ctx, &injections).expect("turn2 → Some");
 
     assert_eq!(
-        turn_a.to_model, turn_b.to_model,
-        "reminder must be deterministic across turns when sources are unchanged"
+        a.to_model, b.to_model,
+        "reminder must be deterministic across turns when injections are unchanged"
     );
-    assert!(turn_a.to_model.contains("<system-reminder>"));
-    assert!(turn_b.to_model.contains("<system-reminder>"));
+    assert!(a.to_model.contains("<system-reminder>"));
+    assert!(b.to_model.contains("<system-reminder>"));
 }
 
 /// I3-prep — verifies user global instructions appear in system prompt Layers 7/8.
@@ -155,11 +167,6 @@ fn reminder_reflects_runtime_file_change() {
 }
 
 // ── §5: Hook injection end-to-end ─────────────────────────────────────────
-
-use wgenty_code::runtime::hooks::{
-    collect_injections, ContextSource, HookAction, HookContext, HookDefinition, HookEvent,
-    HookManager, HookOutcome, LayerVisibility,
-};
 
 /// I5.3 — hook injection flows through to reminder.to_model.
 #[tokio::test]
@@ -328,7 +335,7 @@ async fn hook_only_yields_wrapped_reminder() {
         "hook-only output must start with reminder opener"
     );
     assert!(
-        reminder.to_model.contains("# wgentyMd"),
+        reminder.to_model.contains("# injectedContext"),
         "opening preamble must be present"
     );
     assert!(
