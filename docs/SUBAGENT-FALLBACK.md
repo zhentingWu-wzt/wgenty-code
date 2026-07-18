@@ -98,8 +98,23 @@ The `subagent-driven-development` dual-review flow is unchanged.
 - **Salvage context not injected:** Interception 2 re-dispatches with the
   original `user_prompt` recovered from the transcript. The failed child's
   accumulated `text_snapshot` is not explicitly injected as salvage context
-  (the transcript already preserves the failed run's history). This may be
-  revisited if partial-work salvage becomes important.
+  (the transcript already preserves the failed run's history, and
+  `ChildResult.partial_result` is currently always `None` for failed children).
+  The spec's "partial result offered to fallback" SHALL is downgraded to a
+  best-effort: the transcript's event history is the recovery path. See the
+  delta spec for the amended requirement.
+- **Fallback child is a "ghost" -- cannot spawn grandchildren:** The
+  synthesized fallback child context (both interceptions) is NOT registered
+  with the coordinator's `scopes` (it bypasses `reserve_child`/`register_task`
+  because the original reserve failed or the re-dispatch is a fresh synthetic
+  agent). Consequently, if the fallback child itself calls the `task` tool to
+  spawn a grandchild, `reserve_child` returns `CoordinatorError::ParentNotRunning`
+  (the synthetic agent is not in `scopes`), which is not fallback-eligible and
+  surfaces to the fallback child's model. Tasks whose prompt requires nested
+  subagent dispatch therefore cannot be completed by the fallback path. A
+  fuller fix would register the synthetic child scope before running the loop;
+  deferred. For now, fallback suits leaf tasks (file inspection, single
+  command, research) rather than coordinator-style nested-dispatch tasks.
 - **Headless path:** `run_subagent_loop` (headless wrapper, used by run-script
   / rlm) passes `Settings::default()` with no transcript store, so interception
   2 degrades to the parent model on those paths. Rich contexts that go through

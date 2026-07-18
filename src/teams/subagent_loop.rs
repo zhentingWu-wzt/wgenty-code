@@ -301,11 +301,14 @@ impl SubagentSynthesis {
                 continue;
             }
 
+            // Mark fallback used BEFORE the attempt (mirrors interception 1).
+            // `on_candidate_final` runs every synthesis round, so marking only
+            // on success would let a failed fallback re-attempt every round --
+            // violating the single-shot, non-recursive constraint.
+            self.coordinator.mark_fallback_used(&child_id_str).await;
+
             match self.attempt_model_fallback(&r).await {
-                Ok(new_result) => {
-                    self.coordinator.mark_fallback_used(&child_id_str).await;
-                    out.push(new_result);
-                }
+                Ok(new_result) => out.push(new_result),
                 Err(reason) => {
                     tracing::warn!(
                         fallback = "interception2",
