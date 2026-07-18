@@ -104,6 +104,13 @@ pub struct App {
     /// Shared conversation history — all Turns in this session read/write
     /// through this Arc, so each Turn inherits the accumulated context.
     pub conversation_history: Arc<TokioMutex<Vec<ChatMessage>>>,
+    /// Serializes session persistence so Turn-complete saves and exit flush
+    /// cannot race (last-writer-wins with a stale snapshot).
+    session_save_lock: Arc<TokioMutex<()>>,
+    /// Set after a successful exit flush. In-flight `spawn_save_session` tasks
+    /// observe this under the save lock and skip so they cannot overwrite the
+    /// final snapshot with a UI clone taken earlier in the session.
+    session_exit_saved: Arc<std::sync::atomic::AtomicBool>,
     /// Pending user inputs queued while a Turn is running.
     pub pending_inputs: VecDeque<PendingInput>,
     /// Handle for the currently executing Turn (None when idle).
@@ -135,6 +142,7 @@ pub struct App {
     pub permission_state: PermissionState,
     pub question_state: QuestionState,
     pub session_state: SessionState,
+    pub memory_state: crate::tui::components::memory::MemoryState,
     pub task_panel: TaskPanelState,
     /// Structured plan panel state (Codex-style update_plan tool)
     pub plan_panel_state: PlanPanelState,
@@ -360,32 +368,8 @@ impl App {
         let agents_sections = crate::utils::project::read_agents_md_sections(&project_root);
         crate::utils::startup_timing::mark("app new: wgenty/agents sections read");
 
-        // ── Per-turn <system-reminder> hook injection is dynamic per-turn.
-        // At startup there are no hooks, so the estimate is always 0.
-        // Token budget for system prompt (including Layers 7/8 user globals)
-        // is managed by the prompt assembler itself. The dev-log warning below
-        // is retained as a baseline guard; hook-heavy sessions may trigger it.
-        let reminder_token_estimate = {
-            let preview_ctx = crate::prompts::PromptContext::new();
-            match crate::prompts::build_user_turn_reminder(&preview_ctx, &[]) {
-                Some(out) => crate::utils::estimate_tokens(&out.to_model),
-                None => 0,
-            }
-        };
-        // Dev-facing only: log once at startup when the per-turn
-        // <system-reminder> block exceeds the token budget. No user-visible
-        // surface — see the `system-reminder-injection` spec (token-budget
-        // warning is dev-log-only) and `render.rs` (welcome banner must not
-        // be suppressed by the budget calculation).
-        if reminder_token_estimate > 2000 {
-            tracing::warn!(
-                reminder_tokens = reminder_token_estimate,
-                "<system-reminder> block estimate ~{} tokens. \
-                 Consider trimming WGENTY.md / AGENTS.md / ~/.wgenty-code/ files to keep per-turn input lean.",
-                reminder_token_estimate,
-            );
-        }
-
+        // Static project/user instruction files live in the system cascade
+        // (Layers 7–10). Per-turn <system-reminder> is hook-only and starts empty.
         let mut prompt_ctx = prompt_ctx
             .with_wgenty_md(wgenty_sections)
             .with_agents_md(agents_sections)
@@ -399,10 +383,12 @@ impl App {
         let assembled = prompts::assemble_instructions(&settings, &prompt_ctx);
         crate::utils::startup_timing::mark("app new: prompt assembled");
         let system_messages = assembled.system_messages;
-        let conversation_history = Arc::new(TokioMutex::new(system_messages.clone()));
+        // Dialogue-only history: system layers are prepended each API round and
+        // must not be seeded into (or duplicated by) conversation_history.
+        let conversation_history = Arc::new(TokioMutex::new(Vec::new()));
         // Share the prompt context with each AgentLoop so per-turn reminders
-        // can inject hook fragments. User global instructions/rules are cached
-        // at construction and delivered via Layers 7/8 in the system prompt.
+        // can inject hook fragments. Project/user instruction files are cached
+        // at construction and delivered via the system cascade.
         let prompt_context = Arc::new(prompt_ctx);
 
         // Initialize hook manager from settings
@@ -467,6 +453,8 @@ impl App {
             scroll_offset: 0,
             user_scrolled: false,
             conversation_history,
+            session_save_lock: Arc::new(TokioMutex::new(())),
+            session_exit_saved: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             assembled_system_messages: system_messages,
             pending_inputs: VecDeque::new(),
             current_turn_handle: None,
@@ -486,6 +474,7 @@ impl App {
             permission_state: PermissionState::new(),
             question_state: QuestionState::new(),
             session_state: SessionState::new(),
+            memory_state: crate::tui::components::memory::MemoryState::new(),
             task_panel: TaskPanelState::new(),
             plan_panel_state: PlanPanelState::new(),
             subagent_tree: SubagentTree::default(),
@@ -543,6 +532,117 @@ impl App {
 
     pub fn event_sender(&self) -> mpsc::UnboundedSender<AppEvent> {
         self.event_tx.clone()
+    }
+
+    /// Max time to wait for the final session flush on exit.
+    /// Local daemon + JSON write is typically tens of ms; 3s covers a
+    /// momentarily busy daemon without making Ctrl+C feel stuck.
+    const EXIT_SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+    /// Snapshot current history + UI track and persist under `session_save_lock`.
+    ///
+    /// Exit path only. After a successful write, sets `session_exit_saved` so
+    /// any earlier fire-and-forget save still waiting on the lock drops its
+    /// stale UI clone instead of overwriting the final snapshot.
+    pub(super) async fn save_session_snapshot(&self) {
+        let id = self.session_id.clone();
+        let name = self.session_name.clone();
+        let client = self.daemon_client.clone();
+        let history = self.conversation_history.clone();
+        let ui_messages: Vec<_> = self
+            .committed_messages
+            .iter()
+            .map(UIMessage::to_session_ui_message)
+            .collect();
+        let lock = self.session_save_lock.clone();
+        let exit_saved = self.session_exit_saved.clone();
+
+        let _guard = lock.lock().await;
+        // Sanitize under the save lock so interrupt/exit never persist unpaired
+        // tool_calls (idempotent when history is already well-formed).
+        let h = {
+            let mut hist = history.lock().await;
+            crate::api::types::sanitize_tool_call_pairing(&mut hist);
+            hist.clone()
+        };
+        match client.save_session(&id, &name, &h, &ui_messages).await {
+            Ok(()) => {
+                exit_saved.store(true, std::sync::atomic::Ordering::Release);
+            }
+            Err(e) => {
+                tracing::error!(
+                    session_id = %id,
+                    session_name = %name,
+                    error = %e,
+                    "Failed to save session to daemon"
+                );
+            }
+        }
+    }
+
+    /// Non-blocking save for TurnComplete / interrupt paths.
+    ///
+    /// Clones the UI track at schedule time; history is re-read + sanitized
+    /// under the lock. Skips the write if exit flush already persisted the
+    /// final snapshot — preventing last-writer-wins with a stale UI clone.
+    ///
+    /// If exit flush *timed out* without setting the flag, an in-flight spawn
+    /// still writes (best-effort) rather than dropping the only remaining save.
+    pub(super) fn spawn_save_session(&self) {
+        let id = self.session_id.clone();
+        let name = self.session_name.clone();
+        let client = self.daemon_client.clone();
+        let history = self.conversation_history.clone();
+        let ui_messages: Vec<_> = self
+            .committed_messages
+            .iter()
+            .map(UIMessage::to_session_ui_message)
+            .collect();
+        let lock = self.session_save_lock.clone();
+        let exit_saved = self.session_exit_saved.clone();
+        tokio::spawn(async move {
+            let _guard = lock.lock().await;
+            if exit_saved.load(std::sync::atomic::Ordering::Acquire) {
+                tracing::debug!(
+                    session_id = %id,
+                    "skipping spawned session save; exit flush already persisted"
+                );
+                return;
+            }
+            let h = {
+                let mut hist = history.lock().await;
+                crate::api::types::sanitize_tool_call_pairing(&mut hist);
+                hist.clone()
+            };
+            if let Err(e) = client.save_session(&id, &name, &h, &ui_messages).await {
+                tracing::error!(
+                    session_id = %id,
+                    session_name = %name,
+                    error = %e,
+                    "Failed to save session to daemon"
+                );
+            }
+        });
+    }
+
+    /// Best-effort final persist before process teardown.
+    ///
+    /// Waits up to [`Self::EXIT_SAVE_TIMEOUT`]. If a TurnComplete save is still
+    /// holding the lock, we queue behind it then write the latest snapshot so
+    /// the on-disk file matches the UI the user just left.
+    async fn flush_session_on_exit(&self) {
+        match tokio::time::timeout(Self::EXIT_SAVE_TIMEOUT, self.save_session_snapshot()).await {
+            Ok(()) => {
+                tracing::debug!(session_id = %self.session_id, "exit session flush completed");
+            }
+            Err(_) => {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    timeout_secs = Self::EXIT_SAVE_TIMEOUT.as_secs(),
+                    "exit session flush timed out; continuing shutdown"
+                );
+            }
+        }
     }
 
     /// Run the main event loop.
@@ -647,6 +747,11 @@ impl App {
                 self.handle_event(event).await;
             }
         }
+
+        // Persist the latest transcript before tearing down the daemon session.
+        // Bounded wait — see EXIT_SAVE_TIMEOUT — so a hung daemon cannot block
+        // Ctrl+C indefinitely.
+        self.flush_session_on_exit().await;
 
         // Cancel the agent session through the coordinator so no subagent
         // outlives the TUI: live root-direct subtrees are cancelled bottom-up
@@ -825,45 +930,45 @@ mod token_budget_tests {
 
     #[test]
     #[serial_test::serial]
-    fn reminder_over_threshold_estimate_exceeds_2000() {
-        // ~12,000 chars / 4 chars-per-token ≈ 3000 tokens (well over threshold).
+    fn reminder_is_hook_only_project_docs_do_not_inflate_user_turn() {
+        // Static WGENTY content no longer rides the per-turn reminder channel.
+        // A huge project section alone must not produce a user-turn reminder.
         let tmp = tempfile::TempDir::new().unwrap();
         let huge = long_section(12_000);
-
         let preview_ctx = crate::prompts::PromptContext::new().with_wgenty_md(vec![huge]);
 
-        let estimated = with_fake_home(tmp.path(), || {
-            let reminder = crate::prompts::build_user_turn_reminder(&preview_ctx, &[])
-                .expect("Some — section present");
-            crate::utils::estimate_tokens(&reminder.to_model)
+        let reminder = with_fake_home(tmp.path(), || {
+            crate::prompts::build_user_turn_reminder(&preview_ctx, &[])
         });
 
         assert!(
-            estimated > 2000,
-            "synthetic huge section should exceed 2000 token threshold, got {}",
-            estimated
+            reminder.is_none(),
+            "project docs must not produce a per-turn system-reminder without hooks"
         );
     }
 
     #[test]
     #[serial_test::serial]
-    fn reminder_under_threshold_estimate_stays_quiet() {
-        // Small section in an isolated $HOME → estimate must stay well under threshold.
+    fn reminder_with_hook_injection_is_present() {
+        use crate::runtime::hooks::{InjectedFragment, LayerVisibility};
+
         let tmp = tempfile::TempDir::new().unwrap();
-        let tiny = "Short project rule.".to_string();
-        let preview_ctx = crate::prompts::PromptContext::new().with_wgenty_md(vec![tiny]);
+        let preview_ctx = crate::prompts::PromptContext::new();
+        let hooks = vec![InjectedFragment {
+            content: "hook body".into(),
+            source_label: "test-hook".into(),
+            visibility: LayerVisibility::Internal,
+            priority: 50,
+        }];
 
-        let estimated = with_fake_home(tmp.path(), || {
-            let reminder =
-                crate::prompts::build_user_turn_reminder(&preview_ctx, &[]).expect("Some");
-            crate::utils::estimate_tokens(&reminder.to_model)
-        });
+        let reminder = with_fake_home(tmp.path(), || {
+            crate::prompts::build_user_turn_reminder(&preview_ctx, &hooks)
+        })
+        .expect("hook injection must produce a reminder");
 
-        assert!(
-            estimated < 2000,
-            "tiny section should not exceed threshold; got {}",
-            estimated
-        );
+        assert!(reminder.to_model.contains("<system-reminder>"));
+        assert!(reminder.to_model.contains("hook body"));
+        assert!(reminder.to_transcript.is_none());
     }
 
     /// Regression guard for the channel bug introduced in commit 006945f and

@@ -299,6 +299,10 @@ pub enum AppEvent {
     Tick,
     /// Toggle session popup
     ToggleSessions,
+    /// Toggle memory browser popup
+    ToggleMemory,
+    /// Memory list finished loading from MemoryManager
+    MemoryListLoaded(Vec<crate::tui::components::memory::MemoryListItem>),
     /// Toggle task panel
     ToggleTaskPanel,
     /// Pasted text from bracketed paste
@@ -313,7 +317,12 @@ pub enum AppEvent {
     SystemNotice(String),
     /// Sessions loaded from daemon
     SessionListLoaded(Vec<SessionInfo>),
-    HistoryLoaded(Vec<ChatMessage>),
+    /// Model history plus optional UI transcript from a loaded session.
+    /// When `ui_messages` is non-empty, the TUI restores display from that track.
+    HistoryLoaded {
+        messages: Vec<ChatMessage>,
+        ui_messages: Vec<crate::context::SessionUiMessage>,
+    },
     SaveSession,
     /// Delete a session by id
     DeleteSession(String),
@@ -408,6 +417,59 @@ pub struct UIMessage {
     pub tool_running: bool,
     pub diff_data: Option<DiffData>,
     pub tool_metadata: Option<serde_json::Value>,
+}
+
+impl UIMessage {
+    /// Convert a live TUI row into the serializable session UI track.
+    pub fn to_session_ui_message(&self) -> crate::context::SessionUiMessage {
+        crate::context::SessionUiMessage {
+            role: match self.role {
+                MessageRole::User => "user".to_string(),
+                MessageRole::Assistant => "assistant".to_string(),
+                MessageRole::Tool => "tool".to_string(),
+                MessageRole::System => "system".to_string(),
+            },
+            content: self.content.clone(),
+            tool_name: self.tool_name.clone(),
+            tool_args: self.tool_args.clone(),
+            content_collapsed: self.content_collapsed,
+            tool_collapsed: self.tool_collapsed,
+            diff_data: self
+                .diff_data
+                .as_ref()
+                .map(|d| crate::context::SessionDiffData {
+                    file_path: d.file_path.clone(),
+                    old_content: d.old_content.clone(),
+                    new_content: d.new_content.clone(),
+                }),
+            tool_metadata: self.tool_metadata.clone(),
+        }
+    }
+
+    /// Restore a TUI row from the persisted UI track. `tool_running` is always false.
+    pub fn from_session_ui_message(msg: crate::context::SessionUiMessage) -> Self {
+        let role = match msg.role.as_str() {
+            "assistant" => MessageRole::Assistant,
+            "tool" => MessageRole::Tool,
+            "system" => MessageRole::System,
+            _ => MessageRole::User,
+        };
+        Self {
+            role,
+            content: msg.content,
+            tool_name: msg.tool_name,
+            tool_args: msg.tool_args,
+            content_collapsed: msg.content_collapsed,
+            tool_collapsed: msg.tool_collapsed,
+            tool_running: false,
+            diff_data: msg.diff_data.map(|d| DiffData {
+                file_path: d.file_path,
+                old_content: d.old_content,
+                new_content: d.new_content,
+            }),
+            tool_metadata: msg.tool_metadata,
+        }
+    }
 }
 
 /// Structured diff data for syntax-highlighted diff rendering in the TUI.
@@ -542,6 +604,41 @@ mod tests {
             args_hint: None,
             category: category.to_string(),
         }
+    }
+
+    #[test]
+    fn ui_message_session_track_round_trip() {
+        let original = UIMessage {
+            role: MessageRole::Tool,
+            content: "patched".to_string(),
+            tool_name: Some("apply_patch".to_string()),
+            tool_args: Some(serde_json::json!({"path": "x.rs"})),
+            content_collapsed: true,
+            tool_collapsed: false,
+            tool_running: true, // must not persist
+            diff_data: Some(DiffData {
+                file_path: "x.rs".to_string(),
+                old_content: "a".to_string(),
+                new_content: "b".to_string(),
+            }),
+            tool_metadata: Some(serde_json::json!({"ok": true})),
+        };
+
+        let wire = original.to_session_ui_message();
+        let restored = UIMessage::from_session_ui_message(wire);
+
+        assert_eq!(restored.role, MessageRole::Tool);
+        assert_eq!(restored.content, "patched");
+        assert_eq!(restored.tool_name.as_deref(), Some("apply_patch"));
+        assert_eq!(restored.tool_args, original.tool_args);
+        assert!(restored.content_collapsed);
+        assert!(!restored.tool_collapsed);
+        assert!(!restored.tool_running);
+        assert_eq!(
+            restored.diff_data.as_ref().map(|d| d.file_path.as_str()),
+            Some("x.rs")
+        );
+        assert_eq!(restored.tool_metadata, original.tool_metadata);
     }
 
     #[test]

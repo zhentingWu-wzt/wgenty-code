@@ -15,7 +15,13 @@ pub struct Session {
     pub project_path: Option<PathBuf>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Model-facing dialogue history (may be compacted). Used for resume/API.
     pub messages: Vec<SessionMessage>,
+    /// Human-facing TUI transcript (pre-compact display). Optional for legacy
+    /// sessions; when present, the TUI restores this instead of rebuilding from
+    /// `messages`. Never sent to the model.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ui_messages: Vec<SessionUiMessage>,
     #[serde(default)]
     pub metadata: HashMap<String, serde_json::Value>,
     #[serde(default)]
@@ -50,6 +56,7 @@ impl Session {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             messages: Vec::new(),
+            ui_messages: Vec::new(),
             metadata: HashMap::new(),
             status: SessionStatus::Active,
             lazy_message_count: None,
@@ -76,6 +83,35 @@ impl Session {
     pub fn message_count(&self) -> usize {
         self.messages.len()
     }
+}
+
+/// Persisted TUI chat row (display transcript). Independent of model `messages`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionUiMessage {
+    /// `user` | `assistant` | `tool` | `system`
+    pub role: String,
+    #[serde(default)]
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_args: Option<serde_json::Value>,
+    #[serde(default)]
+    pub content_collapsed: bool,
+    #[serde(default)]
+    pub tool_collapsed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_data: Option<SessionDiffData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_metadata: Option<serde_json::Value>,
+}
+
+/// Diff payload embedded in [`SessionUiMessage`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionDiffData {
+    pub file_path: String,
+    pub old_content: String,
+    pub new_content: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -343,6 +379,7 @@ impl SessionManager {
                                 created_at,
                                 updated_at,
                                 messages: Vec::new(),
+                                ui_messages: Vec::new(),
                                 metadata: HashMap::new(),
                                 status,
                                 lazy_message_count: Some(msg_count),
@@ -827,6 +864,98 @@ mod tests {
         assert!(
             wire.contains("\"tool_call_id\":\"call_abc\""),
             "serialized tool message must include tool_call_id, got: {wire}"
+        );
+    }
+
+    #[test]
+    fn session_ui_messages_round_trip_and_legacy_default() {
+        let ui = SessionUiMessage {
+            role: "tool".to_string(),
+            content: "diff output".to_string(),
+            tool_name: Some("apply_patch".to_string()),
+            tool_args: Some(serde_json::json!({"path": "a.rs"})),
+            content_collapsed: true,
+            tool_collapsed: false,
+            diff_data: Some(SessionDiffData {
+                file_path: "a.rs".to_string(),
+                old_content: "old".to_string(),
+                new_content: "new".to_string(),
+            }),
+            tool_metadata: Some(serde_json::json!({"lines": 2})),
+        };
+
+        let mut session = Session::with_id("ui-track", Some("ui-track"));
+        session.messages.push(SessionMessage {
+            role: "user".to_string(),
+            content: "compacted model history".to_string(),
+            tool_call_id: None,
+            tool_calls: None,
+            timestamp: Utc::now(),
+            metadata: HashMap::new(),
+        });
+        session.ui_messages.push(ui.clone());
+
+        let json = serde_json::to_string(&session).expect("serialize session");
+        assert!(json.contains("ui_messages"));
+        assert!(json.contains("apply_patch"));
+
+        let loaded: Session = serde_json::from_str(&json).expect("deserialize session");
+        assert_eq!(loaded.ui_messages.len(), 1);
+        assert_eq!(loaded.ui_messages[0], ui);
+        assert_eq!(loaded.messages.len(), 1);
+
+        // Legacy files without ui_messages deserialize to empty UI track.
+        let legacy = r#"{
+            "id":"legacy",
+            "name":"legacy",
+            "project_path":null,
+            "created_at":"2026-01-01T00:00:00Z",
+            "updated_at":"2026-01-01T00:00:00Z",
+            "messages":[]
+        }"#;
+        let legacy_session: Session =
+            serde_json::from_str(legacy).expect("legacy session without ui_messages");
+        assert!(legacy_session.ui_messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn save_load_preserves_ui_messages_independently_of_messages() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = SessionManager::with_dir(tmp.path().to_path_buf());
+
+        let mut session = Session::with_id("dual-track", Some("dual"));
+        session.add_message("user", "model-facing only");
+        session.ui_messages.push(SessionUiMessage {
+            role: "system".to_string(),
+            content: "notice kept only on UI track".to_string(),
+            tool_name: None,
+            tool_args: None,
+            content_collapsed: false,
+            tool_collapsed: false,
+            diff_data: None,
+            tool_metadata: None,
+        });
+        session.ui_messages.push(SessionUiMessage {
+            role: "user".to_string(),
+            content: "full user text before compact".to_string(),
+            tool_name: None,
+            tool_args: None,
+            content_collapsed: false,
+            tool_collapsed: false,
+            diff_data: None,
+            tool_metadata: None,
+        });
+
+        mgr.save(&session).await.unwrap();
+        let loaded = mgr.load("dual-track").await.unwrap().unwrap();
+
+        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(loaded.messages[0].content, "model-facing only");
+        assert_eq!(loaded.ui_messages.len(), 2);
+        assert_eq!(loaded.ui_messages[0].role, "system");
+        assert_eq!(
+            loaded.ui_messages[1].content,
+            "full user text before compact"
         );
     }
 }

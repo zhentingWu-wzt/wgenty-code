@@ -597,6 +597,7 @@ pub async fn create_session(
         created_at: session.created_at.to_rfc3339(),
         updated_at: session.updated_at.to_rfc3339(),
         messages: session.messages,
+        ui_messages: session.ui_messages,
     }))
 }
 
@@ -617,6 +618,7 @@ pub async fn get_session(
         created_at: session.created_at.to_rfc3339(),
         updated_at: session.updated_at.to_rfc3339(),
         messages: session.messages,
+        ui_messages: session.ui_messages,
     }))
 }
 
@@ -645,6 +647,9 @@ pub async fn update_session(
     if let Some(messages) = body.messages {
         session.messages = messages;
     }
+    if let Some(ui_messages) = body.ui_messages {
+        session.ui_messages = ui_messages;
+    }
     session.updated_at = chrono::Utc::now();
     // Fully materialised write — clear any lazy index marker.
     session.lazy_message_count = None;
@@ -661,6 +666,7 @@ pub async fn update_session(
         created_at: session.created_at.to_rfc3339(),
         updated_at: session.updated_at.to_rfc3339(),
         messages: session.messages,
+        ui_messages: session.ui_messages,
     }))
 }
 
@@ -1135,6 +1141,7 @@ mod tests {
                 timestamp: chrono::Utc::now(),
                 metadata: Default::default(),
             }]),
+            ui_messages: None,
         };
         let Json(resp): Json<SessionResponse> =
             update_session(State(state.clone()), Path(fixed_id.clone()), Json(body))
@@ -1191,6 +1198,7 @@ mod tests {
                     timestamp: chrono::Utc::now(),
                     metadata: Default::default(),
                 }]),
+                ui_messages: None,
             };
             let Json(resp): Json<SessionResponse> =
                 update_session(State(state.clone()), Path(fixed_id.clone()), Json(body))

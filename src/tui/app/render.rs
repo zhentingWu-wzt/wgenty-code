@@ -54,6 +54,9 @@ impl App {
         let active_count = self.subagent_tree.active_count();
         let has_status_bar = active_count > 0;
         let status_bar_height = status_bar_layout_height(active_count);
+        // Input column width ≈ full area; mode label row sits under the box.
+        let input_box_height = self.input_box.preferred_height(area.width);
+        let input_section_height = input_box_height.saturating_add(1); // + mode label
         let constraints: Vec<Constraint> = if show_panel {
             vec![
                 Constraint::Min(3),
@@ -61,12 +64,7 @@ impl App {
                 Constraint::Length(1),
                 Constraint::Length(if has_status_bar { status_bar_height } else { 0 }),
                 Constraint::Length(if has_pending { pending_height } else { 0 }),
-                Constraint::Length(
-                    (self.input_box.textarea.lines().len() + 3)
-                        .clamp(6, 16)
-                        .try_into()
-                        .unwrap_or(16),
-                ),
+                Constraint::Length(input_section_height),
             ]
         } else {
             vec![
@@ -74,12 +72,7 @@ impl App {
                 Constraint::Length(1),
                 Constraint::Length(if has_status_bar { status_bar_height } else { 0 }),
                 Constraint::Length(if has_pending { pending_height } else { 0 }),
-                Constraint::Length(
-                    (self.input_box.textarea.lines().len() + 3)
-                        .clamp(6, 16)
-                        .try_into()
-                        .unwrap_or(16),
-                ),
+                Constraint::Length(input_section_height),
             ]
         };
         let layout = Layout::default()
@@ -150,6 +143,8 @@ impl App {
         }
         // Session is still a popup overlay
         components::session::render(f, &self.session_state, centered_rect);
+        // Memory browser overlay (hygiene L1)
+        components::memory::render(f, &self.memory_state, centered_rect);
     }
 
     fn render_chat(&self, f: &mut Frame, area: Rect) {

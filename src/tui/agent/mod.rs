@@ -68,7 +68,7 @@ pub struct AgentLoop {
     /// accumulated context is inherited by the next Turn in the queue.
     pub(super) conversation_history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
     /// Pre-assembled system messages (layered instructions from PromptAssembler).
-    /// Used when initializing or resetting the conversation history.
+    /// Prepended fresh each API round; never stored in `conversation_history`.
     pub(super) assembled_system_messages: Vec<ChatMessage>,
     pub(super) rounds_since_plan: usize,
     pub(super) compacted_summary: String,
@@ -118,6 +118,10 @@ pub struct AgentLoop {
     /// `AgentLocalView` events so the handler can discard stale views from
     /// a previous generation after `/clear` or a generation reset.
     pub(super) agent_generation: u64,
+    /// When true, dump each turn's `<system-reminder>` under
+    /// `.wgenty-code/debug/reminders/`. Driven by `prompt.debug_dump_reminder`
+    /// or env `WGENTY_DEBUG_REMINDER`.
+    pub(super) debug_dump_reminder: bool,
 }
 
 impl AgentLoop {
@@ -140,6 +144,7 @@ impl AgentLoop {
         max_tokens: usize,
         memory_manager: Arc<crate::context::MemoryManager>,
         agent_generation: u64,
+        debug_dump_reminder: bool,
     ) -> Self {
         Self {
             client,
@@ -166,6 +171,7 @@ impl AgentLoop {
             max_tokens,
             memory_manager,
             agent_generation,
+            debug_dump_reminder,
         }
     }
 
@@ -314,11 +320,33 @@ impl AgentLoop {
         // 1b. Collect injected fragments from hook outcomes.
         let injections = crate::runtime::hooks::collect_injections(&outcomes);
 
-        // 2. Build per-turn `<system-reminder>` block from file sources + hook injections.
+        // 2. Build per-turn `<system-reminder>` from hook injections only.
+        // Static WGENTY/AGENTS live in assembled_system_messages (system cascade).
         let reminder =
             crate::prompts::build_user_turn_reminder(self.prompt_context.as_ref(), &injections);
 
-        // 3. Assemble user message content: reminder (if any) prepended to user input.
+        // 2b. Optional debug dump of the user-message system-reminder channel.
+        if self.debug_dump_reminder {
+            match crate::prompts::dump_user_turn_reminder(
+                self.prompt_context.project_root.as_deref(),
+                &self.session_id,
+                &input,
+                reminder.as_ref(),
+                injections.len(),
+            ) {
+                Ok(path) => tracing::info!(
+                    path = %path.display(),
+                    hooks = injections.len(),
+                    has_reminder = reminder.is_some(),
+                    "dumped user-turn system-reminder"
+                ),
+                Err(err) => tracing::warn!(error = %err, "failed to dump system-reminder"),
+            }
+        }
+
+        // 3. Assemble user message: hook reminder (if any) prepended to user input.
+        // History stays free of static system layers; only dynamic hook context
+        // may ride along with this user turn.
         let user_content = match &reminder {
             Some(r) => format!("{}\n\n{}", r.to_model, input),
             None => input.clone(),
@@ -332,9 +360,7 @@ impl AgentLoop {
             history.push(ChatMessage::user(&user_content));
         }
 
-        // Deliver the user-visible portion of the per-turn reminder to the
-        // transcript so the user sees context that was injected (file sources,
-        // hook injections) without it being buried in the model-facing prompt.
+        // Deliver the user-visible portion of hook injections to the transcript.
         if let Some(transcript) = reminder.as_ref().and_then(|r| r.to_transcript.clone()) {
             let _ = self.event_tx.send(AppEvent::SystemNotice(transcript));
         }
@@ -396,6 +422,7 @@ mod tests {
             65536,
             mm.clone(),
             0,
+            false,
         );
 
         // Verify the field is accessible and is of the correct type.
