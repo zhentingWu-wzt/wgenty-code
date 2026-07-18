@@ -263,9 +263,7 @@ mod tests {
             Some(true)
         );
         assert_eq!(
-            out.metadata
-                .get("permission_mode")
-                .and_then(|v| v.as_str()),
+            out.metadata.get("permission_mode").and_then(|v| v.as_str()),
             Some("yolo")
         );
     }

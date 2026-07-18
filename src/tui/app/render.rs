@@ -35,7 +35,7 @@ impl App {
         let has_plan = self.plan_panel_state.visible;
         let show_panel = has_question || has_permission || has_plan;
         let panel_height = if has_question {
-            self.question_state.height_needed()
+            self.question_state.height_needed(area.width)
         } else if has_permission {
             self.permission_state.height_needed()
         } else if has_plan {
