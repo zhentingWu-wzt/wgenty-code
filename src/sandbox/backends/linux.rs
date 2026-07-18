@@ -38,6 +38,26 @@ impl LinuxBackend {
         }
     }
 
+    /// Probe whether we can actually create a cgroup under the v2 base.
+    ///
+    /// `cgroup.controllers` existing only proves cgroup v2 is mounted; on
+    /// unprivileged hosts (CI runners, non-root sessions) `/sys/fs/cgroup` is
+    /// read-only and [`create_cgroup`](Self::create_cgroup) would fail with
+    /// `EACCES`. Probe once at backend selection so [`create_backend`](super::create_backend)
+    /// falls back to NoneBackend instead of hard-failing every sandboxed spawn
+    /// under `FailMode::HardFail`.
+    fn cgroup_base_writable() -> bool {
+        let probe = std::path::Path::new("/sys/fs/cgroup")
+            .join(format!(".wgenty-probe-{}", std::process::id()));
+        match std::fs::create_dir(&probe) {
+            Ok(()) => {
+                let _ = std::fs::remove_dir(&probe);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Create a temporary cgroup directory for resource limits.
     fn create_cgroup(&self, profile: &SandboxProfile) -> Result<String, SandboxError> {
         let cg_name = format!("wgenty-code-{}", std::process::id());
@@ -111,6 +131,7 @@ impl SandboxBackend for LinuxBackend {
     fn is_available() -> bool {
         cfg!(target_os = "linux")
             && std::path::Path::new("/sys/fs/cgroup/cgroup.controllers").exists()
+            && Self::cgroup_base_writable()
     }
 
     fn is_hardware_enforced(&self) -> bool {
