@@ -2,6 +2,7 @@
 change: per-turn-file-checkpoint
 design-doc: docs/superpowers/specs/2026-07-18-per-turn-file-checkpoint-design.md
 base-ref: e9e691b4849f566b33306db874a92f705b3f3c5b
+archived-with: 2026-07-18-per-turn-file-checkpoint
 ---
 
 # Implementation Plan: per-turn-file-checkpoint
