@@ -35,15 +35,17 @@ fn test_context() -> AgentExecutionContext {
 /// Build a blocking PreToolUse hook that blocks a given tool name when
 /// the workflow state matches one of the given states (pipe-separated).
 fn blocking_hook(tool_matcher: &str, when_state: &str, reason: &str) -> HookDefinition {
+    // `reason` is retained for call-site documentation; exit-2 blocks surface
+    // stderr (often empty) rather than this string.
+    let _ = reason;
     HookDefinition {
         event: HookEvent::PreToolUse,
         matcher: Some(tool_matcher.to_string()),
         when_state: Some(when_state.to_string()),
+        // Portable CC-compat block: exit 2. Avoid `echo '{json}'` — Windows cmd
+        // mangles single-quoted JSON and the hook would silently allow.
         actions: vec![HookAction::Command {
-            command: format!(
-                "echo '{{\"continue_execution\":false,\"reason\":\"{}\"}}'",
-                reason
-            ),
+            command: "exit 2".to_string(),
             timeout_secs: 5,
         }],
     }
