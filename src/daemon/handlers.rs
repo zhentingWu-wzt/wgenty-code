@@ -220,6 +220,14 @@ pub async fn execute_tool(
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             let effective_mode = *state.effective_mode.read().unwrap();
+            // Ensure the turn snapshot exists when the client supplies a turn id
+            // (TUI/REPL generate one per user message). Plan mode skips capture
+            // inside maybe_capture_pre_edit via EffectiveMode::Plan.
+            if let Some(turn_id) = body.turn_id.as_deref() {
+                if let Err(e) = state.checkpoint_manager.begin_turn(turn_id) {
+                    tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
+                }
+            }
             let tool_context = crate::agent::ToolContext {
                 agent: &root_context,
                 invocation_id: crate::agent::ToolInvocationId::new(
@@ -228,6 +236,7 @@ pub async fn execute_tool(
                 origin_turn_id: body.turn_id.as_deref(),
                 workdir: None,
                 effective_mode,
+                checkpoint: Some(state.checkpoint_store.as_ref()),
             };
             // Execute directly with hooks
             let msg = state
@@ -267,15 +276,12 @@ pub async fn execute_tool(
                         req.session_rule
                     );
                 }
-                let mutating = matches!(
-                    tool_name.as_str(),
-                    "apply_patch" | "file_edit" | "file_write" | "exec_command"
-                );
-                if mutating {
-                    let _ = state
-                        .checkpoint_manager
-                        .create(&format!("before {}", tool_name))
-                        .await;
+                // Per-tool git-stash checkpoints removed: pre-edit capture happens
+                // inside ToolRegistry::execute_with_context via CheckpointStore.
+                if let Some(turn_id) = body.turn_id.as_deref() {
+                    if let Err(e) = state.checkpoint_manager.begin_turn(turn_id) {
+                        tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
+                    }
                 }
                 let root_context = state
                     .root_context(session_id)
@@ -290,6 +296,7 @@ pub async fn execute_tool(
                     origin_turn_id: body.turn_id.as_deref(),
                     workdir: None,
                     effective_mode,
+                    checkpoint: Some(state.checkpoint_store.as_ref()),
                 };
                 let msg = state
                     .tool_executor
@@ -700,7 +707,10 @@ pub async fn search_sessions(
 pub async fn undo_checkpoint(State(state): State<Arc<DaemonState>>) -> Result<String, StatusCode> {
     match state.checkpoint_manager.undo(None).await {
         Ok(output) => Ok(output),
-        Err(_e) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(e) => {
+            tracing::warn!(error = %e, "undo_checkpoint failed");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
     }
 }
 

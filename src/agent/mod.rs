@@ -28,7 +28,8 @@ pub use coordinator::{
 pub use core::StreamProcessor;
 pub use events::{StreamEvent, StreamResult};
 pub use identity::{
-    AgentExecutionContext, AgentId, AgentLifecycleStatus, SessionId, ToolContext, ToolInvocationId,
+    AgentExecutionContext, AgentId, AgentLifecycleStatus, CheckpointCapture, SessionId,
+    ToolContext, ToolInvocationId,
 };
 pub use progress::{ProgressCallback, SubagentMetadata, SubagentProgress, SubagentStatus};
 pub use store::{

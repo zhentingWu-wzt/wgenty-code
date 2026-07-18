@@ -11,7 +11,7 @@ use crate::teams::mailbox::TeamManager;
 use crate::teams::permission_bridge::PermissionBridge;
 use crate::tools::execution::background::{BackgroundManager, BackgroundTool};
 use crate::tools::meta::team_message::TeamMessageTool;
-use crate::tools::{CheckpointManager, ToolExecutor, ToolRegistry};
+use crate::tools::{CheckpointManager, CheckpointStore, ToolExecutor, ToolRegistry};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -37,6 +37,7 @@ pub struct DaemonState {
     pub tool_registry: Arc<ToolRegistry>,
     pub tool_executor: ToolExecutor,
     pub checkpoint_manager: Arc<CheckpointManager>,
+    pub checkpoint_store: Arc<CheckpointStore>,
     pub task_manager: Arc<TaskManagementTool>,
     pub todo_state: Arc<RwLock<TodoState>>,
     pub skill_loader: Arc<SkillLoader>,
@@ -145,7 +146,11 @@ impl DaemonState {
         // that points to the *final* Arc allocation — not a temporary one that
         // gets dropped (which would leave a dangling weak reference).
         let tool_registry = Arc::new_cyclic(|weak_reg| {
-            let registry = ToolRegistry::new().with_settings(&app_state.settings);
+            let registry = ToolRegistry::with_project_root(
+                app_state.settings.storage.working_dir.clone(),
+                app_state.settings.agent.checkpoint.keep_n,
+            )
+            .with_settings(&app_state.settings);
             registry.register(Box::new(BackgroundTool::new(bg_manager.clone())));
 
             // Team messaging (s09): always available; writes peer mailboxes directly.
@@ -230,6 +235,7 @@ impl DaemonState {
         });
         crate::utils::startup_timing::mark("daemon state: tool registry built");
         let checkpoint_manager = tool_registry.checkpoint_manager.clone();
+        let checkpoint_store = tool_registry.checkpoint_store.clone();
 
         // Extract reserved tool names from the real registry (no throwaway
         // construction needed - avoids a second ToolRegistry::new() which
@@ -296,6 +302,7 @@ impl DaemonState {
             tool_executor,
             tool_registry,
             checkpoint_manager,
+            checkpoint_store,
             task_manager,
             todo_state,
             skill_loader,
