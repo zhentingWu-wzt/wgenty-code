@@ -72,6 +72,10 @@ pub struct AgentLoop {
     pub(super) assembled_system_messages: Vec<ChatMessage>,
     pub(super) rounds_since_plan: usize,
     pub(super) compacted_summary: String,
+    /// Index into `conversation_history` where the summarized prefix ends.
+    /// Messages `[0..boundary)` are replaced by `compacted_summary` in the API
+    /// view but remain in the stored history (and the saved session).
+    pub(super) compaction_boundary: usize,
     /// Set by the `compact` tool to request compaction at the next loop-top
     /// check. Compaction runs at the loop top (not mid-tool-batch) so it never
     /// wipes the in-flight assistant tool_calls message — which would orphan
@@ -144,6 +148,7 @@ impl AgentLoop {
             assembled_system_messages: system_messages,
             rounds_since_plan: 0,
             compacted_summary: String::new(),
+            compaction_boundary: 0,
             compact_requested: false,
             compaction_failed: false,
             preparing_tools_fired: false,
@@ -184,10 +189,10 @@ impl AgentLoop {
 
         self.token_counter.reset_turn();
         self.compaction_failed = false;
-        // Guard: nothing meaningful to summarize (only system messages).
+        // Guard: nothing meaningful to summarize (empty conversation).
         let has_content = {
             let history = self.conversation_history.lock().await;
-            history.iter().any(|m| m.role != "system")
+            !history.is_empty()
         };
         if !has_content {
             let _ = self.event_tx.send(AppEvent::StreamError(
@@ -202,18 +207,27 @@ impl AgentLoop {
         let compactor = TuiCompactor::new(
             self.client.clone(),
             self.event_tx.clone(),
-            self.assembled_system_messages.clone(),
             self.memory_manager.clone(),
             summary_slot.clone(),
         );
-        let rewritten = compactor.compact(&history).await;
-        self.compacted_summary = summary_slot.lock().await.clone();
-        // Keep the context progress bar in sync without waiting for the next
-        // API usage report (same chars/4 heuristic as auto-compaction).
-        if rewritten {
+        let result = compactor.compact(&history).await;
+        if let Some(ref summary) = result {
+            self.compacted_summary = summary.clone();
+            // Advance the boundary so the API view drops the summarized prefix
+            // (replaced by the summary) while the full history is preserved.
             let snap = self.conversation_history.lock().await;
+            let boundary = crate::agent::runtime::compaction::split_for_compaction(&snap)
+                .0
+                .len();
+            self.compaction_boundary = boundary;
+            let tail = crate::agent::runtime::compaction::micro_compact_messages(&snap[boundary..]);
+            let view = crate::agent::runtime::compaction::assemble_post_compaction_history(
+                &self.assembled_system_messages,
+                summary,
+                &tail,
+            );
             self.token_counter
-                .set_prompt_tokens(crate::agent::runtime::estimate_prompt_tokens(&snap));
+                .set_prompt_tokens(crate::agent::runtime::estimate_prompt_tokens(&view));
         }
         Ok(())
     }
@@ -341,7 +355,7 @@ impl AgentLoop {
 
     pub async fn reset(&self) {
         let mut history = self.conversation_history.lock().await;
-        *history = self.assembled_system_messages.clone();
+        history.clear();
     }
 }
 

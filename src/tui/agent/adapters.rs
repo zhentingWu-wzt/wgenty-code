@@ -3,9 +3,9 @@
 //! Lives under `tui` so `agent::runtime` never depends on TUI or DaemonClient.
 
 use crate::agent::runtime::{
-    archive_transcript, assemble_post_compaction_history, parse_compaction_response, Compactor,
-    EventSink, HistoryStore, InteractionPort, LlmPort, PlannerPort, RuntimeError, RuntimeEvent,
-    ToolPort, ToolRequest, ToolResponse, COMPACTION_SYSTEM_PROMPT,
+    archive_transcript, parse_compaction_response, Compactor, EventSink, HistoryStore,
+    InteractionPort, LlmPort, PlannerPort, RuntimeError, RuntimeEvent, ToolPort, ToolRequest,
+    ToolResponse, COMPACTION_SYSTEM_PROMPT,
 };
 use crate::agent::{StreamEvent, StreamProcessor};
 use crate::api::{ApiClient, ChatMessage, ToolDefinition};
@@ -514,7 +514,6 @@ impl InteractionPort for TuiInteractionPort {
 pub struct TuiCompactor {
     client: DaemonClient,
     event_tx: mpsc::UnboundedSender<AppEvent>,
-    assembled_system_messages: Vec<ChatMessage>,
     memory_manager: Arc<MemoryManager>,
     /// Written on success so the AgentLoop can surface summary size.
     compacted_summary: Arc<tokio::sync::Mutex<String>>,
@@ -524,14 +523,12 @@ impl TuiCompactor {
     pub fn new(
         client: DaemonClient,
         event_tx: mpsc::UnboundedSender<AppEvent>,
-        assembled_system_messages: Vec<ChatMessage>,
         memory_manager: Arc<MemoryManager>,
         compacted_summary: Arc<tokio::sync::Mutex<String>>,
     ) -> Self {
         Self {
             client,
             event_tx,
-            assembled_system_messages,
             memory_manager,
             compacted_summary,
         }
@@ -540,11 +537,11 @@ impl TuiCompactor {
 
 #[async_trait]
 impl Compactor for TuiCompactor {
-    async fn compact(&self, history: &dyn HistoryStore) -> bool {
+    async fn compact(&self, history: &dyn HistoryStore) -> Option<String> {
         let history_snapshot = history.get().await;
         archive_transcript(&history_snapshot).await;
 
-        let (tail, transcript_text) =
+        let (_tail, transcript_text) =
             crate::agent::runtime::compactor::prepare_compaction_transcript(&history_snapshot);
 
         let summary_messages = vec![
@@ -564,21 +561,11 @@ impl Compactor for TuiCompactor {
         {
             Ok(r) => r,
             Err(e) => {
-                let err = e.to_string();
-                tracing::warn!(error = %err, "compaction summary request failed");
-                if crate::agent::runtime::compactor::is_payload_too_large_error(&err)
-                    && crate::agent::runtime::compactor::fallback_micro_compact(history).await
-                {
-                    let _ = self.event_tx.send(AppEvent::StreamError(
-                        "Compaction summary hit a size limit; applied micro-compact fallback."
-                            .to_string(),
-                    ));
-                    return true;
-                }
+                tracing::warn!(error = %e, "compaction summary request failed");
                 let _ = self.event_tx.send(AppEvent::StreamError(
                     "Compaction failed; continuing with full history.".to_string(),
                 ));
-                return false;
+                return None;
             }
         };
 
@@ -607,19 +594,10 @@ impl Compactor for TuiCompactor {
         }
         if let Some(reason) = stream_error {
             tracing::warn!(reason = %reason, "compaction summary stream errored");
-            if crate::agent::runtime::compactor::is_payload_too_large_error(&reason)
-                && crate::agent::runtime::compactor::fallback_micro_compact(history).await
-            {
-                let _ = self.event_tx.send(AppEvent::StreamError(
-                    "Compaction summary stream hit a size limit; applied micro-compact fallback."
-                        .to_string(),
-                ));
-                return true;
-            }
             let _ = self.event_tx.send(AppEvent::StreamError(
                 "Compaction failed; continuing with full history.".to_string(),
             ));
-            return false;
+            return None;
         }
 
         let result = processor.finish();
@@ -633,19 +611,10 @@ impl Compactor for TuiCompactor {
 
         if summary.trim().is_empty() {
             tracing::warn!("compaction produced an empty summary; leaving history intact");
-            // Empty summary after a large request: still try micro-compact so we
-            // make progress instead of permanently disabling compaction.
-            if crate::agent::runtime::compactor::fallback_micro_compact(history).await {
-                let _ = self.event_tx.send(AppEvent::StreamError(
-                    "Compaction produced an empty summary; applied micro-compact fallback."
-                        .to_string(),
-                ));
-                return true;
-            }
             let _ = self.event_tx.send(AppEvent::StreamError(
                 "Compaction produced an empty summary; continuing with full history.".to_string(),
             ));
-            return false;
+            return None;
         }
 
         let filtered = crate::agent::runtime::compactor::filter_extracted_memories(
@@ -665,15 +634,12 @@ impl Compactor for TuiCompactor {
         {
             *self.compacted_summary.lock().await = summary.clone();
         }
-        let new_history =
-            assemble_post_compaction_history(&self.assembled_system_messages, &summary, &tail);
-        history.replace(new_history).await;
 
         let summary_chars = summary.chars().count();
         let _ = self
             .event_tx
             .send(AppEvent::ContextCompacted { summary_chars });
-        true
+        Some(summary)
     }
 }
 
