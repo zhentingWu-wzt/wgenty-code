@@ -439,10 +439,12 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::KeyEvent(_)
         | AppEvent::Tick
         | AppEvent::ToggleSessions
+        | AppEvent::ToggleMemory
+        | AppEvent::MemoryListLoaded(_)
         | AppEvent::ToggleTaskPanel
         | AppEvent::CtrlCPressed
         | AppEvent::SessionListLoaded(_)
-        | AppEvent::HistoryLoaded(_)
+        | AppEvent::HistoryLoaded { .. }
         | AppEvent::PlanUpdate(_)
         | AppEvent::UndoResult(_)
         | AppEvent::SaveSession

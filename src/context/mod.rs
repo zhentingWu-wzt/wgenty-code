@@ -25,8 +25,8 @@ use anyhow::Context as _;
 pub use consolidation::{ConsolidationConfig, ConsolidationEngine};
 pub use history::{HistoryEntry, HistoryFilter, HistoryManager};
 pub use memory_session::{
-    Session as MemorySession, SessionInfo as MemorySessionInfo,
-    SessionManager as MemorySessionManager,
+    Session as MemorySession, SessionDiffData, SessionInfo as MemorySessionInfo,
+    SessionManager as MemorySessionManager, SessionUiMessage,
 };
 pub use storage::{Storage, StorageBackend};
 

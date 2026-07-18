@@ -4044,6 +4044,7 @@ dependencies = [
  "tracing-subscriber",
  "tui-textarea",
  "unic-langid",
+ "unicode-width 0.2.0",
  "uuid",
  "walkdir",
  "wasm-bindgen",
