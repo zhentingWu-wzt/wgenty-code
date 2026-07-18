@@ -2,6 +2,8 @@
 comet_change: subagent-dispatch-fallback
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-18-subagent-dispatch-fallback
+status: final
 ---
 
 # Design: Subagent Dispatch Fallback
