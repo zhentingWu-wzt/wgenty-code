@@ -467,6 +467,7 @@ mod tests {
             origin_turn_id: None,
             workdir: None,
             effective_mode: EffectiveMode::Yolo,
+            checkpoint: None,
         };
         let out = tool
             .execute_with_context(&ctx, json!({"command": "echo hi"}))

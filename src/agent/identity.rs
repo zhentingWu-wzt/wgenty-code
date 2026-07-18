@@ -111,6 +111,20 @@ impl AgentLifecycleStatus {
     }
 }
 
+/// Per-turn file snapshot capture, used by mutating tools to record pre-edit
+/// file content before writing. Implemented by the tools-layer
+/// [`CheckpointStore`](crate::tools::CheckpointStore); the trait lives in the
+/// agent layer so [`ToolContext`] can reference it without a circular
+/// `tools` -> `agent` -> `tools` dependency.
+///
+/// Best-effort: implementations log failures internally and never propagate
+/// errors to the caller, so a capture miss never blocks the tool itself.
+pub trait CheckpointCapture: Send + Sync {
+    /// Capture the pre-edit content of `abs_path` into the turn snapshot
+    /// identified by `turn_id`. Idempotent per (turn, path).
+    fn capture_file(&self, turn_id: &str, abs_path: &std::path::Path);
+}
+
 /// Context supplied to a tool invocation on behalf of an agent.
 pub struct ToolContext<'a> {
     /// Trusted identity and cancellation state of the invoking agent.
@@ -131,6 +145,10 @@ pub struct ToolContext<'a> {
     /// not a process-global lock). Defaults to [`EffectiveMode::Normal`]
     /// at construction sites that omit an explicit mode.
     pub effective_mode: crate::sandbox::EffectiveMode,
+    /// Per-turn file checkpoint capture handle. When `Some` and
+    /// [`origin_turn_id`](Self::origin_turn_id) is set, mutating tools record
+    /// pre-edit file content before writing so the turn can be rewound.
+    pub checkpoint: Option<&'a dyn CheckpointCapture>,
 }
 
 #[cfg(test)]

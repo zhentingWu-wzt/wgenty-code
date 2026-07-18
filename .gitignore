@@ -37,9 +37,10 @@ settings.json
 # CodeGraph index
 .codegraph/
 
-# Project-local runtime state (memory, sessions) - not skill definitions
+# Project-local runtime state (memory, sessions, checkpoints) - not skill definitions
 .wgenty-code/memory/
 .wgenty-code/sessions/
+.wgenty-code/checkpoints/
 .wgenty-permission-in-workspace.txt
 
 # Worktrees

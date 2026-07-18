@@ -4,7 +4,7 @@
 
 pub use super::{
     Settings, ModelsConfig, ModelEndpoint, TransportConfig,
-    AgentConfig, TokenBudget, SubagentLimits,
+    AgentConfig, CheckpointSettings, TokenBudget, SubagentLimits,
     SubagentRlmOverride, SubagentPromptOverride, SubagentPromptIncludesOverride,
     PromptConfig, PromptIncludes,
     PluginsConfig, StorageConfig, TranscriptConfig, IntegrationsConfig,
