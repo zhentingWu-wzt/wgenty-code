@@ -96,11 +96,11 @@
       "enabled": true,
       "path": "~/.wgenty-code/memory.json",
       "consolidation_interval": 24,
-      "max_memories": 1000,
-      "importance_threshold": 0.3,
-      "age_threshold_hours": 24,
+      "max_memories": 200,
+      "importance_threshold": 0.6,
+      "age_threshold_hours": 48,
       "enable_auto_consolidation": true,
-      "recall_top_n": 5,
+      "recall_top_n": 3,
       "recall_similarity_threshold": 0.3
     },
     "transcript": {
