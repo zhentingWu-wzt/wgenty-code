@@ -37,4 +37,9 @@ pub struct PromptConfig {
     pub collaboration_mode: Option<String>,
     #[serde(default)]
     pub model_instructions_file: Option<String>,
+    /// When true, each user turn dumps the assembled `<system-reminder>` (or a
+    /// note that none was injected) under `<project>/.wgenty-code/debug/reminders/`.
+    /// Also enabled by env `WGENTY_DEBUG_REMINDER=1`.
+    #[serde(default)]
+    pub debug_dump_reminder: bool,
 }

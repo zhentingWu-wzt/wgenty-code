@@ -226,6 +226,9 @@ pub struct SessionResponse {
     pub created_at: String,
     pub updated_at: String,
     pub messages: Vec<SessionMessage>,
+    /// Human-facing TUI transcript; empty for legacy sessions.
+    #[serde(default)]
+    pub ui_messages: Vec<crate::context::SessionUiMessage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -240,6 +243,9 @@ pub struct UpdateSessionRequest {
     pub name: Option<String>,
     #[serde(default)]
     pub messages: Option<Vec<SessionMessage>>,
+    /// When `Some`, replace the UI transcript track. `None` leaves existing data.
+    #[serde(default)]
+    pub ui_messages: Option<Vec<crate::context::SessionUiMessage>>,
 }
 
 #[derive(Debug, Deserialize)]

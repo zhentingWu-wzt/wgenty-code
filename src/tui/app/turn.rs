@@ -70,7 +70,14 @@ impl App {
         let sys_msgs = self.assembled_system_messages.clone();
         let plan_mode = self.mode == AgentMode::PlanMode;
         // Read agent config from settings
-        let (planner_client, max_rounds, subagent_timeout_secs, context_window, max_tokens) = {
+        let (
+            planner_client,
+            max_rounds,
+            subagent_timeout_secs,
+            context_window,
+            max_tokens,
+            debug_dump_reminder,
+        ) = {
             let s = self.settings_lock.read().expect("lock poisoned: settings");
             let planner = if let Some(ref pm) = s.models.planner {
                 let mut planner_settings = s.clone();
@@ -91,6 +98,7 @@ impl App {
                 s.agent.subagent.timeout_secs,
                 s.models.context_window,
                 s.models.transport.max_tokens,
+                crate::prompts::reminder_dump_enabled(s.prompt.debug_dump_reminder),
             )
         };
         let token_counter = self.token_counter.clone();
@@ -154,6 +162,7 @@ impl App {
                 max_tokens,
                 memory_manager,
                 agent_generation,
+                debug_dump_reminder,
             );
             let result = agent.process_input(input_agent).await;
             if let Err(ref e) = result {
@@ -190,7 +199,14 @@ impl App {
         let session_id = self.session_id.clone();
         let sys_msgs = self.assembled_system_messages.clone();
         let plan_mode = self.mode == AgentMode::PlanMode;
-        let (planner_client, max_rounds, subagent_timeout_secs, context_window, max_tokens) = {
+        let (
+            planner_client,
+            max_rounds,
+            subagent_timeout_secs,
+            context_window,
+            max_tokens,
+            debug_dump_reminder,
+        ) = {
             let s = self.settings_lock.read().expect("lock poisoned: settings");
             let planner = if let Some(ref pm) = s.models.planner {
                 let mut planner_settings = s.clone();
@@ -211,6 +227,7 @@ impl App {
                 s.agent.subagent.timeout_secs,
                 s.models.context_window,
                 s.models.transport.max_tokens,
+                crate::prompts::reminder_dump_enabled(s.prompt.debug_dump_reminder),
             )
         };
         let token_counter = self.token_counter.clone();
@@ -240,6 +257,7 @@ impl App {
                 max_tokens,
                 memory_manager,
                 agent_generation,
+                debug_dump_reminder,
             );
             let result = agent.process_continuation(delivery).await;
             if let Err(ref e) = result {
@@ -318,6 +336,7 @@ impl App {
                 max_tokens,
                 memory_manager,
                 agent_generation,
+                false,
             );
             let _ = agent.compact_only().await;
             let _ = event_tx.send(AppEvent::TurnComplete);
@@ -403,21 +422,12 @@ impl App {
                 }
             }
         });
-        // Repair the shared conversation history: an interrupt may have aborted
-        // the agent loop after it pushed the assistant tool_calls message but
-        // before appending tool results. Without this, the orphaned tool_calls
-        // would make the next API request fail with `missing messages.tool_call_id`,
-        // and the broken history would be persisted to the session. Sanitize
-        // backfills a synthetic result for every unanswered tool call.
-        {
-            let history = self.conversation_history.clone();
-            tokio::spawn(async move {
-                let mut h = history.lock().await;
-                crate::api::types::sanitize_tool_call_pairing(&mut h);
-            });
-        }
         // User-facing feedback.
         self.push_system_message("\u{23F9} Interrupted by user");
+        // Persist interrupted UI + history. Save path sanitizes unpaired
+        // tool_calls under the session lock (abort may skip TurnComplete).
+        // Exit flush is a second safety net if the user quits immediately.
+        self.spawn_save_session();
     }
 
     /// Number of inputs waiting in the queue (excluding the running one).
