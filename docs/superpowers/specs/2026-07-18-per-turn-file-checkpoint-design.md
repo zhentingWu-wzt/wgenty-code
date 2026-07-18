@@ -2,6 +2,8 @@
 comet_change: per-turn-file-checkpoint
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-18-per-turn-file-checkpoint
+status: final
 ---
 
 # Design: Per-turn file checkpoint
