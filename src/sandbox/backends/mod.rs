@@ -9,6 +9,12 @@ use std::process::Stdio;
 
 use crate::sandbox::SandboxBackend;
 
+/// Unix prefix forced into every `sh -c` body so nested shells / `env -i`
+/// wrappers still inherit non-interactive git/ssh behaviour even if process
+/// env was cleared by an intermediate step.
+#[cfg(not(windows))]
+const NONINTERACTIVE_SHELL_PREFIX: &str = "export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/bin/false SSH_ASKPASS=/usr/bin/false SSH_ASKPASS_REQUIRE=never GCM_INTERACTIVE=never CI=true;";
+
 /// Build a platform-native shell command that runs `command` via the system shell.
 ///
 /// - Windows: `cmd /C <command>`
@@ -17,17 +23,26 @@ use crate::sandbox::SandboxBackend;
 /// Does **not** configure stdio or creation flags; callers that run under the
 /// TUI should follow with [`configure_captured_stdio`] (or use
 /// [`shell_command_captured`]).
+///
+/// On Unix the command body is prefixed with non-interactive `export`s so git
+/// credential prompts cannot open `/dev/tty` even when an intermediate
+/// `env -i` / sandbox allowlist drops process-level env vars.
 pub fn shell_command(command: &str) -> tokio::process::Command {
     #[cfg(windows)]
     {
         let mut cmd = tokio::process::Command::new("cmd");
-        cmd.arg("/C").arg(command);
+        // cmd.exe: set vars for this command line only.
+        let wrapped = format!(
+            "set \"GIT_TERMINAL_PROMPT=0\"&& set \"GCM_INTERACTIVE=never\"&& set \"SSH_ASKPASS_REQUIRE=never\"&& set \"CI=true\"&& {command}"
+        );
+        cmd.arg("/C").arg(wrapped);
         cmd
     }
     #[cfg(not(windows))]
     {
         let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c").arg(command);
+        let wrapped = format!("{NONINTERACTIVE_SHELL_PREFIX}{command}");
+        cmd.arg("-c").arg(wrapped);
         cmd
     }
 }
@@ -55,7 +70,10 @@ pub fn std_shell_command(command: &str) -> std::process::Command {
     {
         use std::os::windows::process::CommandExt;
         let mut cmd = std::process::Command::new("cmd");
-        cmd.arg("/C").arg(command);
+        let wrapped = format!(
+            "set \"GIT_TERMINAL_PROMPT=0\"&& set \"GCM_INTERACTIVE=never\"&& set \"SSH_ASKPASS_REQUIRE=never\"&& set \"CI=true\"&& {command}"
+        );
+        cmd.arg("/C").arg(wrapped);
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
         apply_noninteractive_env_std(&mut cmd);
@@ -64,7 +82,8 @@ pub fn std_shell_command(command: &str) -> std::process::Command {
     #[cfg(not(windows))]
     {
         let mut cmd = std::process::Command::new("sh");
-        cmd.arg("-c").arg(command);
+        let wrapped = format!("{NONINTERACTIVE_SHELL_PREFIX}{command}");
+        cmd.arg("-c").arg(wrapped);
         apply_noninteractive_env_std(&mut cmd);
         cmd
     }
@@ -110,6 +129,20 @@ pub fn configure_captured_stdio(cmd: &mut tokio::process::Command) {
 pub fn apply_noninteractive_env(cmd: &mut tokio::process::Command) {
     // Git: never prompt on the terminal (uses /dev/tty even when stdio is piped).
     cmd.env("GIT_TERMINAL_PROMPT", "0");
+    // Prefer a failing askpass over opening /dev/tty if a helper still asks.
+    // `/usr/bin/false` exits 1 with no output on macOS/Linux; on Windows `false`
+    // may be absent — git then falls back to GIT_TERMINAL_PROMPT=0 behaviour.
+    #[cfg(not(windows))]
+    {
+        cmd.env("GIT_ASKPASS", "/usr/bin/false");
+        cmd.env("SSH_ASKPASS", "/usr/bin/false");
+    }
+    #[cfg(windows)]
+    {
+        // No portable false binary; rely on GIT_TERMINAL_PROMPT + GCM flags.
+        cmd.env_remove("GIT_ASKPASS");
+        cmd.env_remove("SSH_ASKPASS");
+    }
     // Git Credential Manager (cross-platform helper).
     cmd.env("GCM_INTERACTIVE", "never");
     // OpenSSH 8.4+: never fall back to TTY askpass when no display/askpass.
@@ -121,6 +154,16 @@ pub fn apply_noninteractive_env(cmd: &mut tokio::process::Command) {
 /// Same as [`apply_noninteractive_env`] for `std::process::Command`.
 pub fn apply_noninteractive_env_std(cmd: &mut std::process::Command) {
     cmd.env("GIT_TERMINAL_PROMPT", "0");
+    #[cfg(not(windows))]
+    {
+        cmd.env("GIT_ASKPASS", "/usr/bin/false");
+        cmd.env("SSH_ASKPASS", "/usr/bin/false");
+    }
+    #[cfg(windows)]
+    {
+        cmd.env_remove("GIT_ASKPASS");
+        cmd.env_remove("SSH_ASKPASS");
+    }
     cmd.env("GCM_INTERACTIVE", "never");
     cmd.env("SSH_ASKPASS_REQUIRE", "never");
     cmd.env("CI", "true");
