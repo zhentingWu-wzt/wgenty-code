@@ -52,7 +52,7 @@ pub enum SubagentEventType {
 }
 
 /// Categorized error types for subagent execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ErrorType {
     Timeout,
     BudgetExceeded {
