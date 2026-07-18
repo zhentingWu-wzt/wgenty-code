@@ -14,7 +14,10 @@ use crate::agent::runtime::{
     MutexHistoryStore, RoundObserver, RunLoopArgs, RuntimeConfig, RuntimeError, RuntimeEvent,
     StreamStyle, SynthesisPort,
 };
-use crate::agent::{AgentCoordinator, AgentExecutionContext, ChildResult, CoordinatorError};
+use crate::agent::{
+    AgentCoordinator, AgentExecutionContext, AgentId, ChildResult, ChildTerminalStatus,
+    CoordinatorError,
+};
 use crate::api::{ApiClient, ChatMessage};
 use crate::teams::approval_registry;
 use crate::teams::guarding_tool_port::{
@@ -118,9 +121,48 @@ impl SubagentError {
             ErrorType::ToolError { .. } => "subagent_tool_error",
             ErrorType::ParseError { .. } => "subagent_parse_error",
             ErrorType::Cancelled => "subagent_cancelled",
+            ErrorType::ModelUnavailable => "subagent_model_unavailable",
             ErrorType::Unknown => "subagent_error",
         }
     }
+}
+
+/// Classify a free-form `RuntimeError::Stream` message into an `ErrorType`.
+///
+/// Model-unavailable signatures (API HTTP errors, connection failures) map to
+/// [`ErrorType::ModelUnavailable`] so the fallback layer can detect them.
+/// "stuck"/"Stuck" stays [`ErrorType::Stuck`]. Everything else stays
+/// [`ErrorType::Unknown`].
+pub fn classify_stream_error(msg: &str) -> ErrorType {
+    if msg.contains("stuck") || msg.contains("Stuck") {
+        return ErrorType::Stuck {
+            reason: msg.to_string(),
+        };
+    }
+    if is_model_unavailable_message(msg) {
+        return ErrorType::ModelUnavailable;
+    }
+    ErrorType::Unknown
+}
+
+/// Heuristic: does this stream failure message indicate the model endpoint was
+/// unavailable? Matches "API error", "api error", "connection", "HTTP <status>",
+/// or a `(NNN)` status-code parenthetical.
+fn is_model_unavailable_message(msg: &str) -> bool {
+    use std::sync::OnceLock;
+    static HTTP_STATUS: OnceLock<regex::Regex> = OnceLock::new();
+    static STATUS_PAREN: OnceLock<regex::Regex> = OnceLock::new();
+    let http_status = HTTP_STATUS.get_or_init(|| {
+        // word-boundary "HTTP" followed by optional whitespace and 3 digits
+        regex::Regex::new(r"(?i)\bHTTP\b\s*\d{3}").expect("valid regex")
+    });
+    let status_paren =
+        STATUS_PAREN.get_or_init(|| regex::Regex::new(r"\(\d{3}\)").expect("valid regex"));
+    let lower = msg.to_lowercase();
+    lower.contains("api error")
+        || lower.contains("connection")
+        || http_status.is_match(msg)
+        || status_paren.is_match(msg)
 }
 
 impl std::fmt::Display for SubagentError {
@@ -167,6 +209,13 @@ struct SubagentSynthesis {
     context: AgentExecutionContext,
     synthesized: Mutex<HashSet<String>>,
     is_non_root: bool,
+    /// Interception point 2: fallback configuration for model-unavailable
+    /// runtime failures. `settings` selects the fallback model;
+    /// `transcript_store` recovers the failed child's original `user_prompt`;
+    /// `tool_registry` rebuilds the allowed tool set for the re-dispatch.
+    settings: Arc<crate::config::Settings>,
+    transcript_store: Option<Arc<crate::transcript::SubagentTranscriptStore>>,
+    tool_registry: Arc<ToolRegistry>,
 }
 
 #[async_trait]
@@ -183,6 +232,12 @@ impl SynthesisPort for SubagentSynthesis {
             .map_err(|e: CoordinatorError| {
                 RuntimeError::Stream(format!("subagent lifecycle coordination failed: {e}"))
             })?;
+
+        // Interception point 2: runtime model-unavailable fallback. For each
+        // failed child with `subagent_model_unavailable`, attempt to re-dispatch
+        // with a configured fallback model. Replaces the ChildResult in-place on
+        // success; leaves it untouched on failure (degrades to parent model).
+        let child_results = self.apply_runtime_fallback(child_results).await;
 
         let fresh: Vec<ChildResult> = {
             let synthesized = self.synthesized.lock().expect("lock poisoned: synthesized");
@@ -210,6 +265,155 @@ impl SynthesisPort for SubagentSynthesis {
                 RuntimeError::Stream(format!("subagent lifecycle coordination failed: {e}"))
             })?;
         Ok(None)
+    }
+}
+
+impl SubagentSynthesis {
+    /// Interception point 2: for each failed child whose `error_code` is
+    /// `subagent_model_unavailable`, attempt to re-dispatch it with a fallback
+    /// model. On success the `ChildResult` is replaced with a `Completed` result;
+    /// on failure (no fallback model, no transcript prompt, fallback execution
+    /// error, or single-shot already used) the original failed result is kept so
+    /// the parent model decides. Root callers skip fallback (Comet isolation).
+    async fn apply_runtime_fallback(&self, results: Vec<ChildResult>) -> Vec<ChildResult> {
+        use crate::agent::fallback::{
+            fallback_eligible_from_child_result, is_root_caller, FallbackKind,
+        };
+
+        if is_root_caller(&self.context) {
+            return results;
+        }
+
+        let mut out = Vec::with_capacity(results.len());
+        for r in results {
+            let eligible = fallback_eligible_from_child_result(&r);
+            if eligible != Some(FallbackKind::ModelUnavailable) {
+                out.push(r);
+                continue;
+            }
+
+            let child_id_str = r.child_id.as_str().to_string();
+            if self.coordinator.fallback_already_used(&child_id_str).await {
+                tracing::warn!(
+                    fallback = "interception2",
+                    child_id = %child_id_str,
+                    "Fallback already used; skipping (single-shot)"
+                );
+                out.push(r);
+                continue;
+            }
+
+            // Mark fallback used BEFORE the attempt (mirrors interception 1).
+            // `on_candidate_final` runs every synthesis round, so marking only
+            // on success would let a failed fallback re-attempt every round --
+            // violating the single-shot, non-recursive constraint.
+            self.coordinator.mark_fallback_used(&child_id_str).await;
+
+            match self.attempt_model_fallback(&r).await {
+                Ok(new_result) => out.push(new_result),
+                Err(reason) => {
+                    tracing::warn!(
+                        fallback = "interception2",
+                        child_id = %child_id_str,
+                        reason = %reason,
+                        "Model fallback failed; degrading to parent model"
+                    );
+                    out.push(r);
+                }
+            }
+        }
+        out
+    }
+
+    /// Re-dispatch a failed child with a fallback model. Returns a replacement
+    /// `ChildResult` on success, or an error reason string on failure.
+    async fn attempt_model_fallback(&self, failed: &ChildResult) -> Result<ChildResult, String> {
+        // 1. Select fallback model (first entry != failed child's model).
+        let failed_model = &self.settings.models.main.name;
+        let fallback_model = self
+            .settings
+            .select_fallback_model(failed_model)
+            .ok_or_else(|| "no fallback model configured".to_string())?;
+
+        tracing::info!(
+            fallback = "interception2",
+            child_id = %failed.child_id.as_str(),
+            failed_model = %failed_model,
+            fallback_model = %fallback_model,
+            "Re-dispatching child with fallback model"
+        );
+
+        // 2. Recover the original prompt from the transcript store.
+        let transcript_store = self
+            .transcript_store
+            .as_ref()
+            .ok_or_else(|| "no transcript store available".to_string())?;
+        let transcript = transcript_store
+            .get_by_id(failed.child_id.as_str())
+            .map_err(|e| format!("transcript read failed: {e}"))?
+            .ok_or_else(|| "transcript not found for child".to_string())?;
+
+        let user_prompt = transcript.user_prompt.clone();
+        let system_prompt = transcript.system_prompt.clone().unwrap_or_default();
+
+        // 3. Build fallback api_client (swap model name, reuse original endpoint).
+        let fallback_settings = self.settings.fallback_model_settings(fallback_model);
+        let api_client = ApiClient::new(fallback_settings);
+
+        // 4. Allowed tools: same registry, all non-spawn tools at this depth.
+        let tool_registry = Arc::clone(&self.tool_registry);
+        let allowed_tools: Vec<String> = tool_registry
+            .list()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+
+        // 5. Synthesize a child context reusing the parent's session/depth.
+        let child_context = AgentExecutionContext {
+            agent_id: AgentId::new(uuid::Uuid::new_v4().to_string()),
+            parent_id: Some(self.context.agent_id.clone()),
+            session_id: self.context.session_id.clone(),
+            depth: self.context.depth,
+            cancellation: self.context.cancellation.clone(),
+        };
+
+        let timeout_secs = self.settings.agent.subagent.timeout_secs;
+        let workdir: Option<std::path::PathBuf> = Some(self.settings.storage.working_dir.clone());
+        let permission = SubagentPermissionContext::headless(
+            self.settings.storage.working_dir.clone(),
+            child_context.agent_id.as_str(),
+        );
+
+        // 6. Re-dispatch with the fallback model.
+        let result = run_subagent_loop_with_permissions(
+            &api_client,
+            Arc::clone(&tool_registry),
+            &child_context,
+            Arc::clone(&self.coordinator),
+            &system_prompt,
+            &user_prompt,
+            &allowed_tools,
+            self.settings.agent.subagent.max_rounds.unwrap_or(100),
+            timeout_secs,
+            None,
+            None,
+            workdir,
+            permission,
+            Arc::clone(&self.settings),
+            self.transcript_store.clone(),
+        )
+        .await;
+
+        match result {
+            Ok(summary) => Ok(ChildResult {
+                child_id: failed.child_id.clone(),
+                status: ChildTerminalStatus::Completed,
+                summary: summary.chars().take(500).collect(),
+                error_code: None,
+                partial_result: None,
+            }),
+            Err(e) => Err(format!("fallback execution failed: {}", e.full_message())),
+        }
     }
 }
 
@@ -625,7 +829,7 @@ fn sanitize_mailbox_name(name: &str) -> String {
 #[allow(clippy::too_many_arguments)]
 pub async fn run_subagent_loop(
     api_client: &ApiClient,
-    tool_registry: &ToolRegistry,
+    tool_registry: Arc<ToolRegistry>,
     context: &AgentExecutionContext,
     coordinator: Arc<AgentCoordinator>,
     system_prompt: &str,
@@ -644,6 +848,9 @@ pub async fn run_subagent_loop(
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         context.agent_id.as_str(),
     );
+    // Headless path has no Settings/transcript_store: interception-2 fallback
+    // degrades to parent model (no fallback_models configured, no prompt source).
+    let settings = Arc::new(crate::config::Settings::default());
     run_subagent_loop_with_permissions(
         api_client,
         tool_registry,
@@ -658,6 +865,8 @@ pub async fn run_subagent_loop(
         token_budget_k,
         workdir,
         permission,
+        settings,
+        None,
     )
     .await
 }
@@ -667,7 +876,7 @@ pub async fn run_subagent_loop(
 #[allow(clippy::too_many_arguments)]
 pub async fn run_subagent_loop_with_permissions(
     api_client: &ApiClient,
-    tool_registry: &ToolRegistry,
+    tool_registry: Arc<ToolRegistry>,
     context: &AgentExecutionContext,
     coordinator: Arc<AgentCoordinator>,
     system_prompt: &str,
@@ -679,6 +888,8 @@ pub async fn run_subagent_loop_with_permissions(
     token_budget_k: Option<u64>,
     workdir: Option<std::path::PathBuf>,
     permission: SubagentPermissionContext,
+    settings: Arc<crate::config::Settings>,
+    transcript_store: Option<Arc<crate::transcript::SubagentTranscriptStore>>,
 ) -> Result<String, SubagentError> {
     let timeout_duration = Duration::from_secs(timeout_secs);
     static SUBAGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -706,7 +917,7 @@ pub async fn run_subagent_loop_with_permissions(
 
     let llm = ApiLlmPort::new(api_client.clone());
     let allowed: HashSet<String> = allowed_tools.iter().cloned().collect();
-    let tools = GuardingToolPort::new(tool_registry, context, allowed, workdir, permission);
+    let tools = GuardingToolPort::new(&tool_registry, context, allowed, workdir, permission);
     let events = NullEventSink;
 
     let is_non_root = context.parent_id.is_some();
@@ -715,6 +926,9 @@ pub async fn run_subagent_loop_with_permissions(
         context: context.clone(),
         synthesized: Mutex::new(HashSet::new()),
         is_non_root,
+        settings,
+        transcript_store,
+        tool_registry: Arc::clone(&tool_registry),
     };
 
     let observer = SubagentObserver {
@@ -849,12 +1063,7 @@ pub async fn run_subagent_loop_with_permissions(
                         e.to_string(),
                     ),
                     RuntimeError::StreamTimeout(_) => (ErrorType::Timeout, e.to_string()),
-                    RuntimeError::Stream(msg) if msg.contains("stuck") || msg.contains("Stuck") => (
-                        ErrorType::Stuck {
-                            reason: msg.clone(),
-                        },
-                        msg.clone(),
-                    ),
+                    RuntimeError::Stream(msg) => (classify_stream_error(msg), msg.clone()),
                     other => (ErrorType::Unknown, other.to_string()),
                 };
                 Err(SubagentError {
@@ -929,5 +1138,57 @@ mod tests {
         let args = serde_json::json!({ "description": "短任务" });
         let summary = extract_params_summary("task", &args);
         assert_eq!(summary, "短任务");
+    }
+
+    #[test]
+    fn model_unavailable_maps_to_subagent_model_unavailable_code() {
+        let err = SubagentError {
+            message: "API error (503): service unavailable".to_string(),
+            error_type: ErrorType::ModelUnavailable,
+            partial_result: None,
+        };
+        assert_eq!(err.code(), "subagent_model_unavailable");
+    }
+
+    #[test]
+    fn classify_stream_error_api_error_is_model_unavailable() {
+        assert_eq!(
+            classify_stream_error("API error (503): service unavailable"),
+            ErrorType::ModelUnavailable
+        );
+    }
+
+    #[test]
+    fn classify_stream_error_connection_is_model_unavailable() {
+        assert_eq!(
+            classify_stream_error("connection refused by host"),
+            ErrorType::ModelUnavailable
+        );
+    }
+
+    #[test]
+    fn classify_stream_error_http_status_is_model_unavailable() {
+        assert_eq!(
+            classify_stream_error("request failed: HTTP 500 internal server error"),
+            ErrorType::ModelUnavailable
+        );
+    }
+
+    #[test]
+    fn classify_stream_error_stuck_remains_stuck() {
+        assert_eq!(
+            classify_stream_error("subagent stuck in loop"),
+            ErrorType::Stuck {
+                reason: "subagent stuck in loop".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn classify_stream_error_other_remains_unknown() {
+        assert_eq!(
+            classify_stream_error("some unexpected stream error"),
+            ErrorType::Unknown
+        );
     }
 }

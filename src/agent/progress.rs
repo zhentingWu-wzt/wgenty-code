@@ -52,7 +52,7 @@ pub enum SubagentEventType {
 }
 
 /// Categorized error types for subagent execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ErrorType {
     Timeout,
     BudgetExceeded {
@@ -71,6 +71,9 @@ pub enum ErrorType {
     },
     /// The subagent was cancelled via its execution context's cancellation token.
     Cancelled,
+    /// The model endpoint was unavailable (API HTTP error, connection refused, etc.).
+    /// Eligible for fallback to a backup model.
+    ModelUnavailable,
     Unknown,
 }
 

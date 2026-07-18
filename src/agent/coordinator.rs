@@ -5,7 +5,7 @@
 //! derives parentage, session, and depth entirely from trusted runtime
 //! context--never from model-supplied JSON.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -305,6 +305,13 @@ pub struct AgentCoordinator {
     child_groups: Arc<RwLock<HashMap<(SessionId, AgentId), TaskGroupId>>>,
     owner_groups: Arc<RwLock<HashMap<OwnerGroupKey, TaskGroupId>>>,
     group_operations: Arc<Mutex<()>>,
+    /// Per-child fallback marker enforcing the single-shot, non-recursive
+    /// fallback constraint. Key is either `child_id.as_str()` (interception 2,
+    /// runtime failure) or `format!("pending:{}", description)` (interception 1,
+    /// pre-dispatch failure where no child was reserved). Stored at coordinator
+    /// level rather than `GroupRecord` so it survives group claim/removal during
+    /// `collect_children_for_synthesis`.
+    fallback_used: Arc<RwLock<HashSet<String>>>,
 }
 
 impl AgentCoordinator {
@@ -323,7 +330,24 @@ impl AgentCoordinator {
             child_groups: Arc::new(RwLock::new(HashMap::new())),
             owner_groups: Arc::new(RwLock::new(HashMap::new())),
             group_operations: Arc::new(Mutex::new(())),
+            fallback_used: Arc::new(RwLock::new(HashSet::new())),
         }
+    }
+
+    /// Mark that a fallback has been used for the given key (a child id for
+    /// interception 2, or `"pending:<description>"` for interception 1).
+    /// Enforces the single-shot fallback constraint. Idempotent.
+    pub async fn mark_fallback_used(&self, key: &str) {
+        let mut set = self.fallback_used.write().await;
+        set.insert(key.to_string());
+    }
+
+    /// Whether a fallback has already been used for the given key. When true,
+    /// the caller MUST NOT attempt another fallback for this child -- the
+    /// failure degrades to the parent/root model instead of recursing.
+    pub async fn fallback_already_used(&self, key: &str) -> bool {
+        let set = self.fallback_used.read().await;
+        set.contains(key)
     }
 
     /// Sets the bounded shutdown timeout used while awaiting cancelling children.
@@ -2937,5 +2961,47 @@ impl AgentCoordinator {
             cancelled_scopes: affected.len(),
             cancelled_subtrees,
         })
+    }
+}
+
+#[cfg(test)]
+mod fallback_used_tests {
+    use super::*;
+
+    fn coord() -> AgentCoordinator {
+        AgentCoordinator::new(4, 5)
+    }
+
+    #[tokio::test]
+    async fn mark_and_check_fallback_used() {
+        let c = coord();
+        assert!(!c.fallback_already_used("child-1").await);
+        c.mark_fallback_used("child-1").await;
+        assert!(c.fallback_already_used("child-1").await);
+    }
+
+    #[tokio::test]
+    async fn fallback_used_is_per_key() {
+        let c = coord();
+        c.mark_fallback_used("child-1").await;
+        assert!(c.fallback_already_used("child-1").await);
+        assert!(!c.fallback_already_used("child-2").await);
+    }
+
+    #[tokio::test]
+    async fn pending_key_for_pre_dispatch_fallback() {
+        let c = coord();
+        let key = format!("pending:{}", "explore the codebase");
+        assert!(!c.fallback_already_used(&key).await);
+        c.mark_fallback_used(&key).await;
+        assert!(c.fallback_already_used(&key).await);
+    }
+
+    #[tokio::test]
+    async fn mark_fallback_used_is_idempotent() {
+        let c = coord();
+        c.mark_fallback_used("child-1").await;
+        c.mark_fallback_used("child-1").await;
+        assert!(c.fallback_already_used("child-1").await);
     }
 }

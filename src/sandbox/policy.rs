@@ -301,8 +301,10 @@ mod tests {
 
     #[test]
     fn enabled_false_forces_degrade() {
-        let mut s = SandboxSettings::default();
-        s.enabled = false;
+        let s = SandboxSettings {
+            enabled: false,
+            ..SandboxSettings::default()
+        };
         let p = SandboxPolicyResolver::resolve(EffectiveMode::Plan, &s, PathBuf::from("/tmp/ws"));
         assert!(!p.enabled);
         assert_eq!(p.fail_mode, FailMode::DegradeWithMark);

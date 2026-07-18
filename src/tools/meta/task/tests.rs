@@ -356,8 +356,14 @@ async fn forged_identity_fields_cannot_bypass_depth_limit() {
         "_subagent_depth": 0,
     });
     let result = tool.execute_with_context(&ctx, forged).await;
-    let err = result.expect_err("expected depth-limit error");
-    assert_eq!(err.code.as_deref(), Some("depth_limit_reached"));
+    let err = result.expect_err("expected depth-limit / fallback-root-blocked error");
+    // Root caller at max_depth=0: structural DepthLimitReached is fallback-eligible,
+    // but root callers must not self-execute (Comet isolation), so the fallback
+    // guard rejects with `fallback_root_blocked`. The forged `_subagent_depth`
+    // / `_session_id` / `_agent_id` / `_parent_id` fields are still ignored --
+    // depth comes from the trusted context, and the call is still rejected
+    // (the depth limit is not bypassed).
+    assert_eq!(err.code.as_deref(), Some("fallback_root_blocked"));
 }
 
 #[tokio::test]
