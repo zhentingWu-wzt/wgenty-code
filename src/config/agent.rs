@@ -146,6 +146,13 @@ pub struct SubagentLimits {
     /// Decision when approval wait times out.
     #[serde(default)]
     pub timeout_decision: TimeoutDecision,
+    /// Ordered list of fallback model names for model-unavailable failures.
+    /// On a `subagent_model_unavailable` failure, the first entry different
+    /// from the failed child's model is selected and swapped in (reusing the
+    /// original endpoint). Empty (default) => model failures degrade to the
+    /// parent model (current behavior).
+    #[serde(default)]
+    pub fallback_models: Vec<String>,
 }
 
 impl Default for SubagentLimits {
@@ -164,6 +171,7 @@ impl Default for SubagentLimits {
             explore_readonly: default_explore_readonly(),
             approval_timeout_secs: default_approval_timeout_secs(),
             timeout_decision: TimeoutDecision::default(),
+            fallback_models: Vec::new(),
         }
     }
 }

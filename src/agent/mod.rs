@@ -15,6 +15,7 @@ pub mod capability;
 pub mod coordinator;
 pub mod core;
 pub mod events;
+pub mod fallback;
 pub mod identity;
 pub mod progress;
 pub mod runtime;

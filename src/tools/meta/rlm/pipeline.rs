@@ -342,7 +342,7 @@ Context: {context}
                 inject_format_instruction("analysis", &mut sub_system_prompt);
                 let result = run_subagent_loop(
                     &api_client,
-                    &registry,
+                    registry.clone(),
                     &sub_context,
                     sub_coordinator.clone(),
                     &sub_system_prompt,

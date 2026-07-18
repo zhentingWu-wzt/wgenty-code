@@ -90,16 +90,14 @@ impl BackgroundManager {
 
         // Resolve whether we will attempt sandbox or must degrade / hard-fail now.
         let mut start_bypassed = !policy.enabled;
-        if policy.enabled {
-            if self.sandbox.is_none() {
-                if !should_degrade_to_direct(policy.fail_mode) {
-                    return Err(sandbox_infra_tool_error(
-                        "none",
-                        "sandbox manager not attached",
-                    ));
-                }
-                start_bypassed = true;
+        if policy.enabled && self.sandbox.is_none() {
+            if !should_degrade_to_direct(policy.fail_mode) {
+                return Err(sandbox_infra_tool_error(
+                    "none",
+                    "sandbox manager not attached",
+                ));
             }
+            start_bypassed = true;
         }
 
         let task_id_clone = task_id.clone();

@@ -41,6 +41,7 @@ pub enum FailureMode {
     ParseError,
     MaxRoundsExceeded,
     ApiError,
+    ModelUnavailable,
     ToolError,
     Cancelled,
     Unknown,
@@ -49,7 +50,9 @@ pub enum FailureMode {
 impl FailureMode {
     pub fn classify(error_msg: &str) -> Self {
         let lower = error_msg.to_lowercase();
-        if lower.contains("timeout") || lower.contains("timed out") {
+        if lower.contains("model_unavailable") || lower.contains("model unavailable") {
+            Self::ModelUnavailable
+        } else if lower.contains("timeout") || lower.contains("timed out") {
             Self::Timeout
         } else if lower.contains("budget") || lower.contains("token") {
             Self::TokenBudgetExceeded
@@ -79,6 +82,7 @@ impl FailureMode {
             Self::ParseError => "Parse Error Cascade",
             Self::MaxRoundsExceeded => "Max Rounds Exceeded",
             Self::ApiError => "API/Network Error",
+            Self::ModelUnavailable => "Model Unavailable",
             Self::ToolError => "Tool Execution Error",
             Self::Cancelled => "Cancelled",
             Self::Unknown => "Unknown",
@@ -87,7 +91,7 @@ impl FailureMode {
 
     pub fn severity(&self) -> &'static str {
         match self {
-            Self::Timeout | Self::ApiError => "Critical",
+            Self::Timeout | Self::ApiError | Self::ModelUnavailable => "Critical",
             Self::TokenBudgetExceeded | Self::MaxRoundsExceeded => "Warning",
             Self::StuckLoop | Self::ParseError | Self::ToolError => "Warning",
             Self::Cancelled | Self::Unknown => "Info",
@@ -438,6 +442,9 @@ fn recommend(mode: &FailureMode, count: usize, _avg_rounds: f64) -> String {
             "Subagents hitting max rounds — increase max_rounds or split tasks".into()
         }
         FailureMode::ApiError => "Check API endpoint availability and rate limits".into(),
+        FailureMode::ModelUnavailable => {
+            "Configure agent.subagent.fallback_models so model-unavailable failures auto-retry with a backup model".into()
+        }
         FailureMode::ToolError => "Verify file paths, permissions, and tool availability".into(),
         FailureMode::Cancelled => "User cancelled — not a system issue".into(),
         FailureMode::Unknown => "Unclassified failure — review transcript details".into(),
@@ -637,5 +644,36 @@ mod tests {
         assert!((h.success_rate - 0.6).abs() < 0.01);
         assert_eq!(h.failure_modes.len(), 2);
         assert_eq!(h.status, HealthStatus::Unhealthy);
+    }
+}
+
+#[cfg(test)]
+mod model_unavailable_health_tests {
+    use super::*;
+
+    #[test]
+    fn classifies_model_unavailable_code() {
+        assert_eq!(
+            FailureMode::classify("subagent_model_unavailable"),
+            FailureMode::ModelUnavailable
+        );
+    }
+
+    #[test]
+    fn classifies_model_unavailable_message() {
+        assert_eq!(
+            FailureMode::classify("model unavailable: endpoint down"),
+            FailureMode::ModelUnavailable
+        );
+    }
+
+    #[test]
+    fn model_unavailable_label() {
+        assert_eq!(FailureMode::ModelUnavailable.label(), "Model Unavailable");
+    }
+
+    #[test]
+    fn model_unavailable_severity_is_critical() {
+        assert_eq!(FailureMode::ModelUnavailable.severity(), "Critical");
     }
 }

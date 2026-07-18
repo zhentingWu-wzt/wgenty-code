@@ -157,6 +157,29 @@ impl Settings {
         s
     }
 
+    /// Build a Settings clone where `models.main.name` is overridden by the
+    /// given fallback model name. All other endpoint fields (base_url, api_key,
+    /// appkey, provider) are preserved from `self` -- the fallback reuses the
+    /// original endpoint. If the endpoint itself is down, the fallback fails
+    /// (single-shot constraint terminates, degrades to parent/root model).
+    pub fn fallback_model_settings(&self, model_name: &str) -> Self {
+        let mut s = self.clone();
+        s.models.main.name = model_name.to_string();
+        s
+    }
+
+    /// Select the first fallback model name different from `failed_model`.
+    /// Returns `None` if `fallback_models` is empty or every entry matches the
+    /// failed model.
+    pub fn select_fallback_model(&self, failed_model: &str) -> Option<&str> {
+        self.agent
+            .subagent
+            .fallback_models
+            .iter()
+            .find(|m| m.as_str() != failed_model)
+            .map(|m| m.as_str())
+    }
+
     /// Build a Settings clone where subagent override fields (under agent.subagent)
     /// have been folded into the corresponding agent.* fields. Used at subagent spawn
     /// time so the subagent loop can read agent.* directly.
