@@ -53,7 +53,11 @@ pub fn sandbox_infra_tool_error(backend: &str, err: impl std::fmt::Display) -> T
 /// - `full`: FS + network isolation roughly match profile intent (e.g. macOS seatbelt)
 /// - `partial`: kernel limits exist but not full FS/network (e.g. Windows job objects)
 /// - `none`: no hardware isolation (NoneBackend / bypassed)
-pub fn enforcement_fidelity(backend: &str, hardware_enforced: bool, bypassed: bool) -> &'static str {
+pub fn enforcement_fidelity(
+    backend: &str,
+    hardware_enforced: bool,
+    bypassed: bool,
+) -> &'static str {
     if bypassed || !hardware_enforced || backend == "none" || backend == "windows-stub" {
         return "none";
     }
