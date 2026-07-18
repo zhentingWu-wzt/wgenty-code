@@ -750,7 +750,17 @@ impl Tool for TaskTool {
         let progress_store_for_transcript = self.progress_store.clone();
         let sid_for_rlm = session_id.clone();
         let node_id_for_rlm = subagent_node_id.clone();
-        let settings_bg = self.settings.clone();
+        // `settings_bg` must reflect the child's actual model so interception-2
+        // fallback reads the correct `failed_model`. When `use_small_model` is
+        // set, the child runs with `small_model_settings()` (which overrides
+        // `models.main.name` to the small model); mirror that here so
+        // `SubagentSynthesis.settings.models.main.name` matches the child's
+        // api_client, and `select_fallback_model` does not pick the same model.
+        let settings_bg = if use_small && self.settings.models.small.is_some() {
+            self.settings.small_model_settings()
+        } else {
+            self.settings.clone()
+        };
         let coordinator_bg = self.coordinator.clone();
         let permission_ctx = self.build_permission_context(child_context.agent_id.as_str());
 
