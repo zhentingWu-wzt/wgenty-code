@@ -38,21 +38,32 @@ When a subagent result exceeds the persistence threshold, the system SHALL persi
 - **AND** the failure SHALL be logged
 
 ### Requirement: Failed subagent delivers structured error code and partial results
-When a subagent fails (timeout, budget exhaustion, stuck detection, parse error, or max-rounds exceeded), the system SHALL return a structured `SubagentError` to the parent agent carrying (1) a categorized error type that maps to a stable error-code string and (2) the subagent's last accumulated text snapshot as a partial result. The parent agent SHALL receive both the structured error code (via `ToolError::code`) and the partial work (via `ToolError::message`, which appends the partial result through `full_message()`), so it can salvage partial work and make informed retry/continue/abort decisions rather than receiving a bare error string with no recoverable output. The failed transcript SHALL record the same `full_message()` as its result snapshot.
+When a subagent fails (model-availability failure, timeout, budget exhaustion, stuck detection, parse error, or max-rounds exceeded), the system SHALL return a structured `SubagentError` to the parent agent carrying (1) a categorized error type that maps to a stable error-code string and (2) the subagent's last accumulated text snapshot as a partial result. The parent agent SHALL receive both the structured error code (via `ToolError::code`) and the partial work (via `ToolError::message`, which appends the partial result through `full_message()`), so it can salvage partial work and make informed retry/continue/abort decisions rather than receiving a bare error string with no recoverable output. The failed transcript SHALL record the same `full_message()` as its result snapshot.
+
+When the failure is fallback-eligible (model-availability failure, or a pre-dispatch structural failure such as depth-limit, concurrency-closed, or task-group-add failure), the system SHALL additionally invoke the parent self-execution fallback defined in the `subagent-dispatch-fallback` capability. The fallback takes a hybrid two-path form: a model-availability runtime failure (which passes through `ChildTerminal` and `collect_children_for_synthesis`) SHALL trigger a re-dispatched fallback child using a configured fallback model; a pre-dispatch structural failure (which does NOT pass through `ChildTerminal` or `collect_children_for_synthesis`, since no child ever ran) SHALL be handled directly at the `TaskTool::execute_with_context` dispatch point by synchronous execution of the task's `full_prompt`. Failures that are not fallback-eligible (timeout, stuck/max-rounds, panic, parent-scope cancellation) SHALL continue to be delivered to the parent agent's model for a decision without triggering the fallback.
 
 #### Scenario: Subagent timeout delivers structured error code and partial results
 - **WHEN** a subagent exceeds `agent.subagent.timeout_secs`
 - **THEN** the parent agent SHALL receive a `ToolError` whose `code` is `subagent_timeout`
 - **AND** the `ToolError::message` SHALL include any text the subagent accumulated before timing out, appended via `full_message()`'s "Partial results" section
 - **AND** the failed transcript SHALL record the same `full_message()` as its result snapshot
+- **AND** the system SHALL NOT trigger the parent self-execution fallback (timeout is not fallback-eligible)
 
 #### Scenario: Budget exhaustion delivers budget_exceeded code and partial results
 - **WHEN** a subagent exhausts its token budget
 - **THEN** the parent agent SHALL receive a `ToolError` whose `code` is `budget_exceeded`
 - **AND** the `ToolError::message` SHALL include the subagent's partial work accumulated before budget exhaustion
+- **AND** the system SHALL NOT trigger the parent self-execution fallback
+
+#### Scenario: Model-availability failure triggers parent self-execution fallback
+- **WHEN** a subagent fails because its model endpoint is unavailable (non-2xx HTTP response or model-endpoint connection error)
+- **THEN** the parent agent SHALL receive a `ToolError` whose `code` is `subagent_model_unavailable`
+- **AND** the `ToolError::message` SHALL include any text the subagent accumulated before failing
+- **AND** the system SHALL invoke the parent self-execution fallback, executing the task in the dispatching parent's context using a configured fallback model
 
 #### Scenario: Empty partial result does not append an empty segment
 - **WHEN** a subagent fails and has no accumulated text snapshot, or the snapshot is empty/whitespace-only
 - **THEN** `full_message()` SHALL return only the error message
 - **AND** SHALL NOT append a "Partial results (before failure)" section
+- **AND** if the failure is fallback-eligible, the fallback SHALL still proceed without salvage context
 

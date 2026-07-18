@@ -2,6 +2,7 @@
 change: subagent-dispatch-fallback
 design-doc: docs/superpowers/specs/2026-07-18-subagent-dispatch-fallback-design.md
 base-ref: 103a85b8200afef7b9a5ba5371c216758d9e0493
+archived-with: 2026-07-18-subagent-dispatch-fallback
 ---
 
 # Subagent Dispatch Fallback Implementation Plan
@@ -28,6 +29,7 @@ base-ref: 103a85b8200afef7b9a5ba5371c216758d9e0493
 - 配置键:`agent.subagent.fallback_models: Vec<String>`(模型名有序列表)。
 - ErrorType 新增 `ModelUnavailable` 变体;`SubagentError::code()` 返回 `subagent_model_unavailable`。
 
+archived-with: 2026-07-18-subagent-dispatch-fallback
 ---
 
 ## File Map
@@ -62,6 +64,7 @@ base-ref: 103a85b8200afef7b9a5ba5371c216758d9e0493
 - `subagent-driven-development` 双审查流程改动
 - 父作用域取消语义改动
 
+archived-with: 2026-07-18-subagent-dispatch-fallback
 ---
 
 ## Task 1: ErrorType::ModelUnavailable 变体 + code 映射
@@ -168,6 +171,7 @@ git commit -m "feat(fallback): add ErrorType::ModelUnavailable variant and code 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-07-18-subagent-dispatch-fallback
 ---
 
 ## Task 2: 失败分类细化 -- RuntimeError::Stream 模型不可用识别
@@ -316,6 +320,7 @@ ErrorType::ModelUnavailable so the fallback layer can detect them.
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-07-18-subagent-dispatch-fallback
 ---
 
 ## Task 3: fallback 模块 -- FallbackKind + fallback_eligible 判定
@@ -550,6 +555,7 @@ git commit -m "feat(fallback): add fallback_eligible module with FallbackKind
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-07-18-subagent-dispatch-fallback
 ---
 
 ## Task 4: fallback_used 标记 + AgentCoordinator 单次约束存储
@@ -679,6 +685,7 @@ group claim/removal during collect_children_for_synthesis.
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-07-18-subagent-dispatch-fallback
 ---
 
 ## Task 5: 备用模型配置 -- fallback_models + fallback_model_settings
@@ -881,6 +888,7 @@ git commit -m "feat(fallback): add fallback_models config and fallback_model_set
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-07-18-subagent-dispatch-fallback
 ---
 
 ## Task 6: 拦截点 1 -- TaskTool 内兜底同步执行
@@ -1190,6 +1198,7 @@ git commit -m "feat(fallback): interception point 1 -- TaskTool sync fallback on
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-07-18-subagent-dispatch-fallback
 ---
 
 ## Task 7: 拦截点 2 -- 运行时模型失败降级再派发
@@ -1538,6 +1547,7 @@ git commit -m "feat(fallback): interception point 2 -- model-unavailable re-disp
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-07-18-subagent-dispatch-fallback
 ---
 
 ## Task 8: 可观测性 -- FailureMode::ModelUnavailable + tracing 日志
@@ -1694,6 +1704,7 @@ git commit -m "feat(fallback): add FailureMode::ModelUnavailable health bucket
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-07-18-subagent-dispatch-fallback
 ---
 
 ## Task 9: 集成测试 -- 端到端 fallback 场景
@@ -1834,6 +1845,7 @@ git commit -m "test(fallback): integration tests for dispatch fallback scenarios
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-07-18-subagent-dispatch-fallback
 ---
 
 ## Task 10: 文档更新 -- fallback 行为说明
@@ -1924,6 +1936,7 @@ git commit -m "docs(fallback): document subagent dispatch fallback behavior
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
+archived-with: 2026-07-18-subagent-dispatch-fallback
 ---
 
 ## Self-Review Checklist
