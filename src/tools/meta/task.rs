@@ -11,7 +11,8 @@
 
 use crate::agent::progress::{ErrorType, ProgressCallback, SubagentProgress, SubagentStatus};
 use crate::agent::{
-    AgentCoordinator, ChildTerminal, CoordinatorError, SpawnChildRequest, ToolContext,
+    AgentCoordinator, AgentExecutionContext, AgentId, ChildTerminal, CoordinatorError,
+    SpawnChildRequest, ToolContext,
 };
 use crate::api::ApiClient;
 use crate::config::agent::RootPermissionMode;
@@ -214,6 +215,129 @@ impl TaskTool {
                 store.entry(sid).or_default().insert(node_id, progress);
             });
         })
+    }
+
+    /// Interception point 1: synchronous fallback execution inside TaskTool.
+    ///
+    /// Called when `reserve_child_in_group` fails with a structural
+    /// `CoordinatorError` (`DepthLimitReached` / `ConcurrencyClosed` / `TaskGroup`).
+    /// Runs `full_prompt` using the parent agent's api client and tool registry,
+    /// returning the result as a `ToolOutput`. The parent agent model is unaware
+    /// that a fallback occurred.
+    ///
+    /// Guards:
+    /// - `!is_root_caller(context.agent)` (root must not self-execute; Comet isolation)
+    /// - `!fallback_already_used` (single-shot, non-recursive constraint)
+    ///
+    /// On fallback execution failure: returns `ToolError` (degrades to root model,
+    /// no recursion). Structural failures do not swap the model.
+    async fn execute_fallback_sync(
+        &self,
+        context: &ToolContext<'_>,
+        description: &str,
+        full_prompt: &str,
+        system_prompt: &str,
+        fallback_key: &str,
+    ) -> Result<ToolOutput, ToolError> {
+        use crate::agent::fallback::{is_root_caller, FallbackKind};
+
+        // Guard: root callers must not self-execute (Comet isolation).
+        if is_root_caller(context.agent) {
+            return Err(ToolError {
+                message: "fallback unavailable: root caller cannot self-execute"
+                    .to_string(),
+                code: Some("fallback_root_blocked".to_string()),
+            });
+        }
+
+        // Guard: single-shot constraint.
+        if self.coordinator.fallback_already_used(fallback_key).await {
+            return Err(ToolError {
+                message: "fallback already used for this child".to_string(),
+                code: Some("fallback_already_used".to_string()),
+            });
+        }
+
+        tracing::info!(
+            fallback = "interception1",
+            kind = ?FallbackKind::Structural,
+            description = %description,
+            "Subagent dispatch fallback: synchronous execution in TaskTool"
+        );
+
+        // Mark fallback used BEFORE execution (prevents re-entry).
+        self.coordinator.mark_fallback_used(fallback_key).await;
+
+        // Structural failure does not swap the model: reuse parent's settings.
+        let api_client = ApiClient::new(self.settings.clone());
+        let tool_registry = self.tool_registry.upgrade().ok_or_else(|| ToolError {
+            message: "tool registry unavailable for fallback".to_string(),
+            code: Some("fallback_no_registry".to_string()),
+        })?;
+
+        // Synthesize a child context based on the parent's context. We do NOT
+        // call coordinator.reserve_child (it failed). The synthesized agent runs
+        // at the parent's depth (no deeper, since depth limit was a failure reason).
+        let child_agent_id_str = uuid::Uuid::new_v4().to_string();
+        let child_context = AgentExecutionContext {
+            agent_id: AgentId::new(child_agent_id_str.clone()),
+            parent_id: Some(context.agent.agent_id.clone()),
+            session_id: context.agent.session_id.clone(),
+            depth: context.agent.depth,
+            cancellation: context.agent.cancellation.clone(),
+        };
+
+        let allowed_tools: Vec<String> = tool_registry
+            .list()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        let timeout_secs = self.settings.agent.subagent.timeout_secs;
+        let workdir: Option<std::path::PathBuf> = Some(self.settings.storage.working_dir.clone());
+        let permission = self.build_permission_context(&child_agent_id_str);
+
+        let result = run_subagent_loop_with_permissions(
+            &api_client,
+            &tool_registry,
+            &child_context,
+            self.coordinator.clone(),
+            system_prompt,
+            full_prompt,
+            &allowed_tools,
+            self.settings.agent.subagent.max_rounds.unwrap_or(100),
+            timeout_secs,
+            None,
+            None,
+            workdir,
+            permission,
+        )
+        .await;
+
+        match result {
+            Ok(output) => {
+                tracing::info!(
+                    fallback = "interception1",
+                    result = "success",
+                    "Subagent dispatch fallback succeeded"
+                );
+                Ok(ToolOutput::text(output))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    fallback = "interception1",
+                    result = "failure",
+                    error = %e.full_message(),
+                    "Subagent dispatch fallback failed; degrading to root model"
+                );
+                Err(ToolError {
+                    message: format!(
+                        "Fallback execution failed: {}. Original dispatch error preserved.",
+                        e.full_message()
+                    ),
+                    code: Some("fallback_execution_failed".to_string()),
+                })
+            }
+        }
     }
 }
 
@@ -518,7 +642,7 @@ impl Tool for TaskTool {
                 .map_err(map_coordinator_error)?
         };
 
-        let reservation = self
+        let reservation = match self
             .coordinator
             .reserve_child_in_group(
                 context.agent,
@@ -526,7 +650,27 @@ impl Tool for TaskTool {
                 group_id.clone(),
             )
             .await
-            .map_err(map_coordinator_error)?;
+        {
+            Ok(r) => r,
+            Err(e) => {
+                // Interception point 1: pre-dispatch structural failure.
+                use crate::agent::fallback::fallback_eligible_from_coordinator_error;
+                if fallback_eligible_from_coordinator_error(&e).is_some() {
+                    let fallback_key = format!("pending:{}", description);
+                    return self
+                        .execute_fallback_sync(
+                            context,
+                            description,
+                            &full_prompt,
+                            &system_prompt,
+                            &fallback_key,
+                        )
+                        .await;
+                }
+                // Not eligible -> original error path.
+                return Err(map_coordinator_error(e));
+            }
+        };
         let child_context = reservation.context.clone();
         let child_id = child_context.agent_id.clone();
 
