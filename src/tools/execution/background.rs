@@ -90,16 +90,14 @@ impl BackgroundManager {
 
         // Resolve whether we will attempt sandbox or must degrade / hard-fail now.
         let mut start_bypassed = !policy.enabled;
-        if policy.enabled {
-            if self.sandbox.is_none() {
-                if !should_degrade_to_direct(policy.fail_mode) {
-                    return Err(sandbox_infra_tool_error(
-                        "none",
-                        "sandbox manager not attached",
-                    ));
-                }
-                start_bypassed = true;
+        if policy.enabled && self.sandbox.is_none() {
+            if !should_degrade_to_direct(policy.fail_mode) {
+                return Err(sandbox_infra_tool_error(
+                    "none",
+                    "sandbox manager not attached",
+                ));
             }
+            start_bypassed = true;
         }
 
         let task_id_clone = task_id.clone();
@@ -411,10 +409,7 @@ impl BackgroundTool {
             .unwrap_or(false);
 
         // Pre-check HardFail when no sandbox manager and enabled (spawn also checks).
-        let task_id = self
-            .manager
-            .spawn(command, timeout, mode, workdir)
-            .await?;
+        let task_id = self.manager.spawn(command, timeout, mode, workdir).await?;
 
         // At accept time we do not yet know if runtime will degrade; mark intent.
         let bypassed = !policy.enabled
@@ -472,6 +467,7 @@ mod tests {
             origin_turn_id: None,
             workdir: None,
             effective_mode: EffectiveMode::Yolo,
+            checkpoint: None,
         };
         let out = tool
             .execute_with_context(&ctx, json!({"command": "echo hi"}))

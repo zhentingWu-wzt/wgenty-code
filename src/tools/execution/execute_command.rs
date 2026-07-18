@@ -251,6 +251,7 @@ mod tests {
             origin_turn_id: None,
             workdir: None,
             effective_mode: EffectiveMode::Yolo,
+            checkpoint: None,
         };
         let out = tool
             .execute_with_context(&ctx, json!({"command": "echo hi"}))
@@ -263,9 +264,7 @@ mod tests {
             Some(true)
         );
         assert_eq!(
-            out.metadata
-                .get("permission_mode")
-                .and_then(|v| v.as_str()),
+            out.metadata.get("permission_mode").and_then(|v| v.as_str()),
             Some("yolo")
         );
     }

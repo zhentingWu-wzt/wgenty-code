@@ -123,6 +123,23 @@ impl Tool for ApplyPatchTool {
     }
 }
 
+/// Extract affected file paths from an apply_patch document without fully
+/// validating hunks. Best-effort: returns whatever file headers can be parsed.
+/// Paths are returned as they appear in the patch (relative or absolute).
+pub fn extract_patch_paths(patch: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for line in patch.lines() {
+        if let Some(path) = line.strip_prefix("*** Add File: ") {
+            paths.push(path.trim().to_string());
+        } else if let Some(path) = line.strip_prefix("*** Delete File: ") {
+            paths.push(path.trim().to_string());
+        } else if let Some(path) = line.strip_prefix("*** Update File: ") {
+            paths.push(path.trim().to_string());
+        }
+    }
+    paths
+}
+
 fn parse_patch(patch: &str, workdir: &Path) -> Result<Vec<PatchOperation>, ToolError> {
     let lines: Vec<&str> = patch.lines().collect();
     if lines.first().copied() != Some("*** Begin Patch") {
@@ -501,5 +518,17 @@ mod tests {
             }))
             .await;
         assert!(result.is_err(), "应返回错误而非静默成功");
+    }
+
+    #[test]
+    fn extract_patch_paths_finds_add_update_delete() {
+        let patch = "*** Begin Patch\n*** Add File: a.rs\n+fn a() {}\n*** Update File: b.rs\n@@\n-old\n+new\n*** Delete File: c.rs\n*** End Patch";
+        let paths = extract_patch_paths(patch);
+        assert_eq!(paths, vec!["a.rs", "b.rs", "c.rs"]);
+    }
+
+    #[test]
+    fn extract_patch_paths_empty_on_garbage() {
+        assert!(extract_patch_paths("not a patch").is_empty());
     }
 }
