@@ -237,7 +237,7 @@ Return summary with files changed and remaining occurrences of "process_transact
 
     let result = run_subagent_loop(
         &api_client,
-        &registry,
+        registry.clone(),
         &root_context,
         coordinator,
         system_prompt,

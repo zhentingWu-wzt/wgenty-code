@@ -133,7 +133,7 @@ impl SubagentError {
 /// [`ErrorType::ModelUnavailable`] so the fallback layer can detect them.
 /// "stuck"/"Stuck" stays [`ErrorType::Stuck`]. Everything else stays
 /// [`ErrorType::Unknown`].
-pub(crate) fn classify_stream_error(msg: &str) -> ErrorType {
+pub fn classify_stream_error(msg: &str) -> ErrorType {
     if msg.contains("stuck") || msg.contains("Stuck") {
         return ErrorType::Stuck {
             reason: msg.to_string(),
