@@ -32,6 +32,43 @@ fn explore_readonly_false_keeps_mutating_tools() {
 }
 
 #[test]
+fn general_purpose_keeps_spawn_tools_at_max_depth() {
+    // Soft-stripping `task` at depth==max_depth would make interception-point 1
+    // (DepthLimitReached -> parent self-execute) unreachable. GP must keep
+    // spawn tools; the coordinator hard gate + structural fallback own depth.
+    let all = vec![
+        "file_read".into(),
+        "task".into(),
+        "delegate".into(),
+        "grep".into(),
+    ];
+    let filtered = filter_allowed_tools(all, "general-purpose", 1, 1, true);
+    assert!(filtered.contains(&"task".to_string()));
+    assert!(filtered.contains(&"delegate".to_string()));
+    assert!(filtered.contains(&"file_read".to_string()));
+    assert!(filtered.contains(&"grep".to_string()));
+}
+
+#[test]
+fn explore_and_plan_never_keep_spawn_tools_regardless_of_depth() {
+    let all = vec!["task".into(), "delegate".into(), "file_read".into()];
+    for st in ["explore", "plan"] {
+        for (depth, max_depth) in [(0, 1), (1, 1), (0, 3), (2, 3)] {
+            let filtered = filter_allowed_tools(all.clone(), st, depth, max_depth, true);
+            assert!(
+                !filtered.contains(&"task".to_string()),
+                "{st} must not keep task at depth={depth} max_depth={max_depth}"
+            );
+            assert!(
+                !filtered.contains(&"delegate".to_string()),
+                "{st} must not keep delegate at depth={depth} max_depth={max_depth}"
+            );
+            assert!(filtered.contains(&"file_read".to_string()));
+        }
+    }
+}
+
+#[test]
 fn test_simple_prompt_not_complex() {
     assert!(!is_complex_task(
         "create a file called config.json with default settings",
@@ -364,6 +401,92 @@ async fn forged_identity_fields_cannot_bypass_depth_limit() {
     // depth comes from the trusted context, and the call is still rejected
     // (the depth limit is not bypassed).
     assert_eq!(err.code.as_deref(), Some("fallback_root_blocked"));
+}
+
+#[tokio::test]
+async fn nested_parent_depth_limit_triggers_structural_self_execute() {
+    // Default topology: max_depth=1.
+    // Root (depth 0) -> child (depth 1). When the child tries to spawn a
+    // grandchild, DepthLimitReached fires and interception-point 1 must
+    // self-execute inside the non-root parent (not block with a hard error).
+    // Without a live model the loop fails, but the error code must be
+    // `fallback_execution_failed` (proving fallback ran), never
+    // `depth_limit_reached` or `fallback_root_blocked`.
+    let registry = std::sync::Arc::new(crate::tools::ToolRegistry::new());
+    let coordinator = std::sync::Arc::new(AgentCoordinator::new(4, 1));
+    let root = coordinator
+        .ensure_root(SessionId::new("s-nested"))
+        .await
+        .unwrap();
+    let child = coordinator
+        .reserve_child(&root, crate::agent::SpawnChildRequest::new("child"))
+        .await
+        .expect("root must be able to spawn depth-1 child")
+        .context;
+    assert_eq!(child.depth, 1);
+    assert!(child.parent_id.is_some());
+
+    let tool = TaskTool::new(
+        Settings::default(),
+        std::sync::Arc::downgrade(&registry),
+        coordinator.clone(),
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        None,
+    );
+    let ctx = ToolContext {
+        agent: &child,
+        invocation_id: ToolInvocationId::new("inv-nested"),
+        origin_turn_id: None,
+        workdir: None,
+        effective_mode: crate::sandbox::EffectiveMode::default(),
+    };
+    let result = tool
+        .execute_with_context(
+            &ctx,
+            serde_json::json!({
+                "description": "grandchild work",
+                "prompt": "do the leaf work inline when depth blocks spawn",
+            }),
+        )
+        .await;
+
+    match result {
+        Ok(output) => {
+            // Live model available: fallback completed the work as tool output.
+            assert_ne!(
+                output.metadata.get("status").and_then(|v| v.as_str()),
+                Some("running"),
+                "depth-limit fallback must not spawn a running child"
+            );
+        }
+        Err(err) => {
+            assert_eq!(
+                err.code.as_deref(),
+                Some("fallback_execution_failed"),
+                "nested depth-limit must enter structural self-execute; got {:?}",
+                err
+            );
+            // Ghost fallback must not hit coordinator NotVisible (unregistered
+            // non-root synthesis). Without a live model the failure is an API /
+            // stream error, never "agent is not visible".
+            assert!(
+                !err.message.contains("not visible"),
+                "ghost fallback must skip synthesis NotVisible; got: {}",
+                err.message
+            );
+            assert!(
+                coordinator
+                    .fallback_already_used("pending:grandchild work")
+                    .await,
+                "fallback_used marker must be set for the pending key"
+            );
+        }
+    }
+
+    root.cancellation.cancel();
+    let _ = coordinator
+        .cancel_subtree(&root, child.agent_id.clone())
+        .await;
 }
 
 #[tokio::test]

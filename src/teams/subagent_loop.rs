@@ -360,21 +360,24 @@ impl SubagentSynthesis {
         let fallback_settings = self.settings.fallback_model_settings(fallback_model);
         let api_client = ApiClient::new(fallback_settings);
 
-        // 4. Allowed tools: same registry, all non-spawn tools at this depth.
+        // 4. Allowed tools: leaf set only (no nested spawn from a ghost agent).
         let tool_registry = Arc::clone(&self.tool_registry);
         let allowed_tools: Vec<String> = tool_registry
             .list()
             .iter()
             .map(|t| t.name().to_string())
+            .filter(|name| name != "task" && name != "delegate")
             .collect();
 
-        // 5. Synthesize a child context reusing the parent's session/depth.
+        // 5. Synthesize a leaf context. parent_id=None so SubagentSynthesis
+        // skips collect_children_for_synthesis (ghost is not in scopes;
+        // non-root would hit NotVisible via active_owner_status).
         let child_context = AgentExecutionContext {
             agent_id: AgentId::new(uuid::Uuid::new_v4().to_string()),
-            parent_id: Some(self.context.agent_id.clone()),
+            parent_id: None,
             session_id: self.context.session_id.clone(),
             depth: self.context.depth,
-            cancellation: self.context.cancellation.clone(),
+            cancellation: self.context.cancellation.child_token(),
         };
 
         let timeout_secs = self.settings.agent.subagent.timeout_secs;
