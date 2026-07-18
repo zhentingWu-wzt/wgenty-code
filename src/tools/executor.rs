@@ -347,6 +347,7 @@ mod tests {
             origin_turn_id: None,
             workdir: None,
             effective_mode: crate::sandbox::EffectiveMode::default(),
+            checkpoint: None,
         };
         let result = executor
             .execute_with_hooks(
@@ -391,6 +392,7 @@ mod tests {
             origin_turn_id: None,
             workdir: None,
             effective_mode: crate::sandbox::EffectiveMode::default(),
+            checkpoint: None,
         };
         let result = executor
             .execute_with_hooks(

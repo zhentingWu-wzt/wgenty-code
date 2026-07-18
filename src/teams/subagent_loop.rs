@@ -31,6 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 /// Maximum length of a tool parameter summary string.
 const MAX_PARAMS_SUMMARY_LEN: usize = 80;
@@ -404,6 +405,7 @@ impl SubagentSynthesis {
             permission,
             Arc::clone(&self.settings),
             self.transcript_store.clone(),
+            None, // interception-2 ghost has no root turn id
         )
         .await;
 
@@ -870,12 +872,16 @@ pub async fn run_subagent_loop(
         permission,
         settings,
         None,
+        None,
     )
     .await
 }
 
 /// Same as [`run_subagent_loop`] but with an explicit permission context
 /// (shared session_rules / optional approval bridge / guardian).
+///
+/// `origin_turn_id`, when set, folds subagent file edits into the parent
+/// turn's checkpoint snapshot (no independent subagent checkpoint).
 #[allow(clippy::too_many_arguments)]
 pub async fn run_subagent_loop_with_permissions(
     api_client: &ApiClient,
@@ -893,6 +899,7 @@ pub async fn run_subagent_loop_with_permissions(
     permission: SubagentPermissionContext,
     settings: Arc<crate::config::Settings>,
     transcript_store: Option<Arc<crate::transcript::SubagentTranscriptStore>>,
+    origin_turn_id: Option<String>,
 ) -> Result<String, SubagentError> {
     let timeout_duration = Duration::from_secs(timeout_secs);
     static SUBAGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -920,7 +927,14 @@ pub async fn run_subagent_loop_with_permissions(
 
     let llm = ApiLlmPort::new(api_client.clone());
     let allowed: HashSet<String> = allowed_tools.iter().cloned().collect();
-    let tools = GuardingToolPort::new(&tool_registry, context, allowed, workdir, permission);
+    // Prefer the explicit root turn id; fall back to a fresh id only so the
+    // shared loop still stamps ToolRequest.turn_id. Capture itself keys off
+    // GuardingToolPort.origin_turn_id (root), not the loop's own id.
+    let loop_turn_id = origin_turn_id
+        .clone()
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let tools = GuardingToolPort::new(&tool_registry, context, allowed, workdir, permission)
+        .with_origin_turn_id(origin_turn_id);
     let events = NullEventSink;
 
     let is_non_root = context.parent_id.is_some();
@@ -964,7 +978,7 @@ pub async fn run_subagent_loop_with_permissions(
         context_window: 200_000,
         max_tokens: 4096,
         session_id: context.session_id.as_str().to_string(),
-        turn_id: None,
+        turn_id: Some(loop_turn_id),
         agent_generation: 0,
         stream_max_retries: 0,
     };

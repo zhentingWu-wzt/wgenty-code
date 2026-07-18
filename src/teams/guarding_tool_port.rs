@@ -85,6 +85,9 @@ pub struct GuardingToolPort<'a> {
     allowed: HashSet<String>,
     workdir: Option<PathBuf>,
     permission: SubagentPermissionContext,
+    /// Root turn id shared with the parent so subagent edits fold into the
+    /// same per-turn checkpoint snapshot. `None` disables capture.
+    origin_turn_id: Option<String>,
 }
 
 impl<'a> GuardingToolPort<'a> {
@@ -101,7 +104,14 @@ impl<'a> GuardingToolPort<'a> {
             allowed,
             workdir,
             permission,
+            origin_turn_id: None,
         }
+    }
+
+    /// Fold subagent file edits into the root turn's checkpoint snapshot.
+    pub fn with_origin_turn_id(mut self, turn_id: Option<String>) -> Self {
+        self.origin_turn_id = turn_id;
+        self
     }
 
     fn record_denial(&self, reason: &str) {
@@ -309,12 +319,16 @@ impl ToolPort for GuardingToolPort<'_> {
             .invocation_id
             .clone()
             .unwrap_or_else(|| format!("{}-inv", req.name));
+        // Prefer the root turn id (shared checkpoint) over the subagent's own
+        // ToolRequest turn_id, which the shared loop may leave unset.
+        let turn_id = self.origin_turn_id.as_deref().or(req.turn_id.as_deref());
         let tool_context = ToolContext {
             agent: self.context,
             invocation_id: ToolInvocationId::new(inv_id),
-            origin_turn_id: None,
+            origin_turn_id: turn_id,
             workdir: self.workdir.as_deref(),
             effective_mode: self.permission.effective_mode,
+            checkpoint: Some(self.registry.checkpoint_store.as_ref()),
         };
 
         match self

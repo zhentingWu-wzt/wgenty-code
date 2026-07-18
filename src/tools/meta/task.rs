@@ -324,6 +324,7 @@ impl TaskTool {
             permission,
             Arc::new(self.settings.clone()),
             self.transcript_store.clone(),
+            context.origin_turn_id.map(|s| s.to_string()),
         )
         .await;
 
@@ -795,6 +796,8 @@ impl Tool for TaskTool {
         };
         let coordinator_bg = self.coordinator.clone();
         let permission_ctx = self.build_permission_context(child_context.agent_id.as_str());
+        // Fold subagent file edits into the root turn's checkpoint snapshot.
+        let origin_turn_id_bg = context.origin_turn_id.map(|s| s.to_string());
 
         // The coordinator-owned child context moves into the spawned task so
         // the loop runs as the child agent and cancellation propagates. The
@@ -856,6 +859,7 @@ impl Tool for TaskTool {
                         permission_ctx,
                         Arc::new(settings_bg.clone()),
                         transcript_store_bg.clone(),
+                        origin_turn_id_bg,
                     )
                     .await
                 }

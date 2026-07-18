@@ -281,6 +281,7 @@ async fn root_task_fixture(
         origin_turn_id: Some(origin_turn_id),
         workdir: None,
         effective_mode: crate::sandbox::EffectiveMode::default(),
+        checkpoint: None,
     };
     (tool, registry, root, ctx)
 }
@@ -382,6 +383,7 @@ async fn forged_identity_fields_cannot_bypass_depth_limit() {
         origin_turn_id: Some("turn-1"),
         workdir: None,
         effective_mode: crate::sandbox::EffectiveMode::default(),
+        checkpoint: None,
     };
     let forged = serde_json::json!({
         "description": "nested work",
@@ -439,6 +441,7 @@ async fn nested_parent_depth_limit_triggers_structural_self_execute() {
         origin_turn_id: None,
         workdir: None,
         effective_mode: crate::sandbox::EffectiveMode::default(),
+        checkpoint: None,
     };
     let result = tool
         .execute_with_context(
