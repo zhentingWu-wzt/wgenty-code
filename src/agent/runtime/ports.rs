@@ -80,10 +80,17 @@ pub trait ToolPort: Send + Sync {
 ///
 /// Micro-compaction is pure and always applied by the loop; this port covers
 /// the expensive summarization path.
+///
+/// The compact implementation must **not** mutate `history`. It archives the
+/// transcript, asks the LLM for a summary, and returns `Some(summary)` on
+/// success. The caller assembles the API-facing context view from the summary
+/// plus a boundary into the *full, preserved* history - so the on-disk session
+/// always keeps the original messages verbatim.
 #[async_trait]
 pub trait Compactor: Send + Sync {
-    /// Attempt full compaction. Return `true` if history was rewritten.
-    async fn compact(&self, history: &dyn HistoryStore) -> bool;
+    /// Run a compaction pass. Returns `Some(summary)` on success, `None` on
+    /// failure. Never rewrites the stored history.
+    async fn compact(&self, history: &dyn HistoryStore) -> Option<String>;
 }
 
 /// Interactive prompts (`ask_user_question`) for frontends that can show UI.

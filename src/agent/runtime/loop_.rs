@@ -1,7 +1,7 @@
 //! Shared multi-round agent loop (stream → tools → compact → repeat).
 
 use super::compaction::{
-    estimate_prompt_tokens, micro_compact_messages, needs_compaction, request_size_chars,
+    estimate_prompt_tokens, micro_compact_messages, needs_compaction, split_for_compaction,
 };
 use super::config::RuntimeConfig;
 use super::error::RuntimeError;
@@ -85,6 +85,11 @@ pub struct LoopTurnState {
     pub preparing_tools_fired: bool,
     pub rounds_since_plan: usize,
     pub compacted_summary: String,
+    /// Index into `conversation_history` where the summarized prefix ends.
+    /// Messages `[0..boundary)` are replaced by `compacted_summary` in the API
+    /// view but remain in the stored history (and the saved session). `0` means
+    /// no compaction has occurred.
+    pub compaction_boundary: usize,
     /// Consecutive tool rounds with irrecoverable JSON arg failures.
     pub consecutive_parse_errors: usize,
     /// Rounds since the model last called `task_management`; drives ready-task nudges.
@@ -123,6 +128,9 @@ pub struct RunLoopArgs<'a> {
     pub state: &'a mut LoopTurnState,
     pub stream_style: StreamStyle,
     pub hooks: LoopHooks<'a>,
+    /// Pre-assembled system prompt (8 layers). Prepended to the API request
+    /// every round but never stored in `history` or the saved session.
+    pub system_messages: &'a [ChatMessage],
 }
 
 /// Run the shared agent loop until the model stops calling tools or limits hit.
@@ -159,6 +167,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
         state,
         stream_style,
         mut hooks,
+        system_messages,
     } = args;
     let mut llm_rounds = 0usize;
     let max_rounds = config.max_rounds;
@@ -182,12 +191,6 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             );
         }
 
-        let raw = history.get().await;
-        let messages = micro_compact_messages(&raw);
-        if let Some(obs) = hooks.observer {
-            obs.on_round_start(llm_rounds + 1, &messages);
-        }
-
         // s09 inbox: drain team mailbox at the top of each round so peer
         // messages are visible to the model before it acts. Injected as a
         // system message; an empty inbox is a no-op.
@@ -197,63 +200,101 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             }
         }
 
+        // Build the API view: system_messages (8-layer prompt) + optional
+        // compaction summary + the unsummarized tail of conversation_history.
+        // system_messages and the summary are prepended fresh every round and
+        // never stored in history; only the raw tail is persisted to the saved
+        // session. This keeps sessions compact while the live request always
+        // carries the current system instructions.
+        let raw = history.get().await;
+        let boundary = state.compaction_boundary.min(raw.len());
+        let tail_msgs = micro_compact_messages(&raw[boundary..]);
+        let mut messages = if state.compacted_summary.is_empty() {
+            let mut m = Vec::with_capacity(system_messages.len() + tail_msgs.len());
+            m.extend_from_slice(system_messages);
+            m.extend(tail_msgs);
+            m
+        } else {
+            super::compaction::assemble_post_compaction_history(
+                system_messages,
+                &state.compacted_summary,
+                &tail_msgs,
+            )
+        };
+        // Defensive boundary 1: demote `role="tool"` messages whose
+        // `tool_call_id` has no matching preceding assistant `tool_calls`
+        // entry. This happens for sessions saved by older builds that dropped
+        // `tool_call_id`/`tool_calls` during persistence - replaying them
+        // verbatim fails with `missing messages.tool_call_id`. No-op for
+        // well-formed histories.
+        crate::api::types::demote_orphan_tool_results(&mut messages);
+        // Defensive boundary 2: guarantee every assistant `tool_calls` block is
+        // followed by matching `tool_result`s. Repairs histories orphaned by a
+        // mid-execution interrupt (Esc) that aborts after the assistant message
+        // is pushed but before tool results are appended - otherwise the next
+        // request fails with `missing messages.tool_call_id`. No-op for
+        // well-formed histories.
+        crate::api::types::sanitize_tool_call_pairing(&mut messages);
+
+        if let Some(obs) = hooks.observer {
+            obs.on_round_start(llm_rounds + 1, &messages);
+        }
+
         let want_compact = state.compact_requested
             || needs_compaction(&messages, config.context_window, config.max_tokens);
         state.compact_requested = false;
         if want_compact && !state.compaction_failed {
             if let Some(compactor) = hooks.compactor {
                 events.emit(RuntimeEvent::CompactionStarted);
-                if compactor.compact(history).await {
-                    let compacted_raw = history.get().await;
-                    // Always re-apply micro-compact after a successful compact
-                    // (summary or micro-fallback) so oversized tool results shrink.
-                    let compacted = micro_compact_messages(&compacted_raw);
-                    let before = request_size_chars(&compacted_raw);
-                    let after = request_size_chars(&compacted);
-                    let final_msgs = if after < before {
-                        history.replace(compacted.clone()).await;
-                        compacted
-                    } else {
-                        compacted_raw
-                    };
-                    // Refresh context-bar estimate immediately — API usage only
-                    // arrives on the next model round.
-                    if let Some(tc) = hooks.token_counter {
-                        tc.set_prompt_tokens(estimate_prompt_tokens(&final_msgs));
-                    }
-                    if needs_compaction(&final_msgs, config.context_window, config.max_tokens) {
-                        tracing::warn!(
-                            "compaction succeeded but history still exceeds the threshold; \
-                             stopping retries to avoid an infinite compaction loop"
+                match compactor.compact(history).await {
+                    Some(summary) if !summary.trim().is_empty() => {
+                        // The compactor produced a summary but did NOT mutate
+                        // history. Advance the boundary so the API view drops
+                        // the summarized prefix (replaced by the summary) while
+                        // the full history is preserved for the saved session.
+                        let fresh = history.get().await;
+                        let new_boundary = split_for_compaction(&fresh).0.len();
+                        state.compaction_boundary = new_boundary;
+                        state.compacted_summary = summary.clone();
+                        // Build the post-compaction view to refresh the token
+                        // estimate and guard against an infinite compaction loop
+                        // (e.g. when the system prompt alone exceeds the
+                        // threshold and no amount of summarizing helps).
+                        let tail = &fresh[new_boundary..];
+                        let tail_msgs = micro_compact_messages(tail);
+                        let view = super::compaction::assemble_post_compaction_history(
+                            system_messages,
+                            &summary,
+                            &tail_msgs,
                         );
-                        events.emit(RuntimeEvent::StreamError(
-                            "Compaction ran but couldn't shrink the context below the threshold \
-                             (the last exchange or system prompts are too large); sending the \
-                             request anyway - it may fail if still too large."
-                                .to_string(),
-                        ));
+                        if let Some(tc) = hooks.token_counter {
+                            tc.set_prompt_tokens(estimate_prompt_tokens(&view));
+                        }
+                        events.emit(RuntimeEvent::ContextCompacted {
+                            summary_chars: summary.chars().count(),
+                        });
+                        if needs_compaction(&view, config.context_window, config.max_tokens) {
+                            tracing::warn!(
+                                "compaction succeeded but the view still exceeds the threshold; stopping retries to avoid an infinite loop"
+                            );
+                            events.emit(RuntimeEvent::StreamError(
+                                "Compaction ran but couldn't shrink the context below the threshold (system prompt or last exchange too large); sending the request anyway - it may fail if still too large.".to_string(),
+                            ));
+                            state.compaction_failed = true;
+                        }
+                        continue;
+                    }
+                    _ => {
+                        // Summary failed; history is untouched. Disable further
+                        // auto-compaction this turn and fall through with the
+                        // already micro-compacted view built above.
                         state.compaction_failed = true;
                     }
-                    continue;
                 }
-                // Summary failed without a successful rewrite — still try
-                // micro-compact once so the next request is smaller.
-                let snap = history.get().await;
-                let micro = micro_compact_messages(&snap);
-                if request_size_chars(&micro) < request_size_chars(&snap) {
-                    history.replace(micro.clone()).await;
-                    if let Some(tc) = hooks.token_counter {
-                        tc.set_prompt_tokens(estimate_prompt_tokens(&micro));
-                    }
-                    tracing::info!(
-                        "compaction summary failed; applied micro-compact before continuing"
-                    );
-                }
-                state.compaction_failed = true;
             } else {
                 events.emit(RuntimeEvent::StreamError(
                     "Context is large enough for compaction, but auto-summary is not \
-                     available on this path; continuing with micro-compacted history."
+                     available on this path; continuing with full history."
                         .to_string(),
                 ));
                 state.compaction_failed = true;
@@ -282,24 +323,9 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             None
         };
 
-        // Re-fetch after possible compaction.
-        let raw = history.get().await;
-        let mut messages = micro_compact_messages(&raw);
-        // Defensive boundary 1: demote `role="tool"` messages whose
-        // `tool_call_id` has no matching preceding assistant `tool_calls`
-        // entry. This happens for sessions saved by older builds that dropped
-        // `tool_call_id`/`tool_calls` during persistence - replaying them
-        // verbatim fails with `missing messages.tool_call_id`. No-op for
-        // well-formed histories.
-        crate::api::types::demote_orphan_tool_results(&mut messages);
-        // Defensive boundary 2: guarantee every assistant `tool_calls` block is
-        // followed by matching `tool_result`s. Repairs histories orphaned by a
-        // mid-execution interrupt (Esc) that aborts after the assistant message
-        // is pushed but before tool results are appended - otherwise the next
-        // request fails with `missing messages.tool_call_id`. No-op for
-        // well-formed histories.
-        crate::api::types::sanitize_tool_call_pairing(&mut messages);
-
+        // `messages` (system prompt + optional summary + micro-compacted tail)
+        // was assembled above; a compaction that triggered `continue` rebuilds
+        // it on the next iteration, so no second fetch is needed here.
         let result = if stream_style.prefer_non_stream {
             match complete_non_stream(llm, events, &messages, tool_defs).await {
                 Ok(r) => r,
