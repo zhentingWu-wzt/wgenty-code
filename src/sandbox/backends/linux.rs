@@ -162,6 +162,9 @@ impl SandboxBackend for LinuxBackend {
         // Use `unshare` to create a new mount + network namespace.
         // We use the external `unshare` command for simplicity and reliability;
         // a future version can use libc::clone directly for more control.
+        let wrapped = format!(
+            "export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/bin/false SSH_ASKPASS=/usr/bin/false SSH_ASKPASS_REQUIRE=never GCM_INTERACTIVE=never CI=true; {command}"
+        );
         let mut cmd = tokio::process::Command::new("unshare");
         cmd.arg("--mount") // mount namespace: private /tmp
             .arg("--net") // network namespace: no NICs
@@ -170,7 +173,7 @@ impl SandboxBackend for LinuxBackend {
             .arg("--mount-proc") // mount /proc in new pid ns
             .arg("sh")
             .arg("-c")
-            .arg(command);
+            .arg(wrapped);
 
         // Keep child output off the parent TUI console.
         super::configure_captured_stdio(&mut cmd);
