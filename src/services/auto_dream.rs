@@ -1,12 +1,16 @@
 //! AutoDream Service - Automatic memory consolidation
 //!
-//! Background memory consolidation that fires the /dream prompt as a forked
-//! subagent when time-gate passes AND enough sessions have accumulated.
+//! Background memory consolidation that runs MemoryManager::consolidate()
+//! (pure-local TF-IDF merge, no LLM) when the time-gate passes AND enough
+//! sessions have accumulated.
 //!
 //! Gate order (cheapest first):
 //!   1. Time: hours since lastConsolidatedAt >= minHours
 //!   2. Sessions: transcript count with mtime > lastConsolidatedAt >= minSessions
-//!   3. Lock: no other process mid-consolidation
+//!   3. Reentry guard: in-memory is_consolidating flag (same-process only)
+//!
+//! Cross-process mutual exclusion is handled by MemoryManager::consolidate()'s
+//! internal ConsolidationFileLock - AutoDream no longer writes its own disk lock.
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -14,11 +18,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::state::AppState;
-
 /// Default configuration for AutoDream
-const DEFAULT_MIN_HOURS: i64 = 24;
-const DEFAULT_MIN_SESSIONS: usize = 5;
+const DEFAULT_MIN_HOURS: i64 = 1;
+const DEFAULT_MIN_SESSIONS: usize = 1;
 const SESSION_SCAN_INTERVAL_MS: i64 = 10 * 60 * 1000;
 
 /// AutoDream configuration
@@ -44,6 +46,10 @@ impl Default for AutoDreamConfig {
 pub struct ConsolidationState {
     pub last_consolidated_at: DateTime<Utc>,
     pub session_count: usize,
+    /// In-memory only (D3): never persisted to disk. Guards same-process
+    /// reentry into check_and_run; cross-process locking is handled by
+    /// MemoryManager::consolidate()'s ConsolidationFileLock.
+    #[serde(skip)]
     pub is_consolidating: bool,
     pub last_session_scan: DateTime<Utc>,
 }
@@ -68,7 +74,6 @@ pub struct AutoDreamService {
 
 impl AutoDreamService {
     pub fn new(
-        _state: Arc<RwLock<AppState>>,
         config: Option<AutoDreamConfig>,
         memory_manager: Option<Arc<crate::context::MemoryManager>>,
     ) -> Self {
@@ -126,10 +131,10 @@ impl AutoDreamService {
             return Ok(false);
         }
 
-        if !self.try_acquire_lock(&mut consolidation).await? {
-            return Ok(false);
-        }
-
+        // D3: No disk lock - mm.consolidate() uses its own cross-process
+        // ConsolidationFileLock. The in-memory is_consolidating flag guards
+        // same-process reentry only.
+        consolidation.is_consolidating = true;
         drop(consolidation);
 
         self.run_consolidation().await?;
@@ -168,28 +173,6 @@ impl AutoDreamService {
         }
 
         Ok(count)
-    }
-
-    async fn try_acquire_lock(
-        &self,
-        consolidation: &mut ConsolidationState,
-    ) -> anyhow::Result<bool> {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let lock_path = home.join(".wgenty-code").join(".consolidation.lock");
-
-        if lock_path.exists() {
-            let content = std::fs::read_to_string(&lock_path)?;
-            if let Ok(lock_time) = chrono::DateTime::parse_from_rfc3339(&content) {
-                let lock_time: DateTime<Utc> = lock_time.with_timezone(&Utc);
-                if Utc::now() - lock_time < chrono::Duration::hours(1) {
-                    return Ok(false);
-                }
-            }
-        }
-
-        std::fs::write(&lock_path, Utc::now().to_rfc3339())?;
-        consolidation.is_consolidating = true;
-        Ok(true)
     }
 
     async fn run_consolidation(&self) -> anyhow::Result<()> {
@@ -294,17 +277,66 @@ mod tests {
         .await
         .unwrap();
 
-        let state =
-            std::sync::Arc::new(tokio::sync::RwLock::new(crate::state::AppState::default()));
         let config = AutoDreamConfig {
             min_hours: 0,
             min_sessions: 0,
             enabled: true,
         };
-        let service = AutoDreamService::new(state, Some(config), Some(mm.clone()));
+        let service = AutoDreamService::new(Some(config), Some(mm.clone()));
 
         // Force consolidation (bypasses gate)
         let result = service.force_consolidation().await;
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_default_thresholds_are_relaxed() {
+        // D2: thresholds relaxed to 1h/1session so consolidation actually triggers
+        let config = AutoDreamConfig::default();
+        assert_eq!(config.min_hours, 1, "DEFAULT_MIN_HOURS should be 1 (D2)");
+        assert_eq!(
+            config.min_sessions, 1,
+            "DEFAULT_MIN_SESSIONS should be 1 (D2)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_and_run_does_not_write_disk_lock() {
+        // D3: AutoDream no longer writes ~/.wgenty-code/.consolidation.lock
+        // (mm.consolidate() uses its own cross-process ConsolidationFileLock).
+        //
+        // Uses mm = None so run_consolidation is a no-op — the point is that
+        // check_and_run no longer writes the timestamp lock *before* delegating
+        // to mm. This also avoids a ConsolidationFileLock race with
+        // test_autodream_delegates_to_memory_manager (parallel test threads).
+        let config = AutoDreamConfig {
+            min_hours: 0,
+            min_sessions: 0,
+            enabled: true,
+        };
+        let service = AutoDreamService::new(Some(config), None);
+
+        // Push state into the past so time + scan-interval gates pass
+        let past = Utc::now() - Duration::hours(3);
+        {
+            let mut state = service.consolidation_state.write().await;
+            state.last_consolidated_at = past;
+            state.last_session_scan = past;
+        }
+
+        // Ensure no stale lock file before running
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let lock_path = home.join(".wgenty-code").join(".consolidation.lock");
+        let _ = std::fs::remove_file(&lock_path);
+        // Ensure ~/.wgenty-code/ exists (save_state writes .autodream_state.json there)
+        std::fs::create_dir_all(home.join(".wgenty-code")).unwrap();
+
+        let _ran = service.check_and_run().await.unwrap();
+
+        assert!(
+            !lock_path.exists(),
+            "AutoDream must not write .consolidation.lock (D3); \
+             mm.consolidate() internal ConsolidationFileLock handles cross-process"
+        );
     }
 }

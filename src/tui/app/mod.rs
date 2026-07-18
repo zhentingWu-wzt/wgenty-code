@@ -191,8 +191,6 @@ pub struct App {
     /// Sticky session flag: shell ran outside OS sandbox (degrade / disabled).
     /// Cleared on `/clear` / new session reset paths that rebuild App state.
     pub sandbox_bypassed_session: bool,
-    /// AutoDream service for time-gated memory consolidation.
-    pub auto_dream_service: Option<Arc<crate::services::AutoDreamService>>,
     /// Command router for slash command dispatch (replaces Comet-specific routing).
     pub command_router: Option<CommandRouter>,
     /// Interaction service for runtime user interaction (ask, confirm).
@@ -442,7 +440,7 @@ impl App {
             });
         }
 
-        // ── Memory manager (created first so AutoDream can hold a ref) ────
+        // ── Memory manager (for cross-session recall + injection) ────────
         // Configured from settings so consolidation thresholds are tunable
         // via `storage.memory` in settings.json.
         let mm = Arc::new(crate::context::MemoryManager::with_settings(
@@ -452,12 +450,6 @@ impl App {
 
         // ── Detect CodeGraph MCP status from settings ─────────────────────
         let codegraph_status = detect_codegraph_status(&settings);
-
-        // ── AutoDream service for time-gated memory consolidation ────────
-        let auto_dream = {
-            let state = Arc::new(tokio::sync::RwLock::new(crate::state::AppState::default()));
-            crate::services::AutoDreamService::new(state, None, Some(mm.clone()))
-        };
 
         let app = Self {
             daemon_client,
@@ -542,7 +534,6 @@ impl App {
             startup_memories: Vec::new(),
             codegraph_status,
             sandbox_bypassed_session: false,
-            auto_dream_service: Some(Arc::new(auto_dream)),
             command_router: Some(command_router),
             interaction_service,
             workflow_state,
@@ -579,34 +570,11 @@ impl App {
         });
 
         // Render the first frame IMMEDIATELY so the user sees the UI before any
-        // startup background work runs. AutoDream consolidation (which may
-        // trigger an LLM call) and cross-session memory recall are spawned
-        // below and deliver their results via events - they never block the
-        // first paint.
+        // startup background work runs. Cross-session memory recall is spawned
+        // below and delivers its results via events - it never blocks the
+        // first paint. (AutoDream consolidation is handled by the daemon, D1.)
         terminal.draw(|f| self.render(f))?;
         crate::utils::startup_timing::mark("first frame rendered (UI ready)");
-
-        // ── Background startup: AutoDream consolidation (fire-and-forget) ──
-        // Runs after the first frame so an LLM-backed consolidation can never
-        // delay the first visible paint. Best-effort: failures are logged and
-        // the session continues with existing memories.
-        if let Some(ref ads) = self.auto_dream_service {
-            let ads = Arc::clone(ads);
-            tokio::spawn(async move {
-                match ads.check_and_run().await {
-                    Ok(true) => {
-                        tracing::info!("AutoDream consolidation completed at session startup")
-                    }
-                    Ok(false) => {
-                        tracing::debug!("AutoDream gate not passed; consolidation skipped")
-                    }
-                    Err(e) => tracing::warn!(
-                        error = %e,
-                        "AutoDream consolidation failed; continuing with existing memories"
-                    ),
-                }
-            });
-        }
 
         // ── Background startup: recall cross-session memories ─────────────
         // Loads + searches memories off the render path; formatted results are
@@ -783,18 +751,6 @@ mod tests {
         let yaml = "entry_commands:\n  -   comet  \n  -  comet-open \n";
         let result = parse_yaml_list(yaml, "entry_commands:");
         assert_eq!(result, vec!["comet", "comet-open"]);
-    }
-
-    #[tokio::test]
-    async fn auto_dream_service_is_initialized_on_app_creation() {
-        let client = DaemonClient::new("http://localhost:0".to_string());
-        let settings_handle: crate::config::watcher::SettingsHandle =
-            std::sync::Arc::new(std::sync::RwLock::new(crate::config::Settings::default()));
-        let app = App::new(client, "test-session-5".to_string(), settings_handle);
-        assert!(
-            app.auto_dream_service.is_some(),
-            "auto_dream_service should be Some after App::new()"
-        );
     }
 
     #[test]
