@@ -5,7 +5,7 @@ pub mod file_write;
 pub mod list_files;
 pub mod view;
 
-pub use apply_patch::ApplyPatchTool;
+pub use apply_patch::{extract_patch_paths, ApplyPatchTool};
 pub use file_edit::FileEditTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;

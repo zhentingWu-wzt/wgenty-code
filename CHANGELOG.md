@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed (Checkpoint)
+
+- Per-mutating-tool `git stash` checkpoints are replaced by **per-turn file-content snapshots** under `.wgenty-code/checkpoints/<turn-id>/`.
+- Before `file_edit` / `file_write` / `apply_patch`, the pre-edit content is captured once per (turn, path). `undo` rewinds only those files — unrelated untracked files are left alone (no `git reset` / `git clean` / stash pop).
+- Retention: `agent.checkpoint.keep_n` (default 10). Subagent edits fold into the root turn snapshot.
+- Manual `checkpoint` / `undo` tools remain; they now target turn ids instead of stash SHAs.
+
 ### BREAKING (Sandbox)
 
 - Shell tools no longer default to Minimal + silent bare exec on sandbox failure.

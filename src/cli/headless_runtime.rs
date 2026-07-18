@@ -120,12 +120,18 @@ impl ToolPort for RegistryToolPort {
             .invocation_id
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
+        if let Some(turn_id) = req.turn_id.as_deref() {
+            if let Err(e) = self.registry.checkpoint_manager.begin_turn(turn_id) {
+                tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
+            }
+        }
         let context = ToolContext {
             agent: &self.agent,
             invocation_id: ToolInvocationId::new(inv_id),
             origin_turn_id: req.turn_id.as_deref(),
             workdir: None,
             effective_mode: crate::sandbox::EffectiveMode::default(),
+            checkpoint: Some(self.registry.checkpoint_store.as_ref()),
         };
         match self
             .registry
@@ -237,10 +243,22 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
     let llm = ApiLlmPort::new(client);
     // Same client for summarization (tools omitted in chat_completion call).
     let llm_for_compact: Arc<dyn crate::agent::runtime::LlmPort> = Arc::new(llm.clone());
-    let registry = Arc::new(ToolRegistry::new().with_settings(&settings));
+    let registry = Arc::new(
+        ToolRegistry::with_project_root(
+            settings.storage.working_dir.clone(),
+            settings.agent.checkpoint.keep_n,
+        )
+        .with_settings(&settings),
+    );
     registry.register(Box::new(crate::tools::meta::MemoryAddTool::new(
         memory_manager.clone(),
     )));
+    // One turn id for the whole headless run; open the snapshot up-front so
+    // prune runs even if no file tool fires.
+    let turn_id = Uuid::new_v4().to_string();
+    if let Err(e) = registry.checkpoint_manager.begin_turn(&turn_id) {
+        tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
+    }
     let tools = RegistryToolPort::new(registry, &session_id);
     let events = CliEventSink::new(std::env::var("WGENTY_VERBOSE").is_ok());
 
@@ -259,7 +277,7 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
         context_window: settings.models.context_window,
         max_tokens: settings.models.transport.max_tokens,
         session_id,
-        turn_id: Some(Uuid::new_v4().to_string()),
+        turn_id: Some(turn_id),
         agent_generation: 0,
         stream_max_retries: 2,
     };

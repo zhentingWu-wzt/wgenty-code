@@ -192,6 +192,16 @@ mod agent_mode_effective_tests {
     }
 }
 
+/// A selectable option for `ask_user_question`, carrying a short label and a
+/// longer description (explanation) shown beneath the label in the panel.
+#[derive(Debug, Clone)]
+pub struct QuestionOption {
+    /// Short display label (1-5 words).
+    pub label: String,
+    /// Detailed explanation of this option, wrapped beneath the label.
+    pub description: String,
+}
+
 /// Wraps a oneshot sender for returning question answers.
 /// Manual Debug impl because `oneshot::Sender` doesn't implement Debug.
 pub struct QuestionResponder(pub Option<tokio::sync::oneshot::Sender<Vec<String>>>);
@@ -256,7 +266,7 @@ pub enum AppEvent {
     /// ask_user_question was invoked
     QuestionAsked {
         question: String,
-        options: Vec<String>,
+        options: Vec<QuestionOption>,
         multi_select: bool,
         responder: QuestionResponder,
     },

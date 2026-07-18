@@ -375,7 +375,7 @@ fn resolve_working_dir_makes_dot_absolute() {
         "resolve_working_dir should bind '.' to an absolute project root"
     );
     assert!(
-        s.storage.working_dir != PathBuf::from("."),
+        s.storage.working_dir != std::path::Path::new("."),
         "resolved working_dir must not remain relative '.'"
     );
 }

@@ -607,6 +607,8 @@ impl Tool for TaskTool {
         let settings_bg = self.settings.clone();
         let coordinator_bg = self.coordinator.clone();
         let permission_ctx = self.build_permission_context(child_context.agent_id.as_str());
+        // Fold subagent file edits into the root turn's checkpoint snapshot.
+        let origin_turn_id_bg = context.origin_turn_id.map(|s| s.to_string());
 
         // The coordinator-owned child context moves into the spawned task so
         // the loop runs as the child agent and cancellation propagates. The
@@ -666,6 +668,7 @@ impl Tool for TaskTool {
                         token_budget,
                         workdir,
                         permission_ctx,
+                        origin_turn_id_bg,
                     )
                     .await
                 }

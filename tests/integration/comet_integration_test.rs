@@ -89,6 +89,7 @@ async fn test_no_state_handle_skips_hook_blocking() {
         origin_turn_id: None,
         workdir: None,
         effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
+        checkpoint: None,
     };
     let result = executor
         .execute_with_hooks(
@@ -129,6 +130,7 @@ async fn test_build_phase_allows_write_tools() {
         origin_turn_id: None,
         workdir: None,
         effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
+        checkpoint: None,
     };
     let result = executor
         .execute_with_hooks(
@@ -167,6 +169,7 @@ async fn test_open_phase_blocks_write_tools() {
         origin_turn_id: None,
         workdir: None,
         effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
+        checkpoint: None,
     };
     let result = executor
         .execute_with_hooks(
@@ -205,6 +208,7 @@ async fn test_read_tools_not_blocked_in_open_phase() {
         origin_turn_id: None,
         workdir: None,
         effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
+        checkpoint: None,
     };
     let result = executor
         .execute_with_hooks(
@@ -243,6 +247,7 @@ async fn test_exec_command_blocked_in_open_phase() {
         origin_turn_id: None,
         workdir: None,
         effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
+        checkpoint: None,
     };
     let result = executor
         .execute_with_hooks(
@@ -281,6 +286,7 @@ async fn test_exec_command_allowed_in_build_phase() {
         origin_turn_id: None,
         workdir: None,
         effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
+        checkpoint: None,
     };
     let result = executor
         .execute_with_hooks(
@@ -330,6 +336,7 @@ async fn test_notification_hook_fires_on_block() {
         origin_turn_id: None,
         workdir: None,
         effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
+        checkpoint: None,
     };
     let result = executor
         .execute_with_hooks(
@@ -371,6 +378,7 @@ async fn test_hook_state_mismatch_allows() {
         origin_turn_id: None,
         workdir: None,
         effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
+        checkpoint: None,
     };
     let result = executor
         .execute_with_hooks(

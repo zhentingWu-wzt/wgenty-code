@@ -7,6 +7,7 @@
 //!   - meta/        — think, lsp, ask_user_question, note_edit
 
 pub mod checkpoint;
+pub mod checkpoint_store;
 pub mod execution;
 pub mod executor;
 pub mod filesystem;
@@ -110,18 +111,31 @@ pub struct ToolError {
 pub struct ToolRegistry {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
     pub checkpoint_manager: Arc<CheckpointManager>,
+    pub checkpoint_store: Arc<CheckpointStore>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
+        Self::with_project_root(
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            checkpoint_store::DEFAULT_KEEP_N,
+        )
+    }
+
+    /// Construct a registry scoped to `project_root` (checkpoint snapshots live
+    /// under `<project_root>/.wgenty-code/checkpoints/`).
+    pub fn with_project_root(project_root: impl Into<std::path::PathBuf>, keep_n: usize) -> Self {
         let sandbox = std::sync::Arc::new(crate::sandbox::SandboxManager::new());
         let command_sessions = std::sync::Arc::new(
             execution::session_manager::CommandSessionManager::new().with_sandbox(sandbox.clone()),
         );
-        let checkpoint_manager = std::sync::Arc::new(checkpoint::CheckpointManager::new());
+        let store = std::sync::Arc::new(CheckpointStore::with_keep_n(project_root, keep_n));
+        let checkpoint_manager =
+            std::sync::Arc::new(checkpoint::CheckpointManager::new(store.clone()));
         let registry = Self {
             tools: RwLock::new(HashMap::new()),
             checkpoint_manager: checkpoint_manager.clone(),
+            checkpoint_store: store,
         };
 
         // Checkpoint tools
@@ -304,12 +318,17 @@ impl ToolRegistry {
     /// never from model-supplied JSON. Forging `_agent_id`/`_session_id`/
     /// `_subagent_depth` in `input` has no effect because the context is
     /// authoritative.
+    ///
+    /// Before executing mutating filesystem tools (`file_edit`, `file_write`,
+    /// `apply_patch`), captures pre-edit file content into the active turn
+    /// snapshot when `context.checkpoint` and `context.origin_turn_id` are set.
     pub async fn execute_with_context(
         &self,
         context: &ToolContext<'_>,
         name: &str,
         input: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
+        maybe_capture_pre_edit(context, name, &input);
         let tool = self
             .tools
             .read()
@@ -326,6 +345,38 @@ impl ToolRegistry {
     }
 }
 
+/// Best-effort pre-edit capture for mutating filesystem tools. Never blocks
+/// the tool call: missing context / path extraction failures are ignored
+/// (logged by the capture implementation).
+fn maybe_capture_pre_edit(context: &ToolContext<'_>, tool_name: &str, args: &serde_json::Value) {
+    let (Some(capture), Some(turn_id)) = (context.checkpoint, context.origin_turn_id) else {
+        return;
+    };
+    if context.effective_mode == crate::sandbox::EffectiveMode::Plan {
+        return;
+    }
+    let paths = match tool_name {
+        "file_edit" | "file_write" => args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|p| vec![p.to_string()])
+            .unwrap_or_default(),
+        "apply_patch" => args
+            .get("patch")
+            .and_then(|v| v.as_str())
+            .map(filesystem::extract_patch_paths)
+            .unwrap_or_default(),
+        _ => return,
+    };
+    for path in paths {
+        if path.is_empty() {
+            continue;
+        }
+        let abs = resolve_path(&path, context.workdir);
+        capture.capture_file(turn_id, &abs);
+    }
+}
+
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
@@ -334,6 +385,7 @@ impl Default for ToolRegistry {
 
 // Re-export all tool types
 pub use checkpoint::{CheckpointManager, CheckpointTool, UndoTool};
+pub use checkpoint_store::CheckpointStore;
 pub use execution::{
     BackgroundManager, BackgroundResult, BackgroundTool, CommandSessionManager, ExecCommandTool,
     ExecuteCommandTool, GitOperationsTool, KillSessionTool, RunTestTool, WriteStdinTool,
@@ -417,6 +469,7 @@ mod external_tool_tests {
             origin_turn_id: None,
             workdir: None,
             effective_mode: crate::sandbox::EffectiveMode::default(),
+            checkpoint: None,
         };
 
         // Input carries forged identity fields; they must be ignored.
@@ -449,6 +502,7 @@ mod external_tool_tests {
             origin_turn_id: None,
             workdir: None,
             effective_mode: crate::sandbox::EffectiveMode::default(),
+            checkpoint: None,
         };
 
         let output = registry
@@ -456,6 +510,89 @@ mod external_tool_tests {
             .await
             .unwrap();
         assert_eq!(output.output_type, "text");
+    }
+
+    #[tokio::test]
+    async fn pre_edit_capture_runs_before_file_write_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("a.txt"), "original").unwrap();
+
+        let registry = ToolRegistry::with_project_root(root, 10);
+        let store = registry.checkpoint_store.clone();
+        store.begin_turn("turn-1").unwrap();
+
+        let root_agent =
+            crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new("s"));
+        let context = ToolContext {
+            agent: &root_agent,
+            invocation_id: crate::agent::ToolInvocationId::new("inv-cap"),
+            origin_turn_id: Some("turn-1"),
+            workdir: Some(root),
+            effective_mode: crate::sandbox::EffectiveMode::default(),
+            checkpoint: Some(store.as_ref()),
+        };
+
+        // First write captures pre-edit content then overwrites.
+        registry
+            .execute_with_context(
+                &context,
+                "file_write",
+                serde_json::json!({"path": "a.txt", "content": "first"}),
+            )
+            .await
+            .unwrap();
+        // Second write of same file must not replace the first capture.
+        registry
+            .execute_with_context(
+                &context,
+                "file_write",
+                serde_json::json!({"path": "a.txt", "content": "second"}),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "second"
+        );
+        let summary = store.rewind("turn-1").unwrap();
+        assert!(summary.contains("restored 1"), "{summary}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "original"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_edit_capture_skipped_in_plan_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("a.txt"), "original").unwrap();
+        let registry = ToolRegistry::with_project_root(root, 10);
+        let store = registry.checkpoint_store.clone();
+        store.begin_turn("turn-plan").unwrap();
+        let root_agent =
+            crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new("s"));
+        let context = ToolContext {
+            agent: &root_agent,
+            invocation_id: crate::agent::ToolInvocationId::new("inv-plan"),
+            origin_turn_id: Some("turn-plan"),
+            workdir: Some(root),
+            effective_mode: crate::sandbox::EffectiveMode::Plan,
+            checkpoint: Some(store.as_ref()),
+        };
+        registry
+            .execute_with_context(
+                &context,
+                "file_write",
+                serde_json::json!({"path": "a.txt", "content": "changed"}),
+            )
+            .await
+            .unwrap();
+        let infos = store.list().unwrap();
+        let turn = infos.iter().find(|t| t.turn_id == "turn-plan").unwrap();
+        assert_eq!(turn.file_count, 0, "plan mode must not capture files");
     }
 
     #[test]

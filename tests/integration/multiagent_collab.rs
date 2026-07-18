@@ -192,9 +192,8 @@ async fn execute_command_respects_context_workdir() {
     std::fs::create_dir_all(&inner).unwrap();
 
     let sandbox = std::sync::Arc::new(wgenty_code::sandbox::SandboxManager::new());
-    let tool = wgenty_code::tools::execution::execute_command::ExecuteCommandTool::with_sandbox(
-        sandbox,
-    );
+    let tool =
+        wgenty_code::tools::execution::execute_command::ExecuteCommandTool::with_sandbox(sandbox);
     let agent = AgentExecutionContext::root(SessionId::new("s"));
     let ctx = ToolContext {
         agent: &agent,
@@ -202,6 +201,7 @@ async fn execute_command_respects_context_workdir() {
         origin_turn_id: None,
         workdir: Some(&inner),
         effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
+        checkpoint: None,
     };
     let out = tool
         .execute_with_context(&ctx, serde_json::json!({"command": "pwd"}))
@@ -235,6 +235,7 @@ async fn file_read_resolves_relative_path_via_workdir() {
         origin_turn_id: None,
         workdir: Some(&inner),
         effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
+        checkpoint: None,
     };
     let out = tool
         .execute_with_context(&ctx, serde_json::json!({"path": "src/main.rs"}))
@@ -267,6 +268,7 @@ async fn file_read_absolute_path_ignores_workdir() {
         origin_turn_id: None,
         workdir: Some(&other_dir),
         effective_mode: wgenty_code::sandbox::EffectiveMode::default(),
+        checkpoint: None,
     };
     let out = tool
         .execute_with_context(&ctx, serde_json::json!({"path": abs.to_string_lossy()}))

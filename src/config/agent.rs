@@ -183,6 +183,30 @@ pub struct AgentConfig {
     /// Autonomous worker (s11): background claimer for ready task-groups.
     #[serde(default)]
     pub autonomous: AutonomousConfig,
+    /// Per-turn file checkpoint settings (non-destructive snapshots).
+    #[serde(default)]
+    pub checkpoint: CheckpointSettings,
+}
+
+/// Retention settings for per-turn file checkpoints.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointSettings {
+    /// Number of most-recent turn snapshots to keep on disk. Older turns are
+    /// pruned when a new turn begins. Default: 10.
+    #[serde(default = "default_checkpoint_keep_n")]
+    pub keep_n: usize,
+}
+
+fn default_checkpoint_keep_n() -> usize {
+    10
+}
+
+impl Default for CheckpointSettings {
+    fn default() -> Self {
+        Self {
+            keep_n: default_checkpoint_keep_n(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
