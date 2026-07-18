@@ -44,6 +44,8 @@ impl WindowsBackend {
                 }
             }
         }
+        // Always force non-interactive after allowlist (may have cleared prior env).
+        super::apply_noninteractive_env(cmd);
     }
 }
 

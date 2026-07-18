@@ -142,15 +142,15 @@ impl GitOperationsTool {
         repo_path: &Path,
         args: &[String],
     ) -> Result<ToolOutput, ToolError> {
-        let output = tokio::process::Command::new("git")
-            .current_dir(repo_path)
-            .args(args)
-            .output()
-            .await
-            .map_err(|e| ToolError {
-                message: format!("Failed to execute git command: {}", e),
-                code: Some("git_error".to_string()),
-            })?;
+        // Never let git open /dev/tty for credentials — that hijacks the parent
+        // TUI input line (Username for 'https://...'). Fail closed into stderr.
+        let mut cmd = tokio::process::Command::new("git");
+        cmd.current_dir(repo_path).args(args);
+        crate::sandbox::apply_noninteractive_env(&mut cmd);
+        let output = cmd.output().await.map_err(|e| ToolError {
+            message: format!("Failed to execute git command: {}", e),
+            code: Some("git_error".to_string()),
+        })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
