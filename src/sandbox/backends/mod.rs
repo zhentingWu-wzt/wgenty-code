@@ -47,6 +47,9 @@ pub fn shell_command_captured(command: &str) -> tokio::process::Command {
 /// On Windows also sets `CREATE_NO_WINDOW` so console apps cannot allocate a
 /// window that shares the parent TUI surface. Callers that need pipes should
 /// set `Stdio` themselves (or use [`std::process::Command::output`]).
+///
+/// Always applies [`apply_noninteractive_env_std`] (same rationale as
+/// [`configure_captured_stdio`]).
 pub fn std_shell_command(command: &str) -> std::process::Command {
     #[cfg(windows)]
     {
@@ -55,12 +58,14 @@ pub fn std_shell_command(command: &str) -> std::process::Command {
         cmd.arg("/C").arg(command);
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
+        apply_noninteractive_env_std(&mut cmd);
         cmd
     }
     #[cfg(not(windows))]
     {
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c").arg(command);
+        apply_noninteractive_env_std(&mut cmd);
         cmd
     }
 }
@@ -71,11 +76,17 @@ pub fn std_shell_command(command: &str) -> std::process::Command {
 /// write progress bars and ANSI sequences straight into the shared console and
 /// corrupt ratatui's alternate-screen / raw-mode rendering (especially on
 /// Windows). Captured streams are consumed by [`crate::sandbox::SandboxedChild`].
+///
+/// Also applies [`apply_noninteractive_env`] so tools that open `/dev/tty`
+/// (notably `git push` credential prompts) cannot hijack the parent TUI input
+/// line when stdin/stdout are already piped.
 pub fn configure_captured_stdio(cmd: &mut tokio::process::Command) {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+
+    apply_noninteractive_env(cmd);
 
     // Prevent console subsystem children (cmd.exe, node, npm) from allocating
     // or writing to a console window that shares the parent's TUI surface.
@@ -86,6 +97,33 @@ pub fn configure_captured_stdio(cmd: &mut tokio::process::Command) {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
+}
+
+/// Force child processes into non-interactive mode so credential / password
+/// prompts cannot write to the parent TTY and pollute the TUI input line.
+///
+/// Git (and some credential helpers) bypass piped stdio and open `/dev/tty`
+/// directly when asking for a username/password. Setting these vars makes
+/// those prompts fail closed into captured stderr instead.
+///
+/// Safe to call after `env_clear()` + allowlist restore — always re-apply.
+pub fn apply_noninteractive_env(cmd: &mut tokio::process::Command) {
+    // Git: never prompt on the terminal (uses /dev/tty even when stdio is piped).
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    // Git Credential Manager (cross-platform helper).
+    cmd.env("GCM_INTERACTIVE", "never");
+    // OpenSSH 8.4+: never fall back to TTY askpass when no display/askpass.
+    cmd.env("SSH_ASKPASS_REQUIRE", "never");
+    // Common convention: many CLIs skip interactive prompts under CI.
+    cmd.env("CI", "true");
+}
+
+/// Same as [`apply_noninteractive_env`] for `std::process::Command`.
+pub fn apply_noninteractive_env_std(cmd: &mut std::process::Command) {
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GCM_INTERACTIVE", "never");
+    cmd.env("SSH_ASKPASS_REQUIRE", "never");
+    cmd.env("CI", "true");
 }
 
 /// Auto-select the best available backend for the current platform.
@@ -128,6 +166,46 @@ mod tests {
         // behaviour is covered by backend spawn tests that assert stdout content.
         let mut cmd = tokio::process::Command::new("echo");
         configure_captured_stdio(&mut cmd);
+    }
+
+    #[test]
+    fn noninteractive_env_is_visible_to_child() {
+        // Prove the env vars actually reach the child (not just set on the builder).
+        #[cfg(windows)]
+        let check = "echo %GIT_TERMINAL_PROMPT% %GCM_INTERACTIVE% %SSH_ASKPASS_REQUIRE% %CI%";
+        #[cfg(not(windows))]
+        let check = "printf '%s %s %s %s' \"$GIT_TERMINAL_PROMPT\" \"$GCM_INTERACTIVE\" \"$SSH_ASKPASS_REQUIRE\" \"$CI\"";
+
+        let output = std_shell_command(check)
+            .output()
+            .expect("spawn std shell with noninteractive env");
+        assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("0")
+                && stdout.contains("never")
+                && stdout.contains("true"),
+            "expected noninteractive env in child, got {stdout:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn captured_shell_inherits_noninteractive_env() {
+        #[cfg(windows)]
+        let check = "echo %GIT_TERMINAL_PROMPT%";
+        #[cfg(not(windows))]
+        let check = "printf '%s' \"$GIT_TERMINAL_PROMPT\"";
+
+        let child = shell_command_captured(check)
+            .spawn()
+            .expect("spawn captured shell");
+        let out = child.wait_with_output().await.expect("wait");
+        assert!(out.status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.trim() == "0" || stdout.contains("0"),
+            "GIT_TERMINAL_PROMPT should be 0, got {stdout:?}"
+        );
     }
 
     #[test]
