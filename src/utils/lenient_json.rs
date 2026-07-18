@@ -161,7 +161,7 @@ fn extract_partial_fields(raw: &str) -> serde_json::Value {
         "background",
         "use_small_model",
         "replace_all",
-        "multi_select",
+        "multiSelect",
     ] {
         if let Some(val) = extract_bool_field(raw, field) {
             map.insert(field.to_string(), serde_json::Value::Bool(val));
@@ -324,5 +324,28 @@ mod tests {
         let (val, err) = parse_tool_args_lenient("", "file_write");
         assert!(err.is_some());
         assert!(val["_parse_error"].is_object());
+    }
+
+    #[test]
+    fn test_extract_multiselect_camelcase() {
+        // Schema-declared key is `multiSelect` (camelCase); the lenient
+        // fallback must recover it from truncated JSON so the question panel
+        // activates multi-select mode.
+        let raw = r#"{"question": "Pick", "multiSelect": true"#;
+        let (val, err) = parse_tool_args_lenient(raw, "ask_user_question");
+        assert!(err.is_some());
+        assert_eq!(val["question"].as_str(), Some("Pick"));
+        assert_eq!(val["multiSelect"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn test_valid_json_preserves_multiselect_camelcase() {
+        // Well-formed JSON passes through serde_json unchanged, preserving
+        // the camelCase key the adapter reads.
+        let raw =
+            r#"{"question":"q","options":[{"label":"a","description":"d"}],"multiSelect":true}"#;
+        let (val, err) = parse_tool_args_lenient(raw, "ask_user_question");
+        assert!(err.is_none());
+        assert_eq!(val["multiSelect"].as_bool(), Some(true));
     }
 }
