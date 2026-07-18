@@ -338,9 +338,32 @@ impl WindowsBackend {
             cmd.current_dir(dir);
         }
 
-        let child = cmd.spawn().map_err(|e| SandboxError::Spawn {
-            io_error: format!("{}", e),
-        })?;
+        // ERROR_ACCESS_DENIED on CreateProcess typically means the parent is
+        // already inside a Job Object whose limits forbid breakaway (common on
+        // GHA Windows runners). CREATE_BREAKAWAY_FROM_JOB then fails the spawn
+        // outright; retry as a plain captured spawn so the tool still runs
+        // instead of hard-failing every sandboxed spawn under HardFail.
+        const ERROR_ACCESS_DENIED: i32 = 5;
+        let child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
+                tracing::warn!(
+                    error = %e,
+                    "sandboxed spawn denied (parent job forbids breakaway); \
+                     degrading to direct spawn without job limits"
+                );
+                let token = job.to_cleanup_token();
+                win::close_job_token(&token);
+                return Self::spawn_degraded(profile, command, workdir);
+            }
+            Err(e) => {
+                let token = job.to_cleanup_token();
+                win::close_job_token(&token);
+                return Err(SandboxError::Spawn {
+                    io_error: format!("{}", e),
+                });
+            }
+        };
 
         let Some(pid) = child.id() else {
             // Suspended child with no pid cannot be assigned or resumed safely.
@@ -394,6 +417,37 @@ impl WindowsBackend {
                 "job-object-degraded".into()
             },
             cleanup,
+        })
+    }
+
+    /// Fallback spawn without Job Object isolation or `CREATE_SUSPENDED`.
+    ///
+    /// Used when the full sandboxed spawn is denied (`ERROR_ACCESS_DENIED`,
+    /// typically because the parent Job Object forbids breakaway on CI
+    /// runners). Keeps `CREATE_NO_WINDOW` + captured stdio so child output does
+    /// not corrupt the parent TUI, but runs with no resource limits and reports
+    /// `job-object-degraded` so callers/UI can mark the lack of enforcement.
+    fn spawn_degraded(
+        &self,
+        profile: &SandboxProfile,
+        command: &str,
+        workdir: Option<&Path>,
+    ) -> Result<SandboxedChild, SandboxError> {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = super::shell_command_captured(command);
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        Self::apply_env(profile, &mut cmd);
+        if let Some(dir) = workdir.or(profile.workdir.as_deref()) {
+            cmd.current_dir(dir);
+        }
+        let child = cmd.spawn().map_err(|e| SandboxError::Spawn {
+            io_error: format!("{}", e),
+        })?;
+        Ok(SandboxedChild {
+            child,
+            backend_name: "job-object-degraded".into(),
+            cleanup: None,
         })
     }
 }
