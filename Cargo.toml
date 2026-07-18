@@ -25,7 +25,8 @@ http = "1"
 bytes = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-rhai = "1"
+# Optional: Rhai scripting engine for the run_script tool (heavy to compile).
+rhai = { version = "1", optional = true }
 
 # SQLite-backed application storage
 rusqlite = { version = "0.31" }
@@ -133,7 +134,9 @@ daemon = ["axum", "tower", "tower-http", "tokio-stream"]
 i18n = ["fluent", "fluent-bundle", "unic-langid", "rust-embed"]
 bundled-skills = ["rust-embed"]
 export-icon = ["image"]
-full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqlite"]
+# Rhai-powered run_script tool. Off by default - rhai alone costs ~10s on clean builds.
+scripting = ["dep:rhai"]
+full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqlite", "scripting"]
 # Bundle SQLite from source (for platforms without system SQLite, e.g. Windows).
 # macOS and Linux use the system SQLite by default, avoiding ~60s of C compilation.
 bundled-sqlite = ["rusqlite/bundled"]
@@ -152,6 +155,9 @@ required-features = ["export-icon"]
 # default, but making it explicit guards against future Cargo changes).
 [profile.dev]
 incremental = true
+# Line tables only: faster link + smaller target/, enough for backtraces in dev.
+debug = 1
 
 [profile.test]
 incremental = true
+debug = 1

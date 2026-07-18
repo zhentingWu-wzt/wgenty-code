@@ -28,7 +28,9 @@ pub mod update_plan;
 pub use update_plan::UpdatePlanTool;
 pub mod rlm;
 pub use rlm::RlmDelegateTool;
+#[cfg(feature = "scripting")]
 pub mod run_script;
+#[cfg(feature = "scripting")]
 pub use run_script::RunScriptTool;
 pub mod subagent_trace;
 pub use subagent_trace::SubagentTraceTool;
