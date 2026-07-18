@@ -404,7 +404,7 @@ mod tests {
     #[test]
     fn preferred_height_grows_with_wrapped_content() {
         let mut box_ = InputBox::new();
-        box_.textarea.insert_str(&"word ".repeat(40));
+        box_.textarea.insert_str("word ".repeat(40));
         let h = box_.preferred_height(40);
         assert!(h > MIN_OUTER_HEIGHT);
         assert!(h <= MAX_OUTER_HEIGHT);

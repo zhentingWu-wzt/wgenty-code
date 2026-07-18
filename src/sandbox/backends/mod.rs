@@ -222,12 +222,14 @@ mod tests {
         let output = std_shell_command(check)
             .output()
             .expect("spawn std shell with noninteractive env");
-        assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains("0")
-                && stdout.contains("never")
-                && stdout.contains("true"),
+            stdout.contains("0") && stdout.contains("never") && stdout.contains("true"),
             "expected noninteractive env in child, got {stdout:?}"
         );
     }

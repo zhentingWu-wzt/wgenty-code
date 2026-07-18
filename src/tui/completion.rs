@@ -392,8 +392,7 @@ mod tests {
             .collect();
 
         for expected in [
-            "clear", "plan", "continue", "undo", "init", "compact", "session", "memory",
-            "help",
+            "clear", "plan", "continue", "undo", "init", "compact", "session", "memory", "help",
         ] {
             assert!(
                 command_names.contains(&expected),
