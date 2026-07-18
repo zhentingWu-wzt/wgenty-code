@@ -28,10 +28,7 @@ impl ExecCommandTool {
         // degrade-on-spawn is still reflected only when spawn fails open under
         // DegradeWithMark (session continues; full fidelity needs spawn result).
         let status = self.sessions.sandbox_status();
-        let session_id = self
-            .sessions
-            .spawn(command, workdir.clone(), mode)
-            .await?;
+        let session_id = self.sessions.spawn(command, workdir.clone(), mode).await?;
         let chunk = self
             .sessions
             .read_incremental(session_id, yield_time_ms, max_output_chars)

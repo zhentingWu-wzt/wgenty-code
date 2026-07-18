@@ -137,8 +137,9 @@ impl DaemonState {
         let permission_bridge = Arc::new(PermissionBridge::with_timeout_secs(approval_timeout));
         let shared_session_rules = Arc::new(RwLock::new(HashSet::<String>::new()));
         let root_mode = Arc::new(std::sync::RwLock::new(RootPermissionMode::Normal));
-        let effective_mode =
-            Arc::new(std::sync::RwLock::new(crate::sandbox::EffectiveMode::Normal));
+        let effective_mode = Arc::new(std::sync::RwLock::new(
+            crate::sandbox::EffectiveMode::Normal,
+        ));
 
         // Use Arc::new_cyclic so the TaskTool holds a valid Weak<ToolRegistry>
         // that points to the *final* Arc allocation — not a temporary one that

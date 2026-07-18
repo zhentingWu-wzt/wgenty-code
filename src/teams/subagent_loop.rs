@@ -156,8 +156,8 @@ fn is_model_unavailable_message(msg: &str) -> bool {
         // word-boundary "HTTP" followed by optional whitespace and 3 digits
         regex::Regex::new(r"(?i)\bHTTP\b\s*\d{3}").expect("valid regex")
     });
-    let status_paren = STATUS_PAREN
-        .get_or_init(|| regex::Regex::new(r"\(\d{3}\)").expect("valid regex"));
+    let status_paren =
+        STATUS_PAREN.get_or_init(|| regex::Regex::new(r"\(\d{3}\)").expect("valid regex"));
     let lower = msg.to_lowercase();
     lower.contains("api error")
         || lower.contains("connection")
@@ -276,7 +276,9 @@ impl SubagentSynthesis {
     /// error, or single-shot already used) the original failed result is kept so
     /// the parent model decides. Root callers skip fallback (Comet isolation).
     async fn apply_runtime_fallback(&self, results: Vec<ChildResult>) -> Vec<ChildResult> {
-        use crate::agent::fallback::{fallback_eligible_from_child_result, is_root_caller, FallbackKind};
+        use crate::agent::fallback::{
+            fallback_eligible_from_child_result, is_root_caller, FallbackKind,
+        };
 
         if is_root_caller(&self.context) {
             return results;
@@ -325,10 +327,7 @@ impl SubagentSynthesis {
 
     /// Re-dispatch a failed child with a fallback model. Returns a replacement
     /// `ChildResult` on success, or an error reason string on failure.
-    async fn attempt_model_fallback(
-        &self,
-        failed: &ChildResult,
-    ) -> Result<ChildResult, String> {
+    async fn attempt_model_fallback(&self, failed: &ChildResult) -> Result<ChildResult, String> {
         // 1. Select fallback model (first entry != failed child's model).
         let failed_model = &self.settings.models.main.name;
         let fallback_model = self
@@ -379,8 +378,7 @@ impl SubagentSynthesis {
         };
 
         let timeout_secs = self.settings.agent.subagent.timeout_secs;
-        let workdir: Option<std::path::PathBuf> =
-            Some(self.settings.storage.working_dir.clone());
+        let workdir: Option<std::path::PathBuf> = Some(self.settings.storage.working_dir.clone());
         let permission = SubagentPermissionContext::headless(
             self.settings.storage.working_dir.clone(),
             child_context.agent_id.as_str(),

@@ -673,10 +673,7 @@ mod tests {
         ));
         assert_eq!(app.mode, AgentMode::Yolo);
         assert_eq!(app.prompt_context.sandbox_mode.as_deref(), Some("disabled"));
-        assert_eq!(
-            app.prompt_context.approval_policy.as_deref(),
-            Some("never")
-        );
+        assert_eq!(app.prompt_context.approval_policy.as_deref(), Some("never"));
         let yolo_perm = app
             .assembled_system_messages
             .iter()

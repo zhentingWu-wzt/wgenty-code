@@ -767,7 +767,9 @@ mod tests {
     /// Extract the permissions system-message body, if any.
     fn permissions_layer_text(instructions: &AssembledInstructions) -> Option<&str> {
         instructions.system_messages.iter().find_map(|m| {
-            m.content.as_deref().filter(|c| c.contains("<permissions_instructions>"))
+            m.content
+                .as_deref()
+                .filter(|c| c.contains("<permissions_instructions>"))
         })
     }
 
@@ -856,8 +858,7 @@ mod tests {
             "expected disabled sandbox copy, got: {perm}"
         );
         assert!(
-            perm.contains("without OS-level seatbelt")
-                || perm.contains("sandboxing is disabled"),
+            perm.contains("without OS-level seatbelt") || perm.contains("sandboxing is disabled"),
             "expected full-access body, got: {perm}"
         );
         assert!(perm.contains("Approval policy is currently never"));

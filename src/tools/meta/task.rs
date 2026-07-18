@@ -244,8 +244,7 @@ impl TaskTool {
         // Guard: root callers must not self-execute (Comet isolation).
         if is_root_caller(context.agent) {
             return Err(ToolError {
-                message: "fallback unavailable: root caller cannot self-execute"
-                    .to_string(),
+                message: "fallback unavailable: root caller cannot self-execute".to_string(),
                 code: Some("fallback_root_blocked".to_string()),
             });
         }

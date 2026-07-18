@@ -119,7 +119,10 @@ mod tests {
 
     #[test]
     fn child_model_unavailable_is_model_fallback() {
-        let r = make_child_result(Some("subagent_model_unavailable"), ChildTerminalStatus::Failed);
+        let r = make_child_result(
+            Some("subagent_model_unavailable"),
+            ChildTerminalStatus::Failed,
+        );
         assert_eq!(
             fallback_eligible_from_child_result(&r),
             Some(FallbackKind::ModelUnavailable)
