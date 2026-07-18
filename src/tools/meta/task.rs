@@ -298,7 +298,7 @@ impl TaskTool {
 
         let result = run_subagent_loop_with_permissions(
             &api_client,
-            &tool_registry,
+            tool_registry.clone(),
             &child_context,
             self.coordinator.clone(),
             system_prompt,
@@ -310,6 +310,8 @@ impl TaskTool {
             None,
             workdir,
             permission,
+            Arc::new(self.settings.clone()),
+            self.transcript_store.clone(),
         )
         .await;
 
@@ -798,7 +800,7 @@ impl Tool for TaskTool {
                 } else {
                     run_subagent_loop_with_permissions(
                         &api_client,
-                        &reg,
+                        reg.clone(),
                         &bg_child_context,
                         coordinator_bg.clone(),
                         &sys_prompt_bg,
@@ -810,6 +812,8 @@ impl Tool for TaskTool {
                         token_budget,
                         workdir,
                         permission_ctx,
+                        Arc::new(settings_bg.clone()),
+                        transcript_store_bg.clone(),
                     )
                     .await
                 }
