@@ -160,7 +160,6 @@ impl StressTestRunner {
         let mut result = StressTestResult::new("AutoDream");
 
         let service = AutoDreamService::new(
-            self.state.clone(),
             Some(AutoDreamConfig {
                 min_hours: 24,
                 min_sessions: 5,

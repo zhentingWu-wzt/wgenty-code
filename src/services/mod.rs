@@ -48,11 +48,7 @@ impl ServiceManager {
     pub async fn initialize(&mut self) -> anyhow::Result<()> {
         info!("initializing background services");
 
-        self.auto_dream = Some(Arc::new(AutoDreamService::new(
-            self.state.clone(),
-            None,
-            None,
-        )));
+        self.auto_dream = Some(Arc::new(AutoDreamService::new(None, None)));
         self.voice = Some(Arc::new(crate::voice::VoiceService::new(
             self.state.clone(),
             None,

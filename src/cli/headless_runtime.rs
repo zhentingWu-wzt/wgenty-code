@@ -241,6 +241,23 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
     registry.register(Box::new(crate::tools::meta::MemoryAddTool::new(
         memory_manager.clone(),
     )));
+
+    // ── D4: AutoDream startup check (fire-and-forget) ──────────────────
+    // headless is a single-shot CLI process; a background tick is meaningless
+    // (process exits immediately), but the startup check covers "each headless
+    // invocation tries to consolidate once". Failure only logs - never blocks
+    // the agent loop. Semantically identical to the daemon-side spawn (D1).
+    {
+        let autodream = crate::services::AutoDreamService::new(None, Some(memory_manager.clone()));
+        tokio::spawn(async move {
+            match autodream.check_and_run().await {
+                Ok(true) => tracing::info!("AutoDream: consolidation triggered (headless)"),
+                Ok(false) => tracing::debug!("AutoDream: gate not met, skipped (headless)"),
+                Err(e) => tracing::warn!(error = %e, "AutoDream check_and_run failed (headless)"),
+            }
+        });
+    }
+
     let tools = RegistryToolPort::new(registry, &session_id);
     let events = CliEventSink::new(std::env::var("WGENTY_VERBOSE").is_ok());
 

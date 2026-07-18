@@ -43,6 +43,8 @@ pub struct DaemonState {
     pub background_manager: Arc<BackgroundManager>,
     pub team_manager: Option<Arc<TeamManager>>,
     pub session_manager: MemorySessionManager,
+    /// Shared MemoryManager backing the `memory_add` tool and AutoDream (D1).
+    pub memory_manager: Arc<crate::context::MemoryManager>,
     /// Long-lived external MCP sessions and their status.
     pub mcp_manager: Arc<crate::mcp::McpManager>,
     sessions: Arc<RwLock<std::collections::HashMap<String, SessionRules>>>,
@@ -141,6 +143,12 @@ impl DaemonState {
             crate::sandbox::EffectiveMode::Normal,
         ));
 
+        // ── Shared MemoryManager (D1): backs memory_add tool + AutoDream ──
+        let memory_manager = Arc::new(crate::context::MemoryManager::with_settings(
+            &app_state.settings,
+            app_state.settings.storage.working_dir.clone(),
+        ));
+
         // Use Arc::new_cyclic so the TaskTool holds a valid Weak<ToolRegistry>
         // that points to the *final* Arc allocation — not a temporary one that
         // gets dropped (which would leave a dangling weak reference).
@@ -153,6 +161,11 @@ impl DaemonState {
             registry.register(Box::new(
                 crate::tools::meta::request_approval::RequestApprovalTool::new(),
             ));
+
+            // D1: memory_add tool (backed by shared MemoryManager)
+            registry.register(Box::new(crate::tools::meta::MemoryAddTool::new(
+                memory_manager.clone(),
+            )));
 
             // Register load_skill tool if skills exist
             if !skill_loader.is_empty() {
@@ -231,6 +244,22 @@ impl DaemonState {
         crate::utils::startup_timing::mark("daemon state: tool registry built");
         let checkpoint_manager = tool_registry.checkpoint_manager.clone();
 
+        // ── D1: AutoDream startup check (fire-and-forget) ────────────────
+        // Replaces the old TUI app-side AutoDream spawn (removed in Task 4).
+        // daemon is per-session, so this triggers once per REPL start -
+        // equivalent to the old behavior but centralized in the daemon.
+        {
+            let autodream =
+                crate::services::AutoDreamService::new(None, Some(memory_manager.clone()));
+            tokio::spawn(async move {
+                match autodream.check_and_run().await {
+                    Ok(true) => tracing::info!("AutoDream: consolidation triggered"),
+                    Ok(false) => tracing::debug!("AutoDream: gate not met, skipped"),
+                    Err(e) => tracing::warn!(error = %e, "AutoDream check_and_run failed"),
+                }
+            });
+        }
+
         // Extract reserved tool names from the real registry (no throwaway
         // construction needed - avoids a second ToolRegistry::new() which
         // re-creates all built-in tool instances).
@@ -302,6 +331,7 @@ impl DaemonState {
             background_manager: bg_manager,
             team_manager,
             session_manager,
+            memory_manager,
             mcp_manager,
             sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             subagent_progress: progress_store,

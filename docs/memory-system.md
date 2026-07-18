@@ -27,9 +27,9 @@
 
   AutoDream 自有持久化 (services/auto_dream.rs):
     ~/.wgenty-code/.autodream_state.json     ← 门控状态(last_consolidated_at...)
-    ~/.wgenty-code/.consolidation.lock       ← AutoDream 锁 (路径 A, 1h 过期)
-    ~/.wgenty-code/memory/.consolidation.lock← consolidate 锁 (路径 B, 30min)  ⚠ 两把锁不一致
+    ~/.wgenty-code/memory/.consolidation.lock← consolidate 跨进程锁 (ConsolidationFileLock, 30min)
     ~/.wgenty-code/sessions/*.json           ← 门控 count_recent_sessions 扫这里
+  注: AutoDream 不再自管锁 (D3), 跨进程互斥由 mm.consolidate() 内部 ConsolidationFileLock 统一保护
 ```
 
 **组件职责**
@@ -42,7 +42,7 @@
 | `ConsolidationEngine` | `context/consolidation.rs` | 相似度（Jaccard）、合并、TTL 衰减 |
 | `MemoryContextInjector` | `context/inject.rs` | 召回：关键词提取 + 搜索 + 拼块 |
 | `ApiCompactor` / daemon compactor | `agent/runtime/compactor.rs`, `tui/agent/adapters.rs` | 记忆生产者：压缩时让 LLM 提取 |
-| `AutoDreamService` | `services/auto_dream.rs` | 整理触发者：启动时按门控跑一次 |
+| `AutoDreamService` | `services/auto_dream.rs` | 整理触发者：daemon/headless 启动时按门控跑一次（TUI app 不再启动，D4） |
 
 ## 2. 写入流程（压缩提取 -> 去重落盘）
 
@@ -164,9 +164,10 @@
 ```
    触发源:
    ┌────────────────────────┐        ┌──────────────────────┐
-   │ AutoDream (启动时一次)  │        │ 手动 memory dream /  │
-   │ 门控: 24h ∧ 5session ∧ │        │ force_consolidation  │
-   │ 锁 ∧ enabled           │        │ (绕过门控)            │
+   │ AutoDream (daemon/     │        │ 手动 memory dream /  │
+   │  headless 启动时一次)  │        │ force_consolidation  │
+   │ 门控: 1h ∧ 1session    │        │ (绕过门控)            │
+   │ ∧ enabled              │        │                      │
    └───────────┬────────────┘        └──────────┬───────────┘
                └──────────┬──────────────────────┘
                           ▼
@@ -206,7 +207,7 @@
 
 - consolidate 是唯一做 TTL 衰减和高阈值（0.8 + 同 type）合并的地方。
 - `index.rebuild` 在替换 Vec 后重建 TF-IDF，避免整理后 positional idx 错位导致召回失效。
-- AutoDream 的门控（时间 ∧ 会话数 ∧ 锁）状态存 `.autodream_state.json`，跨重启累积。
+- AutoDream 的门控（时间 ∧ 会话数 ∧ enabled）状态存 `.autodream_state.json`，仅 `last_consolidated_at` 等持久化；`is_consolidating` 仅内存（D3 不再写磁盘锁）。
 
 ## 5. 单条记忆生命周期
 
@@ -251,13 +252,13 @@
 
 - **写**：压缩提取 -> `add_memory` 去重（0.6 相似合并）-> 文件 + TF-IDF 索引
 - **读**：每轮 `recall` -> 关键词 -> TF-IDF top-10 候选 -> importance≥0.5 过滤排序 -> 注入 prompt
-- **整理**：AutoDream(启动, 24h+5session) / 手动 -> `consolidate` -> TTL 衰减 + 0.8 合并 + 删孤儿 + 索引重建
-- **存储**：记忆 `~/.wgenty-code/memory/{id}.json`；AutoDream 状态 `.autodream_state.json`；两把锁路径不一致是已知隐患
+- **整理**：AutoDream(daemon/headless 启动, 1h+1session) / 手动 -> `consolidate` -> TTL 衰减 + 0.8 合并 + 删孤儿 + 索引重建
+- **存储**：记忆 `~/.wgenty-code/memory/{id}.json`；AutoDream 状态 `.autodream_state.json`；consolidation 锁统一在 `memory/.consolidation.lock`（D3 统一）
 
 ## 7. 已知限制与改进点
 
-- **AutoDream 仅启动时跑一次**，无后台周期 tick；长会话内多次压缩靠 `add_memory` 去重兜底。
-- **两把 consolidation 锁路径不一致**：AutoDream 用 `~/.wgenty-code/.consolidation.lock`，`MemoryManager::consolidate` 用 `~/.wgenty-code/memory/.consolidation.lock`，互不保护。
+- **AutoDream 仅启动时跑一次**（daemon/headless 入口），无后台周期 tick；长会话内多次压缩靠 `add_memory` 去重兜底。
+- ~~两把 consolidation 锁路径不一致~~（已修复，D3）：AutoDream 不再自管锁，统一由 `MemoryManager::consolidate()` 的 `ConsolidationFileLock` 保护。
 - **召回按 importance 排序，非相关度**：TF-IDF 仅圈候选，相关度分数未参与最终排序。
 - **候选池硬上限 10**：与 `recall_top_n` 无关，记忆库大时 10 之外候选永远进不来。
 - **substring 兜底几乎无效**：整串 `contains` 对多词查询命中率极低。
