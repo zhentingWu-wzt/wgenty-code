@@ -356,7 +356,7 @@ impl WindowsBackend {
                 );
                 let token = job.to_cleanup_token();
                 win::close_job_token(&token);
-                return Self::spawn_degraded(profile, command, workdir);
+                return self.spawn_degraded(profile, command, workdir);
             }
             Err(e) => {
                 let token = job.to_cleanup_token();
