@@ -379,3 +379,79 @@ fn resolve_working_dir_makes_dot_absolute() {
         "resolved working_dir must not remain relative '.'"
     );
 }
+
+#[cfg(test)]
+mod fallback_config_tests {
+    use super::*;
+    use crate::config::agent::SubagentLimits;
+
+    #[test]
+    fn fallback_models_default_empty() {
+        let limits = SubagentLimits::default();
+        assert!(limits.fallback_models.is_empty());
+    }
+
+    #[test]
+    fn fallback_models_loaded_from_config() {
+        let toml = r#"
+[agent.subagent]
+max_depth = 2
+max_concurrent = 5
+timeout_secs = 1800
+fallback_models = ["claude-sonnet-4", "gpt-4o"]
+"#;
+        let settings: Settings = toml::from_str(toml).unwrap();
+        assert_eq!(
+            settings.agent.subagent.fallback_models,
+            vec!["claude-sonnet-4".to_string(), "gpt-4o".to_string()]
+        );
+    }
+
+    #[test]
+    fn fallback_model_settings_only_overrides_name() {
+        let mut settings = Settings::default();
+        settings.models.main.name = "deepseek-reasoner".to_string();
+        settings.models.main.base_url = Some("https://api.deepseek.com".to_string());
+        settings.models.main.api_key = Some("sk-deepseek".to_string());
+
+        let fallback = settings.fallback_model_settings("claude-sonnet-4");
+        assert_eq!(fallback.models.main.name, "claude-sonnet-4");
+        // base_url / api_key preserved (reuse original endpoint)
+        assert_eq!(
+            fallback.models.main.base_url,
+            Some("https://api.deepseek.com".to_string())
+        );
+        assert_eq!(
+            fallback.models.main.api_key,
+            Some("sk-deepseek".to_string())
+        );
+    }
+
+    #[test]
+    fn select_fallback_model_picks_first_different() {
+        let mut settings = Settings::default();
+        settings.models.main.name = "deepseek-reasoner".to_string();
+        settings.agent.subagent.fallback_models = vec![
+            "deepseek-reasoner".to_string(),
+            "claude-sonnet-4".to_string(),
+            "gpt-4o".to_string(),
+        ];
+        assert_eq!(
+            settings.select_fallback_model("deepseek-reasoner"),
+            Some("claude-sonnet-4")
+        );
+    }
+
+    #[test]
+    fn select_fallback_model_none_when_empty() {
+        let settings = Settings::default();
+        assert_eq!(settings.select_fallback_model("any-model"), None);
+    }
+
+    #[test]
+    fn select_fallback_model_none_when_all_same() {
+        let mut settings = Settings::default();
+        settings.agent.subagent.fallback_models = vec!["deepseek-reasoner".to_string()];
+        assert_eq!(settings.select_fallback_model("deepseek-reasoner"), None);
+    }
+}
