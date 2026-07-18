@@ -70,10 +70,11 @@ i18n = ["fluent", "fluent-bundle", "unic-langid", "rust-embed"]
 bundled-skills = ["rust-embed"]
 export-icon = ["image"]
 bundled-sqlite = ["rusqlite/bundled"]
-full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqlite"]
+scripting = ["dep:rhai"]   # Rhai `run_script` 工具；默认关闭（rhai 全量编译约 10s）
+full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqlite", "scripting"]
 ```
 
-按需构建：`cargo build --release --no-default-features`(纯CLI)，`--features full`(全量)
+按需构建：`cargo build --release --no-default-features`(纯CLI)，`--features full`(全量)，`--features scripting`(启用 `run_script`)
 
 ### 多个二进制目标
 
