@@ -124,6 +124,44 @@ impl SubagentError {
     }
 }
 
+/// Classify a free-form `RuntimeError::Stream` message into an `ErrorType`.
+///
+/// Model-unavailable signatures (API HTTP errors, connection failures) map to
+/// [`ErrorType::ModelUnavailable`] so the fallback layer can detect them.
+/// "stuck"/"Stuck" stays [`ErrorType::Stuck`]. Everything else stays
+/// [`ErrorType::Unknown`].
+pub(crate) fn classify_stream_error(msg: &str) -> ErrorType {
+    if msg.contains("stuck") || msg.contains("Stuck") {
+        return ErrorType::Stuck {
+            reason: msg.to_string(),
+        };
+    }
+    if is_model_unavailable_message(msg) {
+        return ErrorType::ModelUnavailable;
+    }
+    ErrorType::Unknown
+}
+
+/// Heuristic: does this stream failure message indicate the model endpoint was
+/// unavailable? Matches "API error", "api error", "connection", "HTTP <status>",
+/// or a `(NNN)` status-code parenthetical.
+fn is_model_unavailable_message(msg: &str) -> bool {
+    use std::sync::OnceLock;
+    static HTTP_STATUS: OnceLock<regex::Regex> = OnceLock::new();
+    static STATUS_PAREN: OnceLock<regex::Regex> = OnceLock::new();
+    let http_status = HTTP_STATUS.get_or_init(|| {
+        // word-boundary "HTTP" followed by optional whitespace and 3 digits
+        regex::Regex::new(r"(?i)\bHTTP\b\s*\d{3}").expect("valid regex")
+    });
+    let status_paren = STATUS_PAREN
+        .get_or_init(|| regex::Regex::new(r"\(\d{3}\)").expect("valid regex"));
+    let lower = msg.to_lowercase();
+    lower.contains("api error")
+        || lower.contains("connection")
+        || http_status.is_match(msg)
+        || status_paren.is_match(msg)
+}
+
 impl std::fmt::Display for SubagentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.full_message())
@@ -850,12 +888,7 @@ pub async fn run_subagent_loop_with_permissions(
                         e.to_string(),
                     ),
                     RuntimeError::StreamTimeout(_) => (ErrorType::Timeout, e.to_string()),
-                    RuntimeError::Stream(msg) if msg.contains("stuck") || msg.contains("Stuck") => (
-                        ErrorType::Stuck {
-                            reason: msg.clone(),
-                        },
-                        msg.clone(),
-                    ),
+                    RuntimeError::Stream(msg) => (classify_stream_error(msg), msg.clone()),
                     other => (ErrorType::Unknown, other.to_string()),
                 };
                 Err(SubagentError {
@@ -940,5 +973,47 @@ mod tests {
             partial_result: None,
         };
         assert_eq!(err.code(), "subagent_model_unavailable");
+    }
+
+    #[test]
+    fn classify_stream_error_api_error_is_model_unavailable() {
+        assert_eq!(
+            classify_stream_error("API error (503): service unavailable"),
+            ErrorType::ModelUnavailable
+        );
+    }
+
+    #[test]
+    fn classify_stream_error_connection_is_model_unavailable() {
+        assert_eq!(
+            classify_stream_error("connection refused by host"),
+            ErrorType::ModelUnavailable
+        );
+    }
+
+    #[test]
+    fn classify_stream_error_http_status_is_model_unavailable() {
+        assert_eq!(
+            classify_stream_error("request failed: HTTP 500 internal server error"),
+            ErrorType::ModelUnavailable
+        );
+    }
+
+    #[test]
+    fn classify_stream_error_stuck_remains_stuck() {
+        assert_eq!(
+            classify_stream_error("subagent stuck in loop"),
+            ErrorType::Stuck {
+                reason: "subagent stuck in loop".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn classify_stream_error_other_remains_unknown() {
+        assert_eq!(
+            classify_stream_error("some unexpected stream error"),
+            ErrorType::Unknown
+        );
     }
 }
