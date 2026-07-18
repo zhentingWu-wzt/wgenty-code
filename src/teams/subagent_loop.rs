@@ -118,6 +118,7 @@ impl SubagentError {
             ErrorType::ToolError { .. } => "subagent_tool_error",
             ErrorType::ParseError { .. } => "subagent_parse_error",
             ErrorType::Cancelled => "subagent_cancelled",
+            ErrorType::ModelUnavailable => "subagent_model_unavailable",
             ErrorType::Unknown => "subagent_error",
         }
     }
@@ -929,5 +930,15 @@ mod tests {
         let args = serde_json::json!({ "description": "短任务" });
         let summary = extract_params_summary("task", &args);
         assert_eq!(summary, "短任务");
+    }
+
+    #[test]
+    fn model_unavailable_maps_to_subagent_model_unavailable_code() {
+        let err = SubagentError {
+            message: "API error (503): service unavailable".to_string(),
+            error_type: ErrorType::ModelUnavailable,
+            partial_result: None,
+        };
+        assert_eq!(err.code(), "subagent_model_unavailable");
     }
 }
