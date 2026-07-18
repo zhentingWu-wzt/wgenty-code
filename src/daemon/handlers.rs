@@ -698,7 +698,7 @@ pub async fn search_sessions(
 // ── Undo ───────────────────────────────────────────────────────────────────
 
 pub async fn undo_checkpoint(State(state): State<Arc<DaemonState>>) -> Result<String, StatusCode> {
-    match state.checkpoint_manager.undo().await {
+    match state.checkpoint_manager.undo(None).await {
         Ok(output) => Ok(output),
         Err(_e) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
