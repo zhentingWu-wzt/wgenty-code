@@ -219,8 +219,11 @@ impl App {
                                 self.input_box.textarea.select_all();
                                 self.input_box.textarea.cut();
                                 self.input_box.textarea.insert_str(before);
-                                // Both @ and / completion insert /name to input
-                                let insert = format!("/{} ", m.text);
+                                // Preserve the trigger prefix (@ skills vs / commands).
+                                let insert = crate::tui::components::input::completion_insert_text(
+                                    state.prefix,
+                                    &m.text,
+                                );
                                 self.input_box.textarea.insert_str(&insert);
                                 self.input_box.update_style();
                             }
@@ -271,11 +274,15 @@ impl App {
                         tokio::spawn(async move {
                             if let Ok(resp) = client.load_session(&id).await {
                                 let messages = resp.messages;
+                                let ui_messages = resp.ui_messages;
                                 {
                                     let mut h = history.lock().await;
                                     *h = messages.clone();
                                 }
-                                let _ = tx.send(AppEvent::HistoryLoaded(messages));
+                                let _ = tx.send(AppEvent::HistoryLoaded {
+                                    messages,
+                                    ui_messages,
+                                });
                             }
                         });
                     }
@@ -292,6 +299,32 @@ impl App {
                 }
                 KeyCode::Esc => {
                     self.session_state.dismiss();
+                }
+                _ => {}
+            }
+            return;
+        }
+        // Memory browser popup
+        if self.memory_state.visible {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.memory_state.move_up();
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.memory_state.move_down();
+                }
+                KeyCode::Tab => {
+                    self.memory_state.cycle_filter();
+                }
+                KeyCode::Enter => {
+                    self.memory_state.toggle_detail();
+                }
+                KeyCode::Esc => {
+                    if self.memory_state.detail_mode {
+                        self.memory_state.detail_mode = false;
+                    } else {
+                        self.memory_state.dismiss();
+                    }
                 }
                 _ => {}
             }
@@ -419,8 +452,7 @@ impl App {
         //     to Enter outside raw mode), so it never reaches this
         //     Enter branch and is safe to claim here.
         //   - unmodified Enter -> submit.
-        // Other Enter modifier combos (Ctrl/Alt+Enter) fall through to
-        // submit, matching prior behaviour.
+        // Memory / session panels are slash-only (`/memory`, `/session`).
         if key.code == KeyCode::Enter {
             if key.modifiers.contains(KeyModifiers::SHIFT) {
                 self.input_box.textarea.insert_char('\n');
@@ -512,10 +544,9 @@ impl App {
 
     /// Keep system-prompt permissions layer in sync with Shift+Tab / Plan toggle.
     ///
-    /// Always updates `prompt_context` + `assembled_system_messages`. When no
-    /// turn is running, also rewrites the leading `system` prefix of
-    /// `conversation_history` so the next turn sees the new policy. Mid-turn
-    /// history is left alone (in-flight loop already holds the old prefix).
+    /// Updates `prompt_context` + `assembled_system_messages` only. The agent
+    /// loop prepends `assembled_system_messages` each API round, so history
+    /// stays dialogue-only and must not be rewritten with system layers.
     pub(super) fn apply_mode_to_prompt_permissions(&mut self) {
         let sandbox = self.mode.prompt_sandbox_mode().to_string();
         let approval = self.mode.prompt_approval_policy().to_string();
@@ -535,44 +566,13 @@ impl App {
             .clone();
         let assembled = crate::prompts::assemble_instructions(&settings, &new_ctx);
         self.prompt_context = new_ctx;
-        self.assembled_system_messages = assembled.system_messages.clone();
+        self.assembled_system_messages = assembled.system_messages;
         tracing::info!(
             mode = ?self.mode,
             sandbox = self.prompt_context.sandbox_mode.as_deref().unwrap_or("?"),
             approval = self.prompt_context.approval_policy.as_deref().unwrap_or("?"),
             "agent mode changed; system prompt permissions re-assembled"
         );
-
-        // Idle: rewrite leading system prefix so the next turn sees new policy.
-        // Prefer try_lock so a subsequent Submit in the same tick cannot race a
-        // spawned task still waiting on the mutex.
-        if self.current_turn_handle.is_none() {
-            let sys_msgs = assembled.system_messages;
-            match self.conversation_history.try_lock() {
-                Ok(mut h) => {
-                    let rest: Vec<_> = h
-                        .iter()
-                        .skip_while(|m| m.role == "system")
-                        .cloned()
-                        .collect();
-                    *h = sys_msgs;
-                    h.extend(rest);
-                }
-                Err(_) => {
-                    let history = self.conversation_history.clone();
-                    tokio::spawn(async move {
-                        let mut h = history.lock().await;
-                        let rest: Vec<_> = h
-                            .iter()
-                            .skip_while(|m| m.role == "system")
-                            .cloned()
-                            .collect();
-                        *h = sys_msgs;
-                        h.extend(rest);
-                    });
-                }
-            }
-        }
     }
 }
 

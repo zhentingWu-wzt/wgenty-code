@@ -4,17 +4,21 @@
 //!   1. base_instructions   — static role + behavior (from prompts/base.md)
 //!   2. permissions         — sandbox mode + approval policy (dynamic)
 //!   3. developer           — user-custom instructions (from Settings)
-//!   4. environment         — cwd, shell, date, timezone
+//!   4. collaboration       — plan / execute / pair mode
+//!   5. environment         — cwd, shell, date, timezone (+ memories/skills)
+//!   7. user-global WGENTY  — `~/.wgenty-code/WGENTY.md` (session-cached)
+//!   8. user-global rules   — `~/.wgenty-code/rules/*.md` (session-cached)
+//!   9. project WGENTY.md   — project root (session-cached; refresh on mtime)
+//!  10. project AGENTS.md   — project root (session-cached; refresh on mtime)
 //!
-//! Note: AGENTS.md and WGENTY.md (both user and project-level) are
-//! delivered via the per-turn <system-reminder> channel built by
-//! `build_user_turn_reminder`, NOT via this system prompt cascade.
-//! `PromptContext::wgenty_md_sections` and `agents_md_sections` are
-//! still populated for the reminder builder to consume.
+//! Per-turn `<system-reminder>` (see [`build_user_turn_reminder`]) carries
+//! **hook injections only**. Static project/user instruction files live in
+//! the system cascade above so they are not multiplied into conversation
+//! history on every user turn.
 
 use std::collections::HashMap;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::api::ChatMessage;
@@ -26,12 +30,12 @@ use chrono::Local;
 /// Pre-compiled base instructions (embedded at compile time).
 const BASE_INSTRUCTIONS: &str = include_str!("base.md");
 
-/// Opening preamble for the `<system-reminder>` channel injected at user turn.
+/// Opening preamble for the hook-only `<system-reminder>` channel.
 const REMINDER_PREAMBLE_OPENING: &str =
     "As you answer the user's questions, you can use the following context:\n\
-     # wgentyMd\n\
-     Codebase and user instructions are shown below. Be sure to adhere to\n\
-     these instructions. IMPORTANT: These instructions OVERRIDE any default\n\
+     # injectedContext\n\
+     Dynamic hook context is shown below. Be sure to adhere to\n\
+     these instructions when relevant. IMPORTANT: These instructions OVERRIDE any default\n\
      behavior and you MUST follow them exactly as written.\n";
 
 /// Closing preamble for the `<system-reminder>` channel.
@@ -40,10 +44,9 @@ const REMINDER_PREAMBLE_CLOSING: &str =
      \x20     You should not respond to this context unless it is highly relevant\n\
      \x20     to your task.";
 
-// Attribution description strings for project-level file-backed segments.
-const PROJECT_INSTRUCTIONS_DESC: &str = "project instructions, checked into the codebase";
-const PROJECT_AGENTS_DESC: &str = "project agent conventions, checked into the codebase";
 const HOOK_INJECTION_DESC: &str = "dynamic hook injection";
+const PROJECT_INSTRUCTIONS_TAG: &str = "project_instructions";
+const PROJECT_AGENTS_TAG: &str = "project_agent_conventions";
 
 /// Assembled layered instructions for a single turn.
 #[derive(Debug, Clone)]
@@ -77,10 +80,10 @@ pub struct PromptContext {
     pub user_global_rules: Vec<(PathBuf, String)>,
     /// Skills discoverable by the agent. Layer 1: name + description only.
     pub skills_inventory: Vec<SkillEntry>,
-    /// Sections from the project's WGENTY.md (split by `---`). Layer 8.
+    /// Sections from the project's WGENTY.md (split by `---`). System Layer 9.
     pub wgenty_md_sections: Vec<String>,
-    /// Absolute path to the project root; used by reminder builders to render
-    /// attribution headers (e.g. `Contents of <abs-path> (description):`).
+    /// Absolute path to the project root; used when tagging Layers 9/10 with
+    /// the on-disk paths of `WGENTY.md` / `AGENTS.md`.
     pub project_root: Option<PathBuf>,
     /// Generic runtime context assembler. Replaces hardcoded comet phase injection.
     pub context_assembler: Option<Arc<ContextAssembler>>,
@@ -247,80 +250,33 @@ impl PromptContext {
 
 /// Output of [`build_user_turn_reminder`].
 ///
-/// `to_model` includes every collected segment and every injected fragment
-/// (regardless of visibility). `to_transcript` is `Some` only when at least
-/// one injected hook fragment has [`LayerVisibility::Visible`] — file-backed
-/// segments (WGENTY.md / AGENTS.md / rules) are model instructions, never
-/// shown in the transcript.
+/// Hook-only channel: static WGENTY/AGENTS live in the system cascade.
+/// `to_model` includes every injected fragment (regardless of visibility).
+/// `to_transcript` is `Some` only when at least one fragment is
+/// [`LayerVisibility::Visible`].
 #[derive(Debug, Clone)]
 pub struct ReminderOutput {
     pub to_model: String,
     pub to_transcript: Option<String>,
 }
 
-/// Render the attribution header line for a single source block inside the
-/// `<system-reminder>` channel.
-fn render_attribution_header(absolute_path: &Path, description: &str) -> String {
-    format!("Contents of {} ({}):", absolute_path.display(), description)
-}
-
-/// Build the `<system-reminder>` channel injected at the start of each user
-/// turn. Returns `None` when neither file-based segments nor hook injections
-/// produced any content.
+/// Build the per-turn `<system-reminder>` block from **hook injections only**.
+///
+/// Static project/user instruction files are session-cached in
+/// [`assemble_instructions`] and must not be embedded into user messages.
+/// Returns `None` when there are no hook injections.
 pub fn build_user_turn_reminder(
-    ctx: &PromptContext,
+    _ctx: &PromptContext,
     hook_injections: &[InjectedFragment],
 ) -> Option<ReminderOutput> {
-    // ── Collect file-backed segments (project-level only; user globals are in Layers 7/8) ──
-    struct Segment {
-        path: PathBuf,
-        description: &'static str,
-        content: String,
-    }
-    let mut segments: Vec<Segment> = Vec::new();
-
-    if !ctx.wgenty_md_sections.is_empty() {
-        let path = ctx
-            .project_root
-            .as_ref()
-            .map(|p| p.join("WGENTY.md"))
-            .unwrap_or_else(|| PathBuf::from("WGENTY.md"));
-        let content = ctx.wgenty_md_sections.join("\n\n");
-        segments.push(Segment {
-            path,
-            description: PROJECT_INSTRUCTIONS_DESC,
-            content,
-        });
-    }
-    if !ctx.agents_md_sections.is_empty() {
-        let path = ctx
-            .project_root
-            .as_ref()
-            .map(|p| p.join("AGENTS.md"))
-            .unwrap_or_else(|| PathBuf::from("AGENTS.md"));
-        let content = ctx.agents_md_sections.join("\n\n");
-        segments.push(Segment {
-            path,
-            description: PROJECT_AGENTS_DESC,
-            content,
-        });
-    }
-
-    if segments.is_empty() && hook_injections.is_empty() {
+    if hook_injections.is_empty() {
         return None;
     }
 
-    // ── Render dual-track output ───────────────────────────────────────────
     let mut to_model = String::from("<system-reminder>\n");
     let mut to_transcript = String::from("<system-reminder>\n");
     to_model.push_str(REMINDER_PREAMBLE_OPENING);
     to_transcript.push_str(REMINDER_PREAMBLE_OPENING);
-
-    for seg in &segments {
-        let header = render_attribution_header(&seg.path, seg.description);
-        let block = format!("\n{}\n\n{}\n", header, seg.content);
-        to_model.push_str(&block);
-    }
 
     let mut transcript_has_hook = false;
     for frag in hook_injections {
@@ -352,6 +308,114 @@ pub fn build_user_turn_reminder(
             None
         },
     })
+}
+
+/// Whether per-turn `<system-reminder>` dumping is enabled.
+///
+/// True when `prompt.debug_dump_reminder` is set **or** env
+/// `WGENTY_DEBUG_REMINDER` is one of `1` / `true` / `yes` (case-insensitive).
+pub fn reminder_dump_enabled(settings_flag: bool) -> bool {
+    if settings_flag {
+        return true;
+    }
+    match std::env::var("WGENTY_DEBUG_REMINDER") {
+        Ok(v) => {
+            let v = v.trim();
+            v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Dump the per-turn user-message `<system-reminder>` (or a note that none was
+/// injected) for debugging.
+///
+/// Writes under `<project_root>/.wgenty-code/debug/reminders/` when
+/// `project_root` is provided; otherwise falls back to
+/// `~/.wgenty-code/debug/reminders/`.
+///
+/// Returns the path written on success.
+pub fn dump_user_turn_reminder(
+    project_root: Option<&std::path::Path>,
+    session_id: &str,
+    user_input: &str,
+    reminder: Option<&ReminderOutput>,
+    hook_injection_count: usize,
+) -> std::io::Result<PathBuf> {
+    let base = match project_root {
+        Some(root) => root.join(".wgenty-code").join("debug").join("reminders"),
+        None => {
+            let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+            home.join(".wgenty-code").join("debug").join("reminders")
+        }
+    };
+    std::fs::create_dir_all(&base)?;
+
+    let ts = Local::now().format("%Y%m%dT%H%M%S%.3f");
+    // Keep filenames filesystem-safe and short.
+    let sid: String = session_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(36)
+        .collect();
+    let path = base.join(format!("{ts}_{sid}.md"));
+
+    let preview: String = user_input.chars().take(200).collect();
+    let preview = preview.replace('\n', "\\n");
+
+    let mut body = String::new();
+    body.push_str("# system-reminder dump\n\n");
+    body.push_str(&format!("- session_id: `{session_id}`\n"));
+    body.push_str(&format!("- timestamp: `{}`\n", Local::now().to_rfc3339()));
+    body.push_str(&format!("- hook_injections: `{hook_injection_count}`\n"));
+    body.push_str(&format!("- user_input_chars: `{}`\n", user_input.len()));
+    body.push_str(&format!("- user_input_preview: `{preview}`\n\n"));
+
+    match reminder {
+        None => {
+            body.push_str("## Result\n\n");
+            body.push_str("**No `<system-reminder>` was prepended to this user message.**\n\n");
+            body.push_str(
+                "Current channel is hook-only: static WGENTY/AGENTS/rules live in the \
+                 system cascade (`assemble_instructions`), not in the per-turn user \
+                 reminder. An empty dump means no `UserPromptSubmit` hook injected \
+                 context this turn.\n",
+            );
+        }
+        Some(r) => {
+            body.push_str("## to_model (prepended to user message)\n\n");
+            body.push_str(&format!("chars: `{}`\n\n", r.to_model.len()));
+            body.push_str("```text\n");
+            body.push_str(&r.to_model);
+            if !r.to_model.ends_with('\n') {
+                body.push('\n');
+            }
+            body.push_str("```\n\n");
+
+            body.push_str("## to_transcript (UI-visible subset)\n\n");
+            match &r.to_transcript {
+                None => body.push_str("_None — all hook fragments were model-only._\n"),
+                Some(t) => {
+                    body.push_str(&format!("chars: `{}`\n\n", t.len()));
+                    body.push_str("```text\n");
+                    body.push_str(t);
+                    if !t.ends_with('\n') {
+                        body.push('\n');
+                    }
+                    body.push_str("```\n");
+                }
+            }
+        }
+    }
+
+    std::fs::write(&path, body)?;
+    Ok(path)
 }
 
 /// Assembles the full layered instructions from config + context.
@@ -447,6 +511,36 @@ The following skills are available. Use the `load_skill` tool to read a skill's 
     for (ref path, ref content) in &context.user_global_rules {
         system_messages.push(ChatMessage::system(format!(
             "<user_global_rules path=\"{}\">\n{}\n</user_global_rules>",
+            path.display(),
+            content.trim()
+        )));
+    }
+
+    // ── Layer 9: Project WGENTY.md (session-cached) ─────────────
+    if !context.wgenty_md_sections.is_empty() {
+        let path = context
+            .project_root
+            .as_ref()
+            .map(|p| p.join("WGENTY.md"))
+            .unwrap_or_else(|| PathBuf::from("WGENTY.md"));
+        let content = context.wgenty_md_sections.join("\n\n");
+        system_messages.push(ChatMessage::system(format!(
+            "<{PROJECT_INSTRUCTIONS_TAG} path=\"{}\">\n{}\n</{PROJECT_INSTRUCTIONS_TAG}>",
+            path.display(),
+            content.trim()
+        )));
+    }
+
+    // ── Layer 10: Project AGENTS.md (session-cached) ────────────
+    if !context.agents_md_sections.is_empty() {
+        let path = context
+            .project_root
+            .as_ref()
+            .map(|p| p.join("AGENTS.md"))
+            .unwrap_or_else(|| PathBuf::from("AGENTS.md"));
+        let content = context.agents_md_sections.join("\n\n");
+        system_messages.push(ChatMessage::system(format!(
+            "<{PROJECT_AGENTS_TAG} path=\"{}\">\n{}\n</{PROJECT_AGENTS_TAG}>",
             path.display(),
             content.trim()
         )));
@@ -948,6 +1042,44 @@ mod tests {
     }
 
     #[test]
+    fn dump_user_turn_reminder_writes_empty_and_hook_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let empty_path = dump_user_turn_reminder(Some(root), "sess-empty", "hello", None, 0)
+            .expect("empty dump writes");
+        let empty_body = std::fs::read_to_string(&empty_path).unwrap();
+        assert!(empty_body.contains("No `<system-reminder>`"));
+        assert!(empty_body.contains("hello"));
+
+        let reminder = build_user_turn_reminder(
+            &PromptContext::new(),
+            &[crate::runtime::hooks::InjectedFragment {
+                content: "dynamic bits".into(),
+                source_label: "unit-hook".into(),
+                visibility: crate::runtime::hooks::LayerVisibility::Visible,
+                priority: 50,
+            }],
+        )
+        .expect("hook reminder");
+        let hook_path =
+            dump_user_turn_reminder(Some(root), "sess-hook", "with hook", Some(&reminder), 1)
+                .expect("hook dump writes");
+        let hook_body = std::fs::read_to_string(&hook_path).unwrap();
+        assert!(hook_body.contains("dynamic bits"));
+        assert!(hook_body.contains("to_model"));
+        assert!(hook_body.contains("to_transcript"));
+    }
+
+    #[test]
+    fn reminder_dump_enabled_respects_flag_and_env() {
+        assert!(reminder_dump_enabled(true));
+        // Do not assert env-false globally (may be set in developer shell);
+        // only check that true flag always wins.
+        let _ = reminder_dump_enabled(false);
+    }
+
+    #[test]
     fn test_graceful_degradation_no_permissions() {
         let settings = Settings::default();
         let ctx = PromptContext::new().with_cwd("/tmp").with_shell("zsh");
@@ -964,45 +1096,51 @@ mod tests {
     }
 
     // ============================================================
-    // U9 (Task 4.4) — Hard-cut verification: Layer 7/8 removed
+    // U9 — Project WGENTY/AGENTS live in system Layers 9/10
     // ============================================================
     #[test]
-    fn assemble_instructions_no_layer_7_8() {
-        // After the system-reminder-channel hard-cut, AGENTS.md and WGENTY.md
-        // sections must NOT appear as system messages — they go through the
-        // <system-reminder> channel instead.
+    fn assemble_instructions_includes_project_docs_layers() {
         let settings = Settings::default();
         let ctx = PromptContext::new()
             .with_cwd("/tmp")
             .with_shell("zsh")
+            .with_project_root(PathBuf::from("/tmp/proj"))
             .with_wgenty_md(vec!["wgenty body".into()])
             .with_agents_md(vec!["agents body".into()]);
 
         let instructions = assemble_instructions(&settings, &ctx);
+        let sys_text = instructions
+            .system_messages
+            .iter()
+            .filter_map(|m| m.content.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n");
 
-        for msg in &instructions.system_messages {
-            let content = msg.content.as_deref().unwrap_or_default();
-            // Match the EXACT Layer 7 header format: "# AGENTS.md\n\n<body>".
-            // Plain substring "# AGENTS.md" would false-positive on base.md's
-            // "## AGENTS.md and repository conventions" heading.
-            assert!(
-                !content.contains("# AGENTS.md\n\n"),
-                "AGENTS.md Layer 7 header should NOT appear in system messages after hard-cut"
-            );
-            assert!(
-                !content.contains("# WGENTY.md — 项目规则与约定"),
-                "WGENTY.md section header should NOT appear in system messages"
-            );
-            // Bonus: actual content strings should also be absent (the data exits via reminder, not here)
-            assert!(
-                !content.contains("wgenty body"),
-                "wgenty body content should NOT be pushed to system messages"
-            );
-            assert!(
-                !content.contains("agents body"),
-                "agents body content should NOT be pushed to system messages"
-            );
-        }
+        assert!(
+            sys_text.contains("wgenty body"),
+            "project WGENTY body must be in system cascade"
+        );
+        assert!(
+            sys_text.contains("agents body"),
+            "project AGENTS body must be in system cascade"
+        );
+        assert!(
+            sys_text.contains(&format!("<{PROJECT_INSTRUCTIONS_TAG}")),
+            "Layer 9 tag required"
+        );
+        assert!(
+            sys_text.contains(&format!("<{PROJECT_AGENTS_TAG}")),
+            "Layer 10 tag required"
+        );
+        // Must not use the old bare markdown headers as system message bodies.
+        assert!(
+            !sys_text.contains("# AGENTS.md\n\nagents body"),
+            "legacy bare AGENTS.md header format should not be used"
+        );
+        assert!(
+            build_user_turn_reminder(&ctx, &[]).is_none(),
+            "project docs must not also ride the per-turn reminder"
+        );
     }
 }
 
@@ -1032,7 +1170,7 @@ mod reminder_tests {
     }
 
     // ============================================================
-    // U1 — complete snapshot (2 project sources in reminder; user globals in Layers 7/8)
+    // U1 — static docs in system cascade; reminder empty without hooks
     // ============================================================
     #[test]
     #[serial]
@@ -1057,7 +1195,7 @@ mod reminder_tests {
             .with_agents_md(vec!["PROJECT_AGENTS".to_string()])
             .with_project_root(project_root.path().to_path_buf());
 
-        // ── System prompt: user instructions + rules in Layers 7/8 ─────
+        // ── System prompt: Layers 7–10 hold static instruction files ──
         let settings = Settings::default();
         let assembled = assemble_instructions(&settings, &ctx);
         let sys_text = assembled
@@ -1077,65 +1215,46 @@ mod reminder_tests {
             "Layer 7 tag"
         );
         assert!(sys_text.contains("<user_global_rules"), "Layer 8 tag");
-
-        // ── Reminder: project WGENTY.md + AGENTS.md only ─────────────
-        let result = build_user_turn_reminder(&ctx, &[]).expect("reminder should be Some");
-
-        // Skeleton
         assert!(
-            result.to_model.starts_with("<system-reminder>\n"),
-            "missing opener: {}",
-            result.to_model.chars().take(50).collect::<String>()
+            sys_text.contains("PROJECT_WGENTY"),
+            "Layer 9: project WGENTY.md"
         );
         assert!(
-            result.to_model.contains("# wgentyMd"),
-            "missing # wgentyMd marker"
+            sys_text.contains("PROJECT_AGENTS"),
+            "Layer 10: project AGENTS.md"
         );
         assert!(
-            result
-                .to_model
-                .contains("IMPORTANT: These instructions OVERRIDE"),
-            "missing OVERRIDE preamble"
+            sys_text.contains(&format!("<{PROJECT_INSTRUCTIONS_TAG}")),
+            "Layer 9 tag"
         );
         assert!(
-            result
-                .to_model
-                .contains("IMPORTANT: this context may or may not be relevant"),
-            "missing closing preamble"
-        );
-        assert!(
-            result.to_model.trim_end().ends_with("</system-reminder>"),
-            "missing closer"
+            sys_text.contains(&format!("<{PROJECT_AGENTS_TAG}")),
+            "Layer 10 tag"
         );
 
-        // 2 project content markers
-        assert!(result.to_model.contains("PROJECT_WGENTY"));
-        assert!(result.to_model.contains("PROJECT_AGENTS"));
-
-        // 2 description tags (project-level only; user globals now in Layers 7/8)
-        assert!(result
-            .to_model
-            .contains("project instructions, checked into the codebase"));
-        assert!(result
-            .to_model
-            .contains("project agent conventions, checked into the codebase"));
-
-        // Ordering: project WGENTY.md → project AGENTS.md
-        let pos_proj_w = result.to_model.find("PROJECT_WGENTY").unwrap();
-        let pos_proj_a = result.to_model.find("PROJECT_AGENTS").unwrap();
+        // Ordering: user globals → project WGENTY → project AGENTS
+        let pos_user = sys_text.find("USER_WGENTY_CONTENT").unwrap();
+        let pos_proj_w = sys_text.find("PROJECT_WGENTY").unwrap();
+        let pos_proj_a = sys_text.find("PROJECT_AGENTS").unwrap();
+        assert!(pos_user < pos_proj_w, "user globals before project WGENTY");
         assert!(
             pos_proj_w < pos_proj_a,
             "project WGENTY should precede project AGENTS"
         );
+
+        // ── Reminder: hooks only — static docs must not reappear ─────
+        assert!(
+            build_user_turn_reminder(&ctx, &[]).is_none(),
+            "no hooks → no per-turn reminder"
+        );
     }
 
     // ============================================================
-    // U2 — missing user WGENTY → no orphan header
+    // U2 — project docs alone do not create a reminder
     // ============================================================
     #[test]
     #[serial]
     fn reminder_missing_user_wgenty_no_empty_header() {
-        // No user WGENTY.md, no rules — only project sections
         let home = make_fake_home(None, &[]);
         let project_root = TempDir::new().unwrap();
 
@@ -1146,29 +1265,22 @@ mod reminder_tests {
                 .with_agents_md(vec!["PROJECT_AGENTS".to_string()])
                 .with_project_root(project_root.path().to_path_buf());
 
-            let result = build_user_turn_reminder(&ctx, &[]).expect("project sections present");
-
-            // User-global description should NOT appear (no user WGENTY, no rules)
             assert!(
-                !result
-                    .to_model
-                    .contains("user's private global instructions"),
-                "should not include user-global description when no user files"
+                build_user_turn_reminder(&ctx, &[]).is_none(),
+                "project sections alone must not produce a reminder"
             );
-            // Project descriptions still present
-            assert!(result
-                .to_model
-                .contains("project instructions, checked into the codebase"));
-            assert!(result
-                .to_model
-                .contains("project agent conventions, checked into the codebase"));
 
-            // No orphan attribution header — empty path + empty description
-            // would render "Contents of  ():" with double-space; must never occur.
-            assert!(
-                !result.to_model.contains("Contents of  ("),
-                "orphan attribution header with empty path detected"
-            );
+            let settings = Settings::default();
+            let assembled = assemble_instructions(&settings, &ctx);
+            let sys_text = assembled
+                .system_messages
+                .iter()
+                .filter_map(|msg| msg.content.as_deref())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(sys_text.contains("PROJECT_WGENTY"));
+            assert!(sys_text.contains("PROJECT_AGENTS"));
+            assert!(!sys_text.contains("user's private global instructions"));
         }
     }
 
@@ -1190,40 +1302,27 @@ mod reminder_tests {
     }
 
     // ============================================================
-    // U5 (Task 2.6) — Absolute paths in attribution
+    // U5 (Task 2.6) — Hook attribution keeps source labels
     // ============================================================
     #[test]
     #[serial]
     fn reminder_absolute_paths_in_attribution() {
-        let home = make_fake_home(Some("X"), &[("a.md", "Y")]);
-        let project_root = TempDir::new().unwrap();
-
-        {
-            let ctx = PromptContext::new()
-                .with_home_override(home.path().to_path_buf())
-                .with_wgenty_md(vec!["P".to_string()])
-                .with_agents_md(vec!["Q".to_string()])
-                .with_project_root(project_root.path().to_path_buf());
-
-            let result = build_user_turn_reminder(&ctx, &[]).unwrap();
-
-            // Every "Contents of <path> (...)" line must have an absolute path.
-            // Use Path::is_absolute rather than starts_with('/') so this holds on
-            // Windows too, where absolute paths look like "C:\...".
-            for line in result.to_model.lines() {
-                if let Some(rest) = line.strip_prefix("Contents of ") {
-                    // Path is everything up to the last " ("
-                    let path_end = rest
-                        .rfind(" (")
-                        .expect("attribution line should contain ' ('");
-                    let path = &rest[..path_end];
-                    assert!(
-                        std::path::Path::new(path).is_absolute(),
-                        "attribution path should be absolute, got: {path:?}"
-                    );
-                }
-            }
-        }
+        let ctx = PromptContext::new();
+        let frags = vec![InjectedFragment {
+            content: "HOOK_BODY".into(),
+            priority: 10,
+            visibility: LayerVisibility::Visible,
+            source_label: "hook:UserPromptSubmit:0".into(),
+        }];
+        let result = build_user_turn_reminder(&ctx, &frags).unwrap();
+        assert!(
+            result
+                .to_model
+                .contains("Contents of hook:UserPromptSubmit:0 (dynamic hook injection):"),
+            "hook attribution header missing: {}",
+            result.to_model
+        );
+        assert!(result.to_model.contains("HOOK_BODY"));
     }
 
     // ============================================================
@@ -1260,9 +1359,7 @@ mod reminder_tests {
     // ============================================================
     #[test]
     fn reminder_hook_priority_sorting() {
-        // Empty fs setup — but hook_injections feed directly without needing $HOME.
-        // Still mark non-serial since we don't touch HOME here.
-        let ctx = PromptContext::new().with_wgenty_md(vec!["P".to_string()]); // ensures non-None result
+        let ctx = PromptContext::new();
 
         let frags = vec![
             InjectedFragment {
@@ -1293,6 +1390,10 @@ mod reminder_tests {
 
         let result = build_user_turn_reminder(&ctx, &sorted).unwrap();
 
+        assert!(
+            result.to_model.contains("# injectedContext"),
+            "hook reminder uses injectedContext marker"
+        );
         let pos_10 = result.to_model.find("PRI_10").unwrap();
         let pos_20 = result.to_model.find("PRI_20").unwrap();
         let pos_30 = result.to_model.find("PRI_30").unwrap();
@@ -1305,7 +1406,7 @@ mod reminder_tests {
     // ============================================================
     #[test]
     fn reminder_internal_visibility_excludes_transcript() {
-        let ctx = PromptContext::new().with_wgenty_md(vec!["P_CONTENT".to_string()]);
+        let ctx = PromptContext::new();
 
         let frags = vec![
             InjectedFragment {
@@ -1336,8 +1437,8 @@ mod reminder_tests {
             "to_transcript MUST NOT contain internal hook content"
         );
         assert!(
-            !transcript.contains("P_CONTENT"),
-            "to_transcript MUST NOT contain file-backed segments"
+            transcript.contains("VISIBLE_MAKER"),
+            "visible hooks still reach transcript"
         );
     }
 
@@ -1346,7 +1447,7 @@ mod reminder_tests {
     // ============================================================
     #[test]
     fn reminder_visible_hook_in_both_outputs() {
-        let ctx = PromptContext::new().with_wgenty_md(vec!["P_CONTENT".to_string()]);
+        let ctx = PromptContext::new();
 
         let frags = vec![InjectedFragment {
             content: "VISIBLE_PAYLOAD".into(),
