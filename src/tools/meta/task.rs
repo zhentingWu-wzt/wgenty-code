@@ -1,8 +1,11 @@
 //! Task Tool — subagent spawning for complex, multi-step tasks.
 //!
 //! The `task` tool allows the parent agent to delegate work to an isolated
-//! subagent with its own message context, filtered tool set (no recursive
-//! `task` calls to prevent explosion), and a complete agent loop.
+//! subagent with its own message context, filtered tool set, and a complete
+//! agent loop. Explore/plan are leaf types (no spawn tools). General-purpose
+//! may attempt nested `task` calls; depth is enforced by the coordinator, and
+//! blocked deeper spawns self-execute in the non-root parent (structural
+//! fallback) so the delegated work is not dropped.
 //!
 //! Available subagent types:
 //! - `general-purpose` (default) — general tool-use tasks
@@ -229,6 +232,10 @@ impl TaskTool {
     /// - `!is_root_caller(context.agent)` (root must not self-execute; Comet isolation)
     /// - `!fallback_already_used` (single-shot, non-recursive constraint)
     ///
+    /// The fallback loop is intentionally a leaf execution: spawn tools
+    /// (`task` / `delegate`) are stripped so the synthetic ghost agent cannot
+    /// re-enter nested dispatch (it is not registered in coordinator scopes).
+    ///
     /// On fallback execution failure: returns `ToolError` (degrades to root model,
     /// no recursion). Structural failures do not swap the model.
     async fn execute_fallback_sync(
@@ -274,22 +281,28 @@ impl TaskTool {
             code: Some("fallback_no_registry".to_string()),
         })?;
 
-        // Synthesize a child context based on the parent's context. We do NOT
-        // call coordinator.reserve_child (it failed). The synthesized agent runs
-        // at the parent's depth (no deeper, since depth limit was a failure reason).
+        // Synthesize a leaf context for the ghost fallback agent. We do NOT call
+        // coordinator.reserve_child (it failed / was rejected). Important:
+        // `parent_id` must be None so SubagentSynthesis treats this loop as a
+        // root-like leaf and skips collect_children_for_synthesis. The ghost is
+        // not registered in coordinator scopes; a non-root parent_id would make
+        // synthesis call active_owner_status -> NotVisible and abort the work.
         let child_agent_id_str = uuid::Uuid::new_v4().to_string();
         let child_context = AgentExecutionContext {
             agent_id: AgentId::new(child_agent_id_str.clone()),
-            parent_id: Some(context.agent.agent_id.clone()),
+            parent_id: None,
             session_id: context.agent.session_id.clone(),
             depth: context.agent.depth,
-            cancellation: context.agent.cancellation.clone(),
+            cancellation: context.agent.cancellation.child_token(),
         };
 
+        // Leaf tool set only: stripping spawn tools forces the fallback to
+        // complete the delegated work itself (depth-limit takeover).
         let allowed_tools: Vec<String> = tool_registry
             .list()
             .iter()
             .map(|t| t.name().to_string())
+            .filter(|name| name != "task" && name != "delegate")
             .collect();
         let timeout_secs = self.settings.agent.subagent.timeout_secs;
         let workdir: Option<std::path::PathBuf> = Some(self.settings.storage.working_dir.clone());
@@ -355,8 +368,11 @@ impl Tool for TaskTool {
     fn description(&self) -> &str {
         "Launch a subagent to handle complex, multi-step tasks. \
          Available types: general-purpose (default), explore (codebase search), \
-         plan (architecture). Subagents have isolated context and filtered tools \
-         (no recursive task spawning). \
+         plan (architecture). Subagents have isolated context and filtered tools. \
+         Explore/plan never spawn further agents. General-purpose may call task \
+         again; if depth limit blocks the nested spawn, the system self-executes \
+         that delegated prompt in the calling subagent (structural fallback) so \
+         the work is not dropped. \
          Use for: tasks requiring reasoning across multiple files, architecture \
          analysis, refactoring planning, debugging complex bugs, or research \
          that needs an LLM loop. \
@@ -532,8 +548,8 @@ impl Tool for TaskTool {
             code: Some("registry_dropped".to_string()),
         })?;
 
-        // Filter tools: exclude "task" when the trusted caller depth is at the
-        // limit. Depth comes from the execution context, not model input.
+        // Filter tools for the *spawned child* (not the caller). Depth comes
+        // from the trusted execution context, never model input.
         //
         // `explore` and `plan` subagents never spawn children: recursive
         // `task`/`delegate` calls make a root task-group's ready condition
@@ -541,6 +557,12 @@ impl Tool for TaskTool {
         // slow/stuck grandchild blocks the parent's delivery indefinitely.
         // Explore is a leaf search agent and plan is a leaf analysis agent --
         // give them only leaf tools.
+        //
+        // `general-purpose` keeps spawn tools even at `max_depth`. The
+        // coordinator hard-rejects deeper reserves with `DepthLimitReached`,
+        // and interception-point 1 then self-executes the delegated prompt in
+        // the non-root parent (depth-limit takeover). Soft-stripping `task` at
+        // the limit would make that fallback path unreachable.
         let depth = context.agent.depth;
         let explore_readonly = self.settings.agent.subagent.explore_readonly;
         let allowed_tools: Vec<String> = filter_allowed_tools(
@@ -589,10 +611,21 @@ impl Tool for TaskTool {
                  planning. Be thorough and structured in your analysis."
             }
             _ => {
-                "You are a subagent spawned by a coordinator. The coordinator is waiting for your result. Do not attempt to coordinate other agents yourself — focus solely on your assigned task. Return a complete, self-contained result so the coordinator can proceed without follow-up questions.\n\nYou are a general-purpose subagent. Complete the assigned task \
-                 efficiently using the available tools.\n\nKey responsibilities:\n\
+                "You are a general-purpose subagent spawned by a coordinator. The \
+                 coordinator is waiting for your result. Return a complete, \
+                 self-contained result so the coordinator can proceed without \
+                 follow-up questions.\n\n\
+                 You may use the `task` tool to delegate discrete sub-work when it \
+                 helps. If a nested spawn is rejected (depth limit or other \
+                 structural failure), the runtime automatically runs that \
+                 delegated prompt with leaf tools and returns the result as the \
+                 task tool output — treat a successful task result as completed \
+                 work, and if task fails, finish the work yourself with direct \
+                 tools.\n\n\
+                 Key responsibilities:\n\
                  1. Understand the task requirements\n\
-                 2. Use appropriate tools to accomplish the task\n\
+                 2. Use appropriate tools (or task for discrete sub-work) to \
+                    accomplish the task\n\
                  3. Provide clear and complete results\n\
                  4. Handle edge cases gracefully\n\n\
                  If you need to read files, search, or execute commands, use the \
@@ -1021,13 +1054,16 @@ const MUTATING_FS_TOOLS: &[&str] = &["file_write", "file_edit", "apply_patch"];
 ///
 /// - `explore` / `plan` never get spawn tools (`task` / `delegate`).
 /// - When `explore_readonly`, those types also lose mutating FS tools.
-/// - `general-purpose` may spawn only when `depth < max_depth`.
+/// - `general-purpose` keeps spawn tools at every depth. Depth limiting is
+///   enforced by `AgentCoordinator::reserve_child` (`DepthLimitReached`), which
+///   triggers structural self-execution fallback in the non-root parent so the
+///   work intended for a blocked grandchild is completed inline.
 /// - `exec_command` remains visible (still gated by policy + guardian).
 pub(crate) fn filter_allowed_tools(
     names: impl IntoIterator<Item = String>,
     subagent_type: &str,
-    depth: usize,
-    max_depth: usize,
+    _depth: usize,
+    _max_depth: usize,
     explore_readonly: bool,
 ) -> Vec<String> {
     let is_leaf = matches!(subagent_type, "explore" | "plan");
@@ -1036,7 +1072,9 @@ pub(crate) fn filter_allowed_tools(
         .filter(|name| {
             let is_spawn = name == "task" || name == "delegate";
             if is_spawn {
-                return !is_leaf && depth < max_depth;
+                // Leaf types never coordinate. GP always sees spawn tools; the
+                // coordinator + structural fallback own the depth gate.
+                return !is_leaf;
             }
             if explore_readonly && is_leaf && MUTATING_FS_TOOLS.contains(&name.as_str()) {
                 return false;

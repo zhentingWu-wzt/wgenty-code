@@ -49,6 +49,11 @@ different code paths.
   fallback (Comet build-phase isolation rules forbid the main session from
   executing tasks directly). A root caller that hits a fallback-eligible failure
   gets `fallback_root_blocked` and the failure is surfaced to the root model.
+- **Depth-limit takeover:** `general-purpose` subagents keep the `task` tool even
+  at `max_depth`. When they try to spawn deeper and hit `DepthLimitReached`, the
+  non-root parent self-executes the delegated `full_prompt` (interception 1) so
+  the work intended for the blocked grandchild still completes. Explore/plan
+  remain leaf types and never see spawn tools.
 - **No fallback for:** Timeout, stuck, max-rounds, panic, parent-scope
   cancellation. These keep today's behavior (parent model decides).
 - **Endpoint failure:** If the fallback model's endpoint is also down, the
@@ -103,18 +108,13 @@ The `subagent-driven-development` dual-review flow is unchanged.
   The spec's "partial result offered to fallback" SHALL is downgraded to a
   best-effort: the transcript's event history is the recovery path. See the
   delta spec for the amended requirement.
-- **Fallback child is a "ghost" -- cannot spawn grandchildren:** The
-  synthesized fallback child context (both interceptions) is NOT registered
-  with the coordinator's `scopes` (it bypasses `reserve_child`/`register_task`
-  because the original reserve failed or the re-dispatch is a fresh synthetic
-  agent). Consequently, if the fallback child itself calls the `task` tool to
-  spawn a grandchild, `reserve_child` returns `CoordinatorError::ParentNotRunning`
-  (the synthetic agent is not in `scopes`), which is not fallback-eligible and
-  surfaces to the fallback child's model. Tasks whose prompt requires nested
-  subagent dispatch therefore cannot be completed by the fallback path. A
-  fuller fix would register the synthetic child scope before running the loop;
-  deferred. For now, fallback suits leaf tasks (file inspection, single
-  command, research) rather than coordinator-style nested-dispatch tasks.
+- **Fallback child is a "ghost" leaf loop:** The synthesized fallback child
+  context (both interceptions) is NOT registered with the coordinator's
+  `scopes`. It runs with `parent_id = None` so synthesis skips
+  `collect_children_for_synthesis` (a non-root unregistered agent would hit
+  `NotVisible`). Both interceptions also strip `task`/`delegate` so the ghost
+  cannot re-enter nested dispatch. Depth-limit takeover completes the
+  delegated prompt with leaf tools only.
 - **Headless path:** `run_subagent_loop` (headless wrapper, used by run-script
   / rlm) passes `Settings::default()` with no transcript store, so interception
   2 degrades to the parent model on those paths. Rich contexts that go through
