@@ -12,7 +12,7 @@ use crate::api::{ApiClient, ChatMessage, ToolDefinition};
 use crate::context::MemoryManager;
 use crate::runtime::guardian::classify_risk;
 use crate::runtime::hooks::HookManager;
-use crate::tui::app::AppEvent;
+use crate::tui::app::{AppEvent, QuestionOption};
 use crate::tui::client::DaemonClient;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -458,15 +458,28 @@ impl InteractionPort for TuiInteractionPort {
             .as_str()
             .unwrap_or("Choose an option:")
             .to_string();
-        let options: Vec<String> = args["options"]
+        let options: Vec<QuestionOption> = args["options"]
             .as_array()
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|o| o["label"].as_str().map(String::from))
+                    .filter_map(|o| {
+                        let label = o["label"].as_str()?;
+                        let description = o["description"].as_str().unwrap_or("").to_string();
+                        Some(QuestionOption {
+                            label: label.to_string(),
+                            description,
+                        })
+                    })
                     .collect()
             })
             .unwrap_or_default();
-        let multi_select = args["multi_select"].as_bool().unwrap_or(false);
+        // Schema declares `multiSelect` (camelCase), which is what the LLM
+        // produces. Accept `multi_select` (snake_case) as a robustness fallback
+        // for models that emit snake_case.
+        let multi_select = args["multiSelect"]
+            .as_bool()
+            .or_else(|| args["multi_select"].as_bool())
+            .unwrap_or(false);
 
         let _ = self.event_tx.send(AppEvent::QuestionAsked {
             question,
@@ -714,5 +727,97 @@ impl PlannerPort for ApiPlannerPort {
             .first()
             .map(|c| c.message.content.clone().unwrap_or_default())
             .unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::app::AppEvent;
+
+    #[tokio::test]
+    async fn ask_user_question_reads_multiselect_camelcase() {
+        // The tool schema declares `multiSelect` (camelCase); the adapter must
+        // read that key (not `multi_select`) so multi-select actually activates.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
+        let port = TuiInteractionPort::new(tx);
+
+        let args = serde_json::json!({
+            "question": "Which frameworks?",
+            "options": [
+                {"label": "React", "description": "d"},
+                {"label": "Vue", "description": "d"},
+                {"label": "Svelte", "description": "d"}
+            ],
+            "multiSelect": true
+        });
+
+        // Drive the port in a spawned task so we can receive the event and
+        // respond via the oneshot while the call is in flight.
+        let handle = tokio::spawn(async move { port.ask_user_question(&args).await });
+
+        // The panel should receive a multi-select question.
+        let event = rx.recv().await.expect("event sent");
+        match event {
+            AppEvent::QuestionAsked {
+                multi_select,
+                responder,
+                ..
+            } => {
+                assert!(multi_select, "multiSelect must propagate as true");
+
+                // Simulate the user checking two options and submitting.
+                let sender = responder.0.expect("responder sender present");
+                sender
+                    .send(vec!["React".to_string(), "Svelte".to_string()])
+                    .expect("send answers");
+            }
+            other => panic!("expected QuestionAsked, got {other:?}"),
+        }
+
+        let result = handle.await.expect("task join");
+        let parsed: serde_json::Value = serde_json::from_str(&result).expect("json output");
+        assert_eq!(parsed["success"], true);
+        let labels: Vec<&str> = parsed["answers"]
+            .as_array()
+            .expect("answers array")
+            .iter()
+            .map(|a| a["label"].as_str().expect("label"))
+            .collect();
+        assert_eq!(labels, vec!["React", "Svelte"]);
+    }
+
+    #[tokio::test]
+    async fn ask_user_question_accepts_snake_case_fallback() {
+        // Some models emit snake_case; the adapter falls back to `multi_select`.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
+        let port = TuiInteractionPort::new(tx);
+
+        let args = serde_json::json!({
+            "question": "q",
+            "options": [{"label": "a", "description": "d"}],
+            "multi_select": true
+        });
+
+        let handle = tokio::spawn(async move { port.ask_user_question(&args).await });
+
+        let event = rx.recv().await.expect("event sent");
+        match event {
+            AppEvent::QuestionAsked {
+                multi_select,
+                responder,
+                ..
+            } => {
+                assert!(
+                    multi_select,
+                    "snake_case fallback must also activate multi-select"
+                );
+                let _ = responder.0.expect("sender").send(vec!["a".to_string()]);
+            }
+            other => panic!("expected QuestionAsked, got {other:?}"),
+        }
+        let result = handle.await.expect("task join");
+        let parsed: serde_json::Value = serde_json::from_str(&result).expect("json output");
+        assert_eq!(parsed["success"], true);
     }
 }

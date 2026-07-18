@@ -1,4 +1,4 @@
-use crate::tui::app::QuestionResponder;
+use crate::tui::app::{QuestionOption, QuestionResponder};
 use crate::tui::traits::Component;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
@@ -6,13 +6,14 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders};
 use ratatui::Frame;
+use textwrap::Options as WrapOptions;
 
 /// Question panel state (for ask_user_question tool).
-/// Rendered inline between chat and status bar — NOT as a floating popup.
+/// Rendered inline between chat and status bar - NOT as a floating popup.
 pub struct QuestionState {
     pub visible: bool,
     pub question: String,
-    pub options: Vec<String>,
+    pub options: Vec<QuestionOption>,
     pub multi_select: bool,
     pub selected: Vec<usize>,
     /// Current highlighted cursor position.
@@ -30,6 +31,15 @@ pub struct QuestionState {
 const ACCENT_COLOR: Color = Color::Rgb(255, 200, 100);
 const BORDER_COLOR: Color = Color::Rgb(100, 200, 255);
 const DIM_COLOR: Color = Color::Rgb(120, 120, 130);
+
+/// Background context shown at the top of the panel. Explains *why* the agent
+/// is asking, so the user understands the situation before reading the question.
+const BACKGROUND_HINT: &str =
+    "💡 The agent paused and needs your input before it can continue - pick an option below.";
+
+/// Left indent (in display columns) for option description sub-lines, so they
+/// line up under the option label rather than the marker column.
+const DESCRIPTION_INDENT: usize = 6;
 
 impl QuestionState {
     #[allow(clippy::new_without_default)]
@@ -50,7 +60,7 @@ impl QuestionState {
     pub fn show(
         &mut self,
         question: String,
-        options: Vec<String>,
+        options: Vec<QuestionOption>,
         multi_select: bool,
         responder: QuestionResponder,
     ) {
@@ -81,10 +91,14 @@ impl QuestionState {
         } else if self.multi_select {
             self.selected
                 .iter()
-                .filter_map(|&i| self.options.get(i).cloned())
+                .filter_map(|&i| self.options.get(i).map(|o| o.label.clone()))
                 .collect()
         } else {
-            self.options.get(self.cursor).cloned().into_iter().collect()
+            self.options
+                .get(self.cursor)
+                .map(|o| o.label.clone())
+                .into_iter()
+                .collect()
         };
         // Send response via oneshot channel
         if let Some(responder) = self.responder.take() {
@@ -114,10 +128,14 @@ impl QuestionState {
         } else if self.multi_select {
             self.selected
                 .iter()
-                .filter_map(|&i| self.options.get(i).cloned())
+                .filter_map(|&i| self.options.get(i).map(|o| o.label.clone()))
                 .collect()
         } else {
-            self.options.get(self.cursor).cloned().into_iter().collect()
+            self.options
+                .get(self.cursor)
+                .map(|o| o.label.clone())
+                .into_iter()
+                .collect()
         };
         // Now it is safe to consume the responder and submit.
         let responder = self.responder.take()?;
@@ -177,10 +195,33 @@ impl QuestionState {
         }
     }
 
-    /// Height needed to render this panel (estimated).
-    pub fn height_needed(&self) -> u16 {
-        // border(2) + question(2) + hint(1) + options(N) + Other(1) + padding
-        (self.options.len() + 7) as u16
+    /// Height needed to render this panel given the available `width`.
+    ///
+    /// Wrapping is width-dependent, so the caller (which knows the terminal
+    /// width) must pass it in. The estimate mirrors [`render`] so the
+    /// pre-allocated panel area fits the wrapped content without clipping.
+    pub fn height_needed(&self, width: u16) -> u16 {
+        // inner content width = total width minus left/right borders (2 cols).
+        let inner_w = (width as usize).saturating_sub(2).max(1);
+        // Background and question lines are prefixed with a single leading
+        // space, so reserve 1 column for that prefix.
+        let text_w = inner_w.saturating_sub(1).max(1);
+        let desc_w = inner_w.saturating_sub(DESCRIPTION_INDENT).max(1);
+
+        let bg_lines = wrap_lines(BACKGROUND_HINT, text_w).len();
+        let question_lines = wrap_lines(&self.question, text_w).len();
+        let mut option_lines = 0usize;
+        for opt in &self.options {
+            // Option label is short by schema (1-5 words); keep it on one line.
+            option_lines += 1;
+            if !opt.description.is_empty() {
+                option_lines += wrap_lines(&opt.description, desc_w).len();
+            }
+        }
+
+        // 2 borders + bg + blank + question + blank + hint + blank + options + other(1)
+        let total = 2 + bg_lines + 1 + question_lines + 1 + 1 + 1 + option_lines + 1;
+        total.try_into().unwrap_or(u16::MAX)
     }
 }
 
@@ -269,13 +310,31 @@ pub fn render(f: &mut Frame, area: Rect, state: &QuestionState) {
         return;
     }
 
+    // inner content width = area width minus left/right borders (2 cols).
+    let inner_w = (area.width as usize).saturating_sub(2).max(1);
+    let text_w = inner_w.saturating_sub(1).max(1);
+    let desc_w = inner_w.saturating_sub(DESCRIPTION_INDENT).max(1);
+    let indent = " ".repeat(DESCRIPTION_INDENT);
+
     let mut lines: Vec<Line> = Vec::new();
 
-    // Question text
-    lines.push(Line::from(Span::styled(
-        format!(" {}", state.question),
-        Style::default().fg(Color::White),
-    )));
+    // Background / context: explain why the panel is showing before the
+    // user reads the question and options.
+    for chunk in wrap_lines(BACKGROUND_HINT, text_w) {
+        lines.push(Line::from(Span::styled(
+            format!(" {}", chunk),
+            Style::default().fg(Color::Cyan),
+        )));
+    }
+    lines.push(Line::raw(""));
+
+    // Question text (wrapped)
+    for chunk in wrap_lines(&state.question, text_w) {
+        lines.push(Line::from(Span::styled(
+            format!(" {}", chunk),
+            Style::default().fg(Color::White),
+        )));
+    }
     lines.push(Line::raw(""));
 
     // Hint
@@ -290,12 +349,21 @@ pub fn render(f: &mut Frame, area: Rect, state: &QuestionState) {
     )));
     lines.push(Line::raw(""));
 
-    // Numbered options
+    // Numbered options: a label line followed by the wrapped description
+    // (explanation) rendered as dimmed indented sub-lines.
     for (i, opt) in state.options.iter().enumerate() {
-        lines.push(option_line(i, opt, state));
+        lines.push(option_line(i, &opt.label, state));
+        if !opt.description.is_empty() {
+            for chunk in wrap_lines(&opt.description, desc_w) {
+                lines.push(Line::from(Span::styled(
+                    format!("{}{}", indent, chunk),
+                    Style::default().fg(DIM_COLOR),
+                )));
+            }
+        }
     }
 
-    // "Other" option — inline text input when highlighted
+    // "Other" option - inline text input when highlighted
     let other_idx = state.options.len();
     let is_other_active = state.cursor_on_other();
     let cursor_char_other = if is_other_active { "❯" } else { " " };
@@ -306,16 +374,16 @@ pub fn render(f: &mut Frame, area: Rect, state: &QuestionState) {
     };
 
     let mut other_spans = vec![Span::styled(
-        format!(" {} ○ {}. Other — ", cursor_char_other, other_idx + 1),
+        format!(" {} ○ {}. Other - ", cursor_char_other, other_idx + 1),
         Style::default().fg(color_other),
     )];
 
     if is_other_active {
         other_spans.push(Span::styled(
             if state.other_value.is_empty() {
-                "type custom answer..."
+                "type custom answer...".to_string()
             } else {
-                &state.other_value
+                state.other_value.clone()
             },
             Style::default().fg(Color::White),
         ));
@@ -367,4 +435,20 @@ fn option_line(idx: usize, label: &str, state: &QuestionState) -> Line<'static> 
         ),
         Span::styled(label.to_string(), Style::default().fg(Color::White)),
     ])
+}
+
+/// Wrap `text` to at most `width` display columns using textwrap.
+///
+/// textwrap's default features include `unicode-width`, so CJK / wide
+/// characters are measured correctly (width 2 per cell). Returns one owned
+/// string per wrapped line; empty input yields a single empty line.
+fn wrap_lines(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let options = WrapOptions::new(width).break_words(true);
+    textwrap::wrap(text, &options)
+        .into_iter()
+        .map(|cow| cow.into_owned())
+        .collect()
 }

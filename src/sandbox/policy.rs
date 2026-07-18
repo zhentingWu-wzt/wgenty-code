@@ -3,9 +3,7 @@
 //! Maps [`EffectiveMode`] + [`crate::config::SandboxSettings`] to a
 //! [`ResolvedSandboxPolicy`] used by shell/exec tools. No process-global mode.
 
-use crate::config::{
-    FailModeSetting, ModeKey, SandboxLevelSetting, SandboxSettings,
-};
+use crate::config::{FailModeSetting, ModeKey, SandboxLevelSetting, SandboxSettings};
 use crate::sandbox::{NetworkPolicy, SandboxConfig, SandboxProfile, SecurityLevel};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -286,11 +284,7 @@ mod tests {
         let mut s = SandboxSettings::default();
         s.defaults_by_mode
             .insert(ModeKey::Yolo, SandboxLevelSetting::High);
-        let p = SandboxPolicyResolver::resolve(
-            EffectiveMode::Yolo,
-            &s,
-            PathBuf::from("/tmp/ws"),
-        );
+        let p = SandboxPolicyResolver::resolve(EffectiveMode::Yolo, &s, PathBuf::from("/tmp/ws"));
         assert!(!p.enabled);
         assert_eq!(p.source, PolicySource::Disabled);
     }
@@ -300,24 +294,18 @@ mod tests {
         let mut s = SandboxSettings::default();
         s.defaults_by_mode
             .insert(ModeKey::Normal, SandboxLevelSetting::Minimal);
-        let p = SandboxPolicyResolver::resolve(
-            EffectiveMode::Normal,
-            &s,
-            PathBuf::from("/tmp/ws"),
-        );
+        let p = SandboxPolicyResolver::resolve(EffectiveMode::Normal, &s, PathBuf::from("/tmp/ws"));
         assert_eq!(p.level, SecurityLevel::Minimal);
         assert_eq!(p.source, PolicySource::SettingsOverride);
     }
 
     #[test]
     fn enabled_false_forces_degrade() {
-        let mut s = SandboxSettings::default();
-        s.enabled = false;
-        let p = SandboxPolicyResolver::resolve(
-            EffectiveMode::Plan,
-            &s,
-            PathBuf::from("/tmp/ws"),
-        );
+        let s = SandboxSettings {
+            enabled: false,
+            ..SandboxSettings::default()
+        };
+        let p = SandboxPolicyResolver::resolve(EffectiveMode::Plan, &s, PathBuf::from("/tmp/ws"));
         assert!(!p.enabled);
         assert_eq!(p.fail_mode, FailMode::DegradeWithMark);
         assert_eq!(p.source, PolicySource::Disabled);
