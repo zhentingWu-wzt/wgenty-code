@@ -14,7 +14,9 @@
 
 pub mod coordinator;
 pub mod git;
+pub mod hooks;
 pub mod session;
 
 pub use coordinator::SessionCoordinator;
+pub use hooks::{NoHooks, SessionHooks, VerifyFailAction, VerifyFailContext, VerifyFailure};
 pub use session::{GitRefs, SessionSource, SessionState, SessionStatus, TurnRecord};
