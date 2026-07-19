@@ -255,7 +255,25 @@ impl SandboxBackend for WindowsBackend {
     }
 
     fn is_available() -> bool {
-        cfg!(target_os = "windows")
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+            use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
+            // Probe: can we actually create a Job Object? On restricted Windows
+            // configurations (Server Core, some containers) this may fail; fall
+            // back to NoneBackend instead of having every spawn fail under
+            // HardFail. Mirrors the macOS seatbelt probe pattern.
+            let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+                return false;
+            }
+            unsafe { CloseHandle(handle) };
+            true
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
     }
 
     fn is_hardware_enforced(&self) -> bool {
@@ -340,24 +358,14 @@ impl WindowsBackend {
             cmd.current_dir(dir);
         }
 
-        // ERROR_ACCESS_DENIED on CreateProcess typically means the parent is
-        // already inside a Job Object whose limits forbid breakaway (common on
-        // GHA Windows runners). CREATE_BREAKAWAY_FROM_JOB then fails the spawn
-        // outright; retry as a plain captured spawn so the tool still runs
-        // instead of hard-failing every sandboxed spawn under HardFail.
-        const ERROR_ACCESS_DENIED: i32 = 5;
+        // CreateProcess failures (including ERROR_ACCESS_DENIED when the parent
+        // job forbids breakaway on some CI runners) surface as SandboxError so
+        // the caller's FailMode logic decides whether to degrade - never
+        // silently run unsandboxed under a "sandboxed" label. Under
+        // DegradeWithMark the caller retries as a direct captured spawn with
+        // `sandbox_bypassed=true`; under HardFail this becomes a tool error.
         let child = match cmd.spawn() {
             Ok(c) => c,
-            Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
-                tracing::warn!(
-                    error = %e,
-                    "sandboxed spawn denied (parent job forbids breakaway); \
-                     degrading to direct spawn without job limits"
-                );
-                let token = job.to_cleanup_token();
-                win::close_job_token(&token);
-                return self.spawn_degraded(profile, command, workdir);
-            }
             Err(e) => {
                 let token = job.to_cleanup_token();
                 win::close_job_token(&token);
@@ -375,10 +383,10 @@ impl WindowsBackend {
             });
         };
 
-        // Prefer full Job Object isolation. If assignment fails (common when the
-        // parent is already inside a non-breakaway job, e.g. some CI runners),
-        // resume the child and continue without job limits rather than failing
-        // every sandboxed spawn.
+        // Assign to the job before resuming any user code. If assignment fails
+        // (parent already in a non-breakaway job on some CI runners), return
+        // the error so the caller's FailMode logic decides whether to degrade.
+        // Never resume the child without job limits under a "sandboxed" label.
         let cleanup = match win::assign_pid_to_job(job.as_raw(), pid) {
             Ok(()) => {
                 let token = job.to_cleanup_token();
@@ -388,16 +396,15 @@ impl WindowsBackend {
                 })
             }
             Err(e) => {
-                tracing::warn!(
+                // Terminate the suspended child (kill_on_drop on `child`) and
+                // surface the error. The caller's FailMode handles degradation.
+                tracing::error!(
                     error = %e,
                     pid,
-                    "AssignProcessToJobObject failed; resuming child without job limits"
+                    "AssignProcessToJobObject failed; returning error (caller applies FailMode)"
                 );
-                // Drop the unused job handle (OwnedHandle closes on drop via token path;
-                // here we still hold `job` — convert to token and close immediately).
-                let token = job.to_cleanup_token();
-                win::close_job_token(&token);
-                None
+                drop(child); // kill_on_drop terminates the suspended child
+                return Err(e);
             }
         };
 
@@ -413,43 +420,8 @@ impl WindowsBackend {
 
         Ok(SandboxedChild {
             child,
-            backend_name: if cleanup.is_some() {
-                "job-object".into()
-            } else {
-                "job-object-degraded".into()
-            },
+            backend_name: "job-object".into(),
             cleanup,
-        })
-    }
-
-    /// Fallback spawn without Job Object isolation or `CREATE_SUSPENDED`.
-    ///
-    /// Used when the full sandboxed spawn is denied (`ERROR_ACCESS_DENIED`,
-    /// typically because the parent Job Object forbids breakaway on CI
-    /// runners). Keeps `CREATE_NO_WINDOW` + captured stdio so child output does
-    /// not corrupt the parent TUI, but runs with no resource limits and reports
-    /// `job-object-degraded` so callers/UI can mark the lack of enforcement.
-    fn spawn_degraded(
-        &self,
-        profile: &SandboxProfile,
-        command: &str,
-        workdir: Option<&Path>,
-    ) -> Result<SandboxedChild, SandboxError> {
-        use std::os::windows::process::CommandExt;
-        let mut cmd = super::shell_command_captured(command);
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-        Self::apply_env(profile, &mut cmd);
-        if let Some(dir) = workdir.or(profile.workdir.as_deref()) {
-            cmd.current_dir(dir);
-        }
-        let child = cmd.spawn().map_err(|e| SandboxError::Spawn {
-            io_error: format!("{}", e),
-        })?;
-        Ok(SandboxedChild {
-            child,
-            backend_name: "job-object-degraded".into(),
-            cleanup: None,
         })
     }
 }
@@ -500,11 +472,12 @@ mod tests {
         let profile = SandboxProfile::default_for_workspace(Path::new("."));
         let child = backend
             .spawn(&profile, "echo hello-sandbox", None)
-            .expect("spawn");
-        // Full isolation ("job-object") or CI degraded mode ("job-object-degraded")
-        // when the parent process is already inside a non-breakaway Job Object.
-        assert!(
-            child.backend_name == "job-object" || child.backend_name == "job-object-degraded",
+            .expect("spawn should succeed; if the parent job forbids breakaway this environment does not support Job Object isolation");
+        // Job Object assignment now either succeeds ("job-object") or the spawn
+        // returns an error that the caller's FailMode handles. There is no
+        // silent "job-object-degraded" path anymore.
+        assert_eq!(
+            child.backend_name, "job-object",
             "unexpected backend_name {}",
             child.backend_name
         );
