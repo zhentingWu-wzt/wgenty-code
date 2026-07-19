@@ -13,6 +13,7 @@
 //! core runtime does not branch on it.
 
 pub mod coordinator;
+pub mod git;
 pub mod session;
 
 pub use coordinator::SessionCoordinator;
