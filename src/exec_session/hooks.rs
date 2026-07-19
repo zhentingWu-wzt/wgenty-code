@@ -58,7 +58,7 @@ pub struct RollbackContext {
 /// Core principle: gate failure is a signal, not a punishment. The runtime
 /// never auto-rolls-back on failure - rollback is the agent's explicit tool
 /// (`rollback_to`, Task 4). This enum only controls whether the agent gets
-/// another attempt or is escalated.
+/// another attempt, is escalated, or (rarely) the failure is accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerifyFailAction {
     /// Let the agent try again: it sees the failure reason and can
@@ -72,6 +72,13 @@ pub enum VerifyFailAction {
     /// Abort the session immediately. Rare; for hooks that decide the session
     /// is unrecoverable (e.g. guardian blocked a critical command).
     Abort,
+    /// Accept the failure and mark the session `Completed` anyway. For hooks
+    /// that decide the failure is acceptable (e.g. a known flaky test, a
+    /// pre-existing failure outside the agent's scope). The `verify_log`
+    /// records the failed attempt; `final_status` becomes `Completed` by hook
+    /// decision, so the outcome is auditable. Use sparingly - it overrides the
+    /// gate's anti-fabrication guarantee by hook authority.
+    WarnAndContinue,
 }
 
 /// Extension points injected by the caller. The inner layer calls these at

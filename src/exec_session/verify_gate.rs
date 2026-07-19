@@ -5,13 +5,15 @@
 //! paste a "claimed result" - the [`VerifyAndCompleteTool`] input schema only
 //! accepts `commands` and `expected_changed_files`.
 //!
-//! Task 5 scope: core verify logic + `verify_log.json` persistence + status
-//! transition on success. Hook invocation on failure (Task 6) and agent-loop
-//! fallback marking `Unverified` (Task 6) layer on top.
+//! Task 5: core verify logic + `verify_log.json` persistence + status
+//! transition on success. Task 6: `verify_fail` hook invocation on failure
+//! (AutoRetry / Escalate / Abort / WarnAndContinue) + agent-loop fallback
+//! marking `Unverified` via [`VerifyGate::mark_unverified_if_incomplete`].
 //!
 //! Spec reference: §3.3 (A 方案). Failure semantics: gate failure is a signal,
-//! not a punishment - the runtime never auto-rolls-back. Status stays
-//! `InProgress` on failure; Task 6's hook decides retry / escalate.
+//! not a punishment - the runtime never auto-rolls-back. On failure the hook
+//! decides retry / escalate / abort / warn-and-continue; the workspace is
+//! preserved regardless.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -22,7 +24,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::exec_session::git::run_git;
-use crate::exec_session::hooks::VerifyFailure;
+use crate::exec_session::hooks::{
+    NoHooks, SessionHooks, VerifyFailAction, VerifyFailContext, VerifyFailure,
+};
 use crate::exec_session::session::{SessionStatus, TurnRecord};
 use crate::exec_session::SessionCoordinator;
 use crate::tools::checkpoint_store::{FileState, Manifest};
@@ -41,6 +45,12 @@ pub struct CommandRun {
 }
 
 /// Outcome of a `verify_and_complete` attempt.
+///
+/// `success` reflects the raw verify outcome (commands passed + no boundary
+/// violation). `action` is `None` on success; on failure it records what the
+/// [`SessionHooks::verify_fail`] hook decided the runtime should do (retry /
+/// escalate / abort / warn-and-continue), so the agent can see the runtime's
+/// decision alongside the failure reason.
 #[derive(Debug, Clone)]
 pub struct VerifyResult {
     pub success: bool,
@@ -49,6 +59,18 @@ pub struct VerifyResult {
     pub expected_changed_files: Vec<PathBuf>,
     pub out_of_scope: Vec<PathBuf>,
     pub fail_reason: Option<VerifyFailure>,
+    /// Runtime decision after a failed verify (Task 6). `None` on success.
+    pub action: Option<VerifyFailAction>,
+}
+
+/// Outcome of [`VerifyGate::mark_unverified_if_incomplete`] (Task 6 agent-loop
+/// fallback). `MarkedUnverified` means the session was `InProgress` and got
+/// transitioned to `Unverified`; `AlreadyTerminal(status)` means the session
+/// had already reached a terminal status and the call was a no-op.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnverifiedOutcome {
+    MarkedUnverified,
+    AlreadyTerminal(SessionStatus),
 }
 
 /// Abstracts command execution so the gate can route commands through guardian
@@ -136,8 +158,9 @@ pub struct VerifyLog {
 }
 
 /// The verify-gate. Holds a shared coordinator (so the agent loop and the tool
-/// can both access it) and a command executor. Task 6 adds a hooks field for
-/// `verify_fail` invocation.
+/// can both access it), a command executor, and the session hooks. The hooks
+/// (`verify_fail`, Task 6) decide what the runtime does after a failed verify:
+/// retry, escalate, abort, or warn-and-continue.
 ///
 /// The coordinator is wrapped in `Arc<RwLock<...>>` because the agent loop
 /// (Task 7) and this gate share it: the loop drives `begin_turn` / `end_turn`,
@@ -147,17 +170,30 @@ pub struct VerifyLog {
 pub struct VerifyGate {
     coordinator: Arc<RwLock<SessionCoordinator>>,
     executor: Arc<dyn CommandExecutor>,
+    hooks: Arc<dyn SessionHooks>,
 }
 
 impl VerifyGate {
     pub fn new(
         coordinator: Arc<RwLock<SessionCoordinator>>,
         executor: Arc<dyn CommandExecutor>,
+        hooks: Arc<dyn SessionHooks>,
     ) -> Self {
         Self {
             coordinator,
             executor,
+            hooks,
         }
+    }
+
+    /// Convenience constructor with [`NoHooks`] (default `AutoRetry { max: 2 }`
+    /// `verify_fail`, spec §3.3). For tests and callers that don't customize
+    /// hook behavior.
+    pub fn new_with_default_hooks(
+        coordinator: Arc<RwLock<SessionCoordinator>>,
+        executor: Arc<dyn CommandExecutor>,
+    ) -> Self {
+        Self::new(coordinator, executor, Arc::new(NoHooks))
     }
 
     /// Run `commands` (via the executor, which routes through guardian+sandbox
@@ -246,15 +282,67 @@ impl VerifyGate {
             &fail_reason,
         )?;
 
-        // 6. Transition session status on success. On failure, status stays
-        //    InProgress (Task 6 invokes the hook).
-        if success {
+        // 6. Transition session status. On success -> Completed. On failure,
+        //    invoke `hooks.verify_fail` (Task 6) and apply the resulting
+        //    `VerifyFailAction`: AutoRetry keeps InProgress (no rollback, spec
+        //    §3.3); Escalate/Abort -> Failed; WarnAndContinue -> Completed.
+        let action = if success {
             let mut coord = self
                 .coordinator
                 .write()
                 .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
             coord.set_status(SessionStatus::Completed)?;
-        }
+            set_verify_log_final_status(&session_dir, VerifyLogFinalStatus::Completed)?;
+            None
+        } else {
+            let (session_id, current_turn) = {
+                let coord = self
+                    .coordinator
+                    .read()
+                    .map_err(|e| anyhow::anyhow!("coordinator read lock: {e}"))?;
+                (
+                    coord.session().session_id.clone(),
+                    coord.session().current_turn.clone(),
+                )
+            };
+            let ctx = VerifyFailContext {
+                session_id,
+                turn_id: current_turn.unwrap_or_default(),
+                attempt: attempt_num,
+                failure: fail_reason.clone().expect("failure present when !success"),
+            };
+            let decided = self.hooks.verify_fail(&ctx);
+            let (status, final_status) = match &decided {
+                VerifyFailAction::AutoRetry { remaining: 0 } => {
+                    // Defensive: a well-behaved hook returns Escalate when the
+                    // budget is exhausted, but treat remaining=0 as Escalate
+                    // so the session never gets stuck InProgress forever.
+                    (SessionStatus::Failed, Some(VerifyLogFinalStatus::Failed))
+                }
+                VerifyFailAction::AutoRetry { remaining: _ } => {
+                    // Retry: status stays InProgress, final_status left open.
+                    (SessionStatus::InProgress, None)
+                }
+                VerifyFailAction::Escalate | VerifyFailAction::Abort => {
+                    (SessionStatus::Failed, Some(VerifyLogFinalStatus::Failed))
+                }
+                VerifyFailAction::WarnAndContinue => (
+                    SessionStatus::Completed,
+                    Some(VerifyLogFinalStatus::Completed),
+                ),
+            };
+            if status != SessionStatus::InProgress {
+                let mut coord = self
+                    .coordinator
+                    .write()
+                    .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+                coord.set_status(status)?;
+            }
+            if let Some(fs) = final_status {
+                set_verify_log_final_status(&session_dir, fs)?;
+            }
+            Some(decided)
+        };
 
         tracing::info!(
             session_turns = turns_count,
@@ -270,7 +358,51 @@ impl VerifyGate {
             expected_changed_files,
             out_of_scope,
             fail_reason,
+            action,
         })
+    }
+
+    /// Agent-loop fallback (Task 6, spec §3.3 "兜底"): call this when the
+    /// session is ending (final reply / user end / timeout) and the agent did
+    /// NOT call `verify_and_complete`. If the session is still `InProgress`,
+    /// mark it `Unverified` and record `final_status = Unverified` in
+    /// `verify_log.json`. If the session already reached a terminal status
+    /// (`Completed` / `Failed` / `Unverified`), this is a no-op.
+    ///
+    /// The agent loop (Task 7) wires this to its session-end signal. This
+    /// method only mutates session state + verify_log; it does not touch the
+    /// workspace (no rollback) - `Unverified` means "work may be fine but was
+    /// never proven", which the user can see and act on.
+    pub fn mark_unverified_if_incomplete(&self) -> Result<UnverifiedOutcome> {
+        let (session_dir, session_id, current_status) = {
+            let coord = self
+                .coordinator
+                .read()
+                .map_err(|e| anyhow::anyhow!("coordinator read lock: {e}"))?;
+            (
+                coord.session_dir().to_path_buf(),
+                coord.session().session_id.clone(),
+                coord.session().status.clone(),
+            )
+        };
+        match current_status {
+            SessionStatus::InProgress => {
+                {
+                    let mut coord = self
+                        .coordinator
+                        .write()
+                        .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+                    coord.set_status(SessionStatus::Unverified)?;
+                }
+                set_verify_log_final_status(&session_dir, VerifyLogFinalStatus::Unverified)?;
+                tracing::info!(
+                    session_id = %session_id,
+                    "session marked unverified (agent did not call verify_and_complete)"
+                );
+                Ok(UnverifiedOutcome::MarkedUnverified)
+            }
+            other => Ok(UnverifiedOutcome::AlreadyTerminal(other)),
+        }
     }
 
     /// Compute `actual_changed_files` (spec §3.3): union of three sources.
@@ -392,7 +524,9 @@ fn write_verify_log(session_dir: &Path, log: &VerifyLog) -> Result<()> {
 }
 
 /// Append an attempt to `verify_log.json` and return the 1-based attempt
-/// number. Sets `final_status = Completed` when the attempt succeeds.
+/// number. Does NOT set `final_status` - the caller sets it explicitly via
+/// [`set_verify_log_final_status`] based on the hook decision (Task 6:
+/// Completed / Failed / Unverified) or success.
 fn append_verify_log(
     session_dir: &Path,
     commands_run: &[CommandRun],
@@ -427,11 +561,20 @@ fn append_verify_log(
         result,
     };
     log.attempts.push(entry);
-    if result == VerifyLogResult::Completed {
-        log.final_status = Some(VerifyLogFinalStatus::Completed);
-    }
     write_verify_log(session_dir, &log)?;
     Ok(attempt_num)
+}
+
+/// Set `verify_log.json`'s `final_status` field (Task 6). Called by
+/// [`VerifyGate::verify_and_complete`] after the hook decides the terminal
+/// outcome, and by [`VerifyGate::mark_unverified_if_incomplete`] for the
+/// agent-loop fallback. No-op value-wise if already set to the same status,
+/// but still rewrites the file (atomic) so the on-disk log reflects the
+/// latest decision.
+fn set_verify_log_final_status(session_dir: &Path, status: VerifyLogFinalStatus) -> Result<()> {
+    let mut log = read_verify_log(session_dir);
+    log.final_status = Some(status);
+    write_verify_log(session_dir, &log)
 }
 
 /// Tool wrapper: exposes [`VerifyGate::verify_and_complete`] as a [`Tool`] the
@@ -570,6 +713,31 @@ fn format_verify_result(result: &VerifyResult) -> String {
             }
             None => {}
         }
+        // Surface the runtime's hook decision so the agent knows what to do
+        // next (retry / escalated / accepted-with-warning).
+        match &result.action {
+            Some(VerifyFailAction::AutoRetry { remaining }) => {
+                lines.push(format!(
+                    "  Action: retry allowed ({remaining} attempt(s) remaining). Fix the failure and call verify_and_complete again."
+                ));
+            }
+            Some(VerifyFailAction::Escalate) => {
+                lines.push(
+                    "  Action: escalated (retry budget exhausted). Session marked Failed."
+                        .to_string(),
+                );
+            }
+            Some(VerifyFailAction::Abort) => {
+                lines.push("  Action: aborted. Session marked Failed.".to_string());
+            }
+            Some(VerifyFailAction::WarnAndContinue) => {
+                lines.push(
+                    "  Action: accepted with warning (hook override). Session marked Completed."
+                        .to_string(),
+                );
+            }
+            None => {}
+        }
     }
     lines.push(format!(
         "  actual_changed_files ({}): {:?}",
@@ -659,7 +827,10 @@ mod tests {
         .unwrap();
         let coord_arc = Arc::new(RwLock::new(coord));
         let executor = Arc::new(RecordingExecutor::new(exit_code));
-        let gate = Arc::new(VerifyGate::new(coord_arc.clone(), executor.clone()));
+        let gate = Arc::new(VerifyGate::new_with_default_hooks(
+            coord_arc.clone(),
+            executor.clone(),
+        ));
         TestSetup {
             gate,
             coord: coord_arc,
@@ -825,7 +996,10 @@ mod tests {
         .unwrap();
         let coord_arc = Arc::new(RwLock::new(coord));
         let executor = Arc::new(RecordingExecutor::new(0));
-        let gate = Arc::new(VerifyGate::new(coord_arc.clone(), executor.clone()));
+        let gate = Arc::new(VerifyGate::new_with_default_hooks(
+            coord_arc.clone(),
+            executor.clone(),
+        ));
 
         // Begin turn-0: records HEAD + untracked baseline.
         {
@@ -929,7 +1103,10 @@ mod tests {
         let coord_arc = Arc::new(RwLock::new(coord));
         // First attempt: fail (exit 1).
         let fail_executor = Arc::new(RecordingExecutor::new(1));
-        let gate_fail = Arc::new(VerifyGate::new(coord_arc.clone(), fail_executor.clone()));
+        let gate_fail = Arc::new(VerifyGate::new_with_default_hooks(
+            coord_arc.clone(),
+            fail_executor.clone(),
+        ));
         {
             let mut c = coord_arc.write().unwrap();
             c.begin_turn().unwrap();
@@ -943,7 +1120,10 @@ mod tests {
 
         // Second attempt: succeed (exit 0) with a fresh executor.
         let ok_executor = Arc::new(RecordingExecutor::new(0));
-        let gate_ok = Arc::new(VerifyGate::new(coord_arc.clone(), ok_executor));
+        let gate_ok = Arc::new(VerifyGate::new_with_default_hooks(
+            coord_arc.clone(),
+            ok_executor,
+        ));
         let r2 = gate_ok
             .verify_and_complete(vec!["cargo test".into()], vec![])
             .await
@@ -1047,5 +1227,245 @@ mod tests {
         let run = executor.execute("echo hello", dir.path()).await.unwrap();
         assert_eq!(run.exit_code, Some(0));
         assert!(run.stdout.contains("hello") || run.stdout.contains("hello\r"));
+    }
+
+    // ===== Task 6: verify_fail hook + unverified fallback =====
+
+    /// Build a gate with a custom hooks impl (for 6.3 / 6.4). Mirrors
+    /// [`setup`] but lets the test inject its own [`SessionHooks`].
+    fn setup_with_hooks<H: SessionHooks + 'static>(exit_code: i32, hooks: H) -> TestSetup {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(CheckpointStore::new(dir.path()));
+        let coord = SessionCoordinator::new(
+            "es-test".into(),
+            SessionSource::AgentSelf,
+            dir.path(),
+            store.clone(),
+        )
+        .unwrap();
+        let coord_arc = Arc::new(RwLock::new(coord));
+        let executor = Arc::new(RecordingExecutor::new(exit_code));
+        let gate = Arc::new(VerifyGate::new(
+            coord_arc.clone(),
+            executor.clone(),
+            Arc::new(hooks),
+        ));
+        TestSetup {
+            gate,
+            coord: coord_arc,
+            store,
+            executor,
+            dir_path: dir.path().to_path_buf(),
+            _dir: dir,
+        }
+    }
+
+    // ---- 6.1: default hook (AutoRetry max:2), attempt 1 -> InProgress + workspace preserved ----
+
+    #[tokio::test]
+    async fn task6_default_hook_attempt1_keeps_in_progress_and_preserves_workspace() {
+        let setup = setup(1); // executor returns exit 1 -> command failure
+        begin_turn(&setup);
+        // Agent writes a file before calling verify (simulating work-in-progress).
+        std::fs::create_dir_all(setup.dir_path.join("src")).unwrap();
+        std::fs::write(setup.dir_path.join("src/wip.rs"), "draft\n").unwrap();
+
+        let result = setup
+            .gate
+            .verify_and_complete(vec!["cargo test".into()], vec![])
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        // Default hook (NoHooks): attempt 1 -> AutoRetry { remaining: 2 }.
+        assert_eq!(
+            result.action,
+            Some(VerifyFailAction::AutoRetry { remaining: 2 })
+        );
+        // Status stays InProgress (no auto-rollback, spec §3.3).
+        let coord = setup.coord.read().unwrap();
+        assert_eq!(coord.session().status, SessionStatus::InProgress);
+        // Workspace preserved: the file the agent wrote is still on disk.
+        assert!(
+            setup.dir_path.join("src/wip.rs").exists(),
+            "workspace must be preserved on verify failure (no auto-rollback)"
+        );
+        // verify_log: final_status not set (session still open for retry).
+        let log = read_verify_log(coord.session_dir());
+        assert_eq!(log.attempts.len(), 1);
+        assert_eq!(log.attempts[0].result, VerifyLogResult::CommandFailed);
+        assert_eq!(log.final_status, None);
+    }
+
+    // ---- 6.2: consecutive failures, attempt 3 (exceeds max:2) -> Escalate -> Failed ----
+
+    #[tokio::test]
+    async fn task6_consecutive_failures_exhaust_budget_marks_failed() {
+        let setup = setup(1); // always fails
+        begin_turn(&setup);
+
+        // Attempt 1 -> AutoRetry { remaining: 2 }, InProgress.
+        let r1 = setup
+            .gate
+            .verify_and_complete(vec!["cargo test".into()], vec![])
+            .await
+            .unwrap();
+        assert_eq!(
+            r1.action,
+            Some(VerifyFailAction::AutoRetry { remaining: 2 })
+        );
+        {
+            let coord = setup.coord.read().unwrap();
+            assert_eq!(coord.session().status, SessionStatus::InProgress);
+        }
+
+        // Attempt 2 -> AutoRetry { remaining: 1 }, InProgress.
+        let r2 = setup
+            .gate
+            .verify_and_complete(vec!["cargo test".into()], vec![])
+            .await
+            .unwrap();
+        assert_eq!(
+            r2.action,
+            Some(VerifyFailAction::AutoRetry { remaining: 1 })
+        );
+        {
+            let coord = setup.coord.read().unwrap();
+            assert_eq!(coord.session().status, SessionStatus::InProgress);
+        }
+
+        // Attempt 3 -> Escalate (budget exhausted) -> Failed.
+        let r3 = setup
+            .gate
+            .verify_and_complete(vec!["cargo test".into()], vec![])
+            .await
+            .unwrap();
+        assert_eq!(r3.action, Some(VerifyFailAction::Escalate));
+        {
+            let coord = setup.coord.read().unwrap();
+            assert_eq!(coord.session().status, SessionStatus::Failed);
+            // verify_log: 3 attempts, final_status = Failed.
+            let log = read_verify_log(coord.session_dir());
+            assert_eq!(log.attempts.len(), 3);
+            assert_eq!(log.attempts[2].result, VerifyLogResult::CommandFailed);
+            assert_eq!(log.final_status, Some(VerifyLogFinalStatus::Failed));
+        }
+    }
+
+    // ---- 6.3: custom hook returns Abort -> Failed immediately (attempt 1) ----
+
+    #[tokio::test]
+    async fn task6_custom_hook_abort_marks_failed_immediately() {
+        struct AlwaysAbort;
+        impl SessionHooks for AlwaysAbort {
+            fn verify_fail(&self, _ctx: &VerifyFailContext) -> VerifyFailAction {
+                VerifyFailAction::Abort
+            }
+        }
+        let setup = setup_with_hooks(1, AlwaysAbort);
+        begin_turn(&setup);
+
+        let result = setup
+            .gate
+            .verify_and_complete(vec!["cargo test".into()], vec![])
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.action, Some(VerifyFailAction::Abort));
+        // Abort -> Failed on attempt 1 (no retries allowed).
+        let coord = setup.coord.read().unwrap();
+        assert_eq!(coord.session().status, SessionStatus::Failed);
+        let log = read_verify_log(coord.session_dir());
+        assert_eq!(log.final_status, Some(VerifyLogFinalStatus::Failed));
+    }
+
+    // ---- 6.4: custom hook returns WarnAndContinue -> Completed (warning) ----
+
+    #[tokio::test]
+    async fn task6_custom_hook_warn_and_continue_marks_completed() {
+        struct AlwaysWarn;
+        impl SessionHooks for AlwaysWarn {
+            fn verify_fail(&self, _ctx: &VerifyFailContext) -> VerifyFailAction {
+                VerifyFailAction::WarnAndContinue
+            }
+        }
+        let setup = setup_with_hooks(1, AlwaysWarn);
+        begin_turn(&setup);
+
+        let result = setup
+            .gate
+            .verify_and_complete(vec!["cargo test".into()], vec![])
+            .await
+            .unwrap();
+
+        // The verify itself failed (command exit 1)...
+        assert!(!result.success);
+        assert!(result.fail_reason.is_some());
+        // ...but the hook accepted it -> WarnAndContinue.
+        assert_eq!(result.action, Some(VerifyFailAction::WarnAndContinue));
+        // Session marked Completed by hook decision.
+        let coord = setup.coord.read().unwrap();
+        assert_eq!(coord.session().status, SessionStatus::Completed);
+        // verify_log: attempt result = CommandFailed (the raw outcome), but
+        // final_status = Completed (the hook-overridden terminal state). This
+        // makes the warn-and-continue auditable: the log shows the verify
+        // failed but the session was accepted anyway.
+        let log = read_verify_log(coord.session_dir());
+        assert_eq!(log.attempts.len(), 1);
+        assert_eq!(log.attempts[0].result, VerifyLogResult::CommandFailed);
+        assert_eq!(log.final_status, Some(VerifyLogFinalStatus::Completed));
+    }
+
+    // ---- 6.5: mark_unverified_if_incomplete (agent-loop fallback) ----
+
+    #[tokio::test]
+    async fn task6_mark_unverified_when_in_progress() {
+        let setup = setup(0);
+        begin_turn(&setup);
+        // Agent ends without calling verify_and_complete: session still InProgress.
+        {
+            let coord = setup.coord.read().unwrap();
+            assert_eq!(coord.session().status, SessionStatus::InProgress);
+        }
+        // Agent loop (Task 7) detects session end -> calls fallback.
+        let outcome = setup.gate.mark_unverified_if_incomplete().unwrap();
+        assert_eq!(outcome, UnverifiedOutcome::MarkedUnverified);
+        // Session -> Unverified.
+        let coord = setup.coord.read().unwrap();
+        assert_eq!(coord.session().status, SessionStatus::Unverified);
+        // verify_log: final_status = Unverified (no attempts - agent never
+        // called verify_and_complete).
+        let log = read_verify_log(coord.session_dir());
+        assert!(log.attempts.is_empty(), "no verify attempts expected");
+        assert_eq!(log.final_status, Some(VerifyLogFinalStatus::Unverified));
+    }
+
+    #[tokio::test]
+    async fn task6_mark_unverified_noop_when_already_terminal() {
+        let setup = setup(0);
+        begin_turn(&setup);
+        // Verify succeeds -> Completed.
+        setup
+            .gate
+            .verify_and_complete(vec!["true".into()], vec![])
+            .await
+            .unwrap();
+        {
+            let coord = setup.coord.read().unwrap();
+            assert_eq!(coord.session().status, SessionStatus::Completed);
+        }
+        // Agent loop calls fallback at session end -> no-op (already terminal).
+        let outcome = setup.gate.mark_unverified_if_incomplete().unwrap();
+        assert_eq!(
+            outcome,
+            UnverifiedOutcome::AlreadyTerminal(SessionStatus::Completed)
+        );
+        // Status unchanged: still Completed (not overwritten to Unverified).
+        let coord = setup.coord.read().unwrap();
+        assert_eq!(coord.session().status, SessionStatus::Completed);
+        // verify_log final_status stays Completed (the verify result stands).
+        let log = read_verify_log(coord.session_dir());
+        assert_eq!(log.final_status, Some(VerifyLogFinalStatus::Completed));
     }
 }
