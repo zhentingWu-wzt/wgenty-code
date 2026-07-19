@@ -317,6 +317,7 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
             observer: None,
             task_progress: None,
             inbox: None,
+            session: None,
         },
     })
     .await?;

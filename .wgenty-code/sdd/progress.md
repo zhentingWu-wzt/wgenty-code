@@ -15,7 +15,7 @@ docs/superpowers/specs/2026-07-19-exec-session-inner-layer-design.md
 - [x] Task 4: 回退算法(git reset + CheckpointStore::rewind + 删 untracked)
 - [x] Task 5: verify_and_complete 工具(防编造 + 越界检测 + verify_log)
 - [x] Task 6: verify_fail hook + unverified 兜底
-- [ ] Task 7: agent loop 集成(turn 边界挂 coordinator)
+- [x] Task 7: agent loop 集成(turn 边界挂 coordinator)
 - [ ] Task 8: 端到端测试 + 解耦不变式验证
 
 ## Notes
@@ -26,3 +26,4 @@ docs/superpowers/specs/2026-07-19-exec-session-inner-layer-design.md
 - 2026-07-19 Pre-flight complete: branch feature/exec-session-inner-layer created from dev, plan+spec committed (20f79ef), SDD scaffolding ready, brief/task-1-brief.md prepared.
 - 2026-07-19 Task 1: dispatching implementer subagent...
 - 2026-07-19 Task 6: verify_fail hook + unverified 兜底. VerifyFailAction 加 WarnAndContinue; verify_and_complete 失败路径调 hooks.verify_fail -> status 转换; mark_unverified_if_incomplete 兜底方法; verify_log final_status 重构. 6 新测试, 61 total pass, clippy/fmt clean.
+- 2026-07-19 Task 7: agent loop 集成. SessionCoordinatorPort trait(begin/end)+ Arc<RwLock<SessionCoordinator>> impl; LoopHooks.session 字段; run_agent_loop wrapper(inner 模式覆盖所有 return path); ToolRegistry::register_exec_session_tools; AgentConfig.exec_session(prepared, frontend wiring follow-up). 5 新测试(66 total), clippy/fmt clean, checkpoint/undo 未受影响.

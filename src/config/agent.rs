@@ -194,6 +194,34 @@ pub struct AgentConfig {
     /// Per-turn file checkpoint settings (non-destructive snapshots).
     #[serde(default)]
     pub checkpoint: CheckpointSettings,
+    /// ExecutionSession inner layer (turn chain + verify-gate). When enabled,
+    /// frontends construct a `SessionCoordinator`, wire it into the agent loop
+    /// turn hook, and register the `verify_and_complete` tool. Prepared in
+    /// Task 7; frontend wiring lands in a follow-up. Default: `true`.
+    #[serde(default)]
+    pub exec_session: ExecSessionSettings,
+}
+
+/// ExecutionSession inner-layer settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecSessionSettings {
+    /// Master switch for the exec_session inner layer (Task 7). When `false`,
+    /// frontends skip coordinator construction and the agent loop runs without
+    /// turn-boundary snapshots or the `verify_and_complete` tool.
+    #[serde(default = "default_exec_session_enabled")]
+    pub enabled: bool,
+}
+
+fn default_exec_session_enabled() -> bool {
+    true
+}
+
+impl Default for ExecSessionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_exec_session_enabled(),
+        }
+    }
 }
 
 /// Retention settings for per-turn file checkpoints.

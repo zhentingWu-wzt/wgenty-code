@@ -194,6 +194,28 @@ impl ToolRegistry {
         registry
     }
 
+    /// Register the ExecutionSession `verify_and_complete` tool bound to
+    /// `coordinator` (Task 7). Frontends call this after constructing the
+    /// session coordinator so the agent can call `verify_and_complete` to mark
+    /// a session `Completed`. The tool shares the same
+    /// `Arc<RwLock<SessionCoordinator>>` as the agent-loop turn hook, so
+    /// turn-boundary bookkeeping and verify-gate transitions act on one
+    /// session. Uses default hooks (`AutoRetry { max: 2 }` on verify failure)
+    /// and a `ProcessCommandExecutor` (production can swap an executor that
+    /// routes through guardian + sandbox).
+    pub fn register_exec_session_tools(
+        &self,
+        coordinator: Arc<RwLock<crate::exec_session::SessionCoordinator>>,
+    ) {
+        let gate = Arc::new(crate::exec_session::VerifyGate::new_with_default_hooks(
+            coordinator,
+            Arc::new(crate::exec_session::ProcessCommandExecutor),
+        ));
+        self.register(Box::new(crate::exec_session::VerifyAndCompleteTool::new(
+            gate,
+        )));
+    }
+
     /// Apply provider-aware configuration after construction.
     ///
     /// Nearly all major providers now ship with built-in web search:

@@ -15,11 +15,16 @@ use super::{
 use crate::agent::runtime::MutexHistoryStore;
 use crate::api::token_counter::TokenCounter;
 use crate::api::{ChatMessage, ToolCall, ToolCallFunction, ToolDefinition, Usage};
+use crate::exec_session::{
+    ProcessCommandExecutor, SessionCoordinator, SessionCoordinatorPort, SessionSource, VerifyGate,
+};
+use crate::tools::checkpoint_store::CheckpointStore;
+use crate::tools::ToolRegistry;
 use crate::utils::stuck_detector::StuckDetector;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::Mutex as TokioMutex;
 
 // ── Mocks ───────────────────────────────────────────────────────────────────
@@ -597,4 +602,240 @@ async fn successful_compaction_updates_last_prompt_tokens() {
             .any(|m| m.content.as_deref() == Some("summary: short")),
         "history should contain the compacted summary"
     );
+}
+
+// ── Task 7: exec_session turn-boundary integration ─────────────────────────
+
+/// Build a real `SessionCoordinator` over a temp project root + fresh
+/// `CheckpointStore`. Returned as the shared `Arc<RwLock<...>>` shape the
+/// agent loop hook and `VerifyGate` both hold.
+fn make_coordinator(tmp: &tempfile::TempDir) -> Arc<RwLock<SessionCoordinator>> {
+    let store = Arc::new(CheckpointStore::with_keep_n(tmp.path(), 5));
+    let coord = SessionCoordinator::new(
+        format!("test-{}", uuid::Uuid::new_v4()),
+        SessionSource::AgentSelf,
+        tmp.path(),
+        store,
+    )
+    .expect("coordinator new");
+    Arc::new(RwLock::new(coord))
+}
+
+/// `run_agent_loop` with an optional session hook (Task 7). All other hooks
+/// default to `None` - we only need the LLM script to drive a turn.
+async fn run_with_session(
+    llm: &ScriptedLlm,
+    tools: &MockToolPort,
+    events: &VecSink,
+    history: &MutexHistoryStore,
+    config: &RuntimeConfig,
+    state: &mut LoopTurnState,
+    session: Option<&dyn SessionCoordinatorPort>,
+) -> Result<String, RuntimeError> {
+    run_agent_loop(RunLoopArgs {
+        llm,
+        tools,
+        events,
+        history,
+        config,
+        state,
+        stream_style: StreamStyle::subagent(),
+        hooks: LoopHooks {
+            session,
+            ..LoopHooks::default()
+        },
+    })
+    .await
+}
+
+/// 7.1 — agent loop 启动挂 coordinator:首个 turn begin_turn,turns.len==1;
+/// turn 结束 end_turn,current_turn -> turn-0.
+#[tokio::test]
+async fn exec_session_single_turn_records_turn_chain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let coord = make_coordinator(&tmp);
+    let llm = ScriptedLlm::new(vec![text_response("done")]);
+    let tools = MockToolPort::new();
+    let events = VecSink::new();
+    let history = MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("hi")])));
+
+    let mut state = LoopTurnState::default();
+    let port: &dyn SessionCoordinatorPort = &coord as &dyn SessionCoordinatorPort;
+    let out = run_with_session(
+        &llm,
+        &tools,
+        &events,
+        &history,
+        &default_config(),
+        &mut state,
+        Some(port),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out, "done");
+
+    let s = coord.read().unwrap().session().clone();
+    assert_eq!(s.turns.len(), 1, "exactly one turn recorded");
+    assert_eq!(s.turns[0].turn_id, "turn-0");
+    assert_eq!(s.current_turn.as_deref(), Some("turn-0"));
+    assert!(s.turns[0].parent.is_none(), "first turn has no parent");
+}
+
+/// 7.2 — 连续 3 个 turn,parent 链正确(turn-1.parent=turn-0,turn-2.parent=turn-1).
+#[tokio::test]
+async fn exec_session_three_turns_parent_chain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let coord = make_coordinator(&tmp);
+    let port: &dyn SessionCoordinatorPort = &coord as &dyn SessionCoordinatorPort;
+
+    for _ in 0..3 {
+        let llm = ScriptedLlm::new(vec![text_response("ok")]);
+        let tools = MockToolPort::new();
+        let events = VecSink::new();
+        let history =
+            MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("go")])));
+        let mut state = LoopTurnState::default();
+        run_with_session(
+            &llm,
+            &tools,
+            &events,
+            &history,
+            &default_config(),
+            &mut state,
+            Some(port),
+        )
+        .await
+        .unwrap();
+    }
+
+    let s = coord.read().unwrap().session().clone();
+    assert_eq!(s.turns.len(), 3);
+    assert_eq!(s.turns[0].turn_id, "turn-0");
+    assert!(s.turns[0].parent.is_none());
+    assert_eq!(s.turns[1].turn_id, "turn-1");
+    assert_eq!(s.turns[1].parent.as_deref(), Some("turn-0"));
+    assert_eq!(s.turns[2].turn_id, "turn-2");
+    assert_eq!(s.turns[2].parent.as_deref(), Some("turn-1"));
+    assert_eq!(s.current_turn.as_deref(), Some("turn-2"));
+}
+
+/// 7.3 — verify_and_complete 工具在 ToolRegistry 注册并可调用,通过共享
+/// coordinator 操作 session(verify pass -> status=Completed).
+#[tokio::test]
+async fn exec_session_verify_tool_registered_and_callable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let coord = make_coordinator(&tmp);
+    let registry = ToolRegistry::with_project_root(tmp.path(), 5);
+    registry.register_exec_session_tools(coord.clone());
+
+    // Tool is registered under its canonical name.
+    let tool = registry
+        .get("verify_and_complete")
+        .expect("verify_and_complete registered");
+    assert_eq!(tool.name(), "verify_and_complete");
+
+    // Open a turn so the session has a current turn for verify to seal.
+    coord.write().unwrap().begin_turn().unwrap();
+
+    // Call the tool: `true` exits 0, no files changed, expected=[] -> pass.
+    let input = serde_json::json!({
+        "commands": ["true"],
+        "expected_changed_files": []
+    });
+    let output = tool.execute(input).await.expect("tool execute ok");
+    assert!(
+        output
+            .metadata
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        "verify should pass: {}",
+        output.content
+    );
+
+    // The shared coordinator reflects the transition to Completed.
+    let status = coord.read().unwrap().session().status.clone();
+    assert!(
+        matches!(status, crate::exec_session::SessionStatus::Completed),
+        "session should be Completed after verify pass"
+    );
+}
+
+/// 7.4 — agent loop 结束(最终回复)未调 verify -> 兜底 mark_unverified_if_incomplete
+/// 标 session Unverified.
+#[tokio::test]
+async fn exec_session_unverified_fallback_when_agent_skips_verify() {
+    let tmp = tempfile::tempdir().unwrap();
+    let coord = make_coordinator(&tmp);
+    // Build the gate directly so we can invoke the 兜底 (the registry helper
+    // hides it inside the tool).
+    let gate = Arc::new(VerifyGate::new_with_default_hooks(
+        coord.clone(),
+        Arc::new(ProcessCommandExecutor),
+    ));
+
+    // Run a turn: agent replies with final text, never calls verify_and_complete.
+    let llm = ScriptedLlm::new(vec![text_response("all done, trust me")]);
+    let tools = MockToolPort::new();
+    let events = VecSink::new();
+    let history =
+        MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("work")])));
+    let port: &dyn SessionCoordinatorPort = &coord as &dyn SessionCoordinatorPort;
+    let mut state = LoopTurnState::default();
+    let out = run_with_session(
+        &llm,
+        &tools,
+        &events,
+        &history,
+        &default_config(),
+        &mut state,
+        Some(port),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out, "all done, trust me");
+
+    // Session is still InProgress (turn sealed, but no verify).
+    let pre = coord.read().unwrap().session().status.clone();
+    assert!(matches!(
+        pre,
+        crate::exec_session::SessionStatus::InProgress
+    ));
+
+    // 兜底 at session close: mark InProgress -> Unverified.
+    let outcome = gate.mark_unverified_if_incomplete().unwrap();
+    assert!(matches!(
+        outcome,
+        crate::exec_session::UnverifiedOutcome::MarkedUnverified
+    ));
+    let post = coord.read().unwrap().session().status.clone();
+    assert!(matches!(
+        post,
+        crate::exec_session::SessionStatus::Unverified
+    ));
+}
+
+/// 7.5 — coordinator 为 None 时(agent loop 不启用),loop 正常工作,无 panic.
+#[tokio::test]
+async fn exec_session_none_degrades_gracefully() {
+    let llm = ScriptedLlm::new(vec![text_response("fine")]);
+    let tools = MockToolPort::new();
+    let events = VecSink::new();
+    let history = MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user("hi")])));
+
+    let mut state = LoopTurnState::default();
+    let out = run_with_session(
+        &llm,
+        &tools,
+        &events,
+        &history,
+        &default_config(),
+        &mut state,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(out, "fine");
+    // No session dir created when the hook is absent.
+    assert!(tools.recorded().is_empty());
 }
