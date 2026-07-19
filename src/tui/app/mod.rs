@@ -545,6 +545,17 @@ impl App {
     /// any earlier fire-and-forget save still waiting on the lock drops its
     /// stale UI clone instead of overwriting the final snapshot.
     pub(super) async fn save_session_snapshot(&self) {
+        // Skip persisting sessions with no chat content - avoids leaving
+        // unused "New Session" entries in the panel when the REPL quits
+        // before any message is sent (see the startup comment in
+        // cli/args.rs about not POSTing an empty session).
+        if self.committed_messages.is_empty() {
+            tracing::debug!(
+                session_id = %self.session_id,
+                "skipping session save; no chat content"
+            );
+            return;
+        }
         let id = self.session_id.clone();
         let name = self.session_name.clone();
         let client = self.daemon_client.clone();
@@ -589,6 +600,15 @@ impl App {
     /// If exit flush *timed out* without setting the flag, an in-flight spawn
     /// still writes (best-effort) rather than dropping the only remaining save.
     pub(super) fn spawn_save_session(&self) {
+        // Skip persisting sessions with no chat content - see
+        // save_session_snapshot for rationale.
+        if self.committed_messages.is_empty() {
+            tracing::debug!(
+                session_id = %self.session_id,
+                "skipping spawned session save; no chat content"
+            );
+            return;
+        }
         let id = self.session_id.clone();
         let name = self.session_name.clone();
         let client = self.daemon_client.clone();
