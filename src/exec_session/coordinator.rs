@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result};
 
@@ -290,6 +290,49 @@ pub struct RollbackResult {
     pub git_reset: bool,
     pub restored_files: Vec<PathBuf>,
     pub deleted_untracked: Vec<PathBuf>,
+}
+
+/// Agent-loop hook into a [`SessionCoordinator`].
+///
+/// The shared `run_agent_loop` calls [`begin_turn`](Self::begin_turn) at the
+/// start of every turn and [`end_turn`](Self::end_turn) at every exit path
+/// (Task 7). The coordinator is shared (`Arc<RwLock<SessionCoordinator>>`)
+/// between this hook and the [`VerifyGate`](super::verify_gate::VerifyGate) /
+/// `verify_and_complete` tool, so turn-boundary bookkeeping and verify-gate
+/// status transitions act on the same session.
+///
+/// Methods are synchronous: the coordinator uses `std::sync::RwLock` and never
+/// holds a guard across `.await`. Errors are returned as `String` (the loop
+/// logs them at `warn` and continues - the session is an auxiliary layer that
+/// must not abort the agent turn).
+///
+/// The 兜底 (`mark_unverified_if_incomplete`) lives on `VerifyGate`, not here:
+/// the frontend owns the gate and invokes it at session close. Keeping it off
+/// this port avoids a `coordinator -> verify_gate` dependency and keeps the
+/// loop-facing surface minimal (turn boundaries only).
+pub trait SessionCoordinatorPort: Send + Sync {
+    /// Open a new turn: allocate a checkpoint snapshot, record git refs +
+    /// untracked, append to the turn chain, persist `session.json`.
+    fn begin_turn(&self) -> Result<(), String>;
+    /// Seal the current turn: refresh `updated_at`, persist `session.json`.
+    fn end_turn(&self) -> Result<(), String>;
+}
+
+impl SessionCoordinatorPort for Arc<RwLock<SessionCoordinator>> {
+    fn begin_turn(&self) -> Result<(), String> {
+        self.write()
+            .map_err(|e| format!("coordinator write lock: {e}"))?
+            .begin_turn()
+            .map(|_| ())
+            .map_err(|e| format!("begin_turn: {e}"))
+    }
+
+    fn end_turn(&self) -> Result<(), String> {
+        self.write()
+            .map_err(|e| format!("coordinator write lock: {e}"))?
+            .end_turn()
+            .map_err(|e| format!("end_turn: {e}"))
+    }
 }
 
 #[cfg(test)]

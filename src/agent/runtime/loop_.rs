@@ -15,6 +15,7 @@ use super::timeout::resolve_tool_timeout;
 use crate::agent::{StreamProcessor, StreamResult};
 use crate::api::token_counter::TokenCounter;
 use crate::api::ChatMessage;
+use crate::exec_session::SessionCoordinatorPort;
 use crate::utils::lenient_json::parse_tool_args_lenient;
 use crate::utils::stuck_detector::{StuckDetector, StuckStatus};
 use std::time::Duration;
@@ -103,6 +104,13 @@ pub struct LoopHooks<'a> {
     pub task_progress: Option<&'a dyn TaskProgressPort>,
     /// Async inbox drain (s09 mailbox) injected at the top of each round.
     pub inbox: Option<&'a dyn InboxPort>,
+    /// ExecutionSession turn-boundary hook (Task 7). When present, the loop
+    /// calls `begin_turn` at turn start and `end_turn` at every exit path so
+    /// the session records git refs + opens a checkpoint snapshot per turn.
+    /// `None` = exec_session disabled (frontend opted out or unavailable) -
+    /// the loop runs unchanged. Errors are logged at `warn` and swallowed:
+    /// the session is an auxiliary layer and must not abort the agent turn.
+    pub session: Option<&'a dyn SessionCoordinatorPort>,
 }
 
 /// Bundled arguments for [`run_agent_loop`] (keeps the free-function signature small).
@@ -122,6 +130,26 @@ pub struct RunLoopArgs<'a> {
 /// Returns the final assistant text (empty string when the turn ends without
 /// textual content — e.g. plan-mode confirmation already streamed).
 pub async fn run_agent_loop(args: RunLoopArgs<'_>) -> Result<String, RuntimeError> {
+    // Copy the session hook out before `args` is moved into the inner loop.
+    // `Option<&dyn Trait>` is `Copy`, and the reference's lifetime is the
+    // caller's `'a` (independent of the local `args` binding), so it stays
+    // valid across the inner call.
+    let session = args.hooks.session;
+    if let Some(s) = session {
+        if let Err(e) = s.begin_turn() {
+            tracing::warn!(error = %e, "exec_session begin_turn failed; turn proceeds without snapshot");
+        }
+    }
+    let result = run_agent_loop_inner(args).await;
+    if let Some(s) = session {
+        if let Err(e) = s.end_turn() {
+            tracing::warn!(error = %e, "exec_session end_turn failed; turn snapshot may be incomplete");
+        }
+    }
+    result
+}
+
+async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeError> {
     let RunLoopArgs {
         llm,
         tools,

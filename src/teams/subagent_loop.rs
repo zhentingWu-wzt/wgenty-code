@@ -1014,6 +1014,7 @@ pub async fn run_subagent_loop_with_permissions(
             observer: Some(&observer),
             task_progress: None,
             inbox: inbox.as_ref().map(|i| i as &dyn InboxPort),
+            session: None,
         },
     });
 
