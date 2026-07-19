@@ -16,9 +16,14 @@ pub mod coordinator;
 pub mod git;
 pub mod hooks;
 pub mod session;
+pub mod verify_gate;
 
 pub use coordinator::SessionCoordinator;
 pub use hooks::{
     NoHooks, RollbackContext, SessionHooks, VerifyFailAction, VerifyFailContext, VerifyFailure,
 };
 pub use session::{GitRefs, SessionSource, SessionState, SessionStatus, TurnRecord};
+pub use verify_gate::{
+    CommandExecutor, CommandRun, ProcessCommandExecutor, VerifyAndCompleteTool, VerifyGate,
+    VerifyLog, VerifyLogEntry, VerifyLogFinalStatus, VerifyLogResult, VerifyResult,
+};
