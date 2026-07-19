@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 
 use crate::tools::checkpoint_store::CheckpointStore;
 
+use super::git::record_git_state;
 use super::session::{SessionSource, SessionState, SessionStatus, TurnRecord};
 
 /// Coordinates the inner ExecutionSession lifecycle for one session.
@@ -23,6 +24,7 @@ pub struct SessionCoordinator {
     session: SessionState,
     session_dir: PathBuf,
     checkpoint_store: Arc<CheckpointStore>,
+    project_root: PathBuf,
 }
 
 impl SessionCoordinator {
@@ -46,6 +48,7 @@ impl SessionCoordinator {
             session,
             session_dir,
             checkpoint_store,
+            project_root: project_root.to_path_buf(),
         })
     }
 
@@ -58,6 +61,10 @@ impl SessionCoordinator {
     /// index in the chain. `checkpoint_turn_id` is a UUID — `CheckpointStore`
     /// has no notion of a "current" turn id, so the coordinator owns the id
     /// allocation and passes it in.
+    ///
+    /// At the turn boundary, `HEAD` and untracked files are recorded via
+    /// [`record_git_state`]; non-git projects degrade to `None` / empty (file
+    /// rollback via CheckpointStore still applies). See spec §3.2.
     pub fn begin_turn(&mut self) -> Result<&TurnRecord> {
         let turn_id = format!("turn-{}", self.session.turns.len());
         let parent = self.session.current_turn.clone();
@@ -65,14 +72,14 @@ impl SessionCoordinator {
         self.checkpoint_store
             .begin_turn(&checkpoint_turn_id)
             .with_context(|| format!("checkpoint begin_turn: {}", checkpoint_turn_id))?;
+        let (git_refs, untracked_files) = record_git_state(&self.project_root);
         let now = chrono::Utc::now().to_rfc3339();
         let turn = TurnRecord {
             turn_id: turn_id.clone(),
             parent,
             checkpoint_turn_id,
-            // Task 3 fills these at the turn boundary.
-            git_refs: None,
-            untracked_files: Vec::new(),
+            git_refs,
+            untracked_files,
             created_at: now.clone(),
         };
         self.session.turns.push(turn);
@@ -102,6 +109,12 @@ impl SessionCoordinator {
     /// Borrow the session dir (for later tasks / tests).
     pub fn session_dir(&self) -> &Path {
         &self.session_dir
+    }
+
+    /// Borrow the project root (for later tasks: rollback runs `git reset`
+    /// here).
+    pub fn project_root(&self) -> &Path {
+        &self.project_root
     }
 
     /// Borrow the shared checkpoint store (for later tasks: capture / rewind).
@@ -153,6 +166,7 @@ mod tests {
         assert_eq!(t.turn_id, "turn-0");
         assert_eq!(t.parent, None);
         assert!(!t.checkpoint_turn_id.is_empty());
+        // Non-git tempdir: record_git_state degrades to None / empty.
         assert_eq!(t.git_refs, None);
         assert!(t.untracked_files.is_empty());
     }
@@ -237,6 +251,88 @@ mod tests {
         assert!(
             !coord.session_dir().join("session.json.tmp").exists(),
             "stale .tmp left behind"
+        );
+    }
+
+    /// Initialize a git repo with one commit so `HEAD` exists. Writes a
+    /// `.gitignore` so checkpoint artifacts and test scaffolding do not
+    /// pollute the untracked list.
+    fn init_git_repo(dir: &Path) {
+        use std::process::Command;
+        let cmds: &[&[&str]] = &[
+            &["init"],
+            &["config", "user.email", "test@wgenty.local"],
+            &["config", "user.name", "wgenty test"],
+        ];
+        for args in cmds {
+            let status = Command::new("git")
+                .args(*args)
+                .current_dir(dir)
+                .status()
+                .expect("spawn git");
+            assert!(status.success(), "git {:?} failed", args);
+        }
+        // Ignore checkpoint artifacts + tmp scratch files.
+        std::fs::write(dir.join(".gitignore"), ".wgenty-code/\n*.tmp\n").unwrap();
+        std::fs::write(dir.join("seed.txt"), "seed\n").unwrap();
+        let status = Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .status()
+            .expect("git add");
+        assert!(status.success(), "git add failed");
+        let status = Command::new("git")
+            .args(["commit", "-m", "seed"])
+            .current_dir(dir)
+            .status()
+            .expect("git commit");
+        assert!(status.success(), "git commit failed");
+    }
+
+    #[test]
+    fn begin_turn_records_git_head_in_git_repo() {
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        let mut coord = make_coordinator(dir.path());
+        coord.begin_turn().unwrap();
+        let t = &coord.session().turns[0];
+        let refs = t
+            .git_refs
+            .as_ref()
+            .expect("git repo should record HEAD at begin_turn");
+        assert!(!refs.head.is_empty(), "HEAD sha should be non-empty");
+        assert!(
+            refs.head.chars().all(|c| c.is_ascii_hexdigit()),
+            "HEAD should be hex: {}",
+            refs.head
+        );
+    }
+
+    #[test]
+    fn begin_turn_records_untracked_files_in_git_repo() {
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        std::fs::write(dir.path().join("scratch.log"), "x\n").unwrap();
+        let mut coord = make_coordinator(dir.path());
+        coord.begin_turn().unwrap();
+        let t = &coord.session().turns[0];
+        assert!(
+            t.untracked_files.iter().any(|f| f == "scratch.log"),
+            "scratch.log should be recorded as untracked: {:?}",
+            t.untracked_files
+        );
+        assert!(
+            !t.untracked_files.iter().any(|f| f == "seed.txt"),
+            "seed.txt is tracked, must not be untracked: {:?}",
+            t.untracked_files
+        );
+        // .wgenty-code/ is gitignored, so checkpoint artifacts must not appear.
+        assert!(
+            !t.untracked_files
+                .iter()
+                .any(|f| f.starts_with(".wgenty-code/")),
+            ".wgenty-code/ is gitignored, must not appear: {:?}",
+            t.untracked_files
         );
     }
 }
