@@ -22,6 +22,7 @@ pub mod api;
 pub mod cli;
 pub mod config;
 pub mod context;
+pub mod exec_session;
 pub mod knowledge;
 pub mod mcp;
 pub mod permissions;
