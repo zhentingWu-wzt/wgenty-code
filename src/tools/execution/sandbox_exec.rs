@@ -63,6 +63,9 @@ pub fn enforcement_fidelity(
     }
     match backend {
         "seatbelt" => "full",
+        // bwrap path: --ro-bind / / + --bind writable + --tmpfs secret gives
+        // FS write confinement on par with macOS seatbelt.
+        "bwrap" => "full",
         // Linux namespaces + cgroups without real seccomp → partial.
         "seccomp+ns" => "partial",
         // Job Objects: resource/process limits, no FS/network isolation yet.
