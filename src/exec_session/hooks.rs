@@ -38,6 +38,21 @@ pub struct VerifyFailContext {
     pub failure: VerifyFailure,
 }
 
+/// Context handed to [`SessionHooks::rollback_triggered`] when
+/// [`super::SessionCoordinator::rollback_to`] restores the workspace to a
+/// prior turn (spec §3.4).
+///
+/// `from_turn` is the cursor before the rollback (`None` if no turn was
+/// active); `to_turn` is the target turn the workspace is being restored to.
+/// The hook is informational - the rollback proceeds regardless - so the
+/// outer layer can observe / log / audit rollback events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollbackContext {
+    pub session_id: String,
+    pub from_turn: Option<String>,
+    pub to_turn: String,
+}
+
 /// What the runtime should do after a verify-gate failure (spec §3.3).
 ///
 /// Core principle: gate failure is a signal, not a punishment. The runtime
@@ -91,6 +106,13 @@ pub trait SessionHooks: Send + Sync {
     /// Reserved for the outer ExecutionSession node state machine (§5). The
     /// inner layer does not call this; default is a no-op.
     fn post_node(&self, _node_id: &str) {}
+
+    /// Called when [`super::SessionCoordinator::rollback_to`] (Task 4) is
+    /// about to restore the workspace to a prior turn (spec §3.4). Default:
+    /// no-op (observe only). The rollback proceeds regardless - this hook is
+    /// informational, letting the outer layer log / audit / surface rollback
+    /// events. It does NOT gate the rollback.
+    fn rollback_triggered(&self, _ctx: &RollbackContext) {}
 }
 
 /// No-op hooks: uses the default `AutoRetry { max: 2 }` `verify_fail` and
@@ -216,5 +238,42 @@ mod tests {
         // Just ensure they don't panic.
         hooks.pre_node("node-0");
         hooks.post_node("node-0");
+    }
+
+    #[test]
+    fn rollback_triggered_default_noop() {
+        let hooks = NoHooks;
+        hooks.rollback_triggered(&RollbackContext {
+            session_id: "es-test".into(),
+            from_turn: Some("turn-1".into()),
+            to_turn: "turn-0".into(),
+        });
+        // Default is a no-op; nothing to assert beyond not panicking.
+    }
+
+    #[test]
+    fn custom_hook_can_observe_rollback_context() {
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct RecordingHook {
+            seen: Mutex<Vec<RollbackContext>>,
+        }
+        impl SessionHooks for RecordingHook {
+            fn rollback_triggered(&self, ctx: &RollbackContext) {
+                self.seen.lock().unwrap().push(ctx.clone());
+            }
+        }
+
+        let hooks = RecordingHook::default();
+        let ctx = RollbackContext {
+            session_id: "es-obs".into(),
+            from_turn: Some("turn-2".into()),
+            to_turn: "turn-0".into(),
+        };
+        hooks.rollback_triggered(&ctx);
+        let seen = hooks.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0], ctx);
     }
 }
