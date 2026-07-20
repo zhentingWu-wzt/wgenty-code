@@ -650,6 +650,7 @@ async fn run_with_session(
             session,
             ..LoopHooks::default()
         },
+        system_messages: &[],
     })
     .await
 }
