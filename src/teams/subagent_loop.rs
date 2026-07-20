@@ -2,8 +2,8 @@
 //!
 //! Control flow is [`crate::agent::runtime::run_agent_loop`]. This module
 //! provides subagent-specific ports (guarding tools, progress observer,
-//! non-root synthesis barrier) and preserves the historical
-//! [`run_subagent_loop`] signature for `task` / RLM / run_script callers.
+//! non-root synthesis barrier) and exposes [`run_subagent_loop_with_permissions`]
+//! for `task` / RLM / run_script callers.
 
 use crate::agent::progress::{
     ErrorInfo, ErrorType, ProgressCallback, SubagentEvent, SubagentEventType, SubagentMetadata,
@@ -19,6 +19,7 @@ use crate::agent::{
     CoordinatorError, JoinPolicy,
 };
 use crate::api::{ApiClient, ChatMessage};
+use crate::config::resolve_context_window;
 use crate::teams::approval_registry;
 use crate::teams::guarding_tool_port::{
     format_permission_summary, GuardingToolPort, SubagentPermissionContext,
@@ -93,7 +94,7 @@ fn extract_params_summary(tool_name: &str, args: &serde_json::Value) -> String {
     parts.join(", ")
 }
 
-/// Structured error returned by [`run_subagent_loop`] when a subagent fails.
+/// Structured error returned by [`run_subagent_loop_with_permissions`] when a subagent fails.
 #[derive(Debug, Clone)]
 pub struct SubagentError {
     pub message: String,
@@ -290,6 +291,27 @@ impl SubagentSynthesis {
     /// incorporate it before delivering. Subagents carry their own timeouts,
     /// so this cannot hang indefinitely.
     async fn synthesize_root_children(&self) -> Result<Option<String>, RuntimeError> {
+        // Guard: only a true root (parent_id=None AND depth==0) may claim the
+        // root-direct task group. A ghost fallback context (parent_id=None but
+        // depth>0) is NOT a real root -- claiming would return NotVisible and
+        // silently abort the subagent. Short-circuit to Ok(None) instead so the
+        // ghost leaf completes naturally without synthesis.
+        //
+        // This fixes the regression where ghost fallback subagents spawned by
+        // `prepare_structural_fallback` (parent_id=None, depth=caller.depth>0)
+        // entered this path because `is_non_root = parent_id.is_some()` was
+        // false, but `is_root = parent_id.is_none() && depth==0` was also false.
+        if self.context.parent_id.is_none() && self.context.depth > 0 {
+            tracing::warn!(
+                agent_id = %self.context.agent_id,
+                depth = self.context.depth,
+                "synthesize_root_children: ghost fallback context (parent_id=None, \
+                 depth>0) is not a real root; skipping root synthesis to avoid \
+                 NotVisible error"
+            );
+            return Ok(None);
+        }
+
         // Join all live direct children. Awaits each child's terminal state
         // (natural completion, external `finish_child`, or subagent timeout).
         let joined = self
@@ -907,55 +929,9 @@ fn sanitize_mailbox_name(name: &str) -> String {
         .collect()
 }
 
-/// Run a subagent with an isolated agent loop via the shared runtime.
-#[allow(clippy::too_many_arguments)]
-pub async fn run_subagent_loop(
-    api_client: &ApiClient,
-    tool_registry: Arc<ToolRegistry>,
-    context: &AgentExecutionContext,
-    coordinator: Arc<AgentCoordinator>,
-    system_prompt: &str,
-    user_prompt: &str,
-    allowed_tools: &[String],
-    max_rounds: usize,
-    timeout_secs: u64,
-    on_progress: Option<ProgressCallback>,
-    token_budget_k: Option<u64>,
-    workdir: Option<std::path::PathBuf>,
-) -> Result<String, SubagentError> {
-    // Headless default: shared workspace policy, no approval bridge (Ask fail closed).
-    // Call sites that own a root ToolExecutor should pass a richer context via
-    // `run_subagent_loop_with_permissions` once fully wired.
-    let permission = SubagentPermissionContext::headless(
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-        context.agent_id.as_str(),
-    );
-    // Headless path has no Settings/transcript_store: interception-2 fallback
-    // degrades to parent model (no fallback_models configured, no prompt source).
-    let settings = Arc::new(crate::config::Settings::default());
-    run_subagent_loop_with_permissions(
-        api_client,
-        tool_registry,
-        context,
-        coordinator,
-        system_prompt,
-        user_prompt,
-        allowed_tools,
-        max_rounds,
-        timeout_secs,
-        on_progress,
-        token_budget_k,
-        workdir,
-        permission,
-        settings,
-        None,
-        None,
-    )
-    .await
-}
-
-/// Same as [`run_subagent_loop`] but with an explicit permission context
-/// (shared session_rules / optional approval bridge / guardian).
+/// Run a subagent with an isolated agent loop via the shared runtime, with an
+/// explicit permission context (shared session_rules / optional approval
+/// bridge / guardian).
 ///
 /// `origin_turn_id`, when set, folds subagent file edits into the parent
 /// turn's checkpoint snapshot (no independent subagent checkpoint).
@@ -1012,6 +988,18 @@ pub async fn run_subagent_loop_with_permissions(
         .with_origin_turn_id(origin_turn_id);
     let events = NullEventSink;
 
+    // Resolve the context window from the subagent's effective model (small
+    // endpoint if configured, else main) before `settings` is moved into the
+    // synthesis port below.
+    let context_window = resolve_context_window(
+        settings
+            .models
+            .small
+            .as_ref()
+            .unwrap_or(&settings.models.main),
+        settings.models.context_window,
+    );
+
     let is_non_root = context.parent_id.is_some();
     let synthesis = SubagentSynthesis {
         coordinator,
@@ -1050,7 +1038,7 @@ pub async fn run_subagent_loop_with_permissions(
         max_rounds,
         plan_mode: false,
         subagent_timeout_secs: timeout_secs,
-        context_window: 200_000,
+        context_window,
         max_tokens: 4096,
         session_id: context.session_id.as_str().to_string(),
         turn_id: Some(loop_turn_id),
@@ -1283,6 +1271,96 @@ mod tests {
         assert_eq!(
             classify_stream_error("some unexpected stream error"),
             ErrorType::Unknown
+        );
+    }
+
+    // ── Ghost guard tests for synthesize_root_children ──────────────────────
+    //
+    // Regression tests for P0#3: a ghost fallback context (parent_id=None but
+    // depth>0) must NOT trigger NotVisible in synthesize_root_children. It
+    // should short-circuit to Ok(None). A real root (parent_id=None, depth==0)
+    // must still proceed through the normal join/claim path.
+
+    fn make_synthesis(
+        context: AgentExecutionContext,
+    ) -> SubagentSynthesis {
+        let coordinator = Arc::new(AgentCoordinator::new(5, 1));
+        let is_non_root = context.parent_id.is_some();
+        SubagentSynthesis {
+            coordinator,
+            context,
+            synthesized: Mutex::new(HashSet::new()),
+            is_non_root,
+            settings: Arc::new(crate::config::Settings::default()),
+            transcript_store: None,
+            tool_registry: Arc::new(ToolRegistry::new()),
+        }
+    }
+
+    fn make_ghost_context(depth: usize) -> AgentExecutionContext {
+        // Mirrors prepare_structural_fallback (fallback.rs:112-118):
+        // parent_id=None, depth=caller.depth (>0 for a non-root caller).
+        AgentExecutionContext {
+            agent_id: AgentId::new(uuid::Uuid::new_v4().to_string()),
+            parent_id: None,
+            session_id: SessionId::new("test-ghost-session"),
+            depth,
+            cancellation: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn ghost_context_synthesize_returns_ok_none_not_not_visible() {
+        // A ghost fallback context (parent_id=None, depth>0) must short-circuit
+        // to Ok(None) instead of triggering NotVisible in claim_ready_root_group.
+        let ghost = make_ghost_context(1);
+        let synthesis = make_synthesis(ghost);
+
+        let result = synthesis.on_candidate_final("test").await;
+
+        assert!(
+            result.is_ok(),
+            "ghost context must not error (NotVisible regression); got: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            result.unwrap(),
+            None,
+            "ghost context with no children should return Ok(None)"
+        );
+    }
+
+    #[tokio::test]
+    async fn real_root_synthesize_does_not_short_circuit() {
+        // A real root (parent_id=None, depth==0) must NOT short-circuit. With no
+        // live children, join_children returns empty and claim returns None,
+        // yielding Ok(None) -- but via the normal path, not the ghost guard.
+        let root = AgentExecutionContext::root(SessionId::new("test-root-session"));
+        let synthesis = make_synthesis(root);
+
+        let result = synthesis.on_candidate_final("test").await;
+
+        // Real root with no children: join returns empty, claim returns None,
+        // fresh is empty -> Ok(None). The key assertion is no error.
+        assert!(
+            result.is_ok(),
+            "real root with no children must not error; got: {:?}",
+            result.err()
+        );
+    }
+
+    #[tokio::test]
+    async fn ghost_context_at_depth_2_also_short_circuits() {
+        // Deeper ghost (depth=2, e.g. nested fallback) must also short-circuit.
+        let ghost = make_ghost_context(2);
+        let synthesis = make_synthesis(ghost);
+
+        let result = synthesis.on_candidate_final("test").await;
+
+        assert!(
+            result.is_ok(),
+            "ghost at depth 2 must not error; got: {:?}",
+            result.err()
         );
     }
 }

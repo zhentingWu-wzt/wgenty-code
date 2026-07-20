@@ -1,11 +1,12 @@
 //! RLM Pipeline — Planner → Executor → Aggregator.
 //!
-//! The core pipeline used by both the `delegate` tool and auto-routing in `task` tool.
+//! The core pipeline used by the `delegate` tool.
 
 use crate::agent::progress::{ProgressCallback, SubagentProgress, SubagentStatus};
 use crate::api::{ApiClient, ChatMessage};
 use crate::config::Settings;
-use crate::teams::subagent_loop::run_subagent_loop;
+use crate::teams::guarding_tool_port::SubagentPermissionContext;
+use crate::teams::subagent_loop::run_subagent_loop_with_permissions;
 use crate::tools::ToolRegistry;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -81,7 +82,7 @@ async fn build_sub_progress(
 }
 
 /// Run the full RLM pipeline: Planner → Executor → Aggregator.
-/// Used by both the `delegate` tool and auto-routing in `task` tool.
+/// Used by the `delegate` tool.
 ///
 /// `progress_store` and `session_id` are used to create per-sub-task progress
 /// nodes so each sub-agent appears as a distinct entry in the subagent tree.
@@ -385,11 +386,20 @@ Context: {context}
                         idx = idx,
                         "RLM pipeline: depth-limit fallback, self-executing subtask inline"
                     );
+                    let sub_settings = Arc::new(settings.clone());
                     let handle = tokio::spawn(async move {
                         let mut sub_system_prompt =
                             "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.".to_string();
                         inject_format_instruction("analysis", &mut sub_system_prompt);
-                        let result = run_subagent_loop(
+                        let ghost_agent_id = ghost_context.agent_id.as_str().to_string();
+                        let permission = SubagentPermissionContext::headless(
+                            sub_workdir.clone().unwrap_or_else(|| {
+                                std::env::current_dir()
+                                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                            }),
+                            ghost_agent_id,
+                        );
+                        let result = run_subagent_loop_with_permissions(
                             &api_client,
                             registry.clone(),
                             &ghost_context,
@@ -402,6 +412,10 @@ Context: {context}
                             sub_progress,
                             task_budget,
                             sub_workdir,
+                            permission,
+                            sub_settings,
+                            None,
+                            None,
                         )
                         .await;
                         // Ghost is not registered in coordinator scopes; skip
@@ -425,10 +439,18 @@ Context: {context}
             .await;
             let sub_coordinator = coordinator.clone();
             let sub_workdir = workdir.clone();
+            let sub_settings = Arc::new(settings.clone());
             let handle = tokio::spawn(async move {
                 let mut sub_system_prompt = "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.".to_string();
                 inject_format_instruction("analysis", &mut sub_system_prompt);
-                let result = run_subagent_loop(
+                let sub_agent_id = sub_context.agent_id.as_str().to_string();
+                let permission = SubagentPermissionContext::headless(
+                    sub_workdir.clone().unwrap_or_else(|| {
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    }),
+                    sub_agent_id,
+                );
+                let result = run_subagent_loop_with_permissions(
                     &api_client,
                     registry.clone(),
                     &sub_context,
@@ -441,6 +463,10 @@ Context: {context}
                     sub_progress,
                     task_budget,
                     sub_workdir,
+                    permission,
+                    sub_settings,
+                    None,
+                    None,
                 )
                 .await;
                 // Persist the child's terminal through the coordinator so its

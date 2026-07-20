@@ -1,4 +1,4 @@
-# Gap Analysis: wgenty-code vs learn-wgenty-code
+# Gap Analysis: wgenty-code 
 
 > **更新日期**: 2026-07-14 — unified `agent::runtime::run_agent_loop` 已落地；
 > TUI / CLI query / subagent 共用控制流。下表中 s09–s12 仍为未完成协作能力。

@@ -11,7 +11,7 @@ use crate::agent::runtime::{
 };
 use crate::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
 use crate::api::{ApiClient, ChatMessage, ToolDefinition};
-use crate::config::Settings;
+use crate::config::{resolve_context_window, Settings};
 use crate::context::MemoryManager;
 use crate::prompts::{self, PromptContext};
 use crate::tools::ToolRegistry;
@@ -289,7 +289,10 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
         max_rounds: settings.agent.max_rounds.unwrap_or(100),
         plan_mode: false,
         subagent_timeout_secs: settings.agent.subagent.timeout_secs,
-        context_window: settings.models.context_window,
+        context_window: resolve_context_window(
+            &settings.models.main,
+            settings.models.context_window,
+        ),
         max_tokens: settings.models.transport.max_tokens,
         session_id,
         turn_id: Some(turn_id),

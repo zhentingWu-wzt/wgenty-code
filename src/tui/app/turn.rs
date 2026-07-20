@@ -2,6 +2,7 @@
 
 use super::types::*;
 use super::App;
+use crate::config::resolve_context_window;
 use crate::context::inject::MemoryContextInjector;
 use crate::state::agent_phase::{AgentPhase, TurnAbortReason, TurnId};
 use crate::tui::agent::{AgentError, AgentLoop};
@@ -96,7 +97,7 @@ impl App {
                 planner,
                 s.agent.max_rounds.unwrap_or(100),
                 s.agent.subagent.timeout_secs,
-                s.models.context_window,
+                resolve_context_window(&s.models.main, s.models.context_window),
                 s.models.transport.max_tokens,
                 crate::prompts::reminder_dump_enabled(s.prompt.debug_dump_reminder),
             )
@@ -225,7 +226,7 @@ impl App {
                 planner,
                 s.agent.max_rounds.unwrap_or(100),
                 s.agent.subagent.timeout_secs,
-                s.models.context_window,
+                resolve_context_window(&s.models.main, s.models.context_window),
                 s.models.transport.max_tokens,
                 crate::prompts::reminder_dump_enabled(s.prompt.debug_dump_reminder),
             )
@@ -297,7 +298,7 @@ impl App {
             (
                 s.agent.max_rounds.unwrap_or(100),
                 s.agent.subagent.timeout_secs,
-                s.models.context_window,
+                resolve_context_window(&s.models.main, s.models.context_window),
                 s.models.transport.max_tokens,
             )
         };

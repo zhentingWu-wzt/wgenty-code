@@ -1,3 +1,4 @@
+use super::heuristic::is_complex_task;
 use super::*;
 
 #[test]

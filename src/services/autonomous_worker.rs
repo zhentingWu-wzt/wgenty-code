@@ -91,10 +91,28 @@ impl AutonomousWorker {
             {
                 Ok(Some(delivery)) => {
                     // Notify the root agent that a group is ready to synthesize.
+                    // Include result summaries so the notification is actionable
+                    // even without an active TUI connection to consume the
+                    // delivery directly.
+                    let summaries: Vec<String> = delivery
+                        .results
+                        .iter()
+                        .map(|r| {
+                            let status = if r.status == crate::agent::ChildTerminalStatus::Completed
+                            {
+                                "completed"
+                            } else {
+                                "failed"
+                            };
+                            let summary = r.summary.chars().take(200).collect::<String>();
+                            format!("- [{}] {}: {}", r.child_id, status, summary)
+                        })
+                        .collect();
                     let note = format!(
-                        "A background task-group ({} result(s)) is ready for synthesis. \
+                        "A background task-group ({} result(s)) is ready for synthesis.\n\nResults:\n{}\n\n\
                          Use the task-group delivery to continue.",
-                        delivery.results.len()
+                        delivery.results.len(),
+                        summaries.join("\n")
                     );
                     if let Some(path) = mailbox_path(notify_agent_id) {
                         let mb = Mailbox::new(path);

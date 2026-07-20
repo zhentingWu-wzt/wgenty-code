@@ -1,8 +1,10 @@
 //! Shared multi-round agent loop (stream → tools → compact → repeat).
 
 use super::compaction::{
-    estimate_prompt_tokens, micro_compact_messages, needs_compaction, split_for_compaction,
+    estimate_prompt_tokens, micro_compact_messages, needs_compaction, request_size_chars,
+    split_for_compaction, Calibration,
 };
+use super::compactor::{fallback_micro_compact, is_payload_too_large_error};
 use super::config::RuntimeConfig;
 use super::error::RuntimeError;
 use super::events::RuntimeEvent;
@@ -94,6 +96,19 @@ pub struct LoopTurnState {
     pub consecutive_parse_errors: usize,
     /// Rounds since the model last called `task_management`; drives ready-task nudges.
     pub rounds_since_task_mgmt: usize,
+    /// Real `prompt_tokens` from the last provider response; anchors the
+    /// calibrated token estimate so `needs_compaction` tracks the actual
+    /// ratio instead of the crude `chars / 4`. `None` until the first
+    /// successful round of the turn.
+    pub last_measured_prompt_tokens: Option<usize>,
+    /// `request_size_chars` of the message slice that produced
+    /// `last_measured_prompt_tokens`. Stored alongside it so the ratio can
+    /// be reconstructed for the next round's estimate.
+    pub last_request_chars: Option<usize>,
+    /// Guard against 413 fallback loops: once a micro-compact fallback has
+    /// been attempted this turn, a second payload-too-large error aborts
+    /// instead of retrying.
+    pub micro_compact_attempted: bool,
 }
 
 /// Optional capabilities wired by each frontend.
@@ -240,8 +255,16 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             obs.on_round_start(llm_rounds + 1, &messages);
         }
 
+        let fixed_overhead_chars = fixed_tool_def_chars(tools, stream_style, config);
+        let calibration = build_calibration(state);
         let want_compact = state.compact_requested
-            || needs_compaction(&messages, config.context_window, config.max_tokens);
+            || needs_compaction(
+                &messages,
+                config.context_window,
+                config.max_tokens,
+                fixed_overhead_chars,
+                calibration,
+            );
         state.compact_requested = false;
         if want_compact && !state.compaction_failed {
             if let Some(compactor) = hooks.compactor {
@@ -273,7 +296,13 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                         events.emit(RuntimeEvent::ContextCompacted {
                             summary_chars: summary.chars().count(),
                         });
-                        if needs_compaction(&view, config.context_window, config.max_tokens) {
+                        if needs_compaction(
+                            &view,
+                            config.context_window,
+                            config.max_tokens,
+                            fixed_overhead_chars,
+                            calibration,
+                        ) {
                             tracing::warn!(
                                 "compaction succeeded but the view still exceeds the threshold; stopping retries to avoid an infinite loop"
                             );
@@ -330,6 +359,17 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             match complete_non_stream(llm, events, &messages, tool_defs).await {
                 Ok(r) => r,
                 Err(e) => {
+                    if is_payload_too_large_error(&e.to_string())
+                        && !state.micro_compact_attempted
+                        && fallback_micro_compact(history).await
+                    {
+                        state.micro_compact_attempted = true;
+                        events.emit(RuntimeEvent::StreamError(
+                            "Request payload too large; applied micro-compact fallback and retrying."
+                                .to_string(),
+                        ));
+                        continue;
+                    }
                     events.emit(RuntimeEvent::StreamError(e.to_string()));
                     if let Some(obs) = hooks.observer {
                         obs.on_failed(llm_rounds + 1, &e.to_string(), &messages);
@@ -354,6 +394,17 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
             {
                 Ok(r) => r,
                 Err(e) => {
+                    if is_payload_too_large_error(&e.to_string())
+                        && !state.micro_compact_attempted
+                        && fallback_micro_compact(history).await
+                    {
+                        state.micro_compact_attempted = true;
+                        events.emit(RuntimeEvent::StreamError(
+                            "Request payload too large; applied micro-compact fallback and retrying."
+                                .to_string(),
+                        ));
+                        continue;
+                    }
                     events.emit(RuntimeEvent::StreamError(e.to_string()));
                     return Err(e);
                 }
@@ -363,6 +414,11 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
         llm_rounds += 1;
 
         if let Some(ref usage) = result.usage {
+            // Calibration anchor: record the real prompt_tokens alongside the
+            // chars of the message slice we just sent, so the next round's
+            // `needs_compaction` can use the measured ratio instead of chars/4.
+            state.last_measured_prompt_tokens = Some(usage.prompt_tokens);
+            state.last_request_chars = Some(request_size_chars(&messages));
             if let Some(counter) = hooks.token_counter {
                 counter.add(usage.total_tokens);
                 counter.add_output(usage.completion_tokens);
@@ -964,6 +1020,43 @@ fn recovered_useful_fields(args: &serde_json::Value) -> bool {
     args.as_object()
         .map(|obj| obj.keys().any(|k| !k.starts_with('_')))
         .unwrap_or(false)
+}
+
+/// Estimate the fixed request-body overhead (tool definitions) in chars.
+///
+/// Tool definitions are sent every request but live outside `messages`, so
+/// [`request_size_chars`] cannot see them. When `use_tool_definitions` is on
+/// we serialize the current definitions and add their length to the
+/// compaction estimate. Returns 0 when the frontend injects tools
+/// server-side (TUI daemon path, `use_tool_definitions = false`) or in
+/// plan mode (tools disabled).
+fn fixed_tool_def_chars(
+    tools: &dyn ToolPort,
+    stream_style: StreamStyle,
+    config: &RuntimeConfig,
+) -> usize {
+    if !stream_style.use_tool_definitions || config.plan_mode {
+        return 0;
+    }
+    let defs = tools.definitions();
+    if defs.is_empty() {
+        return 0;
+    }
+    serde_json::to_string(&defs).map(|s| s.len()).unwrap_or(0)
+}
+
+/// Build a [`Calibration`] from the last real usage, if available.
+///
+/// Returns `None` before the first successful round (no measurement yet) or
+/// when the stored char count is zero (ratio would be undefined).
+fn build_calibration(state: &LoopTurnState) -> Option<Calibration> {
+    match (state.last_measured_prompt_tokens, state.last_request_chars) {
+        (Some(tokens), Some(chars)) if chars > 0 => Some(Calibration {
+            last_measured_tokens: tokens,
+            last_request_chars: chars,
+        }),
+        _ => None,
+    }
 }
 
 async fn schedule_compact(

@@ -7,7 +7,8 @@
 use crate::agent::{AgentCoordinator, ToolContext};
 use crate::api::ApiClient;
 use crate::config::Settings;
-use crate::teams::subagent_loop::run_subagent_loop;
+use crate::teams::guarding_tool_port::SubagentPermissionContext;
+use crate::teams::subagent_loop::run_subagent_loop_with_permissions;
 use crate::tools::{Tool, ToolError, ToolOutput, ToolRegistry};
 use async_trait::async_trait;
 use rhai::Engine;
@@ -148,7 +149,13 @@ impl Tool for RunScriptTool {
                                 }
                             };
                             let ghost = prepared.ghost;
-                            let result = run_subagent_loop(
+                            let ghost_agent_id = ghost.agent_id.as_str().to_string();
+                            let permission = SubagentPermissionContext::headless(
+                                std::env::current_dir()
+                                    .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                                ghost_agent_id,
+                            );
+                            let result = run_subagent_loop_with_permissions(
                                 &client,
                                 reg.clone(),
                                 &ghost,
@@ -156,9 +163,13 @@ impl Tool for RunScriptTool {
                                 "You are a sub-agent in a Rhai script. Execute the task precisely and return a concise result.",
                                 &prompt,
                                 &tools,
-                                10,
-                                120,
+                                settings.agent.subagent.max_rounds.unwrap_or(100),
+                                settings.agent.subagent.timeout_secs,
                                 None,
+                                None,
+                                None,
+                                permission,
+                                Arc::new(settings.clone()),
                                 None,
                                 None,
                             )
@@ -173,10 +184,17 @@ impl Tool for RunScriptTool {
                         }
                     };
                     let child_context = reservation.context.clone();
-                    let result = run_subagent_loop(
+                    let child_agent_id = child_context.agent_id.as_str().to_string();
+                    let permission = SubagentPermissionContext::headless(
+                        std::env::current_dir()
+                            .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                        child_agent_id,
+                    );
+                    let result = run_subagent_loop_with_permissions(
                         &client, reg.clone(), &child_context, coordinator.clone(),
                         "You are a sub-agent in a Rhai script. Execute the task precisely and return a concise result.",
-                        &prompt, &tools, 10, 120, None, None, None,
+                        &prompt, &tools, settings.agent.subagent.max_rounds.unwrap_or(100), settings.agent.subagent.timeout_secs, None, None, None,
+                        permission, Arc::new(settings.clone()), None, None,
                     ).await;
                     let (terminal, content) = match result {
                         Ok(r) => (
