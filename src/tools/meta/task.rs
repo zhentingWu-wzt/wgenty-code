@@ -14,8 +14,7 @@
 
 use crate::agent::progress::{ErrorType, ProgressCallback, SubagentProgress, SubagentStatus};
 use crate::agent::{
-    AgentCoordinator, AgentExecutionContext, AgentId, ChildTerminal, CoordinatorError,
-    SpawnChildRequest, ToolContext,
+    AgentCoordinator, ChildTerminal, CoordinatorError, SpawnChildRequest, ToolContext,
 };
 use crate::api::ApiClient;
 use crate::config::agent::RootPermissionMode;
@@ -246,23 +245,7 @@ impl TaskTool {
         system_prompt: &str,
         fallback_key: &str,
     ) -> Result<ToolOutput, ToolError> {
-        use crate::agent::fallback::{is_root_caller, FallbackKind};
-
-        // Guard: root callers must not self-execute (Comet isolation).
-        if is_root_caller(context.agent) {
-            return Err(ToolError {
-                message: "fallback unavailable: root caller cannot self-execute".to_string(),
-                code: Some("fallback_root_blocked".to_string()),
-            });
-        }
-
-        // Guard: single-shot constraint.
-        if self.coordinator.fallback_already_used(fallback_key).await {
-            return Err(ToolError {
-                message: "fallback already used for this child".to_string(),
-                code: Some("fallback_already_used".to_string()),
-            });
-        }
+        use crate::agent::fallback::{prepare_structural_fallback, FallbackBlocked, FallbackKind};
 
         tracing::info!(
             fallback = "interception1",
@@ -271,8 +254,27 @@ impl TaskTool {
             "Subagent dispatch fallback: synchronous execution in TaskTool"
         );
 
-        // Mark fallback used BEFORE execution (prevents re-entry).
-        self.coordinator.mark_fallback_used(fallback_key).await;
+        // Shared guard + ghost-context preparation (root-caller rejection +
+        // single-shot constraint), marked used BEFORE execution to prevent
+        // re-entry. See `agent::fallback::prepare_structural_fallback`.
+        let prepared =
+            match prepare_structural_fallback(&self.coordinator, context.agent, fallback_key).await
+            {
+                Ok(p) => p,
+                Err(FallbackBlocked::RootCaller) => {
+                    return Err(ToolError {
+                        message: "fallback unavailable: root caller cannot self-execute"
+                            .to_string(),
+                        code: Some("fallback_root_blocked".to_string()),
+                    });
+                }
+                Err(FallbackBlocked::AlreadyUsed) => {
+                    return Err(ToolError {
+                        message: "fallback already used for this child".to_string(),
+                        code: Some("fallback_already_used".to_string()),
+                    });
+                }
+            };
 
         // Structural failure does not swap the model: reuse parent's settings.
         let api_client = ApiClient::new(self.settings.clone());
@@ -281,20 +283,13 @@ impl TaskTool {
             code: Some("fallback_no_registry".to_string()),
         })?;
 
-        // Synthesize a leaf context for the ghost fallback agent. We do NOT call
-        // coordinator.reserve_child (it failed / was rejected). Important:
-        // `parent_id` must be None so SubagentSynthesis treats this loop as a
-        // root-like leaf and skips collect_children_for_synthesis. The ghost is
-        // not registered in coordinator scopes; a non-root parent_id would make
-        // synthesis call active_owner_status -> NotVisible and abort the work.
-        let child_agent_id_str = uuid::Uuid::new_v4().to_string();
-        let child_context = AgentExecutionContext {
-            agent_id: AgentId::new(child_agent_id_str.clone()),
-            parent_id: None,
-            session_id: context.agent.session_id.clone(),
-            depth: context.agent.depth,
-            cancellation: context.agent.cancellation.child_token(),
-        };
+        // Ghost leaf context (`parent_id = None`) so SubagentSynthesis treats
+        // this loop as a root-like leaf and skips collect_children_for_synthesis.
+        // The ghost is not registered in coordinator scopes; a non-root
+        // parent_id would make synthesis call active_owner_status -> NotVisible
+        // and abort the work.
+        let child_context = prepared.ghost;
+        let child_agent_id_str = prepared.agent_id;
 
         // Leaf tool set only: stripping spawn tools forces the fallback to
         // complete the delegated work itself (depth-limit takeover).
