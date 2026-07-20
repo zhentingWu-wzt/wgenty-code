@@ -106,13 +106,18 @@ pub trait SessionHooks: Send + Sync {
         }
     }
 
-    /// Reserved for the outer ExecutionSession node state machine (§5). The
-    /// inner layer does not call this; default is a no-op.
-    fn pre_node(&self, _node_id: &str) {}
+    /// Called before a node transitions to Running (outer layer node state
+    /// machine). Default is a no-op; the inner layer does not call this.
+    fn pre_node(&self, _node: &crate::exec_session::node::Node) {}
 
-    /// Reserved for the outer ExecutionSession node state machine (§5). The
-    /// inner layer does not call this; default is a no-op.
-    fn post_node(&self, _node_id: &str) {}
+    /// Called after a node reaches Verified or Failed (outer layer node state
+    /// machine). Default is a no-op; the inner layer does not call this.
+    fn post_node(
+        &self,
+        _node: &crate::exec_session::node::Node,
+        _result: &crate::exec_session::VerifyResult,
+    ) {
+    }
 
     /// Called when [`super::SessionCoordinator::rollback_to`] (Task 4) is
     /// about to restore the workspace to a prior turn (spec §3.4). Default:
@@ -241,10 +246,35 @@ mod tests {
 
     #[test]
     fn pre_node_and_post_node_default_noop() {
+        use crate::exec_session::node::{Node, NodeContract, NodeStatus};
+        use crate::exec_session::VerifyResult;
+
         let hooks = NoHooks;
-        // Just ensure they don't panic.
-        hooks.pre_node("node-0");
-        hooks.post_node("node-0");
+        let node = Node {
+            id: "node-0".into(),
+            contract: NodeContract {
+                goal: "test".into(),
+                verify_commands: vec![],
+                expected_files: vec![],
+            },
+            status: NodeStatus::Running,
+            start_turn_id: "turn-0".into(),
+            retry_count: 0,
+            verify_log_path: String::new(),
+            created_at: "2026-07-20T00:00:00+00:00".into(),
+        };
+        let result = VerifyResult {
+            success: true,
+            commands_run: vec![],
+            actual_changed_files: vec![],
+            expected_changed_files: vec![],
+            out_of_scope: vec![],
+            fail_reason: None,
+            action: None,
+        };
+        // Just ensure they don't panic with the new signatures.
+        hooks.pre_node(&node);
+        hooks.post_node(&node, &result);
     }
 
     #[test]
