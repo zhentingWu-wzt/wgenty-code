@@ -1,0 +1,14 @@
+{
+  "change": "add-memory-tool",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "91ba230ed05c238ea37dbf7c8951cb318cfc6f40495420c553eb1714cdb32fa9",
+  "files": [
+    { "path": "openspec/changes/add-memory-tool/proposal.md", "sha256": "ab512b7afb417100a40371c60de8a60ac980966b1a05ad1d68347f0ada9dd687" },
+    { "path": "openspec/changes/add-memory-tool/design.md", "sha256": "a322e88467124317117199be699a7f57155af8921f24438a077ff2d4c6371b2c" },
+    { "path": "openspec/changes/add-memory-tool/tasks.md", "sha256": "385707b8971ec3e48839861aa8c7a5793ecc87253e7f2627507d1b187f622eb2" },
+    { "path": "openspec/changes/add-memory-tool/specs/agent-memory/spec.md", "sha256": "10ed09a17ca63e946533efe21eccb3b636dd5294021b43a93dbd999873d52828" }
+  ]
+}

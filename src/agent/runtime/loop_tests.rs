@@ -733,7 +733,7 @@ async fn exec_session_verify_tool_registered_and_callable() {
     let tmp = tempfile::tempdir().unwrap();
     let coord = make_coordinator(&tmp);
     let registry = ToolRegistry::with_project_root(tmp.path(), 5);
-    registry.register_exec_session_tools(coord.clone());
+    registry.register_exec_session_tools(coord.clone(), 2);
 
     // Tool is registered under its canonical name.
     let tool = registry

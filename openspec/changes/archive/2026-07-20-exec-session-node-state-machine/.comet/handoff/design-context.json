@@ -1,0 +1,14 @@
+{
+  "change": "exec-session-node-state-machine",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "a83f7661249e2ba2030d1dfd45f7095b5bc6019458b707a614b0b56ba7de8a03",
+  "files": [
+    { "path": "openspec/changes/exec-session-node-state-machine/proposal.md", "sha256": "f7751f0f36f68a2425f6a21cb25d489534676e0303e834058a350871cff1b63c" },
+    { "path": "openspec/changes/exec-session-node-state-machine/design.md", "sha256": "6e1e86220e14950bae83a788afed3a03dc365273346af006cb95f8fabd5b7f05" },
+    { "path": "openspec/changes/exec-session-node-state-machine/tasks.md", "sha256": "cb56b18bce4aa292e20242a8ef3be39d4360c8509bec407ec727b5da4b016744" },
+    { "path": "openspec/changes/exec-session-node-state-machine/specs/exec-session-node-runtime/spec.md", "sha256": "828a8792dd9920e8c86b2b0f823ba14f03d9ebcda4115ff9844bb978ce353aef" }
+  ]
+}

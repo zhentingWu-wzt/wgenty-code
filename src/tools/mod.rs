@@ -206,13 +206,30 @@ impl ToolRegistry {
     pub fn register_exec_session_tools(
         &self,
         coordinator: Arc<RwLock<crate::exec_session::SessionCoordinator>>,
+        auto_retry_max: u32,
     ) {
         let gate = Arc::new(crate::exec_session::VerifyGate::new_with_default_hooks(
-            coordinator,
+            Arc::clone(&coordinator),
             Arc::new(crate::exec_session::ProcessCommandExecutor),
         ));
         self.register(Box::new(crate::exec_session::VerifyAndCompleteTool::new(
+            Arc::clone(&gate),
+        )));
+
+        // Outer-layer node state machine tools.
+        let runtime = Arc::new(crate::exec_session::NodeRuntime::new_with_default_hooks(
+            coordinator,
             gate,
+            auto_retry_max,
+        ));
+        self.register(Box::new(crate::exec_session::BeginNodeTool::new(
+            Arc::clone(&runtime),
+        )));
+        self.register(Box::new(crate::exec_session::VerifyNodeTool::new(
+            Arc::clone(&runtime),
+        )));
+        self.register(Box::new(crate::exec_session::RollbackNodeTool::new(
+            runtime,
         )));
     }
 
