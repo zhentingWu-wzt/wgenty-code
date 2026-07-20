@@ -9,14 +9,14 @@
 //! test the runtime in isolation) by verifying persistence, git workspace
 //! rollback, and tool registration through the public API.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use tempfile::TempDir;
 use wgenty_code::exec_session::{
-    CommandExecutor, CommandRun, NoHooks, Node, NodeRuntime, NodeStatus, ProcessCommandExecutor,
+    CommandExecutor, CommandRun, Node, NodeRuntime, NodeStatus, ProcessCommandExecutor,
     SessionCoordinator, SessionHooks, SessionSource, SessionStatus, VerifyGate, VerifyResult,
 };
 use wgenty_code::tools::checkpoint_store::CheckpointStore;
@@ -233,13 +233,9 @@ async fn node_transitions_to_failed_on_failure() {
 
 #[tokio::test]
 async fn failed_node_self_correction_within_retry() {
-    // Use process executor: first attempt fails, second succeeds.
-    let setup = NodeTestSetup::new_with_process_executor();
-    setup.begin_turn();
-
-    // Create a node with a command that will fail first, then we can't change
-    // the contract mid-node. Instead, test with mock: fail twice then verify
-    // the state machine allows retry within budget.
+    // Test that the state machine allows retry within budget.
+    // Mock executor always fails; verify retry_count increments and
+    // session transitions to Failed only when retry_count >= max.
     let setup = NodeTestSetup::new(1); // always fails
     setup.begin_turn();
     setup
@@ -484,7 +480,6 @@ fn runtime_code_has_no_orchestration_skill_references() {
 #[tokio::test]
 async fn node_tools_available_when_exec_session_enabled() {
     use wgenty_code::config::agent::ExecSessionSettings;
-    use wgenty_code::tools::ToolRegistry;
 
     let settings = ExecSessionSettings {
         enabled: true,
