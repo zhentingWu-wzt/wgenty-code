@@ -24,6 +24,62 @@ type SubTaskExecItem = (usize, Arc<ToolRegistry>, ApiClient, String, Vec<String>
 type ProgressStore = Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>;
 type ProgressContext = (ProgressStore, String);
 
+/// Build a per-sub-task progress callback that registers a `Pending` node and
+/// writes updates to the shared progress store. Shared by the normal spawn path
+/// and the structural-fallback path so fallback subtasks appear in the tree.
+async fn build_sub_progress(
+    progress_store: Option<&ProgressContext>,
+    root_node_id: &Option<String>,
+    node_id: &str,
+    label: &str,
+) -> Option<ProgressCallback> {
+    let (store, session_id) = progress_store?;
+    let store = store.clone();
+    let sid = session_id.clone();
+    let nid = node_id.to_string();
+    let pid = root_node_id.clone();
+    let lbl = label.to_string();
+    {
+        let mut s = store.write().await;
+        s.entry(sid.clone()).or_default().insert(
+            nid.clone(),
+            SubagentProgress {
+                node_id: nid.clone(),
+                parent_id: pid.clone(),
+                label: lbl.clone(),
+                status: SubagentStatus::Pending,
+                round: None,
+                max_rounds: Some(100),
+                current_tool: None,
+                current_params: None,
+                action_log: Vec::new(),
+                text_snapshot: None,
+                started_at: chrono::Utc::now().timestamp_millis(),
+                elapsed_ms: 0,
+                metadata: None,
+                progress_delta: None,
+                token_budget_k: None,
+                cumulative_tokens: 0,
+                error_details: None,
+                events: Vec::new(),
+                messages: Vec::new(),
+            },
+        );
+    }
+    Some(Arc::new(move |mut progress: SubagentProgress| {
+        progress.node_id = nid.clone();
+        progress.parent_id = pid.clone();
+        progress.label = lbl.clone();
+        let store = store.clone();
+        let sid = sid.clone();
+        let nid = nid.clone();
+        tokio::spawn(async move {
+            let mut s = store.write().await;
+            s.entry(sid).or_default().insert(nid, progress);
+        });
+    }))
+}
+
 /// Run the full RLM pipeline: Planner → Executor → Aggregator.
 /// Used by both the `delegate` tool and auto-routing in `task` tool.
 ///
@@ -275,9 +331,84 @@ Context: {context}
             {
                 Ok(r) => r,
                 Err(e) => {
-                    // Could not reserve (e.g. depth limit). Record an error
-                    // result for this subtask and skip spawning.
-                    task_errors[idx] = Some(format!("coordinator reserve failed: {}", e));
+                    // Structural failure (depth / concurrency / task-group):
+                    // self-execute the subtask inline in the calling agent via
+                    // the shared fallback path, so depth-limit does not drop
+                    // work. Mirrors `task`'s interception-point-1 fallback.
+                    use crate::agent::fallback::{
+                        fallback_eligible_from_coordinator_error, prepare_structural_fallback,
+                        FallbackBlocked,
+                    };
+                    if fallback_eligible_from_coordinator_error(&e).is_none() {
+                        task_errors[idx] = Some(format!("coordinator reserve failed: {}", e));
+                        continue;
+                    }
+                    let fallback_key = format!("pending:{}", prompt);
+                    let prepared = match prepare_structural_fallback(
+                        &coordinator,
+                        caller,
+                        &fallback_key,
+                    )
+                    .await
+                    {
+                        Ok(p) => p,
+                        Err(FallbackBlocked::RootCaller) => {
+                            task_errors[idx] = Some(format!(
+                                "coordinator reserve failed (root cannot self-execute): {}",
+                                e
+                            ));
+                            continue;
+                        }
+                        Err(FallbackBlocked::AlreadyUsed) => {
+                            task_errors[idx] = Some(format!(
+                                "coordinator reserve failed (fallback already used): {}",
+                                e
+                            ));
+                            continue;
+                        }
+                    };
+                    let ghost_context = prepared.ghost;
+                    let ghost_node_id = prepared.agent_id;
+                    let sub_progress = build_sub_progress(
+                        progress_store.as_ref(),
+                        &root_node_id,
+                        &ghost_node_id,
+                        &sub_label,
+                    )
+                    .await;
+                    let sub_coordinator = coordinator.clone();
+                    let sub_workdir = workdir.clone();
+                    tracing::info!(
+                        target: "rlm",
+                        phase = "execute",
+                        fallback = "structural",
+                        idx = idx,
+                        "RLM pipeline: depth-limit fallback, self-executing subtask inline"
+                    );
+                    let handle = tokio::spawn(async move {
+                        let mut sub_system_prompt =
+                            "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.".to_string();
+                        inject_format_instruction("analysis", &mut sub_system_prompt);
+                        let result = run_subagent_loop(
+                            &api_client,
+                            registry.clone(),
+                            &ghost_context,
+                            sub_coordinator.clone(),
+                            &sub_system_prompt,
+                            &prompt,
+                            &allowed,
+                            100,
+                            timeout_secs,
+                            sub_progress,
+                            task_budget,
+                            sub_workdir,
+                        )
+                        .await;
+                        // Ghost is not registered in coordinator scopes; skip
+                        // finish_child (no permit to release, no scope to retire).
+                        (result, idx)
+                    });
+                    handles.push(handle);
                     continue;
                 }
             };
@@ -285,56 +416,13 @@ Context: {context}
             // Use the coordinator-owned child's identity as the progress-store
             // key so build_local_view() can cross-fill messages/snapshots/tokens.
             let sub_node_id = sub_context.agent_id.as_str().to_string();
-            let sub_progress: Option<ProgressCallback> =
-                if let Some((ref store, ref session_id)) = progress_store {
-                    let store = store.clone();
-                    let sid = session_id.clone();
-                    let nid = sub_node_id.clone();
-                    let pid = root_node_id.clone();
-                    let lbl = sub_label.clone();
-                    // Register Pending node before spawn
-                    {
-                        let mut s = store.write().await;
-                        s.entry(sid.clone()).or_default().insert(
-                            nid.clone(),
-                            SubagentProgress {
-                                node_id: nid.clone(),
-                                parent_id: pid.clone(),
-                                label: lbl.clone(),
-                                status: SubagentStatus::Pending,
-                                round: None,
-                                max_rounds: Some(100),
-                                current_tool: None,
-                                current_params: None,
-                                action_log: Vec::new(),
-                                text_snapshot: None,
-                                started_at: chrono::Utc::now().timestamp_millis(),
-                                elapsed_ms: 0,
-                                metadata: None,
-                                progress_delta: None,
-                                token_budget_k: None,
-                                cumulative_tokens: 0,
-                                error_details: None,
-                                events: Vec::new(),
-                                messages: Vec::new(),
-                            },
-                        );
-                    }
-                    Some(Arc::new(move |mut progress: SubagentProgress| {
-                        progress.node_id = nid.clone();
-                        progress.parent_id = pid.clone();
-                        progress.label = lbl.clone();
-                        let store = store.clone();
-                        let sid = sid.clone();
-                        let nid = nid.clone();
-                        tokio::spawn(async move {
-                            let mut s = store.write().await;
-                            s.entry(sid).or_default().insert(nid, progress);
-                        });
-                    }))
-                } else {
-                    None
-                };
+            let sub_progress = build_sub_progress(
+                progress_store.as_ref(),
+                &root_node_id,
+                &sub_node_id,
+                &sub_label,
+            )
+            .await;
             let sub_coordinator = coordinator.clone();
             let sub_workdir = workdir.clone();
             let handle = tokio::spawn(async move {
