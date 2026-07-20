@@ -12,9 +12,11 @@
 
 pub mod budget;
 pub mod formats;
+pub mod planner;
 mod pipeline;
 
 pub use pipeline::{extract_json, run_rlm_pipeline, RlmResult};
+pub use planner::{Planner, SubTask};
 
 use crate::agent::progress::{SubagentProgress, SubagentStatus};
 use crate::agent::{AgentCoordinator, ToolContext};
