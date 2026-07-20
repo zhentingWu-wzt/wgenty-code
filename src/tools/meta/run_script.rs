@@ -111,7 +111,66 @@ impl Tool for RunScriptTool {
                         .await
                     {
                         Ok(r) => r,
-                        Err(e) => return format!("[ERROR] coordinator reserve failed: {}", e),
+                        Err(e) => {
+                            // Structural failure (depth / concurrency / task-group):
+                            // self-execute the prompt inline via the shared
+                            // fallback path so depth-limit does not drop work.
+                            use crate::agent::fallback::{
+                                fallback_eligible_from_coordinator_error,
+                                prepare_structural_fallback, FallbackBlocked,
+                            };
+                            if fallback_eligible_from_coordinator_error(&e).is_none() {
+                                return format!(
+                                    "[ERROR] coordinator reserve failed: {}",
+                                    e
+                                );
+                            }
+                            let fallback_key = format!("pending:{}", prompt);
+                            let prepared = match prepare_structural_fallback(
+                                &coordinator,
+                                &caller,
+                                &fallback_key,
+                            )
+                            .await
+                            {
+                                Ok(p) => p,
+                                Err(FallbackBlocked::RootCaller) => {
+                                    return format!(
+                                        "[ERROR] coordinator reserve failed (root cannot self-execute): {}",
+                                        e
+                                    );
+                                }
+                                Err(FallbackBlocked::AlreadyUsed) => {
+                                    return format!(
+                                        "[ERROR] coordinator reserve failed (fallback already used): {}",
+                                        e
+                                    );
+                                }
+                            };
+                            let ghost = prepared.ghost;
+                            let result = run_subagent_loop(
+                                &client,
+                                reg.clone(),
+                                &ghost,
+                                coordinator.clone(),
+                                "You are a sub-agent in a Rhai script. Execute the task precisely and return a concise result.",
+                                &prompt,
+                                &tools,
+                                10,
+                                120,
+                                None,
+                                None,
+                                None,
+                            )
+                            .await;
+                            return match result {
+                                Ok(r) => r,
+                                Err(err) => format!(
+                                    "[ERROR] fallback execution failed: {}",
+                                    err
+                                ),
+                            };
+                        }
                     };
                     let child_context = reservation.context.clone();
                     let result = run_subagent_loop(
