@@ -17,6 +17,7 @@ pub mod git;
 pub mod hooks;
 pub mod node;
 pub mod node_runtime;
+pub mod node_tools;
 pub mod session;
 pub mod verify_gate;
 
@@ -26,6 +27,7 @@ pub use hooks::{
 };
 pub use node::{Node, NodeContract, NodeId, NodeStates, NodeStatus};
 pub use node_runtime::{NodeRollbackResult, NodeRuntime, NodeVerifyResult};
+pub use node_tools::{BeginNodeTool, RollbackNodeTool, VerifyNodeTool};
 pub use session::{GitRefs, SessionSource, SessionState, SessionStatus, TurnRecord};
 pub use verify_gate::{
     CommandExecutor, CommandRun, ProcessCommandExecutor, UnverifiedOutcome, VerifyAndCompleteTool,
