@@ -1,0 +1,14 @@
+{
+  "change": "esc-interrupt-turn",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "95b55d0bf9f37a8dc3ce081333b0a19a07cacad833c7cde790d11b141c89580d",
+  "files": [
+    { "path": "openspec/changes/esc-interrupt-turn/proposal.md", "sha256": "c3f906a798ff689918d88ea842f42de9829151be98e837aaaba1aa46245180a9" },
+    { "path": "openspec/changes/esc-interrupt-turn/design.md", "sha256": "01d8a948e15f5564c5fba20521b84931f275f63a62e93bc17dc8efd57a632e11" },
+    { "path": "openspec/changes/esc-interrupt-turn/tasks.md", "sha256": "6e10fc3a689fa9c7eff2ac970fec36a1df6997f693e6600a0c5697c820944685" },
+    { "path": "openspec/changes/esc-interrupt-turn/specs/tui-turn-interruption/spec.md", "sha256": "322bb062347f53cb484a1be594355fb006447bd24676b50f40c1ff6c06790c5d" }
+  ]
+}
