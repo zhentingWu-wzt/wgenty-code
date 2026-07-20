@@ -79,25 +79,38 @@ impl MacOSBackend {
         // These are denied regardless of the workspace, so an escaped or
         // hostile command cannot exfiltrate keys even though reads are
         // otherwise allowed under `(allow default)`.
+        //
+        // Exception: when network is Full (Normal/AcceptEdits Standard), allow
+        // macOS Keychain + SSH agent material so `git push` / `gh` can use the
+        // user's existing credentials via osxkeychain. Without this carve-out,
+        // git credential-osxkeychain returns empty inside the sandbox and git
+        // falls back to a Username/Password prompt on /dev/tty — which paints
+        // into the parent TUI input line. Plan/High (no network) still denies
+        // Keychains; there is no legitimate remote-auth need.
         let home = dirs::home_dir();
+        let allow_remote_auth_secrets = matches!(profile.network, NetworkPolicy::Full);
         let secret_subpaths: Vec<String> = home
             .as_ref()
             .map(|h| {
-                [
-                    ".ssh",
+                let mut secrets: Vec<&str> = vec![
                     ".aws",
                     ".gnupg",
                     ".config/gcloud",
                     ".kube",
                     ".docker",
                     ".netrc",
-                    "Library/Keychains",
                     "Library/Application Support/Google/Chrome",
                     "Library/Cookies",
-                ]
-                .iter()
-                .map(|s| h.join(s).to_string_lossy().into_owned())
-                .collect()
+                ];
+                // Remote-auth material only when the profile already permits egress.
+                if !allow_remote_auth_secrets {
+                    secrets.push(".ssh");
+                    secrets.push("Library/Keychains");
+                }
+                secrets
+                    .iter()
+                    .map(|s| h.join(s).to_string_lossy().into_owned())
+                    .collect()
             })
             .unwrap_or_default();
         sb.push_str(";; Hard-deny reads of secret / credential material\n");
@@ -106,6 +119,20 @@ impl MacOSBackend {
             sb.push_str(&format!("    (subpath \"{}\")\n", path));
         }
         sb.push_str(")\n\n");
+        if allow_remote_auth_secrets {
+            sb.push_str(
+                ";; Network=Full: permit Keychain + .ssh reads for git/gh credential helpers\n",
+            );
+            if let Some(ref h) = home {
+                let keychains = h.join("Library/Keychains");
+                let ssh = h.join(".ssh");
+                sb.push_str(&format!(
+                    "(allow file-read* (subpath \"{}\") (subpath \"{}\"))\n\n",
+                    keychains.display(),
+                    ssh.display()
+                ));
+            }
+        }
 
         // ---- Writes: deny everything under $HOME, then re-allow the
         // workspace and /tmp. Under `(allow default)` file writes would be
@@ -154,9 +181,15 @@ impl MacOSBackend {
         sb.push_str("    (subpath \"/dev/stdin\")\n");
         sb.push_str("    (subpath \"/dev/stdout\")\n");
         sb.push_str("    (subpath \"/dev/stderr\")\n");
-        sb.push_str("    (subpath \"/dev/tty\")\n");
+        // NOTE: deliberately NOT allowing /dev/tty. Child tools that open the
+        // controlling terminal (git credential Username/Password prompts,
+        // sudo, ssh password prompts) would paint into the parent TUI's raw
+        // alternate screen and steal keystrokes from the input line. Stdio is
+        // always piped via configure_captured_stdio; /dev/tty is never needed.
         sb.push_str("    (subpath \"/dev/dtracehelper\")\n");
         sb.push_str(")\n");
+        // Explicit deny so `(allow default)` cannot re-open the controlling TTY.
+        sb.push_str("(deny file-read* file-write* (literal \"/dev/tty\"))\n");
         sb.push_str("(allow sysctl-read)\n");
         sb.push_str("(allow signal)\n");
         sb.push_str("(allow process-info*)\n");
@@ -260,12 +293,17 @@ impl SandboxBackend for MacOSBackend {
 
         // Absolute paths only: after env_clear, bare `sh` can ENOENT if PATH is
         // missing/wrong. Codex also pins sandbox-exec to /usr/bin.
+        // Prefix non-interactive exports inside the sandboxed shell so git cannot
+        // open /dev/tty even if env_clear dropped process-level vars mid-flight.
+        let wrapped = format!(
+            "export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/bin/false SSH_ASKPASS=/usr/bin/false SSH_ASKPASS_REQUIRE=never GCM_INTERACTIVE=never CI=true; {command}"
+        );
         let mut cmd = tokio::process::Command::new("/usr/bin/sandbox-exec");
         cmd.arg("-f")
             .arg(&profile_path)
             .arg("/bin/sh")
             .arg("-c")
-            .arg(command);
+            .arg(wrapped);
 
         // Keep child output off the parent TUI console.
         super::configure_captured_stdio(&mut cmd);
@@ -278,6 +316,8 @@ impl SandboxBackend for MacOSBackend {
                 }
             }
         }
+        // Re-apply after possible env_clear (configure_captured_stdio already set these).
+        super::apply_noninteractive_env(&mut cmd);
 
         if let Some(dir) = workdir.or(profile.workdir.as_deref()) {
             cmd.current_dir(dir);
@@ -332,6 +372,7 @@ mod tests {
 
     #[test]
     fn profile_denies_secrets_and_home_writes() {
+        // default_for_workspace uses NetworkPolicy::None → Keychains/.ssh denied.
         let sb = MacOSBackend::generate_profile(&ws_profile());
         let home = dirs::home_dir().expect("home dir");
 
@@ -355,6 +396,57 @@ mod tests {
         assert!(
             sb.contains("(subpath \"/tmp/test-ws\")"),
             "seatbelt profile should re-allow writes to the workspace: {sb}"
+        );
+    }
+
+    #[test]
+    fn profile_denies_dev_tty() {
+        let sb = MacOSBackend::generate_profile(&ws_profile());
+        assert!(
+            sb.contains("(deny file-read* file-write* (literal \"/dev/tty\"))"),
+            "seatbelt profile must deny /dev/tty to protect parent TUI: {sb}"
+        );
+        assert!(
+            !sb.contains("(subpath \"/dev/tty\")"),
+            "seatbelt profile must not allow /dev/tty: {sb}"
+        );
+    }
+
+    #[test]
+    fn profile_allows_keychain_when_network_full() {
+        let home = dirs::home_dir().expect("home dir");
+        let keychains = home.join("Library/Keychains");
+        let ssh = home.join(".ssh");
+
+        let mut p = ws_profile();
+        p.network = NetworkPolicy::Full;
+        let sb = MacOSBackend::generate_profile(&p);
+
+        // Must explicitly allow Keychain/.ssh reads for credential helpers.
+        assert!(
+            sb.contains(&format!(
+                "(allow file-read* (subpath \"{}\") (subpath \"{}\"))",
+                keychains.display(),
+                ssh.display()
+            )),
+            "Full network profile should allow Keychain + .ssh reads: {sb}"
+        );
+        // Still deny other secrets.
+        let aws = home.join(".aws").to_string_lossy().into_owned();
+        assert!(
+            sb.contains(&format!("(subpath \"{aws}\")")),
+            "Full network profile should still deny .aws: {sb}"
+        );
+        // And must NOT list Keychains inside the deny block as a hard deny that
+        // wins forever — the allow carve-out is the intended path. Presence of
+        // the allow line above is the contract; Keychains should not appear
+        // only-as-deny without the allow.
+        assert!(
+            !sb.contains(&format!(
+                "(deny file-read*\n    (subpath \"{}\")\n)",
+                keychains.display()
+            )),
+            "Keychains must not be the sole deny target without allow carve-out"
         );
     }
 

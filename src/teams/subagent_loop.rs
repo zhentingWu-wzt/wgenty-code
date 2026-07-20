@@ -919,10 +919,8 @@ pub async fn run_subagent_loop_with_permissions(
     let start = Instant::now();
     let started_at_ms = chrono::Utc::now().timestamp_millis();
 
-    let seed = vec![
-        ChatMessage::system(system_prompt),
-        ChatMessage::user(user_prompt),
-    ];
+    let system_messages = vec![ChatMessage::system(system_prompt)];
+    let seed = vec![ChatMessage::user(user_prompt)];
     let history = MutexHistoryStore::new(Arc::new(tokio::sync::Mutex::new(seed)));
 
     let llm = ApiLlmPort::new(api_client.clone());
@@ -1016,6 +1014,7 @@ pub async fn run_subagent_loop_with_permissions(
             inbox: inbox.as_ref().map(|i| i as &dyn InboxPort),
             session: None,
         },
+        system_messages: &system_messages,
     });
 
     let timeout_future = tokio::time::timeout(timeout_duration, loop_future);

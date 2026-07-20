@@ -45,6 +45,8 @@ impl SandboxBackend for NoneBackend {
                 }
             }
         }
+        // Re-apply after possible env_clear (configure_captured_stdio already set these).
+        super::apply_noninteractive_env(&mut cmd);
 
         // Apply working directory
         if let Some(dir) = workdir.or(profile.workdir.as_deref()) {

@@ -222,12 +222,15 @@ impl DaemonState {
                 registry.register(Box::new(rlm_tool));
             }
 
-            let run_script_tool = crate::tools::meta::run_script::RunScriptTool::new(
-                app_state.settings.clone(),
-                weak_reg.clone(),
-                coordinator.clone(),
-            );
-            registry.register(Box::new(run_script_tool));
+            #[cfg(feature = "scripting")]
+            {
+                let run_script_tool = crate::tools::meta::run_script::RunScriptTool::new(
+                    app_state.settings.clone(),
+                    weak_reg.clone(),
+                    coordinator.clone(),
+                );
+                registry.register(Box::new(run_script_tool));
+            }
 
             // Wire external skill registry into the skill tool so the model can
             // invoke external skills via the `skill` tool (fixes C1).

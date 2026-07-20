@@ -35,7 +35,6 @@ impl AgentLoop {
         let compactor = TuiCompactor::new(
             self.client.clone(),
             self.event_tx.clone(),
-            self.assembled_system_messages.clone(),
             self.memory_manager.clone(),
             compacted_summary.clone(),
         );
@@ -60,6 +59,7 @@ impl AgentLoop {
             preparing_tools_fired: self.preparing_tools_fired,
             rounds_since_plan: self.rounds_since_plan,
             compacted_summary: self.compacted_summary.clone(),
+            compaction_boundary: self.compaction_boundary,
             consecutive_parse_errors: 0,
             rounds_since_task_mgmt: 0,
         };
@@ -92,6 +92,7 @@ impl AgentLoop {
                 inbox: None,
                 session: None,
             },
+            system_messages: &self.assembled_system_messages,
         })
         .await;
 
@@ -100,6 +101,7 @@ impl AgentLoop {
         self.compaction_failed = state.compaction_failed;
         self.preparing_tools_fired = state.preparing_tools_fired;
         self.rounds_since_plan = state.rounds_since_plan;
+        self.compaction_boundary = state.compaction_boundary;
         self.compacted_summary = compacted_summary.lock().await.clone();
         if self.compacted_summary.is_empty() {
             self.compacted_summary = state.compacted_summary;
