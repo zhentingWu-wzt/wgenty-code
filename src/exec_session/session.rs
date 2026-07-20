@@ -81,6 +81,13 @@ pub struct SessionState {
     pub updated_at: String,
     pub turns: Vec<TurnRecord>,
     pub current_turn: Option<String>,
+    /// Node chain for the outer-layer node state machine. Backward compat:
+    /// old sessions without this field deserialize as empty.
+    #[serde(default)]
+    pub node_states: Vec<crate::exec_session::node::Node>,
+    /// Current node cursor (outer layer). `None` when no node is active.
+    #[serde(default)]
+    pub current_node: Option<String>,
 }
 
 impl SessionState {
@@ -96,6 +103,8 @@ impl SessionState {
             updated_at: now,
             turns: Vec::new(),
             current_turn: None,
+            node_states: Vec::new(),
+            current_node: None,
         }
     }
 
@@ -314,5 +323,61 @@ mod tests {
 
         s.current_turn = None;
         assert!(s.current_turn_record().is_none());
+    }
+
+    #[test]
+    fn new_initializes_empty_node_states() {
+        let s = SessionState::new("es-nodes".into(), SessionSource::AgentSelf);
+        assert!(s.node_states.is_empty());
+        assert_eq!(s.current_node, None);
+    }
+
+    #[test]
+    fn backward_compat_old_json_without_node_fields() {
+        // Simulate an old session.json created before node_states/current_node
+        // existed. serde(default) must fill in empty Vec and None.
+        let old_json = r#"{
+            "session_id": "es-old",
+            "source": "agent-self",
+            "status": "in_progress",
+            "created_at": "2026-07-19T00:00:00+00:00",
+            "updated_at": "2026-07-19T00:00:00+00:00",
+            "turns": [],
+            "current_turn": null
+        }"#;
+        let s: SessionState = serde_json::from_str(old_json).expect("deserialize old format");
+        assert_eq!(s.session_id, "es-old");
+        assert!(s.node_states.is_empty());
+        assert_eq!(s.current_node, None);
+    }
+
+    #[test]
+    fn node_states_round_trip_through_save_load() {
+        let dir = tempdir().unwrap();
+        let mut s = SessionState::new("es-ns".into(), SessionSource::AgentSelf);
+        s.node_states.push(crate::exec_session::node::Node {
+            id: "n1".into(),
+            contract: crate::exec_session::node::NodeContract {
+                goal: "test goal".into(),
+                verify_commands: vec!["echo ok".into()],
+                expected_files: vec![],
+            },
+            status: crate::exec_session::node::NodeStatus::Verified,
+            start_turn_id: "turn-0".into(),
+            retry_count: 0,
+            verify_log_path: "log.json".into(),
+            created_at: "2026-07-20T00:00:00+00:00".into(),
+        });
+        s.current_node = Some("n1".into());
+        s.save(dir.path()).unwrap();
+
+        let loaded = SessionState::load(dir.path()).unwrap();
+        assert_eq!(loaded.node_states.len(), 1);
+        assert_eq!(loaded.node_states[0].id, "n1");
+        assert_eq!(
+            loaded.node_states[0].status,
+            crate::exec_session::node::NodeStatus::Verified
+        );
+        assert_eq!(loaded.current_node, Some("n1".into()));
     }
 }
