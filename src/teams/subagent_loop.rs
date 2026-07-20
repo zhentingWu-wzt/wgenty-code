@@ -16,7 +16,7 @@ use crate::agent::runtime::{
 };
 use crate::agent::{
     AgentCoordinator, AgentExecutionContext, AgentId, ChildResult, ChildTerminalStatus,
-    CoordinatorError,
+    CoordinatorError, JoinPolicy,
 };
 use crate::api::{ApiClient, ChatMessage};
 use crate::teams::approval_registry;
@@ -223,7 +223,13 @@ struct SubagentSynthesis {
 impl SynthesisPort for SubagentSynthesis {
     async fn on_candidate_final(&self, _candidate: &str) -> Result<Option<String>, RuntimeError> {
         if !self.is_non_root {
-            return Ok(None);
+            // Root (main agent): await in-flight subagents and synthesize their
+            // results before finalizing. Without this, the main agent's final
+            // answer ignored subagent work entirely -- the task tool returns an
+            // immediate ack and root previously short-circuited to `None`, so
+            // subagent changes were invisible until a later continuation turn
+            // (and dropped entirely if a generation reset intervened).
+            return self.synthesize_root_children().await;
         }
 
         let child_results = self
@@ -265,6 +271,77 @@ impl SynthesisPort for SubagentSynthesis {
             .map_err(|e: CoordinatorError| {
                 RuntimeError::Stream(format!("subagent lifecycle coordination failed: {e}"))
             })?;
+        Ok(None)
+    }
+}
+
+impl SubagentSynthesis {
+    /// Root-specific synthesis: await all live direct children (so in-flight
+    /// subagents complete before the main agent finalizes), claim the ready
+    /// root-direct task group for this turn, and return any
+    /// not-yet-synthesized results.
+    ///
+    /// Mirrors the non-root `collect_children_for_synthesis` flow but uses
+    /// `claim_ready_root_group` instead of the owner-group transition path,
+    /// because the persistent root has no terminal state to transition through.
+    ///
+    /// Blocking the main agent's final answer until spawned subagents finish
+    /// is the desired behavior: the main agent delegated work and should
+    /// incorporate it before delivering. Subagents carry their own timeouts,
+    /// so this cannot hang indefinitely.
+    async fn synthesize_root_children(&self) -> Result<Option<String>, RuntimeError> {
+        // Join all live direct children. Awaits each child's terminal state
+        // (natural completion, external `finish_child`, or subagent timeout).
+        let joined = self
+            .coordinator
+            .join_children(&self.context, JoinPolicy::BestEffort)
+            .await
+            .map_err(|e: CoordinatorError| {
+                RuntimeError::Stream(format!("root subagent join failed: {e}"))
+            })?;
+
+        // Claim the ready root-direct task group for the current generation.
+        // The group's recorded results carry richer, subagent-provided
+        // summaries than the terminal-derived join results, so prefer them
+        // when a delivery is available; fall back to `joined` otherwise
+        // (e.g. a child whose group was already claimed in a prior round, or
+        // a record_result that has not landed yet despite the terminal).
+        let generation = self
+            .coordinator
+            .current_generation(&self.context.session_id)
+            .await;
+        let delivery = self
+            .coordinator
+            .claim_ready_root_group(&self.context, generation)
+            .await
+            .map_err(|e: CoordinatorError| {
+                RuntimeError::Stream(format!("root subagent claim failed: {e}"))
+            })?;
+
+        let results = match delivery {
+            Some(d) if !d.results.is_empty() => d.results,
+            _ => joined,
+        };
+
+        let fresh: Vec<ChildResult> = {
+            let synthesized = self.synthesized.lock().expect("lock poisoned: synthesized");
+            results
+                .iter()
+                .filter(|r| !synthesized.contains(r.child_id.as_str()))
+                .cloned()
+                .collect()
+        };
+
+        if !fresh.is_empty() {
+            {
+                let mut synthesized = self.synthesized.lock().expect("lock poisoned: synthesized");
+                for r in &fresh {
+                    synthesized.insert(r.child_id.as_str().to_string());
+                }
+            }
+            return Ok(Some(format_child_result_batch(&fresh)));
+        }
+
         Ok(None)
     }
 }
