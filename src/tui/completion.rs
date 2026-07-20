@@ -71,6 +71,18 @@ impl CompletionEngine {
                 category: "Built-in".to_string(),
             },
             CommandEntry {
+                name: "session".to_string(),
+                description: "Open the session browser".to_string(),
+                args_hint: None,
+                category: "Built-in".to_string(),
+            },
+            CommandEntry {
+                name: "memory".to_string(),
+                description: "Open the memory browser".to_string(),
+                args_hint: None,
+                category: "Built-in".to_string(),
+            },
+            CommandEntry {
                 name: "help".to_string(),
                 description: "Show available commands".to_string(),
                 args_hint: None,
@@ -380,7 +392,7 @@ mod tests {
             .collect();
 
         for expected in [
-            "clear", "plan", "continue", "undo", "init", "compact", "help",
+            "clear", "plan", "continue", "undo", "init", "compact", "session", "memory", "help",
         ] {
             assert!(
                 command_names.contains(&expected),

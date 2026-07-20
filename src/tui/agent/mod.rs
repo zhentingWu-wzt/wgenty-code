@@ -68,10 +68,14 @@ pub struct AgentLoop {
     /// accumulated context is inherited by the next Turn in the queue.
     pub(super) conversation_history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
     /// Pre-assembled system messages (layered instructions from PromptAssembler).
-    /// Used when initializing or resetting the conversation history.
+    /// Prepended fresh each API round; never stored in `conversation_history`.
     pub(super) assembled_system_messages: Vec<ChatMessage>,
     pub(super) rounds_since_plan: usize,
     pub(super) compacted_summary: String,
+    /// Index into `conversation_history` where the summarized prefix ends.
+    /// Messages `[0..boundary)` are replaced by `compacted_summary` in the API
+    /// view but remain in the stored history (and the saved session).
+    pub(super) compaction_boundary: usize,
     /// Set by the `compact` tool to request compaction at the next loop-top
     /// check. Compaction runs at the loop top (not mid-tool-batch) so it never
     /// wipes the in-flight assistant tool_calls message — which would orphan
@@ -114,6 +118,10 @@ pub struct AgentLoop {
     /// `AgentLocalView` events so the handler can discard stale views from
     /// a previous generation after `/clear` or a generation reset.
     pub(super) agent_generation: u64,
+    /// When true, dump each turn's `<system-reminder>` under
+    /// `.wgenty-code/debug/reminders/`. Driven by `prompt.debug_dump_reminder`
+    /// or env `WGENTY_DEBUG_REMINDER`.
+    pub(super) debug_dump_reminder: bool,
 }
 
 impl AgentLoop {
@@ -136,6 +144,7 @@ impl AgentLoop {
         max_tokens: usize,
         memory_manager: Arc<crate::context::MemoryManager>,
         agent_generation: u64,
+        debug_dump_reminder: bool,
     ) -> Self {
         Self {
             client,
@@ -144,6 +153,7 @@ impl AgentLoop {
             assembled_system_messages: system_messages,
             rounds_since_plan: 0,
             compacted_summary: String::new(),
+            compaction_boundary: 0,
             compact_requested: false,
             compaction_failed: false,
             preparing_tools_fired: false,
@@ -161,6 +171,7 @@ impl AgentLoop {
             max_tokens,
             memory_manager,
             agent_generation,
+            debug_dump_reminder,
         }
     }
 
@@ -184,10 +195,10 @@ impl AgentLoop {
 
         self.token_counter.reset_turn();
         self.compaction_failed = false;
-        // Guard: nothing meaningful to summarize (only system messages).
+        // Guard: nothing meaningful to summarize (empty conversation).
         let has_content = {
             let history = self.conversation_history.lock().await;
-            history.iter().any(|m| m.role != "system")
+            !history.is_empty()
         };
         if !has_content {
             let _ = self.event_tx.send(AppEvent::StreamError(
@@ -202,18 +213,27 @@ impl AgentLoop {
         let compactor = TuiCompactor::new(
             self.client.clone(),
             self.event_tx.clone(),
-            self.assembled_system_messages.clone(),
             self.memory_manager.clone(),
             summary_slot.clone(),
         );
-        let rewritten = compactor.compact(&history).await;
-        self.compacted_summary = summary_slot.lock().await.clone();
-        // Keep the context progress bar in sync without waiting for the next
-        // API usage report (same chars/4 heuristic as auto-compaction).
-        if rewritten {
+        let result = compactor.compact(&history).await;
+        if let Some(ref summary) = result {
+            self.compacted_summary = summary.clone();
+            // Advance the boundary so the API view drops the summarized prefix
+            // (replaced by the summary) while the full history is preserved.
             let snap = self.conversation_history.lock().await;
+            let boundary = crate::agent::runtime::compaction::split_for_compaction(&snap)
+                .0
+                .len();
+            self.compaction_boundary = boundary;
+            let tail = crate::agent::runtime::compaction::micro_compact_messages(&snap[boundary..]);
+            let view = crate::agent::runtime::compaction::assemble_post_compaction_history(
+                &self.assembled_system_messages,
+                summary,
+                &tail,
+            );
             self.token_counter
-                .set_prompt_tokens(crate::agent::runtime::estimate_prompt_tokens(&snap));
+                .set_prompt_tokens(crate::agent::runtime::estimate_prompt_tokens(&view));
         }
         Ok(())
     }
@@ -300,11 +320,33 @@ impl AgentLoop {
         // 1b. Collect injected fragments from hook outcomes.
         let injections = crate::runtime::hooks::collect_injections(&outcomes);
 
-        // 2. Build per-turn `<system-reminder>` block from file sources + hook injections.
+        // 2. Build per-turn `<system-reminder>` from hook injections only.
+        // Static WGENTY/AGENTS live in assembled_system_messages (system cascade).
         let reminder =
             crate::prompts::build_user_turn_reminder(self.prompt_context.as_ref(), &injections);
 
-        // 3. Assemble user message content: reminder (if any) prepended to user input.
+        // 2b. Optional debug dump of the user-message system-reminder channel.
+        if self.debug_dump_reminder {
+            match crate::prompts::dump_user_turn_reminder(
+                self.prompt_context.project_root.as_deref(),
+                &self.session_id,
+                &input,
+                reminder.as_ref(),
+                injections.len(),
+            ) {
+                Ok(path) => tracing::info!(
+                    path = %path.display(),
+                    hooks = injections.len(),
+                    has_reminder = reminder.is_some(),
+                    "dumped user-turn system-reminder"
+                ),
+                Err(err) => tracing::warn!(error = %err, "failed to dump system-reminder"),
+            }
+        }
+
+        // 3. Assemble user message: hook reminder (if any) prepended to user input.
+        // History stays free of static system layers; only dynamic hook context
+        // may ride along with this user turn.
         let user_content = match &reminder {
             Some(r) => format!("{}\n\n{}", r.to_model, input),
             None => input.clone(),
@@ -318,9 +360,7 @@ impl AgentLoop {
             history.push(ChatMessage::user(&user_content));
         }
 
-        // Deliver the user-visible portion of the per-turn reminder to the
-        // transcript so the user sees context that was injected (file sources,
-        // hook injections) without it being buried in the model-facing prompt.
+        // Deliver the user-visible portion of hook injections to the transcript.
         if let Some(transcript) = reminder.as_ref().and_then(|r| r.to_transcript.clone()) {
             let _ = self.event_tx.send(AppEvent::SystemNotice(transcript));
         }
@@ -341,7 +381,7 @@ impl AgentLoop {
 
     pub async fn reset(&self) {
         let mut history = self.conversation_history.lock().await;
-        *history = self.assembled_system_messages.clone();
+        history.clear();
     }
 }
 
@@ -382,6 +422,7 @@ mod tests {
             65536,
             mm.clone(),
             0,
+            false,
         );
 
         // Verify the field is accessible and is of the correct type.

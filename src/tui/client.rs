@@ -552,6 +552,7 @@ impl DaemonClient {
         id: &str,
         name: &str,
         messages: &[ChatMessage],
+        ui_messages: &[crate::context::SessionUiMessage],
     ) -> anyhow::Result<()> {
         let encoded = urlencode(id);
         let url = format!("{}/api/v1/sessions/{}", self.base_url, encoded);
@@ -559,7 +560,11 @@ impl DaemonClient {
             .http_tools()
             .put(&url)
             .header("Content-Type", "application/json")
-            .json(&serde_json::json!({"name": name, "messages": messages}))
+            .json(&serde_json::json!({
+                "name": name,
+                "messages": messages,
+                "ui_messages": ui_messages,
+            }))
             .send()
             .await?;
         if !resp.status().is_success() {
@@ -730,6 +735,9 @@ pub struct SessionResponse {
     pub created_at: String,
     pub updated_at: String,
     pub messages: Vec<ChatMessage>,
+    /// Human-facing TUI transcript; empty/absent for legacy sessions.
+    #[serde(default)]
+    pub ui_messages: Vec<crate::context::SessionUiMessage>,
 }
 
 /// Metadata for subagent tasks in the TUI layer.

@@ -37,7 +37,7 @@ impl Tool for GitOperationsTool {
     }
 
     fn description(&self) -> &str {
-        "Execute Git version control operations"
+        "Execute Git version control operations. Remote ops (push/pull) run non-interactively and never prompt on the TTY; on missing credentials the tool returns error code git_auth_required — ask the user via ask_user_question how to fix auth, do not retry blindly."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -142,15 +142,30 @@ impl GitOperationsTool {
         repo_path: &Path,
         args: &[String],
     ) -> Result<ToolOutput, ToolError> {
-        let output = tokio::process::Command::new("git")
-            .current_dir(repo_path)
-            .args(args)
-            .output()
-            .await
-            .map_err(|e| ToolError {
-                message: format!("Failed to execute git command: {}", e),
-                code: Some("git_error".to_string()),
-            })?;
+        // Never let git open /dev/tty for credentials — that hijacks the parent
+        // TUI input line (Username for 'https://...'). Fail closed into stderr.
+        // Prefer existing credential helpers (osxkeychain etc.); only disable
+        // interactive fallback via env + core.askPass.
+        let mut cmd = tokio::process::Command::new("git");
+        cmd.current_dir(repo_path)
+            .args([
+                "-c",
+                "core.askPass=/usr/bin/false",
+                // If a helper is missing, don't fall back to terminal prompts.
+                "-c",
+                "credential.interactive=false",
+            ])
+            .args(args);
+        crate::sandbox::apply_noninteractive_env(&mut cmd);
+        // Ensure piped stdio even though `.output()` sets this — belt & braces
+        // against any future refactor that switches to spawn+inherit.
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let output = cmd.output().await.map_err(|e| ToolError {
+            message: format!("Failed to execute git command: {}", e),
+            code: Some("git_error".to_string()),
+        })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -166,6 +181,14 @@ impl GitOperationsTool {
                 output_type: "text".to_string(),
                 content,
                 metadata: std::collections::HashMap::new(),
+            })
+        } else if is_git_auth_failure(&stdout, &stderr) {
+            // Never prompt on the parent TTY. Surface a structured auth error so
+            // the agent can ask the user via ask_user_question (or guide them to
+            // fix credentials outside the sandboxed tool).
+            Err(ToolError {
+                message: format_git_auth_required_error(&stdout, &stderr, &output.status),
+                code: Some("git_auth_required".to_string()),
             })
         } else {
             // 非零退出码: 返回 Err，message 透传退出码 + stdout + stderr，
@@ -392,6 +415,67 @@ impl GitOperationsTool {
     }
 }
 
+/// Detect authentication / credential failures from git stdout+stderr.
+///
+/// Used to return [`git_auth_required`] instead of a generic failure, and to
+/// instruct the agent to ask the user (never open a TTY prompt).
+fn is_git_auth_failure(stdout: &str, stderr: &str) -> bool {
+    let blob = format!("{stdout}\n{stderr}").to_ascii_lowercase();
+    // Keep markers specific — avoid bare "askpass"/"403" matching unrelated failures.
+    const MARKERS: &[&str] = &[
+        "authentication failed",
+        "authorization failed",
+        "could not read username",
+        "could not read password",
+        "invalid username or password",
+        "invalid credentials",
+        "terminal prompts disabled",
+        "git_terminal_prompt",
+        "unable to locate credentials",
+        "no credentials found",
+        "permission denied (publickey)",
+        "permission denied (keyboard-interactive)",
+        "the requested url returned error: 401",
+        "the requested url returned error: 403",
+        "http basic: access denied",
+        "fatal: could not read username",
+        "fatal: authentication failed",
+        "remote: invalid username or token",
+        "remote: support for password authentication was removed",
+        "remote: write access to repository not granted",
+        "access denied",
+        // GitHub often masks private-repo auth failures as 404.
+        "repository not found",
+    ];
+    MARKERS.iter().any(|m| blob.contains(m))
+}
+
+fn format_git_auth_required_error(
+    stdout: &str,
+    stderr: &str,
+    status: &std::process::ExitStatus,
+) -> String {
+    format!(
+        "Git authentication required (status {status}).\n\
+         \n\
+         Credentials were not available to this non-interactive git invocation \
+         (TTY prompts are disabled so the parent TUI is not hijacked).\n\
+         \n\
+         What you should do next:\n\
+         1. Use the ask_user_question tool to tell the user push/pull needs auth, \
+         and ask how they want to proceed (e.g. run `gh auth login` / \
+         `git credential-osxkeychain` / SSH key in an external terminal, \
+         switch remote to SSH, or cancel).\n\
+         2. Do NOT retry the same git push/pull in a loop hoping a username \
+         prompt will appear — it will not.\n\
+         3. After the user confirms credentials are fixed outside this tool, \
+         retry once.\n\
+         \n\
+         --- stdout ---\n{stdout}\n\
+         --- stderr ---\n{stderr}"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,6 +577,45 @@ mod tests {
             "错误信息应含 stderr 段: {}",
             err.message
         );
+    }
+
+    #[test]
+    fn detects_common_auth_failures() {
+        assert!(is_git_auth_failure(
+            "",
+            "fatal: could not read Username for 'https://github.com': terminal prompts disabled"
+        ));
+        assert!(is_git_auth_failure(
+            "",
+            "remote: Invalid username or token. Password authentication is not supported."
+        ));
+        assert!(is_git_auth_failure(
+            "",
+            "ERROR: Permission denied (publickey)."
+        ));
+        assert!(is_git_auth_failure(
+            "",
+            "fatal: Authentication failed for 'https://github.com/foo/bar.git/'"
+        ));
+        // Non-auth failures must not be classified as auth.
+        assert!(!is_git_auth_failure(
+            "",
+            "fatal: not a git repository (or any of the parent directories)"
+        ));
+        assert!(!is_git_auth_failure(
+            "",
+            "error: failed to push some refs to 'origin' (non-fast-forward)"
+        ));
+    }
+
+    #[test]
+    fn auth_error_message_instructs_ask_user() {
+        let status = std::process::Command::new("false")
+            .status()
+            .expect("spawn false");
+        let msg = format_git_auth_required_error("", "could not read Username", &status);
+        assert!(msg.contains("ask_user_question"));
+        assert!(msg.contains("Do NOT retry"));
     }
 
     /// 端到端: add -> commit -> log 流程应全部成功。

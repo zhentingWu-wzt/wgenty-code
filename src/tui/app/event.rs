@@ -534,6 +534,8 @@ impl App {
                 if self.session_state.visible {
                     self.session_state.dismiss();
                 } else {
+                    // Close memory panel if open (single overlay at a time).
+                    self.memory_state.dismiss();
                     // Show the panel immediately with an empty list so the user
                     // sees feedback right away; the actual list is loaded async.
                     self.session_state.show(Vec::new());
@@ -553,6 +555,34 @@ impl App {
                     });
                 }
             }
+            AppEvent::ToggleMemory => {
+                if self.memory_state.visible {
+                    self.memory_state.dismiss();
+                } else {
+                    self.session_state.dismiss();
+                    self.memory_state.show_loading();
+                    let mm = self.memory_manager.clone();
+                    let tx = self.event_tx.clone();
+                    tokio::spawn(async move {
+                        // Ensure disk state is loaded (idempotent if already warm).
+                        if let Err(e) = mm.load().await {
+                            tracing::warn!(error = %e, "Failed to load memories for browser");
+                        }
+                        let listed = mm.list_memories(None, 0).await;
+                        let items =
+                            listed
+                                .into_iter()
+                                .map(|(origin, entry)| {
+                                    crate::tui::components::memory::MemoryListItem { origin, entry }
+                                })
+                                .collect();
+                        let _ = tx.send(AppEvent::MemoryListLoaded(items));
+                    });
+                }
+            }
+            AppEvent::MemoryListLoaded(items) => {
+                self.memory_state.show_items(items);
+            }
             AppEvent::SessionListLoaded(sessions) => {
                 self.session_state.show(sessions);
             }
@@ -567,74 +597,84 @@ impl App {
                     }
                 });
             }
-            AppEvent::HistoryLoaded(messages) => {
-                // First pass: build tool_use_map from assistant messages' tool_calls
-                // Maps tool_call id -> (tool_name, tool_args)
-                let mut tool_use_map: HashMap<String, (String, serde_json::Value)> = HashMap::new();
-                for msg in &messages {
-                    if let Some(tool_calls) = &msg.tool_calls {
-                        for tc in tool_calls {
-                            let args = serde_json::from_str(&tc.function.arguments)
-                                .unwrap_or(serde_json::Value::Null);
-                            tool_use_map.insert(tc.id.clone(), (tc.function.name.clone(), args));
-                        }
-                    }
-                }
-
-                // Second pass: convert ChatMessage to UIMessage, filtering system messages
+            AppEvent::HistoryLoaded {
+                messages,
+                ui_messages,
+            } => {
                 self.committed_messages.clear();
                 self.sandbox_bypassed_session = false;
-                for msg in &messages {
-                    match msg.role.as_str() {
-                        "system" => continue,
-                        "tool" => {
-                            let (tool_name, tool_args) = msg
-                                .tool_call_id
-                                .as_ref()
-                                .and_then(|id| tool_use_map.get(id))
-                                .map(|(n, a)| (Some(n.clone()), Some(a.clone())))
-                                .unwrap_or_else(|| {
-                                    // Fallback: use the call_id as the display name
-                                    (msg.tool_call_id.clone(), None)
+
+                if !ui_messages.is_empty() {
+                    // Prefer the human-facing UI track (preserves system notices,
+                    // diffs, tool metadata, collapse state after compact).
+                    self.committed_messages = ui_messages
+                        .into_iter()
+                        .map(UIMessage::from_session_ui_message)
+                        .collect();
+                } else {
+                    // Legacy sessions: rebuild a poorer UI from model messages.
+                    let mut tool_use_map: HashMap<String, (String, serde_json::Value)> =
+                        HashMap::new();
+                    for msg in &messages {
+                        if let Some(tool_calls) = &msg.tool_calls {
+                            for tc in tool_calls {
+                                let args = serde_json::from_str(&tc.function.arguments)
+                                    .unwrap_or(serde_json::Value::Null);
+                                tool_use_map
+                                    .insert(tc.id.clone(), (tc.function.name.clone(), args));
+                            }
+                        }
+                    }
+
+                    for msg in &messages {
+                        match msg.role.as_str() {
+                            "system" => continue,
+                            "tool" => {
+                                let (tool_name, tool_args) = msg
+                                    .tool_call_id
+                                    .as_ref()
+                                    .and_then(|id| tool_use_map.get(id))
+                                    .map(|(n, a)| (Some(n.clone()), Some(a.clone())))
+                                    .unwrap_or_else(|| (msg.tool_call_id.clone(), None));
+                                let role = MessageRole::Tool;
+                                let content = msg.content.clone().unwrap_or_default();
+                                let (content_collapsed, tool_collapsed) =
+                                    compute_collapse_state(&role, &content);
+                                self.committed_messages.push(UIMessage {
+                                    role,
+                                    content,
+                                    tool_name,
+                                    tool_args,
+                                    content_collapsed,
+                                    tool_collapsed,
+                                    tool_running: false,
+                                    diff_data: None,
+                                    tool_metadata: None,
                                 });
-                            let role = MessageRole::Tool;
-                            let content = msg.content.clone().unwrap_or_default();
-                            let (content_collapsed, tool_collapsed) =
-                                compute_collapse_state(&role, &content);
-                            self.committed_messages.push(UIMessage {
-                                role,
-                                content,
-                                tool_name,
-                                tool_args,
-                                content_collapsed,
-                                tool_collapsed,
-                                tool_running: false,
-                                diff_data: None,
-                                tool_metadata: None,
-                            });
+                            }
+                            "user" | "assistant" => {
+                                let role = if msg.role == "user" {
+                                    MessageRole::User
+                                } else {
+                                    MessageRole::Assistant
+                                };
+                                let content = msg.content.clone().unwrap_or_default();
+                                let (content_collapsed, tool_collapsed) =
+                                    compute_collapse_state(&role, &content);
+                                self.committed_messages.push(UIMessage {
+                                    role,
+                                    content,
+                                    tool_name: None,
+                                    tool_args: None,
+                                    content_collapsed,
+                                    tool_collapsed,
+                                    tool_running: false,
+                                    diff_data: None,
+                                    tool_metadata: None,
+                                });
+                            }
+                            _ => continue,
                         }
-                        "user" | "assistant" => {
-                            let role = if msg.role == "user" {
-                                MessageRole::User
-                            } else {
-                                MessageRole::Assistant
-                            };
-                            let content = msg.content.clone().unwrap_or_default();
-                            let (content_collapsed, tool_collapsed) =
-                                compute_collapse_state(&role, &content);
-                            self.committed_messages.push(UIMessage {
-                                role,
-                                content,
-                                tool_name: None,
-                                tool_args: None,
-                                content_collapsed,
-                                tool_collapsed,
-                                tool_running: false,
-                                diff_data: None,
-                                tool_metadata: None,
-                            });
-                        }
-                        _ => continue,
                     }
                 }
                 self.scroll_offset = 0;
@@ -824,23 +864,10 @@ impl App {
                 }
             }
             AppEvent::SaveSession => {
-                let id = self.session_id.clone();
-                let name = self.session_name.clone();
-                let client = self.daemon_client.clone();
-                let history = self.conversation_history.clone();
-                tokio::spawn(async move {
-                    let h = history.lock().await.clone();
-                    if let Err(e) = client.save_session(&id, &name, &h).await {
-                        // Previously `let _ =` swallowed failures, so missing
-                        // sessions looked like "never saved". Surface for logs.
-                        tracing::error!(
-                            session_id = %id,
-                            session_name = %name,
-                            error = %e,
-                            "Failed to save session to daemon"
-                        );
-                    }
-                });
+                // Fire-and-forget but serialized via session_save_lock so a
+                // later exit flush cannot be overwritten by a slower earlier
+                // TurnComplete save.
+                self.spawn_save_session();
             }
             AppEvent::CtrlCPressed => {
                 let now = std::time::Instant::now();
@@ -937,17 +964,10 @@ impl App {
                 let assembled = prompts::assemble_instructions(&settings, &new_ctx);
 
                 self.prompt_context = new_ctx;
-                self.assembled_system_messages = assembled.system_messages.clone();
-
-                // If no turns have started yet (the common case at startup),
-                // replace the conversation history so the first turn includes
-                // the skills. If a turn is already in flight (race with
-                // --prompt), the updated assembled_system_messages will be
-                // used on the next turn.
-                if self.turn_count == 0 {
-                    let mut history = self.conversation_history.lock().await;
-                    *history = assembled.system_messages;
-                }
+                // System layers are prepended each API round from this cache;
+                // conversation_history stays dialogue-only and is never seeded
+                // with system messages (avoids duplication after SkillsReady).
+                self.assembled_system_messages = assembled.system_messages;
 
                 tracing::info!(
                     skill_count = self.prompt_context.skills_inventory.len(),

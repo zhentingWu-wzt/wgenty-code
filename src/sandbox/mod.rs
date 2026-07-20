@@ -18,8 +18,8 @@ pub mod profile;
 use std::path::Path;
 
 pub use backends::{
-    configure_captured_stdio, create_backend, shell_command, shell_command_captured,
-    std_shell_command,
+    apply_noninteractive_env, apply_noninteractive_env_std, configure_captured_stdio,
+    create_backend, shell_command, shell_command_captured, std_shell_command,
 };
 pub use config::{SandboxConfig, SecurityLevel};
 pub use error::SandboxError;

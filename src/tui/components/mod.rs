@@ -3,6 +3,7 @@ pub mod completion_panel;
 pub mod context_bar;
 pub mod diff;
 pub mod input;
+pub mod memory;
 pub mod permission;
 
 pub mod plan_panel;

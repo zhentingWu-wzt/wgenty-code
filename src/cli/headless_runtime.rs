@@ -222,9 +222,8 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
     }
 
     let assembled = prompts::assemble_instructions(&settings, &prompt_ctx);
-    let system_messages = assembled.system_messages.clone();
-    let mut seed = assembled.system_messages;
-    seed.push(ChatMessage::user(&prompt));
+    let system_messages = assembled.system_messages;
+    let mut seed = vec![ChatMessage::user(&prompt)];
 
     if memories_loaded {
         let recall_top_n = settings.storage.memory.recall_top_n;
@@ -279,8 +278,8 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
     let events = CliEventSink::new(std::env::var("WGENTY_VERBOSE").is_ok());
 
     let verbose = std::env::var("WGENTY_VERBOSE").is_ok();
-    let compactor = ApiCompactor::new(llm_for_compact, system_messages, Some(memory_manager))
-        .with_status_sink(move |msg| {
+    let compactor =
+        ApiCompactor::new(llm_for_compact, Some(memory_manager)).with_status_sink(move |msg| {
             // Always show compact status on stderr (not only when verbose).
             eprintln!("[compact] {}", msg);
             let _ = verbose; // silence unused when not verbose-gated
@@ -319,6 +318,7 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
             inbox: None,
             session: None,
         },
+        system_messages: &system_messages,
     })
     .await?;
 

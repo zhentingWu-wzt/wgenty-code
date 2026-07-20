@@ -52,10 +52,11 @@ impl App {
             self.phase = AgentPhase::Idle;
             self.suppress_phase_updates = true;
             let history = self.conversation_history.clone();
-            let sys_msgs = self.assembled_system_messages.clone();
             tokio::spawn(async move {
                 let mut h = history.lock().await;
-                *h = sys_msgs;
+                // Dialogue-only: system layers live in assembled_system_messages
+                // and are prepended each API round — never stored in history.
+                h.clear();
             });
             // Clear queued inputs: a fresh generation cancels obsolete work.
             self.pending_inputs.clear();
@@ -206,6 +207,17 @@ impl App {
             }
             self.push_system_message("🔄 Compacting conversation history...");
             self.spawn_compact_turn();
+            return;
+        }
+        // Session / memory browsers (slash-only; no Ctrl bindings).
+        // Accept common plurals as aliases.
+        let slash = text.trim();
+        if matches!(slash, "/session" | "/sessions") {
+            let _ = self.event_tx.send(AppEvent::ToggleSessions);
+            return;
+        }
+        if matches!(slash, "/memory" | "/memories") {
+            let _ = self.event_tx.send(AppEvent::ToggleMemory);
             return;
         }
         if text.trim() == "/help" {

@@ -100,18 +100,35 @@ impl CompletionPanel {
                 .add_modifier(Modifier::DIM);
 
             let marker = if is_selected { "›" } else { " " };
+            let name_style = if is_selected {
+                Style::default()
+                    .fg(Color::Rgb(203, 166, 247))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Rgb(220, 220, 235))
+            };
+            // Fixed-ish columns: marker+name, category badge, description, args.
+            let name_col = format!("{} {}", marker, truncate_pad(&m.text, 18));
+            let cat_col = format!(" {}", truncate_pad(&format!("[{}]", m.category), 10));
+            let row_bg = if is_selected {
+                Color::Rgb(40, 40, 70)
+            } else {
+                Color::Rgb(26, 26, 46)
+            };
             let mut parts = vec![
-                Span::styled(format!("{} {}", marker, m.text), style),
-                Span::styled(format!("  [{}]", m.category), category_style),
+                Span::styled(name_col, name_style.bg(row_bg)),
+                Span::styled(cat_col, category_style.bg(row_bg)),
                 Span::styled(
-                    format!("  {}", m.description),
-                    style.add_modifier(Modifier::DIM),
+                    format!(" {}", m.description),
+                    style.add_modifier(Modifier::DIM).bg(row_bg),
                 ),
             ];
             if let Some(ref hint) = m.args_hint {
                 parts.push(Span::styled(
-                    format!(" {}", hint),
-                    style.add_modifier(Modifier::DIM),
+                    format!("  {}", hint),
+                    Style::default()
+                        .fg(Color::Rgb(137, 180, 250))
+                        .add_modifier(Modifier::DIM),
                 ));
             }
             lines.push(Line::from(parts));
@@ -178,6 +195,24 @@ fn tab_line(state: &CompletionState) -> Line<'static> {
     ));
 
     Line::from(parts)
+}
+
+fn truncate_pad(s: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut w = 0usize;
+    for ch in s.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > width {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    while w < width {
+        out.push(' ');
+        w += 1;
+    }
+    out
 }
 
 fn visible_item_range(

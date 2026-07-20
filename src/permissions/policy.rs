@@ -305,15 +305,40 @@ fn split_shell_commands(command: &str) -> Vec<&str> {
             b')' if !in_single && !in_double && depth > 0 => {
                 depth -= 1;
             }
-            b'&' | b';' | b'|' if !in_single && !in_double && depth == 0 => {
+            // `2>&1` / `>&2` are fd-duplication redirects, not control operators.
+            // Do not split on the `&` inside `>&`.
+            b'&' if !in_single && !in_double && depth == 0 => {
+                if i > 0 && bytes[i - 1] == b'>' {
+                    continue;
+                }
+                // `&>file` is a redirect form, not `cmd & cmd` backgrounding when
+                // immediately followed by `>` — leave it inside the sub-command.
+                if i + 1 < bytes.len() && bytes[i + 1] == b'>' {
+                    continue;
+                }
                 if start < i {
                     let sub = command[start..i].trim();
                     if !sub.is_empty() {
                         result.push(sub);
                     }
                 }
-                // Skip the second char of && / ||
-                if (b == b'&' || b == b'|') && i + 1 < bytes.len() && bytes[i + 1] == b {
+                // Skip the second char of &&
+                if i + 1 < bytes.len() && bytes[i + 1] == b'&' {
+                    start = i + 2;
+                    continue;
+                }
+                // background `&`
+                start = i + 1;
+            }
+            b';' | b'|' if !in_single && !in_double && depth == 0 => {
+                if start < i {
+                    let sub = command[start..i].trim();
+                    if !sub.is_empty() {
+                        result.push(sub);
+                    }
+                }
+                // Skip the second char of ||
+                if b == b'|' && i + 1 < bytes.len() && bytes[i + 1] == b'|' {
                     start = i + 2;
                     continue;
                 }
@@ -331,6 +356,152 @@ fn split_shell_commands(command: &str) -> Vec<&str> {
     result
 }
 
+/// Shell keywords that are not executable command names.
+///
+/// When splitting `for x in a; do rm y; done`, the second segment starts with
+/// `do` — treat it as a keyword and look at the next token for risk basing.
+const SHELL_KEYWORDS: &[&str] = &[
+    "do", "done", "then", "else", "elif", "fi", "if", "for", "while", "until", "case", "esac",
+    "in", "time", "coproc", "select", "function", "!", "{", "}",
+];
+
+/// Return the first non-keyword token of a sub-command (basename-ish).
+fn command_base_name(sub: &str) -> Option<&str> {
+    for token in sub.split_whitespace() {
+        // Strip simple env assignments: `FOO=bar cmd`
+        if token.contains('=') && !token.starts_with('-') && !token.starts_with('/') {
+            let key = token.split('=').next().unwrap_or("");
+            if !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                continue;
+            }
+        }
+        if SHELL_KEYWORDS.contains(&token) {
+            continue;
+        }
+        // Basename of path-qualified commands: `/usr/bin/rm` → `rm`
+        let base = token.rsplit('/').next().unwrap_or(token);
+        return Some(base);
+    }
+    None
+}
+
+/// True when `target` is a null sink (`/dev/null` or Windows `NUL`).
+fn is_null_sink(target: &str) -> bool {
+    let t = target.trim().trim_matches(|c| c == '\'' || c == '"');
+    t.eq_ignore_ascii_case("/dev/null") || t.eq_ignore_ascii_case("nul")
+}
+
+/// Detect a *file-writing* redirect outside quotes, ignoring:
+/// - quoted `>` (e.g. Python `{m:>6}`, `echo "a > b"`)
+/// - fd duplication (`2>&1`, `>&2`)
+/// - redirects to `/dev/null` / `NUL` (`2>/dev/null`, `>/dev/null`)
+///
+/// Still flags real sinks: `> file`, `>> log`, `2> err.log`, `&> out`.
+fn has_file_redirect(sub: &str) -> bool {
+    let bytes = sub.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'\\' if in_double && i + 1 < bytes.len() => {
+                // Skip escaped char inside double quotes.
+                i += 2;
+                continue;
+            }
+            b'\'' if !in_double => {
+                in_single = !in_single;
+                i += 1;
+                continue;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+                i += 1;
+                continue;
+            }
+            b'>' if !in_single && !in_double => {
+                // Optional leading fd digits: `2>`, `10>`
+                let mut j = i;
+                while j > 0 && bytes[j - 1].is_ascii_digit() {
+                    j -= 1;
+                }
+                // Ensure digits (if any) are a token boundary, not part of a word.
+                if j > 0 && !bytes[j - 1].is_ascii_whitespace() && bytes[j - 1] != b'&' {
+                    // e.g. `foo2>bar` is unusual; still treat `>` as redirect op
+                    // only when the run of digits is at a boundary OR starts the
+                    // redirect form after whitespace. Fall through.
+                }
+
+                let mut k = i + 1;
+                // `>>`
+                if k < bytes.len() && bytes[k] == b'>' {
+                    k += 1;
+                }
+                // `>&` fd dup: `2>&1`, `>&2`
+                if k < bytes.len() && bytes[k] == b'&' {
+                    // fd-to-fd duplication — not a file write
+                    i = k + 1;
+                    continue;
+                }
+                // skip spaces before target
+                while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                    k += 1;
+                }
+                // extract redirect target token (until whitespace / operator)
+                let start = k;
+                while k < bytes.len()
+                    && !bytes[k].is_ascii_whitespace()
+                    && bytes[k] != b'|'
+                    && bytes[k] != b';'
+                    && bytes[k] != b'&'
+                    && bytes[k] != b'<'
+                    && bytes[k] != b'>'
+                {
+                    k += 1;
+                }
+                let target = if start < k { &sub[start..k] } else { "" };
+                if is_null_sink(target) {
+                    i = if k > i { k } else { i + 1 };
+                    continue;
+                }
+                // Empty target or real path → treat as file redirect
+                return true;
+            }
+            // `&>file` / `>&file` already handled; bare `&>` without earlier `>`
+            b'&' if !in_single && !in_double && i + 1 < bytes.len() && bytes[i + 1] == b'>' => {
+                let mut k = i + 2;
+                if k < bytes.len() && bytes[k] == b'>' {
+                    k += 1; // `&>>`
+                }
+                while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                    k += 1;
+                }
+                let start = k;
+                while k < bytes.len()
+                    && !bytes[k].is_ascii_whitespace()
+                    && bytes[k] != b'|'
+                    && bytes[k] != b';'
+                {
+                    k += 1;
+                }
+                let target = if start < k { &sub[start..k] } else { "" };
+                if is_null_sink(target) {
+                    i = if k > i { k } else { i + 1 };
+                    continue;
+                }
+                return true;
+            }
+            _ => {
+                i += 1;
+                continue;
+            }
+        }
+    }
+    false
+}
+
 /// Classify the risk of a shell command by examining each sub-command's base name.
 ///
 /// Returns `Some((base_command_name, reason))` if the command needs approval,
@@ -339,17 +510,12 @@ fn classify_command_risk(command: &str) -> Option<(String, String)> {
     let sub_commands = split_shell_commands(command);
 
     for sub in &sub_commands {
-        let base = sub.split_whitespace().next()?;
-
-        // ── File redirect operators ──────────────────────────────────
-        if sub.contains('>') {
-            return Some((
-                base.to_string(),
-                format!("file redirect requires approval: {}", command),
-            ));
-        }
+        let Some(base) = command_base_name(sub) else {
+            continue;
+        };
 
         // ── Filesystem-modifying commands ────────────────────────────
+        // Checked before redirects so `rm a > b` still keys as `rm`.
         const FS_MODIFIERS: &[&str] = &[
             "mv", "cp", "rm", "dd", "touch", "mkdir", "tee", "install", "ln", "chmod", "chown",
             "truncate", "rmdir", "chattr", "setfacl", "setfattr",
@@ -365,6 +531,8 @@ fn classify_command_risk(command: &str) -> Option<(String, String)> {
         }
 
         // ── Script interpreters (arbitrary code execution) ───────────
+        // Before redirect scan so `python3 -c '...{m:>6}...'` reports
+        // interpreter risk (not a misleading "file redirect").
         const INTERPRETERS: &[&str] = &[
             "python3",
             "python",
@@ -430,6 +598,14 @@ fn classify_command_risk(command: &str) -> Option<(String, String)> {
             return Some((
                 base.to_string(),
                 format!("network command requires approval: {}", command),
+            ));
+        }
+
+        // ── File redirect operators (quote-/null-aware) ──────────────
+        if has_file_redirect(sub) {
+            return Some((
+                base.to_string(),
+                format!("file redirect requires approval: {}", command),
             ));
         }
     }
@@ -703,6 +879,15 @@ mod tests {
     }
 
     #[test]
+    fn test_split_keeps_fd_dup_redirect_intact() {
+        // Must not treat `&` inside `2>&1` as a control operator.
+        let parts = split_shell_commands("cargo test 2>&1 | tail -20");
+        assert_eq!(parts, vec!["cargo test 2>&1", "tail -20"]);
+        let parts = split_shell_commands("ls >/dev/null 2>&1");
+        assert_eq!(parts, vec!["ls >/dev/null 2>&1"]);
+    }
+
+    #[test]
     fn test_classify_cp_rm_bypass() {
         let result = classify_command_risk("cp A B && rm A");
         assert!(result.is_some());
@@ -751,5 +936,77 @@ mod tests {
     #[test]
     fn test_classify_rm_chinese_filename() {
         assert!(classify_command_risk(r#"rm "我爱宝宝.txt""#).is_some());
+    }
+
+    // ── Redirect false-positive regressions (log-driven) ───────────
+
+    #[test]
+    fn test_classify_stderr_to_dev_null_is_safe() {
+        assert!(classify_command_risk("ls -la 2>/dev/null").is_none());
+        assert!(classify_command_risk("du -sh target 2>/dev/null").is_none());
+        assert!(classify_command_risk("git status 2>/dev/null").is_none());
+    }
+
+    #[test]
+    fn test_classify_stdout_to_dev_null_is_safe() {
+        assert!(classify_command_risk("ls >/dev/null").is_none());
+        assert!(classify_command_risk("cargo fmt --check >/dev/null 2>&1").is_none());
+    }
+
+    #[test]
+    fn test_classify_fd_dup_redirect_is_safe() {
+        // Common pipeline pattern from agent tooling; not a file write.
+        assert!(classify_command_risk("cargo test 2>&1 | tail -20").is_none());
+    }
+
+    #[test]
+    fn test_classify_gt_inside_quotes_is_not_redirect() {
+        assert!(classify_command_risk(r#"echo "a > b""#).is_none());
+        assert!(classify_command_risk(r#"echo 'n:>6'"#).is_none());
+    }
+
+    #[test]
+    fn test_classify_python_with_format_align_reports_interpreter() {
+        // Regression: `{m:>6}` used to trip the naive `contains('>')` redirect
+        // check *before* the interpreter rule, producing a misleading reason.
+        let (base, reason) =
+            classify_command_risk(r#"python3 -c 'print(f"{m:>6}")'"#).expect("should ask");
+        assert_eq!(base, "python3");
+        assert!(
+            reason.starts_with("interpreter command requires approval:"),
+            "reason should be interpreter, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn test_classify_python_heredoc_with_format_align_reports_interpreter() {
+        let cmd = "python3 - <<'PY'\nprint(f\"{m:>6}\")\nPY";
+        let (base, reason) = classify_command_risk(cmd).expect("should ask");
+        assert_eq!(base, "python3");
+        assert!(
+            reason.starts_with("interpreter command requires approval:"),
+            "reason should be interpreter, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn test_classify_real_redirect_still_asks() {
+        let (base, reason) = classify_command_risk("echo hello > /tmp/out.txt").expect("ask");
+        assert_eq!(base, "echo");
+        assert!(
+            reason.starts_with("file redirect requires approval:"),
+            "got: {reason}"
+        );
+        assert!(classify_command_risk("echo hello >> log.txt").is_some());
+        assert!(classify_command_risk("cmd 2> err.log").is_some());
+    }
+
+    #[test]
+    fn test_classify_for_loop_body_not_keyed_as_do() {
+        // `for x in a; do rg y; done` must not surface session_rule command:do.
+        assert!(classify_command_risk("for m in agent api; do rg foo; done").is_none());
+        let (base, _) =
+            classify_command_risk("for m in agent; do rm -rf /tmp/x; done").expect("rm asks");
+        assert_eq!(base, "rm");
     }
 }

@@ -330,9 +330,10 @@ mod tests {
             event: HookEvent::PreToolUse,
             matcher: Some("exec_command".to_string()),
             when_state: Some("open".to_string()),
+            // Use exit-2 block protocol (CC-compat) so the test is portable:
+            // Windows `cmd echo` mangles JSON quotes and would silently allow.
             actions: vec![HookAction::Command {
-                command: "echo '{\"continue_execution\":false,\"reason\":\"blocked by open-phase hook\"}'"
-                    .to_string(),
+                command: "exit 2".to_string(),
                 timeout_secs: 5,
             }],
         }]);
@@ -375,8 +376,7 @@ mod tests {
             matcher: Some("exec_command".to_string()),
             when_state: Some("open".to_string()), // only fires in "open"
             actions: vec![HookAction::Command {
-                command: "echo '{\"continue_execution\":false,\"reason\":\"blocked by open-phase hook\"}'"
-                    .to_string(),
+                command: "exit 2".to_string(),
                 timeout_secs: 5,
             }],
         }]);

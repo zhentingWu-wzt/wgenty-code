@@ -225,6 +225,7 @@ async fn run(
         state,
         stream_style: StreamStyle::subagent(),
         hooks: LoopHooks::default(),
+        system_messages: &[],
     })
     .await
 }
@@ -381,6 +382,7 @@ async fn stuck_detector_aborts_on_repeat() {
             stuck_detector: Some(&mut stuck),
             ..LoopHooks::default()
         },
+        system_messages: &[],
     })
     .await;
 
@@ -466,6 +468,7 @@ async fn ready_task_nudge_injected_after_idle_rounds() {
             task_progress: Some(&progress),
             ..LoopHooks::default()
         },
+        system_messages: &[],
     })
     .await
     .unwrap();
@@ -514,6 +517,7 @@ async fn no_nudge_when_nothing_ready() {
             task_progress: Some(&progress),
             ..LoopHooks::default()
         },
+        system_messages: &[],
     })
     .await
     .unwrap();
@@ -527,26 +531,20 @@ async fn no_nudge_when_nothing_ready() {
     assert!(!nudged, "no ready-task reminder when ready==0");
 }
 
-/// Compactor that rewrites history to a small fixed set of messages.
+/// Compactor that returns a short summary without mutating history.
 struct ShrinkCompactor;
 
 #[async_trait]
 impl Compactor for ShrinkCompactor {
-    async fn compact(&self, history: &dyn HistoryStore) -> bool {
-        history
-            .replace(vec![
-                ChatMessage::system("sys"),
-                ChatMessage::user("summary: short"),
-            ])
-            .await;
-        true
+    async fn compact(&self, _history: &dyn HistoryStore) -> Option<String> {
+        Some("short".to_string())
     }
 }
 
 #[tokio::test]
 async fn successful_compaction_updates_last_prompt_tokens() {
     // No usage in the post-compact LLM response so last_prompt_tokens keeps the
-    // estimate written immediately after history rewrite.
+    // estimate written immediately after the compaction summary is applied.
     let llm = ScriptedLlm::new(vec![ChatCompletion {
         message: ChatMessage::assistant("ok"),
         finish_reason: "stop".to_string(),
@@ -555,10 +553,9 @@ async fn successful_compaction_updates_last_prompt_tokens() {
     let tools = MockToolPort::new();
     let events = VecSink::new();
     let bulky = "x".repeat(400);
-    let history = MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![
-        ChatMessage::system("sys"),
-        ChatMessage::user(bulky),
-    ])));
+    let system_messages = vec![ChatMessage::system("sys")];
+    let history =
+        MutexHistoryStore::new(Arc::new(TokioMutex::new(vec![ChatMessage::user(&bulky)])));
     let counter = TokenCounter::new();
     // Stale pre-compact estimate the UI would still show without the fix.
     counter.set_prompt_tokens(50_000);
@@ -581,26 +578,35 @@ async fn successful_compaction_updates_last_prompt_tokens() {
             token_counter: Some(&counter),
             ..LoopHooks::default()
         },
+        system_messages: &system_messages,
     })
     .await
     .unwrap();
 
-    // Estimate is taken right after rewrite (before the next assistant reply).
-    let expected = estimate_prompt_tokens(&[
-        ChatMessage::system("sys"),
-        ChatMessage::user("summary: short"),
-    ]);
+    // Estimate is taken right after the compaction summary is applied (before
+    // the next assistant reply). The post-compaction API view is
+    // system_messages + summary + synthetic user + (empty tail).
+    let expected = estimate_prompt_tokens(&super::compaction::assemble_post_compaction_history(
+        &system_messages,
+        "short",
+        &[],
+    ));
     assert_eq!(
         counter.last_prompt_tokens(),
         expected,
-        "context bar must refresh from post-compact history estimate"
+        "context bar must refresh from post-compact view estimate"
     );
     assert!(counter.last_prompt_tokens() < 50_000);
+    // History is preserved verbatim (not mutated by compaction).
     let hist = history.get().await;
     assert!(
         hist.iter()
-            .any(|m| m.content.as_deref() == Some("summary: short")),
-        "history should contain the compacted summary"
+            .any(|m| m.content.as_deref() == Some(bulky.as_str())),
+        "full history should be preserved after compaction"
+    );
+    assert!(
+        !hist.iter().any(|m| m.content.as_deref() == Some("short")),
+        "compaction summary should NOT be stored in history"
     );
 }
 
