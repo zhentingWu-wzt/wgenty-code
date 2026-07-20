@@ -210,16 +210,25 @@ pub struct ExecSessionSettings {
     /// turn-boundary snapshots or the `verify_and_complete` tool.
     #[serde(default = "default_exec_session_enabled")]
     pub enabled: bool,
+    /// Maximum verify retries per node before escalating (outer layer node
+    /// state machine). Default: 2.
+    #[serde(default = "default_auto_retry_max")]
+    pub auto_retry_max: u32,
 }
 
 fn default_exec_session_enabled() -> bool {
     true
 }
 
+fn default_auto_retry_max() -> u32 {
+    2
+}
+
 impl Default for ExecSessionSettings {
     fn default() -> Self {
         Self {
             enabled: default_exec_session_enabled(),
+            auto_retry_max: default_auto_retry_max(),
         }
     }
 }
@@ -338,5 +347,19 @@ mod tests {
             serde_json::to_string(&RootPermissionMode::AcceptEdits).unwrap(),
             "\"accept_edits\""
         );
+    }
+
+    #[test]
+    fn exec_session_auto_retry_max_defaults_to_2() {
+        let settings = ExecSessionSettings::default();
+        assert_eq!(settings.auto_retry_max, 2);
+    }
+
+    #[test]
+    fn exec_session_auto_retry_max_serde_default_when_omitted() {
+        let json = r#"{"enabled": true}"#;
+        let settings: ExecSessionSettings = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(settings.auto_retry_max, 2);
+        assert!(settings.enabled);
     }
 }
