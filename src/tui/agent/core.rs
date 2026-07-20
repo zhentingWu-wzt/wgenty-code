@@ -62,6 +62,9 @@ impl AgentLoop {
             compaction_boundary: self.compaction_boundary,
             consecutive_parse_errors: 0,
             rounds_since_task_mgmt: 0,
+            last_measured_prompt_tokens: None,
+            last_request_chars: None,
+            micro_compact_attempted: false,
         };
 
         let planner_ref = planner

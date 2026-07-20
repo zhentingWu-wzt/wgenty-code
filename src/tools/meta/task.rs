@@ -86,7 +86,6 @@ fn convert_event(
 #[cfg(test)]
 mod tests;
 
-use heuristic::is_complex_task;
 use transcript::build_transcript;
 
 pub struct TaskTool {
@@ -771,13 +770,7 @@ impl Tool for TaskTool {
 
         let reg = tool_registry.clone();
         let tools = allowed_tools.clone();
-        let rlm_enabled = self.settings.agent.rlm.enabled
-            && self.settings.agent.rlm.auto_routing
-            && is_complex_task(&full_prompt, use_small);
-        let progress_store_bg = self.progress_store.clone();
         let progress_store_for_transcript = self.progress_store.clone();
-        let sid_for_rlm = session_id.clone();
-        let node_id_for_rlm = subagent_node_id.clone();
         // `settings_bg` must reflect the child's actual model so interception-2
         // fallback reads the correct `failed_model`. When `use_small_model` is
         // set, the child runs with `small_model_settings()` (which overrides
@@ -810,54 +803,25 @@ impl Tool for TaskTool {
             // causing the parent agent to wait for a delivery that never comes.
             let loop_future = async {
                 let workdir = _worktree_guard.as_ref().map(|w| w.path.clone());
-                if rlm_enabled {
-                    let reason = format!(
-                        "RLM pipeline: prompt_len={}, use_small={}",
-                        full_prompt.len(),
-                        use_small
-                    );
-                    tracing::info!(
-                        target: "rlm",
-                        phase = "auto_route",
-                        reason = %reason,
-                        "Complex task detected, routing to RLM pipeline"
-                    );
-                    crate::tools::meta::rlm::run_rlm_pipeline(
-                        &settings_bg,
-                        reg.clone(),
-                        coordinator_bg.clone(),
-                        &bg_child_context,
-                        &desc_full_bg,
-                        &prompt_bg,
-                        Some((progress_store_bg, sid_for_rlm)),
-                        Some(node_id_for_rlm),
-                        token_budget,
-                        workdir,
-                    )
-                    .await
-                    .map(|r| r.aggregated)
-                    .map_err(SubagentError::from)
-                } else {
-                    run_subagent_loop_with_permissions(
-                        &api_client,
-                        reg.clone(),
-                        &bg_child_context,
-                        coordinator_bg.clone(),
-                        &sys_prompt_bg,
-                        &prompt_bg,
-                        &tools,
-                        100,
-                        timeout_secs,
-                        Some(cb),
-                        token_budget,
-                        workdir,
-                        permission_ctx,
-                        Arc::new(settings_bg.clone()),
-                        transcript_store_bg.clone(),
-                        origin_turn_id_bg,
-                    )
-                    .await
-                }
+                run_subagent_loop_with_permissions(
+                    &api_client,
+                    reg.clone(),
+                    &bg_child_context,
+                    coordinator_bg.clone(),
+                    &sys_prompt_bg,
+                    &prompt_bg,
+                    &tools,
+                    100,
+                    timeout_secs,
+                    Some(cb),
+                    token_budget,
+                    workdir,
+                    permission_ctx,
+                    Arc::new(settings_bg.clone()),
+                    transcript_store_bg.clone(),
+                    origin_turn_id_bg,
+                )
+                .await
             };
 
             let result = match AssertUnwindSafe(loop_future).catch_unwind().await {

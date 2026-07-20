@@ -18,6 +18,12 @@ pub struct ModelEndpoint {
     /// wrongly pick OpenAI and hit a flaky compat layer).
     #[serde(default)]
     pub provider: Option<String>,
+    /// Per-endpoint context window override (tokens). When set, this takes
+    /// priority over both the built-in model lookup ([`known_context_window`])
+    /// and the global [`ModelsConfig::context_window`]. Use this for relays
+    /// or custom models that expose a non-standard window.
+    #[serde(default)]
+    pub context_window: Option<usize>,
 }
 
 impl ModelEndpoint {
@@ -38,6 +44,67 @@ impl ModelEndpoint {
             .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok())
             .or_else(|| self.api_key.clone())
     }
+}
+
+/// Known context-window sizes (in tokens) for common model names/IDs.
+///
+/// Returns `None` for unrecognized models so callers can fall back to a
+/// configured default. This is a static table built from public model docs;
+/// it does not query the API. Model names are matched case-insensitively
+/// against both friendly aliases (`sonnet`) and full IDs
+/// (`claude-sonnet-4-6-20250514`).
+pub fn known_context_window(model: &str) -> Option<usize> {
+    let lower = model.to_ascii_lowercase();
+    // Anthropic Claude family - all current models expose 200k context.
+    if lower.starts_with("claude") || matches!(lower.as_str(), "sonnet" | "opus" | "haiku") {
+        return Some(1024_000);
+    }
+    // DeepSeek - 64k context.
+    if lower.starts_with("deepseek") || matches!(lower.as_str(), "v3" | "r1" | "reasoner") {
+        return Some(1024_000);
+    }
+    // OpenAI gpt-4o / gpt-4-turbo family - 128k.
+    if lower.starts_with("gpt-4o") || lower.starts_with("gpt-4-turbo") {
+        return Some(128_000);
+    }
+    // Legacy gpt-4 (non-turbo) - 8k.
+    if lower.starts_with("gpt-4") || lower == "gpt-4" {
+        return Some(8_000);
+    }
+    if lower.starts_with("gpt-3.5") {
+        return Some(16_000);
+    }
+    if lower.starts_with("gpt") {
+        return Some(1024_000);
+    }
+    // Qwen (DashScope).
+    if lower.starts_with("qwen-long") {
+        return Some(1_000_000);
+    }
+    if lower.starts_with("qwen-plus") || lower.starts_with("qwen-turbo") {
+        return Some(128_000);
+    }
+    if lower.starts_with("qwen-max") {
+        return Some(32_000);
+    }
+    None
+}
+
+/// Resolve the effective context window (tokens) for an endpoint.
+///
+/// Priority:
+/// 1. Explicit [`ModelEndpoint::context_window`] (user override)
+/// 2. Built-in [`known_context_window`] lookup by model name
+/// 3. `global_fallback` (the top-level [`ModelsConfig::context_window`])
+///
+/// This lets each model use its real window instead of the single global
+/// value, so `needs_compaction` triggers at the right point for small-window
+/// models (e.g. DeepSeek 64k) while staying zero-config for known models.
+pub fn resolve_context_window(endpoint: &ModelEndpoint, global_fallback: usize) -> usize {
+    endpoint
+        .context_window
+        .or_else(|| known_context_window(&endpoint.name))
+        .unwrap_or(global_fallback)
 }
 
 /// HTTP/SSE transport-layer config shared by all model endpoints.
@@ -93,6 +160,7 @@ impl Default for ModelsConfig {
                     .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok()),
                 appkey: None,
                 provider: None,
+                context_window: None,
             },
             small: None,
             planner: None,
@@ -124,5 +192,60 @@ mod tests {
         let json = r#"{"main":{"name":"test"}}"#;
         let cfg: ModelsConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.context_window, 200_000);
+    }
+
+    #[test]
+    fn test_known_context_window_matches_common_models() {
+        // Anthropic aliases and full IDs.
+        assert_eq!(known_context_window("sonnet"), Some(200_000));
+        assert_eq!(
+            known_context_window("Claude-Sonnet-4-6-20250514"),
+            Some(200_000)
+        );
+        assert_eq!(known_context_window("haiku"), Some(200_000));
+        // DeepSeek.
+        assert_eq!(known_context_window("deepseek-chat"), Some(64_000));
+        assert_eq!(known_context_window("v3"), Some(64_000));
+        // OpenAI.
+        assert_eq!(known_context_window("gpt-4o"), Some(128_000));
+        assert_eq!(known_context_window("gpt-4"), Some(8_000));
+        // Unknown -> None (caller falls back to config).
+        assert_eq!(known_context_window("my-custom-llm"), None);
+    }
+
+    #[test]
+    fn test_resolve_context_window_priority() {
+        // 1. Explicit endpoint override wins.
+        let ep = ModelEndpoint {
+            name: "sonnet".to_string(),
+            context_window: Some(150_000),
+            ..Default::default()
+        };
+        assert_eq!(resolve_context_window(&ep, 200_000), 150_000);
+        // 2. Known model lookup when no override (sonnet -> 200k, ignores fallback).
+        let ep = ModelEndpoint {
+            name: "sonnet".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(resolve_context_window(&ep, 999_999), 200_000);
+        // 3. Unknown model falls back to global.
+        let ep = ModelEndpoint {
+            name: "my-custom-llm".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(resolve_context_window(&ep, 200_000), 200_000);
+        // DeepSeek: known lookup returns 64k even when global default is 200k.
+        let ep = ModelEndpoint {
+            name: "deepseek-chat".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(resolve_context_window(&ep, 200_000), 64_000);
+    }
+
+    #[test]
+    fn test_model_endpoint_context_window_deserialize() {
+        let json = r#"{"name":"sonnet","context_window":150000}"#;
+        let ep: ModelEndpoint = serde_json::from_str(json).unwrap();
+        assert_eq!(ep.context_window, Some(150_000));
     }
 }

@@ -92,19 +92,70 @@ pub fn estimate_prompt_tokens(messages: &[ChatMessage]) -> usize {
     request_size_chars(messages) / 4
 }
 
+/// Calibration pair derived from the most recent real `usage.prompt_tokens`.
+///
+/// When available, the estimate uses the measured ratio
+/// `last_measured_tokens / last_request_chars` instead of the default
+/// `chars / 4`, which under-counts CJK text (actual ~1.5 char/token) and
+/// reasoning-heavy payloads. This closes most of the gap between the local
+/// estimate and the provider's real token count.
+#[derive(Debug, Clone, Copy)]
+pub struct Calibration {
+    /// Real `prompt_tokens` reported by the provider on the last request.
+    pub last_measured_tokens: usize,
+    /// `request_size_chars` of the message slice that produced
+    /// `last_measured_tokens`. Must be > 0 for the ratio to be usable.
+    pub last_request_chars: usize,
+}
+
+/// Calibrated token estimate accounting for fixed request overhead.
+///
+/// Computes `(request_size_chars(messages) + fixed_overhead_chars) * ratio`
+/// where `ratio = last_measured_tokens / last_request_chars` when a
+/// [`Calibration`] is available, falling back to `(chars + overhead) / 4`
+/// otherwise.
+///
+/// `fixed_overhead_chars` covers request body not present in `messages` -
+/// primarily tool definitions when `use_tool_definitions` is on. The 8-layer
+/// system prompt is already inside `messages` (prepended by the loop each
+/// round) and therefore counted by [`request_size_chars`].
+pub fn estimate_prompt_tokens_calibrated(
+    messages: &[ChatMessage],
+    fixed_overhead_chars: usize,
+    calibration: Option<Calibration>,
+) -> usize {
+    let total_chars = request_size_chars(messages) + fixed_overhead_chars;
+    match calibration {
+        Some(c) if c.last_request_chars > 0 => {
+            ((total_chars as u64) * (c.last_measured_tokens as u64) / (c.last_request_chars as u64))
+                as usize
+        }
+        _ => total_chars / 4,
+    }
+}
+
 /// Whether `messages` exceed the compaction threshold for the given window.
 ///
-/// Compaction fires when the rough token estimate (`request_size_chars / 4`)
-/// exceeds 80% of `context_window`, *minus* `max_tokens` reserved for the
-/// model's output. Without reserving, a large `max_tokens` lets input grow
+/// Compaction fires when the calibrated token estimate exceeds 80% of
+/// `context_window`, *minus* `max_tokens` reserved for the model's output.
+///
+/// `fixed_overhead_chars` adds request-body cost not present in `messages`
+/// (e.g. tool definitions). `calibration` switches the estimate from the
+/// crude `chars / 4` to a ratio anchored on the last real
+/// `usage.prompt_tokens`; pass `None` when no measurement is available yet
+/// (first round of a turn).
+///
+/// Without reserving `max_tokens`, a large output budget lets input grow
 /// until `input + max_tokens` overflows the window.
 pub fn needs_compaction(
     messages: &[ChatMessage],
     context_window: usize,
     max_tokens: usize,
+    fixed_overhead_chars: usize,
+    calibration: Option<Calibration>,
 ) -> bool {
     let threshold = (context_window * 4 / 5).saturating_sub(max_tokens);
-    estimate_prompt_tokens(messages) > threshold
+    estimate_prompt_tokens_calibrated(messages, fixed_overhead_chars, calibration) > threshold
 }
 
 /// Micro-compaction: replace old tool results with short markers.
@@ -326,9 +377,58 @@ mod tests {
         // With a small window and large max_tokens reserve, even modest history
         // should trigger compaction.
         let msgs = vec![ChatMessage::user("x".repeat(400))]; // ~100 tokens
-        assert!(needs_compaction(&msgs, 200, 100));
+        assert!(needs_compaction(&msgs, 200, 100, 0, None));
         // Same history under a large window stays below threshold.
-        assert!(!needs_compaction(&msgs, 200_000, 4096));
+        assert!(!needs_compaction(&msgs, 200_000, 4096, 0, None));
+    }
+
+    #[test]
+    fn test_needs_compaction_accounts_for_fixed_overhead() {
+        // context_window=1000, max_tokens=100 -> threshold = 1000*4/5-100 = 700.
+        let msgs = vec![ChatMessage::user("x".repeat(400))]; // 400 chars / 4 = 100 tokens
+                                                             // Without overhead: 100 < 700, no compaction.
+        assert!(!needs_compaction(&msgs, 1000, 100, 0, None));
+        // With 3000 chars of tool-definition overhead: (400+3000)/4 = 850 > 700,
+        // triggers compaction - proving fixed overhead is counted.
+        assert!(needs_compaction(&msgs, 1000, 100, 3000, None));
+    }
+
+    #[test]
+    fn test_calibrated_estimate_uses_measured_ratio() {
+        // CJK-like scenario: 400 chars measured as 300 real tokens (ratio
+        // 0.75 tok/char) instead of the crude 0.25 (chars/4). The calibrated
+        // estimate must be 3x the crude one.
+        let msgs = vec![ChatMessage::user("x".repeat(400))];
+        let crude = estimate_prompt_tokens(&msgs); // 100
+        assert_eq!(crude, 100);
+        let calibration = Calibration {
+            last_measured_tokens: 300,
+            last_request_chars: 400,
+        };
+        let calibrated = estimate_prompt_tokens_calibrated(&msgs, 0, Some(calibration));
+        assert_eq!(calibrated, 300);
+        // Fixed overhead is scaled by the same ratio.
+        let with_overhead = estimate_prompt_tokens_calibrated(&msgs, 400, Some(calibration));
+        assert_eq!(with_overhead, 600); // (400+400) * 300/400
+    }
+
+    #[test]
+    fn test_calibrated_estimate_falls_back_without_measurement() {
+        let msgs = vec![ChatMessage::user("x".repeat(400))];
+        // No calibration -> crude chars/4 including overhead.
+        assert_eq!(
+            estimate_prompt_tokens_calibrated(&msgs, 400, None),
+            200 // (400+400)/4
+        );
+        // Calibration with zero chars is unusable -> fall back to crude.
+        let bad = Calibration {
+            last_measured_tokens: 300,
+            last_request_chars: 0,
+        };
+        assert_eq!(
+            estimate_prompt_tokens_calibrated(&msgs, 0, Some(bad)),
+            100 // 400/4
+        );
     }
 
     #[test]
