@@ -15,6 +15,7 @@ use crate::tools::checkpoint_store::{CheckpointStore, FileState, Manifest};
 
 use super::git::{record_git_state, run_git};
 use super::hooks::{RollbackContext, SessionHooks};
+use super::node::{Node, NodeStatus};
 use super::session::{SessionSource, SessionState, SessionStatus, TurnRecord};
 
 /// Coordinates the inner ExecutionSession lifecycle for one session.
@@ -128,6 +129,95 @@ impl SessionCoordinator {
     /// Unverified / Failed). Persists immediately.
     pub fn set_status(&mut self, status: SessionStatus) -> Result<()> {
         self.session.set_status(status);
+        self.session.save(&self.session_dir)
+    }
+
+    // --- Node state machine accessors (outer layer, Task 5) ---
+
+    /// Returns the current turn id, or `None` if no turn is active.
+    pub fn current_turn_id(&self) -> Option<&str> {
+        self.session.current_turn.as_deref()
+    }
+
+    /// Returns the full node chain (read-only).
+    pub fn node_states(&self) -> &[Node] {
+        &self.session.node_states
+    }
+
+    /// Returns the current node (the one pointed to by `current_node`), or
+    /// `None` if no node is active.
+    pub fn current_node(&self) -> Option<&Node> {
+        let id = self.session.current_node.as_ref()?;
+        self.session.node_states.iter().find(|n| &n.id == id)
+    }
+
+    /// Returns a mutable reference to the current node, or `None`.
+    pub fn current_node_mut(&mut self) -> Option<&mut Node> {
+        let id = self.session.current_node.clone()?;
+        self.session.node_states.iter_mut().find(|n| n.id == id)
+    }
+
+    /// Adds a new node to the chain and sets it as the current node. Persists
+    /// immediately. Called by `begin_node` (Task 6).
+    pub fn add_node(&mut self, node: Node) -> Result<()> {
+        self.session.node_states.push(node.clone());
+        self.session.current_node = Some(node.id);
+        self.session.updated_at = chrono::Utc::now().to_rfc3339();
+        self.session.save(&self.session_dir)
+    }
+
+    /// Updates a node's status by id and persists. Called by `verify_node`
+    /// (Task 6) on verify pass/fail.
+    pub fn update_node_status(&mut self, node_id: &str, status: NodeStatus) -> Result<()> {
+        if let Some(n) = self
+            .session
+            .node_states
+            .iter_mut()
+            .find(|n| n.id == node_id)
+        {
+            n.status = status;
+        }
+        self.session.updated_at = chrono::Utc::now().to_rfc3339();
+        self.session.save(&self.session_dir)
+    }
+
+    /// Removes all nodes after `verified_node_id` and resets `current_node` to
+    /// it. Returns the ids of removed nodes. Called by `rollback_node`
+    /// (Task 6) after the workspace is restored.
+    pub fn truncate_nodes_after(&mut self, verified_node_id: &str) -> Result<Vec<String>> {
+        let pos = self
+            .session
+            .node_states
+            .iter()
+            .position(|n| n.id == verified_node_id);
+        let removed: Vec<String> = if let Some(idx) = pos {
+            let removed: Vec<String> = self.session.node_states[idx + 1..]
+                .iter()
+                .map(|n| n.id.clone())
+                .collect();
+            self.session.node_states.truncate(idx + 1);
+            self.session.current_node = Some(verified_node_id.to_string());
+            removed
+        } else {
+            Vec::new()
+        };
+        self.session.updated_at = chrono::Utc::now().to_rfc3339();
+        self.session.save(&self.session_dir)?;
+        Ok(removed)
+    }
+
+    /// Increment the retry count of a node by id. Persists immediately.
+    /// Called by `verify_node` (Task 6) on verify failure.
+    pub fn increment_node_retry(&mut self, node_id: &str) -> Result<()> {
+        if let Some(n) = self
+            .session
+            .node_states
+            .iter_mut()
+            .find(|n| n.id == node_id)
+        {
+            n.retry_count += 1;
+        }
+        self.session.updated_at = chrono::Utc::now().to_rfc3339();
         self.session.save(&self.session_dir)
     }
 
@@ -829,5 +919,89 @@ mod tests {
         );
         // current_turn unchanged.
         assert_eq!(coord.session().current_turn.as_deref(), Some("turn-0"));
+    }
+
+    // --- Node accessor tests (Task 5) ---
+
+    use crate::exec_session::node::{Node, NodeContract, NodeStatus};
+
+    fn make_node(id: &str, status: NodeStatus, turn_id: &str) -> Node {
+        Node {
+            id: id.to_string(),
+            contract: NodeContract {
+                goal: "test goal".to_string(),
+                verify_commands: vec!["echo ok".to_string()],
+                expected_files: vec![],
+            },
+            status,
+            start_turn_id: turn_id.to_string(),
+            retry_count: 0,
+            verify_log_path: String::new(),
+            created_at: "2026-07-20T00:00:00+00:00".to_string(),
+        }
+    }
+
+    #[test]
+    fn add_node_sets_current_and_persists() {
+        let dir = tempdir().unwrap();
+        let mut coord = make_coordinator(dir.path());
+        coord.begin_turn().unwrap(); // turn-0
+        let node = make_node("n1", NodeStatus::Running, "turn-0");
+        coord.add_node(node).unwrap();
+
+        assert_eq!(coord.session().node_states.len(), 1);
+        assert_eq!(coord.session().current_node.as_deref(), Some("n1"));
+        assert_eq!(coord.current_node().unwrap().id, "n1");
+
+        // Persisted to disk.
+        let loaded = SessionState::load(coord.session_dir()).unwrap();
+        assert_eq!(loaded.node_states.len(), 1);
+        assert_eq!(loaded.current_node.as_deref(), Some("n1"));
+    }
+
+    #[test]
+    fn update_node_status_persists() {
+        let dir = tempdir().unwrap();
+        let mut coord = make_coordinator(dir.path());
+        coord.begin_turn().unwrap();
+        coord
+            .add_node(make_node("n1", NodeStatus::Running, "turn-0"))
+            .unwrap();
+
+        coord
+            .update_node_status("n1", NodeStatus::Verified)
+            .unwrap();
+        assert_eq!(coord.current_node().unwrap().status, NodeStatus::Verified);
+
+        let loaded = SessionState::load(coord.session_dir()).unwrap();
+        assert_eq!(loaded.node_states[0].status, NodeStatus::Verified);
+    }
+
+    #[test]
+    fn truncate_nodes_after_removes_and_resets_current() {
+        let dir = tempdir().unwrap();
+        let mut coord = make_coordinator(dir.path());
+        coord.begin_turn().unwrap(); // turn-0
+        coord
+            .add_node(make_node("n1", NodeStatus::Verified, "turn-0"))
+            .unwrap();
+        coord.begin_turn().unwrap(); // turn-1
+        coord
+            .add_node(make_node("n2", NodeStatus::Failed, "turn-1"))
+            .unwrap();
+
+        let removed = coord.truncate_nodes_after("n1").unwrap();
+        assert_eq!(removed, vec!["n2".to_string()]);
+        assert_eq!(coord.session().node_states.len(), 1);
+        assert_eq!(coord.session().current_node.as_deref(), Some("n1"));
+    }
+
+    #[test]
+    fn current_turn_id_returns_active_turn() {
+        let dir = tempdir().unwrap();
+        let mut coord = make_coordinator(dir.path());
+        assert_eq!(coord.current_turn_id(), None);
+        coord.begin_turn().unwrap();
+        assert_eq!(coord.current_turn_id(), Some("turn-0"));
     }
 }
