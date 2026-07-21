@@ -21,10 +21,14 @@ use crate::agent::{
 use crate::api::{ApiClient, ChatMessage};
 use crate::config::resolve_context_window;
 use crate::teams::approval_registry;
+use crate::teams::failure_diagnostics::{
+    redact_params, truncate_char_safe, FailedRoundContext, FailureRootCause, ToolCallStep,
+};
 use crate::teams::guarding_tool_port::{
     format_permission_summary, GuardingToolPort, SubagentPermissionContext,
 };
 use crate::teams::mailbox::{Mailbox, TeamMessage};
+use crate::teams::subagent_health::{FailureMode, FailureSignals};
 use crate::tools::ToolRegistry;
 use crate::utils::stuck_detector::StuckDetector;
 use async_trait::async_trait;
@@ -180,6 +184,155 @@ impl From<String> for SubagentError {
             error_type: ErrorType::Unknown,
             partial_result: None,
         }
+    }
+}
+
+/// Default char limit for stored failed-round context (configurable via
+/// `subagent.trace.context_char_limit` -- task 6.1).
+const DEFAULT_CONTEXT_CHAR_LIMIT: usize = 2000;
+
+/// Structured failure diagnostics assembled at the capture site.
+struct FailureDiagnostics {
+    root_cause: FailureRootCause,
+    failed_tool_sequence: Vec<ToolCallStep>,
+    failed_round_context: Option<FailedRoundContext>,
+}
+
+/// Derive structured [`FailureSignals`] from capture-site data. Guardian
+/// rejections come from the most recent `permission_denied` action-log event
+/// (structured signal); sandbox/panic are best-effort matches on the error
+/// message (the observer has no richer signal for those); user-cancellation
+/// comes from the terminal status.
+fn extract_failure_signals(
+    error_msg: &str,
+    status: SubagentStatus,
+    action_log: &[SubagentEvent],
+) -> FailureSignals {
+    let mut signals = FailureSignals {
+        user_cancelled: matches!(
+            status,
+            SubagentStatus::Cancelled | SubagentStatus::Cancelling
+        ),
+        ..Default::default()
+    };
+    for event in action_log.iter().rev() {
+        if let SubagentEventType::Permission { kind, detail } = &event.event_type {
+            if kind.contains("denied") || kind.contains("rejected") {
+                signals.guardian_rejected_reason = Some(detail.clone());
+                break;
+            }
+        }
+    }
+    let lower = error_msg.to_lowercase();
+    signals.sandbox_failed = lower.contains("sandbox");
+    signals.tool_panic = lower.contains("panic");
+    signals
+}
+
+/// Build the failed-round tool-call sequence: the `Action` events after the
+/// last `Thought` (the failing round), each paired with its `ToolResult` to
+/// derive `elapsed_ms`. A trailing `Action` with no result emits with 0ms.
+/// Parameter summaries are wrapped as JSON string values and run through
+/// [`redact_params`] (no-op on string values, but keeps the contract for
+/// future structured params).
+fn build_failed_tool_sequence(action_log: &[SubagentEvent]) -> Vec<ToolCallStep> {
+    let start = action_log
+        .iter()
+        .rposition(|e| matches!(e.event_type, SubagentEventType::Thought { .. }))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let mut steps = Vec::new();
+    let mut pending: Option<(String, String, u64)> = None;
+    for event in &action_log[start..] {
+        match &event.event_type {
+            SubagentEventType::Action {
+                tool_name,
+                params_summary,
+            } => {
+                if let Some((name, summary, _)) = pending.take() {
+                    steps.push(ToolCallStep {
+                        tool_name: name,
+                        params_summary: redact_params(serde_json::Value::String(summary)),
+                        elapsed_ms: 0,
+                    });
+                }
+                pending = Some((tool_name.clone(), params_summary.clone(), event.elapsed_ms));
+            }
+            SubagentEventType::ToolResult { .. } => {
+                if let Some((name, summary, start_elapsed)) = pending.take() {
+                    steps.push(ToolCallStep {
+                        tool_name: name,
+                        params_summary: redact_params(serde_json::Value::String(summary)),
+                        elapsed_ms: event.elapsed_ms.saturating_sub(start_elapsed),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some((name, summary, _)) = pending {
+        steps.push(ToolCallStep {
+            tool_name: name,
+            params_summary: redact_params(serde_json::Value::String(summary)),
+            elapsed_ms: 0,
+        });
+    }
+    steps
+}
+
+/// Build the failed-round context: the last `Thought` text (falling back to
+/// `text_snapshot`) as `assistant_text`, and the last `ToolResult` summary as
+/// `final_tool_output`. Both are char-boundary truncated to `context_char_limit`.
+/// Returns `None` when neither assistant text nor a tool output is available.
+fn build_failed_round_context(
+    action_log: &[SubagentEvent],
+    text_snapshot: Option<&str>,
+    context_char_limit: usize,
+) -> Option<FailedRoundContext> {
+    let assistant_text = action_log
+        .iter()
+        .rev()
+        .find_map(|e| match &e.event_type {
+            SubagentEventType::Thought { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .or(text_snapshot);
+    let final_tool_output = action_log.iter().rev().find_map(|e| match &e.event_type {
+        SubagentEventType::ToolResult { summary, .. } => Some(summary.as_str()),
+        _ => None,
+    });
+    let (text, output) = match (assistant_text, final_tool_output) {
+        (Some(t), Some(o)) => (t, o),
+        (Some(t), None) => (t, ""),
+        (None, Some(o)) => ("", o),
+        (None, None) => return None,
+    };
+    Some(FailedRoundContext {
+        assistant_text: truncate_char_safe(text, context_char_limit),
+        final_tool_output: truncate_char_safe(output, context_char_limit),
+    })
+}
+
+/// Assemble the full failure-diagnostics triple at the capture site. Pure
+/// (no locks) so it is unit-testable; the observer passes its cloned
+/// `action_log` and `text_snapshot`.
+fn build_failure_diagnostics(
+    error_msg: &str,
+    status: SubagentStatus,
+    action_log: &[SubagentEvent],
+    text_snapshot: Option<&str>,
+    context_char_limit: usize,
+) -> FailureDiagnostics {
+    let signals = extract_failure_signals(error_msg, status, action_log);
+    let mode = FailureMode::classify_with_signals(error_msg, &signals);
+    let root_cause = mode.to_root_cause(signals.guardian_rejected_reason.as_deref());
+    let failed_tool_sequence = build_failed_tool_sequence(action_log);
+    let failed_round_context =
+        build_failed_round_context(action_log, text_snapshot, context_char_limit);
+    FailureDiagnostics {
+        root_cause,
+        failed_tool_sequence,
+        failed_round_context,
     }
 }
 
@@ -596,24 +749,36 @@ impl SubagentObserver {
         } else {
             None
         };
-        let error_details = error_msg.as_ref().map(|msg| ErrorInfo {
-            error_type: ErrorType::Unknown,
-            message: msg.clone(),
-            last_tool: current_tool.clone(),
-            last_params: self
-                .current_params
-                .lock()
-                .expect("lock poisoned: current_params")
-                .clone(),
-            round: round.unwrap_or(0) as u32,
-            retryable: true,
-            ..Default::default()
-        });
         let action_log_snapshot = self
             .action_log
             .lock()
             .expect("lock poisoned: action_log")
             .clone();
+        let error_details = error_msg.as_ref().map(|msg| {
+            let diag = build_failure_diagnostics(
+                msg,
+                status.clone(),
+                &action_log_snapshot,
+                snapshot.as_deref(),
+                DEFAULT_CONTEXT_CHAR_LIMIT,
+            );
+            ErrorInfo {
+                error_type: ErrorType::Unknown,
+                message: msg.clone(),
+                last_tool: current_tool.clone(),
+                last_params: self
+                    .current_params
+                    .lock()
+                    .expect("lock poisoned: current_params")
+                    .clone(),
+                round: round.unwrap_or(0) as u32,
+                retryable: true,
+                root_cause: diag.root_cause,
+                failed_tool_sequence: diag.failed_tool_sequence,
+                failed_round_context: diag.failed_round_context,
+                ..Default::default()
+            }
+        });
         cb(SubagentProgress {
             node_id: self.trace_id.to_string(),
             parent_id: None,
@@ -1200,6 +1365,317 @@ mod tests {
     use super::*;
     use crate::agent::SessionId;
 
+    use crate::teams::failure_diagnostics::FailureRootCause;
+
+    fn ev(event_type: SubagentEventType, elapsed_ms: u64) -> SubagentEvent {
+        SubagentEvent {
+            event_type,
+            elapsed_ms,
+        }
+    }
+
+    #[test]
+    fn extract_signals_user_cancelled_from_status() {
+        assert!(extract_failure_signals("err", SubagentStatus::Cancelled, &[]).user_cancelled);
+        assert!(extract_failure_signals("err", SubagentStatus::Cancelling, &[]).user_cancelled);
+        assert!(!extract_failure_signals("err", SubagentStatus::Failed, &[]).user_cancelled);
+    }
+
+    #[test]
+    fn extract_signals_guardian_rejected_from_permission_event() {
+        let log = vec![ev(
+            SubagentEventType::Permission {
+                kind: "permission_denied".into(),
+                detail: "rm -rf blocked".into(),
+            },
+            100,
+        )];
+        let signals = extract_failure_signals("tool failed", SubagentStatus::Failed, &log);
+        assert_eq!(
+            signals.guardian_rejected_reason.as_deref(),
+            Some("rm -rf blocked")
+        );
+    }
+
+    #[test]
+    fn extract_signals_guardian_rejected_picks_most_recent() {
+        let log = vec![
+            ev(
+                SubagentEventType::Permission {
+                    kind: "permission_denied".into(),
+                    detail: "first".into(),
+                },
+                10,
+            ),
+            ev(
+                SubagentEventType::Permission {
+                    kind: "permission_denied".into(),
+                    detail: "second".into(),
+                },
+                20,
+            ),
+        ];
+        let signals = extract_failure_signals("err", SubagentStatus::Failed, &log);
+        assert_eq!(signals.guardian_rejected_reason.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn extract_signals_sandbox_and_panic_from_msg() {
+        assert!(
+            extract_failure_signals("sandbox execution denied", SubagentStatus::Failed, &[])
+                .sandbox_failed
+        );
+        assert!(
+            extract_failure_signals("tool panicked: unwind", SubagentStatus::Failed, &[])
+                .tool_panic
+        );
+        let neutral = extract_failure_signals("plain error", SubagentStatus::Failed, &[]);
+        assert!(!neutral.sandbox_failed && !neutral.tool_panic);
+    }
+
+    #[test]
+    fn failed_tool_sequence_takes_last_round_actions() {
+        let log = vec![
+            ev(
+                SubagentEventType::Thought {
+                    text: "round1".into(),
+                },
+                0,
+            ),
+            ev(
+                SubagentEventType::Action {
+                    tool_name: "grep".into(),
+                    params_summary: "pattern=foo".into(),
+                },
+                10,
+            ),
+            ev(
+                SubagentEventType::ToolResult {
+                    tool_name: "grep".into(),
+                    success: true,
+                    summary: "3 matches".into(),
+                },
+                20,
+            ),
+            ev(
+                SubagentEventType::Thought {
+                    text: "round2".into(),
+                },
+                30,
+            ),
+            ev(
+                SubagentEventType::Action {
+                    tool_name: "file_write".into(),
+                    params_summary: "path=/x".into(),
+                },
+                40,
+            ),
+            ev(
+                SubagentEventType::ToolResult {
+                    tool_name: "file_write".into(),
+                    success: false,
+                    summary: "EACCES".into(),
+                },
+                50,
+            ),
+        ];
+        let seq = build_failed_tool_sequence(&log);
+        assert_eq!(seq.len(), 1, "only the last round's action: {seq:?}");
+        assert_eq!(seq[0].tool_name, "file_write");
+        assert_eq!(seq[0].elapsed_ms, 10, "delta to ToolResult (50-40)");
+        assert_eq!(
+            seq[0].params_summary,
+            serde_json::Value::String("path=/x".into())
+        );
+    }
+
+    #[test]
+    fn failed_tool_sequence_action_without_result_emits_zero_elapsed() {
+        let log = vec![
+            ev(SubagentEventType::Thought { text: "r".into() }, 0),
+            ev(
+                SubagentEventType::Action {
+                    tool_name: "grep".into(),
+                    params_summary: "p".into(),
+                },
+                10,
+            ),
+        ];
+        let seq = build_failed_tool_sequence(&log);
+        assert_eq!(seq.len(), 1);
+        assert_eq!(seq[0].elapsed_ms, 0);
+    }
+
+    #[test]
+    fn failed_tool_sequence_no_thought_takes_all_actions() {
+        let log = vec![
+            ev(
+                SubagentEventType::Action {
+                    tool_name: "grep".into(),
+                    params_summary: "p".into(),
+                },
+                5,
+            ),
+            ev(
+                SubagentEventType::ToolResult {
+                    tool_name: "grep".into(),
+                    success: true,
+                    summary: "ok".into(),
+                },
+                15,
+            ),
+        ];
+        let seq = build_failed_tool_sequence(&log);
+        assert_eq!(seq.len(), 1);
+        assert_eq!(seq[0].elapsed_ms, 10);
+    }
+
+    #[test]
+    fn failed_tool_sequence_wraps_params_as_json_string() {
+        let log = vec![
+            ev(
+                SubagentEventType::Action {
+                    tool_name: "x".into(),
+                    params_summary: "token=secret".into(),
+                },
+                0,
+            ),
+            ev(
+                SubagentEventType::ToolResult {
+                    tool_name: "x".into(),
+                    success: true,
+                    summary: "ok".into(),
+                },
+                1,
+            ),
+        ];
+        let seq = build_failed_tool_sequence(&log);
+        assert_eq!(
+            seq[0].params_summary,
+            serde_json::Value::String("token=secret".into())
+        );
+    }
+
+    #[test]
+    fn failed_round_context_uses_last_thought_and_tool_output() {
+        let log = vec![
+            ev(
+                SubagentEventType::Thought {
+                    text: "analyzing".into(),
+                },
+                0,
+            ),
+            ev(
+                SubagentEventType::Action {
+                    tool_name: "grep".into(),
+                    params_summary: "p".into(),
+                },
+                10,
+            ),
+            ev(
+                SubagentEventType::ToolResult {
+                    tool_name: "grep".into(),
+                    success: false,
+                    summary: "error output".into(),
+                },
+                20,
+            ),
+        ];
+        let ctx = build_failed_round_context(&log, None, 2000).expect("context present");
+        assert_eq!(ctx.assistant_text, "analyzing");
+        assert_eq!(ctx.final_tool_output, "error output");
+    }
+
+    #[test]
+    fn failed_round_context_truncates_to_char_limit() {
+        let long = "a".repeat(500);
+        let log = vec![ev(SubagentEventType::Thought { text: long }, 0)];
+        let ctx = build_failed_round_context(&log, None, 100).expect("context present");
+        assert!(ctx.assistant_text.chars().count() <= 100);
+        assert!(ctx.final_tool_output.is_empty());
+    }
+
+    #[test]
+    fn failed_round_context_none_when_no_data() {
+        assert!(build_failed_round_context(&[], None, 2000).is_none());
+    }
+
+    #[test]
+    fn failed_round_context_falls_back_to_snapshot() {
+        let log = vec![ev(
+            SubagentEventType::Action {
+                tool_name: "x".into(),
+                params_summary: "p".into(),
+            },
+            0,
+        )];
+        let ctx =
+            build_failed_round_context(&log, Some("snapshot text"), 2000).expect("context present");
+        assert_eq!(ctx.assistant_text, "snapshot text");
+    }
+
+    #[test]
+    fn build_diagnostics_cancelled_yields_user_cancelled_root_cause() {
+        let diag = build_failure_diagnostics(
+            "cancelled by user",
+            SubagentStatus::Cancelled,
+            &[],
+            None,
+            2000,
+        );
+        assert_eq!(diag.root_cause, FailureRootCause::UserCancelled);
+    }
+
+    #[test]
+    fn build_diagnostics_guardian_rejection() {
+        let log = vec![ev(
+            SubagentEventType::Permission {
+                kind: "permission_denied".into(),
+                detail: "dangerous cmd".into(),
+            },
+            0,
+        )];
+        let diag =
+            build_failure_diagnostics("tool failed", SubagentStatus::Failed, &log, None, 2000);
+        assert_eq!(
+            diag.root_cause,
+            FailureRootCause::GuardianRejected {
+                reason: "dangerous cmd".into()
+            }
+        );
+    }
+
+    #[test]
+    fn build_diagnostics_sandbox_failure() {
+        let diag = build_failure_diagnostics(
+            "sandbox execution failed",
+            SubagentStatus::Failed,
+            &[],
+            None,
+            2000,
+        );
+        assert_eq!(diag.root_cause, FailureRootCause::SandboxFailed);
+    }
+
+    #[test]
+    fn build_diagnostics_tool_panic() {
+        let diag =
+            build_failure_diagnostics("tool panicked", SubagentStatus::Failed, &[], None, 2000);
+        assert_eq!(diag.root_cause, FailureRootCause::ToolPanic);
+    }
+
+    #[test]
+    fn build_diagnostics_timeout_via_string_fallback() {
+        let diag = build_failure_diagnostics(
+            "subagent timed out after 600s",
+            SubagentStatus::Failed,
+            &[],
+            None,
+            2000,
+        );
+        assert_eq!(diag.root_cause, FailureRootCause::Timeout);
+    }
+
     #[test]
     fn extract_params_summary_truncates_multibyte_at_char_boundary() {
         let description = format!("{}构suffix", "a".repeat(79));
@@ -1283,9 +1759,7 @@ mod tests {
     // should short-circuit to Ok(None). A real root (parent_id=None, depth==0)
     // must still proceed through the normal join/claim path.
 
-    fn make_synthesis(
-        context: AgentExecutionContext,
-    ) -> SubagentSynthesis {
+    fn make_synthesis(context: AgentExecutionContext) -> SubagentSynthesis {
         let coordinator = Arc::new(AgentCoordinator::new(5, 1));
         let is_non_root = context.parent_id.is_some();
         SubagentSynthesis {
