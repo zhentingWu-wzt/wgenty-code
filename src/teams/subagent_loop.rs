@@ -607,6 +607,7 @@ impl SubagentObserver {
                 .clone(),
             round: round.unwrap_or(0) as u32,
             retryable: true,
+            ..Default::default()
         });
         let action_log_snapshot = self
             .action_log

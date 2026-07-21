@@ -860,6 +860,7 @@ mod tests {
             last_params: None,
             round: 3,
             retryable: true,
+            ..Default::default()
         });
         tree.nodes.insert("n1".to_string(), node);
         tree.root_id = Some("n1".to_string());

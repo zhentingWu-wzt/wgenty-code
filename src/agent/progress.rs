@@ -10,6 +10,10 @@ use crate::api::ChatMessage;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::teams::failure_diagnostics::{
+    FailedRoundContext, FailureRootCause, RetryAttempt, ToolCallStep,
+};
+
 /// An event in a subagent's execution timeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentEvent {
@@ -77,8 +81,14 @@ pub enum ErrorType {
     Unknown,
 }
 
+impl Default for ErrorType {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
 /// Detailed error information for a failed subagent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ErrorInfo {
     pub error_type: ErrorType,
     pub message: String,
@@ -86,6 +96,18 @@ pub struct ErrorInfo {
     pub last_params: Option<String>,
     pub round: u32,
     pub retryable: bool,
+    /// Structured root cause determined at capture time from structured signals.
+    #[serde(default)]
+    pub root_cause: FailureRootCause,
+    /// Full ordered tool-call sequence of the failing round (params redacted).
+    #[serde(default)]
+    pub failed_tool_sequence: Vec<ToolCallStep>,
+    /// Truncated assistant text + final tool output of the failing round.
+    #[serde(default)]
+    pub failed_round_context: Option<FailedRoundContext>,
+    /// Per-attempt retry records (error, root cause, strategy, outcome).
+    #[serde(default)]
+    pub retry_history: Vec<RetryAttempt>,
 }
 
 /// A progress update emitted by a subagent at key lifecycle points.
@@ -423,6 +445,7 @@ mod tests {
             last_params: Some("src/main.rs".to_string()),
             round: 5,
             retryable: true,
+            ..Default::default()
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("Timeout"));
@@ -449,6 +472,7 @@ mod tests {
             last_params: None,
             round: 0,
             retryable: false,
+            ..Default::default()
         };
         let json = serde_json::to_string(&info).unwrap();
         let deserialized: ErrorInfo = serde_json::from_str(&json).unwrap();
@@ -580,6 +604,7 @@ mod tests {
             last_params: current_params.clone(),
             round: round as u32,
             retryable: true,
+            ..Default::default()
         });
 
         assert!(
@@ -608,6 +633,7 @@ mod tests {
             last_params: current_params.clone(),
             round: 0,
             retryable: true,
+            ..Default::default()
         });
 
         assert!(

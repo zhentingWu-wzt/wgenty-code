@@ -869,6 +869,7 @@ impl Tool for TaskTool {
                         last_params: None,
                         round: 0,
                         retryable: false,
+                        ..Default::default()
                     }),
                     events: Vec::new(),
                     messages: Vec::new(),
