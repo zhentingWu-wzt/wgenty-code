@@ -9,10 +9,10 @@
 
 ## 2. Transcript Storage Adaptation
 
-- [ ] 2.1 Add idempotent migration in `run_migrations` (`src/transcript/store.rs`) to `ALTER TABLE subagent_transcripts ADD COLUMN` `failure_diagnostics TEXT`, `root_cause TEXT`, `retry_history TEXT` (guarded by `PRAGMA table_info` presence check)
-- [ ] 2.2 Extend `SubagentTranscriptHeader` serialization + `insert`/`get_by_id` to round-trip the new diagnostics columns; map NULL to `Unknown`/empty on read (graceful degradation for old rows)
-- [ ] 2.3 Write diagnostics columns in the same transaction as the header row on failure; leave NULL on success
-- [ ] 2.4 Add/extend unit tests: empty-db migration, old-db migration (no data loss), NULL-column degradation, diagnostics round-trip
+- [x] 2.1 Add idempotent migration in `run_migrations` (`src/transcript/store.rs`) to `ALTER TABLE subagent_transcripts ADD COLUMN` `failure_diagnostics TEXT`, `root_cause TEXT`, `retry_history TEXT` (guarded by `PRAGMA table_info` presence check)
+- [x] 2.2 Extend `SubagentTranscriptHeader` serialization + `insert`/`get_by_id` to round-trip the new diagnostics columns; map NULL to `Unknown`/empty on read (graceful degradation for old rows)
+- [x] 2.3 Write diagnostics columns in the same transaction as the header row on failure; leave NULL on success
+- [x] 2.4 Add/extend unit tests: empty-db migration, old-db migration (no data loss), NULL-column degradation, diagnostics round-trip
 
 ## 3. Trace Streaming (JSONL File + Daemon SSE)
 
