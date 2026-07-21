@@ -57,11 +57,11 @@ pub fn known_context_window(model: &str) -> Option<usize> {
     let lower = model.to_ascii_lowercase();
     // Anthropic Claude family - all current models expose 200k context.
     if lower.starts_with("claude") || matches!(lower.as_str(), "sonnet" | "opus" | "haiku") {
-        return Some(1024_000);
+        return Some(1_024_000);
     }
     // DeepSeek - 64k context.
     if lower.starts_with("deepseek") || matches!(lower.as_str(), "v3" | "r1" | "reasoner") {
-        return Some(1024_000);
+        return Some(1_024_000);
     }
     // OpenAI gpt-4o / gpt-4-turbo family - 128k.
     if lower.starts_with("gpt-4o") || lower.starts_with("gpt-4-turbo") {
@@ -75,7 +75,7 @@ pub fn known_context_window(model: &str) -> Option<usize> {
         return Some(16_000);
     }
     if lower.starts_with("gpt") {
-        return Some(1024_000);
+        return Some(1_024_000);
     }
     // Qwen (DashScope).
     if lower.starts_with("qwen-long") {

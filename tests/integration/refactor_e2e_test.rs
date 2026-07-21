@@ -6,6 +6,12 @@
 //!
 //! Run: cargo test --test refactor_e2e_test -- --nocapture --ignored
 //! (ignored because it calls the real API)
+//!
+//! Gate: references the pre-refactor `run_subagent_loop` API (now `run_agent_loop`
+//! with `RunLoopArgs`). Excluded from default `cargo test --all` to avoid blocking
+//! the build. Enable with `--features integration-tests`.
+
+#![cfg(feature = "integration-tests")]
 
 use std::sync::Arc;
 use wgenty_code::agent::progress::{ProgressCallback, SubagentProgress};

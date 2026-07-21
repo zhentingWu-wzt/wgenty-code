@@ -1,0 +1,15 @@
+{
+  "change": "rlm-replan-ability",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "60500181942cd3efba8a98532167749517472cac059c58b57e0357db9efcc64f",
+  "files": [
+    { "path": "openspec/changes/rlm-replan-ability/proposal.md", "sha256": "973950f1ecfb72a25034e404ace512b4d4b32fa6945473a4a9e8acaefce77cd0" },
+    { "path": "openspec/changes/rlm-replan-ability/design.md", "sha256": "11f816b84543a29503b57ad0ec46811c13b80e405f62460e63192a57cda5a5a6" },
+    { "path": "openspec/changes/rlm-replan-ability/tasks.md", "sha256": "e8038cca2d97702c6604155c703eb4e6f823324f89c7b7bdf7a30ac7074e79ba" },
+    { "path": "openspec/changes/rlm-replan-ability/specs/rlm-budget-control/spec.md", "sha256": "65cea7ef5e810972c88dd2d56f26776f87bb26c855771ba227042d9637a78013" },
+    { "path": "openspec/changes/rlm-replan-ability/specs/rlm-replan/spec.md", "sha256": "482227f996e9f2bc9fca5e433ed37aa3d564072bfa968050f1714e43694d4ac5" }
+  ]
+}

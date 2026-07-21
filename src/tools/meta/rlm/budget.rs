@@ -41,6 +41,21 @@ impl BudgetAllocation {
             _ => {}
         }
     }
+
+    /// Charge `amount` from the executor pool (saturating). Returns the
+    /// amount actually charged (may be less than requested when the pool is
+    /// exhausted). Used by the replan phase to draw replanner-call and
+    /// replacement-execution budget on demand (design §4.4 Q4).
+    pub fn charge_executor(&mut self, amount: u64) -> u64 {
+        let charged = amount.min(self.executor_pool);
+        self.executor_pool -= charged;
+        charged
+    }
+
+    /// Whether the executor pool still has at least `amount` remaining.
+    pub fn executor_has(&self, amount: u64) -> bool {
+        self.executor_pool >= amount
+    }
 }
 
 #[cfg(test)]
@@ -94,6 +109,29 @@ mod tests {
         let mut a = BudgetAllocation::new(100);
         a.rollover_unused("executor", 15);
         assert_eq!(a.aggregator, 25); // 10 + 15 unused
+    }
+
+    #[test]
+    fn test_charge_executor_saturating() {
+        let mut a = BudgetAllocation::new(100);
+        assert_eq!(a.executor_pool, 80);
+        assert_eq!(a.charge_executor(30), 30);
+        assert_eq!(a.executor_pool, 50);
+        // Saturates: requests 100 but only 50 remain.
+        assert_eq!(a.charge_executor(100), 50);
+        assert_eq!(a.executor_pool, 0);
+        // Exhausted pool charges nothing.
+        assert_eq!(a.charge_executor(5), 0);
+    }
+
+    #[test]
+    fn test_executor_has() {
+        let a = BudgetAllocation::new(100);
+        assert!(a.executor_has(80));
+        assert!(!a.executor_has(81));
+        let mut b = BudgetAllocation::new(100);
+        b.charge_executor(80);
+        assert!(!b.executor_has(1));
     }
 
     #[test]

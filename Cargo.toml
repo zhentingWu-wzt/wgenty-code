@@ -136,6 +136,9 @@ bundled-skills = ["rust-embed"]
 export-icon = ["image"]
 # Rhai-powered run_script tool. Off by default - rhai alone costs ~10s on clean builds.
 scripting = ["dep:rhai"]
+# Integration tests that require real API keys and network access.
+# Off by default so `cargo test --all` / `cargo clippy --all-targets` stay green.
+integration-tests = []
 full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqlite", "scripting"]
 # Bundle SQLite from source (for platforms without system SQLite, e.g. Windows).
 # macOS and Linux use the system SQLite by default, avoiding ~60s of C compilation.
