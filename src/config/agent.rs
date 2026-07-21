@@ -67,6 +67,34 @@ pub enum TimeoutDecision {
     Deny,
 }
 
+/// Where subagent trace events are emitted (design D6).
+///
+/// - `file`: append JSONL to `<trace_dir>/<session_id>.jsonl` (default).
+/// - `daemon`: broadcast to the daemon SSE trace stream (no file).
+/// - `both`: file + daemon.
+/// - `off`: disable streaming entirely.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TraceSinkMode {
+    #[default]
+    File,
+    Daemon,
+    Both,
+    Off,
+}
+
+impl TraceSinkMode {
+    /// Whether this mode writes the project-local JSONL trace file.
+    pub fn writes_file(self) -> bool {
+        matches!(self, TraceSinkMode::File | TraceSinkMode::Both)
+    }
+
+    /// Whether this mode feeds the daemon broadcast/SSE channel.
+    pub fn writes_daemon(self) -> bool {
+        matches!(self, TraceSinkMode::Daemon | TraceSinkMode::Both)
+    }
+}
+
 /// Root agent's runtime permission mode, mirrored to subagents so they can
 /// short-circuit policy `Ask` without blocking on the approval bridge.
 ///
@@ -108,6 +136,19 @@ fn default_explore_readonly() -> bool {
 
 fn default_approval_timeout_secs() -> u64 {
     60
+}
+
+/// Subagent trace streaming config (design D3/D6).
+///
+/// `dir = None` resolves to `<project_root>/.wgenty-code/traces` at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SubagentTraceConfig {
+    #[serde(default)]
+    pub sink: TraceSinkMode,
+    /// Optional override for the trace directory. `None` => project-local
+    /// `.wgenty-code/traces` (resolved at the dispatch site).
+    #[serde(default)]
+    pub dir: Option<std::path::PathBuf>,
 }
 
 /// Subagent runtime limits + overrides.
@@ -153,6 +194,9 @@ pub struct SubagentLimits {
     /// parent model (current behavior).
     #[serde(default)]
     pub fallback_models: Vec<String>,
+    /// Subagent trace streaming config (JSONL file + daemon SSE).
+    #[serde(default)]
+    pub trace: SubagentTraceConfig,
 }
 
 impl Default for SubagentLimits {
@@ -172,6 +216,7 @@ impl Default for SubagentLimits {
             approval_timeout_secs: default_approval_timeout_secs(),
             timeout_decision: TimeoutDecision::default(),
             fallback_models: Vec::new(),
+            trace: SubagentTraceConfig::default(),
         }
     }
 }

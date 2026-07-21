@@ -19,7 +19,9 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::agent::progress::{ProgressCallback, SubagentProgress};
+use crate::config::TraceSinkMode;
 use crate::teams::failure_diagnostics::redact_params;
+use crate::utils::current_project_root;
 
 /// Bounded channel capacity for the file writer. The writer batches flushes,
 /// so a modest buffer absorbs bursts without blocking the agent loop.
@@ -153,6 +155,25 @@ impl TraceSink {
         Arc::clone(&self.callback)
     }
 
+    /// Create a file sink for the given mode, or `None` when file sinking is
+    /// disabled (`off` or `daemon`-only). Resolves the trace dir, defaulting to
+    /// `<project_root>/.wgenty-code/traces` when `dir` is `None`.
+    ///
+    /// Must be called from a tokio runtime context (spawns a writer task).
+    pub fn for_mode(
+        mode: TraceSinkMode,
+        dir: Option<&Path>,
+        session_id: impl Into<String>,
+    ) -> Option<Self> {
+        if !mode.writes_file() {
+            return None;
+        }
+        let dir = dir
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| current_project_root().join(".wgenty-code").join("traces"));
+        Some(Self::new(dir, session_id))
+    }
+
     /// Signal the writer to drain pending events and exit, then await it.
     pub async fn shutdown(mut self) -> std::io::Result<()> {
         // Signal the writer to drain + exit. Releasing our senders also lets
@@ -180,6 +201,31 @@ impl Drop for TraceSink {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
+    }
+}
+
+/// Compose a caller-supplied `ProgressCallback` with an optional trace sink.
+///
+/// When both are present, each progress update is forwarded to the original
+/// callback first, then to the sink (a clone is made since the callback
+/// consumes the value by value). Returns `None` only when neither side is
+/// present, so the observer can skip callback invocation entirely.
+pub fn compose_progress_callback(
+    orig: Option<ProgressCallback>,
+    sink: Option<&TraceSink>,
+) -> Option<ProgressCallback> {
+    match (orig, sink) {
+        (Some(orig), Some(sink)) => {
+            let sink_cb = sink.callback();
+            Some(Arc::new(move |p: SubagentProgress| {
+                let for_sink = p.clone();
+                orig(p);
+                sink_cb(for_sink);
+            }))
+        }
+        (None, Some(sink)) => Some(sink.callback()),
+        (Some(orig), None) => Some(orig),
+        (None, None) => None,
     }
 }
 
@@ -496,5 +542,100 @@ mod tests {
             file_mode, 0o600,
             "trace file must be 0600, got {file_mode:o}"
         );
+    }
+
+    #[test]
+    fn test_trace_sink_mode_serde_and_defaults() {
+        // Default is `file`.
+        assert_eq!(TraceSinkMode::default(), TraceSinkMode::File);
+        assert!(TraceSinkMode::File.writes_file());
+        assert!(TraceSinkMode::Both.writes_file());
+        assert!(!TraceSinkMode::Daemon.writes_file());
+        assert!(!TraceSinkMode::Off.writes_file());
+        assert!(TraceSinkMode::Daemon.writes_daemon());
+        assert!(TraceSinkMode::Both.writes_daemon());
+        assert!(!TraceSinkMode::File.writes_daemon());
+        assert!(!TraceSinkMode::Off.writes_daemon());
+
+        // Lowercase serde round-trip.
+        let off: TraceSinkMode = serde_json::from_str("\"off\"").unwrap();
+        assert_eq!(off, TraceSinkMode::Off);
+        let both: TraceSinkMode = serde_json::from_str("\"both\"").unwrap();
+        assert_eq!(both, TraceSinkMode::Both);
+        assert_eq!(
+            serde_json::to_string(&TraceSinkMode::Daemon).unwrap(),
+            "\"daemon\""
+        );
+    }
+
+    #[test]
+    fn test_for_mode_off_and_daemon_return_none() {
+        // `off` and `daemon`-only do not create a file sink (Task 3.2). These
+        // return before spawning, so no runtime is required.
+        let dir = Path::new("/tmp/never-used-off");
+        assert!(TraceSink::for_mode(TraceSinkMode::Off, Some(dir), "s").is_none());
+        assert!(TraceSink::for_mode(TraceSinkMode::Daemon, Some(dir), "s").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_for_mode_file_and_both_create_sink() {
+        let dir = TempDir::new().unwrap();
+        for mode in [TraceSinkMode::File, TraceSinkMode::Both] {
+            let path = dir.path().join(format!("sub-{:?}", mode));
+            let sink = TraceSink::for_mode(mode, Some(&path), "sess-fm").expect("Some sink");
+            let cb = sink.callback();
+            cb(make_progress());
+            sink.shutdown().await.unwrap();
+            assert!(
+                path.join("sess-fm.jsonl").exists(),
+                "file for {mode:?} missing"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_compose_progress_callback_invokes_both() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let dir = TempDir::new().unwrap();
+        let sink = TraceSink::new(dir.path().to_path_buf(), "sess-c");
+        let orig_count = Arc::new(AtomicU32::new(0));
+        let oc = Arc::clone(&orig_count);
+        let orig: ProgressCallback = Arc::new(move |_p| {
+            oc.fetch_add(1, Ordering::Relaxed);
+        });
+
+        let composed = compose_progress_callback(Some(orig), Some(&sink));
+        let cb = composed.expect("composed present");
+        cb(make_progress());
+        cb(make_progress());
+
+        sink.shutdown().await.unwrap();
+        assert_eq!(orig_count.load(Ordering::Relaxed), 2, "orig invoked twice");
+        // Sink persisted both events.
+        let content = fs::read_to_string(dir.path().join("sess-c.jsonl")).unwrap();
+        assert_eq!(content.trim_end().lines().count(), 2);
+    }
+
+    #[test]
+    fn test_compose_progress_callback_only_orig() {
+        let composed = compose_progress_callback(Some(Arc::new(|_| {})), None);
+        assert!(composed.is_some(), "orig-only must yield Some");
+    }
+
+    #[tokio::test]
+    async fn test_compose_progress_callback_only_sink() {
+        let dir = TempDir::new().unwrap();
+        let sink = TraceSink::new(dir.path().to_path_buf(), "sess-os");
+        let composed = compose_progress_callback(None, Some(&sink));
+        assert!(composed.is_some(), "sink-only must yield Some");
+        composed.unwrap()(make_progress());
+        sink.shutdown().await.unwrap();
+        assert!(dir.path().join("sess-os.jsonl").exists());
+    }
+
+    #[test]
+    fn test_compose_progress_callback_none() {
+        let composed = compose_progress_callback(None, None);
+        assert!(composed.is_none(), "neither side must yield None");
     }
 }
