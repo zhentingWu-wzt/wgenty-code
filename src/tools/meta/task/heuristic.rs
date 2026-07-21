@@ -8,6 +8,7 @@
 ///
 /// This avoids routing simple tasks like "create a file" through the
 /// expensive RLM pipeline.
+#[allow(dead_code)]
 pub(super) fn is_complex_task(prompt: &str, use_small_model: bool) -> bool {
     if use_small_model {
         return false; // User explicitly asked for cheap model
