@@ -965,6 +965,24 @@ async fn build_local_view(
     .await
 }
 
+/// Computes a live `elapsed_ms` for a subagent progress entry.
+///
+/// The subagent loop only emits progress at round/tool boundaries, so a
+/// long-running tool (e.g. `sleep`) freezes the stored `elapsed_ms` until the
+/// next emit. For still-running agents recompute from `started_at` so the TUI
+/// timer keeps ticking; terminal agents keep their stored final value.
+fn live_elapsed_ms(progress: Option<&crate::agent::progress::SubagentProgress>) -> u64 {
+    let Some(p) = progress else {
+        return 0;
+    };
+    let stored = p.elapsed_ms;
+    if p.status.is_terminal() || p.started_at <= 0 {
+        return stored;
+    }
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    ((now_ms - p.started_at).max(0) as u64).max(stored)
+}
+
 /// Assembles a trusted UI local response and issues generation-bound
 /// capabilities for its canonical direct children.
 async fn assemble_local_view(
@@ -992,6 +1010,10 @@ async fn assemble_local_view(
         let node = session_progress.get(child.agent_id.as_str());
         let text_snapshot = node.and_then(|p| p.text_snapshot.clone());
         let cumulative_tokens = node.map(|p| p.cumulative_tokens).unwrap_or(0);
+        let started_at = node.map(|p| p.started_at).unwrap_or(0);
+        let elapsed_ms = live_elapsed_ms(node);
+        let round = node.and_then(|p| p.round);
+        let max_rounds = node.and_then(|p| p.max_rounds);
         let messages = node.map(|p| p.messages.clone()).unwrap_or_default();
         children.push(DirectChildResponse {
             agent_id: child.agent_id.as_str().to_string(),
@@ -1001,6 +1023,10 @@ async fn assemble_local_view(
             navigation_capability: cap,
             text_snapshot,
             cumulative_tokens,
+            started_at,
+            elapsed_ms,
+            round,
+            max_rounds,
             messages,
         });
     }
@@ -1013,6 +1039,10 @@ async fn assemble_local_view(
             cumulative_tokens: self_node
                 .map(|progress| progress.cumulative_tokens)
                 .unwrap_or(0),
+            started_at: self_node.map(|progress| progress.started_at).unwrap_or(0),
+            elapsed_ms: live_elapsed_ms(self_node),
+            round: self_node.and_then(|progress| progress.round),
+            max_rounds: self_node.and_then(|progress| progress.max_rounds),
             messages: self_node
                 .map(|progress| progress.messages.clone())
                 .unwrap_or_default(),

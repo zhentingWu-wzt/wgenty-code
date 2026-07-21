@@ -60,17 +60,16 @@ impl App {
                         );
                         let new_state = visible.get(focus.selector_index - 1);
                         if let Some(id) = new_state {
-                            // Descend into the selected direct child via its
-                            // opaque navigation capability. The daemon verifies
-                            // the capability and returns the child's local view;
-                            // we do not rebuild from the in-memory tree.
-                            if let Some(capability) = self.subagent_tree.capability_for_child(id) {
-                                let _ = self.event_tx.send(AppEvent::NavigateAgent { capability });
-                            } else if let Some(state) =
-                                FocusViewState::build(id, &self.subagent_tree)
-                            {
-                                // No capability (self node or stale view):
-                                // fall back to the in-memory focus switch.
+                            // Switch the timeline to the selected node in-memory.
+                            // We intentionally do NOT descend via NavigateAgent:
+                            // descending switches `agent_navigation` to the child
+                            // scope, which makes the background progress poller's
+                            // root-scope `AgentLocalView` updates fail the
+                            // `matches_current_scope` check (event.rs) and get
+                            // skipped, freezing the focus view. The root tree
+                            // always carries every direct child's live progress,
+                            // so an in-memory switch keeps the timeline live.
+                            if let Some(state) = FocusViewState::build(id, &self.subagent_tree) {
                                 *focus = state;
                             }
                         }
@@ -373,18 +372,15 @@ impl App {
                                 {
                                     self.subagent_focus = Some(state);
                                 }
-                                // Descend into the selected subagent so the
-                                // selector reflects the scoped local view
-                                // (parent + this subagent's direct children)
-                                // instead of all siblings from the root view.
-                                // The AgentViewNavigated handler will rebuild
-                                // the focus view once the daemon responds.
-                                if let Some(capability) =
-                                    self.subagent_tree.capability_for_child(node_id)
-                                {
-                                    let _ =
-                                        self.event_tx.send(AppEvent::NavigateAgent { capability });
-                                }
+                                // Intentionally do NOT descend via NavigateAgent
+                                // here. Descending switches `agent_navigation`
+                                // to the child scope, which makes the background
+                                // progress poller's root-scope `AgentLocalView`
+                                // updates fail the `matches_current_scope` check
+                                // (event.rs) and get skipped -- freezing the focus
+                                // view's elapsed_ms/rounds/timeline. Keeping the
+                                // root scope lets `replace_local` + `focus.rebuild`
+                                // stay live.
                             }
                             return;
                         }

@@ -8,7 +8,8 @@ use std::time::Duration;
 /// | tool                         | timeout                                              |
 /// |------------------------------|------------------------------------------------------|
 /// | `task` / `delegate`          | `subagent_timeout_secs + 120s` buffer                |
-/// | `execute_command` / `exec`   | `max(args.timeout + 30, 120)` where timeout defaults to 60 |
+/// | `execute_command`            | `max(args.timeout + 30, 120)` where timeout defaults to 60 |
+/// | `exec_command`               | `max(args.yield_time_ms/1000 + 30, 60)` where yield defaults to 1000ms |
 /// | all other tools              | 120s                                                 |
 ///
 /// `subagent_timeout_secs` must always be > the subagent's own loop timeout
@@ -20,9 +21,22 @@ pub fn resolve_tool_timeout(
 ) -> Duration {
     match tool_name {
         "task" | "delegate" => Duration::from_secs(subagent_timeout_secs.saturating_add(120)),
-        "execute_command" | "exec_command" => {
+        "execute_command" => {
             let user_timeout = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(60);
             Duration::from_secs(cmp::max(user_timeout + 30, 120))
+        }
+        "exec_command" => {
+            // exec_command is a session-style tool: execute() returns after at
+            // most yield_time_ms (read_incremental polls until the command
+            // finishes or yield elapses). The tool timeout must cover that
+            // yield plus a buffer, otherwise a large yield_time_ms would be
+            // truncated by the outer tokio::time::timeout.
+            let yield_ms = args
+                .get("yield_time_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1000);
+            let yield_secs = yield_ms / 1000;
+            Duration::from_secs(cmp::max(yield_secs + 30, 60))
         }
         _ => Duration::from_secs(120),
     }
@@ -95,11 +109,22 @@ mod tests {
     }
 
     #[test]
-    fn test_timeout_exec_command_alias() {
-        let args = json!({"command": "echo hello", "timeout": 100});
+    fn test_timeout_exec_command_default_yield() {
+        // No yield_time_ms -> defaults to 1000ms -> max(1 + 30, 60) = 60
+        let args = json!({"command": "echo hello"});
         assert_eq!(
             resolve_tool_timeout("exec_command", &args, 1800),
-            Duration::from_secs(130)
+            Duration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn test_timeout_exec_command_large_yield() {
+        // yield_time_ms=120000 -> max(120 + 30, 60) = 150 (not truncated)
+        let args = json!({"command": "echo hello", "yield_time_ms": 120000});
+        assert_eq!(
+            resolve_tool_timeout("exec_command", &args, 1800),
+            Duration::from_secs(150)
         );
     }
 

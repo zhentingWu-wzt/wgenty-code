@@ -17,6 +17,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
+use textwrap::wrap as textwrap_wrap;
 
 /// Completed subagents are removed from the selector after this delay (seconds).
 pub const COMPLETED_REMOVE_DELAY_SECS: u64 = 10;
@@ -308,7 +309,7 @@ impl FocusView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(8), // header
+                Constraint::Length(5), // header (compact: label wrap + info + error)
                 Constraint::Min(5),    // timeline
                 Constraint::Length(8), // selector
                 Constraint::Length(1), // help
@@ -330,57 +331,58 @@ impl FocusView {
 
         let (status_label, status_color) = status_display(&state.status);
         let total_secs = state.elapsed_ms as f64 / 1000.0;
-        let budget_str = state
-            .token_budget_k
-            .map(|b| format!("{}k", b))
-            .unwrap_or_else(|| "unlimited".to_string());
 
-        let mut header_lines: Vec<Line> = vec![
-            Line::from(vec![
-                Span::styled(" Task:    ", Style::default().fg(Color::Rgb(108, 112, 134))),
+        // Wrap label to available width (prefix " Task: " = 7 chars).
+        let label_w = header_inner.width.saturating_sub(7).max(10) as usize;
+        let wrapped = textwrap_wrap(&state.label, label_w);
+        let mut header_lines: Vec<Line> = Vec::new();
+        for (i, line) in wrapped.iter().take(2).enumerate() {
+            let prefix = if i == 0 { " Task: " } else { "       " };
+            header_lines.push(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(Color::Rgb(108, 112, 134))),
                 Span::styled(
-                    state.label.clone(),
+                    line.to_string(),
                     Style::default()
                         .fg(Color::Rgb(249, 226, 175))
                         .add_modifier(Modifier::BOLD),
                 ),
-            ]),
-            Line::from(vec![
-                Span::styled(" Status:  ", Style::default().fg(Color::Rgb(108, 112, 134))),
-                Span::styled(
-                    status_label,
-                    Style::default()
-                        .fg(status_color)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    format!("{:.1}s", total_secs),
-                    Style::default().fg(Color::Rgb(180, 180, 200)),
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    format!("{}/{} tokens", state.cumulative_tokens, budget_str),
-                    Style::default().fg(Color::Rgb(180, 180, 200)),
-                ),
-            ]),
-        ];
-
-        if let (Some(r), Some(mr)) = (state.round, state.max_rounds) {
-            header_lines.push(Line::from(vec![
-                Span::styled(" Rounds:  ", Style::default().fg(Color::Rgb(108, 112, 134))),
-                Span::styled(
-                    format!("{}/{}", r, mr),
-                    Style::default().fg(Color::Rgb(180, 180, 200)),
-                ),
             ]));
         }
 
+        // Compact info line: Status | Time | Rounds | Tokens
+        let round_str = match (state.round, state.max_rounds) {
+            (Some(r), Some(mr)) => format!("R:{}/{}", r, mr),
+            (Some(r), None) => format!("R:{}", r),
+            _ => "R:-".to_string(),
+        };
+        header_lines.push(Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled(
+                status_label,
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" | ", Style::default().fg(Color::Rgb(108, 112, 134))),
+            Span::styled(
+                format!("{:.1}s", total_secs),
+                Style::default().fg(Color::Rgb(180, 180, 200)),
+            ),
+            Span::styled(" | ", Style::default().fg(Color::Rgb(108, 112, 134))),
+            Span::styled(round_str, Style::default().fg(Color::Rgb(180, 180, 200))),
+            Span::styled(" | ", Style::default().fg(Color::Rgb(108, 112, 134))),
+            Span::styled(
+                format!("{} tok", state.cumulative_tokens),
+                Style::default().fg(Color::Rgb(180, 180, 200)),
+            ),
+        ]));
+
         if let Some(ref err) = state.error_message {
+            let err_display = truncate(err, label_w);
             header_lines.push(Line::from(vec![
-                Span::styled(" Error:   ", Style::default().fg(Color::Rgb(108, 112, 134))),
+                Span::styled(" Error: ", Style::default().fg(Color::Rgb(108, 112, 134))),
                 Span::styled(
-                    err,
+                    err_display,
                     Style::default()
                         .fg(Color::Rgb(243, 139, 168))
                         .add_modifier(Modifier::BOLD),
@@ -602,7 +604,14 @@ fn build_selector_lines(
             Color::Rgb(180, 180, 200)
         };
 
-        let max_w = inner.width.saturating_sub(8) as usize;
+        let elapsed_ms = node.map(|n| n.progress.elapsed_ms).unwrap_or(0);
+        let elapsed_secs = elapsed_ms as f64 / 1000.0;
+        let time_str = if elapsed_secs >= 60.0 {
+            format!("{:.0}m", elapsed_secs / 60.0)
+        } else {
+            format!("{:.1}s", elapsed_secs)
+        };
+        let max_w = inner.width.saturating_sub(18) as usize;
         let display = truncate(&label, max_w);
 
         lines.push(Line::from(vec![
@@ -613,6 +622,10 @@ fn build_selector_lines(
                 Style::default()
                     .fg(label_color)
                     .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {:>6}", time_str),
+                Style::default().fg(Color::Rgb(108, 112, 134)),
             ),
             Span::styled(current_marker, Style::default().fg(cursor_color)),
         ]));

@@ -32,6 +32,7 @@ pub struct RlmDelegateTool {
     tool_registry: std::sync::Weak<ToolRegistry>,
     coordinator: Arc<AgentCoordinator>,
     progress_store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
+    transcript_store: Option<Arc<crate::transcript::SubagentTranscriptStore>>,
 }
 
 impl RlmDelegateTool {
@@ -40,12 +41,14 @@ impl RlmDelegateTool {
         tool_registry: std::sync::Weak<ToolRegistry>,
         coordinator: Arc<AgentCoordinator>,
         progress_store: Arc<RwLock<HashMap<String, HashMap<String, SubagentProgress>>>>,
+        transcript_store: Option<Arc<crate::transcript::SubagentTranscriptStore>>,
     ) -> Self {
         Self {
             settings,
             tool_registry,
             coordinator,
             progress_store,
+            transcript_store,
         }
     }
 }
@@ -144,6 +147,7 @@ impl Tool for RlmDelegateTool {
             Some(root_node_id),
             None,
             None,
+            self.transcript_store.clone(),
         )
         .await
         .map_err(|e| ToolError {
