@@ -14,9 +14,16 @@
 
 ## Next Task
 
-- **Task 11** = tasks.md 3.3: Add bounded broadcast channel for trace events; on full, drop oldest for live subscribers only (persistence unaffected). 需要在 `TraceSink` 内增加 `tokio::sync::broadcast::Sender<TraceEvent>`（容量上限，如 1024），`emit`/callback 同时 `try_send` mpsc（文件）和 `broadcast.send`（daemon）；`broadcast.send` 失败（无订阅者或满）忽略不阻塞。提供 `subscribe() -> broadcast::Receiver`。`mode.writes_daemon()` 时才广播。daemon SSE endpoint (3.4) 订阅此 channel。
+- **Task 12** = tasks.md 3.4: Add `GET /api/v1/subagents/trace/stream` SSE endpoint (feature-gated `daemon`) with `require_auth`, `session_id` + `since` query params; replay persisted history from transcript store on cold start, then stream live. 需要：(a) daemon routes 挂载 SSE endpoint；(b) 从 TraceSink 的 broadcast 订阅（需全局/共享 TraceSink 句柄或 daemon AppState 持有）；(c) 冷启动从 transcript store 回放；(d) session_id/since 过滤。
 
-## Current Stage: implementing (Task 10 完成，Task 11 待开始)
+## Current Stage: implementing (Task 11 完成，Task 12 待开始)
+
+## Task 11 (3.3) 完成证据
+- `trace_sink.rs` 重构：`TraceSink` 加 `broadcast: Option<broadcast::Sender<TraceEvent>>`；`with_mode(dir, sid, mode)` 构造器按 mode 启用 file mpsc（**unbounded**，永不丢，持久不受 backpressure 影响）+ broadcast（容量 1024，满则覆盖最旧 -> 慢订阅者 Lagged）。
+- `subscribe() -> Option<broadcast::Receiver>`；`for_mode` 现在对 File/Daemon/Both 返回 Some（仅 Off 返回 None）——daemon-only 无文件、仅广播。
+- callback 同时 send file mpsc + broadcast（daemon）；broadcast.send 失败（无订阅者）忽略。
+- 关键修正：file mpsc 改 unbounded（原 bounded+try_send 在突发时会丢事件，违反"持久不受影响"），backpressure 测试暴露并修复。
+- 验证：19 trace_sink 测试 GREEN（含 subscribe 投递、daemon-only 无文件、backpressure 文件全量持久 1074 事件）；clippy --all-targets -D warnings 零 warning；cargo fmt 干净。
 
 ## Task 10 (3.2) 完成证据
 - config: `src/config/agent.rs` 加 `TraceSinkMode`（lowercase serde, default File, writes_file/writes_daemon）+ `SubagentTraceConfig { sink, dir: Option<PathBuf> }`；`SubagentLimits.trace` 字段 + Default。
