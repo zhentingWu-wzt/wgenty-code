@@ -1206,6 +1206,12 @@ pub async fn run_subagent_loop_with_permissions(
         settings.models.context_window,
     );
 
+    // Resolve max_tokens from transport settings so the subagent's output
+    // budget matches the main agent. Previously this was hardcoded to 4096,
+    // which truncated tool-call JSON on local models and caused spin/hang
+    // failures while the main agent (using transport.max_tokens) succeeded.
+    let max_tokens = settings.models.transport.max_tokens;
+
     let is_non_root = context.parent_id.is_some();
 
     // s04/s09: optional trace sink (subagent.trace.sink). Built before
@@ -1256,7 +1262,7 @@ pub async fn run_subagent_loop_with_permissions(
         plan_mode: false,
         subagent_timeout_secs: timeout_secs,
         context_window,
-        max_tokens: 4096,
+        max_tokens,
         session_id: context.session_id.as_str().to_string(),
         turn_id: Some(loop_turn_id),
         agent_generation: 0,

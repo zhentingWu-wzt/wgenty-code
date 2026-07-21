@@ -1,0 +1,21 @@
+workflow: full
+phase: design
+context_compression: off
+build_mode: null
+build_pause: null
+subagent_dispatch: null
+tdd_mode: null
+isolation: null
+verify_mode: null
+auto_transition: false
+base_ref: bafc8388ea5c3e8c559ee669eeae30d943a9d66a
+design_doc: openspec/changes/web-ops-console/design.md
+plan: null
+verify_result: deferred
+verification_report: null
+branch_status: pending
+created_at: 2026-07-18
+verified_at: null
+archived: false
+# Product hold: team-oriented Web later; TUI first. See DEFERRED.md.
+
