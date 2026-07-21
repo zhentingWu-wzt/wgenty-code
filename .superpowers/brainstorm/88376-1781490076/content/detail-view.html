@@ -1,0 +1,86 @@
+<h2>Transcript Detail View — 全屏布局</h2>
+<p class="subtitle">按 Enter 进入 subagent 完整执行记录后的全屏视图，哪种信息组织方式更好？</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>时间线视图（推荐）</h3>
+      <p>左侧 header（状态/耗时/tokens/rounds）+ 右侧时间线滚动列表，每条事件标注时间偏移和类型图标。</p>
+      <div class="mockup" style="margin-top: 8px;">
+        <div class="mockup-body" style="background: #0d1117; color: #c9d1d9; font-family: monospace; font-size: 12px; padding: 12px; border-radius: 4px;">
+          <div style="border-bottom: 1px solid #30363d; padding-bottom: 6px; margin-bottom: 8px;">
+            <span style="color: #58a6ff;">📋 sub: explore skills system</span>
+            <span style="float:right; color: #3fb950;">✅ Completed</span>
+          </div>
+          <div style="display:flex; gap: 12px;">
+            <div style="min-width: 140px; color: #8b949e; font-size: 11px;">
+              <div>⏱ 66.2s</div>
+              <div>🔄 14 rounds</div>
+              <div>📊 307.0k tokens</div>
+              <div>🛠 28 tool calls</div>
+              <div style="margin-top: 8px; color: #58a6ff;">💭 2 findings</div>
+            </div>
+            <div style="flex:1; border-left: 1px solid #30363d; padding-left: 12px; max-height: 200px; overflow-y: auto;">
+              <div style="color: #7ee787;">+0.2s 💭 Analyzing the skills directory structure to identify how skills are registered and loaded...</div>
+              <div style="color: #d2a8ff; margin-top: 4px;">+1.5s 🔧 grep("skill", path="src/")</div>
+              <div style="color: #8b949e; margin-top: 2px;">+3.2s ✓ 12 matches in 4 files</div>
+              <div style="color: #d2a8ff; margin-top: 4px;">+4.1s 🔧 file_read("src/skills/registry.rs")</div>
+              <div style="color: #8b949e; margin-top: 2px;">+5.8s ✓ 245 lines read</div>
+              <div style="color: #7ee787; margin-top: 4px;">+7.3s 💭 The skill system uses a plugin-based registry. Skills are auto-discovered from ~/.claude/skills/ directory. Each skill has a SKILL.md...</div>
+              <div style="color: #d2a8ff; margin-top: 4px;">+8.9s 🔧 file_read("src/skills/loader.rs")</div>
+              <div style="color: #8b949e; margin-top: 2px;">+10.1s ✓ 180 lines read</div>
+              <div style="color: #8b949e; margin-top: 8px;">··· 20 more events ···</div>
+              <div style="color: #d2a8ff; margin-top: 4px;">+64.5s 🔧 glob("**/SKILL.md")</div>
+              <div style="color: #8b949e; margin-top: 2px;">+65.8s ✓ 42 files found</div>
+              <div style="color: #3fb950; margin-top: 8px;">+66.2s 🏁 Completed: Found 42 skill definitions across 3 plugin directories</div>
+            </div>
+          </div>
+          <div style="border-top: 1px solid #30363d; margin-top: 8px; padding-top: 4px; color: #8b949e; font-size: 11px;">
+            ↑↓ scroll · PgUp/PgDn page · g/G top/bottom · Esc back
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>分栏视图</h3>
+      <p>左侧事件列表（仅显示类型+时间），右侧详情面板（选中后展示完整内容）。适合长事件列表导航。</p>
+      <div class="mockup" style="margin-top: 8px;">
+        <div class="mockup-body" style="background: #0d1117; color: #c9d1d9; font-family: monospace; font-size: 12px; padding: 12px; border-radius: 4px;">
+          <div style="border-bottom: 1px solid #30363d; padding-bottom: 6px; margin-bottom: 8px;">
+            <span style="color: #58a6ff;">📋 sub: explore skills</span>
+            <span style="float:right; color: #3fb950;">✅ Completed · 66.2s</span>
+          </div>
+          <div style="display:flex; gap: 8px;">
+            <div style="width: 180px; border-right: 1px solid #30363d; padding-right: 8px; max-height: 180px; overflow-y: auto;">
+              <div style="color: #7ee787; padding: 2px;">💭 +0.2s</div>
+              <div style="color: #d2a8ff; padding: 2px; background:#1f2937;">🔧 +1.5s grep</div>
+              <div style="color: #8b949e; padding: 2px;">  ✓ +3.2s</div>
+              <div style="color: #d2a8ff; padding: 2px;">🔧 +4.1s read</div>
+              <div style="color: #8b949e; padding: 2px;">  ✓ +5.8s</div>
+              <div style="color: #7ee787; padding: 2px;">💭 +7.3s</div>
+              <div style="color: #8b949e; padding: 2px; font-size:10px;">··· 22 more ···</div>
+              <div style="color: #3fb950; padding: 2px;">🏁 +66.2s</div>
+            </div>
+            <div style="flex:1; padding: 8px; background:#161b22; border-radius: 4px;">
+              <div style="color: #d2a8ff; font-size:10px;">🔧 Tool: grep</div>
+              <div style="color: #c9d1d9; margin-top: 4px;">pattern: "skill"</div>
+              <div style="color: #8b949e;">path: src/</div>
+              <div style="border-top: 1px solid #30363d; margin-top:6px; padding-top:4px;">
+                <div style="color: #8b949e; font-size: 10px;">Result (12 matches):</div>
+                <div style="color: #c9d1d9;">src/skills/registry.rs:15</div>
+                <div style="color: #c9d1d9;">src/skills/registry.rs:42</div>
+                <div style="color: #c9d1d9;">src/skills/loader.rs:8</div>
+                <div style="color: #8b949e;">··· 9 more matches ···</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

@@ -876,20 +876,25 @@ impl Tool for TaskTool {
                 });
             }
 
-            let (terminal, content) = match result {
+            let (terminal, content, error_message) = match result {
                 Ok(r) => (
                     ChildTerminal::Completed {
                         summary: r.chars().take(500).collect(),
                     },
                     r,
+                    None,
                 ),
-                Err(e) => (
-                    ChildTerminal::Failed {
-                        code: e.code().to_string(),
-                        partial_result: None,
-                    },
-                    format!("Subagent error: {}", e),
-                ),
+                Err(e) => {
+                    let msg = e.full_message();
+                    (
+                        ChildTerminal::Failed {
+                            code: e.code().to_string(),
+                            partial_result: None,
+                        },
+                        format!("Subagent error: {}", msg),
+                        Some(msg),
+                    )
+                }
             };
 
             // Persist the child's terminal state and release its permit
@@ -963,7 +968,7 @@ impl Tool for TaskTool {
                     total_tokens,
                     actual_rounds,
                     token_budget,
-                    None, // error_message captured in content, not individual
+                    error_message,
                     None, // summary
                     events,
                     failure_diagnostics,

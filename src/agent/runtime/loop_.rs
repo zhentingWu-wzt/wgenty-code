@@ -415,10 +415,19 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
 
         if let Some(ref usage) = result.usage {
             // Calibration anchor: record the real prompt_tokens alongside the
-            // chars of the message slice we just sent, so the next round's
+            // total request chars we just sent, so the next round's
             // `needs_compaction` can use the measured ratio instead of chars/4.
+            //
+            // The denominator MUST match the `total_chars` used by
+            // [`estimate_prompt_tokens_calibrated`] (`messages` +
+            // `fixed_overhead_chars`). `usage.prompt_tokens` already includes
+            // the tool-definition tokens, so omitting `fixed_overhead_chars`
+            // here would leave those tokens in the numerator with no
+            // corresponding bytes in the denominator, double-counting them and
+            // systematically inflating the estimate (which triggers compaction
+            // far too early).
             state.last_measured_prompt_tokens = Some(usage.prompt_tokens);
-            state.last_request_chars = Some(request_size_chars(&messages));
+            state.last_request_chars = Some(request_size_chars(&messages) + fixed_overhead_chars);
             if let Some(counter) = hooks.token_counter {
                 counter.add(usage.total_tokens);
                 counter.add_output(usage.completion_tokens);
