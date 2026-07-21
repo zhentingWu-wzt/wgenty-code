@@ -1,7 +1,7 @@
 ## 1. Failure Diagnostics Data Model & Capture
 
 - [ ] 1.1 Extend `ErrorInfo` (`src/agent/progress.rs`) with `root_cause: FailureRootCause`, `failed_tool_sequence: Vec<ToolCallStep>`, `failed_round_context: Option<FailedRoundContext>`, `retry_history: Vec<RetryAttempt>`; keep `retryable: bool` for backward compat; all new fields `#[serde(default)]`
-- [ ] 1.2 Define `FailureRootCause` enum (TokenBudgetExceeded/GuardianRejected{reason}/SandboxFailed/ApiError/ToolPanic/Timeout/UserCancelled/Unknown) and `ToolCallStep`/`FailedRoundContext`/`RetryAttempt` structs
+- [x] 1.2 Define `FailureRootCause` enum (TokenBudgetExceeded/GuardianRejected{reason}/SandboxFailed/ApiError/ToolPanic/Timeout/UserCancelled/Unknown) and `ToolCallStep`/`FailedRoundContext`/`RetryAttempt` structs
 - [ ] 1.3 Extend `FailureMode::classify` (`src/teams/subagent_health.rs`) to emit `FailureRootCause` from structured signals at capture site; add GuardianRejected/SandboxFailed/ToolPanic categories; keep string-match as `Unknown` fallback
 - [ ] 1.4 In `subagent_loop.rs`, populate `failed_tool_sequence` (from `action_log` failing-round slice, with redacted param summaries + elapsed_ms), `failed_round_context` (assistant text + final tool output, char-boundary truncated to `context_char_limit`), and `root_cause` at failure time
 - [ ] 1.5 Record `retry_history` per retry attempt (error/root_cause/strategy/outcome) in the retry path; leave empty on no-retry
