@@ -7,7 +7,9 @@ use crate::api::{ApiClient, ChatMessage};
 use crate::config::Settings;
 use crate::teams::guarding_tool_port::SubagentPermissionContext;
 use crate::teams::subagent_loop::run_subagent_loop_with_permissions;
+use crate::tools::meta::task::transcript::{new_transcript_id, save_minimal_transcript};
 use crate::tools::ToolRegistry;
+use crate::transcript::SubagentTranscriptStore;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::formats::jaccard_similarity;
@@ -102,6 +104,7 @@ pub async fn run_rlm_pipeline(
     root_node_id: Option<String>,
     token_budget_k: Option<u64>,
     workdir: Option<std::path::PathBuf>,
+    transcript_store: Option<Arc<SubagentTranscriptStore>>,
 ) -> Result<RlmResult, String> {
     tracing::info!(
         target: "rlm",
@@ -305,6 +308,7 @@ pub async fn run_rlm_pipeline(
                         "RLM pipeline: depth-limit fallback, self-executing subtask inline"
                     );
                     let sub_settings = Arc::new(settings.clone());
+                    let sub_transcript_store = transcript_store.clone();
                     let handle = tokio::spawn(async move {
                         let mut sub_system_prompt =
                             "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.".to_string();
@@ -317,6 +321,7 @@ pub async fn run_rlm_pipeline(
                             }),
                             ghost_agent_id,
                         );
+                        let started_at = chrono::Utc::now().timestamp_millis();
                         let result = run_subagent_loop_with_permissions(
                             &api_client,
                             registry.clone(),
@@ -331,11 +336,30 @@ pub async fn run_rlm_pipeline(
                             task_budget,
                             sub_workdir,
                             permission,
-                            sub_settings,
-                            None,
+                            sub_settings.clone(),
+                            sub_transcript_store.clone(),
                             None,
                         )
                         .await;
+                        if let Some(ref store) = sub_transcript_store {
+                            let retention = if sub_settings.storage.transcript.max_age_days > 0 {
+                                Some(sub_settings.storage.transcript.max_age_days)
+                            } else {
+                                None
+                            };
+                            save_minimal_transcript(
+                                store,
+                                &new_transcript_id(),
+                                ghost_context.session_id.as_str(),
+                                &prompt,
+                                Some(sub_system_prompt.clone()),
+                                prompt.clone(),
+                                started_at,
+                                &result,
+                                sub_settings.agent.subagent.trace.context_char_limit,
+                                retention,
+                            );
+                        }
                         // Ghost is not registered in coordinator scopes; skip
                         // finish_child (no permit to release, no scope to retire).
                         (result, idx)
@@ -358,6 +382,7 @@ pub async fn run_rlm_pipeline(
             let sub_coordinator = coordinator.clone();
             let sub_workdir = workdir.clone();
             let sub_settings = Arc::new(settings.clone());
+            let sub_transcript_store = transcript_store.clone();
             let handle = tokio::spawn(async move {
                 let mut sub_system_prompt = "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.".to_string();
                 inject_format_instruction("analysis", &mut sub_system_prompt);
@@ -368,6 +393,7 @@ pub async fn run_rlm_pipeline(
                     }),
                     sub_agent_id,
                 );
+                let started_at = chrono::Utc::now().timestamp_millis();
                 let result = run_subagent_loop_with_permissions(
                     &api_client,
                     registry.clone(),
@@ -382,11 +408,30 @@ pub async fn run_rlm_pipeline(
                     task_budget,
                     sub_workdir,
                     permission,
-                    sub_settings,
-                    None,
+                    sub_settings.clone(),
+                    sub_transcript_store.clone(),
                     None,
                 )
                 .await;
+                if let Some(ref store) = sub_transcript_store {
+                    let retention = if sub_settings.storage.transcript.max_age_days > 0 {
+                        Some(sub_settings.storage.transcript.max_age_days)
+                    } else {
+                        None
+                    };
+                    save_minimal_transcript(
+                        store,
+                        &new_transcript_id(),
+                        sub_context.session_id.as_str(),
+                        &prompt,
+                        Some(sub_system_prompt.clone()),
+                        prompt.clone(),
+                        started_at,
+                        &result,
+                        sub_settings.agent.subagent.trace.context_char_limit,
+                        retention,
+                    );
+                }
                 // Persist the child's terminal through the coordinator so its
                 // permit is released and it appears in the hierarchy.
                 let terminal = match &result {
@@ -604,6 +649,7 @@ pub async fn run_rlm_pipeline(
                 let sub_coordinator = coordinator.clone();
                 let sub_workdir = workdir.clone();
                 let sub_settings = Arc::new(settings.clone());
+                let sub_transcript_store = transcript_store.clone();
                 let handle = tokio::spawn(async move {
                     let mut sub_system_prompt = "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.".to_string();
                     inject_format_instruction("analysis", &mut sub_system_prompt);
@@ -615,6 +661,7 @@ pub async fn run_rlm_pipeline(
                         }),
                         sub_agent_id,
                     );
+                    let started_at = chrono::Utc::now().timestamp_millis();
                     let result = run_subagent_loop_with_permissions(
                         &client,
                         registry.clone(),
@@ -629,11 +676,30 @@ pub async fn run_rlm_pipeline(
                         repl_task_budget,
                         sub_workdir,
                         permission,
-                        sub_settings,
-                        None,
+                        sub_settings.clone(),
+                        sub_transcript_store.clone(),
                         None,
                     )
                     .await;
+                    if let Some(ref store) = sub_transcript_store {
+                        let retention = if sub_settings.storage.transcript.max_age_days > 0 {
+                            Some(sub_settings.storage.transcript.max_age_days)
+                        } else {
+                            None
+                        };
+                        save_minimal_transcript(
+                            store,
+                            &new_transcript_id(),
+                            sub_context.session_id.as_str(),
+                            &prompt,
+                            Some(sub_system_prompt.clone()),
+                            prompt.clone(),
+                            started_at,
+                            &result,
+                            sub_settings.agent.subagent.trace.context_char_limit,
+                            retention,
+                        );
+                    }
                     let terminal = match &result {
                         Ok(r) => crate::agent::ChildTerminal::Completed {
                             summary: r.chars().take(500).collect(),

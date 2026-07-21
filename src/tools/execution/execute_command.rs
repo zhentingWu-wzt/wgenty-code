@@ -38,7 +38,7 @@ impl Tool for ExecuteCommandTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command (sandboxed when available)"
+        "Execute a shell command and block until it completes or times out (sandboxed when available). Use for one-shot commands including long-running ones (builds, tests, sleep, watches); set timeout (seconds, default 60) for commands that may exceed it. Returns full stdout on success; returns an error on non-zero exit or timeout. For interactive sessions needing follow-up stdin, use exec_command instead."
     }
 
     fn input_schema(&self) -> serde_json::Value {

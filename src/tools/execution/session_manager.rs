@@ -267,10 +267,24 @@ impl CommandSessionManager {
         let handle = self.get_session(session_id).await?;
 
         if yield_time_ms > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(yield_time_ms)).await;
+            // Poll until the command finishes or yield_time_ms elapses
+            // (whichever comes first), instead of sleeping the full yield
+            // unconditionally. Short commands return as soon as they exit;
+            // long ones still yield after yield_time_ms with finished=false.
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_millis(yield_time_ms);
+            loop {
+                self.refresh_exit_status(&handle).await;
+                if handle.state.exit_status.read().await.is_some()
+                    || std::time::Instant::now() >= deadline
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        } else {
+            self.refresh_exit_status(&handle).await;
         }
-
-        self.refresh_exit_status(&handle).await;
 
         let stdout_bytes = handle.state.stdout.lock().await.clone();
         let stderr_bytes = handle.state.stderr.lock().await.clone();
