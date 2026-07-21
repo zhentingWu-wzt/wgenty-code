@@ -1197,6 +1197,7 @@ pub async fn run_subagent_loop_with_permissions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::SessionId;
 
     #[test]
     fn extract_params_summary_truncates_multibyte_at_char_boundary() {
