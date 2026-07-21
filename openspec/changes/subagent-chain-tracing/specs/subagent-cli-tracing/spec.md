@@ -8,7 +8,7 @@ The system SHALL provide a `wgenty-code subagent` CLI subcommand with `list`, `t
 - **THEN** the `list`, `trace`, and `health` sub-actions SHALL be documented with their options
 
 ### Requirement: List historical subagent runs
-`wgenty-code subagent list` SHALL list historical subagent runs in reverse chronological order, showing at minimum: transcript id, label, status, root-cause (when failed), duration, and started-at timestamp. It SHALL support optional `--session <id>` (filter by session), `--status <status>` (filter by status), and `--limit <n>` (default 20).
+`wgenty-code subagent list` SHALL list historical subagent runs in reverse chronological order, showing at minimum: transcript id, label, status, root-cause (when failed), duration, and started-at timestamp. It SHALL support optional `--session <id>` (filter by session), `--status <status>` (filter by status), and `--limit <n>` (default 50).
 
 #### Scenario: List recent runs
 - **WHEN** `wgenty-code subagent list` is run
@@ -19,7 +19,7 @@ The system SHALL provide a `wgenty-code subagent` CLI subcommand with `list`, `t
 - **THEN** only runs with Failed status SHALL be listed, each annotated with its root cause
 
 ### Requirement: Show single subagent trace
-`wgenty-code subagent trace <id>` SHALL render the full trace of a single subagent run, reusing the existing trace rendering logic. It SHALL support `--format <call_tree|error_timeline|chrome_trace|html>` (default `call_tree`) and `--raw` (print the raw stored error message and failed-round context without rendering).
+`wgenty-code subagent trace <id>` SHALL render the full trace of a single subagent run, reusing the existing trace rendering logic. It SHALL support `--format <call_tree|error_timeline|chrome|html>` (default `call_tree`) and `--raw` (print the raw stored error message and failed-round context without rendering).
 
 #### Scenario: Default call-tree rendering
 - **WHEN** `wgenty-code subagent trace <id>` is run
@@ -34,11 +34,11 @@ The system SHALL provide a `wgenty-code subagent` CLI subcommand with `list`, `t
 - **THEN** the command SHALL exit non-zero with a clear "not found" error message
 
 ### Requirement: Health summary
-`wgenty-code subagent health` SHALL print subagent health statistics computed from transcript headers: total runs, completed, failed, success rate, and failure-mode breakdown. It SHALL support `--period <1h|24h|7d|30d|all>` (default `24h`).
+`wgenty-code subagent health` SHALL print subagent health statistics computed from transcript headers: total runs, completed, failed, success rate, and failure-mode breakdown. It SHALL support `--period <1h|24h|7d|30d|all>` (default `all`).
 
-#### Scenario: Default 24h health
+#### Scenario: Default all-time health
 - **WHEN** `wgenty-code subagent health` is run
-- **THEN** the 24-hour window statistics SHALL be printed, including success rate and failure-mode counts
+- **THEN** the all-time window statistics SHALL be printed, including success rate and failure-mode counts
 
 #### Scenario: Failure-mode breakdown with root causes
 - **WHEN** `wgenty-code subagent health --period 7d` is run and failures exist
