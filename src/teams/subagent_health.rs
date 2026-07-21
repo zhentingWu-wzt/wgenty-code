@@ -11,6 +11,8 @@ use crate::transcript::{SubagentTranscriptHeader, SubagentTranscriptStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::teams::failure_diagnostics::FailureRootCause;
+
 #[derive(Debug, Clone, Copy)]
 pub enum HealthPeriod {
     Last1h,
@@ -43,6 +45,9 @@ pub enum FailureMode {
     ApiError,
     ModelUnavailable,
     ToolError,
+    GuardianRejected,
+    SandboxFailed,
+    ToolPanic,
     Cancelled,
     Unknown,
 }
@@ -74,6 +79,56 @@ impl FailureMode {
         }
     }
 
+    /// Structured classification at the capture site. When explicit signals are
+    /// present they take priority over free-text matching; otherwise this falls
+    /// back to [`FailureMode::classify`].
+    ///
+    /// Priority: user-cancelled > guardian rejection > sandbox failure > tool
+    /// panic > string-based classification. Per design D2 the guardian/sandbox/
+    /// panic signals are unstable in error messages, so structured signals are
+    /// authoritative when available.
+    pub fn classify_with_signals(error_msg: &str, signals: &FailureSignals) -> Self {
+        if signals.user_cancelled {
+            return Self::Cancelled;
+        }
+        if signals.guardian_rejected_reason.is_some() {
+            return Self::GuardianRejected;
+        }
+        if signals.sandbox_failed {
+            return Self::SandboxFailed;
+        }
+        if signals.tool_panic {
+            return Self::ToolPanic;
+        }
+        Self::classify(error_msg)
+    }
+
+    /// Emit the structured [`FailureRootCause`]. `reason` is used only for the
+    /// `GuardianRejected` variant (which carries a reason string); for all other
+    /// variants it is ignored. A missing reason degrades to `"unspecified"`.
+    pub fn to_root_cause(&self, reason: Option<&str>) -> FailureRootCause {
+        match self {
+            Self::TokenBudgetExceeded => FailureRootCause::TokenBudgetExceeded,
+            Self::GuardianRejected => FailureRootCause::GuardianRejected {
+                reason: reason.unwrap_or("unspecified").to_string(),
+            },
+            Self::SandboxFailed => FailureRootCause::SandboxFailed,
+            Self::ApiError | Self::ModelUnavailable => FailureRootCause::ApiError,
+            Self::ToolPanic => FailureRootCause::ToolPanic,
+            Self::Timeout => FailureRootCause::Timeout,
+            Self::Cancelled => FailureRootCause::UserCancelled,
+            // String-detected modes with no dedicated root-cause variant
+            // (StuckLoop/ParseError/MaxRoundsExceeded/ToolError/Unknown) degrade
+            // to Unknown: their authoritative root cause requires structured
+            // signals unavailable from `classify` alone.
+            Self::StuckLoop
+            | Self::ParseError
+            | Self::MaxRoundsExceeded
+            | Self::ToolError
+            | Self::Unknown => FailureRootCause::Unknown,
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::Timeout => "Timeout",
@@ -84,6 +139,9 @@ impl FailureMode {
             Self::ApiError => "API/Network Error",
             Self::ModelUnavailable => "Model Unavailable",
             Self::ToolError => "Tool Execution Error",
+            Self::GuardianRejected => "Guardian Rejected",
+            Self::SandboxFailed => "Sandbox Execution Failed",
+            Self::ToolPanic => "Tool Panic",
             Self::Cancelled => "Cancelled",
             Self::Unknown => "Unknown",
         }
@@ -92,11 +150,31 @@ impl FailureMode {
     pub fn severity(&self) -> &'static str {
         match self {
             Self::Timeout | Self::ApiError | Self::ModelUnavailable => "Critical",
+            Self::GuardianRejected | Self::SandboxFailed | Self::ToolPanic => "Critical",
             Self::TokenBudgetExceeded | Self::MaxRoundsExceeded => "Warning",
             Self::StuckLoop | Self::ParseError | Self::ToolError => "Warning",
             Self::Cancelled | Self::Unknown => "Info",
         }
     }
+}
+
+/// Structured failure signals available at the capture site (`subagent_loop`).
+///
+/// These take priority over free-text matching in
+/// [`FailureMode::classify_with_signals`] because guardian/sandbox/panic
+/// information is unstable in error messages (design D2).
+#[derive(Debug, Clone, Default)]
+pub struct FailureSignals {
+    /// Non-empty when the guardian rejected a command; carries the rejection
+    /// reason (used as the `FailureRootCause::GuardianRejected` reason).
+    pub guardian_rejected_reason: Option<String>,
+    /// True when the OS sandbox rejected or failed to execute the command.
+    pub sandbox_failed: bool,
+    /// True when a tool invocation panicked (unwind/abort) rather than
+    /// returning a normal error.
+    pub tool_panic: bool,
+    /// True when the user explicitly cancelled the subagent run.
+    pub user_cancelled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -446,6 +524,15 @@ fn recommend(mode: &FailureMode, count: usize, _avg_rounds: f64) -> String {
             "Configure agent.subagent.fallback_models so model-unavailable failures auto-retry with a backup model".into()
         }
         FailureMode::ToolError => "Verify file paths, permissions, and tool availability".into(),
+        FailureMode::GuardianRejected => {
+            "Guardian rejected a command - review guardian policy or prompt constraints".into()
+        }
+        FailureMode::SandboxFailed => {
+            "Sandbox execution failed - check sandbox config and OS permissions".into()
+        }
+        FailureMode::ToolPanic => {
+            "Tool panicked - inspect tool implementation for unwinds/aborts".into()
+        }
         FailureMode::Cancelled => "User cancelled — not a system issue".into(),
         FailureMode::Unknown => "Unclassified failure — review transcript details".into(),
     }
@@ -505,6 +592,7 @@ fn gen_recs(
 mod tests {
     use super::*;
     use crate::transcript::SubagentTranscriptHeader;
+    use crate::teams::failure_diagnostics::FailureRootCause;
 
     fn hdr(
         status: &str,
@@ -555,6 +643,162 @@ mod tests {
             FailureMode::classify("API call failed: connection refused"),
             FailureMode::ApiError
         );
+    }
+
+    #[test]
+    fn test_classify_with_signals_guardian() {
+        let signals = FailureSignals {
+            guardian_rejected_reason: Some("dangerous command".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            FailureMode::classify_with_signals("tool exec failed", &signals),
+            FailureMode::GuardianRejected
+        );
+    }
+
+    #[test]
+    fn test_classify_with_signals_sandbox() {
+        let signals = FailureSignals {
+            sandbox_failed: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            FailureMode::classify_with_signals("exec failed", &signals),
+            FailureMode::SandboxFailed
+        );
+    }
+
+    #[test]
+    fn test_classify_with_signals_tool_panic() {
+        let signals = FailureSignals {
+            tool_panic: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            FailureMode::classify_with_signals("unknown error", &signals),
+            FailureMode::ToolPanic
+        );
+    }
+
+    #[test]
+    fn test_classify_with_signals_user_cancelled() {
+        let signals = FailureSignals {
+            user_cancelled: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            FailureMode::classify_with_signals("whatever", &signals),
+            FailureMode::Cancelled
+        );
+    }
+
+    #[test]
+    fn test_classify_with_signals_falls_back_to_string() {
+        let signals = FailureSignals::default();
+        assert_eq!(
+            FailureMode::classify_with_signals("Subagent timed out after 600s", &signals),
+            FailureMode::Timeout
+        );
+        assert_eq!(
+            FailureMode::classify_with_signals("completely unrecognized message", &signals),
+            FailureMode::Unknown
+        );
+    }
+
+    #[test]
+    fn test_classify_does_not_detect_new_categories_via_string() {
+        // D2: string match is degradation; guardian/sandbox/panic not detected.
+        assert_eq!(
+            FailureMode::classify("guardian rejected the command"),
+            FailureMode::Unknown
+        );
+        // "sandbox execution failed" contains "execut" -> degrades to ToolError.
+        assert_eq!(
+            FailureMode::classify("sandbox execution failed"),
+            FailureMode::ToolError
+        );
+        // "tool panicked" contains "tool" -> degrades to ToolError.
+        assert_eq!(
+            FailureMode::classify("tool panicked and aborted"),
+            FailureMode::ToolError
+        );
+    }
+
+    #[test]
+    fn test_to_root_cause_mapping() {
+        assert_eq!(
+            FailureMode::TokenBudgetExceeded.to_root_cause(None),
+            FailureRootCause::TokenBudgetExceeded
+        );
+        assert_eq!(
+            FailureMode::Timeout.to_root_cause(None),
+            FailureRootCause::Timeout
+        );
+        assert_eq!(
+            FailureMode::Cancelled.to_root_cause(None),
+            FailureRootCause::UserCancelled
+        );
+        assert_eq!(
+            FailureMode::ApiError.to_root_cause(None),
+            FailureRootCause::ApiError
+        );
+        assert_eq!(
+            FailureMode::ModelUnavailable.to_root_cause(None),
+            FailureRootCause::ApiError
+        );
+        assert_eq!(
+            FailureMode::SandboxFailed.to_root_cause(None),
+            FailureRootCause::SandboxFailed
+        );
+        assert_eq!(
+            FailureMode::ToolPanic.to_root_cause(None),
+            FailureRootCause::ToolPanic
+        );
+        assert_eq!(
+            FailureMode::ToolError.to_root_cause(None),
+            FailureRootCause::Unknown
+        );
+        assert_eq!(
+            FailureMode::StuckLoop.to_root_cause(None),
+            FailureRootCause::Unknown
+        );
+        assert_eq!(
+            FailureMode::ParseError.to_root_cause(None),
+            FailureRootCause::Unknown
+        );
+        assert_eq!(
+            FailureMode::MaxRoundsExceeded.to_root_cause(None),
+            FailureRootCause::Unknown
+        );
+        assert_eq!(
+            FailureMode::Unknown.to_root_cause(None),
+            FailureRootCause::Unknown
+        );
+
+        // GuardianRejected carries a reason when provided.
+        match FailureMode::GuardianRejected.to_root_cause(Some("rm -rf")) {
+            FailureRootCause::GuardianRejected { reason } => assert_eq!(reason, "rm -rf"),
+            other => panic!("expected GuardianRejected, got {:?}", other),
+        }
+        // Missing reason -> "unspecified".
+        match FailureMode::GuardianRejected.to_root_cause(None) {
+            FailureRootCause::GuardianRejected { reason } => assert_eq!(reason, "unspecified"),
+            other => panic!("expected GuardianRejected, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_variants_label_and_severity() {
+        assert_eq!(FailureMode::GuardianRejected.label(), "Guardian Rejected");
+        assert_eq!(FailureMode::SandboxFailed.label(), "Sandbox Execution Failed");
+        assert_eq!(FailureMode::ToolPanic.label(), "Tool Panic");
+
+        // Guardian/sandbox rejections and tool panics are Critical: they indicate
+        // a security-boundary enforcement or an unexpected crash.
+        assert_eq!(FailureMode::GuardianRejected.severity(), "Critical");
+        assert_eq!(FailureMode::SandboxFailed.severity(), "Critical");
+        assert_eq!(FailureMode::ToolPanic.severity(), "Critical");
     }
 
     #[test]
