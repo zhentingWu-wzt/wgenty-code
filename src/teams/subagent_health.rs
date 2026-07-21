@@ -591,8 +591,8 @@ fn gen_recs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transcript::SubagentTranscriptHeader;
     use crate::teams::failure_diagnostics::FailureRootCause;
+    use crate::transcript::SubagentTranscriptHeader;
 
     fn hdr(
         status: &str,
@@ -791,7 +791,10 @@ mod tests {
     #[test]
     fn test_new_variants_label_and_severity() {
         assert_eq!(FailureMode::GuardianRejected.label(), "Guardian Rejected");
-        assert_eq!(FailureMode::SandboxFailed.label(), "Sandbox Execution Failed");
+        assert_eq!(
+            FailureMode::SandboxFailed.label(),
+            "Sandbox Execution Failed"
+        );
         assert_eq!(FailureMode::ToolPanic.label(), "Tool Panic");
 
         // Guardian/sandbox rejections and tool panics are Critical: they indicate

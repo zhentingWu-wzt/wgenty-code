@@ -14,9 +14,9 @@
 
 use std::sync::Arc;
 use wgenty_code::agent::progress::{ProgressCallback, SubagentProgress};
+use wgenty_code::agent::runtime::loop_::run_agent_loop;
 use wgenty_code::api::ApiClient;
 use wgenty_code::config::Settings;
-use wgenty_code::agent::runtime::loop_::run_agent_loop;
 use wgenty_code::tools::ToolRegistry;
 
 fn create_test_project(dir: &std::path::Path) {

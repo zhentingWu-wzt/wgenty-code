@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum FailureRootCause {
     TokenBudgetExceeded,
-    GuardianRejected { reason: String },
+    GuardianRejected {
+        reason: String,
+    },
     SandboxFailed,
     ApiError,
     ToolPanic,
@@ -93,7 +95,8 @@ mod tests {
 
     #[test]
     fn redacts_sensitive_keys() {
-        let params = json!({"api_key": "sk-123", "token": "abc", "query": "hello", "password": "pw"});
+        let params =
+            json!({"api_key": "sk-123", "token": "abc", "query": "hello", "password": "pw"});
         let redacted = redact_params(params);
         assert_eq!(redacted["api_key"], "***REDACTED***");
         assert_eq!(redacted["token"], "***REDACTED***");
