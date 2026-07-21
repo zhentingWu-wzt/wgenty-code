@@ -20,6 +20,7 @@ mod plugin_loading_test;
 mod refactor_e2e_test;
 mod skills_test;
 mod strict_subagent_isolation;
+mod subagent_cli_test;
 mod subagent_evaluation;
 mod subagent_fallback_test;
 mod system_reminder;

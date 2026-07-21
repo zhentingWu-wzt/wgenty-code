@@ -8,6 +8,7 @@ pub mod args;
 pub mod branding;
 pub mod commands;
 pub mod headless_runtime;
+pub mod subagent;
 
 pub use args::Cli;
 
@@ -171,6 +172,50 @@ pub enum Commands {
         /// Port to listen on
         #[arg(long, default_value = "8371")]
         port: u16,
+    },
+
+    /// Inspect subagent transcripts offline (list / trace / health)
+    Subagent {
+        #[command(subcommand)]
+        action: SubagentCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SubagentCommands {
+    /// List subagent runs, most recent first
+    List {
+        /// Filter by session id
+        #[arg(long)]
+        session: Option<String>,
+        /// Filter by status (completed | failed | cancelled | running)
+        #[arg(long)]
+        status: Option<String>,
+        /// Max rows to print
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+
+    /// Render a single subagent trace by id
+    Trace {
+        /// Transcript id
+        id: String,
+        /// Render format
+        #[arg(long, value_enum, default_value_t = crate::cli::subagent::TraceFormat::CallTree)]
+        format: crate::cli::subagent::TraceFormat,
+        /// Print raw stored diagnostics as pretty JSON (ignores --format)
+        #[arg(long)]
+        raw: bool,
+    },
+
+    /// Show aggregate subagent health (success rate + failure modes)
+    Health {
+        /// Time window
+        #[arg(long, value_enum, default_value_t = crate::cli::subagent::HealthPeriodArg::All)]
+        period: crate::cli::subagent::HealthPeriodArg,
+        /// Filter by session id
+        #[arg(long)]
+        session: Option<String>,
     },
 }
 
