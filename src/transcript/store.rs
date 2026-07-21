@@ -4,6 +4,9 @@ use super::{
     SubagentEventRecord, SubagentTranscript, SubagentTranscriptHeader, TranscriptError,
     TranscriptStatus,
 };
+
+use crate::agent::progress::ErrorInfo;
+use crate::teams::failure_diagnostics::FailureRootCause;
 use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
@@ -32,6 +35,39 @@ fn column_exists(db: &Connection, table: &str, column: &str) -> Result<bool, rus
         }
     }
     Ok(false)
+}
+
+/// Parse the `failure_diagnostics` JSON column into an `ErrorInfo`. `None`
+/// (NULL column, e.g. success or legacy rows) -> `None`. A malformed JSON
+/// value degrades to `None` with a warning rather than failing the read.
+fn parse_failure_diagnostics(opt_json: Option<String>) -> Option<ErrorInfo> {
+    opt_json.and_then(|s| {
+        if s.is_empty() {
+            return None;
+        }
+        match serde_json::from_str::<ErrorInfo>(&s) {
+            Ok(info) => Some(info),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to deserialize failure_diagnostics");
+                None
+            }
+        }
+    })
+}
+
+/// Parse the denormalized `root_cause` JSON column into a `FailureRootCause`.
+/// NULL / empty / malformed -> `Unknown` (graceful degradation for legacy rows).
+fn parse_root_cause(opt_json: Option<String>) -> FailureRootCause {
+    opt_json
+        .and_then(|s| {
+            if s.is_empty() {
+                return None;
+            }
+            serde_json::from_str::<FailureRootCause>(&s)
+                .map_err(|e| tracing::warn!(error = %e, "failed to deserialize root_cause"))
+                .ok()
+        })
+        .unwrap_or_default()
 }
 
 impl SubagentTranscriptStore {
@@ -132,12 +168,30 @@ impl SubagentTranscriptStore {
             TranscriptStatus::Cancelled => "cancelled",
         };
 
+        // Failure diagnostics (denormalized): the full ErrorInfo JSON plus the
+        // root_cause and retry_history projections, written only on failure
+        // (NULL on success). project_path is always written when available.
+        let failure_diagnostics_json = transcript
+            .failure_diagnostics
+            .as_ref()
+            .map(|e| serde_json::to_string(e).unwrap_or_default());
+        let root_cause_json = transcript
+            .failure_diagnostics
+            .as_ref()
+            .map(|e| serde_json::to_string(&e.root_cause).unwrap_or_default());
+        let retry_history_json = transcript
+            .failure_diagnostics
+            .as_ref()
+            .map(|e| serde_json::to_string(&e.retry_history).unwrap_or_default());
+
         tx.execute(
             "INSERT OR REPLACE INTO subagent_transcripts
              (id, session_id, parent_id, label, status, system_prompt, user_prompt,
               started_at, finished_at, total_tokens, max_rounds, actual_rounds,
-              token_budget_k, error_message, summary)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+              token_budget_k, error_message, summary,
+              failure_diagnostics, root_cause, retry_history, project_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                     ?16, ?17, ?18, ?19)",
             params![
                 transcript.id,
                 transcript.session_id,
@@ -154,6 +208,10 @@ impl SubagentTranscriptStore {
                 transcript.token_budget_k,
                 transcript.error_message,
                 transcript.summary,
+                failure_diagnostics_json,
+                root_cause_json,
+                retry_history_json,
+                transcript.project_path,
             ],
         )?;
 
@@ -245,7 +303,8 @@ impl SubagentTranscriptStore {
         let db = self.db.lock().expect("lock poisoned: transcript db");
         let mut stmt = db.prepare(
             "SELECT id, session_id, parent_id, label, status, started_at, finished_at,
-                    total_tokens, actual_rounds, error_message, summary
+                    total_tokens, actual_rounds, error_message, summary,
+                    root_cause, project_path
              FROM subagent_transcripts
              WHERE session_id = ?1
              ORDER BY started_at DESC",
@@ -263,6 +322,8 @@ impl SubagentTranscriptStore {
                 actual_rounds: row.get::<_, i32>(8)? as u32,
                 error_message: row.get(9)?,
                 summary: row.get(10)?,
+                root_cause: parse_root_cause(row.get(11)?),
+                project_path: row.get(12)?,
             })
         })?;
         let mut result = Vec::new();
@@ -278,7 +339,8 @@ impl SubagentTranscriptStore {
         let mut stmt = db.prepare(
             "SELECT id, session_id, parent_id, label, status, system_prompt, user_prompt,
                     started_at, finished_at, total_tokens, max_rounds, actual_rounds,
-                    token_budget_k, error_message, summary
+                    token_budget_k, error_message, summary,
+                    failure_diagnostics, project_path
              FROM subagent_transcripts WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
@@ -304,6 +366,8 @@ impl SubagentTranscriptStore {
                 token_budget_k: row.get::<_, Option<i64>>(12)?.map(|v| v as u64),
                 error_message: row.get(13)?,
                 summary: row.get(14)?,
+                failure_diagnostics: parse_failure_diagnostics(row.get(15)?),
+                project_path: row.get(16)?,
                 events: Vec::new(),
             })
         })?;
@@ -352,7 +416,8 @@ impl SubagentTranscriptStore {
         let pattern = format!("%{}%", query);
         let mut stmt = db.prepare(
             "SELECT id, session_id, parent_id, label, status, started_at, finished_at,
-                    total_tokens, actual_rounds, error_message, summary
+                    total_tokens, actual_rounds, error_message, summary,
+                    root_cause, project_path
              FROM subagent_transcripts
              WHERE label LIKE ?1
              ORDER BY started_at DESC
@@ -371,6 +436,8 @@ impl SubagentTranscriptStore {
                 actual_rounds: row.get::<_, i32>(8)? as u32,
                 error_message: row.get(9)?,
                 summary: row.get(10)?,
+                root_cause: parse_root_cause(row.get(11)?),
+                project_path: row.get(12)?,
             })
         })?;
         let mut result = Vec::new();
@@ -423,6 +490,8 @@ mod tests {
             token_budget_k: None,
             error_message: None,
             summary: Some("done".to_string()),
+            failure_diagnostics: None,
+            project_path: None,
             events: vec![
                 SubagentEventRecord {
                     round: 0,
@@ -699,5 +768,62 @@ mod tests {
         let loaded = store.get_by_id("old-1").unwrap().unwrap();
         assert_eq!(loaded.label, "legacy");
         assert_eq!(loaded.session_id, "sess-old");
+    }
+
+    #[test]
+    fn test_failure_diagnostics_round_trip() {
+        use crate::agent::progress::{ErrorInfo, ErrorType};
+        use crate::teams::failure_diagnostics::FailureRootCause;
+        let (store, _dir) = setup_store();
+        let mut t = sample_transcript("diag-1", "s1");
+        t.status = TranscriptStatus::Failed;
+        t.failure_diagnostics = Some(ErrorInfo {
+            error_type: ErrorType::Unknown,
+            message: "boom".into(),
+            root_cause: FailureRootCause::GuardianRejected {
+                reason: "rm -rf".into(),
+            },
+            ..Default::default()
+        });
+        t.project_path = Some("/proj".into());
+        store.save(&t, None).unwrap();
+        let loaded = store.get_by_id("diag-1").unwrap().unwrap();
+        let diag = loaded.failure_diagnostics.expect("diagnostics present");
+        assert_eq!(
+            diag.root_cause,
+            FailureRootCause::GuardianRejected {
+                reason: "rm -rf".into()
+            }
+        );
+        assert_eq!(loaded.project_path.as_deref(), Some("/proj"));
+    }
+
+    #[test]
+    fn test_header_root_cause_null_degrades_to_unknown() {
+        use crate::teams::failure_diagnostics::FailureRootCause;
+        let (store, _dir) = setup_store();
+        // Success transcript: no failure_diagnostics -> NULL column.
+        store.save(&sample_transcript("ok-1", "s1"), None).unwrap();
+        let headers = store.list_by_session("s1").unwrap();
+        let h = &headers[0];
+        assert_eq!(h.root_cause, FailureRootCause::Unknown, "NULL -> Unknown");
+        assert!(h.project_path.is_none());
+    }
+
+    #[test]
+    fn test_header_root_cause_round_trip_from_failure() {
+        use crate::agent::progress::ErrorInfo;
+        use crate::teams::failure_diagnostics::FailureRootCause;
+        let (store, _dir) = setup_store();
+        let mut t = sample_transcript("fail-1", "s1");
+        t.status = TranscriptStatus::Failed;
+        t.failure_diagnostics = Some(ErrorInfo {
+            root_cause: FailureRootCause::SandboxFailed,
+            message: "sandbox denied".into(),
+            ..Default::default()
+        });
+        store.save(&t, None).unwrap();
+        let headers = store.list_by_session("s1").unwrap();
+        assert_eq!(headers[0].root_cause, FailureRootCause::SandboxFailed);
     }
 }

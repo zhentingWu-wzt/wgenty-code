@@ -928,7 +928,7 @@ impl Tool for TaskTool {
                 // Pull real token/event/round telemetry from the last progress
                 // callback the subagent loop emitted (defaults to 0/empty if
                 // it never reported - e.g. early API failure).
-                let (total_tokens, actual_rounds, events) = {
+                let (total_tokens, actual_rounds, events, failure_diagnostics) = {
                     let store = progress_store_for_transcript.read().await;
                     store
                         .get(&sid_bg)
@@ -936,10 +936,18 @@ impl Tool for TaskTool {
                         .map(|p| {
                             let events: Vec<crate::transcript::SubagentEventRecord> =
                                 p.events.iter().map(convert_event).collect();
-                            (p.cumulative_tokens, p.round.unwrap_or(0) as u32, events)
+                            (
+                                p.cumulative_tokens,
+                                p.round.unwrap_or(0) as u32,
+                                events,
+                                p.error_details.clone(),
+                            )
                         })
-                        .unwrap_or((0, 0, Vec::new()))
+                        .unwrap_or((0, 0, Vec::new(), None))
                 };
+                let project_path = std::env::current_dir()
+                    .ok()
+                    .map(|p| p.to_string_lossy().to_string());
                 let transcript = build_transcript(
                     bg_node_id,
                     &sid_bg,
@@ -958,6 +966,8 @@ impl Tool for TaskTool {
                     None, // error_message captured in content, not individual
                     None, // summary
                     events,
+                    failure_diagnostics,
+                    project_path,
                 );
                 let _ = store.save(&transcript, retention);
             }
