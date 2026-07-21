@@ -1,3 +1,4 @@
+use crate::agent::progress::ErrorInfo;
 use crate::transcript::{SubagentEventRecord, SubagentTranscript, TranscriptStatus};
 
 /// Helper to build a SubagentTranscript from subagent execution metadata.
@@ -16,6 +17,8 @@ pub(super) fn build_transcript(
     error_message: Option<String>,
     summary: Option<String>,
     events: Vec<SubagentEventRecord>,
+    failure_diagnostics: Option<ErrorInfo>,
+    project_path: Option<String>,
 ) -> SubagentTranscript {
     SubagentTranscript {
         id,
@@ -33,6 +36,8 @@ pub(super) fn build_transcript(
         token_budget_k,
         error_message,
         summary,
+        failure_diagnostics,
+        project_path,
         events,
     }
 }

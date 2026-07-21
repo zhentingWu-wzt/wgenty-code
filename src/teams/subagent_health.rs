@@ -614,6 +614,8 @@ mod tests {
             actual_rounds: rounds,
             error_message: err.map(|s| s.into()),
             summary: None,
+            root_cause: FailureRootCause::default(),
+            project_path: None,
         }
     }
 

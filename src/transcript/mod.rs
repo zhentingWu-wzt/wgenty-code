@@ -9,6 +9,9 @@ pub use store::SubagentTranscriptStore;
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::progress::ErrorInfo;
+use crate::teams::failure_diagnostics::FailureRootCause;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentTranscript {
     pub id: String, // UUID v4
@@ -26,6 +29,14 @@ pub struct SubagentTranscript {
     pub token_budget_k: Option<u64>,
     pub error_message: Option<String>,
     pub summary: Option<String>,
+    /// Structured failure diagnostics (full `ErrorInfo` JSON) when the subagent
+    /// failed; `None` on success or for legacy rows predating this column.
+    #[serde(default)]
+    pub failure_diagnostics: Option<ErrorInfo>,
+    /// Project root the subagent ran in (recorded at write time; reserved for
+    /// future project-scoped CLI filtering since the transcript DB is global).
+    #[serde(default)]
+    pub project_path: Option<String>,
     pub events: Vec<SubagentEventRecord>,
 }
 
@@ -74,6 +85,13 @@ pub struct SubagentTranscriptHeader {
     pub actual_rounds: u32,
     pub error_message: Option<String>,
     pub summary: Option<String>,
+    /// Structured root cause of the failure; `Unknown` for success or legacy
+    /// rows (NULL column). Denormalized for SQL filtering / CLI list display.
+    #[serde(default)]
+    pub root_cause: FailureRootCause,
+    /// Project root the subagent ran in.
+    #[serde(default)]
+    pub project_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
