@@ -189,10 +189,6 @@ impl From<String> for SubagentError {
     }
 }
 
-/// Default char limit for stored failed-round context (configurable via
-/// `subagent.trace.context_char_limit` -- task 6.1).
-const DEFAULT_CONTEXT_CHAR_LIMIT: usize = 2000;
-
 /// Structured failure diagnostics assembled at the capture site.
 struct FailureDiagnostics {
     root_cause: FailureRootCause,
@@ -716,6 +712,7 @@ struct SubagentObserver {
     start: Instant,
     started_at_ms: i64,
     token_budget_k: Option<u64>,
+    context_char_limit: usize,
     action_log: Mutex<Vec<SubagentEvent>>,
     text_snapshot: Mutex<Option<String>>,
     current_params: Mutex<Option<String>>,
@@ -795,7 +792,7 @@ impl SubagentObserver {
                 status.clone(),
                 &action_log_snapshot,
                 snapshot.as_deref(),
-                DEFAULT_CONTEXT_CHAR_LIMIT,
+                self.context_char_limit,
             );
             ErrorInfo {
                 error_type: ErrorType::Unknown,
@@ -1218,6 +1215,7 @@ pub async fn run_subagent_loop_with_permissions(
     // inside TraceSink, and the writer task never blocks the agent loop.
     let trace_sink = build_trace_sink(&settings, context.session_id.as_str());
     let on_progress = compose_progress_callback(on_progress, trace_sink.as_ref());
+    let context_char_limit = settings.agent.subagent.trace.context_char_limit;
 
     let synthesis = SubagentSynthesis {
         coordinator,
@@ -1236,6 +1234,7 @@ pub async fn run_subagent_loop_with_permissions(
         start,
         started_at_ms,
         token_budget_k,
+        context_char_limit,
         action_log: Mutex::new(Vec::new()),
         text_snapshot: Mutex::new(None),
         current_params: Mutex::new(None),

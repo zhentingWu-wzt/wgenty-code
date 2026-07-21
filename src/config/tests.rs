@@ -455,4 +455,20 @@ fallback_models = ["claude-sonnet-4", "gpt-4o"]
         settings.agent.subagent.fallback_models = vec!["deepseek-reasoner".to_string()];
         assert_eq!(settings.select_fallback_model("deepseek-reasoner"), None);
     }
+
+    #[test]
+    fn subagent_trace_context_char_limit_defaults_to_2000() {
+        let trace = SubagentTraceConfig::default();
+        assert_eq!(trace.context_char_limit, 2000);
+        assert_eq!(trace.sink, TraceSinkMode::File);
+        assert!(trace.dir.is_none());
+    }
+
+    #[test]
+    fn subagent_trace_context_char_limit_is_configurable() {
+        let json = r#"{"context_char_limit": 4096, "sink": "off"}"#;
+        let trace: SubagentTraceConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(trace.context_char_limit, 4096);
+        assert_eq!(trace.sink, TraceSinkMode::Off);
+    }
 }

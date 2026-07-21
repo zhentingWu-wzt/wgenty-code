@@ -32,10 +32,10 @@
 
 ## 5. Trace Rendering Adaptation
 
-- [ ] 5.1 Extend `SubagentTraceTool` / trace rendering to surface `root_cause` + `failed_tool_sequence` (with per-step durations) in `call_tree`
-- [ ] 5.2 Extend `error_timeline` to group by `FailureRootCause` and include `retry_history`
-- [ ] 5.3 Extend `html` report with a failure-diagnostics section (root cause, failed sequence, failed-round context, retry history); keep self-contained, UTF-8 char-boundary safe
-- [ ] 5.4 Add raw-mode rendering that prints stored diagnostics as pretty JSON
+- [x] 5.1 Extend `SubagentTraceTool` / trace rendering to surface `root_cause` + `failed_tool_sequence` (with per-step durations) in `call_tree`
+- [x] 5.2 Extend `error_timeline` to group by `FailureRootCause` and include `retry_history`
+- [x] 5.3 Extend `html` report with a failure-diagnostics section (root cause, failed sequence, failed-round context, retry history); keep self-contained, UTF-8 char-boundary safe
+- [x] 5.4 Add raw-mode rendering that prints stored diagnostics as pretty JSON
 
 ## 6. Config, Docs & Integration
 
