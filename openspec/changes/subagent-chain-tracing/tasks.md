@@ -39,7 +39,7 @@
 
 ## 6. Config, Docs & Integration
 
-- [ ] 6.1 Add config keys `subagent.trace.sink`, `subagent.trace.dir`, `subagent.trace.context_char_limit` to settings schema with defaults; document in WGENTY.md config table
-- [ ] 6.2 Document `wgenty-code subagent list|trace|health` in WGENTY.md CLI subcommand table
-- [ ] 6.3 Run `cargo fmt`, `cargo clippy --all-targets -- -D warnings` (zero warning), `cargo test --all`; fix any regressions
-- [ ] 6.4 Verify cross-platform compile (linux/macos/windows) and `daemon` feature gating of SSE endpoint
+- [x] 6.1 Add config keys `subagent.trace.sink`, `subagent.trace.dir`, `subagent.trace.context_char_limit` to settings schema with defaults; document in WGENTY.md config table
+- [x] 6.2 Document `wgenty-code subagent list|trace|health` in WGENTY.md CLI subcommand table
+- [x] 6.3 Run `cargo fmt`, `cargo clippy --all-targets -- -D warnings` (zero warning), `cargo test --all`; fix any regressions
+- [x] 6.4 Verify cross-platform compile (linux/macos/windows) and `daemon` feature gating of SSE endpoint
