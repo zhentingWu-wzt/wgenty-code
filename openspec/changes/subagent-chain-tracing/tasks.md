@@ -24,11 +24,11 @@
 
 ## 4. CLI Subagent Subcommand
 
-- [ ] 4.1 Add `Commands::Subagent { action: SubagentCommands }` and `SubagentCommands::{List, Trace, Health}` to `src/cli/mod.rs` with clap args (`--session`, `--status`, `--limit`, `--format`, `--raw`, `--period`, `--output`)
-- [ ] 4.2 Implement `list`: query transcript store, print reverse-chronological table (id/label/status/root-cause/duration/started_at) with filters
-- [ ] 4.3 Implement `trace <id>`: load by id, reuse trace rendering with `--format` (default call_tree) and `--raw` (print diagnostics JSON); non-zero exit on unknown id
-- [ ] 4.4 Implement `health`: call `SubagentHealthAnalyzer::compute_from_headers` with `--period`, print total/completed/failed/success-rate + failure-mode breakdown grouped by `FailureRootCause`
-- [ ] 4.5 Tests: list filter/sort, trace format variants + unknown id exit code, health period windows + root-cause grouping
+- [x] 4.1 Add `Commands::Subagent { action: SubagentCommands }` and `SubagentCommands::{List, Trace, Health}` to `src/cli/mod.rs` with clap args (`--session`, `--status`, `--limit`, `--format`, `--raw`, `--period`, `--output`)
+- [x] 4.2 Implement `list`: query transcript store, print reverse-chronological table (id/label/status/root-cause/duration/started_at) with filters
+- [x] 4.3 Implement `trace <id>`: load by id, reuse trace rendering with `--format` (default call_tree) and `--raw` (print diagnostics JSON); non-zero exit on unknown id
+- [x] 4.4 Implement `health`: call `SubagentHealthAnalyzer::compute_from_headers` with `--period`, print total/completed/failed/success-rate + failure-mode breakdown grouped by `FailureRootCause`
+- [x] 4.5 Tests: list filter/sort, trace format variants + unknown id exit code, health period windows + root-cause grouping
 
 ## 5. Trace Rendering Adaptation
 

@@ -83,6 +83,9 @@ impl Cli {
                     "Daemon feature is not enabled. Rebuild with: cargo build --features daemon"
                 ));
             }
+            Some(super::Commands::Subagent { action }) => {
+                super::subagent::run(&state, action).await?;
+            }
             None => {
                 self.run_repl(state, None).await?;
             }
