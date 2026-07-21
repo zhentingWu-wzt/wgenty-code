@@ -12,8 +12,8 @@
 
 pub mod budget;
 pub mod formats;
-pub mod planner;
 mod pipeline;
+pub mod planner;
 
 pub use pipeline::{extract_json, run_rlm_pipeline, RlmResult};
 pub use planner::{Planner, SubTask};
