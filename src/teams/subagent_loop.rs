@@ -22,7 +22,8 @@ use crate::api::{ApiClient, ChatMessage};
 use crate::config::resolve_context_window;
 use crate::teams::approval_registry;
 use crate::teams::failure_diagnostics::{
-    redact_params, truncate_char_safe, FailedRoundContext, FailureRootCause, ToolCallStep,
+    redact_params, truncate_char_safe, FailedRoundContext, FailureRootCause, RetryAttempt,
+    RetryOutcome, ToolCallStep,
 };
 use crate::teams::guarding_tool_port::{
     format_permission_summary, GuardingToolPort, SubagentPermissionContext,
@@ -196,6 +197,7 @@ struct FailureDiagnostics {
     root_cause: FailureRootCause,
     failed_tool_sequence: Vec<ToolCallStep>,
     failed_round_context: Option<FailedRoundContext>,
+    retry_history: Vec<RetryAttempt>,
 }
 
 /// Derive structured [`FailureSignals`] from capture-site data. Guardian
@@ -313,6 +315,35 @@ fn build_failed_round_context(
     })
 }
 
+/// A retry-attempt signal captured from the execution path. The subagent loop
+/// has no in-loop subagent-level retry today (the only re-attempt is the
+/// parent-level `attempt_model_fallback` model re-dispatch, which spawns a
+/// separate child run rather than retrying within one `ErrorInfo`). When a
+/// subagent-level retry path is added, emit one `RetrySignal` per attempt and
+/// [`build_retry_history`] will record it.
+#[derive(Debug, Clone)]
+pub struct RetrySignal {
+    pub error: String,
+    pub root_cause: FailureRootCause,
+    pub strategy: String,
+    pub outcome: RetryOutcome,
+}
+
+/// Build the retry-history from captured retry signals. Empty when no retries
+/// occurred (the common single-attempt case); one [`RetryAttempt`] per retry
+/// signal otherwise.
+fn build_retry_history(signals: &[RetrySignal]) -> Vec<RetryAttempt> {
+    signals
+        .iter()
+        .map(|s| RetryAttempt {
+            error: s.error.clone(),
+            root_cause: s.root_cause.clone(),
+            strategy: s.strategy.clone(),
+            outcome: s.outcome,
+        })
+        .collect()
+}
+
 /// Assemble the full failure-diagnostics triple at the capture site. Pure
 /// (no locks) so it is unit-testable; the observer passes its cloned
 /// `action_log` and `text_snapshot`.
@@ -333,6 +364,9 @@ fn build_failure_diagnostics(
         root_cause,
         failed_tool_sequence,
         failed_round_context,
+        // No in-loop subagent retry today -> empty history. When a retry path
+        // is added, pass captured RetrySignals here instead of `&[]`.
+        retry_history: build_retry_history(&[]),
     }
 }
 
@@ -776,7 +810,7 @@ impl SubagentObserver {
                 root_cause: diag.root_cause,
                 failed_tool_sequence: diag.failed_tool_sequence,
                 failed_round_context: diag.failed_round_context,
-                ..Default::default()
+                retry_history: diag.retry_history,
             }
         });
         cb(SubagentProgress {
@@ -1366,6 +1400,7 @@ mod tests {
     use crate::agent::SessionId;
 
     use crate::teams::failure_diagnostics::FailureRootCause;
+    use crate::teams::failure_diagnostics::RetryOutcome;
 
     fn ev(event_type: SubagentEventType, elapsed_ms: u64) -> SubagentEvent {
         SubagentEvent {
@@ -1674,6 +1709,54 @@ mod tests {
             2000,
         );
         assert_eq!(diag.root_cause, FailureRootCause::Timeout);
+    }
+
+    #[test]
+    fn build_retry_history_empty_when_no_signals() {
+        assert!(build_retry_history(&[]).is_empty());
+    }
+
+    #[test]
+    fn build_retry_history_records_each_attempt() {
+        let signals = vec![
+            RetrySignal {
+                error: "e1".into(),
+                root_cause: FailureRootCause::ApiError,
+                strategy: "model_fallback".into(),
+                outcome: RetryOutcome::Failed,
+            },
+            RetrySignal {
+                error: "e2".into(),
+                root_cause: FailureRootCause::ApiError,
+                strategy: "model_fallback".into(),
+                outcome: RetryOutcome::Failed,
+            },
+            RetrySignal {
+                error: String::new(),
+                root_cause: FailureRootCause::Unknown,
+                strategy: "model_fallback".into(),
+                outcome: RetryOutcome::Succeeded,
+            },
+        ];
+        let history = build_retry_history(&signals);
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].error, "e1");
+        assert_eq!(history[0].outcome, RetryOutcome::Failed);
+        assert_eq!(history[2].outcome, RetryOutcome::Succeeded);
+        assert_eq!(history[2].root_cause, FailureRootCause::Unknown);
+    }
+
+    #[test]
+    fn build_diagnostics_single_attempt_has_empty_retry_history() {
+        // The subagent loop has no in-loop subagent-level retry today (the only
+        // re-attempt is the parent-level `attempt_model_fallback` model
+        // re-dispatch, which spawns a separate child run). A single-attempt
+        // failure therefore yields an empty retry_history.
+        let diag = build_failure_diagnostics("err", SubagentStatus::Failed, &[], None, 2000);
+        assert!(
+            diag.retry_history.is_empty(),
+            "no in-loop retry -> empty retry_history"
+        );
     }
 
     #[test]
