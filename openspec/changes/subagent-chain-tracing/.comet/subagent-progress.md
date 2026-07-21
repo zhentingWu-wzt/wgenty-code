@@ -7,14 +7,15 @@
 
 - **Task 1** (commit a1050015) = tasks.md 1.2: Define failure diagnostics types -- `src/teams/failure_diagnostics.rs`（FailureRootCause/ToolCallStep/FailedRoundContext/RetryAttempt/RetryOutcome/redact_params/truncate_char_safe）。5 tests GREEN。✅ 勾选验证 PASS
 - **Task 2** (commit 6eef8d1a) = tasks.md 1.1: Extend ErrorInfo -- 加 4 字段（root_cause/failed_tool_sequence/failed_round_context/retry_history, #[serde(default)]）+ ErrorType/ErrorInfo Default + 7 处构造点 ..Default::default()。24 progress tests GREEN。✅ 已勾选
+- **Task 3** (commit 5db7be86) = tasks.md 1.3: Extend FailureMode::classify -- 加 GuardianRejected/SandboxFailed/ToolPanic 变体 + `FailureSignals` + `classify_with_signals()` + `to_root_cause()`；`classify()` 字符串匹配保留为 Unknown 降级路径（design D2）。附带修复 ErrorType 手动 `impl Default` -> `#[derive(Default)]`（clippy derivable_impls，Task 2 债）。18 subagent_health tests GREEN，`cargo clippy --all-targets -D warnings` 零 warning。✅ 已勾选
 - **附带** (commit 663c5544): 预存 SessionId 测试编译错误修复
 - **附带** (commit 92f44f02, by stalled subagent): 预存 clippy warning 修复（digit grouping, dead_code is_complex_task）+ gate 坏 e2e 测试
 
 ## Next Task
 
-- **Task 3** = tasks.md 1.3: Extend `FailureMode::classify` (`src/teams/subagent_health.rs`) -- 加 GuardianRejected/SandboxFailed/ToolPanic 类别 + `to_root_cause()` 方法发射 FailureRootCause；保留字符串匹配作 Unknown fallback。TDD：先写 root_cause_tests 看 RED，再实现。
+- **Task 4** = tasks.md 1.4: Populate failed_tool_sequence/failed_round_context/root_cause at failure in `subagent_loop.rs` -- 从 action_log 失败轮次切片构建 `ToolCallStep`（脱敏参数 + elapsed_ms），assistant text + final tool output 按 char-boundary 截断到 `context_char_limit` 存入 `FailedRoundContext`，调用 `classify_with_signals` + `to_root_cause` 填充 `root_cause`。TDD：先写捕获测试看 RED。
 
-## Current Stage: implementing (Task 3 待开始)
+## Current Stage: implementing (Task 4 待开始)
 
 ## Key Facts (恢复用)
 - transcript db 全局 `~/.wgenty-code/subagent_transcripts.db`（settings.storage.transcript.db_path 可配），CLI 全局显示 + session 过滤，schema 加 4 列含 project_path（Q1）
@@ -30,4 +31,4 @@
 - design: openspec/changes/subagent-chain-tracing/design.md（含 Q1-Q5 决策）
 
 ## Notes
-- 并发 subagent 30d602e7 可能仍后台运行（已提交 92f40f02 后疑似停滞）；若再提交需核对一致性
+- 已确认 build_mode=executing-plans 内联执行，无活跃并发 subagent；30d602e7 早已停滞，忽略其产出
