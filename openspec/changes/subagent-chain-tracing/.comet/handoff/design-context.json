@@ -1,0 +1,18 @@
+{
+  "change": "subagent-chain-tracing",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "bbd37f5ea8acf23ccecf9df1e1e58730b4a999212b097bc2c3757e6d7d737e86",
+  "files": [
+    { "path": "openspec/changes/subagent-chain-tracing/proposal.md", "sha256": "dbda3b43f3526ac232fa37012b60145cf14159fa33c39dac6e79c89e1cd3498f" },
+    { "path": "openspec/changes/subagent-chain-tracing/design.md", "sha256": "c97b298466d0fbea17be554752d51cdd96fc890e0f0734e372b9ca5abb9927b8" },
+    { "path": "openspec/changes/subagent-chain-tracing/tasks.md", "sha256": "9cc0b62a3582e311392c466f84d8e8baf40ef63f0c227cac636f7f80e17c29cb" },
+    { "path": "openspec/changes/subagent-chain-tracing/specs/subagent-cli-tracing/spec.md", "sha256": "4dd94c8fc87b98745a381d59dc0fcebae26a9b4c713a63c59929fb20bda13d46" },
+    { "path": "openspec/changes/subagent-chain-tracing/specs/subagent-failure-diagnostics/spec.md", "sha256": "8200a3a30924ed829deacbe3f5415443e2774c71b12566024e9d035f562818fc" },
+    { "path": "openspec/changes/subagent-chain-tracing/specs/subagent-trace-html-report/spec.md", "sha256": "51e8135d5645d3e4d95e5612f994a3b1918e9870f6819caf978812018a73d377" },
+    { "path": "openspec/changes/subagent-chain-tracing/specs/subagent-trace-streaming/spec.md", "sha256": "fe055328974177246ee4b36f06ee384cbeac8f284abc2b4dd9bdbe15c39d0161" },
+    { "path": "openspec/changes/subagent-chain-tracing/specs/subagent-transcript-storage/spec.md", "sha256": "d0ce7a9238d817723f2c164386cc993bbcd77d031b45a4da013ac807efe40f91" }
+  ]
+}
