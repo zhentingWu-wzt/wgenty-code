@@ -5,6 +5,7 @@
 //! team protocols, autonomous agents, worktree isolation).
 
 pub mod approval_registry;
+pub mod failure_diagnostics;
 pub mod guarding_tool_port;
 pub mod mailbox;
 pub mod permission_bridge;
