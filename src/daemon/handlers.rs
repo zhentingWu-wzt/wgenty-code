@@ -178,6 +178,179 @@ pub async fn chat_stream(
     Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(KeepAlive::default())
 }
 
+// ── Subagent Trace Stream (SSE) ──────────────────────────────────────────────
+
+/// Query parameters for `GET /api/v1/subagents/trace/stream`.
+#[derive(Debug, serde::Deserialize)]
+pub struct TraceStreamQuery {
+    /// Filter to a single session. When omitted, the stream is global (all
+    /// sessions, live-only -- no cold-start replay).
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// Unix epoch milliseconds. Replayed headers and live events at or before
+    /// this timestamp are skipped.
+    #[serde(default)]
+    pub since: Option<i64>,
+}
+
+/// `GET /api/v1/subagents/trace/stream` -- SSE stream of live subagent trace
+/// events with optional cold-start replay.
+///
+/// On connect (when `session_id` is given) the endpoint replays persisted
+/// transcript headers for that session from the global transcript store, then
+/// streams live redacted events from the process-global trace hub. A slow
+/// subscriber observes `Lagged` (drop-oldest); file persistence is unaffected.
+/// Requires the standard bearer token (`require_auth`). See design D3 / Q5.
+pub async fn subagent_trace_stream(
+    State(state): State<Arc<DaemonState>>,
+    Query(q): Query<TraceStreamQuery>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let (tx, rx) = mpsc::unbounded_channel::<Result<Event, Infallible>>();
+
+    // Subscribe to the global live hub BEFORE cold-start replay so events
+    // emitted during replay are buffered in the receiver (avoids a race that
+    // would drop events between replay and subscribe).
+    let live = crate::teams::trace_sink::trace_hub_subscribe();
+
+    let session_id = q.session_id;
+    let since = q.since.unwrap_or(0);
+    let store = state.transcript_store.clone();
+
+    tokio::spawn(async move {
+        let mut live = live;
+
+        // 1. Cold-start replay from the global transcript store. Only when a
+        //    session is requested: a global (no session_id) subscription has
+        //    no single persisted history to replay and starts live.
+        if let Some(sid) = session_id.as_deref() {
+            if let Some(store) = store.as_ref() {
+                for ev in replay_session_events(store, sid, since) {
+                    let data = serde_json::to_string(&ev).unwrap_or_default();
+                    if tx.send(Ok(Event::default().data(data))).is_err() {
+                        return; // client disconnected
+                    }
+                }
+            }
+        }
+
+        // 2. Live stream from the global hub.
+        loop {
+            match live.recv().await {
+                Ok(ev) => {
+                    if !should_emit_live(&ev, session_id.as_deref(), since) {
+                        continue;
+                    }
+                    let data = serde_json::to_string(&ev).unwrap_or_default();
+                    if tx.send(Ok(Event::default().data(data))).is_err() {
+                        return; // client disconnected
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(
+                        target: "wgenty::daemon",
+                        lagged = n,
+                        "trace SSE subscriber lagged; oldest events dropped for this subscriber"
+                    );
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
+    Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(KeepAlive::default())
+}
+
+/// Reconstruct persisted transcript headers for `session_id` into trace events
+/// for cold-start SSE replay. Headers newer than `since` (by `started_at`, unix
+/// ms) are emitted in chronological (ascending) order. Per-step detail
+/// (round/tool/params) is not stored at the header level, so each replayed
+/// event carries the run's terminal state; live events provide per-step detail
+/// going forward. `pub(crate)` for unit testing.
+pub(crate) fn replay_session_events(
+    store: &crate::transcript::SubagentTranscriptStore,
+    session_id: &str,
+    since: i64,
+) -> Vec<crate::teams::trace_sink::TraceEvent> {
+    match store.list_by_session(session_id) {
+        Ok(headers) => {
+            // list_by_session returns DESC by started_at; emit ASC so the
+            // client observes chronological order.
+            let mut ordered: Vec<_> = headers
+                .into_iter()
+                .filter(|h| h.started_at > since)
+                .collect();
+            ordered.reverse();
+            ordered
+                .into_iter()
+                .map(|h| trace_event_from_header(&h))
+                .collect()
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                session_id = session_id,
+                "cold-start replay: list_by_session failed"
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// Whether a live trace event should be emitted to a subscriber filtered by an
+/// optional `session_id` and a `since` (unix ms) watermark. `since` is
+/// inclusive-skip: events with `ts <= since` are dropped. `pub(crate)` for unit
+/// testing.
+pub(crate) fn should_emit_live(
+    ev: &crate::teams::trace_sink::TraceEvent,
+    session_id: Option<&str>,
+    since: i64,
+) -> bool {
+    if let Some(sid) = session_id {
+        if ev.session_id != sid {
+            return false;
+        }
+    }
+    ev.ts > since
+}
+
+/// Reconstruct a `TraceEvent` summary from a persisted transcript header.
+///
+/// The `status` string is the raw DB value (lowercase, e.g. "completed"); live
+/// events use the runtime `SubagentStatus` serde name (PascalCase, e.g.
+/// "Completed"). Consumers should treat both case-insensitively. The `error`
+/// object carries the persisted message + denormalized `root_cause`.
+fn trace_event_from_header(
+    h: &crate::transcript::SubagentTranscriptHeader,
+) -> crate::teams::trace_sink::TraceEvent {
+    use crate::teams::trace_sink::TraceEvent;
+    let error = h.error_message.as_ref().map(|m| {
+        let mut obj = serde_json::Map::new();
+        obj.insert("message".to_string(), serde_json::Value::String(m.clone()));
+        obj.insert(
+            "root_cause".to_string(),
+            serde_json::to_value(&h.root_cause).unwrap_or(serde_json::Value::Null),
+        );
+        serde_json::Value::Object(obj)
+    });
+    TraceEvent {
+        ts: h.started_at,
+        session_id: h.session_id.clone(),
+        node_id: h.id.clone(),
+        parent_id: h.parent_id.clone(),
+        label: h.label.clone(),
+        status: h.status.clone(),
+        round: Some(h.actual_rounds as usize),
+        current_tool: None,
+        current_params: None,
+        elapsed_ms: 0,
+        progress_delta: None,
+        token_budget_k: None,
+        cumulative_tokens: h.total_tokens,
+        error,
+    }
+}
+
 // ── Tools ────────────────────────────────────────────────────────────────────
 
 pub async fn list_tools(State(state): State<Arc<DaemonState>>) -> Json<ListToolsResponse> {
@@ -1541,6 +1714,229 @@ mod tests {
                 "invariant".to_string()
             )),
             StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    // ── Subagent trace SSE (Task 3.4 / 3.5) ──────────────────────────────────
+
+    #[tokio::test]
+    async fn replay_session_events_filters_by_session_and_since() {
+        use crate::transcript::{SubagentTranscript, SubagentTranscriptStore, TranscriptStatus};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("replay.db");
+        let store = SubagentTranscriptStore::open(&db).unwrap();
+
+        let mk =
+            |id: &str, sid: &str, started_at: i64, status: TranscriptStatus| SubagentTranscript {
+                id: id.into(),
+                session_id: sid.into(),
+                parent_id: None,
+                label: format!("label-{id}"),
+                status,
+                system_prompt: None,
+                user_prompt: "u".into(),
+                started_at,
+                finished_at: Some(started_at + 1000),
+                total_tokens: 100,
+                max_rounds: None,
+                actual_rounds: 3,
+                token_budget_k: None,
+                error_message: None,
+                summary: None,
+                failure_diagnostics: None,
+                project_path: None,
+                events: vec![],
+            };
+
+        store
+            .save(&mk("a", "alpha", 1000, TranscriptStatus::Completed), None)
+            .unwrap();
+        store
+            .save(&mk("b", "alpha", 2000, TranscriptStatus::Failed), None)
+            .unwrap();
+        store
+            .save(&mk("c", "beta", 3000, TranscriptStatus::Completed), None)
+            .unwrap();
+
+        // No since filter: both alpha events, ascending by started_at
+        // (list_by_session returns DESC; replay reverses to ASC).
+        let evs = replay_session_events(&store, "alpha", 0);
+        assert_eq!(evs.len(), 2);
+        assert_eq!(evs[0].node_id, "a");
+        assert_eq!(evs[0].ts, 1000);
+        assert_eq!(evs[1].node_id, "b");
+        assert_eq!(evs[1].ts, 2000);
+
+        // since=1000 skips the first (ts <= since is inclusive-skip).
+        let evs = replay_session_events(&store, "alpha", 1000);
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].node_id, "b");
+
+        // beta only.
+        let evs = replay_session_events(&store, "beta", 0);
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].node_id, "c");
+
+        // unknown session -> empty.
+        assert!(replay_session_events(&store, "gamma", 0).is_empty());
+    }
+
+    #[test]
+    fn should_emit_live_filters_session_and_since() {
+        use crate::teams::trace_sink::TraceEvent;
+
+        let mk = |ts: i64, sid: &str| TraceEvent {
+            ts,
+            session_id: sid.into(),
+            node_id: "n".into(),
+            parent_id: None,
+            label: "l".into(),
+            status: "Running".into(),
+            round: None,
+            current_tool: None,
+            current_params: None,
+            elapsed_ms: 0,
+            progress_delta: None,
+            token_budget_k: None,
+            cumulative_tokens: 0,
+            error: None,
+        };
+
+        // session filter keeps matching, drops non-matching.
+        assert!(should_emit_live(&mk(100, "alpha"), Some("alpha"), 0));
+        assert!(!should_emit_live(&mk(100, "beta"), Some("alpha"), 0));
+        // no session filter (global) keeps all sessions.
+        assert!(should_emit_live(&mk(100, "alpha"), None, 0));
+        // since: ts > since passes; ts <= since dropped.
+        assert!(should_emit_live(&mk(101, "alpha"), Some("alpha"), 100));
+        assert!(!should_emit_live(&mk(100, "alpha"), Some("alpha"), 100));
+    }
+
+    #[tokio::test]
+    async fn sse_trace_stream_requires_bearer_auth() {
+        use crate::config::Settings;
+        use crate::state::AppState;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        settings.storage.transcript.db_path = temp
+            .path()
+            .join("sse-auth.db")
+            .to_string_lossy()
+            .into_owned();
+        let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+        let token = "sse-auth-token".to_string();
+        let (health, protected) = crate::daemon::routes::create_routers(state, token);
+        let app = health.merge(protected);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let client = reqwest::Client::new();
+        // No bearer -> 401 (middleware short-circuits before the handler).
+        let resp = client
+            .get(format!("http://{addr}/api/v1/subagents/trace/stream"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        // Wrong bearer -> 401.
+        let resp = client
+            .get(format!("http://{addr}/api/v1/subagents/trace/stream"))
+            .bearer_auth("wrong")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn sse_trace_stream_cold_start_replays_persisted_session() {
+        use crate::config::Settings;
+        use crate::state::AppState;
+        use crate::transcript::{SubagentTranscript, SubagentTranscriptStore, TranscriptStatus};
+        use std::time::{Duration, Instant};
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        let db_path = temp.path().join("sse-replay.db");
+        settings.storage.transcript.db_path = db_path.to_string_lossy().into_owned();
+
+        // Seed a persisted transcript for session "alpha-cs" before starting the
+        // daemon so the SSE cold-start path has history to replay.
+        {
+            let store = SubagentTranscriptStore::open(&db_path).unwrap();
+            let t = SubagentTranscript {
+                id: "node-cs-1".into(),
+                session_id: "alpha-cs".into(),
+                parent_id: None,
+                label: "cold-start-seed".into(),
+                status: TranscriptStatus::Completed,
+                system_prompt: None,
+                user_prompt: "u".into(),
+                started_at: 5_000,
+                finished_at: Some(6_000),
+                total_tokens: 42,
+                max_rounds: None,
+                actual_rounds: 2,
+                token_budget_k: None,
+                error_message: None,
+                summary: None,
+                failure_diagnostics: None,
+                project_path: None,
+                events: vec![],
+            };
+            store.save(&t, None).unwrap();
+        }
+
+        let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+        let token = "sse-replay-token".to_string();
+        let (health, protected) = crate::daemon::routes::create_routers(state, token);
+        let app = health.merge(protected);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(format!(
+                "http://{addr}/api/v1/subagents/trace/stream?session_id=alpha-cs"
+            ))
+            .bearer_auth("sse-replay-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Read the SSE body stream; cold-start replay emits the seeded header
+        // immediately. Collect with a deadline (the live loop never ends).
+        let mut stream = resp.bytes_stream();
+        let mut buf = String::new();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if let Ok(Some(Ok(chunk))) =
+                tokio::time::timeout(Duration::from_millis(250), stream.next()).await
+            {
+                buf.push_str(&String::from_utf8_lossy(&chunk));
+                if buf.contains("\"node_id\":\"node-cs-1\"") {
+                    break;
+                }
+            }
+        }
+        assert!(
+            buf.contains("\"node_id\":\"node-cs-1\""),
+            "cold-start replay event missing; got: {buf}"
+        );
+        assert!(
+            buf.contains("\"session_id\":\"alpha-cs\""),
+            "session-scoped replay missing; got: {buf}"
         );
     }
 }

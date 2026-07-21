@@ -19,8 +19,8 @@
 - [x] 3.1 Create `src/teams/trace_sink.rs` `TraceSink` driven by `ProgressCallback`: append JSONL events to `<subagent.trace.dir>/<session_id>.jsonl` with 0600 file / 0700 dir permissions; apply sensitive-param redaction
 - [x] 3.2 Wire `TraceSink` into the subagent dispatch path so it receives progress events; honor `subagent.trace.sink` (`file`|`daemon`|`both`|`off`, default `file`)
 - [x] 3.3 Add bounded broadcast channel for trace events; on full, drop oldest for live subscribers only (persistence unaffected)
-- [ ] 3.4 Add `GET /api/v1/subagents/trace/stream` SSE endpoint (feature-gated `daemon`) with `require_auth`, `session_id` and `since` query params; replay persisted history from transcript store on cold start, then stream live
-- [ ] 3.5 Tests: JSONL append + redaction, sink disabled by config, SSE auth rejection, session filter, cold-start replay, backpressure drops oldest (persistence intact)
+- [x] 3.4 Add `GET /api/v1/subagents/trace/stream` SSE endpoint (feature-gated `daemon`) with `require_auth`, `session_id` and `since` query params; replay persisted history from transcript store on cold start, then stream live
+- [x] 3.5 Tests: JSONL append + redaction, sink disabled by config, SSE auth rejection, session filter, cold-start replay, backpressure drops oldest (persistence intact)
 
 ## 4. CLI Subagent Subcommand
 

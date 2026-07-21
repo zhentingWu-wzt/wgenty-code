@@ -16,7 +16,7 @@
 //! agent loop is never blocked. See design D3.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -33,6 +33,43 @@ use crate::utils::current_project_root;
 /// `Lagged` error -- live subscribers drop oldest, but file persistence is
 /// unaffected (it uses the separate mpsc channel). See design D3 risk note.
 const TRACE_BROADCAST_CAPACITY: usize = 1024;
+
+/// Bounded capacity for the global live-trace hub (daemon SSE subscribers).
+///
+/// Distinct from each sink's per-spawn `TRACE_BROADCAST_CAPACITY` only by
+/// lifetime: the per-spawn channel dies with the subagent run, while this hub
+/// lives for the whole process so long-lived SSE clients stream across many
+/// spawns. `send` never blocks; with no subscribers it returns `Err`
+/// (harmless), and a slow subscriber observes `Lagged` (drop-oldest) -- file
+/// persistence is unaffected (separate mpsc channel). See design D3 / Q5.
+const TRACE_HUB_CAPACITY: usize = 1024;
+
+/// Process-global, long-lived broadcast hub for live subagent trace events.
+///
+/// Each `TraceSink` whose mode `writes_daemon()` forwards its redacted events
+/// here in addition to its per-spawn broadcast. The daemon SSE endpoint
+/// subscribes to this hub so a single long-lived client receives events across
+/// multiple subagent spawns (the per-spawn channel cannot serve that -- it is
+/// dropped when the run ends). Lives in `teams/` so neither `teams/` depends on
+/// `daemon/` nor the daemon on any per-spawn sink handle.
+static TRACE_HUB: OnceLock<broadcast::Sender<TraceEvent>> = OnceLock::new();
+
+/// Borrow the global live-trace hub sender, initializing it lazily on first
+/// access.
+pub fn trace_hub() -> &'static broadcast::Sender<TraceEvent> {
+    TRACE_HUB.get_or_init(|| broadcast::channel::<TraceEvent>(TRACE_HUB_CAPACITY).0)
+}
+
+/// Subscribe to the global live-trace hub for daemon SSE streaming.
+pub fn trace_hub_subscribe() -> broadcast::Receiver<TraceEvent> {
+    trace_hub().subscribe()
+}
+
+/// Best-effort publish to the global hub. `Err` (no live subscribers) is
+/// silently ignored; persistence to JSONL is unaffected.
+fn trace_hub_publish(ev: &TraceEvent) {
+    let _ = trace_hub().send(ev.clone());
+}
 
 /// A single JSONL trace event persisted to `<trace_dir>/<session_id>.jsonl`.
 ///
@@ -158,6 +195,11 @@ impl TraceSink {
             None
         };
 
+        // Whether this sink also feeds the global live-trace hub (daemon SSE
+        // subscribers). Captured by value so the closure remains `Send` and does
+        // not borrow `mode`.
+        let forward_to_hub = mode.writes_daemon();
+
         let callback: ProgressCallback = {
             let file_tx = tx.clone();
             let bcast = broadcast.clone();
@@ -182,7 +224,13 @@ impl TraceSink {
                     // `send` overwrites the oldest value when full (slow
                     // subscribers observe `Lagged`); `Err` means no live
                     // subscribers, which is harmless.
-                    let _ = bc.send(ev);
+                    let _ = bc.send(ev.clone());
+                }
+                if forward_to_hub {
+                    // Forward to the process-global hub so daemon SSE clients
+                    // stream across subagent spawns (per-spawn channel dies with
+                    // this sink). Best-effort; no subscribers = no-op.
+                    trace_hub_publish(&ev);
                 }
             })
         };
