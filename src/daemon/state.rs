@@ -74,6 +74,10 @@ pub struct DaemonState {
     /// Sandbox effective mode (includes Plan). Updated with permission mode;
     /// used when building ToolContext for shell tools.
     pub effective_mode: Arc<std::sync::RwLock<crate::sandbox::EffectiveMode>>,
+    /// Shared read connection to the global subagent transcript store, used by
+    /// the SSE trace endpoint for cold-start replay. `None` when the store
+    /// failed to open at startup (SSE then streams live-only). See design D5.
+    pub transcript_store: Option<Arc<crate::transcript::SubagentTranscriptStore>>,
 }
 
 impl DaemonState {
@@ -148,6 +152,26 @@ impl DaemonState {
             &app_state.settings,
             app_state.settings.storage.working_dir.clone(),
         ));
+
+        // Shared read connection to the global transcript db for the SSE trace
+        // endpoint's cold-start replay (Task 3.4). `None` on failure -> the SSE
+        // stream degrades to live-only. Built at the body level (not inside the
+        // Arc::new_cyclic closure) so DaemonState can hold it directly.
+        let sse_transcript_store = {
+            let db_path = std::path::PathBuf::from(&app_state.settings.storage.transcript.db_path);
+            match crate::transcript::SubagentTranscriptStore::open(&db_path) {
+                Ok(store) => Some(std::sync::Arc::new(store)),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to open SSE transcript store at {}: {}. \
+                         Trace SSE will stream live-only.",
+                        db_path.display(),
+                        e
+                    );
+                    None
+                }
+            }
+        };
 
         // Use Arc::new_cyclic so the TaskTool holds a valid Weak<ToolRegistry>
         // that points to the *final* Arc allocation — not a temporary one that
@@ -353,6 +377,7 @@ impl DaemonState {
             permission_bridge,
             root_mode,
             effective_mode,
+            transcript_store: sse_transcript_store,
         }
     }
 

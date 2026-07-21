@@ -89,6 +89,11 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         // /api/v1/subagent/progress endpoint is retired in favor of these
         // capability-scoped local views.
         .merge(agent_routes())
+        // Subagent trace stream (SSE): live + cold-start replay. Daemon-only.
+        .route(
+            "/api/v1/subagents/trace/stream",
+            get(handlers::subagent_trace_stream),
+        )
         // MCP
         .route("/api/v1/mcp/servers", get(handlers::list_mcp_servers))
         // Sessions
