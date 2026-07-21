@@ -16,6 +16,6 @@ verification_report: docs/superpowers/reports/2026-07-21-subagent-chain-tracing-
 branch_status: handled
 created_at: 2026-07-21
 verified_at: 2026-07-21
-archived: false
+archived: true
 handoff_context: openspec/changes/subagent-chain-tracing/.comet/handoff/design-context.json
 handoff_hash: bbd37f5ea8acf23ccecf9df1e1e58730b4a999212b097bc2c3757e6d7d737e86
