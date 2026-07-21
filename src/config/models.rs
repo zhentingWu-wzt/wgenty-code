@@ -55,11 +55,11 @@ impl ModelEndpoint {
 /// (`claude-sonnet-4-6-20250514`).
 pub fn known_context_window(model: &str) -> Option<usize> {
     let lower = model.to_ascii_lowercase();
-    // Anthropic Claude family - all current models expose 200k context.
+    // Anthropic Claude family - all current models expose ~1M context.
     if lower.starts_with("claude") || matches!(lower.as_str(), "sonnet" | "opus" | "haiku") {
         return Some(1_024_000);
     }
-    // DeepSeek - 64k context.
+    // DeepSeek - ~1M context.
     if lower.starts_with("deepseek") || matches!(lower.as_str(), "v3" | "r1" | "reasoner") {
         return Some(1_024_000);
     }
@@ -86,6 +86,12 @@ pub fn known_context_window(model: &str) -> Option<usize> {
     }
     if lower.starts_with("qwen-max") {
         return Some(32_000);
+    }
+    if lower.starts_with("glm") {
+        return Some(1_024_000);
+    }
+    if lower.starts_with("kimi") {
+        return Some(1_024_000);
     }
     None
 }
@@ -197,15 +203,15 @@ mod tests {
     #[test]
     fn test_known_context_window_matches_common_models() {
         // Anthropic aliases and full IDs.
-        assert_eq!(known_context_window("sonnet"), Some(200_000));
+        assert_eq!(known_context_window("sonnet"), Some(1_024_000));
         assert_eq!(
             known_context_window("Claude-Sonnet-4-6-20250514"),
-            Some(200_000)
+            Some(1_024_000)
         );
-        assert_eq!(known_context_window("haiku"), Some(200_000));
+        assert_eq!(known_context_window("haiku"), Some(1_024_000));
         // DeepSeek.
-        assert_eq!(known_context_window("deepseek-chat"), Some(64_000));
-        assert_eq!(known_context_window("v3"), Some(64_000));
+        assert_eq!(known_context_window("deepseek-chat"), Some(1_024_000));
+        assert_eq!(known_context_window("v3"), Some(1_024_000));
         // OpenAI.
         assert_eq!(known_context_window("gpt-4o"), Some(128_000));
         assert_eq!(known_context_window("gpt-4"), Some(8_000));
@@ -222,24 +228,24 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolve_context_window(&ep, 200_000), 150_000);
-        // 2. Known model lookup when no override (sonnet -> 200k, ignores fallback).
+        // 2. Known model lookup when no override (sonnet -> 1M, ignores fallback).
         let ep = ModelEndpoint {
             name: "sonnet".to_string(),
             ..Default::default()
         };
-        assert_eq!(resolve_context_window(&ep, 999_999), 200_000);
+        assert_eq!(resolve_context_window(&ep, 999_999), 1_024_000);
         // 3. Unknown model falls back to global.
         let ep = ModelEndpoint {
             name: "my-custom-llm".to_string(),
             ..Default::default()
         };
         assert_eq!(resolve_context_window(&ep, 200_000), 200_000);
-        // DeepSeek: known lookup returns 64k even when global default is 200k.
+        // DeepSeek: known lookup returns 1M even when global default is 200k.
         let ep = ModelEndpoint {
             name: "deepseek-chat".to_string(),
             ..Default::default()
         };
-        assert_eq!(resolve_context_window(&ep, 200_000), 64_000);
+        assert_eq!(resolve_context_window(&ep, 200_000), 1_024_000);
     }
 
     #[test]
