@@ -1,0 +1,187 @@
+<h2>Subagent Tree Visualization — Two Display Modes</h2>
+<p class="subtitle">左：对话内嵌卡片（collapsible） · 右：独立面板（完整视图）</p>
+
+<div class="split">
+  <!-- === LEFT: Inline Chat Card === -->
+  <div class="mockup">
+    <div class="mockup-header">Mode B: Inline Card in Chat Flow</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 13px; padding: 12px; background: #1a1a2e; color: #cdd6f4; line-height: 1.6;">
+
+      <!-- User message -->
+      <div style="color: #89b4fa; margin-bottom: 8px;">
+        <span style="color: #6c7086;">You</span> 12:34<br>
+        分析一下这个项目的 RLM 架构
+      </div>
+
+      <!-- Assistant invoking task/delegate -->
+      <div style="color: #a6e3a1; margin-bottom: 4px;">
+        <span style="color: #6c7086;">Assistant</span> 12:34<br>
+        我来使用 delegate 工具将这个任务分解后并行分析。
+      </div>
+
+      <!-- Tool call indicator -->
+      <div style="margin: 8px 0; padding: 6px 10px; border-left: 3px solid #f9e2af; background: #1e1e2e; border-radius: 0 4px 4px 0;">
+        <div style="color: #f9e2af; font-weight: bold;">🔧 delegate</div>
+        <div style="color: #a6adc8; font-size: 12px;">task: "分析这个项目的 RLM 架构"</div>
+      </div>
+
+      <!-- Subagent Tree CARD (the new thing) -->
+      <div style="margin: 8px 0 8px 12px; padding: 10px; background: #181825; border: 1px solid #313244; border-radius: 8px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span style="color: #cba6f7; font-weight: bold;">🌳 Subagent Tree</span>
+          <span style="color: #a6adc8; font-size: 11px;">3/5 done · <span style="color: #6c7086; cursor: pointer;">collapse ▾</span></span>
+        </div>
+
+        <!-- Tree nodes -->
+        <div style="padding-left: 0px;">
+          <!-- L1: delegate root -->
+          <div style="display: flex; align-items: center; gap: 6px; padding: 3px 0; color: #a6e3a1;">
+            <span>┌─</span><span>🔄</span><span style="font-weight: bold;">delegate</span>
+            <span style="color: #6c7086; font-size: 11px;">executing · 12s</span>
+          </div>
+
+          <!-- L2: Planner -->
+          <div style="display: flex; align-items: center; gap: 6px; padding: 3px 0; padding-left: 16px; color: #a6e3a1;">
+            <span>├─</span><span>✅</span><span>Planner</span>
+            <span style="color: #6c7086; font-size: 11px;">3 tasks · 2s</span>
+          </div>
+
+          <!-- L2: Executor / sub-task 1 -->
+          <div style="display: flex; align-items: center; gap: 6px; padding: 3px 0; padding-left: 16px; color: #a6e3a1;">
+            <span>├─</span><span>✅</span><span>Sub 1: 分析 RLM mod.rs</span>
+            <span style="color: #6c7086; font-size: 11px;">8 rounds · 45s</span>
+          </div>
+
+          <!-- L2: Executor / sub-task 2 -->
+          <div style="display: flex; align-items: center; gap: 6px; padding: 3px 0; padding-left: 16px; color: #f9e2af;">
+            <span>├─</span><span>🔄</span><span>Sub 2: 分析 pipeline.rs</span>
+            <span style="color: #f9e2af; font-size: 11px;">round 3/20 · exec_command</span>
+          </div>
+
+          <!-- L2: Executor / sub-task 3 -->
+          <div style="display: flex; align-items: center; gap: 6px; padding: 3px 0; padding-left: 16px; color: #6c7086;">
+            <span>├─</span><span>⏳</span><span>Sub 3: 分析 subagent_loop</span>
+            <span style="color: #6c7086; font-size: 11px;">waiting deps</span>
+          </div>
+
+          <!-- L2: Executor / sub-task 4 -->
+          <div style="display: flex; align-items: center; gap: 6px; padding: 3px 0; padding-left: 16px; color: #6c7086;">
+            <span>└─</span><span>⏳</span><span>Sub 4: 分析 mailbox.rs</span>
+            <span style="color: #6c7086; font-size: 11px;">waiting deps</span>
+          </div>
+        </div>
+
+        <!-- Collapsed summary line (when collapsed) -->
+        <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #313244; color: #6c7086; font-size: 11px; opacity: 0.6;">
+          collapsed view: 🔄 delegate · 3/5 · 12s elapsed
+        </div>
+      </div>
+
+      <!-- Continuing chat... -->
+      <div style="color: #6c7086; font-size: 12px; margin-top: 6px;">
+        ... waiting for delegate to complete ...
+      </div>
+    </div>
+  </div>
+
+  <!-- === RIGHT: Dedicated Panel === -->
+  <div class="mockup">
+    <div class="mockup-header">Mode C: Dedicated Panel (toggle via hotkey)</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 13px; background: #1a1a2e; color: #cdd6f4; line-height: 1.6;">
+
+      <!-- Panel header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: #181825; border-bottom: 1px solid #313244; margin: -8px -8px 8px -8px;">
+        <span style="color: #cba6f7; font-weight: bold;">🌳 Subagent Monitor</span>
+        <span style="color: #6c7086; font-size: 12px;">Ctrl+T to toggle · 5 agents · 3 active</span>
+      </div>
+
+      <!-- Summary stats bar -->
+      <div style="display: flex; gap: 16px; margin-bottom: 12px; font-size: 12px;">
+        <span>✅ <span style="color: #a6e3a1;">2 done</span></span>
+        <span>🔄 <span style="color: #f9e2af;">2 running</span></span>
+        <span>⏳ <span style="color: #6c7086;">2 pending</span></span>
+        <span>⏱ <span style="color: #89b4fa;">18s elapsed</span></span>
+      </div>
+
+      <!-- Full tree -->
+      <div style="padding: 4px 0;">
+
+        <!-- Root -->
+        <div style="padding: 4px 8px; margin: 2px 0; border-radius: 4px; background: rgba(203, 166, 247, 0.1);">
+          <span style="color: #a6e3a1;">🔄</span>
+          <span style="color: #cba6f7; font-weight: bold;"> delegate</span>
+          <span style="color: #6c7086; font-size: 12px; margin-left: 8px;">RLM pipeline · 18s</span>
+          <span style="float: right; color: #a6adc8; font-size: 11px;">expand ▾</span>
+        </div>
+
+        <!-- Planner (level 1) -->
+        <div style="padding: 3px 8px; margin: 1px 0; margin-left: 20px; border-left: 1px solid #45475a;">
+          <span style="color: #a6e3a1;">✅</span>
+          <span style="color: #cdd6f4;"> Planner</span>
+          <span style="color: #6c7086; font-size: 11px; margin-left: 8px;">3 sub-tasks · 2s · 120 tokens</span>
+        </div>
+
+        <!-- Executor group (level 1) -->
+        <div style="padding: 3px 8px; margin: 1px 0; margin-left: 20px; border-left: 1px solid #45475a;">
+          <span style="color: #a6e3a1;">🔄</span>
+          <span style="color: #cdd6f4;"> Executor</span>
+          <span style="color: #6c7086; font-size: 11px; margin-left: 8px;">level 0/2 · 2 parallel</span>
+        </div>
+
+        <!-- Sub 1 (level 2) -->
+        <div style="padding: 3px 8px; margin: 1px 0; margin-left: 40px; border-left: 1px solid #45475a;">
+          <span style="color: #a6e3a1;">✅</span>
+          <span> Sub 1: 分析 RLM mod.rs</span>
+          <span style="color: #6c7086; font-size: 11px; margin-left: 8px;">8 rounds · 45s · 2.3k tokens</span>
+        </div>
+
+        <!-- Sub 2 (level 2) — currently running -->
+        <div style="padding: 3px 8px; margin: 1px 0; margin-left: 40px; border-left: 2px solid #f9e2af; background: rgba(249, 226, 175, 0.05); border-radius: 0 4px 4px 0;">
+          <span style="color: #f9e2af;">🔄</span>
+          <span style="color: #f9e2af;"> Sub 2: 分析 pipeline.rs</span>
+          <span style="color: #f9e2af; font-size: 11px; margin-left: 8px;">round 3/20</span>
+          <div style="margin-left: 28px; color: #a6adc8; font-size: 11px;">
+            └─ 🛠 executing: <span style="color: #89b4fa;">grep "run_rlm_pipeline" src/</span>
+          </div>
+        </div>
+
+        <!-- Sub 3 (level 2) — waiting deps -->
+        <div style="padding: 3px 8px; margin: 1px 0; margin-left: 40px; border-left: 1px solid #45475a;">
+          <span style="color: #6c7086;">⏳</span>
+          <span style="color: #9399b2;"> Sub 3: 分析 subagent_loop</span>
+          <span style="color: #6c7086; font-size: 11px; margin-left: 8px;">waiting: Sub 1 & 2</span>
+        </div>
+
+        <!-- Sub 4 (level 2) — waiting -->
+        <div style="padding: 3px 8px; margin: 1px 0; margin-left: 40px; border-left: 1px solid #45475a;">
+          <span style="color: #6c7086;">⏳</span>
+          <span style="color: #9399b2;"> Sub 4: 分析 mailbox.rs</span>
+          <span style="color: #6c7086; font-size: 11px; margin-left: 8px;">waiting: Sub 3</span>
+        </div>
+
+        <!-- Aggregator (level 1) — pending -->
+        <div style="padding: 3px 8px; margin: 1px 0; margin-left: 20px; border-left: 1px solid #45475a;">
+          <span style="color: #6c7086;">⏳</span>
+          <span style="color: #9399b2;"> Aggregator</span>
+          <span style="color: #6c7086; font-size: 11px; margin-left: 8px;">pending results</span>
+        </div>
+      </div>
+
+      <!-- Bottom status -->
+      <div style="margin-top: 12px; padding: 6px 8px; background: #181825; border-radius: 4px; font-size: 11px; color: #6c7086;">
+        ℹ️ Sub 3 & 4 depend on Sub 1 & 2 — waiting for dependency level to complete
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Legend -->
+<div class="section" style="margin-top: 16px;">
+  <h3>Status Legend</h3>
+  <div style="display: flex; gap: 24px; font-size: 14px;">
+    <span style="color: #6c7086;">⏳ pending</span>
+    <span style="color: #f9e2af;">🔄 running</span>
+    <span style="color: #a6e3a1;">✅ completed</span>
+    <span style="color: #f38ba8;">❌ failed</span>
+  </div>
+</div>

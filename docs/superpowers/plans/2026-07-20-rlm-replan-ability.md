@@ -2,6 +2,7 @@
 change: rlm-replan-ability
 design-doc: openspec/changes/rlm-replan-ability/design.md
 base-ref: 21637d09c45264b696785cdbb3b590e2d5430a5d
+archived-with: 2026-07-21-rlm-replan-ability
 ---
 
 # Implementation Plan: RLM Task-Level Replan Ability
@@ -17,6 +18,7 @@ base-ref: 21637d09c45264b696785cdbb3b590e2d5430a5d
 - **验证门槛**：每个 Phase 结束跑 `cargo test --all` + `cargo clippy --all-targets -- -D warnings` + `cargo fmt --check` 全绿才进入下一 Phase。
 - **不变量**：`src/exec_session/` 无 "comet" 字符串；RLM 不写 `session.json`；向后兼容（`retry_enabled=false` 行为同现状）。
 
+archived-with: 2026-07-21-rlm-replan-ability
 ---
 
 ## Phase 1：模块提取（行为保持重构）
@@ -71,6 +73,7 @@ base-ref: 21637d09c45264b696785cdbb3b590e2d5430a5d
 **验收**: 全绿 + 行为不变
 **依赖**: 1.5
 
+archived-with: 2026-07-21-rlm-replan-ability
 ---
 
 ## Phase 2：配置接入
@@ -98,6 +101,7 @@ base-ref: 21637d09c45264b696785cdbb3b590e2d5430a5d
 **验收**: 3 个单测通过
 **依赖**: 2.2
 
+archived-with: 2026-07-21-rlm-replan-ability
 ---
 
 ## Phase 3：Incremental Planner mode
@@ -127,6 +131,7 @@ base-ref: 21637d09c45264b696785cdbb3b590e2d5430a5d
 **验收**: 单测通过（用 mock client 或 JSON 解析测试）
 **依赖**: 3.2
 
+archived-with: 2026-07-21-rlm-replan-ability
 ---
 
 ## Phase 4：Executor replan 循环
@@ -187,6 +192,7 @@ base-ref: 21637d09c45264b696785cdbb3b590e2d5430a5d
 **验收**: 4 个场景单测通过
 **依赖**: 4.5
 
+archived-with: 2026-07-21-rlm-replan-ability
 ---
 
 ## Phase 5：Replan 输出去重（Q5）
@@ -207,6 +213,7 @@ base-ref: 21637d09c45264b696785cdbb3b590e2d5430a5d
 **验收**: 单测通过
 **依赖**: 5.1
 
+archived-with: 2026-07-21-rlm-replan-ability
 ---
 
 ## Phase 6：Replan 预算集成（Q4）
@@ -232,6 +239,7 @@ base-ref: 21637d09c45264b696785cdbb3b590e2d5430a5d
 **验收**: 单测通过
 **依赖**: 6.2
 
+archived-with: 2026-07-21-rlm-replan-ability
 ---
 
 ## Phase 7：P2-2 验证 + 文档
@@ -253,6 +261,7 @@ base-ref: 21637d09c45264b696785cdbb3b590e2d5430a5d
 **验收**: 文档准确反映现状
 **依赖**: 7.1
 
+archived-with: 2026-07-21-rlm-replan-ability
 ---
 
 ## Phase 8：不变量与回归
@@ -280,6 +289,7 @@ base-ref: 21637d09c45264b696785cdbb3b590e2d5430a5d
 **验收**: 提交完成 + tasks.md 同步
 **依赖**: 8.2
 
+archived-with: 2026-07-21-rlm-replan-ability
 ---
 
 ## 风险与缓解
