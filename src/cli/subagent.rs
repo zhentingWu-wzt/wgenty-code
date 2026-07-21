@@ -101,7 +101,7 @@ fn collect_headers(
         all
     };
     // Reverse-chronological; dedupe by id in case global scan overlapped.
-    headers.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+    headers.sort_by_key(|h| std::cmp::Reverse(h.started_at));
     headers.dedup_by(|a, b| a.id == b.id);
     Ok(headers)
 }
@@ -110,7 +110,7 @@ fn collect_headers(
 fn render_list(headers: &[SubagentTranscriptHeader], status: Option<&str>, limit: usize) -> String {
     let filtered: Vec<&SubagentTranscriptHeader> = headers
         .iter()
-        .filter(|h| status.map_or(true, |s| h.status == s))
+        .filter(|h| status.is_none_or(|s| h.status == s))
         .take(limit)
         .collect();
 
@@ -348,7 +348,7 @@ mod tests {
         ];
         // collect_headers sorts; emulate by pre-sorting desc as it would
         let mut sorted = headers.clone();
-        sorted.sort_by(|x, y| y.started_at.cmp(&x.started_at));
+        sorted.sort_by_key(|h| std::cmp::Reverse(h.started_at));
         let out = render_list(&sorted, None, 50);
         let pos_b = out.find("b").unwrap();
         let pos_c = out.find("c").unwrap();
@@ -406,7 +406,7 @@ mod tests {
                 .expect("in-memory store"),
         );
         let analyzer = SubagentHealthAnalyzer::new(store);
-        let headers = vec![
+        let headers = [
             hdr("a", "s", "failed", 1, FailureRootCause::Timeout),
             hdr("b", "s", "failed", 2, FailureRootCause::TokenBudgetExceeded),
             hdr("c", "s", "completed", 3, FailureRootCause::Unknown),

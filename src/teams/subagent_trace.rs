@@ -5,6 +5,7 @@
 //! executions with their tool calls, then renders them as ASCII art
 //! or exports JSON for external tools (Perfetto, Chrome DevTools).
 
+use crate::agent::progress::ErrorInfo;
 use crate::teams::subagent_health::{HealthPeriod, SubagentHealthAnalyzer};
 use crate::transcript::{SubagentTranscriptHeader, SubagentTranscriptStore};
 use std::collections::HashMap;
@@ -27,6 +28,9 @@ struct TraceNode {
     total_tokens: u64,
     actual_rounds: u32,
     summary: Option<String>,
+    /// Structured failure diagnostics (root cause, failed tool sequence,
+    /// retry history) populated only when the subagent failed.
+    failure_diagnostics: Option<ErrorInfo>,
     events: Vec<TraceEvent>,
     children: Vec<TraceNode>,
 }
@@ -123,6 +127,7 @@ impl SubagentTraceReporter {
                     total_tokens: t.total_tokens,
                     actual_rounds: t.actual_rounds,
                     summary: t.summary,
+                    failure_diagnostics: t.failure_diagnostics,
                     events: t
                         .events
                         .iter()
@@ -276,6 +281,48 @@ impl SubagentTraceReporter {
             ));
         }
 
+        // Structured failure diagnostics: root cause + failed tool sequence.
+        if let Some(ref diag) = node.failure_diagnostics {
+            buf.push_str(&format!(
+                "{} {}{}{} Root cause: {}\n",
+                prefix,
+                child_prefix,
+                connector,
+                if is_last { "  " } else { "│ " },
+                format!("{:?}", diag.root_cause).to_lowercase()
+            ));
+            if !diag.failed_tool_sequence.is_empty() {
+                buf.push_str(&format!(
+                    "{} {}{}{} Failed tool sequence:\n",
+                    prefix,
+                    child_prefix,
+                    connector,
+                    if is_last { "  " } else { "│ " },
+                ));
+                for step in &diag.failed_tool_sequence {
+                    buf.push_str(&format!(
+                        "{} {}{}{}   - {} ({}ms)\n",
+                        prefix,
+                        child_prefix,
+                        connector,
+                        if is_last { "  " } else { "│ " },
+                        step.tool_name,
+                        step.elapsed_ms,
+                    ));
+                }
+            }
+            if !diag.retry_history.is_empty() {
+                buf.push_str(&format!(
+                    "{} {}{}{} Retries: {}\n",
+                    prefix,
+                    child_prefix,
+                    connector,
+                    if is_last { "  " } else { "│ " },
+                    diag.retry_history.len(),
+                ));
+            }
+        }
+
         // Render tool calls as sub-items (only the most significant ones)
         let tool_events: Vec<&TraceEvent> = node
             .events
@@ -399,10 +446,31 @@ impl SubagentTraceReporter {
                     };
                     let err_msg = h.error_message.as_deref().unwrap_or("(no details)");
                     let err_short = safe_truncate(err_msg, 80);
+                    let root_cause = format!("{:?}", h.root_cause).to_lowercase();
                     buf.push_str(&format!(
-                        "│ {} {} {} — rounds={}, tokens={}\n│   {}\n",
-                        status_icon, time, h.label, h.actual_rounds, h.total_tokens, err_short
+                        "│ {} {} {} — root_cause={}, rounds={}, tokens={}\n│   {}\n",
+                        status_icon,
+                        time,
+                        h.label,
+                        root_cause,
+                        h.actual_rounds,
+                        h.total_tokens,
+                        err_short
                     ));
+                    if let Ok(Some(t)) = self.store.get_by_id(&h.id) {
+                        if let Some(ref diag) = t.failure_diagnostics {
+                            if !diag.retry_history.is_empty() {
+                                buf.push_str(&format!(
+                                    "│   retries: {} (last strategy: {})\n",
+                                    diag.retry_history.len(),
+                                    diag.retry_history
+                                        .last()
+                                        .map(|r| r.strategy.as_str())
+                                        .unwrap_or("-")
+                                ));
+                            }
+                        }
+                    }
                 }
                 buf.push_str("└───────────────────────────────────────────────────────────────\n");
             }
@@ -680,6 +748,10 @@ fn nodes_to_json(nodes: &[TraceNode]) -> serde_json::Value {
                 "is_success": node.is_success(),
                 "is_failed": node.is_failed(),
                 "is_cancelled": node.is_cancelled(),
+                "failure_diagnostics": node.failure_diagnostics,
+                "root_cause": node.failure_diagnostics.as_ref().map(|d| &d.root_cause),
+                "failed_tool_sequence": node.failure_diagnostics.as_ref().map(|d| &d.failed_tool_sequence).unwrap_or(&Vec::new()),
+                "retry_history": node.failure_diagnostics.as_ref().map(|d| &d.retry_history).unwrap_or(&Vec::new()),
                 "events": node.events.iter().map(|e| serde_json::json!({
                     "round": e.round,
                     "event_type": e.event_type,
@@ -893,6 +965,8 @@ h2 {{ color: var(--subtext1); font-size: 1.1rem; margin: 24px 0 12px; }}
 
 <div id="tab-errors" class="tab-content">
   <div id="errors-root"></div>
+  <h2 style="color:var(--peach);margin-top:24px;">Failure Diagnostics</h2>
+  <div id="diagnostics-root"></div>
 </div>
 
 <script>
@@ -1064,11 +1138,54 @@ function filterTree(query) {{
   if (q) expandAll();
 }}
 
+// ── Failure diagnostics (root cause, failed tool sequence, retry history) ──
+function renderFailureDiagnostics(nodes) {{
+  const failed = [];
+  (function walk(ns) {{
+    for (const n of ns) {{
+      if (n.failure_diagnostics) failed.push(n);
+      if (n.children) walk(n.children);
+    }}
+  }})(nodes);
+  if (failed.length === 0) {{
+    return '<p style="color:var(--overlay0)">No failure diagnostics recorded.</p>';
+  }}
+  let html = '';
+  for (const n of failed) {{
+    const d = n.failure_diagnostics;
+    html += '<div class="diag-card" style="background:var(--surface0);border-left:3px solid var(--red);padding:12px;margin:8px 0;border-radius:6px;">';
+    html += '<div><strong>' + esc(n.label) + '</strong> — root cause: <span style="color:var(--red)">' + esc(String(d.root_cause || 'unknown')) + '</span></div>';
+    if (d.message) html += '<div style="color:var(--subtext0);margin-top:4px;">' + esc(d.message) + '</div>';
+    if (d.failed_tool_sequence && d.failed_tool_sequence.length) {{
+      html += '<div style="margin-top:6px;">Failed tool sequence:</div><ul>';
+      for (const s of d.failed_tool_sequence) {{
+        html += '<li>' + esc(s.tool_name) + ' (' + (s.elapsed_ms||0) + 'ms)</li>';
+      }}
+      html += '</ul>';
+    }}
+    if (d.failed_round_context) {{
+      html += '<details style="margin-top:6px;"><summary>Failed round context</summary>';
+      html += '<pre style="white-space:pre-wrap;color:var(--subtext0);">' + esc(d.failed_round_context.assistant_text || '') + '\\n---\\n' + esc(d.failed_round_context.final_tool_output || '') + '</pre></details>';
+    }}
+    if (d.retry_history && d.retry_history.length) {{
+      html += '<div style="margin-top:6px;">Retries: ' + d.retry_history.length + '</div><ul>';
+      for (const r of d.retry_history) {{
+        html += '<li>' + esc(r.strategy) + ' — ' + esc(r.outcome) + ' (' + esc(r.error) + ')</li>';
+      }}
+      html += '</ul>';
+    }}
+    html += '</div>';
+  }}
+  return html;
+}}
+function esc(s) {{ return String(s).replace(/[&<>]/g, c => ({{'&':'&amp;','<':'&lt;','>':'&gt;'}}[c])); }}
+
 // ── Init ──────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function() {{
   document.getElementById('tree-root').innerHTML = renderTree(DATA.tree, 0, new Set());
   renderHealthDashboard(DATA.health);
   renderErrorTimeline(DATA.health);
+  document.getElementById('diagnostics-root').innerHTML = renderFailureDiagnostics(DATA.tree);
 }});
 </script>
 
@@ -1161,6 +1278,7 @@ mod tests {
             total_tokens: 1500,
             actual_rounds: 3,
             summary: Some("done".into()),
+            failure_diagnostics: None,
             events: vec![TraceEvent {
                 round: 1,
                 event_type: "action".into(),
@@ -1198,6 +1316,7 @@ mod tests {
             total_tokens: 500,
             actual_rounds: 2,
             summary: None,
+            failure_diagnostics: None,
             events: vec![],
             children: vec![],
         };
@@ -1211,6 +1330,7 @@ mod tests {
             total_tokens: 1000,
             actual_rounds: 3,
             summary: None,
+            failure_diagnostics: None,
             events: vec![],
             children: vec![child],
         };
@@ -1236,6 +1356,7 @@ mod tests {
             total_tokens: 0,
             actual_rounds: 0,
             summary: None,
+            failure_diagnostics: None,
             events: vec![],
             children: vec![],
         };
@@ -1306,5 +1427,189 @@ mod tests {
         let html = build_html_report(&tree, &health, "s");
         assert!(html.contains("total_runs"));
         assert!(html.contains("95"));
+    }
+
+    // ── Section 5: failure-diagnostics rendering (RED) ─────────────────
+
+    use crate::agent::progress::{ErrorInfo, ErrorType};
+    use crate::teams::failure_diagnostics::{
+        FailedRoundContext, RetryAttempt, RetryOutcome, ToolCallStep,
+    };
+
+    fn failed_node_with_diagnostics() -> TraceNode {
+        let diag = ErrorInfo {
+            error_type: ErrorType::Timeout,
+            message: "Subagent timed out after 240s".to_string(),
+            last_tool: Some("file_edit".to_string()),
+            last_params: None,
+            round: 4,
+            retryable: true,
+            root_cause: crate::teams::failure_diagnostics::FailureRootCause::Timeout,
+            failed_tool_sequence: vec![
+                ToolCallStep {
+                    tool_name: "file_read".to_string(),
+                    params_summary: serde_json::json!({"path": "src/main.rs"}),
+                    elapsed_ms: 120,
+                },
+                ToolCallStep {
+                    tool_name: "file_edit".to_string(),
+                    params_summary: serde_json::json!({"path": "src/main.rs"}),
+                    elapsed_ms: 5000,
+                },
+            ],
+            failed_round_context: Some(FailedRoundContext {
+                assistant_text: "Let me edit the file...".to_string(),
+                final_tool_output: "Error: disk full".to_string(),
+            }),
+            retry_history: vec![RetryAttempt {
+                error: "timeout".to_string(),
+                root_cause: crate::teams::failure_diagnostics::FailureRootCause::Timeout,
+                strategy: "extend deadline".to_string(),
+                outcome: RetryOutcome::Failed,
+            }],
+        };
+        TraceNode {
+            id: "f1".into(),
+            label: "task: failing".into(),
+            status: "failed".into(),
+            started_at: 1000,
+            finished_at: Some(9000),
+            error_message: Some("Subagent timed out after 240s".into()),
+            total_tokens: 4096,
+            actual_rounds: 4,
+            summary: None,
+            failure_diagnostics: Some(diag),
+            events: vec![],
+            children: vec![],
+        }
+    }
+
+    /// 5.1: call_tree surfaces root_cause + failed_tool_sequence durations.
+    #[test]
+    fn call_tree_surfaces_root_cause_and_failed_sequence() {
+        let dir = std::env::temp_dir().join(format!("wgenty_ct_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+        let store = crate::transcript::SubagentTranscriptStore::open(&db).unwrap();
+
+        let diag = failed_node_with_diagnostics().failure_diagnostics.unwrap();
+        let t = crate::transcript::SubagentTranscript {
+            id: "f1".to_string(),
+            session_id: "sess-ct".to_string(),
+            parent_id: None,
+            label: "task: failing".to_string(),
+            status: crate::transcript::TranscriptStatus::Failed,
+            system_prompt: None,
+            user_prompt: "do".to_string(),
+            started_at: 1,
+            finished_at: Some(2),
+            total_tokens: 4096,
+            max_rounds: Some(10),
+            actual_rounds: 4,
+            token_budget_k: None,
+            error_message: Some("timed out".to_string()),
+            summary: None,
+            failure_diagnostics: Some(diag),
+            project_path: None,
+            events: vec![],
+        };
+        store.save(&t, None).unwrap();
+
+        let reporter = SubagentTraceReporter::new(Arc::new(store));
+        let out = reporter.render_call_tree("sess-ct").unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(
+            out.contains("Timeout") || out.to_lowercase().contains("timeout"),
+            "call_tree must surface root_cause, got: {out}"
+        );
+        assert!(
+            out.contains("file_read"),
+            "call_tree must list failed_tool_sequence tools, got: {out}"
+        );
+        assert!(
+            out.contains("file_edit"),
+            "call_tree must list failed_tool_sequence tools, got: {out}"
+        );
+    }
+
+    /// 5.2: error_timeline groups by FailureRootCause and includes retry_history.
+    #[test]
+    fn error_timeline_groups_by_root_cause_and_shows_retries() {
+        // Reuse the public path through a real store so we exercise the
+        // grouping logic end to end.
+        let dir = std::env::temp_dir().join(format!("wgenty_et_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+        let store = crate::transcript::SubagentTranscriptStore::open(&db).unwrap();
+
+        let diag = failed_node_with_diagnostics().failure_diagnostics.unwrap();
+        let t = crate::transcript::SubagentTranscript {
+            id: "f1".to_string(),
+            session_id: "sess-et".to_string(),
+            parent_id: None,
+            label: "task: failing".to_string(),
+            status: crate::transcript::TranscriptStatus::Failed,
+            system_prompt: None,
+            user_prompt: "do".to_string(),
+            started_at: 1,
+            finished_at: Some(2),
+            total_tokens: 4096,
+            max_rounds: Some(10),
+            actual_rounds: 4,
+            token_budget_k: None,
+            error_message: Some("timed out".to_string()),
+            summary: None,
+            failure_diagnostics: Some(diag),
+            project_path: None,
+            events: vec![],
+        };
+        store.save(&t, None).unwrap();
+
+        let reporter = SubagentTraceReporter::new(Arc::new(store));
+        let out = reporter
+            .render_error_timeline(Some("sess-et"), HealthPeriod::AllTime)
+            .unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+
+        // Grouping by root cause: Timeout must appear as a failure mode label.
+        assert!(
+            out.to_lowercase().contains("timeout"),
+            "error_timeline must group by root cause, got: {out}"
+        );
+        assert!(
+            out.contains("retry") || out.contains("Retry") || out.contains("retr"),
+            "error_timeline must surface retry_history, got: {out}"
+        );
+    }
+
+    /// 5.3: html report has a failure-diagnostics section.
+    #[test]
+    fn html_report_has_failure_diagnostics_section() {
+        let node = failed_node_with_diagnostics();
+        let tree = nodes_to_json(&[node]);
+        let health = serde_json::json!({});
+        let html = build_html_report(&tree, &health, "s");
+        assert!(
+            html.to_lowercase().contains("diagnostic"),
+            "html must have a failure-diagnostics section"
+        );
+        assert!(html.contains("Timeout") || html.contains("timeout"));
+        assert!(html.contains("file_edit"));
+    }
+
+    /// 5.4: raw-mode rendering prints stored diagnostics as pretty JSON.
+    #[test]
+    fn nodes_to_json_emits_diagnostics() {
+        let node = failed_node_with_diagnostics();
+        let json = nodes_to_json(&[node]);
+        let s = serde_json::to_string(&json).unwrap();
+        assert!(
+            s.contains("failure_diagnostics"),
+            "json must carry diagnostics"
+        );
+        assert!(s.contains("root_cause"));
+        assert!(s.contains("failed_tool_sequence"));
+        assert!(s.contains("retry_history"));
     }
 }
