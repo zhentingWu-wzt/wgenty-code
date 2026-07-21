@@ -141,7 +141,7 @@ fn default_approval_timeout_secs() -> u64 {
 /// Subagent trace streaming config (design D3/D6).
 ///
 /// `dir = None` resolves to `<project_root>/.wgenty-code/traces` at runtime.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentTraceConfig {
     #[serde(default)]
     pub sink: TraceSinkMode,
@@ -149,6 +149,25 @@ pub struct SubagentTraceConfig {
     /// `.wgenty-code/traces` (resolved at the dispatch site).
     #[serde(default)]
     pub dir: Option<std::path::PathBuf>,
+    /// Char-boundary truncation threshold for the failing round's
+    /// assistant text + final tool output captured in `FailedRoundContext`.
+    /// Default 2000 (design D6 / Q4).
+    #[serde(default = "default_context_char_limit")]
+    pub context_char_limit: usize,
+}
+
+fn default_context_char_limit() -> usize {
+    2000
+}
+
+impl Default for SubagentTraceConfig {
+    fn default() -> Self {
+        Self {
+            sink: TraceSinkMode::default(),
+            dir: None,
+            context_char_limit: default_context_char_limit(),
+        }
+    }
 }
 
 /// Subagent runtime limits + overrides.
