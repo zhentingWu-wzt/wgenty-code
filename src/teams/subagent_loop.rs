@@ -30,6 +30,7 @@ use crate::teams::guarding_tool_port::{
 };
 use crate::teams::mailbox::{Mailbox, TeamMessage};
 use crate::teams::subagent_health::{FailureMode, FailureSignals};
+use crate::teams::trace_sink::{compose_progress_callback, TraceSink};
 use crate::tools::ToolRegistry;
 use crate::utils::stuck_detector::StuckDetector;
 use async_trait::async_trait;
@@ -1129,6 +1130,14 @@ fn sanitize_mailbox_name(name: &str) -> String {
         .collect()
 }
 
+/// Build a trace sink from settings, or `None` when trace streaming is off
+/// (or daemon-only, which has no file sink in Task 3.2). The sink writes to
+/// `<trace_dir>/<session_id>.jsonl`, aggregating all subagents in the session.
+fn build_trace_sink(settings: &crate::config::Settings, session_id: &str) -> Option<TraceSink> {
+    let trace = &settings.agent.subagent.trace;
+    TraceSink::for_mode(trace.sink, trace.dir.as_deref(), session_id)
+}
+
 /// Run a subagent with an isolated agent loop via the shared runtime, with an
 /// explicit permission context (shared session_rules / optional approval
 /// bridge / guardian).
@@ -1201,6 +1210,15 @@ pub async fn run_subagent_loop_with_permissions(
     );
 
     let is_non_root = context.parent_id.is_some();
+
+    // s04/s09: optional trace sink (subagent.trace.sink). Built before
+    // `settings` is moved into the synthesis port. The sink's callback is
+    // composed with the caller's `on_progress` so trace emission is
+    // transparent to the loop; file/dir permissions and redaction are handled
+    // inside TraceSink, and the writer task never blocks the agent loop.
+    let trace_sink = build_trace_sink(&settings, context.session_id.as_str());
+    let on_progress = compose_progress_callback(on_progress, trace_sink.as_ref());
+
     let synthesis = SubagentSynthesis {
         coordinator,
         context: context.clone(),
@@ -1390,6 +1408,12 @@ pub async fn run_subagent_loop_with_permissions(
             }
         },
     };
+
+    if let Some(sink) = trace_sink {
+        if let Err(e) = sink.shutdown().await {
+            tracing::warn!(target: "wgenty::trace_sink", error = %e, "trace sink shutdown failed");
+        }
+    }
 
     result
 }

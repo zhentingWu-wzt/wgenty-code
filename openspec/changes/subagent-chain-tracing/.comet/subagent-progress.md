@@ -14,9 +14,16 @@
 
 ## Next Task
 
-- **Task 10** = tasks.md 3.2: Wire `TraceSink` into the subagent dispatch path so it receives progress events; honor `subagent.trace.sink` (`file`|`daemon`|`both`|`off`, default `file`). 需要：(a) 在 subagent dispatch（`AgentSession`/`run_subagent_loop_with_permissions` 调用点）构造 TraceSink 并把 `sink.callback()` 注入为 ProgressCallback（与现有 callback 复合）；(b) config schema 加 `subagent.trace.sink` + `subagent.trace.dir`（Task 6.1 的前序，先读 settings 决定是否创建 sink）；(c) subagent 结束后 `sink.shutdown().await`。`off` 时不创建 sink。
+- **Task 11** = tasks.md 3.3: Add bounded broadcast channel for trace events; on full, drop oldest for live subscribers only (persistence unaffected). 需要在 `TraceSink` 内增加 `tokio::sync::broadcast::Sender<TraceEvent>`（容量上限，如 1024），`emit`/callback 同时 `try_send` mpsc（文件）和 `broadcast.send`（daemon）；`broadcast.send` 失败（无订阅者或满）忽略不阻塞。提供 `subscribe() -> broadcast::Receiver`。`mode.writes_daemon()` 时才广播。daemon SSE endpoint (3.4) 订阅此 channel。
 
-## Current Stage: implementing (Task 9 完成，Task 10 待开始)
+## Current Stage: implementing (Task 10 完成，Task 11 待开始)
+
+## Task 10 (3.2) 完成证据
+- config: `src/config/agent.rs` 加 `TraceSinkMode`（lowercase serde, default File, writes_file/writes_daemon）+ `SubagentTraceConfig { sink, dir: Option<PathBuf> }`；`SubagentLimits.trace` 字段 + Default。
+- `trace_sink.rs`: `TraceSink::for_mode(mode, dir, session)`（off/daemon->None; file/both->Some，dir 默认 `<project_root>/.wgenty-code/traces`）+ `compose_progress_callback(orig, sink)`（双调/单调/None）。
+- `subagent_loop.rs`: `build_trace_sink(settings, session_id)` helper；在 synthesis 之前构造 sink + composite callback（修正了 settings 移动顺序）；select 后 `sink.shutdown().await`（best-effort）。
+- 验证：trace_sink + subagent_loop 46 测试 GREEN（新增 for_mode/compose/mode-serde 7 测试）；clippy --all-targets -D warnings 零 warning；cargo fmt 干净；lib 编译通过。
+- 前向兼容：`daemon`/`both` 的广播部分留待 3.3（writes_daemon 方法已就位）。
 
 ## Task 9 (3.1) 完成证据
 - 新文件 `src/teams/trace_sink.rs`：`TraceEvent`（compact, serde）+ `TraceSink`（mpsc 1024 + spawned writer task + oneshot shutdown）。
