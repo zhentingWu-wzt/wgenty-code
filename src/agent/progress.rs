@@ -56,7 +56,7 @@ pub enum SubagentEventType {
 }
 
 /// Categorized error types for subagent execution.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ErrorType {
     Timeout,
     BudgetExceeded {
@@ -78,13 +78,8 @@ pub enum ErrorType {
     /// The model endpoint was unavailable (API HTTP error, connection refused, etc.).
     /// Eligible for fallback to a backup model.
     ModelUnavailable,
+    #[default]
     Unknown,
-}
-
-impl Default for ErrorType {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 /// Detailed error information for a failed subagent.
