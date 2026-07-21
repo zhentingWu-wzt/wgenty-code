@@ -15,6 +15,7 @@ pub mod subagent_health;
 pub mod subagent_loop;
 pub mod subagent_mailbox;
 pub mod subagent_trace;
+pub mod trace_sink;
 pub mod worktree;
 
 pub use guarding_tool_port::{

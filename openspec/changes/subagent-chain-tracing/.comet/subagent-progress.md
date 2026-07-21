@@ -14,9 +14,18 @@
 
 ## Next Task
 
-- **Task 9** = tasks.md 3.1: Create `src/teams/trace_sink.rs` `TraceSink` driven by ProgressCallback -- 异步 buffered writer（mpsc + spawn task），append JSONL 到 `<subagent.trace.dir>/<session_id>.jsonl`（项目本地），0600 文件/0700 目录权限，apply redact_params。TDD：先写 JSONL append + 脱敏测试看 RED。
+- **Task 10** = tasks.md 3.2: Wire `TraceSink` into the subagent dispatch path so it receives progress events; honor `subagent.trace.sink` (`file`|`daemon`|`both`|`off`, default `file`). 需要：(a) 在 subagent dispatch（`AgentSession`/`run_subagent_loop_with_permissions` 调用点）构造 TraceSink 并把 `sink.callback()` 注入为 ProgressCallback（与现有 callback 复合）；(b) config schema 加 `subagent.trace.sink` + `subagent.trace.dir`（Task 6.1 的前序，先读 settings 决定是否创建 sink）；(c) subagent 结束后 `sink.shutdown().await`。`off` 时不创建 sink。
 
-## Current Stage: implementing (Task 9 待开始)
+## Current Stage: implementing (Task 9 完成，Task 10 待开始)
+
+## Task 9 (3.1) 完成证据
+- 新文件 `src/teams/trace_sink.rs`：`TraceEvent`（compact, serde）+ `TraceSink`（mpsc 1024 + spawned writer task + oneshot shutdown）。
+- `TraceEvent::from_progress`：current_params 解析 JSON 后 `redact_params`，否则原样 string；error = `redact_params(to_value(ErrorInfo))` 递归脱敏 failed_tool_sequence/retry_history；status 经 serde 取 variant 名。
+- writer task：`tokio::select! { rx.recv() | &mut shutdown }`，batch drain（try_recv 突发）后单次 flush；None/shutdown 均 drain 剩余再退出，零丢失。
+- 权限：unix `set_permissions` 0700 dir / 0600 file；非 unix no-op（跨平台编译）。
+- `TraceSink::new` 必须 tokio runtime（spawn）；`callback()` 返回 `Arc::clone`；`shutdown(mut self).await` 发信号+释放 sender+await handle；`Drop` best-effort 发信号防 task 泄漏。
+- 验证：8/8 trace_sink 测试 GREEN（JSONL append、脱敏写盘、non-json params、建缺失目录、shutdown drain 10 事件、unix 权限 0600/0700）；`cargo clippy --all-targets -- -D warnings` 零 warning；`cargo fmt` 已应用；teams:: 107 测试无回归。
+- 已注册 `pub mod trace_sink;`（src/teams/mod.rs）。
 
 ## Key Facts (恢复用)
 - transcript db 全局 `~/.wgenty-code/subagent_transcripts.db`（settings.storage.transcript.db_path 可配）；schema 已加 4 列含 project_path（Q1）
