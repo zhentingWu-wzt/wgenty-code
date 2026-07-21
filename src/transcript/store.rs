@@ -17,6 +17,23 @@ pub struct SubagentTranscriptStore {
     db: Mutex<Connection>,
 }
 
+/// Return true if `column` exists on `table`, via a `PRAGMA table_info` scan.
+/// Used by the idempotent ADD COLUMN migration (SQLite has no
+/// `ADD COLUMN IF NOT EXISTS`).
+fn column_exists(db: &Connection, table: &str, column: &str) -> Result<bool, rusqlite::Error> {
+    let mut stmt = db.prepare(&format!("PRAGMA table_info({})", table))?;
+    let rows = stmt.query_map([], |row| {
+        let name: String = row.get(1)?;
+        Ok(name)
+    })?;
+    for row in rows {
+        if row? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 impl SubagentTranscriptStore {
     /// Open or create the database. Auto-creates tables and indexes.
     pub fn open(path: &Path) -> Result<Self, TranscriptError> {
@@ -73,6 +90,25 @@ impl SubagentTranscriptStore {
             CREATE INDEX IF NOT EXISTS idx_events_transcript ON subagent_events(transcript_id, round);
             CREATE INDEX IF NOT EXISTS idx_events_type ON subagent_events(event_type);
         ")?;
+
+        // Idempotent column additions for the failure-diagnostics migration.
+        // SQLite's ADD COLUMN has no IF NOT EXISTS clause, so guard each ALTER
+        // with a PRAGMA table_info presence check. This keeps re-opens safe and
+        // upgrades legacy databases created before this migration.
+        for (col, decl) in [
+            ("failure_diagnostics", "TEXT"),
+            ("root_cause", "TEXT"),
+            ("retry_history", "TEXT"),
+            ("project_path", "TEXT"),
+        ] {
+            if !column_exists(&db, "subagent_transcripts", col)? {
+                db.execute_batch(&format!(
+                    "ALTER TABLE subagent_transcripts ADD COLUMN {} {}",
+                    col, decl
+                ))?;
+            }
+        }
+
         Ok(())
     }
 
@@ -563,5 +599,105 @@ mod tests {
             store.get_by_id("zero-guard-old").unwrap().is_some(),
             "old transcript should still exist"
         );
+    }
+
+    /// Read column names of `table` via PRAGMA table_info (test helper).
+    fn column_names(store: &SubagentTranscriptStore, table: &str) -> Vec<String> {
+        let db = store.db.lock().expect("lock poisoned: transcript db");
+        let mut stmt = db
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .expect("prepare table_info");
+        let rows = stmt
+            .query_map([], |row| {
+                let name: String = row.get(1)?;
+                Ok(name)
+            })
+            .expect("query_map table_info");
+        rows.map(|r| r.expect("row")).collect()
+    }
+
+    #[test]
+    fn test_migration_adds_diagnostics_columns() {
+        let (store, _dir) = setup_store();
+        let cols = column_names(&store, "subagent_transcripts");
+        for col in [
+            "failure_diagnostics",
+            "root_cause",
+            "retry_history",
+            "project_path",
+        ] {
+            assert!(
+                cols.contains(&col.to_string()),
+                "missing column `{}` after migration: {:?}",
+                col,
+                cols
+            );
+        }
+    }
+
+    #[test]
+    fn test_migration_idempotent() {
+        let (store, _dir) = setup_store();
+        // Re-running migrations on an already-migrated DB must not error.
+        store.run_migrations().expect("second migration run");
+        store.run_migrations().expect("third migration run");
+        let cols = column_names(&store, "subagent_transcripts");
+        assert!(cols.contains(&"failure_diagnostics".to_string()));
+        assert!(cols.contains(&"project_path".to_string()));
+    }
+
+    #[test]
+    fn test_migration_old_db_preserves_data() {
+        // Simulate a legacy DB created before the diagnostics migration: build
+        // the table WITHOUT the new columns, insert a row, then open via the
+        // store (which runs migrations) and verify the row survives and the new
+        // columns are present.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("old.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE subagent_transcripts (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    parent_id TEXT,
+                    label TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    system_prompt TEXT,
+                    user_prompt TEXT NOT NULL,
+                    started_at INTEGER NOT NULL,
+                    finished_at INTEGER,
+                    total_tokens INTEGER DEFAULT 0,
+                    max_rounds INTEGER,
+                    actual_rounds INTEGER DEFAULT 0,
+                    token_budget_k INTEGER,
+                    error_message TEXT,
+                    summary TEXT,
+                    created_at INTEGER DEFAULT (unixepoch('now'))
+                );
+                INSERT INTO subagent_transcripts
+                    (id, session_id, label, status, user_prompt, started_at)
+                VALUES ('old-1', 'sess-old', 'legacy', 'completed', 'do', 1000);",
+            )
+            .unwrap();
+        }
+        let store = SubagentTranscriptStore::open(&path).unwrap();
+        let cols = column_names(&store, "subagent_transcripts");
+        for col in [
+            "failure_diagnostics",
+            "root_cause",
+            "retry_history",
+            "project_path",
+        ] {
+            assert!(
+                cols.contains(&col.to_string()),
+                "old-db migration missing `{}`",
+                col
+            );
+        }
+        // Legacy row is preserved and readable.
+        let loaded = store.get_by_id("old-1").unwrap().unwrap();
+        assert_eq!(loaded.label, "legacy");
+        assert_eq!(loaded.session_id, "sess-old");
     }
 }
