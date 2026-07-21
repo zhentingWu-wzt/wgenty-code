@@ -16,6 +16,6 @@ verification_report: docs/superpowers/reports/2026-07-20-rlm-replan-ability-veri
 branch_status: handled
 created_at: 2026-07-20
 verified_at: 2026-07-21
-archived: false
+archived: true
 handoff_context: openspec/changes/rlm-replan-ability/.comet/handoff/design-context.json
 handoff_hash: 60500181942cd3efba8a98532167749517472cac059c58b57e0357db9efcc64f
