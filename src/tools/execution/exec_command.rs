@@ -67,7 +67,7 @@ impl Tool for ExecCommandTool {
     }
 
     fn description(&self) -> &str {
-        "Start a long-lived shell command session and return a session ID for follow-up input/output"
+        "Start an interactive shell command session; returns a session ID for follow-up via write_stdin/kill_session. Yields incremental output after yield_time_ms and returns immediately even while the process is still running (finished=false). Use only for short or interactive commands; for long-running or blocking commands (sleep, builds, watches, tail -f), prefer execute_command with a timeout, which blocks until completion."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -84,7 +84,7 @@ impl Tool for ExecCommandTool {
                 },
                 "yield_time_ms": {
                     "type": "integer",
-                    "description": "Milliseconds to wait before collecting initial output"
+                    "description": "Milliseconds to wait before collecting initial output (not the command's total runtime; the process keeps running in the background after this returns)"
                 },
                 "max_output_chars": {
                     "type": "integer",

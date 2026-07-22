@@ -7,8 +7,13 @@ use crate::api::{ApiClient, ChatMessage};
 use crate::config::Settings;
 use crate::teams::guarding_tool_port::SubagentPermissionContext;
 use crate::teams::subagent_loop::run_subagent_loop_with_permissions;
+use crate::tools::meta::task::transcript::{new_transcript_id, save_minimal_transcript};
 use crate::tools::ToolRegistry;
-use std::collections::HashMap;
+use crate::transcript::SubagentTranscriptStore;
+use std::collections::{HashMap, HashSet, VecDeque};
+
+use super::formats::jaccard_similarity;
+use super::planner::{Planner, ReplacementSubTask, SubTask};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -99,6 +104,7 @@ pub async fn run_rlm_pipeline(
     root_node_id: Option<String>,
     token_budget_k: Option<u64>,
     workdir: Option<std::path::PathBuf>,
+    transcript_store: Option<Arc<SubagentTranscriptStore>>,
 ) -> Result<RlmResult, String> {
     tracing::info!(
         target: "rlm",
@@ -108,81 +114,7 @@ pub async fn run_rlm_pipeline(
         "RLM pipeline: starting planner phase"
     );
 
-    let planner_client = ApiClient::new(settings.clone());
-
-    let planner_prompt = format!(
-        r#"You are a task decomposition planner. Analyze the following complex task and break it down into independent sub-tasks.
-
-Rules:
-- Each sub-task MUST be self-contained and independently executable
-- Sub-tasks that depend on a previous sub-task's output must list their dependencies
-- Return ONLY a valid JSON array. No markdown, no explanation, no additional text.
-- Maximum 8 sub-tasks.
-
-<example>
-Input: "Refactor the authentication module to use JWT tokens"
-Output: [
-  {{"prompt": "Read and analyze the current auth module in src/auth/ to understand the existing flow, data structures, and dependencies", "use_small_model": true, "depends_on": []}},
-  {{"prompt": "Research JWT library options for this project — check dependencies in Cargo.toml and identify the best JWT crate", "use_small_model": true, "depends_on": []}},
-  {{"prompt": "Implement the JWT token generation and verification logic in a new src/auth/jwt.rs module. Include token creation with claims, expiry, and refresh token support", "use_small_model": false, "depends_on": [0, 1]}},
-  {{"prompt": "Update the login endpoint to return JWT tokens instead of session cookies, and add middleware for token validation", "use_small_model": false, "depends_on": [2]}}
-]
-</example>
-
-Task: {task}
-
-Context: {context}
-"#,
-        task = task,
-        context = context
-    );
-
-    let planner_messages = vec![
-        ChatMessage::system(
-            "You are a precise task decomposition planner. Always return valid JSON.",
-        ),
-        ChatMessage::user(&planner_prompt),
-    ];
-
-    let planner_response = planner_client
-        .chat(planner_messages, None)
-        .await
-        .map_err(|e| {
-            tracing::error!(target: "rlm", phase = "plan", error = %e, "RLM planner API call failed");
-            format!("RLM planner API call failed: {}", e)
-        })?;
-
-    let planner_content = planner_response
-        .choices
-        .first()
-        .and_then(|c| c.message.content.as_deref())
-        .unwrap_or("");
-
-    let json_str = extract_json(planner_content);
-
-    let sub_tasks: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_else(|e| {
-        tracing::warn!(
-            target: "rlm",
-            phase = "plan",
-            parse_error = %e,
-            raw = %json_str,
-            "RLM: failed to parse planner output, treating as single sub-task"
-        );
-        vec![serde_json::json!({
-            "prompt": format!("{}. Context: {}", task, context),
-            "use_small_model": false,
-            "depends_on": []
-        })]
-    });
-
-    let sub_tasks: Vec<serde_json::Value> = sub_tasks.into_iter().take(8).collect();
-
-    tracing::info!(
-        target: "rlm",
-        phase = "plan",
-        sub_task_count = sub_tasks.len(),
-        "RLM pipeline: planner decomposed task"
-    );
+    let sub_tasks: Vec<SubTask> = Planner::plan(settings, task, context).await?;
 
     // ── Budget allocation ──────────────────────────────────────────
     let budget_used = token_budget_k.unwrap_or(0);
@@ -225,16 +157,12 @@ Context: {context}
     let mut deps: Vec<Vec<usize>> = vec![Vec::new(); n];
 
     for (i, task_item) in sub_tasks.iter().enumerate() {
-        if let Some(dep_indices) = task_item.get("depends_on").and_then(|d| d.as_array()) {
-            for dep in dep_indices {
-                if let Some(idx) = dep.as_u64() {
-                    let idx = idx as usize;
-                    if idx < n {
-                        deps[i].push(idx);
-                    }
-                }
-            }
-        }
+        deps[i] = task_item
+            .depends_on
+            .iter()
+            .copied()
+            .filter(|&idx| idx < n)
+            .collect();
     }
 
     let mut depth: Vec<usize> = vec![0; n];
@@ -262,15 +190,8 @@ Context: {context}
             .enumerate()
             .filter(|(i, _)| depth[*i] == level)
             .map(|(idx, task_def)| {
-                let prompt = task_def
-                    .get("prompt")
-                    .and_then(|p| p.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let use_small = task_def
-                    .get("use_small_model")
-                    .and_then(|s| s.as_bool())
-                    .unwrap_or(false);
+                let prompt = task_def.prompt.clone();
+                let use_small = task_def.use_small_model;
                 let client = if use_small {
                     small_client.clone().unwrap_or_else(|| main_client.clone())
                 } else {
@@ -387,6 +308,7 @@ Context: {context}
                         "RLM pipeline: depth-limit fallback, self-executing subtask inline"
                     );
                     let sub_settings = Arc::new(settings.clone());
+                    let sub_transcript_store = transcript_store.clone();
                     let handle = tokio::spawn(async move {
                         let mut sub_system_prompt =
                             "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.".to_string();
@@ -399,6 +321,7 @@ Context: {context}
                             }),
                             ghost_agent_id,
                         );
+                        let started_at = chrono::Utc::now().timestamp_millis();
                         let result = run_subagent_loop_with_permissions(
                             &api_client,
                             registry.clone(),
@@ -413,11 +336,30 @@ Context: {context}
                             task_budget,
                             sub_workdir,
                             permission,
-                            sub_settings,
-                            None,
+                            sub_settings.clone(),
+                            sub_transcript_store.clone(),
                             None,
                         )
                         .await;
+                        if let Some(ref store) = sub_transcript_store {
+                            let retention = if sub_settings.storage.transcript.max_age_days > 0 {
+                                Some(sub_settings.storage.transcript.max_age_days)
+                            } else {
+                                None
+                            };
+                            save_minimal_transcript(
+                                store,
+                                &new_transcript_id(),
+                                ghost_context.session_id.as_str(),
+                                &prompt,
+                                Some(sub_system_prompt.clone()),
+                                prompt.clone(),
+                                started_at,
+                                &result,
+                                sub_settings.agent.subagent.trace.context_char_limit,
+                                retention,
+                            );
+                        }
                         // Ghost is not registered in coordinator scopes; skip
                         // finish_child (no permit to release, no scope to retire).
                         (result, idx)
@@ -440,6 +382,7 @@ Context: {context}
             let sub_coordinator = coordinator.clone();
             let sub_workdir = workdir.clone();
             let sub_settings = Arc::new(settings.clone());
+            let sub_transcript_store = transcript_store.clone();
             let handle = tokio::spawn(async move {
                 let mut sub_system_prompt = "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.".to_string();
                 inject_format_instruction("analysis", &mut sub_system_prompt);
@@ -450,6 +393,7 @@ Context: {context}
                     }),
                     sub_agent_id,
                 );
+                let started_at = chrono::Utc::now().timestamp_millis();
                 let result = run_subagent_loop_with_permissions(
                     &api_client,
                     registry.clone(),
@@ -464,11 +408,30 @@ Context: {context}
                     task_budget,
                     sub_workdir,
                     permission,
-                    sub_settings,
-                    None,
+                    sub_settings.clone(),
+                    sub_transcript_store.clone(),
                     None,
                 )
                 .await;
+                if let Some(ref store) = sub_transcript_store {
+                    let retention = if sub_settings.storage.transcript.max_age_days > 0 {
+                        Some(sub_settings.storage.transcript.max_age_days)
+                    } else {
+                        None
+                    };
+                    save_minimal_transcript(
+                        store,
+                        &new_transcript_id(),
+                        sub_context.session_id.as_str(),
+                        &prompt,
+                        Some(sub_system_prompt.clone()),
+                        prompt.clone(),
+                        started_at,
+                        &result,
+                        sub_settings.agent.subagent.trace.context_char_limit,
+                        retention,
+                    );
+                }
                 // Persist the child's terminal through the coordinator so its
                 // permit is released and it appears in the hierarchy.
                 let terminal = match &result {
@@ -500,6 +463,291 @@ Context: {context}
                 }
                 Err(e) => {
                     tracing::error!(target: "rlm", phase = "execute", error = %e, "RLM pipeline: join error");
+                }
+            }
+        }
+    }
+
+    // ── Replan phase (P0-2): incrementally re-decompose failed sub-tasks ──
+    let rlm_cfg = resolve_rlm_settings(settings, caller);
+    if rlm_cfg.retry_enabled && rlm_cfg.max_replan_cycles > 0 {
+        let max_cycles = rlm_cfg.max_replan_cycles;
+        let jaccard_threshold = rlm_cfg.jaccard_threshold;
+
+        // Replan budget unit (Q4): replanner calls + replacement execution
+        // draw from the executor pool. Estimate each replanner call and each
+        // replacement at one per-task share; when the pool cannot cover a
+        // call, replan is skipped (see per-cycle check below).
+        let repl_per_task = per_task_budget
+            .as_ref()
+            .and_then(|b| b.first().copied())
+            .unwrap_or(0);
+
+        for cycle in 0..max_cycles {
+            let (replace_ids, replace_set, failure_reasons) =
+                compute_replan_scope(&deps, &task_errors, n);
+            if replace_ids.is_empty() {
+                break;
+            }
+
+            // Q4: skip replan when the executor pool cannot cover a replanner call.
+            if let Some(ref alloc) = allocation {
+                if !alloc.executor_has(repl_per_task) {
+                    tracing::info!(
+                        target: "rlm",
+                        phase = "replan",
+                        remaining = alloc.executor_pool,
+                        "RLM pipeline: replan budget exhausted, skipping replan"
+                    );
+                    break;
+                }
+            }
+
+            // Partial results: only preserved (non-replaced) tasks.
+            let partial_results: HashMap<usize, String> = (0..n)
+                .filter_map(|i| {
+                    if replace_set.contains(&i) {
+                        None
+                    } else {
+                        results[i]
+                            .clone()
+                            .filter(|s| !s.starts_with("[ERROR]"))
+                            .map(|s| (i, s))
+                    }
+                })
+                .collect();
+
+            tracing::info!(
+                target: "rlm",
+                phase = "replan",
+                cycle = cycle + 1,
+                max_cycles = max_cycles,
+                failed = task_errors.iter().filter(|e| e.is_some()).count(),
+                replace_total = replace_ids.len(),
+                "RLM pipeline: incremental replan"
+            );
+
+            let replacements = match Planner::replan_incremental(
+                settings,
+                &sub_tasks,
+                &replace_ids,
+                &failure_reasons,
+                &partial_results,
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "rlm",
+                        phase = "replan",
+                        error = %e,
+                        "RLM pipeline: replan planner failed, aborting replan"
+                    );
+                    break;
+                }
+            };
+
+            // Q4: charge the replanner call against the executor pool.
+            if let Some(ref mut alloc) = allocation {
+                alloc.charge_executor(repl_per_task);
+            }
+
+            let accepted = jaccard_dedup_replacements(replacements, &sub_tasks, jaccard_threshold);
+
+            if accepted.is_empty() {
+                tracing::info!(
+                    target: "rlm",
+                    phase = "replan",
+                    "RLM pipeline: no viable replacements after dedup, stopping replan"
+                );
+                break;
+            }
+
+            tracing::info!(
+                target: "rlm",
+                phase = "replan",
+                cycle = cycle + 1,
+                replacements = accepted.len(),
+                "RLM pipeline: executing replacement sub-tasks"
+            );
+
+            // Execute all accepted replacements in parallel (single tier —
+            // they only depend on preserved tasks which are already done).
+            let mut replan_handles: Vec<
+                tokio::task::JoinHandle<(
+                    Result<String, crate::teams::subagent_loop::SubagentError>,
+                    usize,
+                )>,
+            > = Vec::new();
+            let timeout_secs = settings.agent.subagent.timeout_secs;
+
+            for repl in accepted {
+                let replaces_id = repl.replaces_id;
+                let prompt = repl.prompt.clone();
+                let client = if repl.use_small_model {
+                    small_client.clone().unwrap_or_else(|| main_client.clone())
+                } else {
+                    main_client.clone()
+                };
+                let registry = tool_registry.clone();
+                let allowed = allowed_tools.clone();
+
+                // Q4: charge one per-task share for replacement execution.
+                let repl_task_budget = if let Some(ref mut alloc) = allocation {
+                    let charged = alloc.charge_executor(repl_per_task);
+                    if charged > 0 {
+                        Some(charged)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let sub_label = {
+                    let p = prompt.trim();
+                    if p.len() > 46 {
+                        let truncate_at = {
+                            let mut end = 43;
+                            while end > 0 && !p.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            end
+                        };
+                        format!("replan[{}]: {}…", replaces_id, &p[..truncate_at])
+                    } else {
+                        format!("replan[{}]: {}", replaces_id, p)
+                    }
+                };
+
+                let reservation = match coordinator
+                    .reserve_child(caller, crate::agent::SpawnChildRequest::new(&prompt))
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "rlm",
+                            phase = "replan",
+                            replaces_id = replaces_id,
+                            error = %e,
+                            "RLM pipeline: replan reserve_child failed, skipping replacement"
+                        );
+                        continue;
+                    }
+                };
+                let sub_context = reservation.context.clone();
+                let sub_node_id = sub_context.agent_id.as_str().to_string();
+                let sub_progress = build_sub_progress(
+                    progress_store.as_ref(),
+                    &root_node_id,
+                    &sub_node_id,
+                    &sub_label,
+                )
+                .await;
+                let sub_coordinator = coordinator.clone();
+                let sub_workdir = workdir.clone();
+                let sub_settings = Arc::new(settings.clone());
+                let sub_transcript_store = transcript_store.clone();
+                let handle = tokio::spawn(async move {
+                    let mut sub_system_prompt = "You are a sub-agent in a recursive language model system. Execute the assigned sub-task precisely and return a complete, self-contained result.".to_string();
+                    inject_format_instruction("analysis", &mut sub_system_prompt);
+                    let sub_agent_id = sub_context.agent_id.as_str().to_string();
+                    let permission = SubagentPermissionContext::headless(
+                        sub_workdir.clone().unwrap_or_else(|| {
+                            std::env::current_dir()
+                                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                        }),
+                        sub_agent_id,
+                    );
+                    let started_at = chrono::Utc::now().timestamp_millis();
+                    let result = run_subagent_loop_with_permissions(
+                        &client,
+                        registry.clone(),
+                        &sub_context,
+                        sub_coordinator.clone(),
+                        &sub_system_prompt,
+                        &prompt,
+                        &allowed,
+                        100,
+                        timeout_secs,
+                        sub_progress,
+                        repl_task_budget,
+                        sub_workdir,
+                        permission,
+                        sub_settings.clone(),
+                        sub_transcript_store.clone(),
+                        None,
+                    )
+                    .await;
+                    if let Some(ref store) = sub_transcript_store {
+                        let retention = if sub_settings.storage.transcript.max_age_days > 0 {
+                            Some(sub_settings.storage.transcript.max_age_days)
+                        } else {
+                            None
+                        };
+                        save_minimal_transcript(
+                            store,
+                            &new_transcript_id(),
+                            sub_context.session_id.as_str(),
+                            &prompt,
+                            Some(sub_system_prompt.clone()),
+                            prompt.clone(),
+                            started_at,
+                            &result,
+                            sub_settings.agent.subagent.trace.context_char_limit,
+                            retention,
+                        );
+                    }
+                    let terminal = match &result {
+                        Ok(r) => crate::agent::ChildTerminal::Completed {
+                            summary: r.chars().take(500).collect(),
+                        },
+                        Err(_) => crate::agent::ChildTerminal::Failed {
+                            code: "subagent_failed".to_string(),
+                            partial_result: None,
+                        },
+                    };
+                    let _ = sub_coordinator.finish_child(&sub_context, terminal).await;
+                    (result, replaces_id)
+                });
+                replan_handles.push(handle);
+            }
+
+            for handle in replan_handles {
+                match handle.await {
+                    Ok((Ok(result), replaces_id)) => {
+                        results[replaces_id] = Some(result);
+                        task_errors[replaces_id] = None;
+                        tracing::info!(
+                            target: "rlm",
+                            phase = "replan",
+                            replaces_id = replaces_id,
+                            status = "completed",
+                            "RLM pipeline: replacement sub-task completed"
+                        );
+                    }
+                    Ok((Err(e), replaces_id)) => {
+                        let error = format!("Replan sub-task {} failed: {}", replaces_id, e);
+                        task_errors[replaces_id] = Some(error.clone());
+                        results[replaces_id] = Some(format!("[ERROR] {}", error));
+                        tracing::error!(
+                            target: "rlm",
+                            phase = "replan",
+                            replaces_id = replaces_id,
+                            error = %e,
+                            "RLM pipeline: replacement sub-task failed"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            target: "rlm",
+                            phase = "replan",
+                            error = %e,
+                            "RLM pipeline: replan join error"
+                        );
+                    }
                 }
             }
         }
@@ -587,6 +835,45 @@ Provide a merged, complete response."#,
     })
 }
 
+/// Resolved RLM replan settings after applying subagent overrides.
+///
+/// Only carries the three fields the replan phase consumes. The other
+/// `RlmSettings` fields (enabled / delegate_tool / auto_routing) gate the
+/// pipeline entry point upstream and are not overridden at the pipeline level.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct EffectiveRlmSettings {
+    pub retry_enabled: bool,
+    pub max_replan_cycles: usize,
+    pub jaccard_threshold: f64,
+}
+
+/// Resolve RLM replan settings for `caller`.
+///
+/// Root callers (depth == 0) use `agent.rlm` verbatim. Subagent callers
+/// (depth > 0) start from `agent.rlm` and let each `Some(_)` field of
+/// `agent.subagent.rlm` override the corresponding value; `None` fields
+/// inherit the top-level setting. This mirrors `SubagentRlmOverride`'s
+/// per-field resolution contract (see `config::agent`).
+pub(crate) fn resolve_rlm_settings(
+    settings: &Settings,
+    caller: &crate::agent::AgentExecutionContext,
+) -> EffectiveRlmSettings {
+    let base = &settings.agent.rlm;
+    if caller.depth == 0 {
+        return EffectiveRlmSettings {
+            retry_enabled: base.retry_enabled,
+            max_replan_cycles: base.max_replan_cycles,
+            jaccard_threshold: base.jaccard_threshold,
+        };
+    }
+    let ov = &settings.agent.subagent.rlm;
+    EffectiveRlmSettings {
+        retry_enabled: ov.retry_enabled.unwrap_or(base.retry_enabled),
+        max_replan_cycles: ov.max_replan_cycles.unwrap_or(base.max_replan_cycles),
+        jaccard_threshold: ov.jaccard_threshold.unwrap_or(base.jaccard_threshold),
+    }
+}
+
 /// Extract a JSON array from a string, handling markdown fences and leading/trailing text.
 pub fn extract_json(input: &str) -> String {
     let input = input.trim();
@@ -628,5 +915,267 @@ fn inject_format_instruction(task_type: &str, prompt: &mut String) {
             prompt.push_str("{\n  \"format\": \"unified-diff/1\",\n  \"changes\": [\n    {\n      \"file\": \"path/to/file.rs\",\n      \"intent\": \"description of change\",\n      \"diff\": \"@@ -1,3 +1,4 @@\\n...\",\n      \"confidence\": 0.9,\n      \"depends_on\": []\n    }\n  ]\n}\n");
         }
         _ => {} // mixed or unknown — no format injection, LLM decides
+    }
+}
+
+/// Compute the set of sub-task ids to re-decompose during replan: directly
+/// failed tasks plus their transitive downstream dependents.
+///
+/// Returns `(replace_ids sorted, replace_set, failure_reasons)`.
+/// `failure_reasons` maps each replaced id to either its own error message
+/// (directly failed) or an "upstream dependencies failed" notice (tainted
+/// downstream dependent).
+fn compute_replan_scope(
+    deps: &[Vec<usize>],
+    task_errors: &[Option<String>],
+    n: usize,
+) -> (Vec<usize>, HashSet<usize>, HashMap<usize, String>) {
+    let failed_ids: Vec<usize> = (0..n).filter(|&i| task_errors[i].is_some()).collect();
+    let failed_set: HashSet<usize> = failed_ids.iter().copied().collect();
+
+    let mut replace_set = failed_set.clone();
+    let mut queue: VecDeque<usize> = failed_ids.iter().copied().collect();
+    while let Some(failed_id) = queue.pop_front() {
+        for (i, i_deps) in deps.iter().enumerate() {
+            if i_deps.contains(&failed_id) && !replace_set.contains(&i) {
+                replace_set.insert(i);
+                queue.push_back(i);
+            }
+        }
+    }
+
+    let mut replace_ids: Vec<usize> = replace_set.iter().copied().collect();
+    replace_ids.sort_unstable();
+
+    let mut failure_reasons: HashMap<usize, String> = HashMap::new();
+    for &id in &replace_ids {
+        if let Some(err) = &task_errors[id] {
+            failure_reasons.insert(id, err.clone());
+        } else {
+            let tainted_deps: Vec<usize> = deps[id]
+                .iter()
+                .filter(|&&d| failed_set.contains(&d))
+                .copied()
+                .collect();
+            failure_reasons.insert(
+                id,
+                format!("Upstream dependencies failed: {:?}", tainted_deps),
+            );
+        }
+    }
+
+    (replace_ids, replace_set, failure_reasons)
+}
+
+/// Filter replacement sub-tasks via Jaccard similarity dedup.
+///
+/// Drops replacements whose prompt is too similar to the failed original
+/// prompt (would repeat the same approach) or to an already-accepted
+/// replacement in this cycle. Returns the accepted replacements in order.
+fn jaccard_dedup_replacements(
+    replacements: Vec<ReplacementSubTask>,
+    sub_tasks: &[SubTask],
+    threshold: f64,
+) -> Vec<ReplacementSubTask> {
+    let mut accepted: Vec<ReplacementSubTask> = Vec::new();
+    let mut seen_prompts: Vec<String> = Vec::new();
+    for repl in replacements {
+        let failed_prompt = sub_tasks
+            .get(repl.replaces_id)
+            .map(|t| t.prompt.as_str())
+            .unwrap_or("");
+        let sim_to_failed = jaccard_similarity(&repl.prompt, failed_prompt);
+        if sim_to_failed >= threshold {
+            tracing::info!(
+                target: "rlm",
+                phase = "replan",
+                replaces_id = repl.replaces_id,
+                jaccard = sim_to_failed,
+                "RLM pipeline: dropping replacement too similar to failed prompt"
+            );
+            continue;
+        }
+        let dup_in_cycle = seen_prompts
+            .iter()
+            .any(|p| jaccard_similarity(&repl.prompt, p) >= threshold);
+        if dup_in_cycle {
+            continue;
+        }
+        seen_prompts.push(repl.prompt.clone());
+        accepted.push(repl);
+    }
+    accepted
+}
+
+#[cfg(test)]
+mod replan_tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_replan_scope_direct_failures_only() {
+        let deps = vec![vec![], vec![], vec![]];
+        let task_errors = vec![None, Some("timeout".to_string()), None];
+        let (replace_ids, replace_set, failure_reasons) =
+            compute_replan_scope(&deps, &task_errors, 3);
+        assert_eq!(replace_ids, vec![1]);
+        assert!(replace_set.contains(&1));
+        assert_eq!(failure_reasons.get(&1), Some(&"timeout".to_string()));
+    }
+
+    #[test]
+    fn test_compute_replan_scope_downstream_propagation() {
+        // 0 failed; 1 and 2 depend on 0; 3 depends on 2.
+        let deps = vec![vec![], vec![0], vec![0], vec![2]];
+        let task_errors = vec![Some("err0".to_string()), None, None, None];
+        let (replace_ids, _, failure_reasons) = compute_replan_scope(&deps, &task_errors, 4);
+        assert_eq!(replace_ids, vec![0, 1, 2, 3]);
+        assert_eq!(failure_reasons.get(&0), Some(&"err0".to_string()));
+        assert!(failure_reasons.get(&1).unwrap().contains("Upstream"));
+        assert!(failure_reasons.get(&2).unwrap().contains("Upstream"));
+        assert!(failure_reasons.get(&3).unwrap().contains("Upstream"));
+    }
+
+    #[test]
+    fn test_compute_replan_scope_no_failures() {
+        let deps = vec![vec![], vec![]];
+        let task_errors = vec![None, None];
+        let (replace_ids, replace_set, _) = compute_replan_scope(&deps, &task_errors, 2);
+        assert!(replace_ids.is_empty());
+        assert!(replace_set.is_empty());
+    }
+
+    #[test]
+    fn test_compute_replan_scope_partial_downstream() {
+        // 0 failed; 1 depends on 0; 2 is independent.
+        let deps = vec![vec![], vec![0], vec![]];
+        let task_errors = vec![Some("err0".to_string()), None, None];
+        let (replace_ids, _, _) = compute_replan_scope(&deps, &task_errors, 3);
+        // Only 0 and 1 should be replaced; 2 is independent.
+        assert_eq!(replace_ids, vec![0, 1]);
+    }
+
+    #[test]
+    fn test_jaccard_dedup_drops_similar_to_failed() {
+        let sub_tasks = vec![SubTask {
+            prompt: "Read the auth module and analyze the login flow".to_string(),
+            use_small_model: true,
+            depends_on: vec![],
+        }];
+        let replacements = vec![
+            ReplacementSubTask {
+                replaces_id: 0,
+                prompt: "Read the auth module and analyze the login flow".to_string(),
+                use_small_model: true,
+                depends_on: vec![],
+            },
+            ReplacementSubTask {
+                replaces_id: 0,
+                prompt: "Inspect the authentication service for session token handling".to_string(),
+                use_small_model: true,
+                depends_on: vec![],
+            },
+        ];
+        let accepted = jaccard_dedup_replacements(replacements, &sub_tasks, 0.8);
+        assert_eq!(accepted.len(), 1);
+        assert!(accepted[0].prompt.contains("authentication service"));
+    }
+
+    #[test]
+    fn test_jaccard_dedup_drops_duplicates_within_cycle() {
+        let sub_tasks = vec![SubTask {
+            prompt: "original prompt".to_string(),
+            use_small_model: false,
+            depends_on: vec![],
+        }];
+        let replacements = vec![
+            ReplacementSubTask {
+                replaces_id: 0,
+                prompt: "Use a hash map to cache the results".to_string(),
+                use_small_model: false,
+                depends_on: vec![],
+            },
+            ReplacementSubTask {
+                replaces_id: 0,
+                prompt: "Use a hash map to cache the results".to_string(),
+                use_small_model: false,
+                depends_on: vec![],
+            },
+        ];
+        let accepted = jaccard_dedup_replacements(replacements, &sub_tasks, 0.8);
+        assert_eq!(accepted.len(), 1);
+    }
+
+    #[test]
+    fn test_jaccard_dedup_keeps_different_approaches() {
+        let sub_tasks = vec![SubTask {
+            prompt: "Read the auth module and analyze the login flow".to_string(),
+            use_small_model: true,
+            depends_on: vec![],
+        }];
+        let replacements = vec![
+            ReplacementSubTask {
+                replaces_id: 0,
+                prompt: "Search for JWT library options in Cargo.toml".to_string(),
+                use_small_model: true,
+                depends_on: vec![],
+            },
+            ReplacementSubTask {
+                replaces_id: 0,
+                prompt: "Write integration tests for the token refresh endpoint".to_string(),
+                use_small_model: false,
+                depends_on: vec![],
+            },
+        ];
+        let accepted = jaccard_dedup_replacements(replacements, &sub_tasks, 0.8);
+        assert_eq!(accepted.len(), 2);
+    }
+
+    #[test]
+    fn test_jaccard_dedup_empty_input() {
+        let sub_tasks: Vec<SubTask> = vec![];
+        let replacements: Vec<ReplacementSubTask> = vec![];
+        let accepted = jaccard_dedup_replacements(replacements, &sub_tasks, 0.8);
+        assert!(accepted.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_rlm_settings_root_uses_top_level() {
+        let mut settings = Settings::default();
+        settings.agent.rlm.retry_enabled = true;
+        settings.agent.rlm.max_replan_cycles = 3;
+        settings.agent.rlm.jaccard_threshold = 0.7;
+        let caller = crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new("s"));
+        let eff = resolve_rlm_settings(&settings, &caller);
+        assert!(eff.retry_enabled);
+        assert_eq!(eff.max_replan_cycles, 3);
+        assert!((eff.jaccard_threshold - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_resolve_rlm_settings_subagent_override_applied() {
+        let mut settings = Settings::default();
+        settings.agent.rlm.retry_enabled = true;
+        settings.agent.rlm.max_replan_cycles = 3;
+        settings.agent.rlm.jaccard_threshold = 0.7;
+        settings.agent.subagent.rlm.retry_enabled = Some(false);
+        settings.agent.subagent.rlm.max_replan_cycles = Some(1);
+        settings.agent.subagent.rlm.jaccard_threshold = Some(0.9);
+        let root = crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new("s"));
+        let caller = root.child(crate::agent::AgentId::new("child"));
+        let eff = resolve_rlm_settings(&settings, &caller);
+        assert!(!eff.retry_enabled);
+        assert_eq!(eff.max_replan_cycles, 1);
+        assert!((eff.jaccard_threshold - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_resolve_rlm_settings_subagent_without_override_falls_back() {
+        let settings = Settings::default();
+        let root = crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new("s"));
+        let caller = root.child(crate::agent::AgentId::new("child"));
+        let eff = resolve_rlm_settings(&settings, &caller);
+        assert_eq!(eff.retry_enabled, settings.agent.rlm.retry_enabled);
+        assert_eq!(eff.max_replan_cycles, settings.agent.rlm.max_replan_cycles);
+        assert!((eff.jaccard_threshold - settings.agent.rlm.jaccard_threshold).abs() < 1e-9);
     }
 }

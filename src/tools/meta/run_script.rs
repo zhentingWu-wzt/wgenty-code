@@ -9,7 +9,9 @@ use crate::api::ApiClient;
 use crate::config::Settings;
 use crate::teams::guarding_tool_port::SubagentPermissionContext;
 use crate::teams::subagent_loop::run_subagent_loop_with_permissions;
+use crate::tools::meta::task::transcript::{new_transcript_id, save_minimal_transcript};
 use crate::tools::{Tool, ToolError, ToolOutput, ToolRegistry};
+use crate::transcript::SubagentTranscriptStore;
 use async_trait::async_trait;
 use rhai::Engine;
 use std::collections::HashMap;
@@ -20,6 +22,7 @@ pub struct RunScriptTool {
     settings: Settings,
     tool_registry: std::sync::Weak<ToolRegistry>,
     coordinator: Arc<AgentCoordinator>,
+    transcript_store: Option<Arc<SubagentTranscriptStore>>,
 }
 
 impl RunScriptTool {
@@ -27,11 +30,13 @@ impl RunScriptTool {
         settings: Settings,
         tool_registry: std::sync::Weak<ToolRegistry>,
         coordinator: Arc<AgentCoordinator>,
+        transcript_store: Option<Arc<SubagentTranscriptStore>>,
     ) -> Self {
         Self {
             settings,
             tool_registry,
             coordinator,
+            transcript_store,
         }
     }
 }
@@ -98,6 +103,8 @@ impl Tool for RunScriptTool {
             let rt = tokio::runtime::Handle::current();
             let caller_context = context.agent.clone();
             let coordinator = self.coordinator.clone();
+            let transcript_store = self.transcript_store.clone();
+            let session_id = context.agent.session_id.as_str().to_string();
             engine.register_fn("task", move |prompt: String| -> String {
                 let n = cnt.fetch_add(1, Ordering::Relaxed);
                 if n >= 10 { return "[ERROR] Max 10 subagent calls per script".to_string(); }
@@ -155,12 +162,14 @@ impl Tool for RunScriptTool {
                                     .unwrap_or_else(|_| std::path::PathBuf::from(".")),
                                 ghost_agent_id,
                             );
+                            let started_at = chrono::Utc::now().timestamp_millis();
+                            let sub_system_prompt = "You are a sub-agent in a Rhai script. Execute the task precisely and return a concise result.";
                             let result = run_subagent_loop_with_permissions(
                                 &client,
                                 reg.clone(),
                                 &ghost,
                                 coordinator.clone(),
-                                "You are a sub-agent in a Rhai script. Execute the task precisely and return a concise result.",
+                                sub_system_prompt,
                                 &prompt,
                                 &tools,
                                 settings.agent.subagent.max_rounds.unwrap_or(100),
@@ -170,10 +179,29 @@ impl Tool for RunScriptTool {
                                 None,
                                 permission,
                                 Arc::new(settings.clone()),
-                                None,
+                                transcript_store.clone(),
                                 None,
                             )
                             .await;
+                            if let Some(ref store) = transcript_store {
+                                let retention = if settings.storage.transcript.max_age_days > 0 {
+                                    Some(settings.storage.transcript.max_age_days)
+                                } else {
+                                    None
+                                };
+                                save_minimal_transcript(
+                                    store,
+                                    &new_transcript_id(),
+                                    &session_id,
+                                    &prompt,
+                                    Some(sub_system_prompt.to_string()),
+                                    prompt.clone(),
+                                    started_at,
+                                    &result,
+                                    settings.agent.subagent.trace.context_char_limit,
+                                    retention,
+                                );
+                            }
                             return match result {
                                 Ok(r) => r,
                                 Err(err) => format!(
@@ -190,12 +218,33 @@ impl Tool for RunScriptTool {
                             .unwrap_or_else(|_| std::path::PathBuf::from(".")),
                         child_agent_id,
                     );
+                    let started_at = chrono::Utc::now().timestamp_millis();
+                    let sub_system_prompt = "You are a sub-agent in a Rhai script. Execute the task precisely and return a concise result.";
                     let result = run_subagent_loop_with_permissions(
                         &client, reg.clone(), &child_context, coordinator.clone(),
-                        "You are a sub-agent in a Rhai script. Execute the task precisely and return a concise result.",
+                        sub_system_prompt,
                         &prompt, &tools, settings.agent.subagent.max_rounds.unwrap_or(100), settings.agent.subagent.timeout_secs, None, None, None,
-                        permission, Arc::new(settings.clone()), None, None,
+                        permission, Arc::new(settings.clone()), transcript_store.clone(), None,
                     ).await;
+                    if let Some(ref store) = transcript_store {
+                        let retention = if settings.storage.transcript.max_age_days > 0 {
+                            Some(settings.storage.transcript.max_age_days)
+                        } else {
+                            None
+                        };
+                        save_minimal_transcript(
+                            store,
+                            &new_transcript_id(),
+                            &session_id,
+                            &prompt,
+                            Some(sub_system_prompt.to_string()),
+                            prompt.clone(),
+                            started_at,
+                            &result,
+                            settings.agent.subagent.trace.context_char_limit,
+                            retention,
+                        );
+                    }
                     let (terminal, content) = match result {
                         Ok(r) => (
                             crate::agent::ChildTerminal::Completed {

@@ -31,11 +31,12 @@ use crate::teams::guarding_tool_port::{
 use crate::teams::mailbox::{Mailbox, TeamMessage};
 use crate::teams::subagent_health::{FailureMode, FailureSignals};
 use crate::teams::trace_sink::{compose_progress_callback, TraceSink};
+use crate::tools::meta::task::transcript::{new_transcript_id, save_minimal_transcript};
 use crate::tools::ToolRegistry;
 use crate::utils::stuck_detector::StuckDetector;
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -190,11 +191,11 @@ impl From<String> for SubagentError {
 }
 
 /// Structured failure diagnostics assembled at the capture site.
-struct FailureDiagnostics {
-    root_cause: FailureRootCause,
-    failed_tool_sequence: Vec<ToolCallStep>,
-    failed_round_context: Option<FailedRoundContext>,
-    retry_history: Vec<RetryAttempt>,
+pub struct FailureDiagnostics {
+    pub root_cause: FailureRootCause,
+    pub failed_tool_sequence: Vec<ToolCallStep>,
+    pub failed_round_context: Option<FailedRoundContext>,
+    pub retry_history: Vec<RetryAttempt>,
 }
 
 /// Derive structured [`FailureSignals`] from capture-site data. Guardian
@@ -344,7 +345,7 @@ fn build_retry_history(signals: &[RetrySignal]) -> Vec<RetryAttempt> {
 /// Assemble the full failure-diagnostics triple at the capture site. Pure
 /// (no locks) so it is unit-testable; the observer passes its cloned
 /// `action_log` and `text_snapshot`.
-fn build_failure_diagnostics(
+pub fn build_failure_diagnostics(
     error_msg: &str,
     status: SubagentStatus,
     action_log: &[SubagentEvent],
@@ -672,6 +673,7 @@ impl SubagentSynthesis {
         );
 
         // 6. Re-dispatch with the fallback model.
+        let started_at = chrono::Utc::now().timestamp_millis();
         let result = run_subagent_loop_with_permissions(
             &api_client,
             Arc::clone(&tool_registry),
@@ -691,6 +693,28 @@ impl SubagentSynthesis {
             None, // interception-2 ghost has no root turn id
         )
         .await;
+
+        // Best-effort transcript save for the model-fallback re-dispatch.
+        if let Some(ref store) = self.transcript_store {
+            let retention = if self.settings.storage.transcript.max_age_days > 0 {
+                Some(self.settings.storage.transcript.max_age_days)
+            } else {
+                None
+            };
+            let description = format!("model fallback for {}", child_context.agent_id.as_str());
+            save_minimal_transcript(
+                store,
+                &new_transcript_id(),
+                self.context.session_id.as_str(),
+                &description,
+                Some(system_prompt.clone()),
+                user_prompt.clone(),
+                started_at,
+                &result,
+                self.settings.agent.subagent.trace.context_char_limit,
+                retention,
+            );
+        }
 
         match result {
             Ok(summary) => Ok(ChildResult {
@@ -717,6 +741,10 @@ struct SubagentObserver {
     text_snapshot: Mutex<Option<String>>,
     current_params: Mutex<Option<String>>,
     cumulative_tokens: Mutex<usize>,
+    /// Latest round number observed via `on_round_start` / `on_tool_start`.
+    /// Used to populate `round` in terminal emits (timeout / runtime error)
+    /// so `actual_rounds` is not always 0 in the persisted transcript.
+    current_round: AtomicUsize,
     /// Shared with GuardingToolPort — drained into action_log on emit.
     permission_events: Arc<Mutex<Vec<(String, String)>>>,
 }
@@ -844,6 +872,7 @@ impl SubagentObserver {
 
 impl RoundObserver for SubagentObserver {
     fn on_round_start(&self, round: usize, messages: &[ChatMessage]) {
+        self.current_round.store(round, Ordering::Relaxed);
         // Capture latest assistant text as snapshot when available.
         if let Some(last_asst) = messages.iter().rev().find(|m| m.role == "assistant") {
             if let Some(content) = last_asst.content.as_deref().map(str::trim) {
@@ -881,6 +910,7 @@ impl RoundObserver for SubagentObserver {
     }
 
     fn on_tool_start(&self, round: usize, tool_name: &str, messages: &[ChatMessage]) {
+        self.current_round.store(round, Ordering::Relaxed);
         // Best-effort params from last assistant tool_calls if present.
         let params = messages
             .iter()
@@ -1206,6 +1236,12 @@ pub async fn run_subagent_loop_with_permissions(
         settings.models.context_window,
     );
 
+    // Resolve max_tokens from transport settings so the subagent's output
+    // budget matches the main agent. Previously this was hardcoded to 4096,
+    // which truncated tool-call JSON on local models and caused spin/hang
+    // failures while the main agent (using transport.max_tokens) succeeded.
+    let max_tokens = settings.models.transport.max_tokens;
+
     let is_non_root = context.parent_id.is_some();
 
     // s04/s09: optional trace sink (subagent.trace.sink). Built before
@@ -1239,6 +1275,7 @@ pub async fn run_subagent_loop_with_permissions(
         text_snapshot: Mutex::new(None),
         current_params: Mutex::new(None),
         cumulative_tokens: Mutex::new(0),
+        current_round: AtomicUsize::new(0),
         permission_events: event_log,
     };
 
@@ -1256,7 +1293,7 @@ pub async fn run_subagent_loop_with_permissions(
         plan_mode: false,
         subagent_timeout_secs: timeout_secs,
         context_window,
-        max_tokens: 4096,
+        max_tokens,
         session_id: context.session_id.as_str().to_string(),
         turn_id: Some(loop_turn_id),
         agent_generation: 0,
@@ -1365,6 +1402,30 @@ pub async fn run_subagent_loop_with_permissions(
                     RuntimeError::Stream(msg) => (classify_stream_error(msg), msg.clone()),
                     other => (ErrorType::Unknown, other.to_string()),
                 };
+                // Emit terminal Failed so diagnostics (root_cause,
+                // failed_tool_sequence, failed_round_context) are captured.
+                // Without this, only the cleanup callback fires and clobbers
+                // the progress store with Default diagnostics.
+                observer
+                    .action_log
+                    .lock()
+                    .expect("lock poisoned: action_log")
+                    .push(SubagentEvent {
+                        event_type: SubagentEventType::Error {
+                            message: message.clone(),
+                            error_type: error_type.clone(),
+                        },
+                        elapsed_ms: start.elapsed().as_millis() as u64,
+                    });
+                let round = observer.current_round.load(Ordering::Relaxed);
+                let msgs = history.get().await;
+                observer.emit(
+                    SubagentStatus::Failed,
+                    Some(round),
+                    None,
+                    Some(message.clone()),
+                    msgs,
+                );
                 Err(SubagentError {
                     message,
                     error_type,
@@ -1380,9 +1441,10 @@ pub async fn run_subagent_loop_with_permissions(
                     elapsed_ms: start.elapsed().as_millis() as u64,
                 });
                 let msgs = history.get().await;
+                let round = observer.current_round.load(Ordering::Relaxed);
                 observer.emit(
                     SubagentStatus::Failed,
-                    None,
+                    Some(round),
                     None,
                     Some(format!(
                         "Timed out after {} seconds",

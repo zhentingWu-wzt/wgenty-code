@@ -231,7 +231,7 @@ impl DaemonState {
 
             // Register subagent trace tool (read-only visualization for subagent transcripts)
             let trace_tool = crate::tools::meta::subagent_trace::SubagentTraceTool::new(
-                transcript_store,
+                transcript_store.clone(),
                 coordinator.clone(),
             );
             registry.register(Box::new(trace_tool));
@@ -242,6 +242,7 @@ impl DaemonState {
                     weak_reg.clone(),
                     coordinator.clone(),
                     progress_store.clone(),
+                    transcript_store.clone(),
                 );
                 registry.register(Box::new(rlm_tool));
             }
@@ -252,6 +253,7 @@ impl DaemonState {
                     app_state.settings.clone(),
                     weak_reg.clone(),
                     coordinator.clone(),
+                    transcript_store.clone(),
                 );
                 registry.register(Box::new(run_script_tool));
             }

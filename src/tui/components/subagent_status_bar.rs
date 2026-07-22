@@ -84,10 +84,26 @@ pub fn render(
         let abs_index = i + 1;
         let (icon, icon_color) = status_icon(&node.progress.status);
         let label = &node.progress.label;
+
+        // Elapsed time from the progress entry.
+        let elapsed_secs = node.progress.elapsed_ms as f64 / 1000.0;
+        let time_str = if elapsed_secs >= 60.0 {
+            format!("{:.0}m", elapsed_secs / 60.0)
+        } else {
+            format!("{:.1}s", elapsed_secs)
+        };
+
+        // Detail: current tool if present, otherwise show round or status hint.
         let detail = match (&node.progress.current_tool, &node.progress.current_params) {
             (Some(tool), Some(params)) => format!("{}(\"{}\")", tool, params),
             (Some(tool), None) => tool.clone(),
-            _ => "thinking...".to_string(),
+            _ => {
+                // Show round info if available, otherwise empty (not "thinking...").
+                node.progress
+                    .round
+                    .map(|r| format!("R:{}", r))
+                    .unwrap_or_default()
+            }
         };
 
         let is_selected = sel == abs_index;
@@ -100,11 +116,14 @@ pub fn render(
             Style::default().fg(Color::Rgb(108, 112, 134))
         };
 
+        // Dynamic label width: up to 40 chars, but at least 15.
+        let label_width = (inner.width as usize).saturating_sub(20).clamp(15, 40);
+
         lines.push(Line::from(vec![
             Span::styled(selector, selector_style),
             Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
             Span::styled(
-                format!("{:<20} ", truncate_str(label, 20)),
+                format!("{} ", truncate_str(label, label_width)),
                 Style::default()
                     .fg(if is_selected {
                         Color::Rgb(249, 226, 175)
@@ -114,7 +133,14 @@ pub fn render(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                truncate_str(&detail, inner.width.saturating_sub(28) as usize),
+                format!("{:>6} ", time_str),
+                Style::default().fg(Color::Rgb(108, 112, 134)),
+            ),
+            Span::styled(
+                truncate_str(
+                    &detail,
+                    (inner.width as usize).saturating_sub(label_width + 12),
+                ),
                 Style::default().fg(Color::Rgb(148, 148, 165)),
             ),
         ]));

@@ -1,0 +1,14 @@
+{
+  "change": "fix-autodream-memory-consolidation",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "1d73f51e9796358febbea3b2347ae7af96d53cb0678e400d66c7ce4d191187c5",
+  "files": [
+    { "path": "openspec/changes/fix-autodream-memory-consolidation/proposal.md", "sha256": "c6e05fd81bd9cd83aa86d84ba41dcc6e3003a48baf04c4433b5c0ee5bd766781" },
+    { "path": "openspec/changes/fix-autodream-memory-consolidation/design.md", "sha256": "19e124fcef976d9880ca44ee2c58b22f241d256e2bebfc38f13707d279bd764e" },
+    { "path": "openspec/changes/fix-autodream-memory-consolidation/tasks.md", "sha256": "60873b1c43641de9dfec5af87a350451369851bb9e16d04bbb7dea7c8ad8658a" },
+    { "path": "openspec/changes/fix-autodream-memory-consolidation/specs/agent-memory/spec.md", "sha256": "061416fbb556c295ab2db69fd100d2f8dae9cb517f78e848e7a4c8b1bb183434" }
+  ]
+}

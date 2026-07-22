@@ -1,0 +1,63 @@
+<h2>TUI 输入框补全 — 哪种布局更好？</h2>
+<p class="subtitle">当前 TUI 使用 Ratatui 终端渲染，补全面板应出现在输入框上方（内联模式）还是作为 overlay 弹窗？</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>内联 Panel（推荐）</h3>
+      <p>补全列表直接出现在输入框上方，推送消息区域上移。与现有 Permission 面板风格一致，不遮挡视线。</p>
+      <div class="mockup" style="margin-top: 8px;">
+        <div class="mockup-body" style="background: #1a1a2e; color: #c0c0c0; font-family: monospace; font-size: 12px; padding: 8px; border-radius: 4px;">
+          <div style="color: #666;">上次消息...</div>
+          <div style="background: #16213e; border: 1px solid #ff8c42; padding: 4px; margin: 4px 0; border-radius: 2px;">
+            <div style="color: #ff8c42;">@com ▸ <span style="color: #fff;">comet</span></div>
+            <div style="color: #aaa;">  comet-open</div>
+            <div style="color: #aaa;">  comet-build</div>
+            <div style="color: #aaa;">  comet-design</div>
+          </div>
+          <div style="color: #ff8c42;">▸ @com▊</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Overlay 弹窗</h3>
+      <p>补全列表以居中浮层显示，背景半透明遮罩。视觉突出但需要额外 z-order 管理，与现有 UI 不一致。</p>
+      <div class="mockup" style="margin-top: 8px;">
+        <div class="mockup-body" style="background: #1a1a2e; color: #c0c0c0; font-family: monospace; font-size: 12px; padding: 8px; position: relative; border-radius: 4px;">
+          <div style="opacity: 0.4;">上次消息...</div>
+          <div style="opacity: 0.4;">其他内容区域</div>
+          <div style="opacity: 0.4; margin-bottom: 4px;">▸ 输入框 ▊</div>
+          <div style="background: #2a2a4e; border: 2px solid #ff8c42; padding: 8px; text-align: center; border-radius: 4px;">
+            <div style="color: #ff8c42; margin-bottom: 4px;">选择 Skill</div>
+            <div style="color: #fff;">▶ comet</div>
+            <div style="color: #aaa;">  comet-open</div>
+            <div style="color: #aaa;">  comet-build</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>内联 + 参数提示（混合式）</h3>
+      <p>在方案A基础上，选定 skill 后内联展开参数提示（如 args 字段）。一步到位，减少交互步骤。</p>
+      <div class="mockup" style="margin-top: 8px;">
+        <div class="mockup-body" style="background: #1a1a2e; color: #c0c0c0; font-family: monospace; font-size: 12px; padding: 8px; border-radius: 4px;">
+          <div style="color: #666;">上次消息...</div>
+          <div style="background: #16213e; border: 1px solid #ff8c42; padding: 4px; margin: 4px 0; border-radius: 2px;">
+            <div style="color: #fff;">▶ comet <span style="color: #888;">&lt;change-name&gt;</span></div>
+            <div style="color: #aaa; font-size: 10px;">  Comet — OpenSpec + Superpowers 双星开发流程</div>
+          </div>
+          <div style="color: #ff8c42;">▸ @com▊</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
