@@ -102,6 +102,17 @@ pub struct ApiClient {
 
 impl ApiClient {
     pub fn new(settings: Settings) -> Self {
+        let (http_client, http_client_stream) = Self::build_clients(&settings);
+        Self::with_clients(settings, http_client, http_client_stream)
+    }
+
+    /// Build the pair of pooled `reqwest::Client`s (non-streaming + streaming)
+    /// from `settings`. Shared by [`new`](Self::new) and by callers that reuse
+    /// a single pooled client across many `ApiClient` instances (e.g. the
+    /// daemon, which creates one `ApiClient` per request) so the HTTP
+    /// keep-alive pool and TLS session cache survive across requests instead of
+    /// being rebuilt - and re-handshaked - on every call.
+    pub fn build_clients(settings: &Settings) -> (Arc<Client>, Arc<Client>) {
         let timeout = Duration::from_secs(settings.models.transport.timeout);
 
         // Non-streaming client: a total deadline is correct here - the whole
@@ -130,6 +141,21 @@ impl ApiClient {
                 Client::default()
             });
 
+        (Arc::new(http_client), Arc::new(http_client_stream))
+    }
+
+    /// Construct an `ApiClient` reusing externally-provided pooled clients.
+    ///
+    /// `settings` is still consumed per-instance so API key / base URL / model /
+    /// provider are read fresh each call; only the `reqwest::Client` (connection
+    /// pool + TLS session cache) is shared. Use this when many short-lived
+    /// `ApiClient`s are created from the same config (e.g. one per daemon
+    /// request) to avoid re-handshaking TLS on every call.
+    pub fn with_clients(
+        settings: Settings,
+        http_client: Arc<Client>,
+        http_client_stream: Arc<Client>,
+    ) -> Self {
         let provider: Arc<dyn Provider> = provider::resolve_provider(
             &settings.models.main.endpoint_base_url(),
             settings.models.main.provider.as_deref(),
@@ -137,8 +163,8 @@ impl ApiClient {
 
         Self {
             settings,
-            http_client: Arc::new(http_client),
-            http_client_stream: Arc::new(http_client_stream),
+            http_client,
+            http_client_stream,
             provider,
         }
     }

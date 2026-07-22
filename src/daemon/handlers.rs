@@ -84,7 +84,15 @@ pub async fn chat_stream(
     Json(body): Json<ChatStreamRequest>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let settings = state.app_state.settings.clone();
-    let client = ApiClient::new(settings);
+    // Reuse the daemon's shared pooled HTTP clients so the keep-alive pool +
+    // TLS session cache survive across requests - avoids a fresh TCP + TLS
+    // handshake on every chat turn. `settings` is still fresh per request for
+    // API key / base URL / model / provider.
+    let client = ApiClient::with_clients(
+        settings,
+        state.http_client.clone(),
+        state.http_client_stream.clone(),
+    );
 
     // Build messages and tools
     let messages = body.messages;

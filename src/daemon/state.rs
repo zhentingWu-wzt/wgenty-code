@@ -34,6 +34,15 @@ impl SessionRules {
 /// Shared state for all daemon HTTP handlers.
 pub struct DaemonState {
     pub app_state: AppState,
+    /// Shared pooled HTTP clients for LLM API calls. Built once at startup
+    /// from `app_state.settings` so the reqwest keep-alive pool + TLS session
+    /// cache are reused across every per-request `ApiClient` - avoids a fresh
+    /// TCP + TLS handshake on each chat turn. `app_state.settings` is a static
+    /// snapshot for the daemon lifetime (no runtime reload), so the
+    /// connect/read timeouts baked in here match what per-request
+    /// `ApiClient::new` would have produced anyway.
+    pub http_client: Arc<reqwest::Client>,
+    pub http_client_stream: Arc<reqwest::Client>,
     pub tool_registry: Arc<ToolRegistry>,
     pub tool_executor: ToolExecutor,
     pub checkpoint_manager: Arc<CheckpointManager>,
@@ -354,6 +363,12 @@ impl DaemonState {
             .with_hooks(hook_manager.clone())
             .with_shared_session_rules(shared_session_rules);
 
+        // Shared pooled HTTP clients for LLM API calls. Built once so every
+        // per-request `ApiClient` reuses the keep-alive pool + TLS session
+        // cache instead of re-handshaking TLS on every chat turn.
+        let (http_client, http_client_stream) =
+            crate::api::ApiClient::build_clients(&app_state.settings);
+
         Self {
             app_state,
             tool_executor,
@@ -380,6 +395,8 @@ impl DaemonState {
             root_mode,
             effective_mode,
             transcript_store: sse_transcript_store,
+            http_client,
+            http_client_stream,
         }
     }
 
