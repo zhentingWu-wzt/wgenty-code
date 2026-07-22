@@ -35,6 +35,7 @@ settings.json
 
 # CodeGraph index
 .codegraph/
+traces/
 
 # Project-local runtime state (memory, sessions, checkpoints) - not skill definitions
 .wgenty-code/memory/
