@@ -61,7 +61,7 @@ impl Default for StorageConfig {
         Self {
             working_dir: PathBuf::from("."),
             memory: MemorySettings {
-                enabled: true,
+                enabled: true,           // ← 这里可以改成 false 关闭总开关
                 path: config_dir.join("memory.json"),
                 consolidation_interval: 24,
                 max_memories: default_max_memories(),
@@ -90,95 +90,53 @@ pub struct IntegrationsConfig {
     pub guardian: GuardianSettings,
     #[serde(default)]
     pub codegraph: CodegraphSettings,
-    /// Mode-linked OS sandbox defaults and fail policy.
     #[serde(default)]
     pub sandbox: super::SandboxSettings,
 }
 
-/// Per-project CodeGraph guidance state.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CodegraphSettings {
-    /// Working dirs (canonical absolute paths, deduped) where the user has
-    /// dismissed install/init guidance. Suppresses both the CLI startup notice
-    /// and the agent's on-demand ask.
     #[serde(default)]
     pub dismissed_paths: Vec<PathBuf>,
 }
 
-// ===== End new sub-config types =====
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemorySettings {
-    /// Enable memory persistence
     pub enabled: bool,
-    /// Memory file path
     pub path: PathBuf,
-    /// Auto-consolidation interval (hours)
     pub consolidation_interval: u64,
-    /// Maximum memories to keep after consolidation.
     #[serde(default = "default_max_memories")]
     pub max_memories: usize,
-    /// Minimum importance for a memory to survive consolidation (0.0–1.0).
-    /// High-importance memories are retained regardless of age.
     #[serde(default = "default_importance_threshold")]
     pub importance_threshold: f32,
-    /// Base TTL (hours) for low-importance ephemeral memories during
-    /// consolidation. Durable types use a multiple of this value.
     #[serde(default = "default_age_threshold_hours")]
     pub age_threshold_hours: u64,
-    /// Whether auto-consolidation is enabled.
     #[serde(default = "default_enable_auto_consolidation")]
     pub enable_auto_consolidation: bool,
-    /// Top-N memories to inject per recall (default 3).
     #[serde(default = "default_recall_top_n")]
     pub recall_top_n: usize,
-    /// Topic overlap threshold (Jaccard) for triggering re-retrieval
-    /// during per-turn smart recall. Range 0.0–1.0, default 0.3.
     #[serde(default = "default_recall_similarity_threshold")]
     pub recall_similarity_threshold: f32,
-    /// Minimum importance required to persist a newly extracted memory
-    /// from context compaction (0.0–1.0). Filters low-value noise at write time.
     #[serde(default = "default_write_importance_threshold")]
     pub write_importance_threshold: f32,
-    /// Maximum memories accepted from a single compaction extract.
     #[serde(default = "default_max_extract_per_compaction")]
     pub max_extract_per_compaction: usize,
 }
 
-fn default_max_memories() -> usize {
-    200
-}
-fn default_importance_threshold() -> f32 {
-    0.6
-}
-fn default_age_threshold_hours() -> u64 {
-    48
-}
-fn default_enable_auto_consolidation() -> bool {
-    true
-}
-fn default_recall_top_n() -> usize {
-    3
-}
-fn default_recall_similarity_threshold() -> f32 {
-    0.3
-}
-fn default_write_importance_threshold() -> f32 {
-    0.6
-}
-fn default_max_extract_per_compaction() -> usize {
-    3
-}
+fn default_max_memories() -> usize { 200 }
+fn default_importance_threshold() -> f32 { 0.6 }
+fn default_age_threshold_hours() -> u64 { 48 }
+fn default_enable_auto_consolidation() -> bool { true }
+fn default_recall_top_n() -> usize { 3 }
+fn default_recall_similarity_threshold() -> f32 { 0.3 }
+fn default_write_importance_threshold() -> f32 { 0.6 }
+fn default_max_extract_per_compaction() -> usize { 3 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceSettings {
-    /// Enable voice input
     pub enabled: bool,
-    /// Push-to-talk mode
     pub push_to_talk: bool,
-    /// Silence detection threshold
     pub silence_threshold: f32,
-    /// Sample rate
     pub sample_rate: u32,
 }
 
@@ -224,8 +182,6 @@ mod tests {
 
     #[test]
     fn serde_old_config_without_codegraph_field() {
-        // A pre-existing settings.json carrying no `codegraph` key must still
-        // deserialize via #[serde(default)].
         let json = r#"{"mcp_servers":[],"hooks":null}"#;
         let cfg: IntegrationsConfig = serde_json::from_str(json).unwrap();
         assert!(cfg.codegraph.dismissed_paths.is_empty());
