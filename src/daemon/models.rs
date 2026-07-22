@@ -270,6 +270,18 @@ pub struct SelfAgentResponse {
     /// Cumulative tokens consumed by this agent.
     #[serde(default)]
     pub cumulative_tokens: u64,
+    /// Unix epoch ms when this agent started (0 if unknown).
+    #[serde(default)]
+    pub started_at: i64,
+    /// Elapsed wall-clock ms; live for running agents (recomputed by the daemon).
+    #[serde(default)]
+    pub elapsed_ms: u64,
+    /// Current round index, if reported by the subagent loop.
+    #[serde(default)]
+    pub round: Option<usize>,
+    /// Maximum rounds configured for this agent.
+    #[serde(default)]
+    pub max_rounds: Option<usize>,
     /// Model messages captured by the progress callback during the subagent loop.
     #[serde(default)]
     pub messages: Vec<crate::api::ChatMessage>,
@@ -291,6 +303,18 @@ pub struct DirectChildResponse {
     /// Cumulative tokens consumed by this subagent.
     #[serde(default)]
     pub cumulative_tokens: u64,
+    /// Unix epoch ms when this subagent started (0 if unknown).
+    #[serde(default)]
+    pub started_at: i64,
+    /// Elapsed wall-clock ms; live for running subagents (recomputed by the daemon).
+    #[serde(default)]
+    pub elapsed_ms: u64,
+    /// Current round index, if reported by the subagent loop.
+    #[serde(default)]
+    pub round: Option<usize>,
+    /// Maximum rounds configured for this subagent.
+    #[serde(default)]
+    pub max_rounds: Option<usize>,
     /// Model messages captured by the progress callback during the subagent
     /// loop. Carried for the TUI focus view; not intended for model consumption.
     #[serde(default)]

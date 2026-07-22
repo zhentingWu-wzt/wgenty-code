@@ -35,7 +35,9 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 
 mod heuristic;
-mod transcript;
+pub(crate) mod transcript;
+
+use self::transcript::{new_transcript_id, save_minimal_transcript};
 
 /// Convert a live `SubagentEvent` (progress timeline) into the persisted
 /// `SubagentEventRecord` (transcript) shape.
@@ -302,6 +304,7 @@ impl TaskTool {
         let workdir: Option<std::path::PathBuf> = Some(self.settings.storage.working_dir.clone());
         let permission = self.build_permission_context(&child_agent_id_str);
 
+        let started_at = chrono::Utc::now().timestamp_millis();
         let result = run_subagent_loop_with_permissions(
             &api_client,
             tool_registry.clone(),
@@ -321,6 +324,28 @@ impl TaskTool {
             context.origin_turn_id.map(|s| s.to_string()),
         )
         .await;
+
+        // Best-effort transcript save for the fallback path (the main path
+        // saves via the progress-store observer; fallback has no observer).
+        if let Some(ref store) = self.transcript_store {
+            let retention = if self.settings.storage.transcript.max_age_days > 0 {
+                Some(self.settings.storage.transcript.max_age_days)
+            } else {
+                None
+            };
+            save_minimal_transcript(
+                store,
+                &new_transcript_id(),
+                context.agent.session_id.as_str(),
+                description,
+                Some(system_prompt.to_string()),
+                full_prompt.to_string(),
+                started_at,
+                &result,
+                self.settings.agent.subagent.trace.context_char_limit,
+                retention,
+            );
+        }
 
         match result {
             Ok(output) => {
@@ -761,12 +786,6 @@ impl Tool for TaskTool {
             None,
             format!("subagent: {}", description),
         );
-        // Clone the callback so we can emit a terminal status after the loop
-        // returns, even if `run_subagent_loop` exited early via `?` (e.g. API
-        // timeout/failure) without calling `emit`. Without this, the progress
-        // store would stay in `Running` forever and the TUI selector would
-        // never remove the completed subagent.
-        let cb_for_cleanup = cb.clone();
 
         let reg = tool_registry.clone();
         let tools = allowed_tools.clone();
@@ -839,57 +858,62 @@ impl Tool for TaskTool {
             // selector uses `is_terminal()` to decide when to remove a
             // subagent; without this, a non-terminal progress entry would keep
             // the subagent pinned in the selector forever.
+            //
+            // MERGE (not replace): only update `status` and `elapsed_ms`.
+            // Preserve `cumulative_tokens`, `round`, `events`, and
+            // `error_details` captured by the real terminal emit. If the real
+            // emit's tokio::spawn write hasn't landed yet (race), fill in
+            // `error_details` from the SubagentError result so diagnostics are
+            // never NULL. This fixes the race where cleanup clobbered good
+            // telemetry with zeros/defaults.
             {
                 let (status, error_msg) = match &result {
                     Ok(_) => (SubagentStatus::Completed, None),
                     Err(e) => (SubagentStatus::Failed, Some(e.full_message())),
                 };
                 let now_ms = chrono::Utc::now().timestamp_millis();
-                cb_for_cleanup(SubagentProgress {
-                    node_id: bg_node_id.clone(),
-                    parent_id: None,
-                    label: String::new(),
-                    status,
-                    round: None,
-                    max_rounds: Some(100),
-                    current_tool: None,
-                    current_params: None,
-                    action_log: Vec::new(),
-                    text_snapshot: None,
-                    started_at: started_at_bg,
-                    elapsed_ms: (now_ms - started_at_bg) as u64,
-                    metadata: None,
-                    progress_delta: None,
-                    token_budget_k: None,
-                    cumulative_tokens: 0,
-                    error_details: error_msg.map(|msg| crate::agent::progress::ErrorInfo {
-                        error_type: ErrorType::Unknown,
-                        message: msg,
-                        last_tool: None,
-                        last_params: None,
-                        round: 0,
-                        retryable: false,
-                        ..Default::default()
-                    }),
-                    events: Vec::new(),
-                    messages: Vec::new(),
-                });
+                let mut store = progress_store_for_transcript.write().await;
+                if let Some(m) = store.get_mut(&sid_bg) {
+                    if let Some(p) = m.get_mut(&bg_node_id) {
+                        p.status = status;
+                        p.elapsed_ms = (now_ms - started_at_bg) as u64;
+                        // Only fill error_details if the real emit didn't.
+                        if p.error_details.is_none() {
+                            if let Some(msg) = &error_msg {
+                                p.error_details = Some(crate::agent::progress::ErrorInfo {
+                                    error_type: ErrorType::Unknown,
+                                    message: msg.clone(),
+                                    last_tool: None,
+                                    last_params: None,
+                                    round: p.round.unwrap_or(0) as u32,
+                                    retryable: false,
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
+                }
             }
 
-            let (terminal, content) = match result {
+            let (terminal, content, error_message) = match result {
                 Ok(r) => (
                     ChildTerminal::Completed {
                         summary: r.chars().take(500).collect(),
                     },
                     r,
+                    None,
                 ),
-                Err(e) => (
-                    ChildTerminal::Failed {
-                        code: e.code().to_string(),
-                        partial_result: None,
-                    },
-                    format!("Subagent error: {}", e),
-                ),
+                Err(e) => {
+                    let msg = e.full_message();
+                    (
+                        ChildTerminal::Failed {
+                            code: e.code().to_string(),
+                            partial_result: None,
+                        },
+                        format!("Subagent error: {}", msg),
+                        Some(msg),
+                    )
+                }
             };
 
             // Persist the child's terminal state and release its permit
@@ -963,7 +987,7 @@ impl Tool for TaskTool {
                     total_tokens,
                     actual_rounds,
                     token_budget,
-                    None, // error_message captured in content, not individual
+                    error_message,
                     None, // summary
                     events,
                     failure_diagnostics,

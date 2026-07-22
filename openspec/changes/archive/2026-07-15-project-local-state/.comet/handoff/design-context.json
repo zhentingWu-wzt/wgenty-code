@@ -1,0 +1,14 @@
+{
+  "change": "project-local-state",
+  "phase": "design",
+  "mode": "full",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "e21b449df8430fa5f9ff4df7cca9d508689c7d36174dc348a33132555bf8a0ed",
+  "files": [
+    { "path": "openspec/changes/project-local-state/proposal.md", "sha256": "1cf17d03553c8101511c140eab91ee61dd7ba40e4a80ad83635ca040eda8defb" },
+    { "path": "openspec/changes/project-local-state/design.md", "sha256": "851a5f8c85d40b819e779b573772a15ced8baa0540c885db1d25de3005f87f06" },
+    { "path": "openspec/changes/project-local-state/tasks.md", "sha256": "491f6904c2a41fd30aa6a160a92b647fe6290406874cd66b091b7786b0e0efa6" },
+    { "path": "openspec/changes/project-local-state/specs/agent-memory/spec.md", "sha256": "c44eca50519c5865b53b083abada95e37f04a7d028dfce56f6eca231b35c0c07" }
+  ]
+}

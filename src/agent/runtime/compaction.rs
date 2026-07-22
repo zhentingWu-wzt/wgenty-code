@@ -413,6 +413,35 @@ mod tests {
     }
 
     #[test]
+    fn test_calibrated_estimate_accurate_when_chars_include_overhead() {
+        // Regression for the compaction inflation bug: the calibration
+        // denominator (`last_request_chars`) must use the same basis as
+        // `estimate_prompt_tokens_calibrated`'s `total_chars` - i.e. it must
+        // include the fixed tool-definition overhead. `usage.prompt_tokens`
+        // already counts the tool-definition tokens, so a denominator that
+        // omits the tool bytes double-counts them and inflates the estimate,
+        // triggering compaction far too early.
+        //
+        // Scenario: 400 bytes of messages + 400 bytes of tool defs. The
+        // provider reports 300 real prompt_tokens (tools + messages combined).
+        // With the fixed basis, last_request_chars = 800, so the estimate
+        // equals the real count exactly. Under the old basis
+        // (last_request_chars = 400, omitting overhead) the same inputs would
+        // estimate 600 - 2x too high.
+        let msgs = vec![ChatMessage::user("x".repeat(400))]; // 400 bytes
+        let fixed_overhead = 400; // tool definitions
+        let calibration = Calibration {
+            last_measured_tokens: 300, // real prompt_tokens incl. tool defs
+            last_request_chars: 800,   // 400 (messages) + 400 (overhead)
+        };
+        assert_eq!(
+            estimate_prompt_tokens_calibrated(&msgs, fixed_overhead, Some(calibration)),
+            300,
+            "when the calibration denominator includes the overhead, the estimate must match the real token count"
+        );
+    }
+
+    #[test]
     fn test_calibrated_estimate_falls_back_without_measurement() {
         let msgs = vec![ChatMessage::user("x".repeat(400))];
         // No calibration -> crude chars/4 including overhead.
