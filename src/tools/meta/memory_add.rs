@@ -57,7 +57,7 @@ impl Tool for MemoryAddTool {
     }
 
     fn description(&self) -> &str {
-        "Proactively write a memory entry (lesson, decision, preference, fact) to persistent storage. Specify scope: 'project' for project-specific content (architecture, paths, conventions) or 'global' for cross-project insights (user preferences, workflow habits). Reuses the same dedup/merge logic as context compaction."
+        "Write a memory entry (lesson, decision, preference, fact) to persistent storage - but ONLY after it passes the veto gate: (1) Durable - useful in weeks/months, not this task; (2) Non-redundant - not already the source of truth in a skill/script/code/AGENTS.md/doc; (3) Retrieval-justified - next time you'll actually retrieve it and be glad, vs re-derive or load the authoritative source; (4) Insight not instance - a generalizable principle, not a single-event replay; (5) Dense - 1-3 sentences; if it needs a step-by-step recipe it belongs in a note/doc. Effort-to-acquire is not retention value. If borderline or unsure, ask the user before writing instead of defaulting to capture. Specify scope: 'project' for project-specific content (architecture, paths, conventions) or 'global' for cross-project insights (user preferences, workflow habits). Reuses the same dedup/merge logic as context compaction."
     }
 
     fn input_schema(&self) -> serde_json::Value {
