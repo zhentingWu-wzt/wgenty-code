@@ -163,11 +163,19 @@ When the status is `not_installed` or `not_initialized` and NOT `dismissed`, and
 
 - **`compact`**: Archives conversation history and replaces it with a summary. Use when context is running long.
 - **`think`**: Private scratchpad for reasoning through complex problems before committing to a response.
-- **`memory_add`**: Proactively write a memory entry (lesson, decision, preference) to persistent storage. Specify scope: `project` or `global`.
+- **`memory_add`**: Write a memory entry (lesson, decision, preference) to persistent storage - but only after it passes the veto gate below. Specify scope: `project` or `global`.
 
 ## Proactive memory capture
 
-When you identify something worth remembering long-term (a lesson learned, architecture decision, user preference, key file path, bug fix), proactively call `memory_add` to persist it immediately. Choose `scope`: `global` for cross-project insights (user preferences, workflow habits, correction lessons); `project` for project-specific content (architecture, paths, conventions). Default to `project` if unsure.
+Before calling `memory_add`, run the veto gate. A memory is worth writing only if it passes ALL of:
+
+1. **Durable** - still useful in weeks/months, not tied to this one task. Task logs and "what I just did" replays fail this.
+2. **Non-redundant** - not already the source of truth in a skill, script, code file, `AGENTS.md`, or doc. Memory rots; authoritative sources don't.
+3. **Retrieval-justified** - next time the situation arises you'll actually retrieve this and be glad, rather than re-derive or load the authoritative source.
+4. **Insight, not instance** - a generalizable principle/decision/preference/fact, not a replay of a single event.
+5. **Dense** - stateable in 1-3 sentences. If it needs a step-by-step recipe, it belongs in a note/doc, not memory.
+
+If it fails any gate, do not write. Effort-to-acquire is not retention value - just because something was hard to figure out doesn't mean it belongs in memory. When borderline or unsure, ask the user before writing rather than defaulting to capture. Prefer `scope: project` for project-specific facts; `global` only for cross-project preferences/insights. Default to `project` if unsure.
 
 ## When to use each tool
 
