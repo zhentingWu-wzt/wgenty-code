@@ -318,8 +318,10 @@ impl MemoryManager {
     /// If the project root equals the home directory, or the project memory
     /// directory cannot be created (e.g. read-only CWD), project_storage
     /// falls back to the global memory directory so memories are not lost.
-    fn create_dual_storage(project_root: &std::path::Path) -> (Arc<Storage>, Arc<Storage>) {
-        let global_path = crate::utils::global_memory_dir();
+    fn create_dual_storage(
+        project_root: &std::path::Path,
+        global_path: PathBuf,
+    ) -> (Arc<Storage>, Arc<Storage>) {
         let project_path = crate::utils::project_memory_dir(project_root);
 
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -359,7 +361,8 @@ impl MemoryManager {
     }
 
     pub fn new(project_root: PathBuf) -> Self {
-        let (project_storage, global_storage) = Self::create_dual_storage(&project_root);
+        let (project_storage, global_storage) =
+            Self::create_dual_storage(&project_root, crate::utils::global_memory_dir());
 
         Self {
             sessions: Arc::new(MemorySessionManager::with_project_root(project_root)),
@@ -387,7 +390,8 @@ impl MemoryManager {
     /// `project_root` determines where project-local sessions are stored
     /// (`<project_root>/.wgenty-code/sessions/`).
     pub fn with_settings(settings: &crate::config::Settings, project_root: PathBuf) -> Self {
-        let (project_storage, global_storage) = Self::create_dual_storage(&project_root);
+        let (project_storage, global_storage) =
+            Self::create_dual_storage(&project_root, crate::utils::global_memory_dir());
 
         let consolidation_config =
             ConsolidationConfig::from_memory_settings(&settings.storage.memory);
@@ -405,6 +409,28 @@ impl MemoryManager {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: mem.write_importance_threshold,
             max_extract_per_compaction: mem.max_extract_per_compaction,
+        }
+    }
+
+    /// Test-only constructor that isolates both project and global memory into
+    /// the supplied directories, so unit tests never write to the real
+    /// `~/.wgenty-code/memory/` global pool.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(project_root: PathBuf, global_dir: PathBuf) -> Self {
+        let (project_storage, global_storage) =
+            Self::create_dual_storage(&project_root, global_dir);
+        Self {
+            sessions: Arc::new(MemorySessionManager::with_project_root(project_root)),
+            history: Arc::new(HistoryManager::new()),
+            project_storage,
+            global_storage,
+            consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
+            memories: Arc::new(RwLock::new(Vec::new())),
+            global_memories: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(RwLock::new(MemoryIndex::new())),
+            consolidating: Arc::new(AtomicBool::new(false)),
+            write_importance_threshold: 0.6,
+            max_extract_per_compaction: 3,
         }
     }
 
@@ -601,6 +627,42 @@ impl MemoryManager {
         global.clear();
         self.global_storage.clear().await?;
         Ok(())
+    }
+
+    /// Delete a single memory by id from the specified origin pool.
+    ///
+    /// Removes the on-disk file (via `Storage::delete_memory`), drops the
+    /// entry from the in-memory Vec, and rebuilds the TF-IDF index for
+    /// project memories. The index uses positional Vec indices, so any
+    /// removal shifts subsequent indices and a full rebuild is the simplest
+    /// correct approach (mirrors `load()` / `consolidate()`). Global memories
+    /// are not indexed, so no rebuild is needed for them.
+    ///
+    /// Returns `true` if an entry was found and removed, `false` if the id
+    /// was not present (still considered success for idempotency).
+    pub async fn delete_memory(&self, origin: MemoryOrigin, id: &str) -> anyhow::Result<bool> {
+        match origin {
+            MemoryOrigin::Project => {
+                self.project_storage.delete_memory(id).await?;
+                let mut mem = self.memories.write().await;
+                let before = mem.len();
+                mem.retain(|m| m.id != id);
+                let removed = mem.len() < before;
+                if removed {
+                    // Rebuild the positional TF-IDF index to match the new Vec
+                    // layout; a mid-Vec removal invalidates all higher indices.
+                    self.index.write().await.rebuild(&mem);
+                }
+                Ok(removed)
+            }
+            MemoryOrigin::Global => {
+                self.global_storage.delete_memory(id).await?;
+                let mut global = self.global_memories.write().await;
+                let before = global.len();
+                global.retain(|m| m.id != id);
+                Ok(global.len() < before)
+            }
+        }
     }
 
     pub async fn export(&self, output: &PathBuf) -> anyhow::Result<()> {

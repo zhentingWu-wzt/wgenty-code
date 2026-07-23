@@ -188,35 +188,37 @@ mod tests {
 
     #[tokio::test]
     async fn creates_new_global_memory() {
-        let tmp = tempfile::tempdir().unwrap();
-        let tool = MemoryAddTool::new(make_mm(&tmp));
+        // Isolate BOTH project and global storage so the test never writes to
+        // the real `~/.wgenty-code/memory/` global pool (which previously
+        // polluted the user's global memories on every `cargo test` run).
+        let project_tmp = tempfile::tempdir().unwrap();
+        let global_tmp = tempfile::tempdir().unwrap();
+        let mm = Arc::new(MemoryManager::new_for_test(
+            project_tmp.path().to_path_buf(),
+            global_tmp.path().to_path_buf(),
+        ));
+        let tool = MemoryAddTool::new(mm);
 
-        // Verify scope="global" is parsed correctly (doesn't return invalid_scope).
-        // Actual global storage write may be blocked by sandbox in test env;
-        // scope routing is covered by context/mod.rs tests with temp dirs.
         let input = serde_json::json!({
             "content": "test global scope parsing",
             "scope": "global"
         });
 
-        let result = tool.execute(input).await;
-        // If the sandbox blocks the global dir write, we still verify the
-        // tool reached add_memory (not a parse error). A parse error would
-        // have code "invalid_scope"; a storage error has code "memory_error".
-        match result {
-            Ok(output) => {
-                let parsed: serde_json::Value = serde_json::from_str(&output.content).unwrap();
-                assert_eq!(parsed["success"], true);
-            }
-            Err(e) => {
-                // Sandbox may block writes to the real global dir.
-                assert_ne!(
-                    e.code,
-                    Some("invalid_scope".to_string()),
-                    "scope parsing should not fail for 'global'"
-                );
-            }
-        }
+        let result = tool.execute(input).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(parsed["success"], true);
+
+        // The global memory must land in the isolated dir, not the real one.
+        let global_files: Vec<_> = std::fs::read_dir(global_tmp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
+            .collect();
+        assert_eq!(
+            global_files.len(),
+            1,
+            "global memory should be persisted to the isolated global dir"
+        );
     }
 
     #[tokio::test]
