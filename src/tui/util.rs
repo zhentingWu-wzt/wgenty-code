@@ -449,6 +449,7 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::UndoResult(_)
         | AppEvent::SaveSession
         | AppEvent::DeleteSession(_)
+        | AppEvent::DeleteMemory(_, _)
         | AppEvent::ToggleCollapseAll
         | AppEvent::ToggleCollapseLatest
         | AppEvent::TodosUpdated(_)

@@ -53,6 +53,8 @@ pub struct MemoryState {
     pub detail_mode: bool,
     pub loading: bool,
     pub status_line: String,
+    /// When true, a delete is pending confirmation for the selected row.
+    pub pending_delete: bool,
 }
 
 impl MemoryState {
@@ -66,6 +68,7 @@ impl MemoryState {
             detail_mode: false,
             loading: false,
             status_line: String::new(),
+            pending_delete: false,
         }
     }
 
@@ -73,6 +76,7 @@ impl MemoryState {
         self.visible = true;
         self.loading = true;
         self.detail_mode = false;
+        self.pending_delete = false;
         self.items.clear();
         self.selected = 0;
         self.status_line = "Loading…".to_string();
@@ -84,6 +88,7 @@ impl MemoryState {
         self.items = items;
         self.selected = 0;
         self.detail_mode = false;
+        self.pending_delete = false;
         let (p, g) = self.pool_counts();
         self.status_line = format!("project {p} · global {g}");
     }
@@ -92,6 +97,7 @@ impl MemoryState {
         self.visible = false;
         self.detail_mode = false;
         self.loading = false;
+        self.pending_delete = false;
     }
 
     pub fn pool_counts(&self) -> (usize, usize) {
@@ -143,6 +149,7 @@ impl MemoryState {
         self.filter = self.filter.next();
         self.selected = 0;
         self.detail_mode = false;
+        self.pending_delete = false;
     }
 
     pub fn selected_item(&self) -> Option<&MemoryListItem> {
@@ -154,6 +161,31 @@ impl MemoryState {
         if self.selected_item().is_some() {
             self.detail_mode = !self.detail_mode;
         }
+    }
+
+    /// Arm the delete-confirmation state for the selected row. No-op if
+    /// nothing is selected or a delete is already pending.
+    pub fn request_delete(&mut self) {
+        if self.selected_item().is_some() {
+            self.pending_delete = true;
+        }
+    }
+
+    /// Cancel a pending delete (called on any non-confirming key).
+    pub fn cancel_delete(&mut self) {
+        self.pending_delete = false;
+    }
+
+    /// Confirm the pending delete: returns `(origin, id)` of the selected
+    /// row so the caller can fire the async `DeleteMemory` event. Clears
+    /// `pending_delete` regardless of outcome.
+    pub fn confirm_delete(&mut self) -> Option<(MemoryOrigin, String)> {
+        if !self.pending_delete {
+            return None;
+        }
+        self.pending_delete = false;
+        self.selected_item()
+            .map(|item| (item.origin, item.entry.id.clone()))
     }
 }
 
@@ -287,27 +319,51 @@ pub fn render(
         }
     }
 
-    // Footer
-    let footer = Paragraph::new(Line::from(vec![
-        Span::styled(" ↑↓", Style::default().fg(Color::Cyan)),
-        Span::raw(" nav  "),
-        Span::styled("Tab", Style::default().fg(Color::Cyan)),
-        Span::raw(" filter  "),
-        Span::styled("Enter", Style::default().fg(Color::Cyan)),
-        Span::raw(" detail  "),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
-        Span::raw(" close  "),
-        Span::styled(
-            state.status_line.clone(),
-            Style::default().fg(Color::Rgb(108, 112, 134)),
-        ),
-    ]))
-    .alignment(Alignment::Left)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::PRIMARY)),
-    );
+    // Footer - changes when a delete is pending confirmation.
+    let footer_spans: Vec<Span> = if state.pending_delete {
+        vec![
+            Span::styled(" ⚠ Delete this memory?", Style::default().fg(Color::Yellow)),
+            Span::raw("  "),
+            Span::styled(
+                "y",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" confirm  "),
+            Span::styled("n/Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" cancel  "),
+            Span::styled(
+                state.status_line.clone(),
+                Style::default().fg(Color::Rgb(108, 112, 134)),
+            ),
+        ]
+    } else {
+        vec![
+            Span::styled(" ↑↓", Style::default().fg(Color::Cyan)),
+            Span::raw(" nav  "),
+            Span::styled("Tab", Style::default().fg(Color::Cyan)),
+            Span::raw(" filter  "),
+            Span::styled("Enter", Style::default().fg(Color::Cyan)),
+            Span::raw(" detail  "),
+            Span::styled("d", Style::default().fg(Color::Red)),
+            Span::raw(" delete  "),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" close  "),
+            Span::styled(
+                state.status_line.clone(),
+                Style::default().fg(Color::Rgb(108, 112, 134)),
+            ),
+        ]
+    };
+
+    let footer = Paragraph::new(Line::from(footer_spans))
+        .alignment(Alignment::Left)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme::PRIMARY)),
+        );
     f.render_widget(footer, chunks[2]);
 }
 
@@ -437,5 +493,48 @@ mod tests {
         assert!(cjk.ends_with('…'));
         assert!(cjk.width() <= 5);
         assert_eq!(truncate_to_width("abc", 0), "");
+    }
+
+    #[test]
+    fn delete_confirmation_flow() {
+        let mut state = MemoryState::new();
+        // No selection -> request_delete is a no-op.
+        state.request_delete();
+        assert!(!state.pending_delete);
+
+        state.show_items(vec![
+            item(MemoryOrigin::Project, "a", 0.5),
+            item(MemoryOrigin::Global, "b", 0.8),
+        ]);
+
+        // Arm delete.
+        state.request_delete();
+        assert!(state.pending_delete);
+
+        // Cancel clears the flag without consuming the selection.
+        state.cancel_delete();
+        assert!(!state.pending_delete);
+
+        // Re-arm, then confirm returns the selected item's (origin, id).
+        state.request_delete();
+        let confirmed = state.confirm_delete();
+        assert!(confirmed.is_some());
+        let (origin, id) = confirmed.unwrap();
+        assert_eq!(origin, MemoryOrigin::Project);
+        assert!(!id.is_empty());
+        assert!(!state.pending_delete);
+
+        // Confirm with nothing pending returns None.
+        assert!(state.confirm_delete().is_none());
+    }
+
+    #[test]
+    fn cycle_filter_cancels_pending_delete() {
+        let mut state = MemoryState::new();
+        state.show_items(vec![item(MemoryOrigin::Project, "a", 0.5)]);
+        state.request_delete();
+        assert!(state.pending_delete);
+        state.cycle_filter();
+        assert!(!state.pending_delete);
     }
 }
