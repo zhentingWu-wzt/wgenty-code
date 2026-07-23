@@ -61,7 +61,7 @@ impl Default for StorageConfig {
         Self {
             working_dir: PathBuf::from("."),
             memory: MemorySettings {
-                enabled: true,           // ← 这里可以改成 false 关闭总开关
+                enabled: true, // ← 这里可以改成 false 关闭总开关
                 path: config_dir.join("memory.json"),
                 consolidation_interval: 24,
                 max_memories: default_max_memories(),
@@ -123,14 +123,30 @@ pub struct MemorySettings {
     pub max_extract_per_compaction: usize,
 }
 
-fn default_max_memories() -> usize { 200 }
-fn default_importance_threshold() -> f32 { 0.6 }
-fn default_age_threshold_hours() -> u64 { 48 }
-fn default_enable_auto_consolidation() -> bool { true }
-fn default_recall_top_n() -> usize { 3 }
-fn default_recall_similarity_threshold() -> f32 { 0.3 }
-fn default_write_importance_threshold() -> f32 { 0.6 }
-fn default_max_extract_per_compaction() -> usize { 3 }
+fn default_max_memories() -> usize {
+    200
+}
+fn default_importance_threshold() -> f32 {
+    0.6
+}
+fn default_age_threshold_hours() -> u64 {
+    48
+}
+fn default_enable_auto_consolidation() -> bool {
+    true
+}
+fn default_recall_top_n() -> usize {
+    3
+}
+fn default_recall_similarity_threshold() -> f32 {
+    0.3
+}
+fn default_write_importance_threshold() -> f32 {
+    0.6
+}
+fn default_max_extract_per_compaction() -> usize {
+    3
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceSettings {

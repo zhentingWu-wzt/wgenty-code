@@ -305,6 +305,22 @@ impl App {
         }
         // Memory browser popup
         if self.memory_state.visible {
+            // When a delete is pending, intercept all keys for the
+            // confirm / cancel flow.
+            if self.memory_state.pending_delete {
+                match key.code {
+                    KeyCode::Char('y') | KeyCode::Enter => {
+                        if let Some((origin, id)) = self.memory_state.confirm_delete() {
+                            let _ = self.event_tx.send(AppEvent::DeleteMemory(origin, id));
+                        }
+                    }
+                    // Any other key cancels the pending delete.
+                    _ => {
+                        self.memory_state.cancel_delete();
+                    }
+                }
+                return;
+            }
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.memory_state.move_up();
@@ -317,6 +333,9 @@ impl App {
                 }
                 KeyCode::Enter => {
                     self.memory_state.toggle_detail();
+                }
+                KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => {
+                    self.memory_state.request_delete();
                 }
                 KeyCode::Esc => {
                     if self.memory_state.detail_mode {

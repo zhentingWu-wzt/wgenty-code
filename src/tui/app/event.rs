@@ -583,6 +583,41 @@ impl App {
             AppEvent::MemoryListLoaded(items) => {
                 self.memory_state.show_items(items);
             }
+            AppEvent::DeleteMemory(origin, id) => {
+                let mm = self.memory_manager.clone();
+                let tx = self.event_tx.clone();
+                tokio::spawn(async move {
+                    match mm.delete_memory(origin, &id).await {
+                        Ok(removed) => {
+                            if !removed {
+                                tracing::warn!(
+                                    memory_id = %id,
+                                    "Memory not found for deletion (already gone?)"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to delete memory");
+                        }
+                    }
+                    // Refresh the browser list regardless of outcome so the
+                    // UI reflects the current on-disk state.
+                    if let Err(e) = mm.load().await {
+                        tracing::warn!(error = %e, "Failed to reload memories after delete");
+                    }
+                    let listed = mm.list_memories(None, 0).await;
+                    let items = listed
+                        .into_iter()
+                        .map(
+                            |(o, entry)| crate::tui::components::memory::MemoryListItem {
+                                origin: o,
+                                entry,
+                            },
+                        )
+                        .collect();
+                    let _ = tx.send(AppEvent::MemoryListLoaded(items));
+                });
+            }
             AppEvent::SessionListLoaded(sessions) => {
                 self.session_state.show(sessions);
             }

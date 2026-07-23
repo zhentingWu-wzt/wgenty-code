@@ -326,6 +326,8 @@ pub enum AppEvent {
     SaveSession,
     /// Delete a session by id
     DeleteSession(String),
+    /// Delete a memory by (origin, id) from the memory browser
+    DeleteMemory(crate::context::MemoryOrigin, String),
     /// Toggle collapse all paragraphs
     ToggleCollapseAll,
     /// Toggle collapse latest message paragraphs
