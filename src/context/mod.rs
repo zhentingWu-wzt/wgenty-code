@@ -435,7 +435,9 @@ impl MemoryManager {
             Self::create_dual_storage(&project_root, crate::utils::global_memory_dir());
 
         Self {
-            sessions: Arc::new(MemorySessionManager::with_project_root(project_root.clone())),
+            sessions: Arc::new(MemorySessionManager::with_project_root(
+                project_root.clone(),
+            )),
             history: Arc::new(HistoryManager::new()),
             project_storage,
             global_storage,
@@ -474,7 +476,9 @@ impl MemoryManager {
         let mem = &settings.storage.memory;
 
         Self {
-            sessions: Arc::new(MemorySessionManager::with_project_root(project_root.clone())),
+            sessions: Arc::new(MemorySessionManager::with_project_root(
+                project_root.clone(),
+            )),
             history: Arc::new(HistoryManager::new()),
             project_storage,
             global_storage,
@@ -502,7 +506,9 @@ impl MemoryManager {
         let (project_storage, global_storage) =
             Self::create_dual_storage(&project_root, global_dir);
         Self {
-            sessions: Arc::new(MemorySessionManager::with_project_root(project_root.clone())),
+            sessions: Arc::new(MemorySessionManager::with_project_root(
+                project_root.clone(),
+            )),
             history: Arc::new(HistoryManager::new()),
             project_storage,
             global_storage,
@@ -538,12 +544,14 @@ impl MemoryManager {
     }
 
     /// Builder-style override of exploration epsilon (primarily for tests).
+    #[cfg(test)]
     pub(crate) fn with_exploration_epsilon(mut self, epsilon: f32) -> Self {
         self.exploration_epsilon = epsilon;
         self
     }
 
     /// Whether `id` is in the session-local recently-explored set.
+    #[cfg(test)]
     pub(crate) async fn was_recently_explored(&self, id: &str) -> bool {
         self.recently_explored.read().await.contains(id)
     }
@@ -665,10 +673,9 @@ impl MemoryManager {
                     MemoryRelation::Ambiguous => {
                         let mut merged =
                             ConsolidationEngine::merge_into(&mem[existing_idx], &entry);
-                        merged.metadata.insert(
-                            "relation_ambiguous".into(),
-                            serde_json::Value::Bool(true),
-                        );
+                        merged
+                            .metadata
+                            .insert("relation_ambiguous".into(), serde_json::Value::Bool(true));
                         storage.save_memory(&merged).await?;
                         mem[existing_idx] = merged.clone();
                         if is_project {
@@ -1028,7 +1035,6 @@ impl MemoryManager {
         *memories = consolidated;
         Ok(())
     }
-
 
     pub async fn load(&self) -> anyhow::Result<()> {
         // Load project memories and index them for TF-IDF recall.
@@ -2051,15 +2057,24 @@ mod tests {
         assert_eq!(result.id, new_id, "memory_id must be the new standalone id");
 
         let memories = mm.memories.read().await;
-        assert_eq!(memories.len(), 2, "both tombstone and new entry stay in pool");
-        let old = memories.iter().find(|m| m.id == old_id).expect("old retained");
+        assert_eq!(
+            memories.len(),
+            2,
+            "both tombstone and new entry stay in pool"
+        );
+        let old = memories
+            .iter()
+            .find(|m| m.id == old_id)
+            .expect("old retained");
         assert_eq!(old.superseded_by.as_deref(), Some(new_id.as_str()));
         assert!(
             (old.importance - old_importance).abs() < f32::EPSILON,
             "Contradicts must not change base importance"
         );
         assert!(
-            memories.iter().any(|m| m.id == new_id && m.superseded_by.is_none()),
+            memories
+                .iter()
+                .any(|m| m.id == new_id && m.superseded_by.is_none()),
             "new entry is live"
         );
         drop(memories);
@@ -2173,8 +2188,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
 
-        let mut tomb =
-            MemoryEntry::new(MemoryType::Knowledge, "use jwt authentication legacy").with_importance(0.9);
+        let mut tomb = MemoryEntry::new(MemoryType::Knowledge, "use jwt authentication legacy")
+            .with_importance(0.9);
         tomb.id = "tomb-jwt".into();
         tomb.superseded_by = Some("someone-else".into());
         mm.add_memory(tomb, MemoryOrigin::Project).await.unwrap();
@@ -2192,7 +2207,9 @@ mod tests {
         let memories = mm.memories.read().await;
         assert_eq!(memories.len(), 2);
         assert!(
-            memories.iter().any(|m| m.id == "tomb-jwt" && m.superseded_by.is_some()),
+            memories
+                .iter()
+                .any(|m| m.id == "tomb-jwt" && m.superseded_by.is_some()),
             "tombstone unchanged"
         );
         assert!(
@@ -2330,7 +2347,9 @@ mod tests {
         let memory_dir = tmp.path().join(".wgenty-code/memory");
         tokio::fs::create_dir_all(&memory_dir).await.unwrap();
         let mm = MemoryManager {
-            sessions: Arc::new(MemorySessionManager::with_project_root(tmp.path().to_path_buf())),
+            sessions: Arc::new(MemorySessionManager::with_project_root(
+                tmp.path().to_path_buf(),
+            )),
             history: Arc::new(HistoryManager::new()),
             project_storage: Arc::new(crate::context::Storage::new(memory_dir)),
             global_storage: Arc::new(crate::context::Storage::new(tmp.path().join("global"))),
@@ -2399,7 +2418,9 @@ mod tests {
             .await
             .unwrap();
         tokio::fs::write(&existing_a, b"fn a() {}").await.unwrap();
-        tokio::fs::write(&existing_b, b"export const b = 1;").await.unwrap();
+        tokio::fs::write(&existing_b, b"export const b = 1;")
+            .await
+            .unwrap();
 
         let mm = MemoryManager::new_for_test(root.to_path_buf(), root.join("global"));
         let entry = MemoryEntry::new(

@@ -185,6 +185,9 @@ Prompt 8 层：base_instructions → permissions → developer → environment �
 | `storage.memory.write_importance_threshold` | f32 | 0.6 | compact 抽取写入门槛 |
 | `storage.memory.max_extract_per_compaction` | usize | 3 | 单次 compact 最多写入条数 |
 | `storage.memory.recall_top_n` | usize | 3 | 每轮召回注入条数 |
+| `storage.memory.exploration_epsilon` | f32 | 0.0 | 召回时以该概率用冷门候选替换最低排名条（0=关闭） |
+| `storage.memory.staleness_check` | bool | true | consolidate 时检查记忆引用路径是否全部缺失 |
+| `storage.memory.staleness_penalty` | f32 | 0.5 | 已标记 stale 的记忆 effective importance 乘数 |
 | `storage.transcript.max_age_days` | u32 | 30 | 子代理记录保留天数 |
 
 **环境变量优先级**: `ANTHROPIC_API_KEY` > `DASHSCOPE_API_KEY` > `DEEPSEEK_API_KEY`，`API_BASE_URL` 覆盖配置文件，`RUST_LOG` 控制日志级别
@@ -289,7 +292,7 @@ wgenty-code 采用双源记忆架构，将记忆按物理存储位置分为 proj
 
 ```bash
 wgenty-code memory status                 # 显示记忆总数（project + global 分别计数）
-wgenty-code memory list --limit 20        # 按 importance 列出
+wgenty-code memory list --limit 20        # 按 effective importance 列出
 wgenty-code memory list --min-importance 0.7
 wgenty-code memory prune                  # 清理低价值/过期记忆（project + global）
 wgenty-code memory dream                  # 整理 project 记忆（合并相似项）

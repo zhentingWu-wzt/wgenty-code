@@ -68,3 +68,32 @@ Track only as future changes; no checkboxes to complete here:
 - Symbol multi-cue recall
 - pain_score friction aggregation
 - Hot-path restate / read-time LLM write-back
+
+## Verification — scenario → test mapping (M6.6 / Task 8)
+
+Config threading (6.3): `MemorySettings` → `MemoryManager::with_settings` → `exploration_epsilon` / `staleness_check` / `staleness_penalty` + `effective_importance_cfg()`; covered by `with_settings_reads_consolidation_thresholds`, `new_for_test_uses_exploration_and_staleness_defaults`, `consolidate_staleness_check_false_skips_mark`.
+
+| Spec scenario (main ADDED/MODIFIED) | Test |
+|---|---|
+| Legacy memory JSON loads with feedback-field defaults | `legacy_memory_json_defaults_feedback_fields` |
+| Superseded memory excluded from recall | `recall_excludes_superseded_memories`, `format_global_excludes_superseded_memories` |
+| Injected project memories increment recall_count | `recall_increments_and_persists_project_recall_count` |
+| List ordering uses effective importance | `list_memories_orders_by_effective_not_raw`, `list_memories_keeps_superseded_but_filters_by_effective` |
+| Global soft-cap / order by effective | `format_global_orders_by_effective_not_raw_importance` |
+| First consolidate anchors missing last_reinforced_at | `consolidate_anchors_missing_last_reinforced_at` |
+| Consolidation is LLM-free | `consolidate_remains_llm_free_structural` |
+| Compatible similar memory merges and reinforces | `add_memory_compatible_merges_and_reinforces` |
+| Contradicting similar memory supersedes via tombstone | `add_memory_contradicts_supersedes_and_recall_excludes_old` |
+| Ambiguous similar memory merges and flags without LLM | `add_memory_ambiguous_merges_and_flags_metadata` |
+| Superseded memory retained on disk / skipped as merge target | `add_memory_skips_superseded_as_merge_target` |
+| Decay reduces importance over time | `effective_importance_decays_with_age` |
+| Hit-rate damping penalizes recall noise | `effective_importance_hit_rate_damping` |
+| Never-recalled memory is neutral on hit-rate | `effective_importance_never_recalled_hitrate_neutral` |
+| Superseded memory has zero effective importance | `effective_importance_superseded_is_zero` |
+| Stale-marked memory is downweighted | `effective_importance_stale_multiplier` |
+| All extracted paths missing marks stale once | `consolidate_marks_stale_when_all_extracted_paths_missing` |
+| Partial path missing does not mark stale | `consolidate_partial_missing_paths_does_not_mark_stale` |
+| Already-marked stale memory is not stacked | `consolidate_stale_mark_is_idempotent_and_keeps_base_importance` |
+| Existing-file-only reference unaffected | `consolidate_existing_only_paths_does_not_mark_stale` |
+| Exploration disabled when epsilon is zero | `recall_exploration_epsilon_zero_never_replaces` |
+| Exploration replaces lowest-ranked slot when enabled | `recall_exploration_force_draw_replaces_lowest_with_cold` |

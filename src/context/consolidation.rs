@@ -141,7 +141,12 @@ pub fn classify_relation(new: &MemoryEntry, existing: &MemoryEntry) -> MemoryRel
     let existing_tokens = meaningful_token_set(&existing.content);
 
     if has_numeric_value_drift(&new.content, &existing.content)
-        || has_state_change_contradiction(&new.content, &existing.content, &new_tokens, &existing_tokens)
+        || has_state_change_contradiction(
+            &new.content,
+            &existing.content,
+            &new_tokens,
+            &existing_tokens,
+        )
     {
         return MemoryRelation::Contradicts;
     }
@@ -390,7 +395,8 @@ fn extract_key_numeric_pairs(content: &str) -> std::collections::HashMap<String,
 
     // Scan whitespace tokens and also run a light char-level pass for `key=val`.
     for raw in lower.split_whitespace() {
-        let token = raw.trim_matches(|c: char| matches!(c, ',' | ';' | '.' | ')' | '(' | '"' | '\''));
+        let token =
+            raw.trim_matches(|c: char| matches!(c, ',' | ';' | '.' | ')' | '(' | '"' | '\''));
         if let Some((k, v)) = split_key_numeric(token) {
             pairs.insert(k, v);
         }
@@ -540,8 +546,7 @@ impl ConsolidationEngine {
         sorted_memories.sort_by(|a, b| {
             let ea = a.effective_importance(now, &eff_cfg);
             let eb = b.effective_importance(now, &eff_cfg);
-            eb.partial_cmp(&ea)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            eb.partial_cmp(&ea).unwrap_or(std::cmp::Ordering::Equal)
         });
 
         for memory in sorted_memories {
@@ -1230,16 +1235,20 @@ mod tests {
         entry.hit_count = 100;
         entry.recall_count = 0;
 
-        let mut cfg_harsh = ConsolidationConfig::default();
-        cfg_harsh.staleness_penalty = 0.5;
+        let cfg_harsh = ConsolidationConfig {
+            staleness_penalty: 0.5,
+            ..Default::default()
+        };
         let engine_harsh = ConsolidationEngine::new(cfg_harsh);
         assert!(
             !engine_harsh.should_keep(&entry),
             "penalty 0.5 should drop aged stale high-raw knowledge (effective below threshold)"
         );
 
-        let mut cfg_mild = ConsolidationConfig::default();
-        cfg_mild.staleness_penalty = 0.85;
+        let cfg_mild = ConsolidationConfig {
+            staleness_penalty: 0.85,
+            ..Default::default()
+        };
         let engine_mild = ConsolidationEngine::new(cfg_mild);
         assert!(
             engine_mild.should_keep(&entry),
@@ -1249,8 +1258,10 @@ mod tests {
 
     #[test]
     fn from_memory_settings_copies_staleness_penalty() {
-        let mut settings = crate::config::MemorySettings::default();
-        settings.staleness_penalty = 0.25;
+        let settings = crate::config::MemorySettings {
+            staleness_penalty: 0.25,
+            ..Default::default()
+        };
         let cfg = ConsolidationConfig::from_memory_settings(&settings);
         assert!((cfg.staleness_penalty - 0.25).abs() < f32::EPSILON);
     }
@@ -1270,8 +1281,7 @@ mod tests {
 
     #[test]
     fn classify_relation_numeric_drift_is_contradicts() {
-        let existing =
-            MemoryEntry::new(MemoryType::Knowledge, "API chat uses max_tokens=128000");
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "API chat uses max_tokens=128000");
         let new = MemoryEntry::new(MemoryType::Knowledge, "API chat uses max_tokens=4096");
         assert_eq!(
             classify_relation(&new, &existing),
@@ -1282,8 +1292,7 @@ mod tests {
 
     #[test]
     fn classify_relation_subset_is_compatible() {
-        let existing =
-            MemoryEntry::new(MemoryType::Knowledge, "use jwt authentication");
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "use jwt authentication");
         let new = MemoryEntry::new(MemoryType::Knowledge, "use jwt");
         assert_eq!(
             classify_relation(&new, &existing),
@@ -1301,10 +1310,14 @@ mod tests {
     fn classify_relation_similar_but_unrelated_choice_is_ambiguous() {
         // High token overlap, different concrete choice, no state-change marker
         // and no shared key=value numeric drift → must NOT false-supersede.
-        let existing =
-            MemoryEntry::new(MemoryType::Preference, "prefer postgres database for storage layer");
-        let new =
-            MemoryEntry::new(MemoryType::Preference, "prefer mysql database for storage layer");
+        let existing = MemoryEntry::new(
+            MemoryType::Preference,
+            "prefer postgres database for storage layer",
+        );
+        let new = MemoryEntry::new(
+            MemoryType::Preference,
+            "prefer mysql database for storage layer",
+        );
         assert_eq!(
             classify_relation(&new, &existing),
             MemoryRelation::Ambiguous,
@@ -1315,10 +1328,8 @@ mod tests {
     #[test]
     fn classify_relation_unresolved_substring_is_not_marker() {
         // "unresolved" contains the substring "resolved" but is open-state language.
-        let existing =
-            MemoryEntry::new(MemoryType::Knowledge, "auth bug reported in login");
-        let new =
-            MemoryEntry::new(MemoryType::Knowledge, "auth bug unresolved in login");
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "auth bug reported in login");
+        let new = MemoryEntry::new(MemoryType::Knowledge, "auth bug unresolved in login");
         assert_ne!(
             classify_relation(&new, &existing),
             MemoryRelation::Contradicts,
