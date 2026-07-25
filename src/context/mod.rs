@@ -14,7 +14,7 @@ pub mod storage;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -378,6 +378,8 @@ pub struct MemoryManager {
     age_threshold_hours: u64,
     /// Explicit project root for path-staleness checks (not derived from storage).
     project_root: PathBuf,
+    /// Session/process-local ids recently chosen by recall exploration (v1).
+    recently_explored: Arc<RwLock<HashSet<String>>>,
 }
 
 impl MemoryManager {
@@ -449,6 +451,7 @@ impl MemoryManager {
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
             project_root,
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -487,6 +490,7 @@ impl MemoryManager {
             staleness_penalty: mem.staleness_penalty,
             age_threshold_hours: mem.age_threshold_hours,
             project_root,
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -514,6 +518,7 @@ impl MemoryManager {
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
             project_root,
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -530,6 +535,27 @@ impl MemoryManager {
     /// ε-greedy exploration rate used by recall (0.0 disables exploration).
     pub fn exploration_epsilon(&self) -> f32 {
         self.exploration_epsilon
+    }
+
+    /// Builder-style override of exploration epsilon (primarily for tests).
+    pub fn with_exploration_epsilon(mut self, epsilon: f32) -> Self {
+        self.exploration_epsilon = epsilon;
+        self
+    }
+
+    /// Whether `id` is in the session-local recently-explored set.
+    pub async fn was_recently_explored(&self, id: &str) -> bool {
+        self.recently_explored.read().await.contains(id)
+    }
+
+    /// Record that exploration selected `id` this session.
+    pub async fn mark_recently_explored(&self, id: &str) {
+        self.recently_explored.write().await.insert(id.to_string());
+    }
+
+    /// Snapshot of project-local memories (for recall exploration candidates).
+    pub async fn project_memories(&self) -> Vec<MemoryEntry> {
+        self.memories.read().await.clone()
     }
 
     /// Whether consolidate should run staleness checks.
@@ -1406,7 +1432,8 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
-        project_root: tmp.path().to_path_buf(),
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // Pre-populate with one memory.
@@ -1458,7 +1485,8 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
-        project_root: tmp.path().to_path_buf(),
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // Before consolidation, last_consolidation should be None.
@@ -1590,7 +1618,8 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
-        project_root: tmp.path().to_path_buf(),
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // Pre-populate a session and a history entry on disk.
@@ -1621,7 +1650,8 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
-        project_root: tmp.path().to_path_buf(),
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // Before load(), the in-memory caches are empty.
@@ -1681,7 +1711,8 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
-        project_root: tmp.path().to_path_buf(),
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // First extraction: a decision captured during compaction.
@@ -1762,7 +1793,8 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
-        project_root: tmp.path().to_path_buf(),
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         let entry = MemoryEntry::new(MemoryType::Knowledge, "a brand new fact");
@@ -1800,7 +1832,8 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
-        project_root: tmp.path().to_path_buf(),
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // First entry.
@@ -1849,7 +1882,8 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
-        project_root: tmp.path().to_path_buf(),
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // idx 0: survives consolidation (Knowledge is always kept).
@@ -2040,6 +2074,7 @@ mod tests {
             &mm,
             5,
             0.0,
+            None,
         )
         .await;
         assert!(
@@ -2305,7 +2340,8 @@ mod tests {
             staleness_check: false,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
-        project_root: tmp.path().to_path_buf(),
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         let entry = MemoryEntry::new(
