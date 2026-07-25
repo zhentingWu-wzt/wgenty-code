@@ -366,6 +366,14 @@ pub struct MemoryManager {
     write_importance_threshold: f32,
     /// Maximum memories accepted from a single compaction extract.
     max_extract_per_compaction: usize,
+    /// ε-greedy exploration rate for recall (0.0 = off).
+    exploration_epsilon: f32,
+    /// Whether consolidate should mark stale memories.
+    staleness_check: bool,
+    /// Multiplier applied when a memory is stale-marked.
+    staleness_penalty: f32,
+    /// Half-life hours for age decay in effective importance.
+    age_threshold_hours: u64,
 }
 
 impl MemoryManager {
@@ -432,6 +440,10 @@ impl MemoryManager {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
         }
     }
 
@@ -465,6 +477,10 @@ impl MemoryManager {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: mem.write_importance_threshold,
             max_extract_per_compaction: mem.max_extract_per_compaction,
+            exploration_epsilon: mem.exploration_epsilon,
+            staleness_check: mem.staleness_check,
+            staleness_penalty: mem.staleness_penalty,
+            age_threshold_hours: mem.age_threshold_hours,
         }
     }
 
@@ -487,6 +503,10 @@ impl MemoryManager {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
         }
     }
 
@@ -498,6 +518,29 @@ impl MemoryManager {
     /// Cap on memories accepted from a single compaction extract.
     pub fn max_extract_per_compaction(&self) -> usize {
         self.max_extract_per_compaction
+    }
+
+    /// ε-greedy exploration rate used by recall (0.0 disables exploration).
+    pub fn exploration_epsilon(&self) -> f32 {
+        self.exploration_epsilon
+    }
+
+    /// Whether consolidate should run staleness checks.
+    pub fn staleness_check(&self) -> bool {
+        self.staleness_check
+    }
+
+    /// Penalty multiplier applied to stale-marked memories.
+    pub fn staleness_penalty(&self) -> f32 {
+        self.staleness_penalty
+    }
+
+    /// Runtime cfg for [`MemoryEntry::effective_importance`].
+    pub fn effective_importance_cfg(&self) -> EffectiveImportanceCfg {
+        EffectiveImportanceCfg {
+            age_threshold_hours: self.age_threshold_hours,
+            staleness_penalty: self.staleness_penalty,
+        }
     }
 
     pub async fn status(&self) -> anyhow::Result<MemoryStatus> {
@@ -1266,6 +1309,10 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
         };
 
         // Pre-populate with one memory.
@@ -1313,6 +1360,10 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
         };
 
         // Before consolidation, last_consolidation should be None.
@@ -1374,6 +1425,9 @@ mod tests {
             recall_similarity_threshold: 0.3,
             write_importance_threshold: 0.65,
             max_extract_per_compaction: 2,
+            exploration_epsilon: 0.15,
+            staleness_check: false,
+            staleness_penalty: 0.25,
         };
 
         let mm = MemoryManager::with_settings(&settings, std::path::PathBuf::from("/tmp"));
@@ -1387,6 +1441,24 @@ mod tests {
         assert!(!config.enable_auto_consolidation);
         assert!((mm.write_importance_threshold() - 0.65).abs() < f32::EPSILON);
         assert_eq!(mm.max_extract_per_compaction(), 2);
+        assert!((mm.exploration_epsilon() - 0.15).abs() < f32::EPSILON);
+        assert!(!mm.staleness_check());
+        assert!((mm.staleness_penalty() - 0.25).abs() < f32::EPSILON);
+        let cfg = mm.effective_importance_cfg();
+        assert_eq!(cfg.age_threshold_hours, 12);
+        assert!((cfg.staleness_penalty - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn new_for_test_uses_exploration_and_staleness_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+        assert!((mm.exploration_epsilon() - 0.0).abs() < f32::EPSILON);
+        assert!(mm.staleness_check());
+        assert!((mm.staleness_penalty() - 0.5).abs() < f32::EPSILON);
+        let cfg = mm.effective_importance_cfg();
+        assert_eq!(cfg.age_threshold_hours, 48);
+        assert!((cfg.staleness_penalty - 0.5).abs() < f32::EPSILON);
     }
 
     /// Regression test: `MemoryManager::load()` must recover persisted
@@ -1419,6 +1491,10 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
         };
 
         // Pre-populate a session and a history entry on disk.
@@ -1445,6 +1521,10 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
         };
 
         // Before load(), the in-memory caches are empty.
@@ -1500,6 +1580,10 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
         };
 
         // First extraction: a decision captured during compaction.
@@ -1576,6 +1660,10 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
         };
 
         let entry = MemoryEntry::new(MemoryType::Knowledge, "a brand new fact");
@@ -1609,6 +1697,10 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
         };
 
         // First entry.
@@ -1653,6 +1745,10 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
         };
 
         // idx 0: survives consolidation (Knowledge is always kept).
