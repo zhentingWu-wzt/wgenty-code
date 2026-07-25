@@ -145,16 +145,33 @@ impl ConsolidationEngine {
     }
 
     fn should_keep(&self, memory: &MemoryEntry) -> bool {
-        // High-importance memories are always kept regardless of type or age.
-        if memory.importance >= self.config.importance_threshold {
+        // Tombstones are audit-only on list; consolidate drops them.
+        if memory.superseded_by.is_some() {
+            return false;
+        }
+
+        // Retention uses effective importance (decay + hit-rate + staleness),
+        // not raw base importance.
+        let now = Utc::now();
+        let cfg = crate::context::EffectiveImportanceCfg {
+            age_threshold_hours: self.config.age_threshold_hours,
+            // Consolidation engine does not own staleness_penalty; use the
+            // settings default. Marked-stale memories already carry the flag
+            // for effective_importance; Task 6 may plumb a dedicated cfg.
+            staleness_penalty: 0.5,
+        };
+        let effective = memory.effective_importance(now, &cfg);
+        if effective >= self.config.importance_threshold {
             return true;
         }
 
-        // Type-specific retention for low-importance memories.
+        // Type-specific retention for low-effective memories.
         // Knowledge/Preference used to be immortal, which let low-value
         // "facts" accumulate forever. They now get a longer TTL (4× base)
         // instead of permanent retention. Ephemeral types expire faster.
-        let age_hours = (Utc::now() - memory.timestamp).num_hours();
+        // Age is measured from the decay anchor (last_reinforced_at or timestamp).
+        let anchor = memory.last_reinforced_at.unwrap_or(memory.timestamp);
+        let age_hours = (now - anchor).num_hours();
         let age = age_hours.max(0) as u64;
         let base = self.config.age_threshold_hours.max(1);
 
@@ -555,9 +572,38 @@ mod tests {
         let mut entry =
             MemoryEntry::new(MemoryType::Knowledge, "important fact").with_importance(0.9);
         entry.timestamp = chrono::Utc::now() - chrono::Duration::hours(10_000);
+        // Fresh reinforce anchor so effective stays high despite old timestamp.
+        entry.last_reinforced_at = Some(chrono::Utc::now());
         assert!(
             engine.should_keep(&entry),
-            "high-importance memories must never expire by age alone"
+            "high-effective memories must never expire by age alone"
+        );
+    }
+
+    #[test]
+    fn should_not_keep_superseded_even_with_high_raw_importance() {
+        let engine = ConsolidationEngine::default();
+        let mut entry =
+            MemoryEntry::new(MemoryType::Knowledge, "tombstoned fact").with_importance(0.99);
+        entry.superseded_by = Some("newer-id".into());
+        entry.timestamp = chrono::Utc::now();
+        assert!(
+            !engine.should_keep(&entry),
+            "superseded entries have effective 0 and must not be kept"
+        );
+    }
+
+    #[test]
+    fn should_not_keep_high_raw_when_effective_decays_below_threshold() {
+        let engine = ConsolidationEngine::default();
+        // Base 0.9 would pass the old raw gate; after many half-lives effective ≪ 0.6.
+        let mut entry =
+            MemoryEntry::new(MemoryType::Knowledge, "decayed high raw").with_importance(0.9);
+        entry.timestamp = chrono::Utc::now() - chrono::Duration::hours(10_000);
+        entry.last_reinforced_at = Some(entry.timestamp);
+        assert!(
+            !engine.should_keep(&entry),
+            "retention must use effective importance, not raw base"
         );
     }
 

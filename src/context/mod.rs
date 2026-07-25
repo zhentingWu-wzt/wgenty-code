@@ -836,35 +836,41 @@ impl MemoryManager {
     }
 
     /// List memories with optional filters (for CLI inspection).
+    ///
+    /// `min_importance` is compared against **effective** importance.
+    /// Superseded rows remain listable (effective 0) when no min filter is set.
     pub async fn list_memories(
         &self,
         min_importance: Option<f32>,
         limit: usize,
     ) -> Vec<(MemoryOrigin, MemoryEntry)> {
-        let mut out: Vec<(MemoryOrigin, MemoryEntry)> = Vec::new();
+        let now = Utc::now();
+        let cfg = self.effective_importance_cfg();
+        let mut out: Vec<(MemoryOrigin, MemoryEntry, f32)> = Vec::new();
         let project = self.memories.read().await;
         for m in project.iter() {
-            if min_importance.map(|t| m.importance >= t).unwrap_or(true) {
-                out.push((MemoryOrigin::Project, m.clone()));
+            let eff = m.effective_importance(now, &cfg);
+            if min_importance.map(|t| eff >= t).unwrap_or(true) {
+                out.push((MemoryOrigin::Project, m.clone(), eff));
             }
         }
         drop(project);
         let global = self.global_memories.read().await;
         for m in global.iter() {
-            if min_importance.map(|t| m.importance >= t).unwrap_or(true) {
-                out.push((MemoryOrigin::Global, m.clone()));
+            let eff = m.effective_importance(now, &cfg);
+            if min_importance.map(|t| eff >= t).unwrap_or(true) {
+                out.push((MemoryOrigin::Global, m.clone(), eff));
             }
         }
         out.sort_by(|a, b| {
-            b.1.importance
-                .partial_cmp(&a.1.importance)
+            b.2.partial_cmp(&a.2)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| b.1.timestamp.cmp(&a.1.timestamp))
         });
         if limit > 0 {
             out.truncate(limit);
         }
-        out
+        out.into_iter().map(|(o, m, _)| (o, m)).collect()
     }
 
     pub async fn consolidate(&self) -> anyhow::Result<()> {
@@ -1792,6 +1798,82 @@ mod tests {
         assert!(
             found.iter().any(|m| m.content.contains("unobtainium")),
             "survivor that shifted index after consolidation must still be searchable"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_memories_orders_by_effective_not_raw() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let mut high_raw_old =
+            MemoryEntry::new(MemoryType::Knowledge, "high-raw-old fact").with_importance(0.95);
+        high_raw_old.timestamp = Utc::now() - chrono::Duration::hours(800);
+        high_raw_old.last_reinforced_at = Some(high_raw_old.timestamp);
+
+        let lower_raw_fresh =
+            MemoryEntry::new(MemoryType::Knowledge, "lower-raw-fresh fact").with_importance(0.6);
+
+        mm.add_memory(high_raw_old, MemoryOrigin::Project)
+            .await
+            .unwrap();
+        mm.add_memory(lower_raw_fresh, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        let listed = mm.list_memories(None, 0).await;
+        assert_eq!(listed.len(), 2);
+        assert!(
+            listed[0].1.content.contains("lower-raw-fresh"),
+            "fresh lower raw should rank first by effective: {:?}",
+            listed
+                .iter()
+                .map(|(_, m)| m.content.clone())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            listed[1].1.content.contains("high-raw-old"),
+            "decayed high raw should rank second"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_memories_keeps_superseded_but_filters_by_effective() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let mut live =
+            MemoryEntry::new(MemoryType::Knowledge, "live listable").with_importance(0.8);
+        live.id = "live-list".into();
+
+        let mut tomb =
+            MemoryEntry::new(MemoryType::Knowledge, "tomb listable").with_importance(0.99);
+        tomb.id = "tomb-list".into();
+        tomb.superseded_by = Some("live-list".into());
+
+        mm.add_memory(live, MemoryOrigin::Project).await.unwrap();
+        mm.add_memory(tomb, MemoryOrigin::Project).await.unwrap();
+
+        // No min filter: superseded remains listable for audit.
+        let all = mm.list_memories(None, 0).await;
+        assert_eq!(all.len(), 2);
+        assert!(
+            all.iter().any(|(_, m)| m.content.contains("tomb listable")),
+            "superseded rows remain listable"
+        );
+        // Live (effective ~0.8) first; tomb (effective 0) last.
+        assert!(all[0].1.content.contains("live listable"));
+        assert!(all[1].1.content.contains("tomb listable"));
+
+        // min_importance compares against effective → tomb (0) filtered out.
+        let filtered = mm.list_memories(Some(0.1), 0).await;
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered[0].1.content.contains("live listable"));
+        assert!(
+            !filtered
+                .iter()
+                .any(|(_, m)| m.content.contains("tomb listable")),
+            "superseded effective 0 must fail min_importance filter"
         );
     }
 }
