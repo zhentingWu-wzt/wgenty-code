@@ -14,11 +14,15 @@ impl MemoryContextInjector {
     /// Extract keywords from user input, search relevant memories via TF-IDF,
     /// and return a formatted `<memory-context>` block (or empty string if no
     /// relevant memories were found).
+    ///
+    /// `explore_draw` is a test hook: `None` draws Bernoulli(`exploration_epsilon`);
+    /// `Some(true/false)` forces the exploration branch without RNG.
     pub async fn recall(
         user_input: &str,
         manager: &MemoryManager,
         top_n: usize,
         threshold: f64,
+        explore_draw: Option<bool>,
     ) -> String {
         let keywords = extract_keywords(user_input);
 
@@ -49,11 +53,15 @@ impl MemoryContextInjector {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let top: Vec<_> = scored.into_iter().take(top_n).collect();
+        let mut top: Vec<_> = scored.into_iter().take(top_n).collect();
 
         if top.is_empty() {
             return String::new();
         }
+
+        // Optional ε-greedy exploration: replace lowest-ranked injected slot
+        // with a cold project memory outside the current top.
+        maybe_explore_replace(&mut top, manager, now, &cfg, explore_draw).await;
 
         // Persist injection frequency for hit-rate damping. Project-only:
         // globals are not part of this block.
@@ -116,7 +124,7 @@ impl MemoryContextInjector {
         top_n: usize,
         threshold: f64,
     ) {
-        let memory_block = Self::recall(user_input, manager, top_n, threshold).await;
+        let memory_block = Self::recall(user_input, manager, top_n, threshold, None).await;
         if memory_block.is_empty() {
             return;
         }
@@ -133,6 +141,77 @@ impl MemoryContextInjector {
 }
 
 // ── Private helpers ─────────────────────────────────────────────────────
+
+/// When exploration is enabled and the draw succeeds, replace the lowest-ranked
+/// injected memory with a cold candidate (not superseded, not in top, not
+/// recently explored). Prefers low effective importance, then low recall_count.
+/// No candidate → leave `top` unchanged (never panics).
+async fn maybe_explore_replace(
+    top: &mut Vec<(crate::context::MemoryEntry, f32)>,
+    manager: &MemoryManager,
+    now: chrono::DateTime<chrono::Utc>,
+    cfg: &crate::context::EffectiveImportanceCfg,
+    explore_draw: Option<bool>,
+) {
+    if top.is_empty() {
+        return;
+    }
+
+    let epsilon = manager.exploration_epsilon();
+    if epsilon <= 0.0 {
+        return;
+    }
+
+    let should_explore = match explore_draw {
+        Some(forced) => forced,
+        None => {
+            use rand::Rng;
+            rand::thread_rng().gen::<f32>() < epsilon
+        }
+    };
+    if !should_explore {
+        return;
+    }
+
+    let top_ids: std::collections::HashSet<&str> =
+        top.iter().map(|(m, _)| m.id.as_str()).collect();
+
+    let pool = manager.project_memories().await;
+    let mut candidates: Vec<(crate::context::MemoryEntry, f32)> = Vec::new();
+    for m in pool {
+        if m.superseded_by.is_some() {
+            continue;
+        }
+        if top_ids.contains(m.id.as_str()) {
+            continue;
+        }
+        if manager.was_recently_explored(&m.id).await {
+            continue;
+        }
+        let eff = m.effective_importance(now, cfg);
+        candidates.push((m, eff));
+    }
+
+    if candidates.is_empty() {
+        return;
+    }
+
+    // Prefer low effective, then low recall_count, then stable id order.
+    candidates.sort_by(|a, b| {
+        a.1.partial_cmp(&b.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.recall_count.cmp(&b.0.recall_count))
+            .then_with(|| a.0.id.cmp(&b.0.id))
+    });
+    let (cold, cold_eff) = candidates.into_iter().next().expect("non-empty candidates");
+
+    // Lowest-ranked injected slot is the last element (sorted desc).
+    let replaced_id = cold.id.clone();
+    if let Some(last) = top.last_mut() {
+        *last = (cold, cold_eff);
+    }
+    manager.mark_recently_explored(&replaced_id).await;
+}
 
 /// Extract meaningful keywords from a user message for memory retrieval.
 /// Filters stop words and short tokens, then sorts by token length descending
@@ -227,7 +306,7 @@ mod tests {
         let mm = make_manager(&tmp);
         mm.load().await.unwrap();
 
-        let result = MemoryContextInjector::recall("", &mm, 5, 0.5).await;
+        let result = MemoryContextInjector::recall("", &mm, 5, 0.5, None).await;
         assert!(result.is_empty(), "empty input should produce empty recall");
     }
 
@@ -237,7 +316,7 @@ mod tests {
         let mm = make_manager(&tmp);
         mm.load().await.unwrap();
 
-        let result = MemoryContextInjector::recall("completely unrelated query", &mm, 5, 0.5).await;
+        let result = MemoryContextInjector::recall("completely unrelated query", &mm, 5, 0.5, None).await;
         assert!(
             result.is_empty(),
             "query with no matches should produce empty recall"
@@ -248,7 +327,7 @@ mod tests {
     async fn recall_finds_and_formats_matching_memories() {
         let (mm, _tmp) = setup_manager_with_memories().await;
 
-        let result = MemoryContextInjector::recall("rust async programming", &mm, 5, 0.5).await;
+        let result = MemoryContextInjector::recall("rust async programming", &mm, 5, 0.5, None).await;
 
         // Should find the two high-importance rust/tokio memories, not the low-importance python one
         assert!(
@@ -302,7 +381,7 @@ mod tests {
         .unwrap();
         mm.load().await.unwrap();
 
-        let result = MemoryContextInjector::recall("rust programming language", &mm, 2, 0.5).await;
+        let result = MemoryContextInjector::recall("rust programming language", &mm, 2, 0.5, None).await;
 
         assert!(!result.is_empty());
         // Count lines in the result (minus the <memory-context> wrapper lines)
@@ -327,7 +406,7 @@ mod tests {
         let (mm, _tmp) = setup_manager_with_memories().await;
 
         // With threshold 0.85, only the 0.9 importance entry should pass
-        let result = MemoryContextInjector::recall("rust async programming", &mm, 5, 0.85).await;
+        let result = MemoryContextInjector::recall("rust async programming", &mm, 5, 0.85, None).await;
         assert!(result.contains("Rust async programming patterns"));
         assert!(
             !result.contains("Use tokio"),
@@ -360,7 +439,7 @@ mod tests {
         mm.load().await.unwrap();
 
         let result =
-            MemoryContextInjector::recall("rust async programming patterns", &mm, 5, 0.5).await;
+            MemoryContextInjector::recall("rust async programming patterns", &mm, 5, 0.5, None).await;
 
         assert!(
             result.contains("patterns live"),
@@ -389,7 +468,7 @@ mod tests {
         mm.load().await.unwrap();
 
         let result =
-            MemoryContextInjector::recall("rust async programming decayed", &mm, 5, 0.3).await;
+            MemoryContextInjector::recall("rust async programming decayed", &mm, 5, 0.3, None).await;
         // One Knowledge half-life → effective ≈ 0.9 * 0.5 = 0.45 → "{:.1}" = "0.5" or "0.4".
         assert!(
             result.contains("(importance: 0.4)") || result.contains("(importance: 0.5)"),
@@ -421,6 +500,7 @@ mod tests {
             &mm,
             5,
             0.5,
+            None,
         )
         .await;
         assert!(
@@ -450,6 +530,137 @@ mod tests {
         assert_eq!(
             from_disk.recall_count, 1,
             "recall_count bump must be persisted to project storage"
+        );
+    }
+
+    /// Shared fixture: three live project memories matching "rust programming".
+    /// Top-2 by effective importance are high + mid; cold is outside the top.
+    async fn setup_exploration_fixture() -> (MemoryManager, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = make_manager(&tmp);
+
+        let mut high = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Rust programming high ranked alpha fact",
+        )
+        .with_importance(0.95);
+        high.id = "explore-high".into();
+
+        let mut mid = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Rust programming mid ranked beta fact",
+        )
+        .with_importance(0.80);
+        mid.id = "explore-mid".into();
+
+        let mut cold = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Rust programming cold low ranked gamma fact",
+        )
+        .with_importance(0.55);
+        cold.id = "explore-cold".into();
+        cold.recall_count = 0;
+
+        mm.add_memory(high, MemoryOrigin::Project).await.unwrap();
+        mm.add_memory(mid, MemoryOrigin::Project).await.unwrap();
+        mm.add_memory(cold, MemoryOrigin::Project).await.unwrap();
+        mm.load().await.unwrap();
+        (mm, tmp)
+    }
+
+    #[tokio::test]
+    async fn recall_exploration_epsilon_zero_never_replaces() {
+        let (mm, _tmp) = setup_exploration_fixture().await;
+        // Default epsilon is 0. Even a forced explore_draw must not replace.
+        let block = MemoryContextInjector::recall(
+            "rust programming ranked fact",
+            &mm,
+            2,
+            0.5,
+            Some(true),
+        )
+        .await;
+
+        assert!(
+            block.contains("high ranked alpha"),
+            "top slot should remain: {block}"
+        );
+        assert!(
+            block.contains("mid ranked beta"),
+            "second slot should remain without exploration: {block}"
+        );
+        assert!(
+            !block.contains("cold low ranked gamma"),
+            "epsilon=0 must never inject the cold candidate: {block}"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_exploration_force_draw_replaces_lowest_with_cold() {
+        let (mm, _tmp) = setup_exploration_fixture().await;
+        let mm = mm.with_exploration_epsilon(1.0);
+
+        let block = MemoryContextInjector::recall(
+            "rust programming ranked fact",
+            &mm,
+            2,
+            0.5,
+            Some(true),
+        )
+        .await;
+
+        assert!(
+            block.contains("high ranked alpha"),
+            "highest-ranked slot must be kept: {block}"
+        );
+        assert!(
+            block.contains("cold low ranked gamma"),
+            "forced explore should inject the cold candidate: {block}"
+        );
+        assert!(
+            !block.contains("mid ranked beta"),
+            "lowest-ranked top slot should be replaced: {block}"
+        );
+        assert!(
+            mm.was_recently_explored("explore-cold").await,
+            "explored cold id should enter the session-local recent set"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_exploration_no_candidate_keeps_original_top() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = make_manager(&tmp).with_exploration_epsilon(1.0);
+
+        // Exactly top_n live memories → no cold candidate outside the top.
+        let mut a = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Rust programming only alpha slot",
+        )
+        .with_importance(0.9);
+        a.id = "only-a".into();
+        let mut b = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Rust programming only beta slot",
+        )
+        .with_importance(0.8);
+        b.id = "only-b".into();
+        mm.add_memory(a, MemoryOrigin::Project).await.unwrap();
+        mm.add_memory(b, MemoryOrigin::Project).await.unwrap();
+        mm.load().await.unwrap();
+
+        let block = MemoryContextInjector::recall(
+            "rust programming only slot",
+            &mm,
+            2,
+            0.5,
+            Some(true),
+        )
+        .await;
+
+        assert!(
+            block.contains("only alpha slot") && block.contains("only beta slot"),
+            "with no cold candidate, original top must be kept (no panic): {block}"
         );
     }
 
