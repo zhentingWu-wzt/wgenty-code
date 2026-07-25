@@ -70,57 +70,191 @@ fn meaningful_token_set(content: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// Closed (resolved/removed) state-change marker tokens. Matched as whole
+/// tokens only — never via raw substring `contains` — so `unresolved` /
+/// `fixed-width` do not false-trigger.
+const CLOSED_STATE_MARKERS: &[&str] = &[
+    "fixed",
+    "resolved",
+    "removed",
+    "deprecated",
+    "migrated",
+    "replaced",
+    "obsolete",
+    "deleted",
+    "disabled",
+];
+
+/// Open / still-pending polarity cues (whole-token).
+const OPEN_STATE_MARKERS: &[&str] = &[
+    "unresolved",
+    "unfixed",
+    "open",
+    "pending",
+    "exists",
+    "broken",
+];
+
+/// Multi-word closed phrase kept as a phrase (not split for matching).
+const CLOSED_STATE_PHRASES: &[&str] = &["no longer"];
+
+/// Multi-word open / negated closed phrases.
+const OPEN_STATE_PHRASES: &[&str] = &["not fixed", "not resolved", "still broken"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatePolarity {
+    /// Explicitly closed / resolved / removed.
+    Closed,
+    /// Explicitly open / unresolved / not fixed.
+    Open,
+    /// No state-change language detected.
+    None,
+}
+
+/// Split content into lowercase alphanumeric tokens (hyphens/underscores split
+/// compounds so `fixed-width` → `fixed`+`width` is *not* used; we keep
+/// hyphenated forms as a single non-marker token by treating non-alnum as
+/// separators only when producing bare words, then check whole tokens against
+/// markers via word-boundary scan on the original lowercased string).
+fn lowercase_word_tokens(content: &str) -> Vec<String> {
+    content
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_lowercase())
+        .collect()
+}
+
+/// True when `needle` appears in `haystack` as a whole token (bounded by
+/// non-alphanumeric edges). Hyphenated compounds like `fixed-width` do **not**
+/// match bare `fixed` because `-` is treated as an interior connector, not a
+/// boundary that ends the marker alone.
+fn has_whole_token(haystack_lower: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let h = haystack_lower.as_bytes();
+    let n = needle.as_bytes();
+    let mut start = 0;
+    while start + n.len() <= h.len() {
+        if let Some(rel) = haystack_lower[start..].find(needle) {
+            let i = start + rel;
+            let before_ok = i == 0 || !is_token_char(h[i - 1]);
+            let after = i + n.len();
+            let after_ok = after >= h.len() || !is_token_char(h[after]);
+            if before_ok && after_ok {
+                return true;
+            }
+            start = i + 1;
+        } else {
+            break;
+        }
+    }
+    false
+}
+
+fn is_token_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
+
+fn state_polarity(content: &str) -> StatePolarity {
+    let lower = content.to_lowercase();
+
+    // Phrase checks first (multi-word); open phrases win over closed substrings
+    // they may embed (e.g. "not fixed" before bare "fixed").
+    let has_open_phrase = OPEN_STATE_PHRASES
+        .iter()
+        .any(|p| has_whole_phrase(&lower, p));
+    let has_closed_phrase = CLOSED_STATE_PHRASES
+        .iter()
+        .any(|p| has_whole_phrase(&lower, p));
+
+    let tokens = lowercase_word_tokens(content);
+    let has_open_token = tokens
+        .iter()
+        .any(|t| OPEN_STATE_MARKERS.iter().any(|m| t == *m));
+    // Whole-token match: `fixed` matches, `fixed-width` / `unresolved` do not.
+    let has_closed_token = CLOSED_STATE_MARKERS
+        .iter()
+        .any(|m| has_whole_token(&lower, m));
+
+    let open = has_open_phrase || has_open_token;
+    let closed = has_closed_phrase || has_closed_token;
+
+    // Negated / open language dominates if both fire (e.g. "not fixed").
+    if open && !closed {
+        return StatePolarity::Open;
+    }
+    if open && closed {
+        // "not fixed" sets open phrase + closed token "fixed" — treat as Open.
+        if has_open_phrase {
+            return StatePolarity::Open;
+        }
+        // Both explicit without phrase negation: conservative None (no flip).
+        return StatePolarity::None;
+    }
+    if closed {
+        return StatePolarity::Closed;
+    }
+    StatePolarity::None
+}
+
+/// Whole-phrase match with token boundaries on both ends of the phrase.
+fn has_whole_phrase(haystack_lower: &str, phrase: &str) -> bool {
+    // Reuse whole-token logic treating the phrase as a unit whose interior
+    // spaces are allowed; boundaries still require non-token chars outside.
+    if phrase.is_empty() {
+        return false;
+    }
+    let h = haystack_lower.as_bytes();
+    let n = phrase.as_bytes();
+    let mut start = 0;
+    while start + n.len() <= h.len() {
+        if let Some(rel) = haystack_lower[start..].find(phrase) {
+            let i = start + rel;
+            let before_ok = i == 0 || !is_token_char(h[i - 1]);
+            let after = i + n.len();
+            let after_ok = after >= h.len() || !is_token_char(h[after]);
+            if before_ok && after_ok {
+                return true;
+            }
+            start = i + 1;
+        } else {
+            break;
+        }
+    }
+    false
+}
+
 /// State-change markers that, combined with high subject overlap, imply the new
-/// memory supersedes the old one. Checked primarily on the *new* content so
-/// "auth bug exists" alone does not look like a fix.
+/// memory supersedes the old one. Polarity-aware: open→closed is Contradicts;
+/// closed→closed refinement is not; negated forms (`unresolved`, `not fixed`)
+/// never count as closed markers.
 fn has_state_change_contradiction(
     new_content: &str,
     existing_content: &str,
     new_tokens: &std::collections::HashSet<String>,
     existing_tokens: &std::collections::HashSet<String>,
 ) -> bool {
-    const MARKERS: &[&str] = &[
-        "fixed",
-        "resolved",
-        "removed",
-        "deprecated",
-        "migrated",
-        "no longer",
-        "replaced",
-        "obsolete",
-        "deleted",
-        "disabled",
-    ];
+    let new_pol = state_polarity(new_content);
+    let existing_pol = state_polarity(existing_content);
 
-    let new_l = new_content.to_lowercase();
-    let existing_l = existing_content.to_lowercase();
-
-    let new_has_marker = MARKERS.iter().any(|m| new_l.contains(m));
-    if !new_has_marker {
+    // Only a closed new side can supersede via state-change language.
+    if new_pol != StatePolarity::Closed {
         return false;
     }
-    // If both sides already carry the same resolution language, treat as refine
-    // rather than a fresh supersede (conservative).
-    let existing_has_marker = MARKERS.iter().any(|m| existing_l.contains(m));
-    if existing_has_marker {
+    // Same closed polarity on both sides → refine, not supersede.
+    // Open → Closed is a real flip. None → Closed is a first resolution.
+    if existing_pol == StatePolarity::Closed {
         return false;
     }
 
-    // Require real subject overlap beyond the marker itself.
-    let marker_tokens: std::collections::HashSet<&str> = [
-        "fixed",
-        "resolved",
-        "removed",
-        "deprecated",
-        "migrated",
-        "longer",
-        "replaced",
-        "obsolete",
-        "deleted",
-        "disabled",
-    ]
-    .into_iter()
-    .collect();
+    // Require real subject overlap beyond marker vocabulary.
+    let marker_tokens: std::collections::HashSet<&str> = CLOSED_STATE_MARKERS
+        .iter()
+        .chain(OPEN_STATE_MARKERS.iter())
+        .chain(["no", "longer", "not", "still"].iter())
+        .copied()
+        .collect();
 
     let overlap: usize = new_tokens
         .intersection(existing_tokens)
@@ -1037,6 +1171,48 @@ mod tests {
             classify_relation(&new, &existing),
             MemoryRelation::Ambiguous,
             "competing alternatives without markers should stay Ambiguous"
+        );
+    }
+
+    #[test]
+    fn classify_relation_unresolved_substring_is_not_marker() {
+        // "unresolved" contains the substring "resolved" but is open-state language.
+        let existing =
+            MemoryEntry::new(MemoryType::Knowledge, "auth bug reported in login");
+        let new =
+            MemoryEntry::new(MemoryType::Knowledge, "auth bug unresolved in login");
+        assert_ne!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Contradicts,
+            "'unresolved' must not match marker via substring 'resolved'"
+        );
+    }
+
+    #[test]
+    fn classify_relation_unresolved_to_resolved_is_contradicts() {
+        // Both sides mention resolution vocabulary; polarity must flip open→closed.
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "auth bug unresolved");
+        let new = MemoryEntry::new(MemoryType::Knowledge, "auth bug resolved");
+        assert_eq!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Contradicts,
+            "unresolved → resolved polarity flip must supersede"
+        );
+    }
+
+    #[test]
+    fn classify_relation_fixed_width_is_not_state_marker() {
+        // Hyphenated "fixed-width" must not count as whole-token marker "fixed".
+        let existing =
+            MemoryEntry::new(MemoryType::Knowledge, "layout uses grid columns for forms");
+        let new = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "layout uses fixed-width columns for forms",
+        );
+        assert_ne!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Contradicts,
+            "'fixed-width' must not count as state-change marker 'fixed'"
         );
     }
 }
