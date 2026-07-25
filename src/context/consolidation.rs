@@ -7,6 +7,20 @@ use tokio::sync::RwLock;
 
 use super::{MemoryEntry, MemoryType};
 
+/// Per-type half-life in hours for effective-importance decay.
+///
+/// Shares the same TTL multipliers as [`ConsolidationEngine::should_keep`]:
+/// Knowledge/Preference ×4, Decision/Insight ×2, Error max(base/2, 1), else ×1.
+pub fn type_half_life_hours(memory_type: MemoryType, age_threshold_hours: u64) -> f64 {
+    let base = age_threshold_hours.max(1) as f64;
+    match memory_type {
+        MemoryType::Knowledge | MemoryType::Preference => base * 4.0,
+        MemoryType::Decision | MemoryType::Insight => base * 2.0,
+        MemoryType::Error => (base / 2.0).max(1.0),
+        MemoryType::Session | MemoryType::Conversation | MemoryType::Task => base,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsolidationConfig {
     pub max_memories: usize,
@@ -144,16 +158,8 @@ impl ConsolidationEngine {
         let age = age_hours.max(0) as u64;
         let base = self.config.age_threshold_hours.max(1);
 
-        let ttl = match memory.memory_type {
-            // Durable but not immortal: low-value knowledge eventually decays.
-            MemoryType::Knowledge | MemoryType::Preference => base.saturating_mul(4),
-            // Stable decisions / insights last longer than session noise.
-            MemoryType::Decision | MemoryType::Insight => base.saturating_mul(2),
-            // Errors go stale quickly.
-            MemoryType::Error => (base / 2).max(1),
-            // Session/task/conversation noise expires at the base TTL.
-            MemoryType::Session | MemoryType::Conversation | MemoryType::Task => base,
-        };
+        let ttl = type_half_life_hours(memory.memory_type.clone(), base).round() as u64;
+        let ttl = ttl.max(1);
 
         age < ttl
     }
@@ -354,6 +360,13 @@ impl ConsolidationEngine {
             importance,
             tags,
             metadata: existing.metadata.clone(),
+            // Feedback counters stay on the surviving entry; Compatible path
+            // will call reinforce() after merge. Task 1 keeps fields intact.
+            recall_count: existing.recall_count,
+            hit_count: existing.hit_count,
+            last_reinforced_at: existing.last_reinforced_at,
+            superseded_by: existing.superseded_by.clone(),
+            stale_marked_at: existing.stale_marked_at,
         }
     }
 

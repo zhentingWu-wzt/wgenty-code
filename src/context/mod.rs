@@ -30,6 +30,13 @@ pub use memory_session::{
 };
 pub use storage::{Storage, StorageBackend};
 
+/// Runtime parameters for [`MemoryEntry::effective_importance`].
+#[derive(Debug, Clone, Copy)]
+pub struct EffectiveImportanceCfg {
+    pub age_threshold_hours: u64,
+    pub staleness_penalty: f32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryEntry {
     pub id: String,
@@ -39,6 +46,21 @@ pub struct MemoryEntry {
     pub importance: f32,
     pub tags: Vec<String>,
     pub metadata: HashMap<String, serde_json::Value>,
+    /// Times injected into `<memory-context>`.
+    #[serde(default)]
+    pub recall_count: u32,
+    /// Positive feedback count (Compatible `reinforce`).
+    #[serde(default)]
+    pub hit_count: u32,
+    /// Decay anchor; `None` → use `timestamp` until first consolidate anchors.
+    #[serde(default)]
+    pub last_reinforced_at: Option<DateTime<Utc>>,
+    /// Tombstone target id when this entry is superseded.
+    #[serde(default)]
+    pub superseded_by: Option<String>,
+    /// Idempotent codebase-staleness mark.
+    #[serde(default)]
+    pub stale_marked_at: Option<DateTime<Utc>>,
     // Note: the `embedding` field was removed — it was never populated
     // anywhere and inflated every serialized JSON file. Old JSON files
     // containing `"embedding": null` still deserialize correctly because
@@ -55,6 +77,11 @@ impl MemoryEntry {
             importance: 0.5,
             tags: Vec::new(),
             metadata: HashMap::new(),
+            recall_count: 0,
+            hit_count: 0,
+            last_reinforced_at: None,
+            superseded_by: None,
+            stale_marked_at: None,
         }
     }
 
@@ -71,6 +98,33 @@ impl MemoryEntry {
     pub fn with_metadata(mut self, key: &str, value: serde_json::Value) -> Self {
         self.metadata.insert(key.to_string(), value);
         self
+    }
+
+    /// Record positive feedback. Does **not** raise base `importance`.
+    pub fn reinforce(&mut self, now: DateTime<Utc>) {
+        self.hit_count = self.hit_count.saturating_add(1);
+        self.last_reinforced_at = Some(now);
+    }
+
+    /// Pure effective importance used for recall ranking / retention.
+    pub fn effective_importance(&self, now: DateTime<Utc>, cfg: &EffectiveImportanceCfg) -> f32 {
+        if self.superseded_by.is_some() {
+            return 0.0;
+        }
+        let anchor = self.last_reinforced_at.unwrap_or(self.timestamp);
+        let hours = (now - anchor).num_minutes().max(0) as f64 / 60.0;
+        let half =
+            consolidation::type_half_life_hours(self.memory_type.clone(), cfg.age_threshold_hours)
+                .max(1e-6);
+        let decay = (-std::f64::consts::LN_2 * hours / half).exp() as f32;
+        let hitrate = (self.hit_count as f32 + 1.0) / (self.recall_count as f32 + 2.0);
+        let hit_factor = 0.5 + 0.5 * hitrate;
+        let stale_mul = if self.stale_marked_at.is_some() {
+            cfg.staleness_penalty
+        } else {
+            1.0
+        };
+        self.importance * decay * hit_factor * stale_mul
     }
 }
 
@@ -1041,6 +1095,118 @@ mod tests {
             MemoryType::Decision => {}
             _ => panic!("MemoryType::Decision variant pattern mismatch"),
         }
+    }
+
+    #[test]
+    fn legacy_memory_json_defaults_feedback_fields() {
+        let raw = r#"{
+            "id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "memory_type":"Knowledge",
+            "content":"old",
+            "timestamp":"2020-01-01T00:00:00Z",
+            "importance":0.8,
+            "tags":[],
+            "metadata":{}
+        }"#;
+        let e: MemoryEntry = serde_json::from_str(raw).unwrap();
+        assert_eq!(e.recall_count, 0);
+        assert_eq!(e.hit_count, 0);
+        assert!(e.last_reinforced_at.is_none());
+        assert!(e.superseded_by.is_none());
+        assert!(e.stale_marked_at.is_none());
+    }
+
+    #[test]
+    fn effective_importance_superseded_is_zero() {
+        let now = Utc::now();
+        let mut e = MemoryEntry::new(MemoryType::Knowledge, "x").with_importance(0.9);
+        e.superseded_by = Some("other-id".into());
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+        assert_eq!(e.effective_importance(now, &cfg), 0.0);
+    }
+
+    #[test]
+    fn effective_importance_never_recalled_hitrate_neutral() {
+        // Laplace prior: hitrate = (0+1)/(0+2) = 0.5 → hit_factor = 0.5 + 0.5*0.5 = 0.75
+        let now = Utc::now();
+        let mut e = MemoryEntry::new(MemoryType::Knowledge, "x").with_importance(0.8);
+        e.timestamp = now;
+        e.last_reinforced_at = None;
+        e.recall_count = 0;
+        e.hit_count = 0;
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+        let eff = e.effective_importance(now, &cfg);
+        let expected = 0.8 * 0.75;
+        assert!(
+            (eff - expected).abs() < 1e-5,
+            "expected {expected}, got {eff}"
+        );
+    }
+
+    #[test]
+    fn effective_importance_decays_with_age() {
+        let now = Utc::now();
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+        let mut fresh = MemoryEntry::new(MemoryType::Knowledge, "x").with_importance(0.8);
+        fresh.timestamp = now;
+        fresh.last_reinforced_at = Some(now);
+
+        let mut aged = MemoryEntry::new(MemoryType::Knowledge, "y").with_importance(0.8);
+        aged.timestamp = now - chrono::Duration::hours(192); // one Knowledge half-life (48*4)
+        aged.last_reinforced_at = Some(aged.timestamp);
+
+        let eff_fresh = fresh.effective_importance(now, &cfg);
+        let eff_aged = aged.effective_importance(now, &cfg);
+        assert!(
+            eff_aged < eff_fresh,
+            "aged ({eff_aged}) should be below fresh ({eff_fresh})"
+        );
+        // At exactly one half-life, decay ≈ 0.5 → effective ≈ 0.8 * 0.5 * 0.75
+        let expected_aged = 0.8 * 0.5 * 0.75;
+        assert!(
+            (eff_aged - expected_aged).abs() < 1e-3,
+            "expected ~{expected_aged}, got {eff_aged}"
+        );
+    }
+
+    #[test]
+    fn effective_importance_stale_multiplier() {
+        let now = Utc::now();
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+        let mut e = MemoryEntry::new(MemoryType::Knowledge, "x").with_importance(0.8);
+        e.timestamp = now;
+        e.last_reinforced_at = Some(now);
+        let base = e.effective_importance(now, &cfg);
+        e.stale_marked_at = Some(now);
+        let stale = e.effective_importance(now, &cfg);
+        assert!(
+            (stale - base * cfg.staleness_penalty).abs() < 1e-5,
+            "stale={stale}, base={base}"
+        );
+    }
+
+    #[test]
+    fn reinforce_bumps_hit_and_anchor_without_raising_importance() {
+        let t0 = Utc::now();
+        let mut e = MemoryEntry::new(MemoryType::Preference, "pref").with_importance(0.4);
+        assert_eq!(e.hit_count, 0);
+        assert!(e.last_reinforced_at.is_none());
+        e.reinforce(t0);
+        assert_eq!(e.hit_count, 1);
+        assert_eq!(e.last_reinforced_at, Some(t0));
+        assert!((e.importance - 0.4).abs() < f32::EPSILON);
     }
 
     #[tokio::test]
