@@ -45,9 +45,9 @@
 
 ## M5 — Optional exploration
 
-- [ ] 5.1 Config `exploration_epsilon` default **0.0**
-- [ ] 5.2 When epsilon > 0, with that probability replace lowest-ranked injected project memory with low-effective, non-superseded, not-recently-recalled candidate; maintain session-local recent set
-- [ ] 5.3 Tests: epsilon=0 disables; epsilon=1 with fixture replaces slot when candidate exists
+- [x] 5.1 Config `exploration_epsilon` default **0.0**
+- [x] 5.2 When epsilon > 0, with that probability replace lowest-ranked injected project memory with low-effective, non-superseded, not-recently-recalled candidate; maintain session-local recent set
+- [x] 5.3 Tests: epsilon=0 disables; epsilon=1 with fixture replaces slot when candidate exists
 
 ## M6 — First-consolidate anchor migration & config surface
 

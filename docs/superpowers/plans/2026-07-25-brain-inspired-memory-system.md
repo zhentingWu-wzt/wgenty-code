@@ -382,22 +382,22 @@ EOF
 
 ---
 
-### Task 7: Optional exploration (default off)
+### Task 7: Optional exploration (default off) ✅
 
 **Files:**
 - Modify: `src/context/inject.rs`
 
 **对齐 tasks.md:** 5.1–5.3
 
-- [ ] **Step 1: 测试 epsilon=0 永不替换**（可用固定 seed 或注入 `Rng`；最简单：epsilon=0 断言集合不变）
+- [x] **Step 1: 测试 epsilon=0 永不替换**（可用固定 seed 或注入 `Rng`；最简单：epsilon=0 断言集合不变）
 
-- [ ] **Step 2: epsilon=1 且存在冷候选时替换最低档**
+- [x] **Step 2: epsilon=1 且存在冷候选时替换最低档**
 
 实现可用 `rand` 若项目已有；否则 `use std::collections::hash_map::DefaultHasher` 基于 turn 不稳定亦可，但测试需可注入布尔 `force_explore` 测试钩 `#[cfg(test)]`。
 
 **推荐：** `recall(..., explore_draw: Option<bool>)` 仅测试覆盖；生产路径 `explore_draw=None` → 内部 bernoulli(epsilon)。
 
-- [ ] **Step 3: commit**
+- [x] **Step 3: commit**
 
 ```bash
 git commit -m "$(cat <<'EOF'
