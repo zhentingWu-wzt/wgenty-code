@@ -45,7 +45,7 @@ base-ref: 479ff8026237a601d9caf33b25b858ac39a86899
 
 ---
 
-### Task 1: MemoryEntry 字段 + effective_importance + serde
+### Task 1: MemoryEntry 字段 + effective_importance + serde ✅
 
 **Files:**
 - Modify: `src/context/mod.rs`
@@ -53,7 +53,7 @@ base-ref: 479ff8026237a601d9caf33b25b858ac39a86899
 
 **对齐 tasks.md:** 1.1–1.6
 
-- [ ] **Step 1: 写失败测试 — legacy JSON 与 effective 曲线**
+- [x] **Step 1: 写失败测试 — legacy JSON 与 effective 曲线**
 
 在 `src/context/mod.rs` 测试模块增加：
 
@@ -90,7 +90,7 @@ fn effective_importance_decays_with_age() { /* same base, different anchor */ }
 fn effective_importance_stale_multiplier() { /* stale_marked_at Some → * penalty */ }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 ```bash
 cargo test -p wgenty-code legacy_memory_json_defaults_feedback_fields effective_importance -- --nocapture
@@ -98,7 +98,7 @@ cargo test -p wgenty-code legacy_memory_json_defaults_feedback_fields effective_
 
 （按实际 package 名调整；若是 bin/lib 一体则 `cargo test legacy_memory_json`）
 
-- [ ] **Step 3: 实现字段与 API**
+- [x] **Step 3: 实现字段与 API**
 
 ```rust
 // MemoryEntry 新增（均 #[serde(default)]）
@@ -140,13 +140,13 @@ pub fn effective_importance(&self, now: DateTime<Utc>, cfg: &EffectiveImportance
 
 `EffectiveImportanceCfg { age_threshold_hours, staleness_penalty }` 可先简单 struct。
 
-- [ ] **Step 4: 测试通过**
+- [x] **Step 4: 测试通过**
 
 ```bash
 cargo test legacy_memory_json effective_importance
 ```
 
-- [ ] **Step 5: 勾选 tasks.md 1.1–1.6 并 commit**
+- [x] **Step 5: 勾选 tasks.md 1.1–1.6 并 commit**
 
 ```bash
 git add src/context/mod.rs src/context/consolidation.rs openspec/changes/brain-inspired-memory-system/tasks.md
