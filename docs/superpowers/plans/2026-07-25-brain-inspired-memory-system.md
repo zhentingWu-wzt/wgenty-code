@@ -199,7 +199,7 @@ EOF
 
 ---
 
-### Task 3: Wire effective into recall / global / should_keep / list
+### Task 3: Wire effective into recall / global / should_keep / list ✅
 
 **Files:**
 - Modify: `src/context/inject.rs`
@@ -208,11 +208,11 @@ EOF
 
 **对齐 tasks.md:** 2.1–2.3, 2.5–2.6（2.4 在 Task 4）
 
-- [ ] **Step 1: 失败测试** — superseded 不进 recall 排序；list 按 effective；should_keep 对 superseded/effective 低者
+- [x] **Step 1: 失败测试** — superseded 不进 recall 排序；list 按 effective；should_keep 对 superseded/effective 低者
 
 复用 `MemoryManager::new_for_test`。
 
-- [ ] **Step 2: 实现**
+- [x] **Step 2: 实现**
 
 `inject::recall`:
 
@@ -226,9 +226,9 @@ EOF
 
 `should_keep`：高 effective 保；否则用 age vs type TTL（与 half-life 一致）。注意：原先 `importance >= threshold` 永留 → 改为 effective 比较。
 
-- [ ] **Step 3: 修现有 inject 测试**（它们按 raw importance 断言）
+- [x] **Step 3: 修现有 inject 测试**（它们按 raw importance 断言）
 
-- [ ] **Step 4: commit**
+- [x] **Step 4: commit**
 
 ```bash
 git commit -m "$(cat <<'EOF'
