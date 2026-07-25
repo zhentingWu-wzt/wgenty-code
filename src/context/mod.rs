@@ -376,6 +376,8 @@ pub struct MemoryManager {
     staleness_penalty: f32,
     /// Half-life hours for age decay in effective importance.
     age_threshold_hours: u64,
+    /// Explicit project root for path-staleness checks (not derived from storage).
+    project_root: PathBuf,
 }
 
 impl MemoryManager {
@@ -431,7 +433,7 @@ impl MemoryManager {
             Self::create_dual_storage(&project_root, crate::utils::global_memory_dir());
 
         Self {
-            sessions: Arc::new(MemorySessionManager::with_project_root(project_root)),
+            sessions: Arc::new(MemorySessionManager::with_project_root(project_root.clone())),
             history: Arc::new(HistoryManager::new()),
             project_storage,
             global_storage,
@@ -446,6 +448,7 @@ impl MemoryManager {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
+            project_root,
         }
     }
 
@@ -468,7 +471,7 @@ impl MemoryManager {
         let mem = &settings.storage.memory;
 
         Self {
-            sessions: Arc::new(MemorySessionManager::with_project_root(project_root)),
+            sessions: Arc::new(MemorySessionManager::with_project_root(project_root.clone())),
             history: Arc::new(HistoryManager::new()),
             project_storage,
             global_storage,
@@ -483,6 +486,7 @@ impl MemoryManager {
             staleness_check: mem.staleness_check,
             staleness_penalty: mem.staleness_penalty,
             age_threshold_hours: mem.age_threshold_hours,
+            project_root,
         }
     }
 
@@ -494,7 +498,7 @@ impl MemoryManager {
         let (project_storage, global_storage) =
             Self::create_dual_storage(&project_root, global_dir);
         Self {
-            sessions: Arc::new(MemorySessionManager::with_project_root(project_root)),
+            sessions: Arc::new(MemorySessionManager::with_project_root(project_root.clone())),
             history: Arc::new(HistoryManager::new()),
             project_storage,
             global_storage,
@@ -509,6 +513,7 @@ impl MemoryManager {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
+            project_root,
         }
     }
 
@@ -877,14 +882,14 @@ impl MemoryManager {
             flag: self.consolidating.clone(),
         };
         let mut global = self.global_memories.write().await;
-        // Same anchor + optional path-staleness prepass as project consolidate.
-        // Path checks still use the project root (codebase grounding).
-        let project_root = self.project_root_for_paths();
+        // Global pool: anchor migration only. Path-staleness is project-scoped
+        // (codebase grounding against the current project root must not apply
+        // to cross-project global memories).
         consolidation::apply_consolidate_prepass(
             &mut global,
-            &project_root,
+            &self.project_root,
             Utc::now(),
-            self.staleness_check,
+            false, // never path-stale global memories
         );
         let consolidated_global = self.consolidation.consolidate(&global).await?;
         self.global_storage.reconcile(&consolidated_global).await?;
@@ -967,10 +972,9 @@ impl MemoryManager {
         // Prepass (LLM-free): anchor last_reinforced_at + optional all-missing
         // path staleness. Must run under the write lock before the engine so
         // retention sees effective importance with stale multipliers.
-        let project_root = self.project_root_for_paths();
         consolidation::apply_consolidate_prepass(
             &mut memories,
-            &project_root,
+            &self.project_root,
             Utc::now(),
             self.staleness_check,
         );
@@ -994,18 +998,6 @@ impl MemoryManager {
         Ok(())
     }
 
-    /// Best-effort project root for relative path existence checks.
-    ///
-    /// Storage lives at `<project_root>/.wgenty-code/memory`; peel two parents.
-    /// Falls back to CWD if the layout is unexpected (e.g. global fallback).
-    fn project_root_for_paths(&self) -> PathBuf {
-        let storage_path = self.project_storage.path();
-        storage_path
-            .parent() // .wgenty-code
-            .and_then(|p| p.parent()) // project root
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(crate::utils::current_project_root)
-    }
 
     pub async fn load(&self) -> anyhow::Result<()> {
         // Load project memories and index them for TF-IDF recall.
@@ -1414,6 +1406,7 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
+        project_root: tmp.path().to_path_buf(),
         };
 
         // Pre-populate with one memory.
@@ -1465,6 +1458,7 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
+        project_root: tmp.path().to_path_buf(),
         };
 
         // Before consolidation, last_consolidation should be None.
@@ -1596,6 +1590,7 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
+        project_root: tmp.path().to_path_buf(),
         };
 
         // Pre-populate a session and a history entry on disk.
@@ -1626,6 +1621,7 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
+        project_root: tmp.path().to_path_buf(),
         };
 
         // Before load(), the in-memory caches are empty.
@@ -1685,6 +1681,7 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
+        project_root: tmp.path().to_path_buf(),
         };
 
         // First extraction: a decision captured during compaction.
@@ -1765,6 +1762,7 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
+        project_root: tmp.path().to_path_buf(),
         };
 
         let entry = MemoryEntry::new(MemoryType::Knowledge, "a brand new fact");
@@ -1802,6 +1800,7 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
+        project_root: tmp.path().to_path_buf(),
         };
 
         // First entry.
@@ -1850,6 +1849,7 @@ mod tests {
             staleness_check: true,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
+        project_root: tmp.path().to_path_buf(),
         };
 
         // idx 0: survives consolidation (Knowledge is always kept).
@@ -2205,6 +2205,19 @@ mod tests {
         );
         // Base importance never multiplied by staleness.
         assert!((memories[0].importance - 0.9).abs() < 1e-5);
+        // Effective importance must apply staleness_penalty.
+        let cfg = mm.effective_importance_cfg();
+        let now = Utc::now();
+        let eff = memories[0].effective_importance(now, &cfg);
+        let unstale = {
+            let mut clone = memories[0].clone();
+            clone.stale_marked_at = None;
+            clone.effective_importance(now, &cfg)
+        };
+        assert!(
+            (eff - unstale * cfg.staleness_penalty).abs() < 1e-5,
+            "effective after mark must be downweighted by staleness_penalty: eff={eff} unstale={unstale}"
+        );
     }
 
     #[tokio::test]
@@ -2249,19 +2262,25 @@ mod tests {
         mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
 
         mm.consolidate().await.unwrap();
-        let first_mark = {
+        let (first_mark, first_anchor) = {
             let memories = mm.memories.read().await;
             assert_eq!(memories.len(), 1);
             let mark = memories[0].stale_marked_at;
             assert!(mark.is_some());
             assert!((memories[0].importance - 0.85).abs() < 1e-5);
-            mark
+            let anchor = memories[0].last_reinforced_at;
+            assert!(anchor.is_some());
+            (mark, anchor)
         };
 
-        // Second pass: no-op on mark, base importance unchanged.
+        // Second pass: no-op on mark/anchor, base importance unchanged.
         mm.consolidate().await.unwrap();
         let memories = mm.memories.read().await;
         assert_eq!(memories[0].stale_marked_at, first_mark);
+        assert_eq!(
+            memories[0].last_reinforced_at, first_anchor,
+            "second consolidate must leave existing last_reinforced_at unchanged"
+        );
         assert!((memories[0].importance - 0.85).abs() < 1e-5);
     }
 
@@ -2286,6 +2305,7 @@ mod tests {
             staleness_check: false,
             staleness_penalty: 0.5,
             age_threshold_hours: 48,
+        project_root: tmp.path().to_path_buf(),
         };
 
         let entry = MemoryEntry::new(
@@ -2323,5 +2343,66 @@ mod tests {
         assert_eq!(memories.len(), 1);
         assert!(memories[0].stale_marked_at.is_none());
         assert!(memories[0].last_reinforced_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn consolidate_existing_only_paths_does_not_mark_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let existing_a = root.join("src/exists_a.rs");
+        let existing_b = root.join("lib/exists_b.ts");
+        tokio::fs::create_dir_all(existing_a.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(existing_b.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&existing_a, b"fn a() {}").await.unwrap();
+        tokio::fs::write(&existing_b, b"export const b = 1;").await.unwrap();
+
+        let mm = MemoryManager::new_for_test(root.to_path_buf(), root.join("global"));
+        let entry = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "see src/exists_a.rs and lib/exists_b.ts",
+        )
+        .with_importance(0.9);
+        mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
+        mm.consolidate().await.unwrap();
+
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 1);
+        assert!(
+            memories[0].stale_marked_at.is_none(),
+            "all-existing extractable paths must NOT mark stale"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_global_pool_does_not_path_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let mm = MemoryManager::new_for_test(root.to_path_buf(), root.join("global"));
+
+        // Global memory points at a missing project-relative path. Global
+        // prepass must still anchor but must NOT path-stale.
+        let entry = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "global tip about src/does_not_exist_global_only.rs",
+        )
+        .with_importance(0.9);
+        mm.add_memory(entry, MemoryOrigin::Global).await.unwrap();
+
+        mm.prune().await.unwrap();
+
+        let global = mm.global_memories.read().await;
+        assert_eq!(global.len(), 1);
+        assert!(
+            global[0].last_reinforced_at.is_some(),
+            "global prepass still anchors"
+        );
+        assert!(
+            global[0].stale_marked_at.is_none(),
+            "global pool must not run path-staleness against project root"
+        );
     }
 }
