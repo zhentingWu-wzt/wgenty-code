@@ -38,10 +38,10 @@
 
 ## M4 — Idempotent codebase staleness in `consolidate`
 
-- [ ] 4.1 Path-extraction helper + filesystem existence check; gated by `staleness_check`
-- [ ] 4.2 Mark only when **all** extracted paths are missing; if not yet marked set `stale_marked_at`; **do not** multiply base `importance`; **do not** refresh `last_reinforced_at`; partial-missing does not mark
-- [ ] 4.3 Second consolidate on same entry is no-op for staleness
-- [ ] 4.4 Tests: all-missing marked once; partial-missing unmarked; existing-only untouched; consolidate remains LLM-free; effective reflects penalty after mark
+- [x] 4.1 Path-extraction helper + filesystem existence check; gated by `staleness_check`
+- [x] 4.2 Mark only when **all** extracted paths are missing; if not yet marked set `stale_marked_at`; **do not** multiply base `importance`; **do not** refresh `last_reinforced_at`; partial-missing does not mark
+- [x] 4.3 Second consolidate on same entry is no-op for staleness
+- [x] 4.4 Tests: all-missing marked once; partial-missing unmarked; existing-only untouched; consolidate remains LLM-free; effective reflects penalty after mark
 
 ## M5 — Optional exploration
 
@@ -51,7 +51,7 @@
 
 ## M6 — First-consolidate anchor migration & config surface
 
-- [ ] 6.1 On consolidate (or dream entry that calls consolidate): for each memory with `last_reinforced_at=None`, set `Some(now)` once and persist (idempotent)
+- [x] 6.1 On consolidate (or dream entry that calls consolidate): for each memory with `last_reinforced_at=None`, set `Some(now)` once and persist (idempotent)
 - [x] 6.2 Add settings keys + defaults: `exploration_epsilon`, `staleness_check`, `staleness_penalty`（`supersede_penalty` only if still used; prefer tombstone-only）
 - [ ] 6.3 Thread config into effective_importance / inject / consolidate
 - [ ] 6.4 Update `WGENTY.md` memory config table

@@ -330,7 +330,7 @@ EOF
 
 ---
 
-### Task 6: consolidate anchor + idempotent all-missing staleness
+### Task 6: consolidate anchor + idempotent all-missing staleness ✅
 
 **Files:**
 - Modify: `src/context/mod.rs` `consolidate`（及 global prune 路径如对称）
@@ -338,7 +338,7 @@ EOF
 
 **对齐 tasks.md:** 4.1–4.4, 6.1
 
-- [ ] **Step 1: 失败测试**
+- [x] **Step 1: 失败测试**
 
 - 无 `last_reinforced_at` → consolidate 后 Some  
 - content `src/does_not_exist_12345.rs` only → stale_marked  
@@ -347,7 +347,7 @@ EOF
 
 使用 tempdir project_root + `new_for_test`。
 
-- [ ] **Step 2: 在 consolidate 写锁内、engine 前**
+- [x] **Step 2: 在 consolidate 写锁内、engine 前**
 
 ```rust
 let now = Utc::now();
@@ -367,9 +367,9 @@ for m in memories.iter_mut() {
 
 Path regex：保守匹配相对路径 / `src/` + 常见后缀；绝对路径若出现可 probe。
 
-- [ ] **Step 3: should_keep 已用 effective（Task 3）— 确认 stale 降权影响保留**
+- [x] **Step 3: should_keep 已用 effective（Task 3）— 确认 stale 降权影响保留**
 
-- [ ] **Step 4: commit**
+- [x] **Step 4: commit**
 
 ```bash
 git commit -m "$(cat <<'EOF'
