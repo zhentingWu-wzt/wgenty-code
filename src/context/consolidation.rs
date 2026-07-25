@@ -21,6 +21,213 @@ pub fn type_half_life_hours(memory_type: MemoryType, age_threshold_hours: u64) -
     }
 }
 
+/// Tier-1 relation between a new memory and a similar existing one.
+///
+/// Conservative: prefer [`MemoryRelation::Ambiguous`] over false
+/// [`MemoryRelation::Contradicts`] (see design §M2 / D4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryRelation {
+    Compatible,
+    Contradicts,
+    Ambiguous,
+}
+
+/// Classify how `new` relates to a Jaccard-similar `existing` memory.
+///
+/// Heuristics (local, LLM-free):
+/// - **Contradicts**: high content similarity plus a state-change marker in the
+///   *new* text (fixed/resolved/removed/…), or a shared key-like token with a
+///   clear numeric drift (e.g. `max_tokens=128000` vs `max_tokens=4096`).
+/// - **Compatible**: one meaningful-token set is a non-trivial subset of the
+///   other (same-direction refinement), without contradiction signals.
+/// - **Ambiguous**: everything else (including competing alternatives).
+pub fn classify_relation(new: &MemoryEntry, existing: &MemoryEntry) -> MemoryRelation {
+    let new_tokens = meaningful_token_set(&new.content);
+    let existing_tokens = meaningful_token_set(&existing.content);
+
+    if has_numeric_value_drift(&new.content, &existing.content)
+        || has_state_change_contradiction(&new.content, &existing.content, &new_tokens, &existing_tokens)
+    {
+        return MemoryRelation::Contradicts;
+    }
+
+    // Subset / same-direction refinement (mirrors content_similarity's subset boost).
+    let min_len = new_tokens.len().min(existing_tokens.len());
+    if min_len >= 1
+        && (new_tokens.is_subset(&existing_tokens) || existing_tokens.is_subset(&new_tokens))
+    {
+        return MemoryRelation::Compatible;
+    }
+
+    MemoryRelation::Ambiguous
+}
+
+fn meaningful_token_set(content: &str) -> std::collections::HashSet<String> {
+    content
+        .split_whitespace()
+        .filter(|w| ConsolidationEngine::is_meaningful_token(w))
+        .map(|w| w.to_lowercase())
+        .collect()
+}
+
+/// State-change markers that, combined with high subject overlap, imply the new
+/// memory supersedes the old one. Checked primarily on the *new* content so
+/// "auth bug exists" alone does not look like a fix.
+fn has_state_change_contradiction(
+    new_content: &str,
+    existing_content: &str,
+    new_tokens: &std::collections::HashSet<String>,
+    existing_tokens: &std::collections::HashSet<String>,
+) -> bool {
+    const MARKERS: &[&str] = &[
+        "fixed",
+        "resolved",
+        "removed",
+        "deprecated",
+        "migrated",
+        "no longer",
+        "replaced",
+        "obsolete",
+        "deleted",
+        "disabled",
+    ];
+
+    let new_l = new_content.to_lowercase();
+    let existing_l = existing_content.to_lowercase();
+
+    let new_has_marker = MARKERS.iter().any(|m| new_l.contains(m));
+    if !new_has_marker {
+        return false;
+    }
+    // If both sides already carry the same resolution language, treat as refine
+    // rather than a fresh supersede (conservative).
+    let existing_has_marker = MARKERS.iter().any(|m| existing_l.contains(m));
+    if existing_has_marker {
+        return false;
+    }
+
+    // Require real subject overlap beyond the marker itself.
+    let marker_tokens: std::collections::HashSet<&str> = [
+        "fixed",
+        "resolved",
+        "removed",
+        "deprecated",
+        "migrated",
+        "longer",
+        "replaced",
+        "obsolete",
+        "deleted",
+        "disabled",
+    ]
+    .into_iter()
+    .collect();
+
+    let overlap: usize = new_tokens
+        .intersection(existing_tokens)
+        .filter(|t| !marker_tokens.contains(t.as_str()))
+        .count();
+    // "auth bug exists" ∩ "auth bug fixed" → {auth, bug} after filtering markers.
+    overlap >= 1
+        && ConsolidationEngine::content_similarity(
+            &MemoryEntry::new(MemoryType::Knowledge, new_content),
+            &MemoryEntry::new(MemoryType::Knowledge, existing_content),
+        ) >= 0.5
+}
+
+/// Detect shared key-like stems with differing numeric values, e.g.
+/// `max_tokens=128000` vs `max_tokens=4096`, or `port:8080` vs `port:3000`.
+fn has_numeric_value_drift(new_content: &str, existing_content: &str) -> bool {
+    let new_pairs = extract_key_numeric_pairs(new_content);
+    let existing_pairs = extract_key_numeric_pairs(existing_content);
+    if new_pairs.is_empty() || existing_pairs.is_empty() {
+        return false;
+    }
+
+    for (key, new_val) in &new_pairs {
+        if let Some(old_val) = existing_pairs.get(key) {
+            if new_val != old_val {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn extract_key_numeric_pairs(content: &str) -> std::collections::HashMap<String, String> {
+    // Match key=number / key:number / key = number (alnum/_/- keys, length ≥ 3).
+    // Also accept glued forms already present as single whitespace tokens.
+    let mut pairs = std::collections::HashMap::new();
+    let lower = content.to_lowercase();
+
+    // Scan whitespace tokens and also run a light char-level pass for `key=val`.
+    for raw in lower.split_whitespace() {
+        let token = raw.trim_matches(|c: char| matches!(c, ',' | ';' | '.' | ')' | '(' | '"' | '\''));
+        if let Some((k, v)) = split_key_numeric(token) {
+            pairs.insert(k, v);
+        }
+    }
+
+    // Character-level: catch `max_tokens=128000` even if punctuation glued oddly.
+    let bytes = lower.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+            let start = i;
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'-')
+            {
+                i += 1;
+            }
+            let key = &lower[start..i];
+            // skip spaces
+            let mut j = i;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && (bytes[j] == b'=' || bytes[j] == b':') {
+                j += 1;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                let num_start = j;
+                while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == b'.') {
+                    j += 1;
+                }
+                if j > num_start && key.len() >= 3 {
+                    let val = &lower[num_start..j];
+                    if val.chars().any(|c| c.is_ascii_digit()) {
+                        pairs.insert(key.to_string(), val.to_string());
+                    }
+                }
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    pairs
+}
+
+fn split_key_numeric(token: &str) -> Option<(String, String)> {
+    for sep in ['=', ':'] {
+        if let Some((k, v)) = token.split_once(sep) {
+            let k = k.trim();
+            let v = v.trim();
+            if k.len() >= 3
+                && k.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                && !v.is_empty()
+                && v.chars().all(|c| c.is_ascii_digit() || c == '.')
+                && v.chars().any(|c| c.is_ascii_digit())
+            {
+                return Some((k.to_string(), v.to_string()));
+            }
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsolidationConfig {
     pub max_memories: usize,
@@ -261,12 +468,18 @@ impl ConsolidationEngine {
         require_same_type: bool,
     ) -> Option<usize> {
         others.iter().position(|other| {
+            // Tombstoned entries are not merge/supersede targets; the live
+            // replacement (or another live near-dup) should win instead.
+            if other.superseded_by.is_some() {
+                return false;
+            }
             let sim = if require_same_type {
                 self.calculate_similarity(entry, other)
             } else {
                 Self::content_similarity(entry, other)
             };
-            sim > threshold
+            // Spec / add_memory gate is Jaccard >= threshold (inclusive).
+            sim >= threshold
         })
     }
 
@@ -768,5 +981,62 @@ mod tests {
         settings.staleness_penalty = 0.25;
         let cfg = ConsolidationConfig::from_memory_settings(&settings);
         assert!((cfg.staleness_penalty - 0.25).abs() < f32::EPSILON);
+    }
+
+    // ── classify_relation gold cases (Task 5 / M2) ──────────────────────
+
+    #[test]
+    fn classify_relation_state_change_marker_is_contradicts() {
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "auth bug exists");
+        let new = MemoryEntry::new(MemoryType::Knowledge, "auth bug fixed");
+        assert_eq!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Contradicts,
+            "state-change marker 'fixed' with shared subject must supersede"
+        );
+    }
+
+    #[test]
+    fn classify_relation_numeric_drift_is_contradicts() {
+        let existing =
+            MemoryEntry::new(MemoryType::Knowledge, "API chat uses max_tokens=128000");
+        let new = MemoryEntry::new(MemoryType::Knowledge, "API chat uses max_tokens=4096");
+        assert_eq!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Contradicts,
+            "shared key-like token with differing numeric value must supersede"
+        );
+    }
+
+    #[test]
+    fn classify_relation_subset_is_compatible() {
+        let existing =
+            MemoryEntry::new(MemoryType::Knowledge, "use jwt authentication");
+        let new = MemoryEntry::new(MemoryType::Knowledge, "use jwt");
+        assert_eq!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Compatible,
+            "subset / same-direction refinement must merge+reinforce, not supersede"
+        );
+        // Symmetric direction also Compatible.
+        assert_eq!(
+            classify_relation(&existing, &new),
+            MemoryRelation::Compatible
+        );
+    }
+
+    #[test]
+    fn classify_relation_similar_but_unrelated_choice_is_ambiguous() {
+        // High token overlap, different concrete choice, no state-change marker
+        // and no shared key=value numeric drift → must NOT false-supersede.
+        let existing =
+            MemoryEntry::new(MemoryType::Preference, "prefer postgres database for storage layer");
+        let new =
+            MemoryEntry::new(MemoryType::Preference, "prefer mysql database for storage layer");
+        assert_eq!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Ambiguous,
+            "competing alternatives without markers should stay Ambiguous"
+        );
     }
 }

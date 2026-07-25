@@ -22,7 +22,9 @@ use tokio::sync::RwLock;
 
 use anyhow::Context as _;
 
-pub use consolidation::{ConsolidationConfig, ConsolidationEngine};
+pub use consolidation::{
+    classify_relation, ConsolidationConfig, ConsolidationEngine, MemoryRelation,
+};
 pub use history::{HistoryEntry, HistoryFilter, HistoryManager};
 pub use memory_session::{
     Session as MemorySession, SessionDiffData, SessionInfo as MemorySessionInfo,
@@ -592,38 +594,71 @@ impl MemoryManager {
 
         let mut mem = memories.write().await;
 
-        // Dedup guard: context compaction asks the model to extract memories
-        // from the conversation being summarized, so the same fact is often
-        // re-extracted across rounds (and may even be tagged with a different
-        // `MemoryType` each time). `add_memory` previously appended a fresh
-        // entry every time, accumulating near-duplicate files that only
-        // consolidation could merge. Instead, fold a sufficiently similar
-        // existing entry into the incoming one (type-agnostic, relaxed
-        // threshold) and persist under the existing id, leaving no orphan.
+        // Dedup guard: context compaction often re-extracts the same fact.
+        // When Jaccard ≥ 0.6 against a live (non-superseded) same-scope entry,
+        // classify the relation and either merge+reinforce, merge+flag, or
+        // tombstone-supersede (new standalone; old file retained).
+        //
+        // Pre-tombstoned incoming entries (e.g. audit import / test fixtures
+        // that already carry `superseded_by`) skip classification so they are
+        // not merged back into a live near-dup.
         const DEDUP_THRESHOLD: f32 = 0.6;
-        if let Some(existing_idx) =
-            self.consolidation
-                .find_similar(&entry, &mem, DEDUP_THRESHOLD, false)
-        {
-            let merged = ConsolidationEngine::merge_into(&mem[existing_idx], &entry);
-            // Persist under the existing id so the original file is overwritten
-            // and no duplicate file is created.
-            storage.save_memory(&merged).await?;
-            mem[existing_idx] = merged.clone();
-            // Keep the TF-IDF index in sync with the merged content. The
-            // positional idx is unchanged, but the token set changed, so the
-            // postings for this idx must be replaced. Only project memories
-            // are indexed.
-            if is_project {
-                self.index
-                    .write()
-                    .await
-                    .replace_entry(&merged, existing_idx);
+        if entry.superseded_by.is_none() {
+            if let Some(existing_idx) =
+                self.consolidation
+                    .find_similar(&entry, &mem, DEDUP_THRESHOLD, false)
+            {
+                match classify_relation(&entry, &mem[existing_idx]) {
+                    MemoryRelation::Compatible => {
+                        let mut merged =
+                            ConsolidationEngine::merge_into(&mem[existing_idx], &entry);
+                        merged.reinforce(Utc::now());
+                        storage.save_memory(&merged).await?;
+                        mem[existing_idx] = merged.clone();
+                        if is_project {
+                            self.index
+                                .write()
+                                .await
+                                .replace_entry(&merged, existing_idx);
+                        }
+                        return Ok(MemoryAddResult {
+                            id: merged.id.clone(),
+                            merged: true,
+                        });
+                    }
+                    MemoryRelation::Ambiguous => {
+                        let mut merged =
+                            ConsolidationEngine::merge_into(&mem[existing_idx], &entry);
+                        merged.metadata.insert(
+                            "relation_ambiguous".into(),
+                            serde_json::Value::Bool(true),
+                        );
+                        storage.save_memory(&merged).await?;
+                        mem[existing_idx] = merged.clone();
+                        if is_project {
+                            self.index
+                                .write()
+                                .await
+                                .replace_entry(&merged, existing_idx);
+                        }
+                        return Ok(MemoryAddResult {
+                            id: merged.id.clone(),
+                            merged: true,
+                        });
+                    }
+                    MemoryRelation::Contradicts => {
+                        // Tombstone existing (keep base importance); write new standalone.
+                        // Do not change existing base importance (design open Q #2).
+                        let old_importance = mem[existing_idx].importance;
+                        mem[existing_idx].superseded_by = Some(entry.id.clone());
+                        debug_assert!(
+                            (mem[existing_idx].importance - old_importance).abs() < f32::EPSILON
+                        );
+                        storage.save_memory(&mem[existing_idx]).await?;
+                        // Fall through to insert `entry` as a new live memory.
+                    }
+                }
             }
-            return Ok(MemoryAddResult {
-                id: merged.id.clone(),
-                merged: true,
-            });
         }
 
         let idx = mem.len();
@@ -1900,6 +1935,194 @@ mod tests {
                 .iter()
                 .any(|(_, m)| m.content.contains("tomb listable")),
             "superseded effective 0 must fail min_importance filter"
+        );
+    }
+
+    /// Contradicts path: old content is tombstoned (file retained), new stands
+    /// alone; recall must not surface the superseded wording.
+    #[tokio::test]
+    async fn add_memory_contradicts_supersedes_and_recall_excludes_old() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        // Phrases share enough meaningful tokens for Jaccard >= 0.6 (gate), plus a
+        // state-change marker so classify_relation → Contradicts. Short gold
+        // pairs like "auth bug exists"/"auth bug fixed" are covered at the
+        // classify_relation unit level (their Jaccard is only 0.5).
+        let existing = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "the auth module login bug exists in codebase today",
+        )
+        .with_importance(0.8);
+        let old_id = existing.id.clone();
+        let old_importance = existing.importance;
+        mm.add_memory(existing, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        let incoming = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "the auth module login bug fixed in codebase today",
+        )
+        .with_importance(0.7);
+        let new_id = incoming.id.clone();
+        let result = mm
+            .add_memory(incoming, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        assert!(!result.merged, "contradicts must not report merge");
+        assert_eq!(result.id, new_id, "memory_id must be the new standalone id");
+
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 2, "both tombstone and new entry stay in pool");
+        let old = memories.iter().find(|m| m.id == old_id).expect("old retained");
+        assert_eq!(old.superseded_by.as_deref(), Some(new_id.as_str()));
+        assert!(
+            (old.importance - old_importance).abs() < f32::EPSILON,
+            "Contradicts must not change base importance"
+        );
+        assert!(
+            memories.iter().any(|m| m.id == new_id && m.superseded_by.is_none()),
+            "new entry is live"
+        );
+        drop(memories);
+
+        // Superseded JSON file remains on disk (audit).
+        let old_path = mm.project_storage.path().join(format!("{old_id}.json"));
+        assert!(
+            tokio::fs::try_exists(&old_path).await.unwrap(),
+            "tombstone file must be retained on disk"
+        );
+        let on_disk: MemoryEntry =
+            serde_json::from_str(&tokio::fs::read_to_string(&old_path).await.unwrap()).unwrap();
+        assert_eq!(on_disk.superseded_by.as_deref(), Some(new_id.as_str()));
+
+        let recall = crate::context::inject::MemoryContextInjector::recall(
+            "auth module login bug codebase",
+            &mm,
+            5,
+            0.0,
+        )
+        .await;
+        assert!(
+            recall.contains("bug fixed"),
+            "new content should be recallable: {recall}"
+        );
+        assert!(
+            !recall.contains("bug exists"),
+            "superseded old content must be excluded from recall: {recall}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_memory_compatible_merges_and_reinforces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let existing =
+            MemoryEntry::new(MemoryType::Knowledge, "use jwt authentication").with_importance(0.6);
+        let existing_id = existing.id.clone();
+        mm.add_memory(existing, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        let result = mm
+            .add_memory(
+                MemoryEntry::new(MemoryType::Knowledge, "use jwt"),
+                MemoryOrigin::Project,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.merged);
+        assert_eq!(result.id, existing_id);
+
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].id, existing_id);
+        assert_eq!(memories[0].hit_count, 1, "Compatible must reinforce");
+        assert!(memories[0].last_reinforced_at.is_some());
+        assert!(memories[0].content.contains("use jwt authentication"));
+    }
+
+    #[tokio::test]
+    async fn add_memory_ambiguous_merges_and_flags_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let existing = MemoryEntry::new(
+            MemoryType::Preference,
+            "prefer postgres database for storage layer",
+        );
+        let existing_id = existing.id.clone();
+        mm.add_memory(existing, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        let result = mm
+            .add_memory(
+                MemoryEntry::new(
+                    MemoryType::Preference,
+                    "prefer mysql database for storage layer",
+                ),
+                MemoryOrigin::Project,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.merged);
+        assert_eq!(result.id, existing_id);
+
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 1);
+        assert_eq!(
+            memories[0]
+                .metadata
+                .get("relation_ambiguous")
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "Ambiguous must flag metadata without LLM"
+        );
+        assert_eq!(memories[0].hit_count, 0, "Ambiguous must not reinforce");
+        assert!(
+            memories[0].content.contains("postgres") && memories[0].content.contains("mysql"),
+            "both alternatives retained in merged content"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_memory_skips_superseded_as_merge_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let mut tomb =
+            MemoryEntry::new(MemoryType::Knowledge, "use jwt authentication legacy").with_importance(0.9);
+        tomb.id = "tomb-jwt".into();
+        tomb.superseded_by = Some("someone-else".into());
+        mm.add_memory(tomb, MemoryOrigin::Project).await.unwrap();
+
+        // Only similar live candidate is the tombstoned one → should NOT merge into it.
+        let incoming = MemoryEntry::new(MemoryType::Knowledge, "use jwt authentication");
+        let new_id = incoming.id.clone();
+        let result = mm
+            .add_memory(incoming, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        assert!(!result.merged);
+        assert_eq!(result.id, new_id);
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 2);
+        assert!(
+            memories.iter().any(|m| m.id == "tomb-jwt" && m.superseded_by.is_some()),
+            "tombstone unchanged"
+        );
+        assert!(
+            memories
+                .iter()
+                .any(|m| m.id == new_id && m.superseded_by.is_none()),
+            "new live entry inserted"
         );
     }
 }
