@@ -649,6 +649,32 @@ impl MemoryManager {
         global.iter().find(|m| m.id == id).cloned()
     }
 
+    /// Increment `recall_count` for project memories that were selected for
+    /// `<memory-context>` injection and persist each updated entry.
+    ///
+    /// Count-only: content tokens are unchanged, so the TF-IDF index is not
+    /// rebuilt. Lock order matches `add_memory`: wait while consolidating,
+    /// then take the project memories write lock and save under that lock.
+    /// Unknown ids are skipped (no error).
+    pub async fn record_recall_injections(&self, ids: &[&str]) -> anyhow::Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+
+        while self.consolidating.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let mut mem = self.memories.write().await;
+        for id in ids {
+            if let Some(entry) = mem.iter_mut().find(|m| m.id == *id) {
+                entry.recall_count = entry.recall_count.saturating_add(1);
+                self.project_storage.save_memory(entry).await?;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn search_memories(&self, query: &str) -> Vec<MemoryEntry> {
         // Search only project memories via the TF-IDF index. Global memories
         // are injected every turn and are not part of recall. Falls back to
