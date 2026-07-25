@@ -1,93 +1,70 @@
 # Implementation Tasks
 
-> 按 pillar 分组。**P1 是其他 pillar 的地基**(effective_importance + LLM 分离 invariant 被 P2/P5 复用),必须先做。P3/P4 无依赖可并行。P2 完成后 P5 的重述才有意义。
+> **Scope lock:** 仅 M1–M5（effective importance、Tier-1 supersede、幂等 staleness、可选 exploration、配置/迁移/文档）。  
+> **不做：** engagement 归因、Tier-2 LLM、情节层/replay、符号多线索、pain_score、热路径 restate。  
+> 每完成一个主 section 应可 `cargo test` 相关模块并通过；不要攒到最后再测。
 
-## Pillar 1 -- 动态 importance 与反馈回路(地基,最先做)
+## M1 — Data model & effective importance
 
-### 1A. Data Model
-- [ ] 1.1 Add `recall_count`/`hit_count`/`last_reinforced_at`/`superseded_by` to `MemoryEntry` (`src/context/mod.rs`) with `#[serde(default)]`
-- [ ] 1.2 Init the four fields in `MemoryEntry::new()`; add `reinforce(&mut self, now)` helper
-- [ ] 1.3 Unit test: legacy JSON (lacking new fields) loads with documented defaults
+- [ ] 1.1 Add `recall_count`, `hit_count`, `last_reinforced_at`, `superseded_by` to `MemoryEntry` with `#[serde(default)]` (`src/context/mod.rs`)
+- [ ] 1.2 Init defaults in `MemoryEntry::new()`; add `reinforce(&mut self, now: DateTime<Utc>)` (`hit_count += 1`, set `last_reinforced_at`)
+- [ ] 1.3 Add `stale_marked_at: Option<DateTime<Utc>>` (or equivalent) with serde default for idempotent staleness
+- [ ] 1.4 Implement shared `type_half_life_hours(memory_type, base_age_threshold) -> f64` from existing `should_keep` TTL multipliers
+- [ ] 1.5 Implement `MemoryEntry::effective_importance(&self, now, cfg) -> f32`:
+  - superseded → 0
+  - else `base * decay * (0.5 + 0.5 * hitrate) * stale_mul`
+  - anchor = `last_reinforced_at.unwrap_or(timestamp)`
+  - `stale_mul = staleness_penalty` if stale marked else 1.0
+- [ ] 1.6 Unit tests: legacy JSON loads defaults; decay curve; hit-rate damping; never-recalled neutral (hitrate factor 1.0); superseded → 0; stale multiplier applied once via flag not stacked on base
 
-### 1B. Effective Importance
-- [ ] 1.4 Add `type_half_life_hours(memory_type, base)` reusing `should_keep` TTL multipliers (`consolidation.rs:147`)
-- [ ] 1.5 Implement `MemoryEntry::effective_importance(&self, now, cfg) -> f32` (superseded->0; else base*decay*(0.5+0.5*hitrate))
-- [ ] 1.6 Replace raw `importance` with `effective_importance` in `recall` (`inject.rs:41`), `should_keep` (`consolidation.rs:135`), `format_global` (`inject.rs:74`)
-- [ ] 1.7 Unit tests: decay curve, hit-rate damping, never-recalled neutral, superseded->0
+## M2 — Wire effective importance into recall & retention
 
-### 1C. Contradiction Detection & Supersede (Tier-1)
-- [ ] 1.8 Implement `classify_relation(new, existing) -> Relation` (state-change markers, value drift, subset)
-- [ ] 1.9 Modify `add_memory` (`mod.rs:451`): Compatible->merge+reinforce; Contradicts->tombstone+penalty+standalone; Ambiguous->merge+flag
-- [ ] 1.10 Add pending-ambiguous-pairs list for Tier-2
-- [ ] 1.11 Unit tests: state-change supersede, value-drift supersede, subset compatible, ambiguous flag
+- [ ] 2.1 `inject` recall path: filter/sort by `effective_importance` instead of raw `importance`; exclude superseded
+- [ ] 2.2 `format_global` / global soft-cap: order by effective importance
+- [ ] 2.3 `should_keep`: use effective importance vs threshold; age/TTL path stays coherent with half-life helper
+- [ ] 2.4 On successful project-memory injection into `<memory-context>`, increment `recall_count` and persist (respect existing lock order: memories write, then index if needed)
+- [ ] 2.5 `list_memories` (CLI list): sort and min filter by effective importance; superseded remain listable at effective 0
+- [ ] 2.6 Unit/integration tests: superseded excluded from recall block; global cap uses effective ordering; list order follows effective; inject persists recall_count
 
-### 1D. Dream Tier-2 LLM Supersede Resolution
-- [ ] 1.12 Add separate `MemoryManager::resolve_ambiguous_pairs()` invoked by `dream` AFTER `consolidate()`; verify `consolidate()` stays LLM-free
-- [ ] 1.13 Design batch LLM classification prompt + JSON parse; apply supersede/merge/both; clear pending list
-- [ ] 1.14 No-op (no LLM call) when no pending pairs
-- [ ] 1.15 Integration test (mock LLM): batch-classified + applied; empty list -> no call
+## M3 — Tier-1 contradiction & supersede in `add_memory`
 
-### 1E. Codebase Staleness Decay
-- [ ] 1.16 Add path-extraction regex + filesystem existence check in `consolidate()`, gated by `staleness_check` config
-- [ ] 1.17 On stale path: `importance *= staleness_penalty`; do NOT refresh `last_reinforced_at`
-- [ ] 1.18 Test: deleted-file reference decayed; existing-file unaffected; verify no LLM call
+- [ ] 3.1 Implement `classify_relation(new, existing) -> Compatible | Contradicts | Ambiguous` (state-change markers + numeric drift + subset; **conservative**)
+- [ ] 3.2 Change `add_memory` similar-branch (Jaccard ≥ 0.6):
+  - Compatible → merge + `reinforce` + persist
+  - Contradicts → set existing `superseded_by = new.id`, persist existing, insert new standalone (no hard delete)
+  - Ambiguous → merge + set metadata/pending flag only (**no LLM**)
+- [ ] 3.3 Tool/`MemoryAddResult` remains truthful (`merged` / ids); document supersede in result if cheap (optional field ok)
+- [ ] 3.4 Unit tests: state-change supersede; value-drift supersede; subset compatible + reinforce; ambiguous flags without delete; superseded file still on disk
 
-### 1F. Engagement Attribution Window
-- [ ] 1.19 Expose `MemoryIndex::distinctive_tokens(text, min_idf)` reusing IDF table
-- [ ] 1.20 Implement `RecallAttribution` (window/last_user_tokens/turn_counter/decay_tau) + `settle` (topic boundary, recency decay, distinctive match) + `record`
-- [ ] 1.21 Integrate into agent loop: settle->recall->record per turn
-- [ ] 1.22 Integration tests: immediate reinforcement, delayed partial credit, topic boundary close, low-IDF no-trigger, self-expire
+## M4 — Idempotent codebase staleness in `consolidate`
 
-### 1G. Recall Exploration
-- [ ] 1.23 In `recall`, with prob `exploration_epsilon` replace lowest-ranked project memory with low-effective unrecalled one; maintain recently-recalled set
-- [ ] 1.24 Unit test: exploration replaces slot; epsilon=0 disables
+- [ ] 4.1 Path-extraction helper + filesystem existence check; gated by `staleness_check`
+- [ ] 4.2 Mark only when **all** extracted paths are missing; if not yet marked set `stale_marked_at`; **do not** multiply base `importance`; **do not** refresh `last_reinforced_at`; partial-missing does not mark
+- [ ] 4.3 Second consolidate on same entry is no-op for staleness
+- [ ] 4.4 Tests: all-missing marked once; partial-missing unmarked; existing-only untouched; consolidate remains LLM-free; effective reflects penalty after mark
 
-## Pillar 3 -- 符号感知多线索召回(无依赖,可与 P1 并行)
+## M5 — Optional exploration
 
-- [ ] 3.1 Collect current task symbol context (open files, edited symbol, stack frames) in agent loop
-- [ ] 3.2 Add symbol extraction from memory content (CodeGraph/LSP symbol table or regex)
-- [ ] 3.3 Extend recall scoring: `score = α·tfidf + β·symbol_overlap + γ·recency`
-- [ ] 3.4 Unit tests: symbol overlap augments ranking; works without embeddings; weights configurable
+- [ ] 5.1 Config `exploration_epsilon` default **0.0**
+- [ ] 5.2 When epsilon > 0, with that probability replace lowest-ranked injected project memory with low-effective, non-superseded, not-recently-recalled candidate; maintain session-local recent set
+- [ ] 5.3 Tests: epsilon=0 disables; epsilon=1 with fixture replaces slot when candidate exists
 
-## Pillar 4 -- pain_score salience(无依赖,可与 P1 并行)
+## M6 — First-consolidate anchor migration & config surface
 
-- [ ] 4.1 Collect friction signals in agent loop: exec_command failure/retry count, guardian denials, user corrections, undo calls
-- [ ] 4.2 Aggregate per-turn `pain_score`; inject into compaction extraction prompt so LLM records it in importance/metadata
-- [ ] 4.3 Higher-pain memories get higher consolidation weight (used by P2 replay); slower decay
-- [ ] 4.4 Test: friction raises pain_score; high-pain prioritized in replay; no new storage for v1
+- [ ] 6.1 On consolidate (or dream entry that calls consolidate): for each memory with `last_reinforced_at=None`, set `Some(now)` once and persist (idempotent)
+- [ ] 6.2 Add settings keys + defaults: `exploration_epsilon`, `staleness_check`, `staleness_penalty`（`supersede_penalty` only if still used; prefer tombstone-only）
+- [ ] 6.3 Thread config into effective_importance / inject / consolidate
+- [ ] 6.4 Update `WGENTY.md` memory config table
+- [ ] 6.5 `cargo test` (memory/context-related + full if practical), `cargo clippy --all-targets -- -D warnings`, `cargo fmt -- --check`
+- [ ] 6.6 Spec compliance pass: every ADDED/MODIFIED scenario in this change’s `specs/agent-memory/spec.md` has a test or explicit verification note
 
-## Pillar 2 -- 情节/语义分层 + 离线 replay 巩固(依赖 P1 的 LLM 分离 invariant)
+## Deferred (do not implement in this change)
 
-### 2A. Episodic Store
-- [ ] 2.1 New module `src/context/episodes.rs`: store at `<project>/.wgenty-code/episodes/`, filename `<YYYYMMDD-HHMM>-<ascii-slug>-<shortid>.json`, id in JSON content, append-mostly
-- [ ] 2.2 ASCII slug derivation (from symbols/keywords, non-ASCII goes to content only); shortid uniqueness
-- [ ] 2.3 Write episodic entries at decision points / session-end summary; record pain_score + decisions/files/bugs/requests
-- [ ] 2.4 Exclude episodic entries from semantic TF-IDF index
-- [ ] 2.5 Tests: chronological ls, ASCII-safe filename, semantic naming unchanged, excluded from index
+Track only as future changes; no checkboxes to complete here:
 
-### 2B. Offline Replay Consolidation
-- [ ] 2.6 Add separate `MemoryManager::replay_extract()` invoked by `dream` AFTER `consolidate()`; verify `consolidate()` stays LLM-free
-- [ ] 2.7 Design batch LLM replay prompt: extract fact->semantic, dedupe episodes, resolve contradiction (supersede), prune low-freq-low-pain
-- [ ] 2.8 Higher-pain episodes prioritized (consume P4 pain_score)
-- [ ] 2.9 No-op (no LLM call) when no unaired episodes
-- [ ] 2.10 Integration tests (mock LLM): extract fact, dedupe, contradiction, prune, no-op, runs-after-consolidate
-
-## Pillar 5 -- 召回时重构(依赖 P2 情节层)
-
-### 5A. Restate at Recall
-- [ ] 5.1 In recall, if injected memory is episodic and exceeds length threshold, run LLM restate pass (extract query-relevant slice); short semantic facts injected verbatim
-- [ ] 5.2 Test: long episodic restated; short fact verbatim (no LLM call)
-
-### 5B. Read-time Reconsolidation (grounding check)
-- [ ] 5.3 On recall, grounding-check memory-referenced symbols/files against current codebase; if changed, emit soft "verify me" signal or trigger write-back
-- [ ] 5.4 Test: stale-at-recall triggers verify signal; unchanged memory unaffected
-
-## Pillar 6 -- Config, Migration & Verification
-
-- [ ] 6.1 Add config keys: `decay_tau_turns`(2.0), `exploration_epsilon`(0.15), `supersede_penalty`(0.3), `staleness_check`(true), `staleness_penalty`(0.5), multi-cue weights `recall_alpha/beta/gamma`, `restate_length_threshold`, `pain_*` weights
-- [ ] 6.2 First-dream anchor migration: set `last_reinforced_at=Some(now)` for all None (idempotent)
-- [ ] 6.3 `cargo test --all` passing (all new unit/integration tests)
-- [ ] 6.4 `cargo clippy --all-targets -- -D warnings` (zero warnings)
-- [ ] 6.5 `cargo fmt -- --check` (clean)
-- [ ] 6.6 Update `WGENTY.md` config table with all new memory config keys
-- [ ] 6.7 Cross-verify spec compliance: each ADDED/MODIFIED requirement scenario has a corresponding test or verification note
+- Engagement attribution window
+- Dream Tier-2 LLM ambiguous resolution
+- Episodic directory + replay_extract
+- Symbol multi-cue recall
+- pain_score friction aggregation
+- Hot-path restate / read-time LLM write-back

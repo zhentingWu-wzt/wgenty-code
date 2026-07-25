@@ -1,69 +1,91 @@
 ## Why
 
-wgenty-code 的 `agent-memory` 能力当前是"检索式"的:扁平短事实 + TF-IDF 关键词召回 + 静态 importance + 本地 consolidate。这套方案本质是信息检索思路,而人脑记忆不是检索,是**重构**。两者哲学差别导致当前系统存在结构性的五个缺口:
+wgenty-code 的 `agent-memory` 当前是开环检索：扁平短事实 + TF-IDF 关键词召回 + 静态 importance + 本地 `consolidate()`。记忆写一次定终身——有用的不强化、过时的不失效、矛盾的仍被召回。这不是“缺 embedding”，而是**缺少反馈回路与 grounding**。
 
-1. **无情节层**:对话 transcript 是事实上的情节存储,但 compaction 一压就只剩 LLM 抽出的语义,情节细节(上次试了方案 A 失败、才改 B)**永久丢失**。没有独立、持久、可回放的情节层。
-2. **importance 写一次定终身**:LLM 压缩时打分,之后只靠静态 TTL。记忆系统开环--rich-get-richer、有用记忆不强化、陈旧事实不失效。
-3. **召回单线索**:只有 TF-IDF 关键词,不利用 coding agent 独有的富信号--当前任务符号上下文(open files / 编辑中的函数 / 栈帧)。通用 chat 拿不到的信号,这里白白浪费。
-4. **salience 单维标量**:单一 LLM 主观 importance,无校准。大脑用情绪强度(新颖性/惊异/错误代价)给编码优先级,agent 完全没有等价物。
-5. **召回即静态取出**:召回物原样注入,不重述、不校验、召回时不更新。大脑召回=微重写(再巩固),agent 是死检索。
+本次 change 只补最能立刻提升可靠性、且不依赖 agent-loop 大改造 / 热路径 LLM 的地基：
 
-本次 change 把这五个缺口一次性补齐,把记忆系统从"带 TTL 的检索数据库"演进为"脑式重构 + grounding 校验"--借大脑的架构(情节/语义分层、巩固转移、再巩固、多维 salience、线索驱动召回),加上大脑没有的 grounding(对照代码库自纠错)。
+1. **importance 开环** → 读时 `effective_importance`（时间衰减 + 命中率阻尼 + tombstone→0）
+2. **矛盾无取代** → Tier-1 启发式 supersede（tombstone，不硬删）
+3. **无代码库校验** → consolidate 时对消失路径做**幂等** staleness 标记
+4. **rich-get-richer** → 可选 ε 探索（默认关或低）
+
+情节层 / replay / 符号多线索 / pain_score / 热路径 restate 仍是正确方向，但作为**后续 change**，避免本 change 变成无法独立验收的 epic。
 
 ## What Changes
 
-本次 change 由 5 个 pillar 构成:
+### In scope（本 change，可独立合并与回滚）
 
-**Pillar 1 -- 动态 importance 与反馈回路(再巩固/强化)**
-- `MemoryEntry` +4 字段(`recall_count`/`hit_count`/`last_reinforced_at`/`superseded_by`),serde default 零迁移
-- `effective_importance()` 惰性纯函数(base × 时间衰减 × 命中率阻尼),recall/consolidation/global 排序改用 effective
-- 正信号:`add_memory` 兼容扩展强化;词法 engagement 归因窗口(recency 衰减 + IDF distinctive 门槛 + topic 边界)
-- 负信号:矛盾取代(Tier1 启发式 + dream 独立后置 LLM 批分类,tombstone 不硬删);代码库实证过时校验
-- 召回探索 ε 打破 rich-get-richer
+**M1 — 动态 effective importance（地基）**
+- `MemoryEntry` +4 字段：`recall_count` / `hit_count` / `last_reinforced_at` / `superseded_by`（`#[serde(default)]` 零迁移）
+- `effective_importance(now, cfg)` 纯读时函数；recall 排序/阈值、`should_keep`、`format_global` 改用 effective
+- 首次 dream 对 `last_reinforced_at=None` 做一次性锚定（幂等）
 
-**Pillar 2 -- 情节/语义分层 + 离线 replay 巩固(海马-皮层分工)**
-- 新增**情节层**:独立目录 `<project>/.wgenty-code/episodes/`,文件名 `<YYYYMMDD-HHMM>-<ascii-slug>-<shortid>.json`(日期前缀免费 chronological 索引,ascii-slug 跨平台安全,shortid 保唯一),id 在 JSON 内容;append-mostly(写一次,回放/剪枝,不合并)
-- `dream` 新增独立后置步骤 `replay_extract()`:批量读近期 episode -> 抽 fact 合并进语义、去重、矛盾标 superseded、prune 低频低痛;**`consolidate()` 本体保持 LLM-free 不变**(复用 Pillar 1 建立的 LLM 分离 invariant)
-- 情节层记录 pain_score(Pillar 4)与决策/文件/bug/用户诉求
+**M2 — 写时矛盾取代（Tier-1 only）**
+- `add_memory` 在相似度 ≥ 0.6 时 `classify_relation` → Compatible / Contradicts / Ambiguous
+- Compatible → merge + `reinforce`（`hit_count++`, 刷新 `last_reinforced_at`）
+- Contradicts → 旧条 tombstone（`superseded_by`），降权，新条独立写入；**不硬删**
+- Ambiguous → **保守默认 merge + 结构化 flag**（metadata/pending 列表）；**本 change 不做 Tier-2 LLM 批分类**（避免 dream 范围膨胀；flag 留待 follow-up）
 
-**Pillar 3 -- 符号感知多线索召回(线索驱动,非相似度驱动)**
-- recall 打分从单 TF-IDF 扩展为多线索:`score = α·tfidf + β·symbol_overlap(当前任务符号上下文, 记忆内容) + γ·recency`
-- symbol_overlap 复用 CodeGraph/LSP 符号表或正则提取;当前任务符号上下文(open files / 编辑函数 / 栈帧)在 agent loop 现成
-- 不引入 embedding--symbol_overlap 是 coding agent 独有的廉价语义信号,在无 embedding 时是关键词之外最强的召回增强
+**M3 — 代码库 staleness（幂等 grounding）**
+- `consolidate()` 内本地路径存在性检查（保持 LLM-free）
+- 使用 `metadata`/`stale_marked_at` 等**一次性标记**，禁止对 base `importance` 反复叠乘
+- effective 计算读取 staleness multiplier；不刷新 `last_reinforced_at`
 
-**Pillar 4 -- pain_score 多维 salience(情绪权重)**
-- 从现有摩擦信号近似 pain:`exec_command` 失败重试次数、guardian 拒绝、用户纠正(同意图重述)、`undo` 调用--agent loop 可观测,无需新存储
-- compaction 抽取时 LLM 把 pain 写入 memory 的 importance/metadata;高 pain 的记忆 consolidate 权重更高
-- effective_importance 可显式加权 pain(从标量 importance 迈向多维 salience 的第一步)
+**M4 — 召回探索（可选，默认安全）**
+- `exploration_epsilon` 默认 `0`（关闭）；>0 时替换最低档 project memory 为冷记忆
+- 轻量 recently-recalled 集合防刷
 
-**Pillar 5 -- 召回时重构(重述 + 再巩固写回)**
-- 召回物若是**情节条目且较长**,经一轮 LLM 重述切出当前 task 相关面再注入(语义短事实跳过,避免 hot-path 无谓 LLM 调用);被 Pillar 2 的情节层 gate
-- 召回时若发现记忆与当前代码不符(grounding 校验),触发软"verify me"提示或写回更新(读时再巩固),延伸 Pillar 1 的矛盾检测到读时
+**M5 — 配置、迁移、文档与回归**
+- 配置项带默认；旧 JSON 兼容；`WGENTY.md` 更新
+- 单测覆盖 decay / hitrate / supersede / staleness 幂等 / epsilon=0
 
-**Deferred(本次不做,文档记录方向)**
-- Schema 层次化约定压缩:强依赖 replay,作为 replay 之后的自然延伸
-- 干扰覆盖(interference overwrite):需 embedding 语义近邻,deferred 到 embedding 时代;其指数衰减+突发重置+prune 部分已被 Pillar 1 覆盖
+### Explicitly deferred（文档保留方向，本 change 不实现、不写进 MUST spec）
+
+| 原 pillar | 原因 | 后续 change 建议名 |
+|-----------|------|-------------------|
+| P1 Tier-2 LLM ambiguous 批分类 | 依赖 dream LLM 管线与 prompt 设计，可独立加 | `memory-ambiguous-llm-resolve` |
+| P1 engagement 归因窗口 | agent-loop 集成 + 假阳性风险，非地基 | `memory-engagement-attribution` |
+| P2 情节层 + replay_extract | 写入粒度/读路径/与 TF-IDF 关系未钉死；范围大 | `memory-episodic-replay` |
+| P3 符号多线索召回 | 符号上下文采集在 loop 中未必“现成” | `memory-symbol-multicue-recall` |
+| P4 pain_score | 摩擦信号 inventory 不足；易 overclaim | `memory-pain-salience` |
+| P5 热路径 restate + 读时 write-back | 与“情节不进 TF-IDF”冲突；热路径延迟 | 随 episodic；restate 仅 cold path |
+
+### Non-goals（本 change）
+
+- 不替换 TF-IDF 为 embedding
+- 不在 `consolidate()` 内引入任何 LLM
+- 不改语义记忆 id-as-filename 不变式
+- 不硬删被取代记忆
+- 不引入后台衰减定时器
+- 不增加热路径 LLM 调用
 
 ## Capabilities
 
 ### New Capabilities
-(无新 capability;全部增强已有 `agent-memory`)
+（无新 capability 名；增强已有 `agent-memory`）
 
 ### Modified Capabilities
 - `agent-memory`:
-  - **数据模型**:MemoryEntry +4 反馈字段;新增情节存储(独立目录 + slug 文件名 + Episodic 类型)
-  - **recall**:effective importance 排序 + 符号感知多线索打分 + ε 探索 + 情节重述 + 读时校验
-  - **consolidation**:should_keep 用 effective;新增代码库过时校验;新增独立后置 LLM 步骤(replay 抽取 + 矛盾批分类),`consolidate()` 本体 LLM-free 不变
-  - **add_memory**:矛盾分类(Compatible/Contradicts/Ambiguous)+ 强化 + tombstone
-  - **salience**:pain_score 从摩擦信号注入 importance
-  - **engagement 归因窗口**:recency + IDF + topic 边界(v1 user 侧)
+  - 数据模型：反馈字段 + superseded tombstone
+  - recall / global 排序 / consolidation retention：effective importance
+  - `add_memory`：关系分类 + reinforce / supersede
+  - `consolidate`：幂等 codebase staleness（仍 LLM-free）
+  - 可选 recall exploration
+  - 配置与首次锚定迁移
 
 ## Impact
 
-- **代码**:`context/mod.rs`(MemoryEntry/effective_importance/add_memory/reinforce/pain)、`context/inject.rs`(recall 多线索/归因/探索/重述)、`context/consolidation.rs`(should_keep/classify_relation/staleness/replay/矛盾批分类)、`context/episodes.rs`(新,情节存储)、`MemoryIndex`(distinctive_tokens/symbol 提取)、agent loop(RecallAttribution + 符号上下文采集 + 摩擦采集)、config
-- **数据兼容**:语义记忆 JSON 零迁移(serde default);情节层为新增目录,不影响现有;建议首次 dream 锚定旧记忆 last_reinforced_at
-- **性能**:recall 每轮多一次 settle + 符号打分(轻量);重述仅对长情节触发;replay/矛盾 LLM 仅在有待处理项时触发,按批
-- **现有 spec 关系**:与"Consolidation is LLM-free"**不冲突**--所有 LLM 操作(replay 抽取、矛盾批分类)均在独立后置步骤,`consolidate()` 本体与 1h/1session 门限前提保留
-- **安全**:无新增 guardian/sandbox 敏感面;LLM 调用复用现有 API 客户端
-- **平台**:情节文件名限 ASCII(跨平台安全),三平台通用;符号提取复用现有 codegraph/lsp
-- **设计哲学**:从"检索"转向"重构 + grounding"--仿脑给架构灵感,grounding(对照代码库自纠错)给可靠性,这是 coding agent 记忆能比人脑更可靠的根因
+- **代码**：`src/context/mod.rs`（MemoryEntry / add_memory / reinforce）、`src/context/inject.rs`（recall / format_global）、`src/context/consolidation.rs`（should_keep / staleness）、config、少量 dream 锚定钩子；**不强制大改 agent loop**（exploration 可先在 inject 层完成）
+- **数据**：语义 JSON 零迁移；回滚时新字段被旧逻辑忽略；tombstone 文件保留可审计
+- **性能**：每轮多一次纯函数计算（记忆数有上限）；staleness 为 consolidate 期路径探测
+- **不变式**：`consolidate()` LLM-free 与 1h/1session 门限前提保持
+- **产品行为**：矛盾记忆不再双双召回；长期未强化记忆排序下降；默认关闭探索以免干扰预期
+
+## Success criteria（可验收）
+
+1. Legacy memory JSON 无迁移加载成功
+2. `effective_importance` 单测：衰减、命中率阻尼、never-recalled 中性、superseded→0、staleness multiplier
+3. Contradicts 路径：旧条不进 recall，文件仍在磁盘
+4. `consolidate()` 路径探测零 LLM；同一 stale 记忆多次 consolidate 不反复打穿 importance
+5. `exploration_epsilon=0` 时行为与“仅 effective 排序”一致
+6. `cargo test` / clippy -D warnings / fmt 通过；`WGENTY.md` 配置表已更新
