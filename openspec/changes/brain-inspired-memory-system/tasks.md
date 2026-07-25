@@ -12,7 +12,7 @@
 - [ ] 1.4 Implement shared `type_half_life_hours(memory_type, base_age_threshold) -> f64` from existing `should_keep` TTL multipliers
 - [ ] 1.5 Implement `MemoryEntry::effective_importance(&self, now, cfg) -> f32`:
   - superseded → 0
-  - else `base * decay * (0.5 + 0.5 * hitrate) * stale_mul`
+  - else `base * decay * (0.5 + hitrate) * stale_mul` with `hitrate` clamped to [0, 1]
   - anchor = `last_reinforced_at.unwrap_or(timestamp)`
   - `stale_mul = staleness_penalty` if stale marked else 1.0
 - [ ] 1.6 Unit tests: legacy JSON loads defaults; decay curve; hit-rate damping; never-recalled neutral (hitrate factor 1.0); superseded → 0; stale multiplier applied once via flag not stacked on base
