@@ -19,11 +19,11 @@
 
 ## M2 — Wire effective importance into recall & retention
 
-- [ ] 2.1 `inject` recall path: filter/sort by `effective_importance` instead of raw `importance`; exclude superseded
-- [ ] 2.2 `format_global` / global soft-cap: order by effective importance
-- [ ] 2.3 `should_keep`: use effective importance vs threshold; age/TTL path stays coherent with half-life helper
+- [x] 2.1 `inject` recall path: filter/sort by `effective_importance` instead of raw `importance`; exclude superseded
+- [x] 2.2 `format_global` / global soft-cap: order by effective importance
+- [x] 2.3 `should_keep`: use effective importance vs threshold; age/TTL path stays coherent with half-life helper
 - [ ] 2.4 On successful project-memory injection into `<memory-context>`, increment `recall_count` and persist (respect existing lock order: memories write, then index if needed)
-- [ ] 2.5 `list_memories` (CLI list): sort and min filter by effective importance; superseded remain listable at effective 0
+- [x] 2.5 `list_memories` (CLI list): sort and min filter by effective importance; superseded remain listable at effective 0
 - [ ] 2.6 Unit/integration tests: superseded excluded from recall block; global cap uses effective ordering; list order follows effective; inject persists recall_count
 
 ## M3 — Tier-1 contradiction & supersede in `add_memory`
