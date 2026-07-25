@@ -410,7 +410,7 @@ EOF
 
 ---
 
-### Task 8: WGENTY.md + 全量质量门 + tasks 收口
+### Task 8: WGENTY.md + 全量质量门 + tasks 收口 ✅
 
 **Files:**
 - Modify: `WGENTY.md`
@@ -418,9 +418,9 @@ EOF
 
 **对齐 tasks.md:** 6.3–6.7
 
-- [ ] **Step 1: 文档** — 配置表增加 `exploration_epsilon` / `staleness_check` / `staleness_penalty` 默认值说明
+- [x] **Step 1: 文档** — 配置表增加 `exploration_epsilon` / `staleness_check` / `staleness_penalty` 默认值说明
 
-- [ ] **Step 2: 质量门**
+- [x] **Step 2: 质量门**
 
 ```bash
 cargo test
@@ -428,9 +428,9 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt -- --check
 ```
 
-- [ ] **Step 3: Spec compliance 笔记** — 在 tasks 6.7 旁或 commit body 列出 scenario→test 映射
+- [x] **Step 3: Spec compliance 笔记** — 在 tasks 6.7 旁或 commit body 列出 scenario→test 映射
 
-- [ ] **Step 4: 最终 commit**
+- [x] **Step 4: 最终 commit**
 
 ```bash
 git commit -m "$(cat <<'EOF'

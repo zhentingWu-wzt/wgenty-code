@@ -53,10 +53,10 @@
 
 - [x] 6.1 On consolidate (or dream entry that calls consolidate): for each memory with `last_reinforced_at=None`, set `Some(now)` once and persist (idempotent)
 - [x] 6.2 Add settings keys + defaults: `exploration_epsilon`, `staleness_check`, `staleness_penalty`（`supersede_penalty` only if still used; prefer tombstone-only）
-- [ ] 6.3 Thread config into effective_importance / inject / consolidate
-- [ ] 6.4 Update `WGENTY.md` memory config table
-- [ ] 6.5 `cargo test` (memory/context-related + full if practical), `cargo clippy --all-targets -- -D warnings`, `cargo fmt -- --check`
-- [ ] 6.6 Spec compliance pass: every ADDED/MODIFIED scenario in this change’s `specs/agent-memory/spec.md` has a test or explicit verification note
+- [x] 6.3 Thread config into effective_importance / inject / consolidate
+- [x] 6.4 Update `WGENTY.md` memory config table
+- [x] 6.5 `cargo test` (memory/context-related + full if practical), `cargo clippy --all-targets -- -D warnings`, `cargo fmt -- --check`
+- [x] 6.6 Spec compliance pass: every ADDED/MODIFIED scenario in this change’s `specs/agent-memory/spec.md` has a test or explicit verification note
 
 ## Deferred (do not implement in this change)
 
@@ -69,31 +69,67 @@ Track only as future changes; no checkboxes to complete here:
 - pain_score friction aggregation
 - Hot-path restate / read-time LLM write-back
 
-## Verification — scenario → test mapping (M6.6 / Task 8)
+## Verification — scenario → test or note (M6.6 / Task 8)
 
-Config threading (6.3): `MemorySettings` → `MemoryManager::with_settings` → `exploration_epsilon` / `staleness_check` / `staleness_penalty` + `effective_importance_cfg()`; covered by `with_settings_reads_consolidation_thresholds`, `new_for_test_uses_exploration_and_staleness_defaults`, `consolidate_staleness_check_false_skips_mark`.
+6.3 Config end-to-end: `MemorySettings` → `MemoryManager::with_settings` → inject/consolidate/`effective_importance_cfg()`. Tests: `with_settings_reads_consolidation_thresholds`, `new_for_test_uses_exploration_and_staleness_defaults`, `consolidate_staleness_check_false_skips_mark`.
 
-| Spec scenario (main ADDED/MODIFIED) | Test |
+6.4 `WGENTY.md` table: `exploration_epsilon=0.0`, `staleness_check=true`, `staleness_penalty=0.5` documented.
+
+6.5 Quality gates (context lib + clippy -D warnings + fmt --check): all green on `488eee4`.
+
+### ADDED scenarios (all covered)
+
+| Scenario | Test |
 |---|---|
-| Legacy memory JSON loads with feedback-field defaults | `legacy_memory_json_defaults_feedback_fields` |
-| Superseded memory excluded from recall | `recall_excludes_superseded_memories`, `format_global_excludes_superseded_memories` |
-| Injected project memories increment recall_count | `recall_increments_and_persists_project_recall_count` |
-| List ordering uses effective importance | `list_memories_orders_by_effective_not_raw`, `list_memories_keeps_superseded_but_filters_by_effective` |
-| Global soft-cap / order by effective | `format_global_orders_by_effective_not_raw_importance` |
-| First consolidate anchors missing last_reinforced_at | `consolidate_anchors_missing_last_reinforced_at` |
-| Consolidation is LLM-free | `consolidate_remains_llm_free_structural` |
-| Compatible similar memory merges and reinforces | `add_memory_compatible_merges_and_reinforces` |
-| Contradicting similar memory supersedes via tombstone | `add_memory_contradicts_supersedes_and_recall_excludes_old` |
-| Ambiguous similar memory merges and flags without LLM | `add_memory_ambiguous_merges_and_flags_metadata` |
-| Superseded memory retained on disk / skipped as merge target | `add_memory_skips_superseded_as_merge_target` |
 | Decay reduces importance over time | `effective_importance_decays_with_age` |
 | Hit-rate damping penalizes recall noise | `effective_importance_hit_rate_damping` |
 | Never-recalled memory is neutral on hit-rate | `effective_importance_never_recalled_hitrate_neutral` |
 | Superseded memory has zero effective importance | `effective_importance_superseded_is_zero` |
 | Stale-marked memory is downweighted | `effective_importance_stale_multiplier` |
+| State-change marker triggers supersede | `classify_relation_state_change_marker_is_contradicts` |
+| Numeric value drift triggers supersede | `classify_relation_numeric_drift_is_contradicts` |
+| Subset relation is compatible, not contradiction | `classify_relation_subset_is_compatible` |
+| Ambiguous pair flagged without LLM | `classify_relation_similar_but_unrelated_choice_is_ambiguous` + `add_memory_ambiguous_merges_and_flags_metadata` |
+| Superseded memory retained on disk | `add_memory_contradicts_supersedes_and_recall_excludes_old` (disk afterwards) + `add_memory_skips_superseded_as_merge_target` (skipped target) |
 | All extracted paths missing marks stale once | `consolidate_marks_stale_when_all_extracted_paths_missing` |
 | Partial path missing does not mark stale | `consolidate_partial_missing_paths_does_not_mark_stale` |
 | Already-marked stale memory is not stacked | `consolidate_stale_mark_is_idempotent_and_keeps_base_importance` |
 | Existing-file-only reference unaffected | `consolidate_existing_only_paths_does_not_mark_stale` |
+| Staleness check is LLM-free | `consolidate_remains_llm_free_structural` (covers stale path too) |
 | Exploration disabled when epsilon is zero | `recall_exploration_epsilon_zero_never_replaces` |
-| Exploration replaces lowest-ranked slot when enabled | `recall_exploration_force_draw_replaces_lowest_with_cold` |
+| Exploration replaces lowest-ranked slot when enabled | `recall_exploration_force_draw_replaces_lowest_with_cold` + `recall_exploration_skips_recently_explored_cold` + `recall_exploration_skips_superseded_cold_candidate` |
+
+### MODIFIED scenarios — changed by this change (covered)
+
+| Scenario | Test |
+|---|---|
+| Legacy memory JSON loads with feedback-field defaults | `legacy_memory_json_defaults_feedback_fields` |
+| Superseded memory excluded from recall | `recall_excludes_superseded_memories`, `format_global_excludes_superseded_memories` |
+| Injected project memories increment recall_count | `recall_increments_and_persists_project_recall_count` |
+| List ordering uses effective importance | `list_memories_orders_by_effective_not_raw`, `list_memories_keeps_superseded_but_filters_by_effective` |
+| Global memories injected every turn (sort by effective) | `format_global_orders_by_effective_not_raw_importance` |
+| Global memory soft cap exceeded (>50 + top-50 + warning) | `format_global_returns_all_global_memories_sorted_by_importance` (ordering + cap); warning log path accepted as non-blocking baseline |
+| First consolidate anchors missing last_reinforced_at | `consolidate_anchors_missing_last_reinforced_at` |
+| Consolidation is LLM-free (incl. stale step) | `consolidate_remains_llm_free_structural` |
+| Compatible similar memory merges and reinforces | `add_memory_compatible_merges_and_reinforces` |
+| Contradicting similar memory supersedes via tombstone | `add_memory_contradicts_supersedes_and_recall_excludes_old` |
+| Ambiguous similar memory merges and flags without LLM | `add_memory_ambiguous_merges_and_flags_metadata` |
+
+### MODIFIED scenarios — pre-existing behavior, unchanged by this change (note, not new test)
+
+| Scenario | Note |
+|---|---|
+| Project memory persisted to project-local directory | Pre-existing; covered by storage/`new_for_test` isolation |
+| Global memory persisted to global directory | Pre-existing; global storage path unchanged |
+| CWD unavailable degrades to global storage | Pre-existing dual-storage fallback; no new path |
+| CWD equals home directory | Pre-existing merge-to-global; unchanged |
+| Global memories injected every turn | Pre-existing inject path; effective sort added above |
+| Project memories recalled by keyword | Pre-existing recall + TF-IDF; effective filter/sort added above |
+| No global memories | Pre-existing empty-global branch; effective no-op |
+| Consolidation gate (pass / fail-time / fail-throttle / lock / autodream-lock / headless / daemon / TUI) | Pre-existing AutoDream gates; no change to triggering |
+| Tool returns memory_id on success | Pre-existing result shape; merged/supersede still truthful |
+| Invalid memory_type rejected | Pre-existing validation; unchanged |
+| Missing content rejected | Pre-existing validation; unchanged |
+| Tool registered in daemon/headless/available-to-all-agents | Pre-existing registration; unchanged |
+
+**Summary: 17 ADDED scenarios all covered by explicit tests. 11 MODIFIED scenarios changed are covered by tests. 19 MODIFIED scenarios unchanged are noted as pre-existing baseline.**
