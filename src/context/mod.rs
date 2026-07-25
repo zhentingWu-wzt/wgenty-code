@@ -877,6 +877,15 @@ impl MemoryManager {
             flag: self.consolidating.clone(),
         };
         let mut global = self.global_memories.write().await;
+        // Same anchor + optional path-staleness prepass as project consolidate.
+        // Path checks still use the project root (codebase grounding).
+        let project_root = self.project_root_for_paths();
+        consolidation::apply_consolidate_prepass(
+            &mut global,
+            &project_root,
+            Utc::now(),
+            self.staleness_check,
+        );
         let consolidated_global = self.consolidation.consolidate(&global).await?;
         self.global_storage.reconcile(&consolidated_global).await?;
         *global = consolidated_global;
@@ -954,6 +963,18 @@ impl MemoryManager {
         // concurrent add_memory() calls from inserting entries that
         // would be overwritten by the stale consolidated result.
         let mut memories = self.memories.write().await;
+
+        // Prepass (LLM-free): anchor last_reinforced_at + optional all-missing
+        // path staleness. Must run under the write lock before the engine so
+        // retention sees effective importance with stale multipliers.
+        let project_root = self.project_root_for_paths();
+        consolidation::apply_consolidate_prepass(
+            &mut memories,
+            &project_root,
+            Utc::now(),
+            self.staleness_check,
+        );
+
         let consolidated = self.consolidation.consolidate(&memories).await?;
 
         // P0 fix: persist the consolidated result AND remove orphaned
@@ -971,6 +992,19 @@ impl MemoryManager {
         self.index.write().await.rebuild(&consolidated);
         *memories = consolidated;
         Ok(())
+    }
+
+    /// Best-effort project root for relative path existence checks.
+    ///
+    /// Storage lives at `<project_root>/.wgenty-code/memory`; peel two parents.
+    /// Falls back to CWD if the layout is unexpected (e.g. global fallback).
+    fn project_root_for_paths(&self) -> PathBuf {
+        let storage_path = self.project_storage.path();
+        storage_path
+            .parent() // .wgenty-code
+            .and_then(|p| p.parent()) // project root
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(crate::utils::current_project_root)
     }
 
     pub async fn load(&self) -> anyhow::Result<()> {
@@ -1826,10 +1860,13 @@ mod tests {
         .await
         .unwrap();
         // idx 1: low-importance, old Session memory -> dropped by consolidate
-        // (age > age_threshold_hours=24, importance < 0.3).
+        // (age from decay anchor > age_threshold_hours, effective < threshold).
+        // Prefill last_reinforced_at so first-consolidate anchor migration does
+        // not reset the age clock to "now".
         let mut stale =
             MemoryEntry::new(MemoryType::Session, "gamma delta transient").with_importance(0.1);
         stale.timestamp = chrono::Utc::now() - chrono::Duration::hours(100);
+        stale.last_reinforced_at = Some(stale.timestamp);
         mm.add_memory(stale, MemoryOrigin::Project).await.unwrap();
         // idx 2: survives, but shifts to idx 1 after the stale entry is
         // dropped. Its distinctive token "unobtainium" lets us search for it
@@ -2124,5 +2161,167 @@ mod tests {
                 .any(|m| m.id == new_id && m.superseded_by.is_none()),
             "new live entry inserted"
         );
+    }
+
+    #[tokio::test]
+    async fn consolidate_anchors_missing_last_reinforced_at() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let entry = MemoryEntry::new(MemoryType::Knowledge, "legacy fact without anchor")
+            .with_importance(0.9);
+        assert!(entry.last_reinforced_at.is_none());
+        mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
+
+        mm.consolidate().await.unwrap();
+
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 1);
+        assert!(
+            memories[0].last_reinforced_at.is_some(),
+            "first consolidate must anchor last_reinforced_at"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidate_marks_stale_when_all_extracted_paths_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let entry = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "logic lives in src/does_not_exist_xyz.rs only",
+        )
+        .with_importance(0.9);
+        mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
+
+        mm.consolidate().await.unwrap();
+
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 1);
+        assert!(
+            memories[0].stale_marked_at.is_some(),
+            "all-missing extractable paths must mark stale"
+        );
+        // Base importance never multiplied by staleness.
+        assert!((memories[0].importance - 0.9).abs() < 1e-5);
+    }
+
+    #[tokio::test]
+    async fn consolidate_partial_missing_paths_does_not_mark_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Create one real path under the project root.
+        let existing = root.join("src/exists_partial.rs");
+        tokio::fs::create_dir_all(existing.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&existing, b"fn ok() {}").await.unwrap();
+
+        let mm = MemoryManager::new_for_test(root.to_path_buf(), root.join("global"));
+        let entry = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "see src/exists_partial.rs and src/does_not_exist_partial.rs",
+        )
+        .with_importance(0.9);
+        mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
+
+        mm.consolidate().await.unwrap();
+
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 1);
+        assert!(
+            memories[0].stale_marked_at.is_none(),
+            "partial missing must NOT mark stale"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidate_stale_mark_is_idempotent_and_keeps_base_importance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let entry = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "only src/does_not_exist_idem.rs remains",
+        )
+        .with_importance(0.85);
+        mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
+
+        mm.consolidate().await.unwrap();
+        let first_mark = {
+            let memories = mm.memories.read().await;
+            assert_eq!(memories.len(), 1);
+            let mark = memories[0].stale_marked_at;
+            assert!(mark.is_some());
+            assert!((memories[0].importance - 0.85).abs() < 1e-5);
+            mark
+        };
+
+        // Second pass: no-op on mark, base importance unchanged.
+        mm.consolidate().await.unwrap();
+        let memories = mm.memories.read().await;
+        assert_eq!(memories[0].stale_marked_at, first_mark);
+        assert!((memories[0].importance - 0.85).abs() < 1e-5);
+    }
+
+    #[tokio::test]
+    async fn consolidate_staleness_check_false_skips_mark() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join(".wgenty-code/memory");
+        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
+        let mm = MemoryManager {
+            sessions: Arc::new(MemorySessionManager::with_project_root(tmp.path().to_path_buf())),
+            history: Arc::new(HistoryManager::new()),
+            project_storage: Arc::new(crate::context::Storage::new(memory_dir)),
+            global_storage: Arc::new(crate::context::Storage::new(tmp.path().join("global"))),
+            consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
+            memories: Arc::new(RwLock::new(Vec::new())),
+            global_memories: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(RwLock::new(MemoryIndex::new())),
+            consolidating: Arc::new(AtomicBool::new(false)),
+            write_importance_threshold: 0.6,
+            max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: false,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
+        };
+
+        let entry = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "points at src/does_not_exist_gated.rs",
+        )
+        .with_importance(0.9);
+        mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
+        mm.consolidate().await.unwrap();
+
+        let memories = mm.memories.read().await;
+        assert!(
+            memories[0].stale_marked_at.is_none(),
+            "staleness_check=false must not mark"
+        );
+        // Anchor migration still runs.
+        assert!(memories[0].last_reinforced_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn consolidate_remains_llm_free_structural() {
+        // consolidate path must not require an LLM client — pure local prepass
+        // + ConsolidationEngine (TF-IDF/TTL). If this compiles and runs, the
+        // surface stays LLM-free.
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+        mm.add_memory(
+            MemoryEntry::new(MemoryType::Knowledge, "no paths here").with_importance(0.9),
+            MemoryOrigin::Project,
+        )
+        .await
+        .unwrap();
+        mm.consolidate().await.unwrap();
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 1);
+        assert!(memories[0].stale_marked_at.is_none());
+        assert!(memories[0].last_reinforced_at.is_some());
     }
 }

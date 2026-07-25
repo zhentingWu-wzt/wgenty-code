@@ -1,11 +1,104 @@
 //! Consolidation - Memory consolidation engine
 
 use chrono::{DateTime, Utc};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
 use super::{MemoryEntry, MemoryType};
+
+/// Conservative filesystem-relative path extractor for codebase staleness.
+///
+/// Matches tokens that look like repo-relative source paths (e.g. `src/foo.rs`,
+/// `lib/bar/baz.ts:12`). Bare URLs are ignored. Returns unique paths in
+/// encounter order, with optional `:line` / `:line:col` suffixes stripped.
+pub fn extract_memory_paths(content: &str) -> Vec<PathBuf> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+            (?P<path>
+                (?:src|lib|crates|apps|packages|tests?|scripts?|docs?)
+                /[\w./+-]+
+                \.
+                (?:rs|ts|tsx|js|jsx|py|go|java|kt|toml|json|md|yml|yaml|css|html|sh|c|h|cpp|hpp|rb|php)
+            )
+            (?: : \d+ (?: : \d+ )? )?
+            ",
+        )
+        .expect("valid extract_memory_paths regex")
+    });
+
+    let mut out: Vec<PathBuf> = Vec::new();
+    for caps in re.captures_iter(content) {
+        let m = caps.name("path").expect("named path group");
+        // Skip URL-embedded matches (e.g. https://example.com/src/foo.rs).
+        if is_url_embedded(content, m.start()) {
+            continue;
+        }
+        let path = PathBuf::from(m.as_str());
+        if !out.iter().any(|p| p == &path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+fn is_url_embedded(content: &str, match_start: usize) -> bool {
+    // Look back for a URL scheme before the match without crossing whitespace.
+    let prefix = &content[..match_start];
+    let token_start = prefix
+        .rfind(|c: char| c.is_whitespace() || c == '(' || c == '[' || c == '"' || c == '\'')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let lead = &content[token_start..match_start];
+    lead.contains("://") || lead.starts_with("www.")
+}
+
+/// True when `paths` is non-empty and every path is missing under `project_root`
+/// (relative paths) or on the absolute path itself.
+pub fn paths_all_missing(project_root: &Path, paths: &[PathBuf]) -> bool {
+    if paths.is_empty() {
+        return false;
+    }
+    paths.iter().all(|p| {
+        let candidate = if p.is_absolute() {
+            p.clone()
+        } else {
+            project_root.join(p)
+        };
+        !candidate.exists()
+    })
+}
+
+/// First-consolidate anchor migration + optional all-missing path staleness.
+///
+/// Idempotent:
+/// - `last_reinforced_at = None` → `Some(now)` once
+/// - stale mark only when extractable paths exist, **all** missing, and not yet marked
+/// - never multiplies base `importance`
+/// - never refreshes `last_reinforced_at` solely for staleness
+pub fn apply_consolidate_prepass(
+    memories: &mut [MemoryEntry],
+    project_root: &Path,
+    now: DateTime<Utc>,
+    staleness_check: bool,
+) {
+    for m in memories.iter_mut() {
+        if m.last_reinforced_at.is_none() {
+            m.last_reinforced_at = Some(now);
+        }
+        if !staleness_check || m.stale_marked_at.is_some() {
+            continue;
+        }
+        let paths = extract_memory_paths(&m.content);
+        if paths_all_missing(project_root, &paths) {
+            m.stale_marked_at = Some(now);
+        }
+    }
+}
 
 /// Per-type half-life in hours for effective-importance decay.
 ///
@@ -818,6 +911,37 @@ impl Default for ConsolidationEngine {
 mod tests {
     use super::*;
     use crate::context::MemoryEntry;
+    use std::path::PathBuf;
+
+    #[test]
+    fn extract_memory_paths_finds_src_relative_files() {
+        let paths = extract_memory_paths("logic lives in src/does_not_exist_xyz.rs only");
+        assert_eq!(paths, vec![PathBuf::from("src/does_not_exist_xyz.rs")]);
+    }
+
+    #[test]
+    fn extract_memory_paths_ignores_bare_urls() {
+        let paths = extract_memory_paths("see https://example.com/src/foo.rs for docs");
+        assert!(
+            paths.is_empty(),
+            "URL path segments must not be treated as filesystem paths: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn extract_memory_paths_strips_line_suffix() {
+        let paths = extract_memory_paths("bug at src/lib/mod.rs:42 in parser");
+        assert_eq!(paths, vec![PathBuf::from("src/lib/mod.rs")]);
+    }
+
+    #[test]
+    fn extract_memory_paths_multiple_unique() {
+        let paths = extract_memory_paths("a src/a.rs and b src/b.ts plus src/a.rs again");
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.ts")]
+        );
+    }
 
     #[test]
     fn merge_memories_preserves_provenance() {
