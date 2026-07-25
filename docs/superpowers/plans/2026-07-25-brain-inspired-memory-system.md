@@ -277,7 +277,7 @@ EOF
 
 ---
 
-### Task 5: Tier-1 classify_relation + add_memory 分支
+### Task 5: Tier-1 classify_relation + add_memory 分支 ✅
 
 **Files:**
 - Modify: `src/context/consolidation.rs` 或 `mod.rs`
@@ -285,7 +285,7 @@ EOF
 
 **对齐 tasks.md:** 3.1–3.4
 
-- [ ] **Step 1: 失败单测金标**
+- [x] **Step 1: 失败单测金标**
 
 ```rust
 // state-change → Contradicts
@@ -294,11 +294,11 @@ EOF
 // unrelated similar-ish → Ambiguous (construct carefully)
 ```
 
-- [ ] **Step 2: 实现 `pub enum MemoryRelation { Compatible, Contradicts, Ambiguous }` + `classify_relation`**
+- [x] **Step 2: 实现 `pub enum MemoryRelation { Compatible, Contradicts, Ambiguous }` + `classify_relation`**
 
 保守：状态词列表见 design；数值漂移：共享非数字 token 且数字 token 集合差非空。
 
-- [ ] **Step 3: 改 `add_memory` 相似分支**
+- [x] **Step 3: 改 `add_memory` 相似分支**
 
 ```rust
 match classify_relation(&entry, &mem[existing_idx]) {
@@ -315,9 +315,9 @@ match classify_relation(&entry, &mem[existing_idx]) {
 
 跳过已被 superseded 的 existing 作为 merge 目标（find_similar 时可 filter，或 classify 前检查）。
 
-- [ ] **Step 4: 集成：supersede 后 recall 不含旧 content**
+- [x] **Step 4: 集成：supersede 后 recall 不含旧 content**
 
-- [ ] **Step 5: commit**
+- [x] **Step 5: commit**
 
 ```bash
 git commit -m "$(cat <<'EOF'
