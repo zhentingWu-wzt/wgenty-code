@@ -177,6 +177,8 @@ async fn maybe_explore_replace(
         top.iter().map(|(m, _)| m.id.as_str()).collect();
 
     let pool = manager.project_memories().await;
+    // Snapshot once per explore pass — avoid N lock acquires in the loop.
+    let recently = manager.recently_explored_ids().await;
     let mut candidates: Vec<(crate::context::MemoryEntry, f32)> = Vec::new();
     for m in pool {
         if m.superseded_by.is_some() {
@@ -185,7 +187,7 @@ async fn maybe_explore_replace(
         if top_ids.contains(m.id.as_str()) {
             continue;
         }
-        if manager.was_recently_explored(&m.id).await {
+        if recently.contains(m.id.as_str()) {
             continue;
         }
         let eff = m.effective_importance(now, cfg);
@@ -661,6 +663,130 @@ mod tests {
         assert!(
             block.contains("only alpha slot") && block.contains("only beta slot"),
             "with no cold candidate, original top must be kept (no panic): {block}"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_exploration_skips_recently_explored_cold() {
+        let (mm, _tmp) = setup_exploration_fixture().await;
+        let mm = mm.with_exploration_epsilon(1.0);
+
+        let first = MemoryContextInjector::recall(
+            "rust programming ranked fact",
+            &mm,
+            2,
+            0.5,
+            Some(true),
+        )
+        .await;
+        assert!(
+            first.contains("cold low ranked gamma"),
+            "first forced explore should inject cold: {first}"
+        );
+        assert!(
+            mm.was_recently_explored("explore-cold").await,
+            "cold must be marked recently explored after first pass"
+        );
+
+        // Second forced explore: cold is session-recent, so it must not be
+        // selected again. With no other cold candidate, original top stays.
+        let second = MemoryContextInjector::recall(
+            "rust programming ranked fact",
+            &mm,
+            2,
+            0.5,
+            Some(true),
+        )
+        .await;
+        assert!(
+            second.contains("high ranked alpha"),
+            "highest-ranked slot must still be kept: {second}"
+        );
+        assert!(
+            second.contains("mid ranked beta"),
+            "with cold blocked, original second slot should return: {second}"
+        );
+        assert!(
+            !second.contains("cold low ranked gamma"),
+            "recently explored cold must not be re-injected: {second}"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_exploration_skips_superseded_cold_candidate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = make_manager(&tmp).with_exploration_epsilon(1.0);
+
+        let mut high = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Rust programming high ranked alpha fact",
+        )
+        .with_importance(0.95);
+        high.id = "explore-high".into();
+
+        let mut mid = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Rust programming mid ranked beta fact",
+        )
+        .with_importance(0.80);
+        mid.id = "explore-mid".into();
+
+        // Tombstone: lower effective than live cold, would win sort if allowed.
+        let mut tomb = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Rust programming tombstone cold delta fact",
+        )
+        .with_importance(0.40);
+        tomb.id = "explore-tomb".into();
+        tomb.recall_count = 0;
+        tomb.superseded_by = Some("explore-cold-live".into());
+
+        let mut live_cold = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Rust programming live cold epsilon fact",
+        )
+        .with_importance(0.55);
+        live_cold.id = "explore-cold-live".into();
+        live_cold.recall_count = 0;
+
+        mm.add_memory(high, MemoryOrigin::Project).await.unwrap();
+        mm.add_memory(mid, MemoryOrigin::Project).await.unwrap();
+        mm.add_memory(tomb, MemoryOrigin::Project).await.unwrap();
+        mm.add_memory(live_cold, MemoryOrigin::Project).await.unwrap();
+        mm.load().await.unwrap();
+
+        let block = MemoryContextInjector::recall(
+            "rust programming ranked fact",
+            &mm,
+            2,
+            0.5,
+            Some(true),
+        )
+        .await;
+
+        assert!(
+            block.contains("high ranked alpha"),
+            "highest-ranked slot must be kept: {block}"
+        );
+        assert!(
+            block.contains("live cold epsilon"),
+            "live cold should be the exploration pick: {block}"
+        );
+        assert!(
+            !block.contains("tombstone cold delta"),
+            "superseded tombstone must never be chosen as cold: {block}"
+        );
+        assert!(
+            !block.contains("mid ranked beta"),
+            "lowest top slot should be replaced by live cold: {block}"
+        );
+        assert!(
+            mm.was_recently_explored("explore-cold-live").await,
+            "live cold id should be marked recently explored"
+        );
+        assert!(
+            !mm.was_recently_explored("explore-tomb").await,
+            "tombstone must not be marked explored"
         );
     }
 

@@ -538,23 +538,28 @@ impl MemoryManager {
     }
 
     /// Builder-style override of exploration epsilon (primarily for tests).
-    pub fn with_exploration_epsilon(mut self, epsilon: f32) -> Self {
+    pub(crate) fn with_exploration_epsilon(mut self, epsilon: f32) -> Self {
         self.exploration_epsilon = epsilon;
         self
     }
 
     /// Whether `id` is in the session-local recently-explored set.
-    pub async fn was_recently_explored(&self, id: &str) -> bool {
+    pub(crate) async fn was_recently_explored(&self, id: &str) -> bool {
         self.recently_explored.read().await.contains(id)
     }
 
     /// Record that exploration selected `id` this session.
-    pub async fn mark_recently_explored(&self, id: &str) {
+    pub(crate) async fn mark_recently_explored(&self, id: &str) {
         self.recently_explored.write().await.insert(id.to_string());
     }
 
+    /// Snapshot of session-local recently-explored ids (one lock per explore pass).
+    pub(crate) async fn recently_explored_ids(&self) -> HashSet<String> {
+        self.recently_explored.read().await.clone()
+    }
+
     /// Snapshot of project-local memories (for recall exploration candidates).
-    pub async fn project_memories(&self) -> Vec<MemoryEntry> {
+    pub(crate) async fn project_memories(&self) -> Vec<MemoryEntry> {
         self.memories.read().await.clone()
     }
 
