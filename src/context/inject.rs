@@ -81,6 +81,7 @@ impl MemoryContextInjector {
         let cfg = manager.effective_importance_cfg();
         let mut scored: Vec<_> = globals
             .into_iter()
+            .filter(|m| m.superseded_by.is_none())
             .map(|m| {
                 let eff = m.effective_importance(now, &cfg);
                 (m, eff)
@@ -589,6 +590,41 @@ mod tests {
         assert!(
             !result.iter().any(|l| l.contains("tokio")),
             "project memories should not appear in global output"
+        );
+    }
+
+    #[tokio::test]
+    async fn format_global_excludes_superseded_memories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = make_manager(&tmp);
+
+        let mut live = MemoryEntry::new(
+            MemoryType::Preference,
+            "Always reply in Chinese live-global",
+        )
+        .with_importance(0.7);
+        live.id = "live-global".into();
+
+        let mut old = MemoryEntry::new(
+            MemoryType::Preference,
+            "Always reply in Chinese old-superseded-global",
+        )
+        .with_importance(0.99);
+        old.id = "old-global".into();
+        old.superseded_by = Some("live-global".into());
+
+        mm.add_memory(live, MemoryOrigin::Global).await.unwrap();
+        mm.add_memory(old, MemoryOrigin::Global).await.unwrap();
+        mm.load().await.unwrap();
+
+        let result = MemoryContextInjector::format_global(&mm).await;
+        assert!(
+            result.iter().any(|l| l.contains("live-global")),
+            "live global should appear: {result:?}"
+        );
+        assert!(
+            !result.iter().any(|l| l.contains("old-superseded-global")),
+            "superseded global must be excluded: {result:?}"
         );
     }
 }

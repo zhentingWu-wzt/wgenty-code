@@ -28,6 +28,8 @@ pub struct ConsolidationConfig {
     pub age_threshold_hours: u64,
     pub consolidation_interval_hours: u64,
     pub enable_auto_consolidation: bool,
+    /// Multiplier applied to effective importance when `stale_marked_at` is set.
+    pub staleness_penalty: f32,
 }
 
 impl Default for ConsolidationConfig {
@@ -38,6 +40,7 @@ impl Default for ConsolidationConfig {
             age_threshold_hours: 48,
             consolidation_interval_hours: 6,
             enable_auto_consolidation: true,
+            staleness_penalty: 0.5,
         }
     }
 }
@@ -55,6 +58,7 @@ impl ConsolidationConfig {
             age_threshold_hours: settings.age_threshold_hours,
             consolidation_interval_hours: settings.consolidation_interval,
             enable_auto_consolidation: settings.enable_auto_consolidation,
+            staleness_penalty: settings.staleness_penalty,
         }
     }
 }
@@ -91,10 +95,16 @@ impl ConsolidationEngine {
         let mut to_merge: Vec<&MemoryEntry> = Vec::new();
         let _insights: Vec<String> = Vec::new();
 
+        let now = Utc::now();
+        let eff_cfg = crate::context::EffectiveImportanceCfg {
+            age_threshold_hours: self.config.age_threshold_hours,
+            staleness_penalty: self.config.staleness_penalty,
+        };
         let mut sorted_memories: Vec<_> = memories.iter().collect();
         sorted_memories.sort_by(|a, b| {
-            b.importance
-                .partial_cmp(&a.importance)
+            let ea = a.effective_importance(now, &eff_cfg);
+            let eb = b.effective_importance(now, &eff_cfg);
+            eb.partial_cmp(&ea)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
@@ -155,10 +165,7 @@ impl ConsolidationEngine {
         let now = Utc::now();
         let cfg = crate::context::EffectiveImportanceCfg {
             age_threshold_hours: self.config.age_threshold_hours,
-            // Consolidation engine does not own staleness_penalty; use the
-            // settings default. Marked-stale memories already carry the flag
-            // for effective_importance; Task 6 may plumb a dedicated cfg.
-            staleness_penalty: 0.5,
+            staleness_penalty: self.config.staleness_penalty,
         };
         let effective = memory.effective_importance(now, &cfg);
         if effective >= self.config.importance_threshold {
@@ -720,5 +727,46 @@ mod tests {
         assert_eq!(merged.content, "use jwt auth tokens");
         // importance takes the max.
         assert!((merged.importance - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn should_keep_respects_custom_staleness_penalty() {
+        // Past Knowledge TTL (4 * 48h = 192h) so retention only succeeds via
+        // effective >= importance_threshold. Boost hit_factor so that a mild
+        // penalty still clears the gate while the default 0.5 does not:
+        //   half-life=192, age≈193 → decay≈0.5; hit_factor=1.5; imp=1.0
+        //   penalty 0.5 → eff≈0.37 < 0.6 → drop
+        //   penalty 0.85 → eff≈0.63 >= 0.6 → keep
+        let mut entry =
+            MemoryEntry::new(MemoryType::Knowledge, "stale marked high raw").with_importance(1.0);
+        entry.timestamp = chrono::Utc::now() - chrono::Duration::hours(193);
+        entry.last_reinforced_at = Some(entry.timestamp);
+        entry.stale_marked_at = Some(chrono::Utc::now());
+        entry.hit_count = 100;
+        entry.recall_count = 0;
+
+        let mut cfg_harsh = ConsolidationConfig::default();
+        cfg_harsh.staleness_penalty = 0.5;
+        let engine_harsh = ConsolidationEngine::new(cfg_harsh);
+        assert!(
+            !engine_harsh.should_keep(&entry),
+            "penalty 0.5 should drop aged stale high-raw knowledge (effective below threshold)"
+        );
+
+        let mut cfg_mild = ConsolidationConfig::default();
+        cfg_mild.staleness_penalty = 0.85;
+        let engine_mild = ConsolidationEngine::new(cfg_mild);
+        assert!(
+            engine_mild.should_keep(&entry),
+            "penalty 0.85 should keep the same entry via effective>=threshold"
+        );
+    }
+
+    #[test]
+    fn from_memory_settings_copies_staleness_penalty() {
+        let mut settings = crate::config::MemorySettings::default();
+        settings.staleness_penalty = 0.25;
+        let cfg = ConsolidationConfig::from_memory_settings(&settings);
+        assert!((cfg.staleness_penalty - 0.25).abs() < f32::EPSILON);
     }
 }
