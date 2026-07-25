@@ -1,160 +1,214 @@
 ## Context
 
-wgenty-code 的 `agent-memory` 当前是"检索式"方案:扁平短事实(`MemoryEntry`)+ TF-IDF 关键词召回(`inject.rs`)+ 静态 importance + 本地 `consolidate()`(LLM-free,1h/1session 门限)。compaction 时 LLM 抽取记忆(编码),`dream` 做合并/去重/剪枝(巩固),TTL 决定遗忘。
+wgenty-code `agent-memory` 今天是检索式闭环缺失系统：
 
-这套方案的根因局限是**哲学层面的**:它是信息检索(相似度打分取 Top-K,确定性),而人脑记忆是**重构**(线索触发重新拼装,每次召回=微重写,带情绪/语境偏差)。两者差别不是"换 embedding 维度"能弥合的,要在机制层补。
+- 编码：compaction / `memory_add` 写入短事实
+- 召回：TF-IDF + **静态** `importance`
+- 巩固：`consolidate()` 本地 merge + type TTL（**LLM-free**，1h/1session 门限依赖此前提）
+- 遗忘：TTL 截断，无强化、无矛盾取代、无代码库 grounding
 
-本次 change 把记忆系统从"带 TTL 的检索数据库"演进为"脑式重构 + grounding 校验"。核心原则:**借大脑的架构灵感(情节/语义分层、巩固转移、再巩固、多维 salience、线索驱动召回),加上大脑没有的 grounding(对照代码库自纠错)**。仿脑给组织方式,grounding 给可靠性--这是 coding agent 记忆能比人脑更可靠的根因。
+原 5-pillar 脑启发方案方向正确，但作为**单一 change** 范围过大：情节层读路径未定义、P5 与“情节不进索引”冲突、P3/P4 低估 agent-loop 采集成本、Tier-2/engagement/restate 引入 LLM 与假阳性。
 
-约束:不替换 TF-IDF 为 embedding(独立 track)、不改 compaction 抽取 prompt 引用已有记忆、`consolidate()` 本体须保持 LLM-free、向后兼容、三平台通用、情节文件名限 ASCII。
-
-## 脑机制 -> Agent 映射
-
-| 大脑机制 | 当前 agent | 本次 pillar |
-|---------|-----------|------------|
-| 工作记忆(有限 scratchpad) | context window | (已有) |
-| 海马-皮层分工(情节 vs 语义) | **无情节层**(transcript 压缩即丢) | **P2** 情节/语义分层 |
-| 巩固(睡眠 replay,海马->皮层转移) | `dream` 纯本地合并 | **P2** replay_extract(LLM,独立步骤) |
-| 再巩固(召回=微重写,可更新) | 召回静态取出 | **P5** 重述 + 读时写回 |
-| 强化(retrieval practice) | 无 | **P1** effective importance + engagement |
-| 遗忘(主动抑制 + 衰减 + 干扰) | TTL 被动截断 | **P1** 指数衰减 + 命中率阻尼 + 探索 |
-| 情绪 salience(杏仁核,多维) | 单维 LLM importance | **P4** pain_score |
-| 线索驱动(多弱线索 AND 起爆) | TF-IDF 单相似度 | **P3** 符号感知多线索 |
-| Schema(模式压缩) | 无(`extract_insights` 已删) | Deferred |
-| **grounding(对照 ground truth 自纠错)** | **无** | **P1 代码库过时 + P5 读时校验** ⭐ agent 独有 |
-
-⭐ grounding 是大脑做不到的:大脑重构会出错且无法自检,agent 能对照代码库验证(文件还在吗、符号签名对吗)。这是 agent 胜过大脑的根本点,贯穿 P1/P5。
+本 design 将范围收束为 **Memory Reliability Foundation（M1–M5）**：只交付可独立合并、可回滚、可测的反馈回路地基；其余 pillar 降为 follow-up 方向（见文末）。
 
 ## Goals / Non-Goals
 
-**Goals:**
-- 补齐五个结构性缺口(无情节层 / importance 静态 / 召回单线索 / salience 单维 / 召回静态取出)
-- 所有 LLM 操作隔离到 `dream` 独立后置步骤,`consolidate()` 保持 LLM-free
-- 记忆系统闭环:importance 动态自校准、情节可回放、召回线索驱动、salience 多维、召回可重构
-- grounding 校验(代码库过时 + 读时校验)作为 agent 可靠性差异化
-- 零迁移向后兼容
+**Goals**
+- 读时动态 importance，打破“写一次定终身”
+- 写时矛盾 → tombstone 取代（可审计、可逆）
+- consolidate 期用代码库做**幂等**过时衰减（agent 独有 grounding）
+- 保持 `consolidate()` **永远 LLM-free**
+- 语义记忆 id-as-filename 与零迁移兼容
+- 默认行为保守（探索默认关；Ambiguous 不误杀）
 
-**Non-Goals:**
-- 不替换 TF-IDF 为 embedding(独立 track;P3 用符号信号在无 embedding 下增强召回)
-- 不做 agent 侧 engagement 归因(v2,噪声大)
-- 不做 Schema 层次化约定压缩(强依赖 replay,作为后续延伸)
-- 不做干扰覆盖(需 embedding 语义近邻;其衰减/突发重置/prune 部分已被 P1 覆盖)
-- 不引入后台定时器做衰减(惰性读时计算)
-- 不硬删被取代记忆(tombstone 保留可审计)
+**Non-Goals（本 change）**
+- 情节层 / offline / dream LLM 后置管线
+- engagement 归因窗口、符号多线索、pain_score
+- 热路径 LLM restate / 读时 LLM write-back
+- Tier-2 LLM 批分类 ambiguous pairs
+- embedding、后台 timer、硬删
 
-## Pillar 1 -- 动态 importance 与反馈回路(再巩固/强化)
+## 脑机制映射（本 change 实际落地部分）
+
+| 大脑/可靠性格言 | 本 change |
+|----------------|-----------|
+| 强化 / 再巩固（弱） | Compatible merge 时 `reinforce`；计数为后续 engagement 留字段 |
+| 遗忘衰减 | `effective_importance` 指数衰减（读时） |
+| 主动抑制 / 取代 | `superseded_by` tombstone |
+| grounding | path staleness 幂等标记 |
+| 探索 vs 利用 | `exploration_epsilon`（默认 0） |
+| 情节 / replay / 情绪 salience / 多线索 | **Deferred** |
+
+## M1 — Effective importance
 
 ### 机制
-- `MemoryEntry` +4 字段:`recall_count`/`hit_count`/`last_reinforced_at`(Option,锚点)/`superseded_by`(Option,tombstone),`#[serde(default)]` 零迁移
-- `effective_importance()` 纯函数(读时计算,不写盘):
-  `effective = base * decay * (0.5 + 0.5*hitrate)`,`decay = exp(-ln2*hours/half_life)`(anchor=last_reinforced_at 或 timestamp,half_life 复用 `should_keep` 类型 TTL 倍率),`hitrate = (hit_count+1)/(recall_count+2)`(Laplace 平滑)。superseded -> 0。
-- 正信号:`add_memory` 兼容扩展(非矛盾)强化旧记忆;词法 engagement 归因窗口
-- 负信号:矛盾取代(Tier1 启发式 + tombstone);代码库实证过时(consolidate 时校验路径存在)
-- 召回探索 ε
+`MemoryEntry` 增加（均 `#[serde(default)]`）：
+- `recall_count: u32`（默认 0）— 本 change 可在注入时递增，供阻尼与后续 engagement
+- `hit_count: u32`（默认 0）— Compatible reinforce 时 +1；engagement follow-up 再扩展
+- `last_reinforced_at: Option<DateTime<Utc>>` — None 表示锚在 `timestamp`
+- `superseded_by: Option<String>` — Some ⇒ 逻辑删除
 
-### 关键决策
-- **D1 惰性衰减非定时器**:纯函数读时投影,无后台状态机,简化并发
-- **D2 命中率阻尼转负反馈**:`recall_count` 不当正信号(那是 rich-get-richer 陷阱),而通过 hitrate 把"频召回零命中"转为衰减动力。Laplace 平滑保护低召回记忆
-- **D6 LLM 隔离**:矛盾批分类在 dream 独立后置步骤,**不进 consolidate()**,保住 "Consolidation is LLM-free" invariant 与门限前提
+```text
+hitrate    = (hit_count + 1) / (recall_count + 2)          # Laplace
+decay      = exp(-ln2 * hours_since(anchor) / type_half_life)
+stale_mul  = staleness_penalty if stale_marked else 1.0
+effective  = 0  if superseded_by.is_some()
+           else base_importance * decay * (0.5 + 0.5*hitrate) * stale_mul
+```
 
-### 落地集成点
-- recall 排序(`inject.rs:41`)、`should_keep`(`consolidation.rs:135`)、`format_global`(`inject.rs:74`)改用 effective
-- `add_memory`(`mod.rs:451`)去重分支:Compatible->merge+reinforce;Contradicts->tombstone;Ambiguous->merge+flag
-- 归因窗口 `RecallAttribution` 挂 agent loop:settle(user msg)->recall->record(注入 ids)
-- Tier2 矛盾分类:dream 后置 `resolve_ambiguous_pairs()`,批处理 flagged 对
+- `type_half_life` **复用**现有 `should_keep` 的 per-type TTL 倍率 × `age_threshold_hours`（与今日保留直觉对齐）
+- **纯函数、读时计算、不写盘**
+- 排序/过滤切换点：`inject.rs` recall、`format_global`、`consolidation.rs` `should_keep`
 
-## Pillar 2 -- 情节/语义分层 + 离线 replay 巩固(海马-皮层分工)
+### 决策
+- **D1 惰性衰减**：无后台 timer，无并发状态机
+- **D2 hitrate 阻尼**：高频召回零命中转负反馈；never-recalled 中性（因子 1.0）
+- **D3 锚定迁移**：首次 consolidate/dream 路径上，对 `last_reinforced_at=None` 写 `Some(now)` 一次，避免老数据被当成“已衰减很久”；操作幂等（已 Some 不改）
+
+### 风险
+- 高 base importance 但长期未强化会被降权甚至在 should_keep 中淘汰——**有意为之**；用配置 half-life/threshold 调节
+- `recall_count` 在本 change 若只在 reinforce 路径有 hit、注入时 +recall，需避免每次 consolidate 误增；注入路径更新要持久化时注意锁序（先 memories 写锁，再 index，与现 `add_memory` 一致）
+
+## M2 — Tier-1 contradiction & supersede
+
+### 机制
+在现有 Jaccard ≥ 0.6 去重分支上扩展，不再无条件 `merge_into`：
+
+| Relation | 条件（保守启发式） | 行为 |
+|----------|-------------------|------|
+| Contradicts | 高相似 + 状态变化标记（fixed/resolved/removed/deprecated/migrated/no longer 等）或明显数值漂移 | 旧条 `superseded_by=new_id`，`importance *= supersede_penalty`（或写入固定降权一次），新条 standalone；**文件保留** |
+| Compatible | 子集/同向细化 | merge + `reinforce` |
+| Ambiguous | 其它 | merge + `metadata` flag / pending 列表 **仅记录**；不 LLM |
+
+### 决策
+- **D4 宁可 Ambiguous 不误 supersede**：标记词必须结合高相似；单测固定用例，不追求 NLP 完备
+- **D5 本 change 无 Tier-2 LLM**：保住 dream/consolidate 范围；pending flag 模式稳定即可，解析器 follow-up 可消费同一 metadata
+- **D6 tombstone 不硬删**：审计、回滚、用户 prune 另议
+
+### `reinforce`
+```text
+hit_count += 1
+last_reinforced_at = now
+// 可选：轻微提升 base importance cap 到 1.0 —— v1 可不改 base，只靠 hitrate/anchor
+```
+
+注入召回时：`recall_count += 1` 并持久化（若性能敏感可会话聚合后写回；v1 简单按次写可接受，记忆量有上限）。
+
+## M3 — Codebase staleness（幂等）
 
 ### 问题
-当前**无情节层**。transcript 是事实上的情节存储,但 compaction 一压,情节细节(试了方案 A 失败才改 B)永久丢失,只剩 LLM 抽出的语义。无法回放"上次会话发生了什么"。
+若 `importance *= penalty` 每次 consolidate 执行，base 会被打穿且失去可解释性。
 
 ### 机制
-- **情节层存储**:独立目录 `<project>/.wgenty-code/episodes/`,append-mostly(写一次,回放/剪枝,不合并/不被 superseded_by 引用/不进 TF-IDF 索引)
-- **replay 巩固**:`dream` 新增独立后置步骤 `replay_extract()`(LLM,在 `consolidate()` 之后):批量读近期 episode -> 抽 fact 合并进语义、去重、矛盾标 superseded、prune 低频低痛情节
+1. 从 content 用保守 regex 提取类路径 token（如 `src/...rs`、带可选 `:line`）
+2. 对 project memory：若**至少一个**被引用路径曾存在逻辑所需——v1 采用：提取到路径且**全部** missing 才标 stale（避免 URL/示例误伤；具体启发式单测钉死）
+3. 标记：
+   - `metadata["stale_paths"] = true` 或一等字段 `stale_marked_at: Option<DateTime>`（更清晰则一等字段 + serde default）
+   - **若已标记则跳过**（幂等）
+4. `effective_importance` 读标记施加 `staleness_penalty`（默认 0.5）
+5. **不**刷新 `last_reinforced_at`；**不**在每次 consolidate 修改 base importance（推荐）
 
-### 关键决策:情节文件名 = 日期-slug(讨论结论)
-原始想法是"用情节描述当现有记忆文件名"。**经代码核查否决**:现有存储 `storage.rs:72` `save_memory` 用 `format!("{}.json", entry.id)` --**文件名就是 id,而 id 是承重的**(superseded_by/TF-IDF 索引/merge-keep-id/import-dedup 全引用它)。`load_all`(:142)虽从内容读 id 容忍文件名≠id,但写/删/单条加载三条路径都假设文件名==id。让文件名变语义 slug = 让 id 变 slug,破坏稳定性 invariant(slug 语义该变,id 必须稳定),且 slug 会撞、跨平台受限(`validate_id` 已强制)、中文文件名脆弱。
+若希望用户在 JSON 里直接看见降权，允许**首次标记时**一次性改 base，并写 `stale_applied=true` 防二次乘——二选一，实现只保留一种并在单测锁死。**优选：不改 base，只改 effective 乘数。**
 
-**安全落地**:情节层用**独立目录**(不碰语义存储的承重 id),文件名 `<YYYYMMDD-HHMM>-<ascii-slug>-<shortid>.json`:
-- 日期前缀 -> `ls` 天然 chronological 索引(文件系统即索引,不另建 DB,符合"简单"直觉)
-- ascii-slug -> 跨平台安全(从符号/关键词派生,非中文自由文本)
-- shortid -> 保唯一性,不靠 slug 防撞
-- id 在 JSON 内容(episode 是 append-mostly,文件名无需稳定,因不被别的逻辑按 id 引用)
+### 决策
+- **D7 staleness 只在 consolidate，保持 LLM-free**
+- **D8 配置门闸** `staleness_check` 默认 true
 
-这样"文件名=情节"的直觉原样落地,且零风险--因为情节层没有语义存储的 id 稳定性约束。
+## M4 — Exploration（默认关）
 
-### 关键决策:replay 是 LLM 操作,隔离到独立步骤
-replay 本质是 LLM(抽 fact/抽象/合并),与 `consolidate()` LLM-free invariant 冲突。解法**复用 P1 的 D6 模式**:`dream = consolidate()(本地) + replay_extract()(独立 LLM)`。所以 **P1 建立的 LLM 分离 invariant 是 P2 的地基**--这是两 pillar 合并的内在递进。
+```text
+if epsilon > 0 && bernoulli(epsilon):
+  replace lowest-ranked injected project memory
+  with a low-effective, not-recently-recalled, not-superseded candidate
+```
 
-## Pillar 3 -- 符号感知多线索召回(线索驱动)
+- 默认 `exploration_epsilon = 0`
+- recently set：进程内 / 会话内即可（v1）
+- 不引入新存储
 
-### 问题
-召回只有 TF-IDF 关键词单信号,不利用 coding agent 独有富信号:当前任务符号上下文(open files / 编辑中的函数 / 栈帧)。通用 chat 拿不到,这里浪费。
+## M5 — Config / migration / surface
 
-### 机制
-recall 打分扩展为多线索:`score = α·tfidf + β·symbol_overlap(当前任务符号上下文, 记忆内容) + γ·recency`。symbol_overlap 复用 CodeGraph/LSP 符号表或正则提取;当前任务符号上下文在 agent loop 现成。
+### Config keys（均有默认）
+| key | default | 含义 |
+|-----|---------|------|
+| `memory.exploration_epsilon` | `0.0` | 召回探索概率 |
+| `memory.supersede_penalty` | `0.3` | tombstone 时对旧条 base 的一次性乘子（若采用改 base）；若仅 effective 路径可作展示降权 |
+| `memory.staleness_check` | `true` | consolidate 路径检查 |
+| `memory.staleness_penalty` | `0.5` | effective 乘数 |
+| （复用）type TTL / importance_threshold | 现有 | half-life 与 should_keep |
 
-### 关键决策:不上 embedding,用符号信号
-symbol_overlap 是关键词之外唯一能廉价拿到的语义信号,**且是 coding agent 独有**。在无 embedding 时它是召回增强的最优解,符合"grounding > 仿脑"原则--用代码符号当线索,比仿海马靠谱。这比"加 embedding 维度"更对症。
+不必引入 `decay_tau_turns`（属 engagement follow-up）。
 
-## Pillar 4 -- pain_score 多维 salience(情绪权重)
+### Migration
+1. serde default 加载旧 JSON
+2. 首次 consolidate：anchor `last_reinforced_at`
+3. 回滚：旧二进制忽略新字段；删除 tombstone 字段即恢复（或用户工具后续做）
 
-### 问题
-单一 LLM 主观 importance,无校准。大脑用情绪强度(新颖性/惊异/错误代价)给编码优先级。
+### 产品表面（最小）
+- 不强制 TUI 大改；若 list API 原样吐 JSON，新字段自然可见
+- CLI/面板若过滤召回，应尊重 superseded（与 inject 一致）
 
-### 机制
-- 从现有摩擦信号近似 pain(v1 不需情节层):`exec_command` 失败重试次数、guardian 拒绝、用户纠正(同意图重述)、`undo` 调用--agent loop 可观测
-- compaction 抽取时 LLM 把 pain 写入 importance/metadata;高 pain 记忆 consolidate 权重更高
-- effective_importance 可显式加权 pain(标量->多维 salience 的第一步)
+## 集成点（现码）
 
-### 关键决策:pain 数字化近似,不仿化学信号
-人脑化学信号(多巴胺/皮质醇)无法直接仿,pain_score 是数字化近似,够用。v1 从摩擦信号派生避免新存储依赖;P2 情节层落地后,pain 可记入 episode,consolidation 时按 pain 加权回放(高 pain 优先搬进语义)。
+| 点 | 文件（约） | 改动 |
+|----|-----------|------|
+| 结构体 | `context/mod.rs` `MemoryEntry` | +4 字段、`new`/`reinforce`/`effective_importance` |
+| 写入去重 | `MemoryManager::add_memory` | 关系分类分支 |
+| 召回 | `context/inject.rs` | effective 排序/阈值；可选 exploration；recall_count |
+| 保留 | `consolidation.rs` `should_keep` | effective；half-life 抽取共享 |
+| 巩固 | `MemoryManager::consolidate` / engine | staleness 标记；anchor 迁移 |
+| 配置 | settings / `ConsolidationConfig` / memory settings | 新 key |
+| 文档 | `WGENTY.md` | 配置表 |
 
-## Pillar 5 -- 召回时重构(重述 + 再巩固写回)
+**不改**：compaction 抽取 prompt 结构（除文档说明外）、AutoDream 门限、存储目录布局、id 文件名。
 
-### 问题
-召回物原样注入,不重述、不校验、不更新。大脑召回=微重写。
+## 跨切不变式
 
-### 机制
-- **重述**:召回物若是情节条目且较长,经一轮 LLM 重述切出当前 task 相关面再注入(语义短事实跳过)
-- **读时再巩固**:召回时若发现记忆与当前代码不符(grounding 校验),触发软"verify me"提示或写回更新,延伸 P1 矛盾检测到读时
-
-### 关键决策:重述被情节层 gate,且避开 hot-path 滥调
-对"重述省 token(500t->80t)"的异议:当前记忆是几十字短事实,restate 省不了多少反而每轮多一次 LLM(hot path,延迟敏感)。**重述价值被 P2 情节层 gate**--只有情节带来 rich episode 时才划算,且仅对长情节触发,语义短事实跳过。读时校验是 grounding 的召回侧延伸,低风险高价值。
-
-## 跨切决策(Cross-cutting)
-
-- **CC1 consolidate() 永远 LLM-free**:所有 LLM 操作(replay 抽取 P2、矛盾批分类 P1)均在 `dream` 独立后置步骤。这是整个 change 的承重 invariant,保住现有 spec "Consolidation is LLM-free" 与 1h/1session 门限前提。P1 的 D6 是地基,P2 复用它
-- **CC2 情节层独立存储**:独立目录 + date-slug 文件名 + append-mostly,不碰语义存储的承重 id(见 P2 文件名结论)
-- **CC3 grounding 贯穿**:代码库过时校验(P1,consolidate 时)+ 读时校验(P5,recall 时)是 agent 独有的可靠性差异化,贯穿而非单点
-- **CC4 不上 embedding**:P3 用符号信号在无 embedding 下增强召回;embedding 是独立 track。避免本 change 范围爆炸
-- **CC5 零迁移**:语义记忆 serde default;情节层新增目录不影响现有
+1. **`consolidate()` 永远 LLM-free`** — 本 change 无任何 dream LLM 步骤
+2. **语义 id 文件名稳定** — superseded 只改内容字段
+3. **默认保守** — epsilon=0；Ambiguous 不删条
+4. **幂等 grounding** — stale 不叠乘
+5. **零迁移** — serde default + 可选 anchor
 
 ## Risks / Trade-offs
 
-- **[Risk] change 范围大(5 pillar)** -> 按 pillar 分阶段实现(P1 先,是其他的地基);tasks.md 标注依赖;可分 PR 但同属一 change
-- **[Risk] decay_tau/epsilon/pain 权重经验值不准** -> 配置可调,留实测;effective_importance 单测覆盖曲线
-- **[Risk] Tier1 矛盾启发式误判** -> tombstone 不硬删可逆可审计;Tier2 LLM + 用户 prune 兜底
-- **[Risk] 词法 engagement 假阳性** -> IDF distinctive 门槛 + topic 边界双重过滤;engagement 是中正信号,权重低于 memory_add 扩展
-- **[Risk] P5 重述 hot-path LLM 成本** -> 仅对长情节触发,语义短事实跳过;被 P2 gate
-- **[Risk] 情节层文件名 slug 信息损失** -> ascii-slug 限 ASCII(跨平台),中文情节描述进 JSON content 不进文件名;shortid 保唯一
-- **[Risk] replay LLM 不稳定** -> 批处理降频;三分类(supersede/merge/both)简单;tombstone 可逆
-- **[Trade-off] effective_importance 每次召回重算** -> 计算廉价,记忆数有 max_memories 上限,可接受
-- **[Trade-off] rich-get-richer 靠 ε 探索缓解** -> 不彻底,彻底解需 embedding 召回(独立 track)
+| 风险 | 缓解 |
+|------|------|
+| Tier-1 误 supersede | 保守规则 + tombstone 可逆 + 单测金标句对 |
+| 衰减过猛 | anchor 迁移；half-life 跟 type TTL；配置 |
+| recall_count 写盘频繁 | 记忆上限小；必要时后续改批量 |
+| stale regex 误伤 | 保守路径形态；全 missing 才标；可关配置 |
+| 范围再膨胀 | tasks 按 M1–M5；deferred 另开 change |
+
+## Follow-up roadmap（非本 change tasks）
+
+1. **engagement attribution** — user-side distinctive IDF 窗口（依赖 recall_count/hit_count 字段）
+2. **ambiguous LLM resolve** — dream 后置批分类（严格 after consolidate）
+3. **symbol multi-cue** — 先 inventory agent-loop 符号信号，再改打分
+4. **episodic store + replay** — 必须先写清：写入粒度、**读路径**（仅 cold dream vs 热召回）、与 TF-IDF 隔离、文件名 ASCII 方案（原 P2 结论可复用）
+5. **pain_score** — 先 friction counter inventory，再进 metadata；最后才进 replay 权重
+6. **cold-path restate / read-time verify 标记** — 禁止默认热路径 LLM；verify 以本地探针为先
+
+### 原 P2/P5 自洽性结论（留给 episodic change）
+
+> 若 episodic **不进** TF-IDF，则热路径无法“召回长情节再 restate”，除非另建 episode 候选通道。  
+> 因此 **restate 不得作为无读路径的 MUST**；episodic v1 应先 **只写 + dream replay 进语义**，热路径只读语义。
+
+## Open questions（build 前收口，允许实现时用默认）
+
+1. stale 标记用一等字段还是 metadata —— 推荐一等 `stale_marked_at: Option<...>`
+2. supersede 是否改旧条 base importance，或只靠 effective=0（tombstone 已是 0）—— 推荐 tombstone⇒effective 0，**不必再乘 penalty**；penalty 留给非 tombstone 的软降权场景。为减少概念，**Contradicts 只设 superseded_by，不再改 importance**
+3. `recall_count` 是否本 change 就持久化 —— 推荐是，否则 hitrate 永中性；至少 inject 路径 +1
+4. 探索候选池定义（最低 20% effective？未召回优先？）—— 实现选简单策略并单测
+
+## 测试策略
+
+- 单元：effective 曲线、legacy serde、classify_relation 金标、staleness 幂等、epsilon=0
+- 集成：`add_memory` supersede 后 `search`/`recall` 不含旧条；consolidate 不调 LLM（现有模式）
+- 不做：大型对话金标（留给 engagement/episodic）
 
 ## Migration Plan
 
-1. **语义记忆兼容**:`#[serde(default)]`,旧 JSON 零迁移(新字段默认:0/0/None->用 timestamp/None)
-2. **锚定迁移**:首次 dream,对 `last_reinforced_at=None` 的记忆锚定为当前时间,避免老记忆瞬间衰减过猛(一次性,幂等)
-3. **情节层**:新增目录,无迁移;首次启用时为空,随会话积累
-4. **回滚**:新字段被旧代码忽略,行为退回静态 importance;情节目录独立,可整目录删除;无数据损坏
-5. **配置**:新项有默认值,无需用户配置
-
-## Open Questions
-
-1. `decay_tau_turns`(2.0)、`exploration_epsilon`(0.15)、`supersede_penalty`(0.3)、`staleness_penalty`(0.5)、多线索权重 α/β/γ 的最优值需实测
-2. replay_extract 的 LLM prompt 批格式(如何呈现 episode 批让 LLM 抽 fact/去重/判矛盾)在 build 阶段设计
-3. 情节层的写入粒度:每轮写 vs 每决策点写 vs 会话结束写(初版倾向每决策点 + 会话结束汇总,平衡容量与完整性)
-4. `MemoryIndex::distinctive_tokens` 与 symbol 提取是否需索引结构调整(预期仅加查询方法)
-5. pain_score 的摩擦信号采集是否影响 agent loop 性能(预期轻量计数)
-6. 归因窗口 `RecallAttribution` 持久化粒度:会话级(初版)vs 跨会话
+1. 部署新二进制 → 旧 JSON 直接读  
+2. 下一次 consolidate → anchor + 可选 stale 标记  
+3. 回滚旧二进制 → 忽略新字段，行为回静态 importance（tombstone 字段残留无害）
