@@ -28,13 +28,13 @@
 
 ## M3 — Tier-1 contradiction & supersede in `add_memory`
 
-- [ ] 3.1 Implement `classify_relation(new, existing) -> Compatible | Contradicts | Ambiguous` (state-change markers + numeric drift + subset; **conservative**)
-- [ ] 3.2 Change `add_memory` similar-branch (Jaccard ≥ 0.6):
+- [x] 3.1 Implement `classify_relation(new, existing) -> Compatible | Contradicts | Ambiguous` (state-change markers + numeric drift + subset; **conservative**)
+- [x] 3.2 Change `add_memory` similar-branch (Jaccard ≥ 0.6):
   - Compatible → merge + `reinforce` + persist
   - Contradicts → set existing `superseded_by = new.id`, persist existing, insert new standalone (no hard delete)
   - Ambiguous → merge + set metadata/pending flag only (**no LLM**)
-- [ ] 3.3 Tool/`MemoryAddResult` remains truthful (`merged` / ids); document supersede in result if cheap (optional field ok)
-- [ ] 3.4 Unit tests: state-change supersede; value-drift supersede; subset compatible + reinforce; ambiguous flags without delete; superseded file still on disk
+- [x] 3.3 Tool/`MemoryAddResult` remains truthful (`merged` / ids); document supersede in result if cheap (optional field ok)
+- [x] 3.4 Unit tests: state-change supersede; value-drift supersede; subset compatible + reinforce; ambiguous flags without delete; superseded file still on disk
 
 ## M4 — Idempotent codebase staleness in `consolidate`
 
