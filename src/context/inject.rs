@@ -49,10 +49,7 @@ impl MemoryContextInjector {
             })
             .filter(|(_, eff)| *eff >= threshold_f32)
             .collect();
-        scored.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         let mut top: Vec<_> = scored.into_iter().take(top_n).collect();
 
         if top.is_empty() {
@@ -102,10 +99,7 @@ impl MemoryContextInjector {
                 (m, eff)
             })
             .collect();
-        scored.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         const SOFT_CAP: usize = 50;
         scored
             .into_iter()
@@ -147,7 +141,7 @@ impl MemoryContextInjector {
 /// recently explored). Prefers low effective importance, then low recall_count.
 /// No candidate → leave `top` unchanged (never panics).
 async fn maybe_explore_replace(
-    top: &mut Vec<(crate::context::MemoryEntry, f32)>,
+    top: &mut [(crate::context::MemoryEntry, f32)],
     manager: &MemoryManager,
     now: chrono::DateTime<chrono::Utc>,
     cfg: &crate::context::EffectiveImportanceCfg,
@@ -173,8 +167,7 @@ async fn maybe_explore_replace(
         return;
     }
 
-    let top_ids: std::collections::HashSet<&str> =
-        top.iter().map(|(m, _)| m.id.as_str()).collect();
+    let top_ids: std::collections::HashSet<&str> = top.iter().map(|(m, _)| m.id.as_str()).collect();
 
     let pool = manager.project_memories().await;
     // Snapshot once per explore pass — avoid N lock acquires in the loop.
@@ -318,7 +311,8 @@ mod tests {
         let mm = make_manager(&tmp);
         mm.load().await.unwrap();
 
-        let result = MemoryContextInjector::recall("completely unrelated query", &mm, 5, 0.5, None).await;
+        let result =
+            MemoryContextInjector::recall("completely unrelated query", &mm, 5, 0.5, None).await;
         assert!(
             result.is_empty(),
             "query with no matches should produce empty recall"
@@ -329,7 +323,8 @@ mod tests {
     async fn recall_finds_and_formats_matching_memories() {
         let (mm, _tmp) = setup_manager_with_memories().await;
 
-        let result = MemoryContextInjector::recall("rust async programming", &mm, 5, 0.5, None).await;
+        let result =
+            MemoryContextInjector::recall("rust async programming", &mm, 5, 0.5, None).await;
 
         // Should find the two high-importance rust/tokio memories, not the low-importance python one
         assert!(
@@ -383,7 +378,8 @@ mod tests {
         .unwrap();
         mm.load().await.unwrap();
 
-        let result = MemoryContextInjector::recall("rust programming language", &mm, 2, 0.5, None).await;
+        let result =
+            MemoryContextInjector::recall("rust programming language", &mm, 2, 0.5, None).await;
 
         assert!(!result.is_empty());
         // Count lines in the result (minus the <memory-context> wrapper lines)
@@ -408,7 +404,8 @@ mod tests {
         let (mm, _tmp) = setup_manager_with_memories().await;
 
         // With threshold 0.85, only the 0.9 importance entry should pass
-        let result = MemoryContextInjector::recall("rust async programming", &mm, 5, 0.85, None).await;
+        let result =
+            MemoryContextInjector::recall("rust async programming", &mm, 5, 0.85, None).await;
         assert!(result.contains("Rust async programming patterns"));
         assert!(
             !result.contains("Use tokio"),
@@ -441,7 +438,8 @@ mod tests {
         mm.load().await.unwrap();
 
         let result =
-            MemoryContextInjector::recall("rust async programming patterns", &mm, 5, 0.5, None).await;
+            MemoryContextInjector::recall("rust async programming patterns", &mm, 5, 0.5, None)
+                .await;
 
         assert!(
             result.contains("patterns live"),
@@ -470,7 +468,8 @@ mod tests {
         mm.load().await.unwrap();
 
         let result =
-            MemoryContextInjector::recall("rust async programming decayed", &mm, 5, 0.3, None).await;
+            MemoryContextInjector::recall("rust async programming decayed", &mm, 5, 0.3, None)
+                .await;
         // One Knowledge half-life → effective ≈ 0.9 * 0.5 = 0.45 → "{:.1}" = "0.5" or "0.4".
         assert!(
             result.contains("(importance: 0.4)") || result.contains("(importance: 0.5)"),
@@ -497,14 +496,9 @@ mod tests {
         mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
         mm.load().await.unwrap();
 
-        let block = MemoryContextInjector::recall(
-            "rust async programming recall count",
-            &mm,
-            5,
-            0.5,
-            None,
-        )
-        .await;
+        let block =
+            MemoryContextInjector::recall("rust async programming recall count", &mm, 5, 0.5, None)
+                .await;
         assert!(
             block.contains("recall count probe"),
             "memory must be injected so recall_count can bump: {block}"
@@ -520,10 +514,8 @@ mod tests {
         );
 
         // Fresh manager reload from the same project/global dirs proves disk write.
-        let reloaded = MemoryManager::new_for_test(
-            tmp.path().to_path_buf(),
-            tmp.path().join("global_memory"),
-        );
+        let reloaded =
+            MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global_memory"));
         reloaded.load().await.unwrap();
         let from_disk = reloaded
             .get_memory("recall-count-probe")
@@ -574,14 +566,9 @@ mod tests {
     async fn recall_exploration_epsilon_zero_never_replaces() {
         let (mm, _tmp) = setup_exploration_fixture().await;
         // Default epsilon is 0. Even a forced explore_draw must not replace.
-        let block = MemoryContextInjector::recall(
-            "rust programming ranked fact",
-            &mm,
-            2,
-            0.5,
-            Some(true),
-        )
-        .await;
+        let block =
+            MemoryContextInjector::recall("rust programming ranked fact", &mm, 2, 0.5, Some(true))
+                .await;
 
         assert!(
             block.contains("high ranked alpha"),
@@ -602,14 +589,9 @@ mod tests {
         let (mm, _tmp) = setup_exploration_fixture().await;
         let mm = mm.with_exploration_epsilon(1.0);
 
-        let block = MemoryContextInjector::recall(
-            "rust programming ranked fact",
-            &mm,
-            2,
-            0.5,
-            Some(true),
-        )
-        .await;
+        let block =
+            MemoryContextInjector::recall("rust programming ranked fact", &mm, 2, 0.5, Some(true))
+                .await;
 
         assert!(
             block.contains("high ranked alpha"),
@@ -635,30 +617,19 @@ mod tests {
         let mm = make_manager(&tmp).with_exploration_epsilon(1.0);
 
         // Exactly top_n live memories → no cold candidate outside the top.
-        let mut a = MemoryEntry::new(
-            MemoryType::Knowledge,
-            "Rust programming only alpha slot",
-        )
-        .with_importance(0.9);
+        let mut a = MemoryEntry::new(MemoryType::Knowledge, "Rust programming only alpha slot")
+            .with_importance(0.9);
         a.id = "only-a".into();
-        let mut b = MemoryEntry::new(
-            MemoryType::Knowledge,
-            "Rust programming only beta slot",
-        )
-        .with_importance(0.8);
+        let mut b = MemoryEntry::new(MemoryType::Knowledge, "Rust programming only beta slot")
+            .with_importance(0.8);
         b.id = "only-b".into();
         mm.add_memory(a, MemoryOrigin::Project).await.unwrap();
         mm.add_memory(b, MemoryOrigin::Project).await.unwrap();
         mm.load().await.unwrap();
 
-        let block = MemoryContextInjector::recall(
-            "rust programming only slot",
-            &mm,
-            2,
-            0.5,
-            Some(true),
-        )
-        .await;
+        let block =
+            MemoryContextInjector::recall("rust programming only slot", &mm, 2, 0.5, Some(true))
+                .await;
 
         assert!(
             block.contains("only alpha slot") && block.contains("only beta slot"),
@@ -671,14 +642,9 @@ mod tests {
         let (mm, _tmp) = setup_exploration_fixture().await;
         let mm = mm.with_exploration_epsilon(1.0);
 
-        let first = MemoryContextInjector::recall(
-            "rust programming ranked fact",
-            &mm,
-            2,
-            0.5,
-            Some(true),
-        )
-        .await;
+        let first =
+            MemoryContextInjector::recall("rust programming ranked fact", &mm, 2, 0.5, Some(true))
+                .await;
         assert!(
             first.contains("cold low ranked gamma"),
             "first forced explore should inject cold: {first}"
@@ -690,14 +656,9 @@ mod tests {
 
         // Second forced explore: cold is session-recent, so it must not be
         // selected again. With no other cold candidate, original top stays.
-        let second = MemoryContextInjector::recall(
-            "rust programming ranked fact",
-            &mm,
-            2,
-            0.5,
-            Some(true),
-        )
-        .await;
+        let second =
+            MemoryContextInjector::recall("rust programming ranked fact", &mm, 2, 0.5, Some(true))
+                .await;
         assert!(
             second.contains("high ranked alpha"),
             "highest-ranked slot must still be kept: {second}"
@@ -752,17 +713,14 @@ mod tests {
         mm.add_memory(high, MemoryOrigin::Project).await.unwrap();
         mm.add_memory(mid, MemoryOrigin::Project).await.unwrap();
         mm.add_memory(tomb, MemoryOrigin::Project).await.unwrap();
-        mm.add_memory(live_cold, MemoryOrigin::Project).await.unwrap();
+        mm.add_memory(live_cold, MemoryOrigin::Project)
+            .await
+            .unwrap();
         mm.load().await.unwrap();
 
-        let block = MemoryContextInjector::recall(
-            "rust programming ranked fact",
-            &mm,
-            2,
-            0.5,
-            Some(true),
-        )
-        .await;
+        let block =
+            MemoryContextInjector::recall("rust programming ranked fact", &mm, 2, 0.5, Some(true))
+                .await;
 
         assert!(
             block.contains("high ranked alpha"),
