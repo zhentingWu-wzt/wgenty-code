@@ -117,8 +117,10 @@ impl MemoryEntry {
             consolidation::type_half_life_hours(self.memory_type.clone(), cfg.age_threshold_hours)
                 .max(1e-6);
         let decay = (-std::f64::consts::LN_2 * hours / half).exp() as f32;
-        let hitrate = (self.hit_count as f32 + 1.0) / (self.recall_count as f32 + 2.0);
-        let hit_factor = 0.5 + 0.5 * hitrate;
+        let hitrate =
+            ((self.hit_count as f32 + 1.0) / (self.recall_count as f32 + 2.0)).clamp(0.0, 1.0);
+        // Laplace prior hitrate=0.5 maps to neutral 1.0 (neither reward nor penalty).
+        let hit_factor = 0.5 + hitrate; // 0.5..1.5 with clamp on hitrate
         let stale_mul = if self.stale_marked_at.is_some() {
             cfg.staleness_penalty
         } else {
@@ -1130,7 +1132,7 @@ mod tests {
 
     #[test]
     fn effective_importance_never_recalled_hitrate_neutral() {
-        // Laplace prior: hitrate = (0+1)/(0+2) = 0.5 → hit_factor = 0.5 + 0.5*0.5 = 0.75
+        // Laplace prior: hitrate = (0+1)/(0+2) = 0.5 → hit_factor = 0.5 + hitrate = 1.0
         let now = Utc::now();
         let mut e = MemoryEntry::new(MemoryType::Knowledge, "x").with_importance(0.8);
         e.timestamp = now;
@@ -1142,10 +1144,45 @@ mod tests {
             staleness_penalty: 0.5,
         };
         let eff = e.effective_importance(now, &cfg);
-        let expected = 0.8 * 0.75;
+        // decay=1 (now==anchor), stale_mul=1 → effective == base * 1.0
+        let expected = 0.8 * 1.0;
         assert!(
             (eff - expected).abs() < 1e-5,
             "expected {expected}, got {eff}"
+        );
+    }
+
+    #[test]
+    fn effective_importance_hit_rate_damping() {
+        // High recall / zero hits should damp below never-recalled neutral.
+        let now = Utc::now();
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+        let mut neutral = MemoryEntry::new(MemoryType::Knowledge, "n").with_importance(0.8);
+        neutral.timestamp = now;
+        neutral.last_reinforced_at = None;
+        neutral.recall_count = 0;
+        neutral.hit_count = 0;
+
+        let mut damped = MemoryEntry::new(MemoryType::Knowledge, "d").with_importance(0.8);
+        damped.timestamp = now;
+        damped.last_reinforced_at = None;
+        damped.recall_count = 10;
+        damped.hit_count = 0;
+
+        let eff_neutral = neutral.effective_importance(now, &cfg);
+        let eff_damped = damped.effective_importance(now, &cfg);
+        assert!(
+            eff_damped < eff_neutral,
+            "damped ({eff_damped}) should be below neutral ({eff_neutral})"
+        );
+        // hitrate=(0+1)/(10+2)=1/12 → hit_factor=0.5+1/12 ≈ 0.5833
+        let expected_damped = 0.8 * (0.5 + 1.0 / 12.0);
+        assert!(
+            (eff_damped - expected_damped).abs() < 1e-5,
+            "expected ~{expected_damped}, got {eff_damped}"
         );
     }
 
@@ -1170,8 +1207,8 @@ mod tests {
             eff_aged < eff_fresh,
             "aged ({eff_aged}) should be below fresh ({eff_fresh})"
         );
-        // At exactly one half-life, decay ≈ 0.5 → effective ≈ 0.8 * 0.5 * 0.75
-        let expected_aged = 0.8 * 0.5 * 0.75;
+        // At exactly one half-life, decay ≈ 0.5 → effective ≈ 0.8 * 0.5 * 1.0
+        let expected_aged = 0.8 * 0.5 * 1.0;
         assert!(
             (eff_aged - expected_aged).abs() < 1e-3,
             "expected ~{expected_aged}, got {eff_aged}"

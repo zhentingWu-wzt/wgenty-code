@@ -49,11 +49,11 @@ wgenty-code `agent-memory` 今天是检索式闭环缺失系统：
 - `superseded_by: Option<String>` — Some ⇒ 逻辑删除
 
 ```text
-hitrate    = (hit_count + 1) / (recall_count + 2)          # Laplace
+hitrate    = clamp((hit_count + 1) / (recall_count + 2), 0, 1)   # Laplace
 decay      = exp(-ln2 * hours_since(anchor) / type_half_life)
 stale_mul  = staleness_penalty if stale_marked else 1.0
 effective  = 0  if superseded_by.is_some()
-           else base_importance * decay * (0.5 + 0.5*hitrate) * stale_mul
+           else base_importance * decay * (0.5 + hitrate) * stale_mul
 ```
 
 - `type_half_life` **复用**现有 `should_keep` 的 per-type TTL 倍率 × `age_threshold_hours`（与今日保留直觉对齐）
