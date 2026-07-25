@@ -55,6 +55,13 @@ impl MemoryContextInjector {
             return String::new();
         }
 
+        // Persist injection frequency for hit-rate damping. Project-only:
+        // globals are not part of this block.
+        let injected_ids: Vec<&str> = top.iter().map(|(m, _)| m.id.as_str()).collect();
+        if let Err(e) = manager.record_recall_injections(&injected_ids).await {
+            tracing::warn!(error = %e, "failed to persist recall_count after injection");
+        }
+
         tracing::info!(count = top.len(), "per-turn memory recall triggered");
 
         let mut block = String::from("<memory-context>\n");
@@ -391,6 +398,58 @@ mod tests {
         assert!(
             !result.contains("(importance: 0.9)"),
             "must not print raw base importance when decayed: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_increments_and_persists_project_recall_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = make_manager(&tmp);
+
+        let mut entry = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Rust async programming recall count probe",
+        )
+        .with_importance(0.9);
+        entry.id = "recall-count-probe".into();
+        entry.recall_count = 0;
+        mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
+        mm.load().await.unwrap();
+
+        let block = MemoryContextInjector::recall(
+            "rust async programming recall count",
+            &mm,
+            5,
+            0.5,
+        )
+        .await;
+        assert!(
+            block.contains("recall count probe"),
+            "memory must be injected so recall_count can bump: {block}"
+        );
+
+        let in_memory = mm
+            .get_memory("recall-count-probe")
+            .await
+            .expect("memory should still be loaded");
+        assert_eq!(
+            in_memory.recall_count, 1,
+            "injected project memory should bump recall_count in memory"
+        );
+
+        // Fresh manager reload from the same project/global dirs proves disk write.
+        let reloaded = MemoryManager::new_for_test(
+            tmp.path().to_path_buf(),
+            tmp.path().join("global_memory"),
+        );
+        reloaded.load().await.unwrap();
+        let from_disk = reloaded
+            .get_memory("recall-count-probe")
+            .await
+            .expect("persisted memory should reload from disk");
+        assert_eq!(
+            from_disk.recall_count, 1,
+            "recall_count bump must be persisted to project storage"
         );
     }
 
