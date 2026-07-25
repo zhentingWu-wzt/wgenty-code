@@ -178,6 +178,10 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
         }
     }
 
