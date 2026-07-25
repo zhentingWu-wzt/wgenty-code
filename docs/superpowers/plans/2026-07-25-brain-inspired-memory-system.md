@@ -241,7 +241,7 @@ EOF
 
 ---
 
-### Task 4: inject 持久化 recall_count
+### Task 4: inject 持久化 recall_count ✅
 
 **Files:**
 - Modify: `src/context/inject.rs`
@@ -249,14 +249,14 @@ EOF
 
 **对齐 tasks.md:** 2.4, 2.6 中 persist 部分
 
-- [ ] **Step 1: 失败集成测试**
+- [x] **Step 1: 失败集成测试**
 
 ```rust
 // add project memory, call recall with matching keywords, reload/get_memory
 // assert recall_count == 1 and disk reflects it
 ```
 
-- [ ] **Step 2: 实现 `MemoryManager::record_recall_injections(&self, ids: &[str])`**
+- [x] **Step 2: 实现 `MemoryManager::record_recall_injections(&self, ids: &[str])`**
 
 - 等待 `!consolidating`（与 add_memory 相同）
 - 写锁 `memories`，对每个 id：`recall_count += 1`，`project_storage.save_memory`
@@ -264,7 +264,7 @@ EOF
 
 `recall` 在确定 top 列表后调用该 API，再拼 block。
 
-- [ ] **Step 3: 测试通过 + commit**
+- [x] **Step 3: 测试通过 + commit**
 
 ```bash
 git commit -m "$(cat <<'EOF'
