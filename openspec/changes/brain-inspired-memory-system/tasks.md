@@ -52,7 +52,7 @@
 ## M6 — First-consolidate anchor migration & config surface
 
 - [ ] 6.1 On consolidate (or dream entry that calls consolidate): for each memory with `last_reinforced_at=None`, set `Some(now)` once and persist (idempotent)
-- [ ] 6.2 Add settings keys + defaults: `exploration_epsilon`, `staleness_check`, `staleness_penalty`（`supersede_penalty` only if still used; prefer tombstone-only）
+- [x] 6.2 Add settings keys + defaults: `exploration_epsilon`, `staleness_check`, `staleness_penalty`（`supersede_penalty` only if still used; prefer tombstone-only）
 - [ ] 6.3 Thread config into effective_importance / inject / consolidate
 - [ ] 6.4 Update `WGENTY.md` memory config table
 - [ ] 6.5 `cargo test` (memory/context-related + full if practical), `cargo clippy --all-targets -- -D warnings`, `cargo fmt -- --check`

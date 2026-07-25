@@ -160,7 +160,7 @@ EOF
 
 ---
 
-### Task 2: 配置键 + MemoryManager 线程 cfg
+### Task 2: 配置键 + MemoryManager 线程 cfg ✅
 
 **Files:**
 - Modify: `src/config/services.rs` (`MemorySettings`)
@@ -169,7 +169,7 @@ EOF
 
 **对齐 tasks.md:** 6.2 的配置部分可先做结构，文档放 Task 6
 
-- [ ] **Step 1: 扩展 MemorySettings**
+- [x] **Step 1: 扩展 MemorySettings**
 
 ```rust
 #[serde(default = "default_exploration_epsilon")]
@@ -182,11 +182,11 @@ pub staleness_penalty: f32, // 0.5
 
 更新 `Default` / 任何手工 struct 字面量（编译器会指路）。
 
-- [ ] **Step 2: MemoryManager 保存 cfg 字段**，供 inject/consolidate 读取（getter 或 pub(crate)）
+- [x] **Step 2: MemoryManager 保存 cfg 字段**，供 inject/consolidate 读取（getter 或 pub(crate)）
 
-- [ ] **Step 3: `cargo test` 相关 config/context 编译通过**
+- [x] **Step 3: `cargo test` 相关 config/context 编译通过**
 
-- [ ] **Step 4: commit**
+- [x] **Step 4: commit**
 
 ```bash
 git commit -m "$(cat <<'EOF'
