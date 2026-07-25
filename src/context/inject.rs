@@ -30,20 +30,26 @@ impl MemoryContextInjector {
         let query = keywords.join(" ");
         let matched = manager.search_memories(&query).await;
 
-        // Filter by importance >= threshold, sort descending, take top N.
+        // Filter/sort by effective importance; drop superseded tombstones.
         #[allow(clippy::cast_possible_truncation)]
         // threshold is a small integer; f32 precision is sufficient
         let threshold_f32 = threshold as f32;
-        let mut sorted: Vec<_> = matched
+        let now = chrono::Utc::now();
+        let cfg = manager.effective_importance_cfg();
+        let mut scored: Vec<_> = matched
             .into_iter()
-            .filter(|m| m.importance >= threshold_f32)
+            .filter(|m| m.superseded_by.is_none())
+            .map(|m| {
+                let eff = m.effective_importance(now, &cfg);
+                (m, eff)
+            })
+            .filter(|(_, eff)| *eff >= threshold_f32)
             .collect();
-        sorted.sort_by(|a, b| {
-            b.importance
-                .partial_cmp(&a.importance)
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let top: Vec<_> = sorted.into_iter().take(top_n).collect();
+        let top: Vec<_> = scored.into_iter().take(top_n).collect();
 
         if top.is_empty() {
             return String::new();
@@ -52,12 +58,12 @@ impl MemoryContextInjector {
         tracing::info!(count = top.len(), "per-turn memory recall triggered");
 
         let mut block = String::from("<memory-context>\n");
-        for m in &top {
+        for (m, eff) in &top {
             block.push_str(&format!(
                 "- [{}] {} (importance: {:.1})\n",
                 format_memory_type(&m.memory_type),
                 m.content,
-                m.importance
+                eff
             ));
         }
         block.push_str("</memory-context>");
@@ -67,20 +73,28 @@ impl MemoryContextInjector {
 
     /// Format global memories into lines for the `<global-memory>` system
     /// prompt block. Returns at most 50 entries (soft cap), sorted by
-    /// importance descending. Unlike `recall()`, this does NOT filter by
-    /// relevance — all global memories are injected every turn.
+    /// effective importance descending. Unlike `recall()`, this does NOT
+    /// filter by relevance — all global memories are injected every turn.
     pub async fn format_global(manager: &MemoryManager) -> Vec<String> {
-        let mut globals = manager.global_memories().await;
-        globals.sort_by(|a, b| {
-            b.importance
-                .partial_cmp(&a.importance)
+        let globals = manager.global_memories().await;
+        let now = chrono::Utc::now();
+        let cfg = manager.effective_importance_cfg();
+        let mut scored: Vec<_> = globals
+            .into_iter()
+            .map(|m| {
+                let eff = m.effective_importance(now, &cfg);
+                (m, eff)
+            })
+            .collect();
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         const SOFT_CAP: usize = 50;
-        globals
+        scored
             .into_iter()
             .take(SOFT_CAP)
-            .map(|m| format!("- [{}] {}", format_memory_type(&m.memory_type), m.content))
+            .map(|(m, _)| format!("- [{}] {}", format_memory_type(&m.memory_type), m.content))
             .collect()
     }
 
@@ -151,38 +165,14 @@ fn format_memory_type(mt: &MemoryType) -> &'static str {
 mod tests {
     use super::*;
     use crate::api::ChatMessage;
-    use crate::context::{
-        ConsolidationEngine, HistoryManager, MemoryEntry, MemoryIndex, MemoryManager, MemoryOrigin,
-        MemorySessionManager, MemoryType, Storage,
-    };
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
+    use crate::context::{MemoryEntry, MemoryManager, MemoryOrigin, MemoryType};
+    use chrono::{Duration, Utc};
 
     fn make_manager(temp_dir: &tempfile::TempDir) -> MemoryManager {
-        let memory_dir = temp_dir.path().join("memory");
-        std::fs::create_dir_all(&memory_dir).unwrap();
-        let storage = Arc::new(Storage::new(memory_dir));
-        let global_memory_dir = temp_dir.path().join("global_memory");
-        std::fs::create_dir_all(&global_memory_dir).unwrap();
-        let global_storage = Arc::new(Storage::new(global_memory_dir));
-        MemoryManager {
-            sessions: Arc::new(MemorySessionManager::new()),
-            history: Arc::new(HistoryManager::new()),
-            project_storage: storage,
-            global_storage,
-            consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
-            memories: Arc::new(RwLock::new(Vec::new())),
-            global_memories: Arc::new(RwLock::new(Vec::new())),
-            index: Arc::new(RwLock::new(MemoryIndex::new())),
-            consolidating: Arc::new(AtomicBool::new(false)),
-            write_importance_threshold: 0.6,
-            max_extract_per_compaction: 3,
-            exploration_epsilon: 0.0,
-            staleness_check: true,
-            staleness_penalty: 0.5,
-            age_threshold_hours: 48,
-        }
+        MemoryManager::new_for_test(
+            temp_dir.path().to_path_buf(),
+            temp_dir.path().join("global_memory"),
+        )
     }
 
     async fn setup_manager_with_memories() -> (MemoryManager, tempfile::TempDir) {
@@ -334,6 +324,112 @@ mod tests {
         assert!(
             !result.contains("Use tokio"),
             "0.8 < 0.85 threshold, should be excluded"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_excludes_superseded_memories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = make_manager(&tmp);
+
+        let mut live = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Rust async programming patterns live",
+        )
+        .with_importance(0.7);
+        live.id = "live-rust".into();
+
+        let mut old = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Rust async programming patterns old superseded",
+        )
+        .with_importance(0.99);
+        old.id = "old-rust".into();
+        old.superseded_by = Some("live-rust".into());
+
+        mm.add_memory(live, MemoryOrigin::Project).await.unwrap();
+        mm.add_memory(old, MemoryOrigin::Project).await.unwrap();
+        mm.load().await.unwrap();
+
+        let result =
+            MemoryContextInjector::recall("rust async programming patterns", &mm, 5, 0.5).await;
+
+        assert!(
+            result.contains("patterns live"),
+            "live memory should appear in recall: {result}"
+        );
+        assert!(
+            !result.contains("old superseded"),
+            "superseded memory must not appear in recall block: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_prints_effective_importance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = make_manager(&tmp);
+
+        // Old anchor → effective well below base importance.
+        let mut entry = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Rust async programming decayed score",
+        )
+        .with_importance(0.9);
+        entry.timestamp = Utc::now() - Duration::hours(192); // one Knowledge half-life
+        entry.last_reinforced_at = Some(entry.timestamp);
+        mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
+        mm.load().await.unwrap();
+
+        let result =
+            MemoryContextInjector::recall("rust async programming decayed", &mm, 5, 0.3).await;
+        // One Knowledge half-life → effective ≈ 0.9 * 0.5 = 0.45 → "{:.1}" = "0.5" or "0.4".
+        assert!(
+            result.contains("(importance: 0.4)") || result.contains("(importance: 0.5)"),
+            "recall should print effective (~0.45), not raw 0.9: {result}"
+        );
+        assert!(
+            !result.contains("(importance: 0.9)"),
+            "must not print raw base importance when decayed: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn format_global_orders_by_effective_not_raw_importance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = make_manager(&tmp);
+
+        let mut high_raw_old = MemoryEntry::new(
+            MemoryType::Preference,
+            "Always reply in Chinese high-raw-old",
+        )
+        .with_importance(0.95);
+        high_raw_old.timestamp = Utc::now() - Duration::hours(800);
+        high_raw_old.last_reinforced_at = Some(high_raw_old.timestamp);
+
+        let lower_raw_fresh = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "User works on Rust projects lower-raw-fresh",
+        )
+        .with_importance(0.6);
+        // fresh → higher effective than heavily decayed 0.95
+
+        mm.add_memory(high_raw_old, MemoryOrigin::Global)
+            .await
+            .unwrap();
+        mm.add_memory(lower_raw_fresh, MemoryOrigin::Global)
+            .await
+            .unwrap();
+        mm.load().await.unwrap();
+
+        let result = MemoryContextInjector::format_global(&mm).await;
+        assert_eq!(result.len(), 2);
+        assert!(
+            result[0].contains("lower-raw-fresh"),
+            "fresh lower raw should rank above decayed high raw: {result:?}"
+        );
+        assert!(
+            result[1].contains("high-raw-old"),
+            "decayed high raw should rank second: {result:?}"
         );
     }
 
