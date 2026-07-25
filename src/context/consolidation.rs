@@ -19,6 +19,8 @@ pub fn extract_memory_paths(content: &str) -> Vec<PathBuf> {
     let re = RE.get_or_init(|| {
         Regex::new(
             r"(?x)
+            # Left boundary: avoid matching inside tokens like foosrc/foo.rs
+            (?:^|[^A-Za-z0-9_])
             (?P<path>
                 (?:src|lib|crates|apps|packages|tests?|scripts?|docs?)
                 /[\w./+-]+
@@ -941,6 +943,18 @@ mod tests {
             paths,
             vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.ts")]
         );
+    }
+
+    #[test]
+    fn extract_memory_paths_rejects_prefix_glued_roots() {
+        let paths = extract_memory_paths("notes about foosrc/foo.rs and barlib/bar.ts");
+        assert!(
+            paths.is_empty(),
+            "glued prefixes must not extract as repo paths: {paths:?}"
+        );
+        // Still extracts when a proper boundary precedes the root segment.
+        let paths = extract_memory_paths("see (src/foo.rs) nearby");
+        assert_eq!(paths, vec![PathBuf::from("src/foo.rs")]);
     }
 
     #[test]
