@@ -17,3 +17,16 @@ pub const ROLE_SYSTEM: Color = Color::Rgb(180, 180, 140);
 
 // Layout
 pub const PROMPT_SYMBOL: &str = "▸";
+
+// Inspector panel
+pub const INSPECTOR_BORDER: Color = Color::Rgb(100, 100, 180);
+pub const INSPECTOR_TAB_ACTIVE: Color = Color::Rgb(100, 200, 255);
+pub const INSPECTOR_TAB_DIM: Color = Color::Rgb(80, 80, 80);
+pub const INSPECTOR_SOURCE_BUILTIN: Color = Color::Rgb(60, 140, 220);
+pub const INSPECTOR_SOURCE_FILE: Color = Color::Rgb(220, 180, 60);
+pub const INSPECTOR_SOURCE_MEMORY: Color = Color::Rgb(100, 220, 120);
+pub const INSPECTOR_SOURCE_SKILL: Color = Color::Rgb(100, 200, 200);
+pub const INSPECTOR_SOURCE_CONFIG: Color = Color::Rgb(160, 160, 160);
+pub const INSPECTOR_IMPORTANCE_HIGH: Color = Color::Rgb(220, 80, 80);
+pub const INSPECTOR_IMPORTANCE_MID: Color = Color::Rgb(200, 160, 60);
+pub const INSPECTOR_IMPORTANCE_LOW: Color = Color::Rgb(100, 100, 100);

@@ -196,6 +196,9 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                 let msgs = history.get().await;
                 obs.on_failed(llm_rounds, &err.to_string(), &msgs);
             }
+            // Save session before exiting on error so the session panel
+            // retains the conversation up to this point.
+            events.emit(RuntimeEvent::SaveSession);
             return Err(err);
         }
         if llm_rounds == warn_rounds {
@@ -311,6 +314,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                             ));
                             state.compaction_failed = true;
                         }
+                        events.emit(RuntimeEvent::SaveSession);
                         continue;
                     }
                     _ => {
@@ -374,6 +378,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                     if let Some(obs) = hooks.observer {
                         obs.on_failed(llm_rounds + 1, &e.to_string(), &messages);
                     }
+                    events.emit(RuntimeEvent::SaveSession);
                     return Err(e);
                 }
             }
@@ -406,6 +411,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                         continue;
                     }
                     events.emit(RuntimeEvent::StreamError(e.to_string()));
+                    events.emit(RuntimeEvent::SaveSession);
                     return Err(e);
                 }
             }
@@ -636,6 +642,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                             let msgs = history.get().await;
                             obs.on_failed(llm_rounds, &msg, &msgs);
                         }
+                        events.emit(RuntimeEvent::SaveSession);
                         return Err(RuntimeError::Stream(msg));
                     }
 

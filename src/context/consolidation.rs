@@ -838,6 +838,7 @@ impl ConsolidationEngine {
             last_reinforced_at: existing.last_reinforced_at,
             superseded_by: existing.superseded_by.clone(),
             stale_marked_at: existing.stale_marked_at,
+            retrieval_mode: existing.retrieval_mode,
         }
     }
 

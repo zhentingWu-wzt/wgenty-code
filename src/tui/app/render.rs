@@ -4,6 +4,7 @@ use super::App;
 use crate::mcp::codegraph::CodegraphInstallState;
 use crate::tui::components;
 use crate::tui::theme;
+use crate::tui::traits::Component;
 use crate::tui::util::centered_rect;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -85,15 +86,24 @@ impl App {
         let status_bar_idx = if show_panel { 3 } else { 2 };
         let pending_idx = if show_panel { 4 } else { 3 };
         let input_idx = if show_panel { 5 } else { 4 };
-        let main_area = if self.task_panel.visible {
-            let split = Layout::default()
+        let main_area = layout[chat_idx];
+        // Determine if Inspector should be visible
+        let inspector_shown =
+            self.inspector.visible && self.subagent_focus.is_none() && f.area().width >= 80;
+
+        let chat_area = if inspector_shown {
+            // Split horizontally: chat 65% | inspector 35%
+            let chunks = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-                .split(layout[chat_idx]);
-            components::task_panel::render(f, split[1], &self.task_panel);
-            split[0]
+                .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
+                .split(main_area);
+
+            // Render Inspector
+            self.inspector.render(f, chunks[1]);
+
+            chunks[0]
         } else {
-            layout[chat_idx]
+            main_area
         };
         // The welcome banner shows until the first message is committed to
         // the chat. Any message — including System messages produced by
@@ -105,9 +115,9 @@ impl App {
                 let s = self.settings_lock.read().expect("lock poisoned: settings");
                 crate::config::ApiConfig::default().get_model_id(&s.models.main.name)
             };
-            components::welcome::render(f, main_area, &model_name);
+            components::welcome::render(f, chat_area, &model_name);
         } else {
-            self.render_chat(f, main_area);
+            self.render_chat(f, chat_area);
         }
         // Inline question / permission panel
         if self.question_state.visible {

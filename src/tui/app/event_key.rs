@@ -111,16 +111,18 @@ impl App {
             }
             self.agent_navigation.back_stack.clear();
             self.subagent_focus = None;
+            self.inspector.visible = self.inspector.was_visible_before_focus;
             return;
         }
         // Permission panel handling (inline, not popup)
-        // Shift+Tab: cycle agent mode (but not when completion panel is active)
+        // Shift+Tab: cycle agent mode (but not when completion panel or inspector is active)
         if key.code == KeyCode::BackTab
             && !self
                 .completion_state
                 .as_ref()
                 .map(|s| s.visible)
                 .unwrap_or(false)
+            && !self.inspector.visible
         {
             self.mode = self.mode.next();
             self.sync_permission_mode_to_daemon();
@@ -252,6 +254,22 @@ impl App {
         }
         // Session popup handling
         if self.session_state.visible {
+            // When a delete is pending, intercept all keys for the
+            // confirm / cancel flow.
+            if self.session_state.pending_delete {
+                match key.code {
+                    KeyCode::Char('y') | KeyCode::Enter => {
+                        if let Some(id) = self.session_state.confirm_delete() {
+                            let _ = self.event_tx.send(AppEvent::DeleteSession(id));
+                        }
+                    }
+                    // Any other key cancels the pending delete.
+                    _ => {
+                        self.session_state.cancel_delete();
+                    }
+                }
+                return;
+            }
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.session_state.move_up();
@@ -286,15 +304,8 @@ impl App {
                         });
                     }
                 }
-                KeyCode::Char('d') => {
-                    if let Some(id) = self.session_state.delete_selected() {
-                        let _ = self.event_tx.send(AppEvent::DeleteSession(id));
-                    }
-                }
-                KeyCode::Delete | KeyCode::Backspace => {
-                    if let Some(id) = self.session_state.delete_selected() {
-                        let _ = self.event_tx.send(AppEvent::DeleteSession(id));
-                    }
+                KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => {
+                    self.session_state.request_delete();
                 }
                 KeyCode::Esc => {
                     self.session_state.dismiss();
@@ -356,8 +367,10 @@ impl App {
             if !active.is_empty() {
                 // Unified list: ["main", ...active]. wrap len = N+1.
                 let len = active.len() + 1;
-                // Auto-activate on ↑↓
-                if key.code == KeyCode::Up || key.code == KeyCode::Down {
+                // Auto-activate on ↑↓ (skip when inspector is visible:
+                // let inspector consume the arrows for turn navigation)
+                if (key.code == KeyCode::Up || key.code == KeyCode::Down) && !self.inspector.visible
+                {
                     self.subagent_status_bar_focused = true;
                 }
                 if self.subagent_status_bar_focused {
@@ -389,6 +402,9 @@ impl App {
                                 if let Some(state) =
                                     FocusViewState::build(node_id, &self.subagent_tree)
                                 {
+                                    self.inspector.was_visible_before_focus =
+                                        self.inspector.visible;
+                                    self.inspector.visible = false;
                                     self.subagent_focus = Some(state);
                                 }
                                 // Intentionally do NOT descend via NavigateAgent
@@ -444,6 +460,25 @@ impl App {
                 return;
             }
             _ => {}
+        }
+        // F2: toggle inspector panel
+        if key.code == KeyCode::F(2) {
+            self.inspector.visible = !self.inspector.visible;
+            if self.inspector.visible {
+                // Sync to latest context when opening
+                self.inspector.selected_turn = self.turn_contexts.len().saturating_sub(1);
+                self.inspector.sync(&self.turn_contexts);
+            }
+            return;
+        }
+        // Inspector key handling (when visible and no subagent focus).
+        // Must come BEFORE PageUp/PageDown/Enter/BackTab global handlers
+        // so the inspector can intercept these keys for its own navigation.
+        if self.inspector.visible
+            && self.subagent_focus.is_none()
+            && self.inspector.handle_key(&key)
+        {
+            return; // Inspector consumed the key
         }
         // Ctrl+L: clear screen
         if key.code == KeyCode::Char('l') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -559,8 +594,8 @@ impl App {
 
     /// Keep system-prompt permissions layer in sync with Shift+Tab / Plan toggle.
     ///
-    /// Updates `prompt_context` + `assembled_system_messages` only. The agent
-    /// loop prepends `assembled_system_messages` each API round, so history
+    /// Updates `prompt_context` + `assembled_instructions` only. The agent
+    /// loop prepends `assembled_instructions.system_messages` each API round, so history
     /// stays dialogue-only and must not be rewritten with system layers.
     pub(super) fn apply_mode_to_prompt_permissions(&mut self) {
         let sandbox = self.mode.prompt_sandbox_mode().to_string();
@@ -581,7 +616,7 @@ impl App {
             .clone();
         let assembled = crate::prompts::assemble_instructions(&settings, &new_ctx);
         self.prompt_context = new_ctx;
-        self.assembled_system_messages = assembled.system_messages;
+        self.assembled_instructions = assembled;
         tracing::info!(
             mode = ?self.mode,
             sandbox = self.prompt_context.sandbox_mode.as_deref().unwrap_or("?"),
@@ -690,7 +725,8 @@ mod tests {
         assert_eq!(app.prompt_context.sandbox_mode.as_deref(), Some("disabled"));
         assert_eq!(app.prompt_context.approval_policy.as_deref(), Some("never"));
         let yolo_perm = app
-            .assembled_system_messages
+            .assembled_instructions
+            .system_messages
             .iter()
             .find_map(|m| {
                 m.content
@@ -734,7 +770,8 @@ mod tests {
             Some("on-request")
         );
         let perm = app
-            .assembled_system_messages
+            .assembled_instructions
+            .system_messages
             .iter()
             .find_map(|m| {
                 m.content

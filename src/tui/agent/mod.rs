@@ -401,7 +401,11 @@ mod tests {
     fn agent_loop_accepts_memory_manager() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let client = DaemonClient::new("http://localhost:8080".to_string());
-        let mm = Arc::new(MemoryManager::new(crate::utils::current_project_root()));
+        let tmp = tempfile::TempDir::new_in(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target"),
+        )
+        .expect("create tempdir");
+        let mm = Arc::new(MemoryManager::new(tmp.path().to_path_buf()));
 
         // Construct AgentLoop with memory_manager — must compile.
         let loop_instance = AgentLoop::new(

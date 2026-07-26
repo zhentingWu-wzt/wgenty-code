@@ -39,6 +39,26 @@ pub struct EffectiveImportanceCfg {
     pub staleness_penalty: f32,
 }
 
+/// Controls how a [`MemoryEntry`] is retrieved for prompt injection.
+///
+/// - `Auto`: Every-turn TF-IDF recall automatically injects this entry
+///   (current behaviour, default).  Suitable for short atomic facts (1–3
+///   sentences) that the agent should "just know" when processing a related
+///   task.
+/// - `OnDemand`: This entry is **never** injected automatically.  The agent
+///   (or user) must call `memory list` (CLI) or `memory_add` (search) to
+///   retrieve it.  Suitable for longer structured documents (design docs,
+///   analysis notes, checklists) that would bloat the context window if
+///   injected every turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum RetrievalMode {
+    #[default]
+    Auto,
+    OnDemand,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryEntry {
     pub id: String,
@@ -63,6 +83,10 @@ pub struct MemoryEntry {
     /// Idempotent codebase-staleness mark.
     #[serde(default)]
     pub stale_marked_at: Option<DateTime<Utc>>,
+    /// Injection strategy: `Auto` (every-turn TF-IDF recall) or `OnDemand`
+    /// (explicit search only).  Defaults to `Auto`.
+    #[serde(default)]
+    pub retrieval_mode: RetrievalMode,
     // Note: the `embedding` field was removed — it was never populated
     // anywhere and inflated every serialized JSON file. Old JSON files
     // containing `"embedding": null` still deserialize correctly because
@@ -84,6 +108,7 @@ impl MemoryEntry {
             last_reinforced_at: None,
             superseded_by: None,
             stale_marked_at: None,
+            retrieval_mode: RetrievalMode::Auto,
         }
     }
 

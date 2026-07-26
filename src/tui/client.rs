@@ -547,6 +547,8 @@ impl DaemonClient {
     }
 
     /// PUT /api/v1/sessions/:id
+    /// Retries up to 2 additional times on network errors or 5xx responses
+    /// with exponential backoff (1s, 2s, 4s).
     pub async fn save_session(
         &self,
         id: &str,
@@ -554,23 +556,68 @@ impl DaemonClient {
         messages: &[ChatMessage],
         ui_messages: &[crate::context::SessionUiMessage],
     ) -> anyhow::Result<()> {
+        const MAX_RETRIES: u32 = 3;
         let encoded = urlencode(id);
         let url = format!("{}/api/v1/sessions/{}", self.base_url, encoded);
-        let resp = self
-            .http_tools()
-            .put(&url)
-            .header("Content-Type", "application/json")
-            .json(&serde_json::json!({
-                "name": name,
-                "messages": messages,
-                "ui_messages": ui_messages,
-            }))
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            anyhow::bail!("Failed to save session ({})", resp.status());
+        let body = serde_json::json!({
+            "name": name,
+            "messages": messages,
+            "ui_messages": ui_messages,
+        });
+        let http_tools = self.http_tools();
+
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 0..MAX_RETRIES {
+            if attempt > 0 {
+                // Exponential backoff: 1s, 2s, 4s
+                tokio::time::sleep(std::time::Duration::from_secs(
+                    1u64 << attempt.saturating_sub(1),
+                ))
+                .await;
+            }
+            match http_tools
+                .put(&url)
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    tracing::debug!("save_session succeeded on attempt {}", attempt + 1);
+                    return Ok(());
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    last_err = Some(anyhow::anyhow!("Failed to save session ({})", status));
+                    if status.is_server_error() {
+                        tracing::warn!(
+                            "save_session attempt {}/{} failed with {}: will retry",
+                            attempt + 1,
+                            MAX_RETRIES,
+                            status
+                        );
+                        continue;
+                    }
+                    // Client errors (4xx) are not retriable.
+                    tracing::error!(
+                        "save_session failed with client error {}: not retrying",
+                        status
+                    );
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "save_session attempt {}/{} network error: {e}: will retry",
+                        attempt + 1,
+                        MAX_RETRIES
+                    );
+                    last_err = Some(anyhow::anyhow!("Save session network error: {e}"));
+                    continue;
+                }
+            }
         }
-        Ok(())
+        Err(last_err
+            .unwrap_or_else(|| anyhow::anyhow!("save_session failed after {MAX_RETRIES} attempts")))
     }
 
     /// DELETE /api/v1/sessions/:id

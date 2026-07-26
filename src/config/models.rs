@@ -53,7 +53,12 @@ impl ModelEndpoint {
 pub fn known_context_window(model: &str) -> Option<usize> {
     let lower = model.to_ascii_lowercase();
     // Multi-provider: all current models expose ~1M context.
-    if lower.starts_with("claude") || matches!(lower.as_str(), "sonnet" | "opus" | "haiku" | "deepseek-v4-pro") {
+    if lower.starts_with("claude")
+        || matches!(
+            lower.as_str(),
+            "sonnet" | "opus" | "haiku" | "deepseek-v4-pro"
+        )
+    {
         return Some(1_024_000);
     }
     // DeepSeek - ~1M context.

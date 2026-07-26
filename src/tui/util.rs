@@ -314,16 +314,6 @@ pub fn tool_label(name: &str, args: &serde_json::Value) -> String {
                 skill_name
             }
         }
-        "note_edit" => {
-            let operation = arg_str(args, "operation");
-            let title = arg_str(args, "title");
-            let note_id = arg_str(args, "note_id");
-            let search_query = arg_str(args, "search_query");
-            [operation, title, note_id, search_query]
-                .into_iter()
-                .find(|value| !value.is_empty())
-                .unwrap_or_default()
-        }
         "run_script" => truncate_label(arg_str(args, "script")),
         "run_test" => {
             let file = arg_str(args, "file");
@@ -441,7 +431,6 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::ToggleSessions
         | AppEvent::ToggleMemory
         | AppEvent::MemoryListLoaded(_)
-        | AppEvent::ToggleTaskPanel
         | AppEvent::CtrlCPressed
         | AppEvent::SessionListLoaded(_)
         | AppEvent::HistoryLoaded { .. }
@@ -452,7 +441,6 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::DeleteMemory(_, _)
         | AppEvent::ToggleCollapseAll
         | AppEvent::ToggleCollapseLatest
-        | AppEvent::TodosUpdated(_)
         | AppEvent::TurnStarted { .. }
         | AppEvent::ConfigChanged(_)
         | AppEvent::ContextCompacted { .. }
@@ -465,6 +453,7 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::MemoriesReady(_)
         | AppEvent::GlobalMemoriesReady(_)
         | AppEvent::SkillsReady(_)
+        | AppEvent::TurnContextCaptured(_)
         | AppEvent::SystemNotice(_) => None,
     }
 }

@@ -2,8 +2,9 @@
 
 use crate::api::ChatMessage;
 use crate::daemon::models::LocalAgentViewResponse;
+use crate::prompts::{LayerMeta, MemoryMeta, ReminderOutput};
 use crate::state::agent_phase::{TurnAbortReason, TurnId};
-use crate::tui::client::{SessionInfo, TodoItem};
+use crate::tui::client::SessionInfo;
 use crossterm::event::KeyEvent;
 use ratatui::style::Color;
 
@@ -226,6 +227,26 @@ impl std::fmt::Debug for PermissionResponder {
     }
 }
 
+/// Partial snapshot captured from process_input_inner (pre-LLM-call).
+#[derive(Debug, Clone)]
+pub struct PartialTurnContext {
+    pub layers: Vec<LayerMeta>,
+    pub memories: Vec<MemoryMeta>,
+    pub reminder: Option<ReminderOutput>,
+}
+
+/// Complete snapshot after LLM response received.
+#[derive(Debug, Clone)]
+pub struct TurnContext {
+    pub turn_index: usize,
+    pub layers: Vec<LayerMeta>,
+    pub memories: Vec<MemoryMeta>,
+    pub reminder: Option<ReminderOutput>,
+    pub full_messages: Vec<ChatMessage>,
+}
+
+pub const TURN_CONTEXT_CAPACITY: usize = 50;
+
 /// Events that drive the UI loop.
 #[derive(Debug)]
 pub enum AppEvent {
@@ -303,8 +324,6 @@ pub enum AppEvent {
     ToggleMemory,
     /// Memory list finished loading from MemoryManager
     MemoryListLoaded(Vec<crate::tui::components::memory::MemoryListItem>),
-    /// Toggle task panel
-    ToggleTaskPanel,
     /// Pasted text from bracketed paste
     Paste(String),
     /// Mouse scroll (positive = up, negative = down)
@@ -334,8 +353,6 @@ pub enum AppEvent {
     ToggleCollapseLatest,
     /// Undo checkpoint result with diff
     UndoResult(String),
-    /// Todo items updated from daemon
-    TodosUpdated(Vec<TodoItem>),
     /// Settings were hot-reloaded from disk
     ConfigChanged(Box<crate::config::Settings>),
     /// A scoped agent local view (self + direct children) from the daemon.
@@ -374,6 +391,8 @@ pub enum AppEvent {
     /// Carries the merged skill inventory, external skill registry, and
     /// comet workflow entry commands for the command router / completion engine.
     SkillsReady(Box<SkillsReadyData>),
+    /// Turn context snapshot captured from a completed agent turn.
+    TurnContextCaptured(TurnContext),
 }
 
 /// Payload for [`AppEvent::SkillsReady`].
