@@ -88,7 +88,7 @@ fn test_prompt_includes_default_all_true() {
 #[test]
 fn test_models_default_no_small_or_planner() {
     let s = Settings::default();
-    assert_eq!(s.models.main.name, "sonnet");
+    assert_eq!(s.models.main.name, "deepseek-v4-pro");
     assert!(s.models.small.is_none());
     assert!(s.models.planner.is_none());
 }
@@ -363,7 +363,7 @@ fn settings_json_template_matches_settings_default() {
     assert_eq!(template_settings.agent.subagent.max_depth, 1);
     assert_eq!(template_settings.agent.subagent.timeout_secs, 1800);
     assert_eq!(template_settings.models.context_window, 200_000);
-    assert_eq!(template_settings.models.main.name, "sonnet");
+    assert_eq!(template_settings.models.main.name, "deepseek-v4-pro");
 }
 
 #[test]

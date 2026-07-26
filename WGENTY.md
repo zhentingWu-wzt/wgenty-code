@@ -1,6 +1,6 @@
 # WGENTY.md
 
-此文件为 Wgenty Code（claude.ai/code）在此仓库中工作时提供指导。
+此文件为 Wgenty Code 在此仓库中工作时提供指导。
 
 ## 项目元信息
 
@@ -44,7 +44,7 @@ cargo run -- --version / --help
 ```bash
 docker build -t wgenty-code:latest .
 docker run --rm wgenty-code --version
-docker run -it --rm -v ~/.wgenty-code:/home/claude/.wgenty-code wgenty-code repl
+docker run -it --rm -v ~/.wgenty-code:/home/wgentycode/.wgenty-code wgenty-code repl
 ```
 
 ---
@@ -120,7 +120,7 @@ Prompt 8 层：base_instructions → permissions → developer → environment �
 ## 核心模块
 
 - **agent/**: `StreamProcessor` 共享 SSE 流解析，产生 `StreamEvent`(Chunk/ToolCall/Error/Done)
-- **api/**: `ApiClient` 多 Provider 支持(Anthropic/DeepSeek/DashScope)，`detect_provider()` 自动路由；模型映射: sonnet->claude-3-5-sonnet-20241022
+- **api/**: `ApiClient` 多 Provider 支持(DeepSeek/Anthropic/DashScope)，`detect_provider()` 自动路由
 - **tools/**: `Tool` trait(name/description/input_schema/execute/is_read_only)，**`is_read_only()` 默认 false**，只读工具必须显式返回 true。25个内置工具：filesystem(read/write/edit/apply_patch/list/view)、search(grep/glob/search/web_search/web_fetch)、execution(exec_command/kill_session/git/run_test/background)、meta(think/lsp/ask_user/update_plan/note_edit/compact)、checkpoint。`with_settings()` 按 provider 动态移除不兼容工具
 - **guardian/**: 两阶段审查（规则+LLM），RiskLevel: Low/Medium/High/Critical
 - **sandbox/**: `SandboxBackend` trait，macOS(Seatbelt)/Linux(seccomp-bpf)/Windows(Job Objects)，无内核时降级 no-op
@@ -141,9 +141,9 @@ Prompt 8 层：base_instructions → permissions → developer → environment �
 
 | 配置路径 | 类型 | 默认值 | 说明 |
 |---------|------|--------|------|
-| `models.main.name` | String | `sonnet` | 主模型别名（sonnet/haiku/opus） |
+| `models.main.name` | String | `deepseek-v4-pro` | 主模型名称 |
 | `models.main.api_key` | Option | env var | API 密钥（推荐用环境变量） |
-| `models.main.base_url` | Option | `https://api.anthropic.com` | API 地址 |
+| `models.main.base_url` | Option | `https://api.deepseek.com` | API 地址 |
 | `models.small` | Option | None | 子代理用小模型端点 |
 | `models.planner` | Option | None | 规划专用模型端点 |
 | `models.transport.max_tokens` | usize | 4096 | 最大 token 数 |
@@ -187,7 +187,7 @@ Prompt 8 层：base_instructions → permissions → developer → environment �
 | `storage.memory.recall_top_n` | usize | 3 | 每轮召回注入条数 |
 | `storage.transcript.max_age_days` | u32 | 30 | 子代理记录保留天数 |
 
-**环境变量优先级**: `ANTHROPIC_API_KEY` > `DASHSCOPE_API_KEY` > `DEEPSEEK_API_KEY`，`API_BASE_URL` 覆盖配置文件，`RUST_LOG` 控制日志级别
+**环境变量优先级**: `DEEPSEEK_API_KEY` > `ANTHROPIC_API_KEY` > `DASHSCOPE_API_KEY`，`API_BASE_URL` 覆盖配置文件，`RUST_LOG` 控制日志级别
 
 ---
 
@@ -245,7 +245,7 @@ Prompt 8 层：base_instructions → permissions → developer → environment �
 5. **Sandbox 多平台**: 统一 SandboxBackend trait，无内核支持降级 no-op
 6. **技能按需加载**: 仅注入名称+描述到 Layer 7，完整内容由 agent 动态获取
 7. **多 Provider API 路由**: 根据 base_url 自动检测，透明转换请求格式
-8. **模型名简写映射**: sonnet/haiku/opus 自动映射完整 Anthropic model ID
+8. **模型名**: 默认 `deepseek-v4-pro`，支持多 Provider（DeepSeek/Anthropic/DashScope）自动路由
 9. **CI 中 binary_name**: release.yml 使用 `wgenty_code_rs`，与 Cargo.toml 的 `wgenty-code` 不一致（历史遗留）
 10. **待补充文档**: `PERFORMANCE_BENCHMARKS.md`、`MIGRATION_GUIDE.md`、`src/README.md`、`docs/API.md` 在 CHANGELOG 中引用但尚未创建
 11. **SQLite 系统库优先**: 默认链接系统 SQLite（macOS/Linux），避免 ~60s C 编译；Windows 和无系统库环境通过 `bundled-sqlite` feature 内置编译
