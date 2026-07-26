@@ -261,7 +261,8 @@ impl GitOperationsTool {
         cmd_args.extend_from_slice(args);
 
         if !branch.is_empty() {
-            cmd_args.push(format!("{}:{}", remote, branch));
+            cmd_args.push(remote.to_string());
+            cmd_args.push(branch.to_string());
         } else {
             cmd_args.push(remote.to_string());
         }
