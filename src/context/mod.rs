@@ -2467,4 +2467,360 @@ mod tests {
             "global pool must not run path-staleness against project root"
         );
     }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    //  Reinforcement anchors decay — reinforced entries decay less
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[test]
+    fn reinforcement_anchors_decay_from_last_reinforce_not_creation() {
+        let now = Utc::now();
+        let created = now - chrono::Duration::hours(100);
+
+        // Entry 1: last reinforced 100h ago (creation time)
+        let mut old = MemoryEntry::new(MemoryType::Knowledge, "old reinforce").with_importance(0.8);
+        old.timestamp = created;
+        old.last_reinforced_at = Some(created);
+        old.hit_count = 10;
+        old.recall_count = 20;
+
+        // Entry 2: last reinforced 10h ago (same creation, recent reinforcement)
+        let mut recent =
+            MemoryEntry::new(MemoryType::Knowledge, "recent reinforce").with_importance(0.8);
+        recent.timestamp = created;
+        recent.last_reinforced_at = Some(now - chrono::Duration::hours(10));
+        recent.hit_count = 10;
+        recent.recall_count = 20;
+
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+
+        let old_eff = old.effective_importance(now, &cfg);
+        let recent_eff = recent.effective_importance(now, &cfg);
+
+        // Recent reinforcement → decay from 10h, NOT 100h
+        assert!(
+            recent_eff > old_eff,
+            "recent={recent_eff} should outrank old={old_eff}"
+        );
+    }
+
+    #[test]
+    fn recent_reinforcement_can_surpass_older_higher_base_importance() {
+        let now = Utc::now();
+
+        // High base importance (0.9) but never reinforced in 200h
+        let mut ancient_high =
+            MemoryEntry::new(MemoryType::Knowledge, "ancient 0.9").with_importance(0.9);
+        ancient_high.timestamp = now - chrono::Duration::hours(200);
+        ancient_high.last_reinforced_at = Some(now - chrono::Duration::hours(200));
+
+        // Lower base importance (0.7) but recently reinforced (5h ago)
+        let mut recent_low =
+            MemoryEntry::new(MemoryType::Knowledge, "recent 0.7").with_importance(0.7);
+        recent_low.timestamp = now - chrono::Duration::hours(5);
+        recent_low.last_reinforced_at = Some(now - chrono::Duration::hours(5));
+
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+
+        let ancient_eff = ancient_high.effective_importance(now, &cfg);
+        let recent_eff = recent_low.effective_importance(now, &cfg);
+        assert!(
+            recent_eff > ancient_eff,
+            "recent 0.7 (eff={recent_eff}) should outrank ancient 0.9 (eff={ancient_eff})"
+        );
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    //  Effective importance: staleness × decay × hitrate combined
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[test]
+    fn effective_importance_stale_and_old_compounds_downward() {
+        let now = Utc::now();
+
+        let mut fresh = MemoryEntry::new(MemoryType::Knowledge, "fresh").with_importance(0.8);
+        fresh.timestamp = now - chrono::Duration::hours(10);
+        fresh.last_reinforced_at = Some(now - chrono::Duration::hours(10));
+
+        // Stale + 300h old → massive decay + staleness penalty
+        let mut stale_old =
+            MemoryEntry::new(MemoryType::Knowledge, "stale and old").with_importance(0.8);
+        stale_old.timestamp = now - chrono::Duration::hours(300);
+        stale_old.last_reinforced_at = Some(now - chrono::Duration::hours(300));
+        stale_old.stale_marked_at = Some(now - chrono::Duration::hours(100));
+
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+
+        let fresh_eff = fresh.effective_importance(now, &cfg);
+        let stale_eff = stale_old.effective_importance(now, &cfg);
+
+        // stale + old should be dramatically lower than fresh
+        assert!(
+            stale_eff < fresh_eff * 0.4,
+            "stale+old eff={stale_eff} should be << fresh eff={fresh_eff}"
+        );
+    }
+
+    #[test]
+    fn effective_importance_superseded_always_zero() {
+        let now = Utc::now();
+        let mut mem = MemoryEntry::new(MemoryType::Knowledge, "superseded").with_importance(1.0);
+        mem.timestamp = now;
+        mem.last_reinforced_at = Some(now);
+        mem.hit_count = 100;
+        mem.recall_count = 100;
+        mem.superseded_by = Some("newer-version".to_string());
+
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+        assert_eq!(
+            mem.effective_importance(now, &cfg),
+            0.0,
+            "superseded entries must have effective_importance = 0"
+        );
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    //  search_memories scope separation (project only, not global)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tokio::test]
+    async fn search_memories_excludes_global_pool() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let proj = MemoryEntry::new(MemoryType::Knowledge, "project specific git workflow")
+            .with_importance(0.9);
+        mm.add_memory(proj, MemoryOrigin::Project).await.unwrap();
+
+        let glob = MemoryEntry::new(MemoryType::Preference, "user prefers dark theme")
+            .with_importance(0.9);
+        mm.add_memory(glob, MemoryOrigin::Global).await.unwrap();
+
+        // Ensure index is rebuilt before searching
+        mm.consolidate().await.unwrap();
+
+        let results = mm.search_memories("git workflow").await;
+        let has_project = results.iter().any(|r| r.content.contains("git workflow"));
+        let has_global = results.iter().any(|r| r.content.contains("dark theme"));
+        assert!(has_project, "project memory should be searchable");
+        assert!(
+            !has_global,
+            "global memory should NOT appear in search results"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_memories_respects_superseded_exclusion() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let v1 = MemoryEntry::new(MemoryType::Knowledge, "API base URL is v1.example.com")
+            .with_importance(0.7);
+        mm.add_memory(v1, MemoryOrigin::Project).await.unwrap();
+
+        // Get v1's id to use as superseded_by reference on v2
+        let v1_id = {
+            let memories = mm.memories.read().await;
+            memories.first().unwrap().id.clone()
+        };
+
+        let mut v2 = MemoryEntry::new(MemoryType::Knowledge, "API base URL is v2.example.com")
+            .with_importance(0.8);
+        v2.superseded_by = Some(v1_id);
+        mm.add_memory(v2, MemoryOrigin::Project).await.unwrap();
+
+        mm.consolidate().await.unwrap();
+
+        let results = mm.search_memories("API base URL").await;
+        // All results should be active (not superseded)
+        let memories = mm.memories.read().await;
+        for r in &results {
+            let entry = memories.iter().find(|m| m.id == r.id).unwrap();
+            assert!(
+                entry.superseded_by.is_none(),
+                "superseded entry id={} should not appear in search results",
+                entry.id
+            );
+        }
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    //  IDF weighting — common terms demoted in ranking
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tokio::test]
+    async fn idf_weighting_demotes_common_terms_in_ranking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        // Add 5 memories sharing the word "project" → high DF → low IDF
+        for i in 0..5 {
+            let text = format!("Project item {i} — shared-term project setup phase");
+            let mem = MemoryEntry::new(MemoryType::Knowledge, &text).with_importance(0.8);
+            mm.add_memory(mem, MemoryOrigin::Project).await.unwrap();
+        }
+
+        // One memory with a rare, distinctive term
+        let rare = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Ziggurat architectural pattern is a rare Mesopotamian design term",
+        )
+        .with_importance(0.8);
+        mm.add_memory(rare, MemoryOrigin::Project).await.unwrap();
+
+        mm.consolidate().await.unwrap();
+
+        let results = mm.search_memories("Ziggurat").await;
+        assert!(!results.is_empty(), "should find at least the rare memory");
+        let top = &results[0];
+        assert!(
+            top.content.contains("Ziggurat"),
+            "rare term should rank highest, got: {}",
+            &top.content
+        );
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    //  Prune full lifecycle: aged low-effective memories removed
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tokio::test]
+    async fn prune_removes_aged_low_importance_session_memories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+        let now = Utc::now();
+
+        // Fresh + high importance → should survive
+        let fresh_high = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Fresh high-importance knowledge about the codebase",
+        )
+        .with_importance(0.9);
+        mm.add_memory(fresh_high, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        // Old + low importance + Session type → should be removed
+        let mut old_session = MemoryEntry::new(
+            MemoryType::Session,
+            "Old session memory, low importance temporary note",
+        )
+        .with_importance(0.4);
+        old_session.timestamp = now - chrono::Duration::hours(100);
+        old_session.last_reinforced_at = Some(now - chrono::Duration::hours(100));
+        mm.add_memory(old_session, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        mm.prune().await.unwrap();
+
+        let mems = mm.memories.read().await;
+        let contents: Vec<&str> = mems.iter().map(|m| m.content.as_str()).collect();
+        assert!(
+            contents.iter().any(|c| c.contains("Fresh high")),
+            "fresh high-importance should survive prune"
+        );
+        assert!(
+            !contents.iter().any(|c| c.contains("Old session")),
+            "old low-importance session should be removed by prune"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_does_not_remove_global_memories_by_path_staleness() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        // Global memory — should not be checked for path staleness against project
+        let mut global = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "Global preference about project structure conventions",
+        )
+        .with_importance(0.7);
+        global.timestamp = Utc::now() - chrono::Duration::hours(100);
+        mm.add_memory(global, MemoryOrigin::Global).await.unwrap();
+
+        mm.prune().await.unwrap();
+
+        let mems = mm.global_memories.read().await;
+        assert_eq!(mems.len(), 1, "global memory should survive prune");
+        assert!(
+            mems[0].stale_marked_at.is_none(),
+            "global memory should not be marked stale by path-staleness check"
+        );
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    //  Supersession chain (A → B → C)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tokio::test]
+    async fn supersession_chain_corrects_multiple_levels() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let v1 =
+            MemoryEntry::new(MemoryType::Knowledge, "Config port value: 100").with_importance(0.7);
+        mm.add_memory(v1, MemoryOrigin::Project).await.unwrap();
+
+        // Get v1's id
+        let v1_id = {
+            let mems = mm.memories.read().await;
+            mems.first().unwrap().id.clone()
+        };
+
+        let mut v2 =
+            MemoryEntry::new(MemoryType::Knowledge, "Config port value: 200").with_importance(0.8);
+        v2.superseded_by = Some(v1_id.clone());
+        mm.add_memory(v2, MemoryOrigin::Project).await.unwrap();
+
+        // Get v2's id
+        let v2_id = {
+            let mems = mm.memories.read().await;
+            mems.iter()
+                .find(|m| m.content.contains("200"))
+                .unwrap()
+                .id
+                .clone()
+        };
+
+        let mut v3 =
+            MemoryEntry::new(MemoryType::Knowledge, "Config port value: 300").with_importance(0.9);
+        v3.superseded_by = Some(v2_id);
+        mm.add_memory(v3, MemoryOrigin::Project).await.unwrap();
+
+        // Consolidate to remove tombstones
+        mm.consolidate().await.unwrap();
+
+        let mems = mm.memories.read().await;
+        let active: Vec<&MemoryEntry> = mems.iter().filter(|m| m.superseded_by.is_none()).collect();
+
+        // Only v1 (Config: 100) should survive as active
+        assert_eq!(
+            active.len(),
+            1,
+            "only one entry should survive the 3-level chain"
+        );
+        assert!(
+            active[0].content.contains("100"),
+            "v1 (config: 100) should be the sole survivor, got: {}",
+            active[0].content
+        );
+
+        // v2 and v3 should be superseded (tombstones removed via consolidate)
+        let superseded_count = mems.iter().filter(|m| m.superseded_by.is_some()).count();
+        assert_eq!(superseded_count, 0, "tombstones should be fully cleaned up");
+    }
 }
