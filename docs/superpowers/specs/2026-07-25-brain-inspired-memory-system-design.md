@@ -73,11 +73,11 @@ Helpers on `MemoryEntry`:
 
 ```text
 anchor     = last_reinforced_at.unwrap_or(timestamp)
-hitrate    = (hit_count + 1) / (recall_count + 2)          # Laplace
+hitrate    = clamp((hit_count + 1) / (recall_count + 2), 0, 1)   # Laplace
 decay      = exp(-ln2 * hours_since(anchor) / type_half_life)
 stale_mul  = cfg.staleness_penalty if stale_marked_at.is_some() else 1.0
 effective  = 0.0 if superseded_by.is_some()
-             else base_importance * decay * (0.5 + 0.5 * hitrate) * stale_mul
+             else base_importance * decay * (0.5 + hitrate) * stale_mul
 ```
 
 `type_half_life_hours(memory_type, age_threshold_hours)` **shares** the existing `should_keep` per-type TTL multipliers:

@@ -1,11 +1,467 @@
 //! Consolidation - Memory consolidation engine
 
 use chrono::{DateTime, Utc};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
 use super::{MemoryEntry, MemoryType};
+
+/// Conservative filesystem-relative path extractor for codebase staleness.
+///
+/// Matches tokens that look like repo-relative source paths (e.g. `src/foo.rs`,
+/// `lib/bar/baz.ts:12`). Bare URLs are ignored. Returns unique paths in
+/// encounter order, with optional `:line` / `:line:col` suffixes stripped.
+pub fn extract_memory_paths(content: &str) -> Vec<PathBuf> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(
+            r"(?x)
+            # Left boundary: avoid matching inside tokens like foosrc/foo.rs
+            (?:^|[^A-Za-z0-9_])
+            (?P<path>
+                (?:src|lib|crates|apps|packages|tests?|scripts?|docs?)
+                /[\w./+-]+
+                \.
+                (?:rs|ts|tsx|js|jsx|py|go|java|kt|toml|json|md|yml|yaml|css|html|sh|c|h|cpp|hpp|rb|php)
+            )
+            (?: : \d+ (?: : \d+ )? )?
+            ",
+        )
+        .expect("valid extract_memory_paths regex")
+    });
+
+    let mut out: Vec<PathBuf> = Vec::new();
+    for caps in re.captures_iter(content) {
+        let m = caps.name("path").expect("named path group");
+        // Skip URL-embedded matches (e.g. https://example.com/src/foo.rs).
+        if is_url_embedded(content, m.start()) {
+            continue;
+        }
+        let path = PathBuf::from(m.as_str());
+        if !out.iter().any(|p| p == &path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+fn is_url_embedded(content: &str, match_start: usize) -> bool {
+    // Look back for a URL scheme before the match without crossing whitespace.
+    let prefix = &content[..match_start];
+    let token_start = prefix
+        .rfind(|c: char| c.is_whitespace() || c == '(' || c == '[' || c == '"' || c == '\'')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let lead = &content[token_start..match_start];
+    lead.contains("://") || lead.starts_with("www.")
+}
+
+/// True when `paths` is non-empty and every path is missing under `project_root`
+/// (relative paths) or on the absolute path itself.
+pub fn paths_all_missing(project_root: &Path, paths: &[PathBuf]) -> bool {
+    if paths.is_empty() {
+        return false;
+    }
+    paths.iter().all(|p| {
+        let candidate = if p.is_absolute() {
+            p.clone()
+        } else {
+            project_root.join(p)
+        };
+        !candidate.exists()
+    })
+}
+
+/// First-consolidate anchor migration + optional all-missing path staleness.
+///
+/// Idempotent:
+/// - `last_reinforced_at = None` → `Some(now)` once
+/// - stale mark only when extractable paths exist, **all** missing, and not yet marked
+/// - never multiplies base `importance`
+/// - never refreshes `last_reinforced_at` solely for staleness
+pub fn apply_consolidate_prepass(
+    memories: &mut [MemoryEntry],
+    project_root: &Path,
+    now: DateTime<Utc>,
+    staleness_check: bool,
+) {
+    for m in memories.iter_mut() {
+        if m.last_reinforced_at.is_none() {
+            m.last_reinforced_at = Some(now);
+        }
+        if !staleness_check || m.stale_marked_at.is_some() {
+            continue;
+        }
+        let paths = extract_memory_paths(&m.content);
+        if paths_all_missing(project_root, &paths) {
+            m.stale_marked_at = Some(now);
+        }
+    }
+}
+
+/// Per-type half-life in hours for effective-importance decay.
+///
+/// Shares the same TTL multipliers as [`ConsolidationEngine::should_keep`]:
+/// Knowledge/Preference ×4, Decision/Insight ×2, Error max(base/2, 1), else ×1.
+pub fn type_half_life_hours(memory_type: MemoryType, age_threshold_hours: u64) -> f64 {
+    let base = age_threshold_hours.max(1) as f64;
+    match memory_type {
+        MemoryType::Knowledge | MemoryType::Preference => base * 4.0,
+        MemoryType::Decision | MemoryType::Insight => base * 2.0,
+        MemoryType::Error => (base / 2.0).max(1.0),
+        MemoryType::Session | MemoryType::Conversation | MemoryType::Task => base,
+    }
+}
+
+/// Tier-1 relation between a new memory and a similar existing one.
+///
+/// Conservative: prefer [`MemoryRelation::Ambiguous`] over false
+/// [`MemoryRelation::Contradicts`] (see design §M2 / D4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryRelation {
+    Compatible,
+    Contradicts,
+    Ambiguous,
+}
+
+/// Classify how `new` relates to a Jaccard-similar `existing` memory.
+///
+/// Heuristics (local, LLM-free):
+/// - **Contradicts**: high content similarity plus a state-change marker in the
+///   *new* text (fixed/resolved/removed/…), or a shared key-like token with a
+///   clear numeric drift (e.g. `max_tokens=128000` vs `max_tokens=4096`).
+/// - **Compatible**: one meaningful-token set is a non-trivial subset of the
+///   other (same-direction refinement), without contradiction signals.
+/// - **Ambiguous**: everything else (including competing alternatives).
+pub fn classify_relation(new: &MemoryEntry, existing: &MemoryEntry) -> MemoryRelation {
+    let new_tokens = meaningful_token_set(&new.content);
+    let existing_tokens = meaningful_token_set(&existing.content);
+
+    if has_numeric_value_drift(&new.content, &existing.content)
+        || has_state_change_contradiction(
+            &new.content,
+            &existing.content,
+            &new_tokens,
+            &existing_tokens,
+        )
+    {
+        return MemoryRelation::Contradicts;
+    }
+
+    // Subset / same-direction refinement (mirrors content_similarity's subset boost).
+    let min_len = new_tokens.len().min(existing_tokens.len());
+    if min_len >= 1
+        && (new_tokens.is_subset(&existing_tokens) || existing_tokens.is_subset(&new_tokens))
+    {
+        return MemoryRelation::Compatible;
+    }
+
+    MemoryRelation::Ambiguous
+}
+
+fn meaningful_token_set(content: &str) -> std::collections::HashSet<String> {
+    content
+        .split_whitespace()
+        .filter(|w| ConsolidationEngine::is_meaningful_token(w))
+        .map(|w| w.to_lowercase())
+        .collect()
+}
+
+/// Closed (resolved/removed) state-change marker tokens. Matched as whole
+/// tokens only — never via raw substring `contains` — so `unresolved` /
+/// `fixed-width` do not false-trigger.
+const CLOSED_STATE_MARKERS: &[&str] = &[
+    "fixed",
+    "resolved",
+    "removed",
+    "deprecated",
+    "migrated",
+    "replaced",
+    "obsolete",
+    "deleted",
+    "disabled",
+];
+
+/// Open / still-pending polarity cues (whole-token).
+const OPEN_STATE_MARKERS: &[&str] = &[
+    "unresolved",
+    "unfixed",
+    "open",
+    "pending",
+    "exists",
+    "broken",
+];
+
+/// Multi-word closed phrase kept as a phrase (not split for matching).
+const CLOSED_STATE_PHRASES: &[&str] = &["no longer"];
+
+/// Multi-word open / negated closed phrases.
+const OPEN_STATE_PHRASES: &[&str] = &["not fixed", "not resolved", "still broken"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatePolarity {
+    /// Explicitly closed / resolved / removed.
+    Closed,
+    /// Explicitly open / unresolved / not fixed.
+    Open,
+    /// No state-change language detected.
+    None,
+}
+
+/// Split content into lowercase alphanumeric tokens (hyphens/underscores split
+/// compounds so `fixed-width` → `fixed`+`width` is *not* used; we keep
+/// hyphenated forms as a single non-marker token by treating non-alnum as
+/// separators only when producing bare words, then check whole tokens against
+/// markers via word-boundary scan on the original lowercased string).
+fn lowercase_word_tokens(content: &str) -> Vec<String> {
+    content
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_lowercase())
+        .collect()
+}
+
+/// True when `needle` appears in `haystack` as a whole token (bounded by
+/// non-alphanumeric edges). Hyphenated compounds like `fixed-width` do **not**
+/// match bare `fixed` because `-` is treated as an interior connector, not a
+/// boundary that ends the marker alone.
+fn has_whole_token(haystack_lower: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let h = haystack_lower.as_bytes();
+    let n = needle.as_bytes();
+    let mut start = 0;
+    while start + n.len() <= h.len() {
+        if let Some(rel) = haystack_lower[start..].find(needle) {
+            let i = start + rel;
+            let before_ok = i == 0 || !is_token_char(h[i - 1]);
+            let after = i + n.len();
+            let after_ok = after >= h.len() || !is_token_char(h[after]);
+            if before_ok && after_ok {
+                return true;
+            }
+            start = i + 1;
+        } else {
+            break;
+        }
+    }
+    false
+}
+
+fn is_token_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
+
+fn state_polarity(content: &str) -> StatePolarity {
+    let lower = content.to_lowercase();
+
+    // Phrase checks first (multi-word); open phrases win over closed substrings
+    // they may embed (e.g. "not fixed" before bare "fixed").
+    let has_open_phrase = OPEN_STATE_PHRASES
+        .iter()
+        .any(|p| has_whole_phrase(&lower, p));
+    let has_closed_phrase = CLOSED_STATE_PHRASES
+        .iter()
+        .any(|p| has_whole_phrase(&lower, p));
+
+    let tokens = lowercase_word_tokens(content);
+    let has_open_token = tokens
+        .iter()
+        .any(|t| OPEN_STATE_MARKERS.iter().any(|m| t == *m));
+    // Whole-token match: `fixed` matches, `fixed-width` / `unresolved` do not.
+    let has_closed_token = CLOSED_STATE_MARKERS
+        .iter()
+        .any(|m| has_whole_token(&lower, m));
+
+    let open = has_open_phrase || has_open_token;
+    let closed = has_closed_phrase || has_closed_token;
+
+    // Negated / open language dominates if both fire (e.g. "not fixed").
+    if open && !closed {
+        return StatePolarity::Open;
+    }
+    if open && closed {
+        // "not fixed" sets open phrase + closed token "fixed" — treat as Open.
+        if has_open_phrase {
+            return StatePolarity::Open;
+        }
+        // Both explicit without phrase negation: conservative None (no flip).
+        return StatePolarity::None;
+    }
+    if closed {
+        return StatePolarity::Closed;
+    }
+    StatePolarity::None
+}
+
+/// Whole-phrase match with token boundaries on both ends of the phrase.
+fn has_whole_phrase(haystack_lower: &str, phrase: &str) -> bool {
+    // Reuse whole-token logic treating the phrase as a unit whose interior
+    // spaces are allowed; boundaries still require non-token chars outside.
+    if phrase.is_empty() {
+        return false;
+    }
+    let h = haystack_lower.as_bytes();
+    let n = phrase.as_bytes();
+    let mut start = 0;
+    while start + n.len() <= h.len() {
+        if let Some(rel) = haystack_lower[start..].find(phrase) {
+            let i = start + rel;
+            let before_ok = i == 0 || !is_token_char(h[i - 1]);
+            let after = i + n.len();
+            let after_ok = after >= h.len() || !is_token_char(h[after]);
+            if before_ok && after_ok {
+                return true;
+            }
+            start = i + 1;
+        } else {
+            break;
+        }
+    }
+    false
+}
+
+/// State-change markers that, combined with high subject overlap, imply the new
+/// memory supersedes the old one. Polarity-aware: open→closed is Contradicts;
+/// closed→closed refinement is not; negated forms (`unresolved`, `not fixed`)
+/// never count as closed markers.
+fn has_state_change_contradiction(
+    new_content: &str,
+    existing_content: &str,
+    new_tokens: &std::collections::HashSet<String>,
+    existing_tokens: &std::collections::HashSet<String>,
+) -> bool {
+    let new_pol = state_polarity(new_content);
+    let existing_pol = state_polarity(existing_content);
+
+    // Only a closed new side can supersede via state-change language.
+    if new_pol != StatePolarity::Closed {
+        return false;
+    }
+    // Same closed polarity on both sides → refine, not supersede.
+    // Open → Closed is a real flip. None → Closed is a first resolution.
+    if existing_pol == StatePolarity::Closed {
+        return false;
+    }
+
+    // Require real subject overlap beyond marker vocabulary.
+    let marker_tokens: std::collections::HashSet<&str> = CLOSED_STATE_MARKERS
+        .iter()
+        .chain(OPEN_STATE_MARKERS.iter())
+        .chain(["no", "longer", "not", "still"].iter())
+        .copied()
+        .collect();
+
+    let overlap: usize = new_tokens
+        .intersection(existing_tokens)
+        .filter(|t| !marker_tokens.contains(t.as_str()))
+        .count();
+    // "auth bug exists" ∩ "auth bug fixed" → {auth, bug} after filtering markers.
+    overlap >= 1
+        && ConsolidationEngine::content_similarity(
+            &MemoryEntry::new(MemoryType::Knowledge, new_content),
+            &MemoryEntry::new(MemoryType::Knowledge, existing_content),
+        ) >= 0.5
+}
+
+/// Detect shared key-like stems with differing numeric values, e.g.
+/// `max_tokens=128000` vs `max_tokens=4096`, or `port:8080` vs `port:3000`.
+fn has_numeric_value_drift(new_content: &str, existing_content: &str) -> bool {
+    let new_pairs = extract_key_numeric_pairs(new_content);
+    let existing_pairs = extract_key_numeric_pairs(existing_content);
+    if new_pairs.is_empty() || existing_pairs.is_empty() {
+        return false;
+    }
+
+    for (key, new_val) in &new_pairs {
+        if let Some(old_val) = existing_pairs.get(key) {
+            if new_val != old_val {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn extract_key_numeric_pairs(content: &str) -> std::collections::HashMap<String, String> {
+    // Match key=number / key:number / key = number (alnum/_/- keys, length ≥ 3).
+    // Also accept glued forms already present as single whitespace tokens.
+    let mut pairs = std::collections::HashMap::new();
+    let lower = content.to_lowercase();
+
+    // Scan whitespace tokens and also run a light char-level pass for `key=val`.
+    for raw in lower.split_whitespace() {
+        let token =
+            raw.trim_matches(|c: char| matches!(c, ',' | ';' | '.' | ')' | '(' | '"' | '\''));
+        if let Some((k, v)) = split_key_numeric(token) {
+            pairs.insert(k, v);
+        }
+    }
+
+    // Character-level: catch `max_tokens=128000` even if punctuation glued oddly.
+    let bytes = lower.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+            let start = i;
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'-')
+            {
+                i += 1;
+            }
+            let key = &lower[start..i];
+            // skip spaces
+            let mut j = i;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && (bytes[j] == b'=' || bytes[j] == b':') {
+                j += 1;
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                let num_start = j;
+                while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == b'.') {
+                    j += 1;
+                }
+                if j > num_start && key.len() >= 3 {
+                    let val = &lower[num_start..j];
+                    if val.chars().any(|c| c.is_ascii_digit()) {
+                        pairs.insert(key.to_string(), val.to_string());
+                    }
+                }
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    pairs
+}
+
+fn split_key_numeric(token: &str) -> Option<(String, String)> {
+    for sep in ['=', ':'] {
+        if let Some((k, v)) = token.split_once(sep) {
+            let k = k.trim();
+            let v = v.trim();
+            if k.len() >= 3
+                && k.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                && !v.is_empty()
+                && v.chars().all(|c| c.is_ascii_digit() || c == '.')
+                && v.chars().any(|c| c.is_ascii_digit())
+            {
+                return Some((k.to_string(), v.to_string()));
+            }
+        }
+    }
+    None
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsolidationConfig {
@@ -14,6 +470,8 @@ pub struct ConsolidationConfig {
     pub age_threshold_hours: u64,
     pub consolidation_interval_hours: u64,
     pub enable_auto_consolidation: bool,
+    /// Multiplier applied to effective importance when `stale_marked_at` is set.
+    pub staleness_penalty: f32,
 }
 
 impl Default for ConsolidationConfig {
@@ -24,6 +482,7 @@ impl Default for ConsolidationConfig {
             age_threshold_hours: 48,
             consolidation_interval_hours: 6,
             enable_auto_consolidation: true,
+            staleness_penalty: 0.5,
         }
     }
 }
@@ -41,6 +500,7 @@ impl ConsolidationConfig {
             age_threshold_hours: settings.age_threshold_hours,
             consolidation_interval_hours: settings.consolidation_interval,
             enable_auto_consolidation: settings.enable_auto_consolidation,
+            staleness_penalty: settings.staleness_penalty,
         }
     }
 }
@@ -77,11 +537,16 @@ impl ConsolidationEngine {
         let mut to_merge: Vec<&MemoryEntry> = Vec::new();
         let _insights: Vec<String> = Vec::new();
 
+        let now = Utc::now();
+        let eff_cfg = crate::context::EffectiveImportanceCfg {
+            age_threshold_hours: self.config.age_threshold_hours,
+            staleness_penalty: self.config.staleness_penalty,
+        };
         let mut sorted_memories: Vec<_> = memories.iter().collect();
         sorted_memories.sort_by(|a, b| {
-            b.importance
-                .partial_cmp(&a.importance)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            let ea = a.effective_importance(now, &eff_cfg);
+            let eb = b.effective_importance(now, &eff_cfg);
+            eb.partial_cmp(&ea).unwrap_or(std::cmp::Ordering::Equal)
         });
 
         for memory in sorted_memories {
@@ -131,29 +596,35 @@ impl ConsolidationEngine {
     }
 
     fn should_keep(&self, memory: &MemoryEntry) -> bool {
-        // High-importance memories are always kept regardless of type or age.
-        if memory.importance >= self.config.importance_threshold {
+        // Tombstones are audit-only on list; consolidate drops them.
+        if memory.superseded_by.is_some() {
+            return false;
+        }
+
+        // Retention uses effective importance (decay + hit-rate + staleness),
+        // not raw base importance.
+        let now = Utc::now();
+        let cfg = crate::context::EffectiveImportanceCfg {
+            age_threshold_hours: self.config.age_threshold_hours,
+            staleness_penalty: self.config.staleness_penalty,
+        };
+        let effective = memory.effective_importance(now, &cfg);
+        if effective >= self.config.importance_threshold {
             return true;
         }
 
-        // Type-specific retention for low-importance memories.
+        // Type-specific retention for low-effective memories.
         // Knowledge/Preference used to be immortal, which let low-value
         // "facts" accumulate forever. They now get a longer TTL (4× base)
         // instead of permanent retention. Ephemeral types expire faster.
-        let age_hours = (Utc::now() - memory.timestamp).num_hours();
+        // Age is measured from the decay anchor (last_reinforced_at or timestamp).
+        let anchor = memory.last_reinforced_at.unwrap_or(memory.timestamp);
+        let age_hours = (now - anchor).num_hours();
         let age = age_hours.max(0) as u64;
         let base = self.config.age_threshold_hours.max(1);
 
-        let ttl = match memory.memory_type {
-            // Durable but not immortal: low-value knowledge eventually decays.
-            MemoryType::Knowledge | MemoryType::Preference => base.saturating_mul(4),
-            // Stable decisions / insights last longer than session noise.
-            MemoryType::Decision | MemoryType::Insight => base.saturating_mul(2),
-            // Errors go stale quickly.
-            MemoryType::Error => (base / 2).max(1),
-            // Session/task/conversation noise expires at the base TTL.
-            MemoryType::Session | MemoryType::Conversation | MemoryType::Task => base,
-        };
+        let ttl = type_half_life_hours(memory.memory_type.clone(), base).round() as u64;
+        let ttl = ttl.max(1);
 
         age < ttl
     }
@@ -231,12 +702,18 @@ impl ConsolidationEngine {
         require_same_type: bool,
     ) -> Option<usize> {
         others.iter().position(|other| {
+            // Tombstoned entries are not merge/supersede targets; the live
+            // replacement (or another live near-dup) should win instead.
+            if other.superseded_by.is_some() {
+                return false;
+            }
             let sim = if require_same_type {
                 self.calculate_similarity(entry, other)
             } else {
                 Self::content_similarity(entry, other)
             };
-            sim > threshold
+            // Spec / add_memory gate is Jaccard >= threshold (inclusive).
+            sim >= threshold
         })
     }
 
@@ -354,6 +831,13 @@ impl ConsolidationEngine {
             importance,
             tags,
             metadata: existing.metadata.clone(),
+            // Feedback counters stay on the surviving entry; Compatible path
+            // will call reinforce() after merge. Task 1 keeps fields intact.
+            recall_count: existing.recall_count,
+            hit_count: existing.hit_count,
+            last_reinforced_at: existing.last_reinforced_at,
+            superseded_by: existing.superseded_by.clone(),
+            stale_marked_at: existing.stale_marked_at,
         }
     }
 
@@ -434,6 +918,49 @@ impl Default for ConsolidationEngine {
 mod tests {
     use super::*;
     use crate::context::MemoryEntry;
+    use std::path::PathBuf;
+
+    #[test]
+    fn extract_memory_paths_finds_src_relative_files() {
+        let paths = extract_memory_paths("logic lives in src/does_not_exist_xyz.rs only");
+        assert_eq!(paths, vec![PathBuf::from("src/does_not_exist_xyz.rs")]);
+    }
+
+    #[test]
+    fn extract_memory_paths_ignores_bare_urls() {
+        let paths = extract_memory_paths("see https://example.com/src/foo.rs for docs");
+        assert!(
+            paths.is_empty(),
+            "URL path segments must not be treated as filesystem paths: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn extract_memory_paths_strips_line_suffix() {
+        let paths = extract_memory_paths("bug at src/lib/mod.rs:42 in parser");
+        assert_eq!(paths, vec![PathBuf::from("src/lib/mod.rs")]);
+    }
+
+    #[test]
+    fn extract_memory_paths_multiple_unique() {
+        let paths = extract_memory_paths("a src/a.rs and b src/b.ts plus src/a.rs again");
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.ts")]
+        );
+    }
+
+    #[test]
+    fn extract_memory_paths_rejects_prefix_glued_roots() {
+        let paths = extract_memory_paths("notes about foosrc/foo.rs and barlib/bar.ts");
+        assert!(
+            paths.is_empty(),
+            "glued prefixes must not extract as repo paths: {paths:?}"
+        );
+        // Still extracts when a proper boundary precedes the root segment.
+        let paths = extract_memory_paths("see (src/foo.rs) nearby");
+        assert_eq!(paths, vec![PathBuf::from("src/foo.rs")]);
+    }
 
     #[test]
     fn merge_memories_preserves_provenance() {
@@ -542,9 +1069,38 @@ mod tests {
         let mut entry =
             MemoryEntry::new(MemoryType::Knowledge, "important fact").with_importance(0.9);
         entry.timestamp = chrono::Utc::now() - chrono::Duration::hours(10_000);
+        // Fresh reinforce anchor so effective stays high despite old timestamp.
+        entry.last_reinforced_at = Some(chrono::Utc::now());
         assert!(
             engine.should_keep(&entry),
-            "high-importance memories must never expire by age alone"
+            "high-effective memories must never expire by age alone"
+        );
+    }
+
+    #[test]
+    fn should_not_keep_superseded_even_with_high_raw_importance() {
+        let engine = ConsolidationEngine::default();
+        let mut entry =
+            MemoryEntry::new(MemoryType::Knowledge, "tombstoned fact").with_importance(0.99);
+        entry.superseded_by = Some("newer-id".into());
+        entry.timestamp = chrono::Utc::now();
+        assert!(
+            !engine.should_keep(&entry),
+            "superseded entries have effective 0 and must not be kept"
+        );
+    }
+
+    #[test]
+    fn should_not_keep_high_raw_when_effective_decays_below_threshold() {
+        let engine = ConsolidationEngine::default();
+        // Base 0.9 would pass the old raw gate; after many half-lives effective ≪ 0.6.
+        let mut entry =
+            MemoryEntry::new(MemoryType::Knowledge, "decayed high raw").with_importance(0.9);
+        entry.timestamp = chrono::Utc::now() - chrono::Duration::hours(10_000);
+        entry.last_reinforced_at = Some(entry.timestamp);
+        assert!(
+            !engine.should_keep(&entry),
+            "retention must use effective importance, not raw base"
         );
     }
 
@@ -661,5 +1217,151 @@ mod tests {
         assert_eq!(merged.content, "use jwt auth tokens");
         // importance takes the max.
         assert!((merged.importance - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn should_keep_respects_custom_staleness_penalty() {
+        // Past Knowledge TTL (4 * 48h = 192h) so retention only succeeds via
+        // effective >= importance_threshold. Boost hit_factor so that a mild
+        // penalty still clears the gate while the default 0.5 does not:
+        //   half-life=192, age≈193 → decay≈0.5; hit_factor=1.5; imp=1.0
+        //   penalty 0.5 → eff≈0.37 < 0.6 → drop
+        //   penalty 0.85 → eff≈0.63 >= 0.6 → keep
+        let mut entry =
+            MemoryEntry::new(MemoryType::Knowledge, "stale marked high raw").with_importance(1.0);
+        entry.timestamp = chrono::Utc::now() - chrono::Duration::hours(193);
+        entry.last_reinforced_at = Some(entry.timestamp);
+        entry.stale_marked_at = Some(chrono::Utc::now());
+        entry.hit_count = 100;
+        entry.recall_count = 0;
+
+        let cfg_harsh = ConsolidationConfig {
+            staleness_penalty: 0.5,
+            ..Default::default()
+        };
+        let engine_harsh = ConsolidationEngine::new(cfg_harsh);
+        assert!(
+            !engine_harsh.should_keep(&entry),
+            "penalty 0.5 should drop aged stale high-raw knowledge (effective below threshold)"
+        );
+
+        let cfg_mild = ConsolidationConfig {
+            staleness_penalty: 0.85,
+            ..Default::default()
+        };
+        let engine_mild = ConsolidationEngine::new(cfg_mild);
+        assert!(
+            engine_mild.should_keep(&entry),
+            "penalty 0.85 should keep the same entry via effective>=threshold"
+        );
+    }
+
+    #[test]
+    fn from_memory_settings_copies_staleness_penalty() {
+        let settings = crate::config::MemorySettings {
+            staleness_penalty: 0.25,
+            ..Default::default()
+        };
+        let cfg = ConsolidationConfig::from_memory_settings(&settings);
+        assert!((cfg.staleness_penalty - 0.25).abs() < f32::EPSILON);
+    }
+
+    // ── classify_relation gold cases (Task 5 / M2) ──────────────────────
+
+    #[test]
+    fn classify_relation_state_change_marker_is_contradicts() {
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "auth bug exists");
+        let new = MemoryEntry::new(MemoryType::Knowledge, "auth bug fixed");
+        assert_eq!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Contradicts,
+            "state-change marker 'fixed' with shared subject must supersede"
+        );
+    }
+
+    #[test]
+    fn classify_relation_numeric_drift_is_contradicts() {
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "API chat uses max_tokens=128000");
+        let new = MemoryEntry::new(MemoryType::Knowledge, "API chat uses max_tokens=4096");
+        assert_eq!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Contradicts,
+            "shared key-like token with differing numeric value must supersede"
+        );
+    }
+
+    #[test]
+    fn classify_relation_subset_is_compatible() {
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "use jwt authentication");
+        let new = MemoryEntry::new(MemoryType::Knowledge, "use jwt");
+        assert_eq!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Compatible,
+            "subset / same-direction refinement must merge+reinforce, not supersede"
+        );
+        // Symmetric direction also Compatible.
+        assert_eq!(
+            classify_relation(&existing, &new),
+            MemoryRelation::Compatible
+        );
+    }
+
+    #[test]
+    fn classify_relation_similar_but_unrelated_choice_is_ambiguous() {
+        // High token overlap, different concrete choice, no state-change marker
+        // and no shared key=value numeric drift → must NOT false-supersede.
+        let existing = MemoryEntry::new(
+            MemoryType::Preference,
+            "prefer postgres database for storage layer",
+        );
+        let new = MemoryEntry::new(
+            MemoryType::Preference,
+            "prefer mysql database for storage layer",
+        );
+        assert_eq!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Ambiguous,
+            "competing alternatives without markers should stay Ambiguous"
+        );
+    }
+
+    #[test]
+    fn classify_relation_unresolved_substring_is_not_marker() {
+        // "unresolved" contains the substring "resolved" but is open-state language.
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "auth bug reported in login");
+        let new = MemoryEntry::new(MemoryType::Knowledge, "auth bug unresolved in login");
+        assert_ne!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Contradicts,
+            "'unresolved' must not match marker via substring 'resolved'"
+        );
+    }
+
+    #[test]
+    fn classify_relation_unresolved_to_resolved_is_contradicts() {
+        // Both sides mention resolution vocabulary; polarity must flip open→closed.
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "auth bug unresolved");
+        let new = MemoryEntry::new(MemoryType::Knowledge, "auth bug resolved");
+        assert_eq!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Contradicts,
+            "unresolved → resolved polarity flip must supersede"
+        );
+    }
+
+    #[test]
+    fn classify_relation_fixed_width_is_not_state_marker() {
+        // Hyphenated "fixed-width" must not count as whole-token marker "fixed".
+        let existing =
+            MemoryEntry::new(MemoryType::Knowledge, "layout uses grid columns for forms");
+        let new = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "layout uses fixed-width columns for forms",
+        );
+        assert_ne!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Contradicts,
+            "'fixed-width' must not count as state-change marker 'fixed'"
+        );
     }
 }
