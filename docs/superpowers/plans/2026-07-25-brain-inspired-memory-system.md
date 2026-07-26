@@ -45,7 +45,7 @@ base-ref: 479ff8026237a601d9caf33b25b858ac39a86899
 
 ---
 
-### Task 1: MemoryEntry 字段 + effective_importance + serde
+### Task 1: MemoryEntry 字段 + effective_importance + serde ✅
 
 **Files:**
 - Modify: `src/context/mod.rs`
@@ -53,7 +53,7 @@ base-ref: 479ff8026237a601d9caf33b25b858ac39a86899
 
 **对齐 tasks.md:** 1.1–1.6
 
-- [ ] **Step 1: 写失败测试 — legacy JSON 与 effective 曲线**
+- [x] **Step 1: 写失败测试 — legacy JSON 与 effective 曲线**
 
 在 `src/context/mod.rs` 测试模块增加：
 
@@ -90,7 +90,7 @@ fn effective_importance_decays_with_age() { /* same base, different anchor */ }
 fn effective_importance_stale_multiplier() { /* stale_marked_at Some → * penalty */ }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 ```bash
 cargo test -p wgenty-code legacy_memory_json_defaults_feedback_fields effective_importance -- --nocapture
@@ -98,7 +98,7 @@ cargo test -p wgenty-code legacy_memory_json_defaults_feedback_fields effective_
 
 （按实际 package 名调整；若是 bin/lib 一体则 `cargo test legacy_memory_json`）
 
-- [ ] **Step 3: 实现字段与 API**
+- [x] **Step 3: 实现字段与 API**
 
 ```rust
 // MemoryEntry 新增（均 #[serde(default)]）
@@ -140,13 +140,13 @@ pub fn effective_importance(&self, now: DateTime<Utc>, cfg: &EffectiveImportance
 
 `EffectiveImportanceCfg { age_threshold_hours, staleness_penalty }` 可先简单 struct。
 
-- [ ] **Step 4: 测试通过**
+- [x] **Step 4: 测试通过**
 
 ```bash
 cargo test legacy_memory_json effective_importance
 ```
 
-- [ ] **Step 5: 勾选 tasks.md 1.1–1.6 并 commit**
+- [x] **Step 5: 勾选 tasks.md 1.1–1.6 并 commit**
 
 ```bash
 git add src/context/mod.rs src/context/consolidation.rs openspec/changes/brain-inspired-memory-system/tasks.md
@@ -160,7 +160,7 @@ EOF
 
 ---
 
-### Task 2: 配置键 + MemoryManager 线程 cfg
+### Task 2: 配置键 + MemoryManager 线程 cfg ✅
 
 **Files:**
 - Modify: `src/config/services.rs` (`MemorySettings`)
@@ -169,7 +169,7 @@ EOF
 
 **对齐 tasks.md:** 6.2 的配置部分可先做结构，文档放 Task 6
 
-- [ ] **Step 1: 扩展 MemorySettings**
+- [x] **Step 1: 扩展 MemorySettings**
 
 ```rust
 #[serde(default = "default_exploration_epsilon")]
@@ -182,11 +182,11 @@ pub staleness_penalty: f32, // 0.5
 
 更新 `Default` / 任何手工 struct 字面量（编译器会指路）。
 
-- [ ] **Step 2: MemoryManager 保存 cfg 字段**，供 inject/consolidate 读取（getter 或 pub(crate)）
+- [x] **Step 2: MemoryManager 保存 cfg 字段**，供 inject/consolidate 读取（getter 或 pub(crate)）
 
-- [ ] **Step 3: `cargo test` 相关 config/context 编译通过**
+- [x] **Step 3: `cargo test` 相关 config/context 编译通过**
 
-- [ ] **Step 4: commit**
+- [x] **Step 4: commit**
 
 ```bash
 git commit -m "$(cat <<'EOF'
@@ -199,7 +199,7 @@ EOF
 
 ---
 
-### Task 3: Wire effective into recall / global / should_keep / list
+### Task 3: Wire effective into recall / global / should_keep / list ✅
 
 **Files:**
 - Modify: `src/context/inject.rs`
@@ -208,11 +208,11 @@ EOF
 
 **对齐 tasks.md:** 2.1–2.3, 2.5–2.6（2.4 在 Task 4）
 
-- [ ] **Step 1: 失败测试** — superseded 不进 recall 排序；list 按 effective；should_keep 对 superseded/effective 低者
+- [x] **Step 1: 失败测试** — superseded 不进 recall 排序；list 按 effective；should_keep 对 superseded/effective 低者
 
 复用 `MemoryManager::new_for_test`。
 
-- [ ] **Step 2: 实现**
+- [x] **Step 2: 实现**
 
 `inject::recall`:
 
@@ -226,9 +226,9 @@ EOF
 
 `should_keep`：高 effective 保；否则用 age vs type TTL（与 half-life 一致）。注意：原先 `importance >= threshold` 永留 → 改为 effective 比较。
 
-- [ ] **Step 3: 修现有 inject 测试**（它们按 raw importance 断言）
+- [x] **Step 3: 修现有 inject 测试**（它们按 raw importance 断言）
 
-- [ ] **Step 4: commit**
+- [x] **Step 4: commit**
 
 ```bash
 git commit -m "$(cat <<'EOF'
@@ -241,7 +241,7 @@ EOF
 
 ---
 
-### Task 4: inject 持久化 recall_count
+### Task 4: inject 持久化 recall_count ✅
 
 **Files:**
 - Modify: `src/context/inject.rs`
@@ -249,14 +249,14 @@ EOF
 
 **对齐 tasks.md:** 2.4, 2.6 中 persist 部分
 
-- [ ] **Step 1: 失败集成测试**
+- [x] **Step 1: 失败集成测试**
 
 ```rust
 // add project memory, call recall with matching keywords, reload/get_memory
 // assert recall_count == 1 and disk reflects it
 ```
 
-- [ ] **Step 2: 实现 `MemoryManager::record_recall_injections(&self, ids: &[str])`**
+- [x] **Step 2: 实现 `MemoryManager::record_recall_injections(&self, ids: &[str])`**
 
 - 等待 `!consolidating`（与 add_memory 相同）
 - 写锁 `memories`，对每个 id：`recall_count += 1`，`project_storage.save_memory`
@@ -264,7 +264,7 @@ EOF
 
 `recall` 在确定 top 列表后调用该 API，再拼 block。
 
-- [ ] **Step 3: 测试通过 + commit**
+- [x] **Step 3: 测试通过 + commit**
 
 ```bash
 git commit -m "$(cat <<'EOF'
@@ -277,7 +277,7 @@ EOF
 
 ---
 
-### Task 5: Tier-1 classify_relation + add_memory 分支
+### Task 5: Tier-1 classify_relation + add_memory 分支 ✅
 
 **Files:**
 - Modify: `src/context/consolidation.rs` 或 `mod.rs`
@@ -285,7 +285,7 @@ EOF
 
 **对齐 tasks.md:** 3.1–3.4
 
-- [ ] **Step 1: 失败单测金标**
+- [x] **Step 1: 失败单测金标**
 
 ```rust
 // state-change → Contradicts
@@ -294,11 +294,11 @@ EOF
 // unrelated similar-ish → Ambiguous (construct carefully)
 ```
 
-- [ ] **Step 2: 实现 `pub enum MemoryRelation { Compatible, Contradicts, Ambiguous }` + `classify_relation`**
+- [x] **Step 2: 实现 `pub enum MemoryRelation { Compatible, Contradicts, Ambiguous }` + `classify_relation`**
 
 保守：状态词列表见 design；数值漂移：共享非数字 token 且数字 token 集合差非空。
 
-- [ ] **Step 3: 改 `add_memory` 相似分支**
+- [x] **Step 3: 改 `add_memory` 相似分支**
 
 ```rust
 match classify_relation(&entry, &mem[existing_idx]) {
@@ -315,9 +315,9 @@ match classify_relation(&entry, &mem[existing_idx]) {
 
 跳过已被 superseded 的 existing 作为 merge 目标（find_similar 时可 filter，或 classify 前检查）。
 
-- [ ] **Step 4: 集成：supersede 后 recall 不含旧 content**
+- [x] **Step 4: 集成：supersede 后 recall 不含旧 content**
 
-- [ ] **Step 5: commit**
+- [x] **Step 5: commit**
 
 ```bash
 git commit -m "$(cat <<'EOF'
@@ -330,7 +330,7 @@ EOF
 
 ---
 
-### Task 6: consolidate anchor + idempotent all-missing staleness
+### Task 6: consolidate anchor + idempotent all-missing staleness ✅
 
 **Files:**
 - Modify: `src/context/mod.rs` `consolidate`（及 global prune 路径如对称）
@@ -338,7 +338,7 @@ EOF
 
 **对齐 tasks.md:** 4.1–4.4, 6.1
 
-- [ ] **Step 1: 失败测试**
+- [x] **Step 1: 失败测试**
 
 - 无 `last_reinforced_at` → consolidate 后 Some  
 - content `src/does_not_exist_12345.rs` only → stale_marked  
@@ -347,7 +347,7 @@ EOF
 
 使用 tempdir project_root + `new_for_test`。
 
-- [ ] **Step 2: 在 consolidate 写锁内、engine 前**
+- [x] **Step 2: 在 consolidate 写锁内、engine 前**
 
 ```rust
 let now = Utc::now();
@@ -367,9 +367,9 @@ for m in memories.iter_mut() {
 
 Path regex：保守匹配相对路径 / `src/` + 常见后缀；绝对路径若出现可 probe。
 
-- [ ] **Step 3: should_keep 已用 effective（Task 3）— 确认 stale 降权影响保留**
+- [x] **Step 3: should_keep 已用 effective（Task 3）— 确认 stale 降权影响保留**
 
-- [ ] **Step 4: commit**
+- [x] **Step 4: commit**
 
 ```bash
 git commit -m "$(cat <<'EOF'
@@ -382,22 +382,22 @@ EOF
 
 ---
 
-### Task 7: Optional exploration (default off)
+### Task 7: Optional exploration (default off) ✅
 
 **Files:**
 - Modify: `src/context/inject.rs`
 
 **对齐 tasks.md:** 5.1–5.3
 
-- [ ] **Step 1: 测试 epsilon=0 永不替换**（可用固定 seed 或注入 `Rng`；最简单：epsilon=0 断言集合不变）
+- [x] **Step 1: 测试 epsilon=0 永不替换**（可用固定 seed 或注入 `Rng`；最简单：epsilon=0 断言集合不变）
 
-- [ ] **Step 2: epsilon=1 且存在冷候选时替换最低档**
+- [x] **Step 2: epsilon=1 且存在冷候选时替换最低档**
 
 实现可用 `rand` 若项目已有；否则 `use std::collections::hash_map::DefaultHasher` 基于 turn 不稳定亦可，但测试需可注入布尔 `force_explore` 测试钩 `#[cfg(test)]`。
 
 **推荐：** `recall(..., explore_draw: Option<bool>)` 仅测试覆盖；生产路径 `explore_draw=None` → 内部 bernoulli(epsilon)。
 
-- [ ] **Step 3: commit**
+- [x] **Step 3: commit**
 
 ```bash
 git commit -m "$(cat <<'EOF'
@@ -410,7 +410,7 @@ EOF
 
 ---
 
-### Task 8: WGENTY.md + 全量质量门 + tasks 收口
+### Task 8: WGENTY.md + 全量质量门 + tasks 收口 ✅
 
 **Files:**
 - Modify: `WGENTY.md`
@@ -418,9 +418,9 @@ EOF
 
 **对齐 tasks.md:** 6.3–6.7
 
-- [ ] **Step 1: 文档** — 配置表增加 `exploration_epsilon` / `staleness_check` / `staleness_penalty` 默认值说明
+- [x] **Step 1: 文档** — 配置表增加 `exploration_epsilon` / `staleness_check` / `staleness_penalty` 默认值说明
 
-- [ ] **Step 2: 质量门**
+- [x] **Step 2: 质量门**
 
 ```bash
 cargo test
@@ -428,9 +428,9 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt -- --check
 ```
 
-- [ ] **Step 3: Spec compliance 笔记** — 在 tasks 6.7 旁或 commit body 列出 scenario→test 映射
+- [x] **Step 3: Spec compliance 笔记** — 在 tasks 6.7 旁或 commit body 列出 scenario→test 映射
 
-- [ ] **Step 4: 最终 commit**
+- [x] **Step 4: 最终 commit**
 
 ```bash
 git commit -m "$(cat <<'EOF'

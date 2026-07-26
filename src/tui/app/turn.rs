@@ -125,6 +125,7 @@ impl App {
                 recall_top_n,
                 // Use the importance threshold from settings for filtering.
                 0.5,
+                None,
             )
             .await;
 

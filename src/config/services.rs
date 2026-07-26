@@ -72,6 +72,9 @@ impl Default for StorageConfig {
                 recall_similarity_threshold: default_recall_similarity_threshold(),
                 write_importance_threshold: default_write_importance_threshold(),
                 max_extract_per_compaction: default_max_extract_per_compaction(),
+                exploration_epsilon: default_exploration_epsilon(),
+                staleness_check: default_staleness_check(),
+                staleness_penalty: default_staleness_penalty(),
             },
             transcript: TranscriptConfig::default(),
         }
@@ -121,6 +124,35 @@ pub struct MemorySettings {
     pub write_importance_threshold: f32,
     #[serde(default = "default_max_extract_per_compaction")]
     pub max_extract_per_compaction: usize,
+    #[serde(default = "default_exploration_epsilon")]
+    pub exploration_epsilon: f32,
+    #[serde(default = "default_staleness_check")]
+    pub staleness_check: bool,
+    #[serde(default = "default_staleness_penalty")]
+    pub staleness_penalty: f32,
+}
+
+impl Default for MemorySettings {
+    fn default() -> Self {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let config_dir = home.join(".wgenty-code");
+        Self {
+            enabled: true,
+            path: config_dir.join("memory.json"),
+            consolidation_interval: 24,
+            max_memories: default_max_memories(),
+            importance_threshold: default_importance_threshold(),
+            age_threshold_hours: default_age_threshold_hours(),
+            enable_auto_consolidation: default_enable_auto_consolidation(),
+            recall_top_n: default_recall_top_n(),
+            recall_similarity_threshold: default_recall_similarity_threshold(),
+            write_importance_threshold: default_write_importance_threshold(),
+            max_extract_per_compaction: default_max_extract_per_compaction(),
+            exploration_epsilon: default_exploration_epsilon(),
+            staleness_check: default_staleness_check(),
+            staleness_penalty: default_staleness_penalty(),
+        }
+    }
 }
 
 fn default_max_memories() -> usize {
@@ -147,6 +179,15 @@ fn default_write_importance_threshold() -> f32 {
 fn default_max_extract_per_compaction() -> usize {
     3
 }
+fn default_exploration_epsilon() -> f32 {
+    0.0
+}
+fn default_staleness_check() -> bool {
+    true
+}
+fn default_staleness_penalty() -> f32 {
+    0.5
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceSettings {
@@ -170,6 +211,28 @@ impl Default for VoiceSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_settings_serde_defaults_exploration_and_staleness() {
+        // Legacy configs omit the new keys; serde defaults must apply.
+        let json = r#"{
+            "enabled": true,
+            "path": "/tmp/memory.json",
+            "consolidation_interval": 24
+        }"#;
+        let settings: MemorySettings = serde_json::from_str(json).unwrap();
+        assert!((settings.exploration_epsilon - 0.0).abs() < f32::EPSILON);
+        assert!(settings.staleness_check);
+        assert!((settings.staleness_penalty - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn memory_settings_default_values_exploration_and_staleness() {
+        let settings = MemorySettings::default();
+        assert!((settings.exploration_epsilon - 0.0).abs() < f32::EPSILON);
+        assert!(settings.staleness_check);
+        assert!((settings.staleness_penalty - 0.5).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn codegraph_settings_default_empty() {

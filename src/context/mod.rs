@@ -14,7 +14,7 @@ pub mod storage;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -22,13 +22,22 @@ use tokio::sync::RwLock;
 
 use anyhow::Context as _;
 
-pub use consolidation::{ConsolidationConfig, ConsolidationEngine};
+pub use consolidation::{
+    classify_relation, ConsolidationConfig, ConsolidationEngine, MemoryRelation,
+};
 pub use history::{HistoryEntry, HistoryFilter, HistoryManager};
 pub use memory_session::{
     Session as MemorySession, SessionDiffData, SessionInfo as MemorySessionInfo,
     SessionManager as MemorySessionManager, SessionUiMessage,
 };
 pub use storage::{Storage, StorageBackend};
+
+/// Runtime parameters for [`MemoryEntry::effective_importance`].
+#[derive(Debug, Clone, Copy)]
+pub struct EffectiveImportanceCfg {
+    pub age_threshold_hours: u64,
+    pub staleness_penalty: f32,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryEntry {
@@ -39,6 +48,21 @@ pub struct MemoryEntry {
     pub importance: f32,
     pub tags: Vec<String>,
     pub metadata: HashMap<String, serde_json::Value>,
+    /// Times injected into `<memory-context>`.
+    #[serde(default)]
+    pub recall_count: u32,
+    /// Positive feedback count (Compatible `reinforce`).
+    #[serde(default)]
+    pub hit_count: u32,
+    /// Decay anchor; `None` → use `timestamp` until first consolidate anchors.
+    #[serde(default)]
+    pub last_reinforced_at: Option<DateTime<Utc>>,
+    /// Tombstone target id when this entry is superseded.
+    #[serde(default)]
+    pub superseded_by: Option<String>,
+    /// Idempotent codebase-staleness mark.
+    #[serde(default)]
+    pub stale_marked_at: Option<DateTime<Utc>>,
     // Note: the `embedding` field was removed — it was never populated
     // anywhere and inflated every serialized JSON file. Old JSON files
     // containing `"embedding": null` still deserialize correctly because
@@ -55,6 +79,11 @@ impl MemoryEntry {
             importance: 0.5,
             tags: Vec::new(),
             metadata: HashMap::new(),
+            recall_count: 0,
+            hit_count: 0,
+            last_reinforced_at: None,
+            superseded_by: None,
+            stale_marked_at: None,
         }
     }
 
@@ -71,6 +100,35 @@ impl MemoryEntry {
     pub fn with_metadata(mut self, key: &str, value: serde_json::Value) -> Self {
         self.metadata.insert(key.to_string(), value);
         self
+    }
+
+    /// Record positive feedback. Does **not** raise base `importance`.
+    pub fn reinforce(&mut self, now: DateTime<Utc>) {
+        self.hit_count = self.hit_count.saturating_add(1);
+        self.last_reinforced_at = Some(now);
+    }
+
+    /// Pure effective importance used for recall ranking / retention.
+    pub fn effective_importance(&self, now: DateTime<Utc>, cfg: &EffectiveImportanceCfg) -> f32 {
+        if self.superseded_by.is_some() {
+            return 0.0;
+        }
+        let anchor = self.last_reinforced_at.unwrap_or(self.timestamp);
+        let hours = (now - anchor).num_minutes().max(0) as f64 / 60.0;
+        let half =
+            consolidation::type_half_life_hours(self.memory_type.clone(), cfg.age_threshold_hours)
+                .max(1e-6);
+        let decay = (-std::f64::consts::LN_2 * hours / half).exp() as f32;
+        let hitrate =
+            ((self.hit_count as f32 + 1.0) / (self.recall_count as f32 + 2.0)).clamp(0.0, 1.0);
+        // Laplace prior hitrate=0.5 maps to neutral 1.0 (neither reward nor penalty).
+        let hit_factor = 0.5 + hitrate; // 0.5..1.5 with clamp on hitrate
+        let stale_mul = if self.stale_marked_at.is_some() {
+            cfg.staleness_penalty
+        } else {
+            1.0
+        };
+        self.importance * decay * hit_factor * stale_mul
     }
 }
 
@@ -310,6 +368,18 @@ pub struct MemoryManager {
     write_importance_threshold: f32,
     /// Maximum memories accepted from a single compaction extract.
     max_extract_per_compaction: usize,
+    /// ε-greedy exploration rate for recall (0.0 = off).
+    exploration_epsilon: f32,
+    /// Whether consolidate should mark stale memories.
+    staleness_check: bool,
+    /// Multiplier applied when a memory is stale-marked.
+    staleness_penalty: f32,
+    /// Half-life hours for age decay in effective importance.
+    age_threshold_hours: u64,
+    /// Explicit project root for path-staleness checks (not derived from storage).
+    project_root: PathBuf,
+    /// Session/process-local ids recently chosen by recall exploration (v1).
+    recently_explored: Arc<RwLock<HashSet<String>>>,
 }
 
 impl MemoryManager {
@@ -365,7 +435,9 @@ impl MemoryManager {
             Self::create_dual_storage(&project_root, crate::utils::global_memory_dir());
 
         Self {
-            sessions: Arc::new(MemorySessionManager::with_project_root(project_root)),
+            sessions: Arc::new(MemorySessionManager::with_project_root(
+                project_root.clone(),
+            )),
             history: Arc::new(HistoryManager::new()),
             project_storage,
             global_storage,
@@ -376,6 +448,12 @@ impl MemoryManager {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
+            project_root,
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -398,7 +476,9 @@ impl MemoryManager {
         let mem = &settings.storage.memory;
 
         Self {
-            sessions: Arc::new(MemorySessionManager::with_project_root(project_root)),
+            sessions: Arc::new(MemorySessionManager::with_project_root(
+                project_root.clone(),
+            )),
             history: Arc::new(HistoryManager::new()),
             project_storage,
             global_storage,
@@ -409,6 +489,12 @@ impl MemoryManager {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: mem.write_importance_threshold,
             max_extract_per_compaction: mem.max_extract_per_compaction,
+            exploration_epsilon: mem.exploration_epsilon,
+            staleness_check: mem.staleness_check,
+            staleness_penalty: mem.staleness_penalty,
+            age_threshold_hours: mem.age_threshold_hours,
+            project_root,
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -420,7 +506,9 @@ impl MemoryManager {
         let (project_storage, global_storage) =
             Self::create_dual_storage(&project_root, global_dir);
         Self {
-            sessions: Arc::new(MemorySessionManager::with_project_root(project_root)),
+            sessions: Arc::new(MemorySessionManager::with_project_root(
+                project_root.clone(),
+            )),
             history: Arc::new(HistoryManager::new()),
             project_storage,
             global_storage,
@@ -431,6 +519,12 @@ impl MemoryManager {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
+            project_root,
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -442,6 +536,57 @@ impl MemoryManager {
     /// Cap on memories accepted from a single compaction extract.
     pub fn max_extract_per_compaction(&self) -> usize {
         self.max_extract_per_compaction
+    }
+
+    /// ε-greedy exploration rate used by recall (0.0 disables exploration).
+    pub fn exploration_epsilon(&self) -> f32 {
+        self.exploration_epsilon
+    }
+
+    /// Builder-style override of exploration epsilon (primarily for tests).
+    #[cfg(test)]
+    pub(crate) fn with_exploration_epsilon(mut self, epsilon: f32) -> Self {
+        self.exploration_epsilon = epsilon;
+        self
+    }
+
+    /// Whether `id` is in the session-local recently-explored set.
+    #[cfg(test)]
+    pub(crate) async fn was_recently_explored(&self, id: &str) -> bool {
+        self.recently_explored.read().await.contains(id)
+    }
+
+    /// Record that exploration selected `id` this session.
+    pub(crate) async fn mark_recently_explored(&self, id: &str) {
+        self.recently_explored.write().await.insert(id.to_string());
+    }
+
+    /// Snapshot of session-local recently-explored ids (one lock per explore pass).
+    pub(crate) async fn recently_explored_ids(&self) -> HashSet<String> {
+        self.recently_explored.read().await.clone()
+    }
+
+    /// Snapshot of project-local memories (for recall exploration candidates).
+    pub(crate) async fn project_memories(&self) -> Vec<MemoryEntry> {
+        self.memories.read().await.clone()
+    }
+
+    /// Whether consolidate should run staleness checks.
+    pub fn staleness_check(&self) -> bool {
+        self.staleness_check
+    }
+
+    /// Penalty multiplier applied to stale-marked memories.
+    pub fn staleness_penalty(&self) -> f32 {
+        self.staleness_penalty
+    }
+
+    /// Runtime cfg for [`MemoryEntry::effective_importance`].
+    pub fn effective_importance_cfg(&self) -> EffectiveImportanceCfg {
+        EffectiveImportanceCfg {
+            age_threshold_hours: self.age_threshold_hours,
+            staleness_penalty: self.staleness_penalty,
+        }
     }
 
     pub async fn status(&self) -> anyhow::Result<MemoryStatus> {
@@ -493,38 +638,70 @@ impl MemoryManager {
 
         let mut mem = memories.write().await;
 
-        // Dedup guard: context compaction asks the model to extract memories
-        // from the conversation being summarized, so the same fact is often
-        // re-extracted across rounds (and may even be tagged with a different
-        // `MemoryType` each time). `add_memory` previously appended a fresh
-        // entry every time, accumulating near-duplicate files that only
-        // consolidation could merge. Instead, fold a sufficiently similar
-        // existing entry into the incoming one (type-agnostic, relaxed
-        // threshold) and persist under the existing id, leaving no orphan.
+        // Dedup guard: context compaction often re-extracts the same fact.
+        // When Jaccard ≥ 0.6 against a live (non-superseded) same-scope entry,
+        // classify the relation and either merge+reinforce, merge+flag, or
+        // tombstone-supersede (new standalone; old file retained).
+        //
+        // Pre-tombstoned incoming entries (e.g. audit import / test fixtures
+        // that already carry `superseded_by`) skip classification so they are
+        // not merged back into a live near-dup.
         const DEDUP_THRESHOLD: f32 = 0.6;
-        if let Some(existing_idx) =
-            self.consolidation
-                .find_similar(&entry, &mem, DEDUP_THRESHOLD, false)
-        {
-            let merged = ConsolidationEngine::merge_into(&mem[existing_idx], &entry);
-            // Persist under the existing id so the original file is overwritten
-            // and no duplicate file is created.
-            storage.save_memory(&merged).await?;
-            mem[existing_idx] = merged.clone();
-            // Keep the TF-IDF index in sync with the merged content. The
-            // positional idx is unchanged, but the token set changed, so the
-            // postings for this idx must be replaced. Only project memories
-            // are indexed.
-            if is_project {
-                self.index
-                    .write()
-                    .await
-                    .replace_entry(&merged, existing_idx);
+        if entry.superseded_by.is_none() {
+            if let Some(existing_idx) =
+                self.consolidation
+                    .find_similar(&entry, &mem, DEDUP_THRESHOLD, false)
+            {
+                match classify_relation(&entry, &mem[existing_idx]) {
+                    MemoryRelation::Compatible => {
+                        let mut merged =
+                            ConsolidationEngine::merge_into(&mem[existing_idx], &entry);
+                        merged.reinforce(Utc::now());
+                        storage.save_memory(&merged).await?;
+                        mem[existing_idx] = merged.clone();
+                        if is_project {
+                            self.index
+                                .write()
+                                .await
+                                .replace_entry(&merged, existing_idx);
+                        }
+                        return Ok(MemoryAddResult {
+                            id: merged.id.clone(),
+                            merged: true,
+                        });
+                    }
+                    MemoryRelation::Ambiguous => {
+                        let mut merged =
+                            ConsolidationEngine::merge_into(&mem[existing_idx], &entry);
+                        merged
+                            .metadata
+                            .insert("relation_ambiguous".into(), serde_json::Value::Bool(true));
+                        storage.save_memory(&merged).await?;
+                        mem[existing_idx] = merged.clone();
+                        if is_project {
+                            self.index
+                                .write()
+                                .await
+                                .replace_entry(&merged, existing_idx);
+                        }
+                        return Ok(MemoryAddResult {
+                            id: merged.id.clone(),
+                            merged: true,
+                        });
+                    }
+                    MemoryRelation::Contradicts => {
+                        // Tombstone existing (keep base importance); write new standalone.
+                        // Do not change existing base importance (design open Q #2).
+                        let old_importance = mem[existing_idx].importance;
+                        mem[existing_idx].superseded_by = Some(entry.id.clone());
+                        debug_assert!(
+                            (mem[existing_idx].importance - old_importance).abs() < f32::EPSILON
+                        );
+                        storage.save_memory(&mem[existing_idx]).await?;
+                        // Fall through to insert `entry` as a new live memory.
+                    }
+                }
             }
-            return Ok(MemoryAddResult {
-                id: merged.id.clone(),
-                merged: true,
-            });
         }
 
         let idx = mem.len();
@@ -548,6 +725,32 @@ impl MemoryManager {
         drop(memories);
         let global = self.global_memories.read().await;
         global.iter().find(|m| m.id == id).cloned()
+    }
+
+    /// Increment `recall_count` for project memories that were selected for
+    /// `<memory-context>` injection and persist each updated entry.
+    ///
+    /// Count-only: content tokens are unchanged, so the TF-IDF index is not
+    /// rebuilt. Lock order matches `add_memory`: wait while consolidating,
+    /// then take the project memories write lock and save under that lock.
+    /// Unknown ids are skipped (no error).
+    pub async fn record_recall_injections(&self, ids: &[&str]) -> anyhow::Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+
+        while self.consolidating.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let mut mem = self.memories.write().await;
+        for id in ids {
+            if let Some(entry) = mem.iter_mut().find(|m| m.id == *id) {
+                entry.recall_count = entry.recall_count.saturating_add(1);
+                self.project_storage.save_memory(entry).await?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn search_memories(&self, query: &str) -> Vec<MemoryEntry> {
@@ -717,6 +920,15 @@ impl MemoryManager {
             flag: self.consolidating.clone(),
         };
         let mut global = self.global_memories.write().await;
+        // Global pool: anchor migration only. Path-staleness is project-scoped
+        // (codebase grounding against the current project root must not apply
+        // to cross-project global memories).
+        consolidation::apply_consolidate_prepass(
+            &mut global,
+            &self.project_root,
+            Utc::now(),
+            false, // never path-stale global memories
+        );
         let consolidated_global = self.consolidation.consolidate(&global).await?;
         self.global_storage.reconcile(&consolidated_global).await?;
         *global = consolidated_global;
@@ -737,35 +949,41 @@ impl MemoryManager {
     }
 
     /// List memories with optional filters (for CLI inspection).
+    ///
+    /// `min_importance` is compared against **effective** importance.
+    /// Superseded rows remain listable (effective 0) when no min filter is set.
     pub async fn list_memories(
         &self,
         min_importance: Option<f32>,
         limit: usize,
     ) -> Vec<(MemoryOrigin, MemoryEntry)> {
-        let mut out: Vec<(MemoryOrigin, MemoryEntry)> = Vec::new();
+        let now = Utc::now();
+        let cfg = self.effective_importance_cfg();
+        let mut out: Vec<(MemoryOrigin, MemoryEntry, f32)> = Vec::new();
         let project = self.memories.read().await;
         for m in project.iter() {
-            if min_importance.map(|t| m.importance >= t).unwrap_or(true) {
-                out.push((MemoryOrigin::Project, m.clone()));
+            let eff = m.effective_importance(now, &cfg);
+            if min_importance.map(|t| eff >= t).unwrap_or(true) {
+                out.push((MemoryOrigin::Project, m.clone(), eff));
             }
         }
         drop(project);
         let global = self.global_memories.read().await;
         for m in global.iter() {
-            if min_importance.map(|t| m.importance >= t).unwrap_or(true) {
-                out.push((MemoryOrigin::Global, m.clone()));
+            let eff = m.effective_importance(now, &cfg);
+            if min_importance.map(|t| eff >= t).unwrap_or(true) {
+                out.push((MemoryOrigin::Global, m.clone(), eff));
             }
         }
         out.sort_by(|a, b| {
-            b.1.importance
-                .partial_cmp(&a.1.importance)
+            b.2.partial_cmp(&a.2)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| b.1.timestamp.cmp(&a.1.timestamp))
         });
         if limit > 0 {
             out.truncate(limit);
         }
-        out
+        out.into_iter().map(|(o, m, _)| (o, m)).collect()
     }
 
     pub async fn consolidate(&self) -> anyhow::Result<()> {
@@ -788,6 +1006,17 @@ impl MemoryManager {
         // concurrent add_memory() calls from inserting entries that
         // would be overwritten by the stale consolidated result.
         let mut memories = self.memories.write().await;
+
+        // Prepass (LLM-free): anchor last_reinforced_at + optional all-missing
+        // path staleness. Must run under the write lock before the engine so
+        // retention sees effective importance with stale multipliers.
+        consolidation::apply_consolidate_prepass(
+            &mut memories,
+            &self.project_root,
+            Utc::now(),
+            self.staleness_check,
+        );
+
         let consolidated = self.consolidation.consolidate(&memories).await?;
 
         // P0 fix: persist the consolidated result AND remove orphaned
@@ -1043,6 +1272,153 @@ mod tests {
         }
     }
 
+    #[test]
+    fn legacy_memory_json_defaults_feedback_fields() {
+        let raw = r#"{
+            "id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "memory_type":"Knowledge",
+            "content":"old",
+            "timestamp":"2020-01-01T00:00:00Z",
+            "importance":0.8,
+            "tags":[],
+            "metadata":{}
+        }"#;
+        let e: MemoryEntry = serde_json::from_str(raw).unwrap();
+        assert_eq!(e.recall_count, 0);
+        assert_eq!(e.hit_count, 0);
+        assert!(e.last_reinforced_at.is_none());
+        assert!(e.superseded_by.is_none());
+        assert!(e.stale_marked_at.is_none());
+    }
+
+    #[test]
+    fn effective_importance_superseded_is_zero() {
+        let now = Utc::now();
+        let mut e = MemoryEntry::new(MemoryType::Knowledge, "x").with_importance(0.9);
+        e.superseded_by = Some("other-id".into());
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+        assert_eq!(e.effective_importance(now, &cfg), 0.0);
+    }
+
+    #[test]
+    fn effective_importance_never_recalled_hitrate_neutral() {
+        // Laplace prior: hitrate = (0+1)/(0+2) = 0.5 → hit_factor = 0.5 + hitrate = 1.0
+        let now = Utc::now();
+        let mut e = MemoryEntry::new(MemoryType::Knowledge, "x").with_importance(0.8);
+        e.timestamp = now;
+        e.last_reinforced_at = None;
+        e.recall_count = 0;
+        e.hit_count = 0;
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+        let eff = e.effective_importance(now, &cfg);
+        // decay=1 (now==anchor), stale_mul=1 → effective == base * 1.0
+        let expected = 0.8 * 1.0;
+        assert!(
+            (eff - expected).abs() < 1e-5,
+            "expected {expected}, got {eff}"
+        );
+    }
+
+    #[test]
+    fn effective_importance_hit_rate_damping() {
+        // High recall / zero hits should damp below never-recalled neutral.
+        let now = Utc::now();
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+        let mut neutral = MemoryEntry::new(MemoryType::Knowledge, "n").with_importance(0.8);
+        neutral.timestamp = now;
+        neutral.last_reinforced_at = None;
+        neutral.recall_count = 0;
+        neutral.hit_count = 0;
+
+        let mut damped = MemoryEntry::new(MemoryType::Knowledge, "d").with_importance(0.8);
+        damped.timestamp = now;
+        damped.last_reinforced_at = None;
+        damped.recall_count = 10;
+        damped.hit_count = 0;
+
+        let eff_neutral = neutral.effective_importance(now, &cfg);
+        let eff_damped = damped.effective_importance(now, &cfg);
+        assert!(
+            eff_damped < eff_neutral,
+            "damped ({eff_damped}) should be below neutral ({eff_neutral})"
+        );
+        // hitrate=(0+1)/(10+2)=1/12 → hit_factor=0.5+1/12 ≈ 0.5833
+        let expected_damped = 0.8 * (0.5 + 1.0 / 12.0);
+        assert!(
+            (eff_damped - expected_damped).abs() < 1e-5,
+            "expected ~{expected_damped}, got {eff_damped}"
+        );
+    }
+
+    #[test]
+    fn effective_importance_decays_with_age() {
+        let now = Utc::now();
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+        let mut fresh = MemoryEntry::new(MemoryType::Knowledge, "x").with_importance(0.8);
+        fresh.timestamp = now;
+        fresh.last_reinforced_at = Some(now);
+
+        let mut aged = MemoryEntry::new(MemoryType::Knowledge, "y").with_importance(0.8);
+        aged.timestamp = now - chrono::Duration::hours(192); // one Knowledge half-life (48*4)
+        aged.last_reinforced_at = Some(aged.timestamp);
+
+        let eff_fresh = fresh.effective_importance(now, &cfg);
+        let eff_aged = aged.effective_importance(now, &cfg);
+        assert!(
+            eff_aged < eff_fresh,
+            "aged ({eff_aged}) should be below fresh ({eff_fresh})"
+        );
+        // At exactly one half-life, decay ≈ 0.5 → effective ≈ 0.8 * 0.5 * 1.0
+        let expected_aged = 0.8 * 0.5 * 1.0;
+        assert!(
+            (eff_aged - expected_aged).abs() < 1e-3,
+            "expected ~{expected_aged}, got {eff_aged}"
+        );
+    }
+
+    #[test]
+    fn effective_importance_stale_multiplier() {
+        let now = Utc::now();
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+        let mut e = MemoryEntry::new(MemoryType::Knowledge, "x").with_importance(0.8);
+        e.timestamp = now;
+        e.last_reinforced_at = Some(now);
+        let base = e.effective_importance(now, &cfg);
+        e.stale_marked_at = Some(now);
+        let stale = e.effective_importance(now, &cfg);
+        assert!(
+            (stale - base * cfg.staleness_penalty).abs() < 1e-5,
+            "stale={stale}, base={base}"
+        );
+    }
+
+    #[test]
+    fn reinforce_bumps_hit_and_anchor_without_raising_importance() {
+        let t0 = Utc::now();
+        let mut e = MemoryEntry::new(MemoryType::Preference, "pref").with_importance(0.4);
+        assert_eq!(e.hit_count, 0);
+        assert!(e.last_reinforced_at.is_none());
+        e.reinforce(t0);
+        assert_eq!(e.hit_count, 1);
+        assert_eq!(e.last_reinforced_at, Some(t0));
+        assert!((e.importance - 0.4).abs() < f32::EPSILON);
+    }
+
     #[tokio::test]
     async fn import_skips_duplicate_ids() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1063,6 +1439,12 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // Pre-populate with one memory.
@@ -1110,6 +1492,12 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // Before consolidation, last_consolidation should be None.
@@ -1171,6 +1559,9 @@ mod tests {
             recall_similarity_threshold: 0.3,
             write_importance_threshold: 0.65,
             max_extract_per_compaction: 2,
+            exploration_epsilon: 0.15,
+            staleness_check: false,
+            staleness_penalty: 0.25,
         };
 
         let mm = MemoryManager::with_settings(&settings, std::path::PathBuf::from("/tmp"));
@@ -1184,6 +1575,24 @@ mod tests {
         assert!(!config.enable_auto_consolidation);
         assert!((mm.write_importance_threshold() - 0.65).abs() < f32::EPSILON);
         assert_eq!(mm.max_extract_per_compaction(), 2);
+        assert!((mm.exploration_epsilon() - 0.15).abs() < f32::EPSILON);
+        assert!(!mm.staleness_check());
+        assert!((mm.staleness_penalty() - 0.25).abs() < f32::EPSILON);
+        let cfg = mm.effective_importance_cfg();
+        assert_eq!(cfg.age_threshold_hours, 12);
+        assert!((cfg.staleness_penalty - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn new_for_test_uses_exploration_and_staleness_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+        assert!((mm.exploration_epsilon() - 0.0).abs() < f32::EPSILON);
+        assert!(mm.staleness_check());
+        assert!((mm.staleness_penalty() - 0.5).abs() < f32::EPSILON);
+        let cfg = mm.effective_importance_cfg();
+        assert_eq!(cfg.age_threshold_hours, 48);
+        assert!((cfg.staleness_penalty - 0.5).abs() < f32::EPSILON);
     }
 
     /// Regression test: `MemoryManager::load()` must recover persisted
@@ -1216,6 +1625,12 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // Pre-populate a session and a history entry on disk.
@@ -1242,6 +1657,12 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // Before load(), the in-memory caches are empty.
@@ -1297,6 +1718,12 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // First extraction: a decision captured during compaction.
@@ -1373,6 +1800,12 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         let entry = MemoryEntry::new(MemoryType::Knowledge, "a brand new fact");
@@ -1406,6 +1839,12 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // First entry.
@@ -1450,6 +1889,12 @@ mod tests {
             consolidating: Arc::new(AtomicBool::new(false)),
             write_importance_threshold: 0.6,
             max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: true,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // idx 0: survives consolidation (Knowledge is always kept).
@@ -1460,10 +1905,13 @@ mod tests {
         .await
         .unwrap();
         // idx 1: low-importance, old Session memory -> dropped by consolidate
-        // (age > age_threshold_hours=24, importance < 0.3).
+        // (age from decay anchor > age_threshold_hours, effective < threshold).
+        // Prefill last_reinforced_at so first-consolidate anchor migration does
+        // not reset the age clock to "now".
         let mut stale =
             MemoryEntry::new(MemoryType::Session, "gamma delta transient").with_importance(0.1);
         stale.timestamp = chrono::Utc::now() - chrono::Duration::hours(100);
+        stale.last_reinforced_at = Some(stale.timestamp);
         mm.add_memory(stale, MemoryOrigin::Project).await.unwrap();
         // idx 2: survives, but shifts to idx 1 after the stale entry is
         // dropped. Its distinctive token "unobtainium" lets us search for it
@@ -1493,6 +1941,530 @@ mod tests {
         assert!(
             found.iter().any(|m| m.content.contains("unobtainium")),
             "survivor that shifted index after consolidation must still be searchable"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_memories_orders_by_effective_not_raw() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let mut high_raw_old =
+            MemoryEntry::new(MemoryType::Knowledge, "high-raw-old fact").with_importance(0.95);
+        high_raw_old.timestamp = Utc::now() - chrono::Duration::hours(800);
+        high_raw_old.last_reinforced_at = Some(high_raw_old.timestamp);
+
+        let lower_raw_fresh =
+            MemoryEntry::new(MemoryType::Knowledge, "lower-raw-fresh fact").with_importance(0.6);
+
+        mm.add_memory(high_raw_old, MemoryOrigin::Project)
+            .await
+            .unwrap();
+        mm.add_memory(lower_raw_fresh, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        let listed = mm.list_memories(None, 0).await;
+        assert_eq!(listed.len(), 2);
+        assert!(
+            listed[0].1.content.contains("lower-raw-fresh"),
+            "fresh lower raw should rank first by effective: {:?}",
+            listed
+                .iter()
+                .map(|(_, m)| m.content.clone())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            listed[1].1.content.contains("high-raw-old"),
+            "decayed high raw should rank second"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_memories_keeps_superseded_but_filters_by_effective() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let mut live =
+            MemoryEntry::new(MemoryType::Knowledge, "live listable").with_importance(0.8);
+        live.id = "live-list".into();
+
+        let mut tomb =
+            MemoryEntry::new(MemoryType::Knowledge, "tomb listable").with_importance(0.99);
+        tomb.id = "tomb-list".into();
+        tomb.superseded_by = Some("live-list".into());
+
+        mm.add_memory(live, MemoryOrigin::Project).await.unwrap();
+        mm.add_memory(tomb, MemoryOrigin::Project).await.unwrap();
+
+        // No min filter: superseded remains listable for audit.
+        let all = mm.list_memories(None, 0).await;
+        assert_eq!(all.len(), 2);
+        assert!(
+            all.iter().any(|(_, m)| m.content.contains("tomb listable")),
+            "superseded rows remain listable"
+        );
+        // Live (effective ~0.8) first; tomb (effective 0) last.
+        assert!(all[0].1.content.contains("live listable"));
+        assert!(all[1].1.content.contains("tomb listable"));
+
+        // min_importance compares against effective → tomb (0) filtered out.
+        let filtered = mm.list_memories(Some(0.1), 0).await;
+        assert_eq!(filtered.len(), 1);
+        assert!(filtered[0].1.content.contains("live listable"));
+        assert!(
+            !filtered
+                .iter()
+                .any(|(_, m)| m.content.contains("tomb listable")),
+            "superseded effective 0 must fail min_importance filter"
+        );
+    }
+
+    /// Contradicts path: old content is tombstoned (file retained), new stands
+    /// alone; recall must not surface the superseded wording.
+    #[tokio::test]
+    async fn add_memory_contradicts_supersedes_and_recall_excludes_old() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        // Phrases share enough meaningful tokens for Jaccard >= 0.6 (gate), plus a
+        // state-change marker so classify_relation → Contradicts. Short gold
+        // pairs like "auth bug exists"/"auth bug fixed" are covered at the
+        // classify_relation unit level (their Jaccard is only 0.5).
+        let existing = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "the auth module login bug exists in codebase today",
+        )
+        .with_importance(0.8);
+        let old_id = existing.id.clone();
+        let old_importance = existing.importance;
+        mm.add_memory(existing, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        let incoming = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "the auth module login bug fixed in codebase today",
+        )
+        .with_importance(0.7);
+        let new_id = incoming.id.clone();
+        let result = mm
+            .add_memory(incoming, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        assert!(!result.merged, "contradicts must not report merge");
+        assert_eq!(result.id, new_id, "memory_id must be the new standalone id");
+
+        let memories = mm.memories.read().await;
+        assert_eq!(
+            memories.len(),
+            2,
+            "both tombstone and new entry stay in pool"
+        );
+        let old = memories
+            .iter()
+            .find(|m| m.id == old_id)
+            .expect("old retained");
+        assert_eq!(old.superseded_by.as_deref(), Some(new_id.as_str()));
+        assert!(
+            (old.importance - old_importance).abs() < f32::EPSILON,
+            "Contradicts must not change base importance"
+        );
+        assert!(
+            memories
+                .iter()
+                .any(|m| m.id == new_id && m.superseded_by.is_none()),
+            "new entry is live"
+        );
+        drop(memories);
+
+        // Superseded JSON file remains on disk (audit).
+        let old_path = mm.project_storage.path().join(format!("{old_id}.json"));
+        assert!(
+            tokio::fs::try_exists(&old_path).await.unwrap(),
+            "tombstone file must be retained on disk"
+        );
+        let on_disk: MemoryEntry =
+            serde_json::from_str(&tokio::fs::read_to_string(&old_path).await.unwrap()).unwrap();
+        assert_eq!(on_disk.superseded_by.as_deref(), Some(new_id.as_str()));
+
+        let recall = crate::context::inject::MemoryContextInjector::recall(
+            "auth module login bug codebase",
+            &mm,
+            5,
+            0.0,
+            None,
+        )
+        .await;
+        assert!(
+            recall.contains("bug fixed"),
+            "new content should be recallable: {recall}"
+        );
+        assert!(
+            !recall.contains("bug exists"),
+            "superseded old content must be excluded from recall: {recall}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_memory_compatible_merges_and_reinforces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let existing =
+            MemoryEntry::new(MemoryType::Knowledge, "use jwt authentication").with_importance(0.6);
+        let existing_id = existing.id.clone();
+        mm.add_memory(existing, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        let result = mm
+            .add_memory(
+                MemoryEntry::new(MemoryType::Knowledge, "use jwt"),
+                MemoryOrigin::Project,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.merged);
+        assert_eq!(result.id, existing_id);
+
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].id, existing_id);
+        assert_eq!(memories[0].hit_count, 1, "Compatible must reinforce");
+        assert!(memories[0].last_reinforced_at.is_some());
+        assert!(memories[0].content.contains("use jwt authentication"));
+    }
+
+    #[tokio::test]
+    async fn add_memory_ambiguous_merges_and_flags_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let existing = MemoryEntry::new(
+            MemoryType::Preference,
+            "prefer postgres database for storage layer",
+        );
+        let existing_id = existing.id.clone();
+        mm.add_memory(existing, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        let result = mm
+            .add_memory(
+                MemoryEntry::new(
+                    MemoryType::Preference,
+                    "prefer mysql database for storage layer",
+                ),
+                MemoryOrigin::Project,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.merged);
+        assert_eq!(result.id, existing_id);
+
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 1);
+        assert_eq!(
+            memories[0]
+                .metadata
+                .get("relation_ambiguous")
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "Ambiguous must flag metadata without LLM"
+        );
+        assert_eq!(memories[0].hit_count, 0, "Ambiguous must not reinforce");
+        assert!(
+            memories[0].content.contains("postgres") && memories[0].content.contains("mysql"),
+            "both alternatives retained in merged content"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_memory_skips_superseded_as_merge_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let mut tomb = MemoryEntry::new(MemoryType::Knowledge, "use jwt authentication legacy")
+            .with_importance(0.9);
+        tomb.id = "tomb-jwt".into();
+        tomb.superseded_by = Some("someone-else".into());
+        mm.add_memory(tomb, MemoryOrigin::Project).await.unwrap();
+
+        // Only similar live candidate is the tombstoned one → should NOT merge into it.
+        let incoming = MemoryEntry::new(MemoryType::Knowledge, "use jwt authentication");
+        let new_id = incoming.id.clone();
+        let result = mm
+            .add_memory(incoming, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        assert!(!result.merged);
+        assert_eq!(result.id, new_id);
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 2);
+        assert!(
+            memories
+                .iter()
+                .any(|m| m.id == "tomb-jwt" && m.superseded_by.is_some()),
+            "tombstone unchanged"
+        );
+        assert!(
+            memories
+                .iter()
+                .any(|m| m.id == new_id && m.superseded_by.is_none()),
+            "new live entry inserted"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidate_anchors_missing_last_reinforced_at() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let entry = MemoryEntry::new(MemoryType::Knowledge, "legacy fact without anchor")
+            .with_importance(0.9);
+        assert!(entry.last_reinforced_at.is_none());
+        mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
+
+        mm.consolidate().await.unwrap();
+
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 1);
+        assert!(
+            memories[0].last_reinforced_at.is_some(),
+            "first consolidate must anchor last_reinforced_at"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidate_marks_stale_when_all_extracted_paths_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let entry = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "logic lives in src/does_not_exist_xyz.rs only",
+        )
+        .with_importance(0.9);
+        mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
+
+        mm.consolidate().await.unwrap();
+
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 1);
+        assert!(
+            memories[0].stale_marked_at.is_some(),
+            "all-missing extractable paths must mark stale"
+        );
+        // Base importance never multiplied by staleness.
+        assert!((memories[0].importance - 0.9).abs() < 1e-5);
+        // Effective importance must apply staleness_penalty.
+        let cfg = mm.effective_importance_cfg();
+        let now = Utc::now();
+        let eff = memories[0].effective_importance(now, &cfg);
+        let unstale = {
+            let mut clone = memories[0].clone();
+            clone.stale_marked_at = None;
+            clone.effective_importance(now, &cfg)
+        };
+        assert!(
+            (eff - unstale * cfg.staleness_penalty).abs() < 1e-5,
+            "effective after mark must be downweighted by staleness_penalty: eff={eff} unstale={unstale}"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidate_partial_missing_paths_does_not_mark_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Create one real path under the project root.
+        let existing = root.join("src/exists_partial.rs");
+        tokio::fs::create_dir_all(existing.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&existing, b"fn ok() {}").await.unwrap();
+
+        let mm = MemoryManager::new_for_test(root.to_path_buf(), root.join("global"));
+        let entry = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "see src/exists_partial.rs and src/does_not_exist_partial.rs",
+        )
+        .with_importance(0.9);
+        mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
+
+        mm.consolidate().await.unwrap();
+
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 1);
+        assert!(
+            memories[0].stale_marked_at.is_none(),
+            "partial missing must NOT mark stale"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidate_stale_mark_is_idempotent_and_keeps_base_importance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let entry = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "only src/does_not_exist_idem.rs remains",
+        )
+        .with_importance(0.85);
+        mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
+
+        mm.consolidate().await.unwrap();
+        let (first_mark, first_anchor) = {
+            let memories = mm.memories.read().await;
+            assert_eq!(memories.len(), 1);
+            let mark = memories[0].stale_marked_at;
+            assert!(mark.is_some());
+            assert!((memories[0].importance - 0.85).abs() < 1e-5);
+            let anchor = memories[0].last_reinforced_at;
+            assert!(anchor.is_some());
+            (mark, anchor)
+        };
+
+        // Second pass: no-op on mark/anchor, base importance unchanged.
+        mm.consolidate().await.unwrap();
+        let memories = mm.memories.read().await;
+        assert_eq!(memories[0].stale_marked_at, first_mark);
+        assert_eq!(
+            memories[0].last_reinforced_at, first_anchor,
+            "second consolidate must leave existing last_reinforced_at unchanged"
+        );
+        assert!((memories[0].importance - 0.85).abs() < 1e-5);
+    }
+
+    #[tokio::test]
+    async fn consolidate_staleness_check_false_skips_mark() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join(".wgenty-code/memory");
+        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
+        let mm = MemoryManager {
+            sessions: Arc::new(MemorySessionManager::with_project_root(
+                tmp.path().to_path_buf(),
+            )),
+            history: Arc::new(HistoryManager::new()),
+            project_storage: Arc::new(crate::context::Storage::new(memory_dir)),
+            global_storage: Arc::new(crate::context::Storage::new(tmp.path().join("global"))),
+            consolidation: Arc::new(ConsolidationEngine::new(Default::default())),
+            memories: Arc::new(RwLock::new(Vec::new())),
+            global_memories: Arc::new(RwLock::new(Vec::new())),
+            index: Arc::new(RwLock::new(MemoryIndex::new())),
+            consolidating: Arc::new(AtomicBool::new(false)),
+            write_importance_threshold: 0.6,
+            max_extract_per_compaction: 3,
+            exploration_epsilon: 0.0,
+            staleness_check: false,
+            staleness_penalty: 0.5,
+            age_threshold_hours: 48,
+            project_root: tmp.path().to_path_buf(),
+            recently_explored: Arc::new(RwLock::new(HashSet::new())),
+        };
+
+        let entry = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "points at src/does_not_exist_gated.rs",
+        )
+        .with_importance(0.9);
+        mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
+        mm.consolidate().await.unwrap();
+
+        let memories = mm.memories.read().await;
+        assert!(
+            memories[0].stale_marked_at.is_none(),
+            "staleness_check=false must not mark"
+        );
+        // Anchor migration still runs.
+        assert!(memories[0].last_reinforced_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn consolidate_remains_llm_free_structural() {
+        // consolidate path must not require an LLM client — pure local prepass
+        // + ConsolidationEngine (TF-IDF/TTL). If this compiles and runs, the
+        // surface stays LLM-free.
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+        mm.add_memory(
+            MemoryEntry::new(MemoryType::Knowledge, "no paths here").with_importance(0.9),
+            MemoryOrigin::Project,
+        )
+        .await
+        .unwrap();
+        mm.consolidate().await.unwrap();
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 1);
+        assert!(memories[0].stale_marked_at.is_none());
+        assert!(memories[0].last_reinforced_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn consolidate_existing_only_paths_does_not_mark_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let existing_a = root.join("src/exists_a.rs");
+        let existing_b = root.join("lib/exists_b.ts");
+        tokio::fs::create_dir_all(existing_a.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(existing_b.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&existing_a, b"fn a() {}").await.unwrap();
+        tokio::fs::write(&existing_b, b"export const b = 1;")
+            .await
+            .unwrap();
+
+        let mm = MemoryManager::new_for_test(root.to_path_buf(), root.join("global"));
+        let entry = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "see src/exists_a.rs and lib/exists_b.ts",
+        )
+        .with_importance(0.9);
+        mm.add_memory(entry, MemoryOrigin::Project).await.unwrap();
+        mm.consolidate().await.unwrap();
+
+        let memories = mm.memories.read().await;
+        assert_eq!(memories.len(), 1);
+        assert!(
+            memories[0].stale_marked_at.is_none(),
+            "all-existing extractable paths must NOT mark stale"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_global_pool_does_not_path_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let mm = MemoryManager::new_for_test(root.to_path_buf(), root.join("global"));
+
+        // Global memory points at a missing project-relative path. Global
+        // prepass must still anchor but must NOT path-stale.
+        let entry = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "global tip about src/does_not_exist_global_only.rs",
+        )
+        .with_importance(0.9);
+        mm.add_memory(entry, MemoryOrigin::Global).await.unwrap();
+
+        mm.prune().await.unwrap();
+
+        let global = mm.global_memories.read().await;
+        assert_eq!(global.len(), 1);
+        assert!(
+            global[0].last_reinforced_at.is_some(),
+            "global prepass still anchors"
+        );
+        assert!(
+            global[0].stale_marked_at.is_none(),
+            "global pool must not run path-staleness against project root"
         );
     }
 }
