@@ -383,7 +383,6 @@ fn tool_verb(name: &str) -> &str {
         "compact" => "Compacted",
         "checkpoint" => "Checkpointed",
         "load_skill" => "Loaded skill",
-        "note_edit" => "Edited note",
         "run_script" => "Ran script",
         "team_message" => "Messaged",
         "think" => "Thought",
@@ -460,8 +459,17 @@ fn tool_label(name: &str, args: &serde_json::Value) -> String {
             .to_string(),
         "ask_user_question" => truncate_label(arg_str(args, "question")),
         "checkpoint" => arg_str(args, "description"),
-        "codegraph_node" | "lsp" => arg_str(args, "symbol"),
-        "codegraph_explore" => arg_str(args, "query"),
+        "codegraph_node" => {
+            let sym = arg_str(args, "symbol");
+            if sym.is_empty() {
+                arg_str(args, "file")
+            } else {
+                sym
+            }
+        }
+        "lsp" => arg_str(args, "symbol"),
+        "codegraph_explore" | "codegraph_search" => arg_str(args, "query"),
+        "codegraph_callers" => arg_str(args, "symbol"),
         "git_operations" => {
             let operation = arg_str(args, "operation");
             let branch = arg_str(args, "branch");
@@ -489,16 +497,6 @@ fn tool_label(name: &str, args: &serde_json::Value) -> String {
             } else {
                 skill_name
             }
-        }
-        "note_edit" => {
-            let operation = arg_str(args, "operation");
-            let title = arg_str(args, "title");
-            let note_id = arg_str(args, "note_id");
-            let search_query = arg_str(args, "search_query");
-            [operation, title, note_id, search_query]
-                .into_iter()
-                .find(|value| !value.is_empty())
-                .unwrap_or_default()
         }
         "run_script" => truncate_label(arg_str(args, "script")),
         "run_test" => {

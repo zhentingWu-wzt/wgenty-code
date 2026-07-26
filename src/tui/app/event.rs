@@ -389,7 +389,7 @@ impl App {
                     .with_agents_md(agents_sections)
                     .with_global_memories(self.prompt_context.global_memories.clone());
                 let assembled = prompts::assemble_instructions(&new_settings, &prompt_ctx);
-                self.assembled_system_messages = assembled.system_messages;
+                self.assembled_instructions = assembled;
                 self.codegraph_status = super::detect_codegraph_status(&new_settings);
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::System,
@@ -412,6 +412,7 @@ impl App {
                 if self.subagent_tree.clear_if_idle() {
                     self.completed_at.clear();
                     self.subagent_focus = None;
+                    self.inspector.visible = self.inspector.was_visible_before_focus;
                     self.subagent_status_bar_selected = 0;
                 }
                 self.turn_started_at = Some(std::time::Instant::now());
@@ -446,6 +447,7 @@ impl App {
                 self.current_turn_handle = None;
                 self.last_abort_reason = None; // normal completion clears
                 self.turn_started_at = None;
+                self.spawn_save_session();
                 if !self.pending_inputs.is_empty() {
                     self.start_next_turn();
                 }
@@ -483,8 +485,17 @@ impl App {
                 self.subagent_tree.clear();
                 self.completed_at.clear();
                 self.subagent_focus = None;
+                self.inspector.visible = self.inspector.was_visible_before_focus;
                 self.subagent_status_bar_selected = 0;
                 self.turn_started_at = None;
+            }
+            AppEvent::TurnContextCaptured(turn_ctx) => {
+                if self.turn_contexts.len() >= TURN_CONTEXT_CAPACITY {
+                    self.turn_contexts.remove(0);
+                }
+                self.turn_contexts.push(turn_ctx);
+                // Sync inspector with latest data (don't auto-jump to latest)
+                self.inspector.sync(&self.turn_contexts);
             }
             AppEvent::PermissionRequired {
                 tool_name,
@@ -919,22 +930,6 @@ impl App {
             AppEvent::PlanUpdate(value) => {
                 self.plan_panel_state.apply_update_value(&value);
             }
-            AppEvent::ToggleTaskPanel => {
-                self.task_panel.toggle();
-                // Fetch todos from daemon if opening
-                if self.task_panel.visible {
-                    let client = self.daemon_client.clone();
-                    let tx = self.event_tx.clone();
-                    tokio::spawn(async move {
-                        if let Ok(todos) = client.get_todos().await {
-                            let _ = tx.send(AppEvent::TodosUpdated(todos.items));
-                        }
-                    });
-                }
-            }
-            AppEvent::TodosUpdated(items) => {
-                self.task_panel.update(items);
-            }
             AppEvent::MemoriesReady(lines) => {
                 // Cross-session memory recall completed in the background at
                 // startup. Populate the shared startup_memories so subsequent
@@ -960,7 +955,7 @@ impl App {
                     .clone();
                 let assembled = prompts::assemble_instructions(&settings, &new_ctx);
                 self.prompt_context = new_ctx;
-                self.assembled_system_messages = assembled.system_messages;
+                self.assembled_instructions = assembled;
             }
             AppEvent::SkillsReady(data) => {
                 // Skill discovery completed in the background at startup.
@@ -1002,7 +997,7 @@ impl App {
                 // System layers are prepended each API round from this cache;
                 // conversation_history stays dialogue-only and is never seeded
                 // with system messages (avoids duplication after SkillsReady).
-                self.assembled_system_messages = assembled.system_messages;
+                self.assembled_instructions = assembled;
 
                 tracing::info!(
                     skill_count = self.prompt_context.skills_inventory.len(),

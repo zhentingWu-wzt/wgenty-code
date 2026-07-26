@@ -1,7 +1,7 @@
 use crate::tui::client::SessionInfo;
 use crate::tui::theme;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
@@ -11,6 +11,8 @@ pub struct SessionState {
     pub sessions: Vec<SessionInfo>,
     pub selected: usize,
     pub search_query: String,
+    /// When true, a delete is pending confirmation for the selected row.
+    pub pending_delete: bool,
 }
 
 impl SessionState {
@@ -21,6 +23,7 @@ impl SessionState {
             sessions: Vec::new(),
             selected: 0,
             search_query: String::new(),
+            pending_delete: false,
         }
     }
 
@@ -28,10 +31,12 @@ impl SessionState {
         self.visible = true;
         self.sessions = sessions;
         self.selected = 0;
+        self.pending_delete = false;
     }
 
     pub fn dismiss(&mut self) {
         self.visible = false;
+        self.pending_delete = false;
     }
 
     pub fn move_up(&mut self) {
@@ -48,7 +53,26 @@ impl SessionState {
         self.sessions.get(self.selected)
     }
 
-    pub fn delete_selected(&mut self) -> Option<String> {
+    /// Arm the delete-confirmation state for the selected row.
+    /// No-op if nothing is selected.
+    pub fn request_delete(&mut self) {
+        if self.selected_session().is_some() {
+            self.pending_delete = true;
+        }
+    }
+
+    /// Cancel a pending delete (called on any non-confirming key).
+    pub fn cancel_delete(&mut self) {
+        self.pending_delete = false;
+    }
+
+    /// Confirm the pending delete: returns the selected session's id
+    /// and removes it from the list. Clears `pending_delete`.
+    pub fn confirm_delete(&mut self) -> Option<String> {
+        if !self.pending_delete {
+            return None;
+        }
+        self.pending_delete = false;
         if self.sessions.is_empty() {
             return None;
         }
@@ -121,22 +145,42 @@ pub fn render(
     let title = format!(" Sessions ({}) ", count_str);
 
     // Footer with shortcut hints
-    let footer = Paragraph::new(Line::from(vec![
-        Span::styled(" ↑↓", Style::default().fg(Color::Cyan)),
-        Span::raw(" nav  "),
-        Span::styled("Enter", Style::default().fg(Color::Cyan)),
-        Span::raw(" load  "),
-        Span::styled("d", Style::default().fg(Color::Red)),
-        Span::raw(" delete  "),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
-        Span::raw(" close"),
-    ]))
-    .alignment(Alignment::Center)
-    .block(
-        Block::default()
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(theme::PRIMARY)),
-    );
+    let footer_spans: Vec<Span> = if state.pending_delete {
+        vec![
+            Span::styled(
+                " ⚠ Delete this session?",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                "y",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" confirm  "),
+            Span::styled("n/Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" cancel"),
+        ]
+    } else {
+        vec![
+            Span::styled(" ↑↓", Style::default().fg(Color::Cyan)),
+            Span::raw(" nav  "),
+            Span::styled("Enter", Style::default().fg(Color::Cyan)),
+            Span::raw(" load  "),
+            Span::styled("d", Style::default().fg(Color::Red)),
+            Span::raw(" delete  "),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" close"),
+        ]
+    };
+    let footer = Paragraph::new(Line::from(footer_spans))
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(theme::PRIMARY)),
+        );
 
     // Layout: list on top, footer at bottom
     let chunks = Layout::default()
@@ -192,6 +236,51 @@ fn short_session_id(id: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delete_confirmation_flow() {
+        let mut state = SessionState::new();
+        // No selection -> request_delete is a no-op.
+        state.request_delete();
+        assert!(!state.pending_delete);
+
+        state.show(vec![
+            SessionInfo {
+                id: "a".into(),
+                name: String::new(),
+                message_count: 1,
+                created_at: String::new(),
+                updated_at: String::new(),
+                summary: None,
+            },
+            SessionInfo {
+                id: "b".into(),
+                name: String::new(),
+                message_count: 2,
+                created_at: String::new(),
+                updated_at: String::new(),
+                summary: None,
+            },
+        ]);
+
+        // Arm delete.
+        state.request_delete();
+        assert!(state.pending_delete);
+
+        // Cancel clears the flag without consuming the selection.
+        state.cancel_delete();
+        assert!(!state.pending_delete);
+        assert_eq!(state.sessions.len(), 2);
+
+        // Arm again and confirm — removes the selected item.
+        state.request_delete();
+        assert!(state.pending_delete);
+        let removed = state.confirm_delete();
+        assert_eq!(removed, Some("a".to_string()));
+        assert!(!state.pending_delete);
+        assert_eq!(state.sessions.len(), 1);
+        assert_eq!(state.sessions[0].id, "b");
+    }
 
     #[test]
     fn short_session_id_uses_uuid_prefix() {

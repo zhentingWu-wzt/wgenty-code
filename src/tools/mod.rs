@@ -4,7 +4,7 @@
 //!   - filesystem/  — read, write, edit, apply_patch, list_files, view
 //!   - search/      — grep, glob, full-text search
 //!   - execution/   — shell commands, session management, git
-//!   - meta/        — think, lsp, ask_user_question, note_edit
+//!   - meta/        — think, lsp, ask_user_question
 
 pub mod checkpoint;
 pub mod checkpoint_store;
@@ -186,7 +186,6 @@ impl ToolRegistry {
         registry.register(Box::new(meta::think::ThinkTool::new()));
         registry.register(Box::new(meta::compact::CompactTool::new()));
         registry.register(Box::new(meta::lsp::LspTool::new()));
-        registry.register(Box::new(meta::note_edit::NoteEditTool::new()));
         registry.register(Box::new(
             meta::dismiss_codegraph_guidance::DismissCodegraphGuidanceTool::new(),
         ));
@@ -434,8 +433,8 @@ pub use filesystem::{
     ApplyPatchTool, FileEditTool, FileReadTool, FileWriteTool, ListFilesTool, ViewTool,
 };
 pub use meta::{
-    AskUserQuestionTool, CompactTool, LoadSkillTool, LspTool, NoteEditTool, RlmDelegateTool,
-    SkillTool, SubagentTraceTool, TaskTool, TeamMessageTool, ThinkTool, UpdatePlanTool,
+    AskUserQuestionTool, CompactTool, LoadSkillTool, LspTool, RlmDelegateTool, SkillTool,
+    SubagentTraceTool, TaskTool, TeamMessageTool, ThinkTool, UpdatePlanTool,
 };
 pub use search::{GlobTool, GrepTool, SearchTool, WebFetchTool, WebSearchTool};
 

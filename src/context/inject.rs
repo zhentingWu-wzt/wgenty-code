@@ -4,7 +4,7 @@
 //! Used by both TUI turn spawning and CLI `run_query` / `run_agent` paths.
 
 use crate::api::ChatMessage;
-use crate::context::{MemoryManager, MemoryType};
+use crate::context::{MemoryManager, MemoryType, RetrievalMode};
 
 /// Stateless injector that searches cross-session memories and prepends
 /// relevant context to a user message.
@@ -42,7 +42,7 @@ impl MemoryContextInjector {
         let cfg = manager.effective_importance_cfg();
         let mut scored: Vec<_> = matched
             .into_iter()
-            .filter(|m| m.superseded_by.is_none())
+            .filter(|m| m.superseded_by.is_none() && m.retrieval_mode != RetrievalMode::OnDemand)
             .map(|m| {
                 let eff = m.effective_importance(now, &cfg);
                 (m, eff)
@@ -93,7 +93,7 @@ impl MemoryContextInjector {
         let cfg = manager.effective_importance_cfg();
         let mut scored: Vec<_> = globals
             .into_iter()
-            .filter(|m| m.superseded_by.is_none())
+            .filter(|m| m.superseded_by.is_none() && m.retrieval_mode != RetrievalMode::OnDemand)
             .map(|m| {
                 let eff = m.effective_importance(now, &cfg);
                 (m, eff)

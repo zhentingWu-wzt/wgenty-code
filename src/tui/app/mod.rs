@@ -11,7 +11,7 @@ pub mod types;
 pub use types::*;
 
 use crate::api::ChatMessage;
-use crate::prompts::{self, PromptContext};
+use crate::prompts::{self, AssembledInstructions, PromptContext};
 use crate::runtime::command::CommandRouter;
 use crate::runtime::context::ContextAssembler;
 use crate::runtime::hooks::HookManager;
@@ -20,13 +20,13 @@ use crate::runtime::interaction_tui::TuiInteractionService;
 use crate::state::agent_phase::{AgentPhase, TurnAbortReason, TurnId};
 use crate::tui::client::DaemonClient;
 use crate::tui::components::input::InputBox;
+use crate::tui::components::inspector::InspectorComponent;
 use crate::tui::components::permission::PermissionState;
 use crate::tui::components::plan_panel::PlanPanelState;
 use crate::tui::components::question::QuestionState;
 use crate::tui::components::session::SessionState;
 use crate::tui::components::subagent_focus_view::FocusViewState;
 use crate::tui::components::subagent_tree::SubagentTree;
-use crate::tui::components::task_panel::TaskPanelState;
 use crossterm::event::EnableBracketedPaste;
 use ratatui::Terminal;
 use std::collections::{HashMap, VecDeque};
@@ -133,7 +133,11 @@ pub struct App {
     pub previous_mode: Option<AgentMode>,
     /// Pre-assembled system messages (layered instructions from PromptAssembler).
     /// Cloned into each new AgentLoop so every Turn inherits the same base instructions.
-    pub assembled_system_messages: Vec<ChatMessage>,
+    pub assembled_instructions: AssembledInstructions,
+    /// Turn context inspector snapshots (ring buffer, max 50).
+    pub turn_contexts: Vec<TurnContext>,
+    /// Partial context captured during process_input_inner, finalized after turn completes.
+    pub pending_context: Option<PartialTurnContext>,
     /// Channel sender for agent/input events
     event_tx: mpsc::UnboundedSender<AppEvent>,
     /// Channel receiver
@@ -143,8 +147,6 @@ pub struct App {
     pub question_state: QuestionState,
     pub session_state: SessionState,
     pub memory_state: crate::tui::components::memory::MemoryState,
-    pub task_panel: TaskPanelState,
-    /// Structured plan panel state (Codex-style update_plan tool)
     pub plan_panel_state: PlanPanelState,
     /// Subagent execution tree for the current turn.
     subagent_tree: SubagentTree,
@@ -162,6 +164,8 @@ pub struct App {
     pub mouse_capture_toggle: Option<bool>,
     /// Shared settings handle — updated by the config watcher on file change.
     pub settings_lock: crate::config::watcher::SettingsHandle,
+    /// Turn inspector panel for browsing context snapshots.
+    pub inspector: InspectorComponent,
 
     /// Timestamp of last Ctrl+C press for double-press detection
     last_ctrl_c: Option<std::time::Instant>,
@@ -382,7 +386,6 @@ impl App {
 
         let assembled = prompts::assemble_instructions(&settings, &prompt_ctx);
         crate::utils::startup_timing::mark("app new: prompt assembled");
-        let system_messages = assembled.system_messages;
         // Dialogue-only history: system layers are prepended each API round and
         // must not be seeded into (or duplicated by) conversation_history.
         let conversation_history = Arc::new(TokioMutex::new(Vec::new()));
@@ -455,13 +458,15 @@ impl App {
             conversation_history,
             session_save_lock: Arc::new(TokioMutex::new(())),
             session_exit_saved: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            assembled_system_messages: system_messages,
+            assembled_instructions: assembled,
             pending_inputs: VecDeque::new(),
             current_turn_handle: None,
             current_turn_id: None,
             agent_generation: 0,
             last_claim_attempt: None,
             turn_count: 0,
+            turn_contexts: Vec::with_capacity(TURN_CONTEXT_CAPACITY),
+            pending_context: None,
             mode: if settings.agent.plan_mode {
                 AgentMode::PlanMode
             } else {
@@ -475,7 +480,6 @@ impl App {
             question_state: QuestionState::new(),
             session_state: SessionState::new(),
             memory_state: crate::tui::components::memory::MemoryState::new(),
-            task_panel: TaskPanelState::new(),
             plan_panel_state: PlanPanelState::new(),
             subagent_tree: SubagentTree::default(),
             subagent_history: HashMap::new(),
@@ -494,6 +498,8 @@ impl App {
             shutdown_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
 
             settings_lock,
+
+            inspector: InspectorComponent::default(),
 
             completion_engine: {
                 let builtin_commands =
@@ -768,6 +774,15 @@ impl App {
             }
         }
 
+        // Drain any remaining events from the channel before saving the
+        // session.  A fast shutdown (e.g., double Ctrl+C) can set
+        // `should_quit` while `StreamDone` / `SaveSession` / `TurnComplete`
+        // events from the last agent turn are still sitting in the channel. We
+        // must process those events here so `committed_messages` includes the
+        // final turn before `flush_session_on_exit` serializes.
+        while let Ok(event) = self.event_rx.try_recv() {
+            self.handle_event(event).await;
+        }
         // Persist the latest transcript before tearing down the daemon session.
         // Bounded wait — see EXIT_SAVE_TIMEOUT — so a hung daemon cannot block
         // Ctrl+C indefinitely.

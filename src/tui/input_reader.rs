@@ -45,12 +45,6 @@ pub fn read_input(
                     // Session / memory panels are opened via slash commands
                     // (`/session`, `/memory`) — no Ctrl bindings (avoids terminal
                     // Ctrl+letter collisions like Ctrl+M == Enter).
-                    if key.code == KeyCode::Char('t')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
-                        let _ = tx.send(AppEvent::ToggleTaskPanel);
-                        continue;
-                    }
                     if key.code == KeyCode::Char('e')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {

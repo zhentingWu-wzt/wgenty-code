@@ -52,6 +52,7 @@ const PROJECT_AGENTS_TAG: &str = "project_agent_conventions";
 #[derive(Debug, Clone)]
 pub struct AssembledInstructions {
     pub system_messages: Vec<ChatMessage>,
+    pub layers: Vec<LayerMeta>,
 }
 
 /// A single skill entry for system prompt injection (Layer 1).
@@ -425,9 +426,20 @@ pub fn assemble_instructions(
     context: &PromptContext,
 ) -> AssembledInstructions {
     let mut system_messages: Vec<ChatMessage> = Vec::new();
+    let mut layers: Vec<LayerMeta> = Vec::new();
 
     // ── Layer 1: Base Instructions ──────────────────────────────────────
-    system_messages.push(ChatMessage::system(BASE_INSTRUCTIONS));
+    {
+        let text = BASE_INSTRUCTIONS.to_string();
+        let char_count = text.len();
+        system_messages.push(ChatMessage::system(text.clone()));
+        layers.push(LayerMeta {
+            label: "Layer 1: base_instructions".into(),
+            source: LayerSource::Builtin,
+            content: text,
+            char_count,
+        });
+    }
 
     // ── Layer 1b: Generic Runtime Context (replaces hardcoded comet injection) ─
     if let Some(ref assembler) = context.context_assembler {
@@ -435,50 +447,110 @@ pub fn assemble_instructions(
         for instruction in &assembled.internal_instructions {
             system_messages.push(ChatMessage::system(instruction));
         }
+        let combined = assembled.internal_instructions.join("\n");
+        let char_count = combined.len();
+        layers.push(LayerMeta {
+            label: "Layer 1b: context_assembler".into(),
+            source: LayerSource::Builtin,
+            content: combined,
+            char_count,
+        });
     }
 
     // ── Layer 2: Permissions (dynamic) ──────────────────────────────────
-    let perm_text = build_permissions_layer(context);
-    if let Some(text) = perm_text {
-        system_messages.push(ChatMessage::system(text));
+    {
+        let perm_text = build_permissions_layer(context);
+        if let Some(text) = perm_text {
+            let char_count = text.len();
+            system_messages.push(ChatMessage::system(text.clone()));
+            layers.push(LayerMeta {
+                label: "Layer 2: permissions".into(),
+                source: LayerSource::Builtin,
+                content: text,
+                char_count,
+            });
+        }
     }
 
     // ── Layer 3: Developer Instructions (from settings) ─────────────────
     if let Some(ref dev_instr) = settings.prompt.developer_instructions {
         if !dev_instr.trim().is_empty() {
-            system_messages.push(ChatMessage::system(format!(
+            let text = format!(
                 "<developer_instructions>\n{}\n</developer_instructions>",
                 dev_instr.trim()
-            )));
+            );
+            let char_count = text.len();
+            system_messages.push(ChatMessage::system(text.clone()));
+            layers.push(LayerMeta {
+                label: "Layer 3: developer_instructions".into(),
+                source: LayerSource::ConfigSettings,
+                content: text,
+                char_count,
+            });
         }
     }
 
     // ── Layer 4: Collaboration Mode (from settings) ──────────────────
-    let collab_text = build_collaboration_layer(context);
-    if let Some(text) = collab_text {
-        system_messages.push(ChatMessage::system(text));
+    {
+        let collab_text = build_collaboration_layer(context);
+        if let Some(text) = collab_text {
+            let char_count = text.len();
+            system_messages.push(ChatMessage::system(text.clone()));
+            layers.push(LayerMeta {
+                label: "Layer 4: collaboration".into(),
+                source: LayerSource::ConfigSettings,
+                content: text,
+                char_count,
+            });
+        }
     }
 
     // ── Layer 5: Environment Context (dynamic) ──────────────────────────
-    let env_text = build_environment_layer(context);
-    system_messages.push(ChatMessage::system(env_text));
+    {
+        let env_text = build_environment_layer(context);
+        let char_count = env_text.len();
+        system_messages.push(ChatMessage::system(env_text.clone()));
+        layers.push(LayerMeta {
+            label: "Layer 5: environment_context".into(),
+            source: LayerSource::Builtin,
+            content: env_text,
+            char_count,
+        });
+    }
 
     // ── Layer 5b: Recalled Cross-Session Memories ──────────────────────
     if !context.memories.is_empty() {
         let memory_lines = context.memories.join("\n");
-        system_messages.push(ChatMessage::system(format!(
+        let text = format!(
             "<relevant_memories>\n{}\n</relevant_memories>",
             memory_lines
-        )));
+        );
+        let char_count = text.len();
+        system_messages.push(ChatMessage::system(text.clone()));
+        layers.push(LayerMeta {
+            label: "Layer 5b: project_memories".into(),
+            source: LayerSource::MemoryRecall {
+                scope: "project".into(),
+            },
+            content: text,
+            char_count,
+        });
     }
 
     // ── Layer 5c: Global Memories (injected every turn, soft cap 50) ──
     if !context.global_memories.is_empty() {
         let global_lines = context.global_memories.join("\n");
-        system_messages.push(ChatMessage::system(format!(
-            "<global-memory>\n{}\n</global-memory>",
-            global_lines
-        )));
+        let text = format!("<global-memory>\n{}\n</global-memory>", global_lines);
+        let char_count = text.len();
+        system_messages.push(ChatMessage::system(text.clone()));
+        layers.push(LayerMeta {
+            label: "Layer 5c: global_memories".into(),
+            source: LayerSource::MemoryRecall {
+                scope: "global".into(),
+            },
+            content: text,
+            char_count,
+        });
     }
 
     // ── Layer 6: Skills (discoverable + on-demand via load_skill tool) ──
@@ -487,33 +559,56 @@ pub fn assemble_instructions(
         for skill in &context.skills_inventory {
             skills_lines.push(format!("- `{}`: {}", skill.name, skill.description));
         }
-        system_messages.push(ChatMessage::system(format!(
+        let text = format!(
             "## Available skills
 
 The following skills are available. Use the `load_skill` tool to read a skill's full instructions when needed.
 
 {}",
-            skills_lines.join("
-")
-        )));
+            skills_lines.join("\n")
+        );
+        let char_count = text.len();
+        system_messages.push(ChatMessage::system(text.clone()));
+        layers.push(LayerMeta {
+            label: "Layer 6: skills_inventory".into(),
+            source: LayerSource::SkillInventory,
+            content: text,
+            char_count,
+        });
     }
 
     // ── Layer 7: User Global Instructions ──────────────────────────
     if let Some((ref path, ref content)) = context.user_global_instructions {
-        system_messages.push(ChatMessage::system(format!(
+        let text = format!(
             "<user_global_instructions path=\"{}\">\n{}\n</user_global_instructions>",
             path.display(),
             content.trim()
-        )));
+        );
+        let char_count = text.len();
+        system_messages.push(ChatMessage::system(text.clone()));
+        layers.push(LayerMeta {
+            label: "Layer 7: user_global_instructions".into(),
+            source: LayerSource::ConfigFile(path.clone()),
+            content: text,
+            char_count,
+        });
     }
 
     // ── Layer 8: User Global Rules ─────────────────────────────────
     for (ref path, ref content) in &context.user_global_rules {
-        system_messages.push(ChatMessage::system(format!(
+        let text = format!(
             "<user_global_rules path=\"{}\">\n{}\n</user_global_rules>",
             path.display(),
             content.trim()
-        )));
+        );
+        let char_count = text.len();
+        system_messages.push(ChatMessage::system(text.clone()));
+        layers.push(LayerMeta {
+            label: format!("Layer 8: rule {}", path.display()),
+            source: LayerSource::ConfigFile(path.clone()),
+            content: text,
+            char_count,
+        });
     }
 
     // ── Layer 9: Project WGENTY.md (session-cached) ─────────────
@@ -524,11 +619,19 @@ The following skills are available. Use the `load_skill` tool to read a skill's 
             .map(|p| p.join("WGENTY.md"))
             .unwrap_or_else(|| PathBuf::from("WGENTY.md"));
         let content = context.wgenty_md_sections.join("\n\n");
-        system_messages.push(ChatMessage::system(format!(
+        let text = format!(
             "<{PROJECT_INSTRUCTIONS_TAG} path=\"{}\">\n{}\n</{PROJECT_INSTRUCTIONS_TAG}>",
             path.display(),
             content.trim()
-        )));
+        );
+        let char_count = text.len();
+        system_messages.push(ChatMessage::system(text.clone()));
+        layers.push(LayerMeta {
+            label: "Layer 9: project WGENTY.md".into(),
+            source: LayerSource::ProjectFile(path),
+            content: text,
+            char_count,
+        });
     }
 
     // ── Layer 10: Project AGENTS.md (session-cached) ────────────
@@ -539,14 +642,25 @@ The following skills are available. Use the `load_skill` tool to read a skill's 
             .map(|p| p.join("AGENTS.md"))
             .unwrap_or_else(|| PathBuf::from("AGENTS.md"));
         let content = context.agents_md_sections.join("\n\n");
-        system_messages.push(ChatMessage::system(format!(
+        let text = format!(
             "<{PROJECT_AGENTS_TAG} path=\"{}\">\n{}\n</{PROJECT_AGENTS_TAG}>",
             path.display(),
             content.trim()
-        )));
+        );
+        let char_count = text.len();
+        system_messages.push(ChatMessage::system(text.clone()));
+        layers.push(LayerMeta {
+            label: "Layer 10: project AGENTS.md".into(),
+            source: LayerSource::ProjectFile(path),
+            content: text,
+            char_count,
+        });
     }
 
-    AssembledInstructions { system_messages }
+    AssembledInstructions {
+        system_messages,
+        layers,
+    }
 }
 
 /// Build the permissions layer text. Returns None if no sandbox/approval info.
@@ -621,6 +735,51 @@ fn build_environment_layer(ctx: &PromptContext) -> String {
 /// Return the /init command prompt text for LLM-based codebase analysis.
 pub fn get_init_prompt() -> &'static str {
     include_str!("init_instructions.md")
+}
+
+/// Labels the origin of a system-prompt layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayerSource {
+    Builtin,
+    ConfigSettings,
+    ConfigFile(std::path::PathBuf),
+    ProjectFile(std::path::PathBuf),
+    MemoryRecall { scope: String },
+    SkillInventory,
+    HookInjection,
+    Unknown,
+}
+
+impl std::fmt::Display for LayerSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LayerSource::Builtin => write!(f, "Builtin"),
+            LayerSource::ConfigSettings => write!(f, "Config Settings"),
+            LayerSource::ConfigFile(p) => write!(f, "~/.wgenty-code/{}", p.display()),
+            LayerSource::ProjectFile(p) => write!(f, "<project>/{}", p.display()),
+            LayerSource::MemoryRecall { scope } => write!(f, "Memory ({})", scope),
+            LayerSource::SkillInventory => write!(f, "Skills"),
+            LayerSource::HookInjection => write!(f, "Hooks"),
+            LayerSource::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LayerMeta {
+    pub label: String,
+    pub source: LayerSource,
+    pub content: String,
+    pub char_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct MemoryMeta {
+    pub scope: String,
+    pub importance: f32,
+    pub score: Option<f32>,
+    pub memory_type: Option<String>,
+    pub content_preview: String,
 }
 
 #[cfg(test)]

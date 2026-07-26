@@ -46,17 +46,6 @@ async fn test_task_management_tool() {
 }
 
 #[tokio::test]
-async fn test_note_edit_tool() {
-    let registry = ToolRegistry::new();
-    let tool = registry
-        .get("note_edit")
-        .expect("note_edit tool should exist");
-
-    assert_eq!(tool.name(), "note_edit");
-    assert!(tool.description().contains("note"));
-}
-
-#[tokio::test]
 async fn test_task_create_and_list() {
     use serde_json::json;
 
@@ -87,41 +76,6 @@ async fn test_task_create_and_list() {
         .await;
 
     assert!(list_result.is_ok());
-}
-
-#[tokio::test]
-async fn test_note_create_and_search() {
-    use serde_json::json;
-
-    let registry = ToolRegistry::new();
-
-    // Create a note
-    let create_result = registry
-        .execute(
-            "note_edit",
-            json!({
-                "operation": "create",
-                "title": "Test Note",
-                "content": "This is a test note content",
-                "tags": ["test", "example"]
-            }),
-        )
-        .await;
-
-    assert!(create_result.is_ok());
-
-    // Search notes
-    let search_result = registry
-        .execute(
-            "note_edit",
-            json!({
-                "operation": "search",
-                "search_query": "test"
-            }),
-        )
-        .await;
-
-    assert!(search_result.is_ok());
 }
 
 #[tokio::test]

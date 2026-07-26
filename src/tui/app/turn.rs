@@ -2,6 +2,7 @@
 
 use super::types::*;
 use super::App;
+use crate::api::ChatMessage;
 use crate::config::resolve_context_window;
 use crate::context::inject::MemoryContextInjector;
 use crate::state::agent_phase::{AgentPhase, TurnAbortReason, TurnId};
@@ -68,7 +69,7 @@ impl App {
         let client = self.daemon_client.clone();
         let event_tx = self.event_tx.clone();
         let session_id = self.session_id.clone();
-        let sys_msgs = self.assembled_system_messages.clone();
+        let sys_msgs = self.assembled_instructions.system_messages.clone();
         let plan_mode = self.mode == AgentMode::PlanMode;
         // Read agent config from settings
         let (
@@ -115,6 +116,14 @@ impl App {
             let s = self.settings_lock.read().expect("lock poisoned: settings");
             s.storage.memory.recall_top_n
         };
+
+        // Capture pre-turn layer metadata for the turn-context inspector.
+        let pre_turn_layers = self.assembled_instructions.layers.clone();
+        let turn_idx = self.turn_count;
+
+        // Clone conversation_history Arc a second time so we can read it
+        // after the first clone is moved into AgentLoop::new.
+        let history_for_snapshot = self.conversation_history.clone();
 
         self.current_turn_handle = Some(tokio::spawn(async move {
             // Per-turn recall: use MemoryContextInjector for keyword extraction
@@ -167,6 +176,27 @@ impl App {
                 debug_dump_reminder,
             );
             let result = agent.process_input(input_agent).await;
+            // Build TurnContext snapshot for the inspector.
+            {
+                let sys_msgs_vec: Vec<ChatMessage> = pre_turn_layers
+                    .iter()
+                    .map(|l| ChatMessage::system(l.content.clone()))
+                    .collect();
+                let history_msgs: Vec<ChatMessage> = {
+                    let lock = history_for_snapshot.lock().await;
+                    lock.clone()
+                };
+                let full_messages: Vec<ChatMessage> =
+                    sys_msgs_vec.into_iter().chain(history_msgs).collect();
+                let turn_ctx = TurnContext {
+                    turn_index: turn_idx,
+                    layers: pre_turn_layers.clone(),
+                    memories: vec![],
+                    reminder: None,
+                    full_messages,
+                };
+                let _ = event_tx.send(AppEvent::TurnContextCaptured(turn_ctx));
+            }
             if let Err(ref e) = result {
                 let reason = match e {
                     AgentError::StreamTimeout(_) => TurnAbortReason::TimedOut,
@@ -199,7 +229,7 @@ impl App {
         let client = self.daemon_client.clone();
         let event_tx = self.event_tx.clone();
         let session_id = self.session_id.clone();
-        let sys_msgs = self.assembled_system_messages.clone();
+        let sys_msgs = self.assembled_instructions.system_messages.clone();
         let plan_mode = self.mode == AgentMode::PlanMode;
         let (
             planner_client,
@@ -293,7 +323,7 @@ impl App {
         let client = self.daemon_client.clone();
         let event_tx = self.event_tx.clone();
         let session_id = self.session_id.clone();
-        let sys_msgs = self.assembled_system_messages.clone();
+        let sys_msgs = self.assembled_instructions.system_messages.clone();
         let (max_rounds, subagent_timeout_secs, context_window, max_tokens) = {
             let s = self.settings_lock.read().expect("lock poisoned: settings");
             (
