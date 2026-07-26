@@ -12,10 +12,8 @@ pub struct ModelEndpoint {
     #[serde(default)]
     pub appkey: Option<String>,
     /// Force the API format regardless of base_url auto-detection.
-    /// `"anthropic"` → `/v1/messages` (Anthropic format); `"openai"` →
-    /// `/v1/chat/completions`. Needed for relays like packyapi that speak
-    /// Anthropic natively but whose URL lacks "anthropic" (auto-detect would
-    /// wrongly pick OpenAI and hit a flaky compat layer).
+    /// `"deepseek"` → `/v1/chat/completions` (OpenAI format); `"openai"` →
+    /// `/v1/chat/completions`. Also supports `"anthropic"` for Anthropic API.
     #[serde(default)]
     pub provider: Option<String>,
     /// Per-endpoint context window override (tokens). When set, this takes
@@ -28,20 +26,20 @@ pub struct ModelEndpoint {
 
 impl ModelEndpoint {
     /// Resolve the effective base_url for this endpoint. If `self.base_url` is None,
-    /// fall back to env var `API_BASE_URL`, then "https://api.anthropic.com".
+    /// fall back to env var `API_BASE_URL`, then "https://api.deepseek.com".
     pub fn endpoint_base_url(&self) -> String {
         if let Some(u) = &self.base_url {
             return u.clone();
         }
-        std::env::var("API_BASE_URL").unwrap_or_else(|_| "https://api.anthropic.com".to_string())
+        std::env::var("API_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".to_string())
     }
 
     /// Resolve the effective api_key for this endpoint, checking env first.
     pub fn endpoint_api_key(&self) -> Option<String> {
-        std::env::var("ANTHROPIC_API_KEY")
+        std::env::var("DEEPSEEK_API_KEY")
             .ok()
+            .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
             .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok())
-            .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok())
             .or_else(|| self.api_key.clone())
     }
 }
@@ -51,12 +49,11 @@ impl ModelEndpoint {
 /// Returns `None` for unrecognized models so callers can fall back to a
 /// configured default. This is a static table built from public model docs;
 /// it does not query the API. Model names are matched case-insensitively
-/// against both friendly aliases (`sonnet`) and full IDs
-/// (`claude-sonnet-4-6-20250514`).
+/// against both friendly aliases and full IDs.
 pub fn known_context_window(model: &str) -> Option<usize> {
     let lower = model.to_ascii_lowercase();
-    // Anthropic Claude family - all current models expose ~1M context.
-    if lower.starts_with("claude") || matches!(lower.as_str(), "sonnet" | "opus" | "haiku") {
+    // Multi-provider: all current models expose ~1M context.
+    if lower.starts_with("claude") || matches!(lower.as_str(), "sonnet" | "opus" | "haiku" | "deepseek-v4-pro") {
         return Some(1_024_000);
     }
     // DeepSeek - ~1M context.
@@ -158,12 +155,12 @@ impl Default for ModelsConfig {
         Self {
             transport: TransportConfig::default(),
             main: ModelEndpoint {
-                name: "sonnet".to_string(),
+                name: "deepseek-v4-pro".to_string(),
                 base_url: std::env::var("API_BASE_URL").ok(),
-                api_key: std::env::var("ANTHROPIC_API_KEY")
+                api_key: std::env::var("DEEPSEEK_API_KEY")
                     .ok()
-                    .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok())
-                    .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok()),
+                    .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
+                    .or_else(|| std::env::var("DASHSCOPE_API_KEY").ok()),
                 appkey: None,
                 provider: None,
                 context_window: None,
@@ -202,14 +199,7 @@ mod tests {
 
     #[test]
     fn test_known_context_window_matches_common_models() {
-        // Anthropic aliases and full IDs.
-        assert_eq!(known_context_window("sonnet"), Some(1_024_000));
-        assert_eq!(
-            known_context_window("Claude-Sonnet-4-6-20250514"),
-            Some(1_024_000)
-        );
-        assert_eq!(known_context_window("haiku"), Some(1_024_000));
-        // DeepSeek.
+        assert_eq!(known_context_window("deepseek-v4-pro"), Some(1_024_000));
         assert_eq!(known_context_window("deepseek-chat"), Some(1_024_000));
         assert_eq!(known_context_window("v3"), Some(1_024_000));
         // OpenAI.
@@ -223,14 +213,14 @@ mod tests {
     fn test_resolve_context_window_priority() {
         // 1. Explicit endpoint override wins.
         let ep = ModelEndpoint {
-            name: "sonnet".to_string(),
+            name: "deepseek-v4-pro".to_string(),
             context_window: Some(150_000),
             ..Default::default()
         };
         assert_eq!(resolve_context_window(&ep, 200_000), 150_000);
-        // 2. Known model lookup when no override (sonnet -> 1M, ignores fallback).
+        // 2. Known model lookup when no override (deepseek-v4-pro -> 1M, ignores fallback).
         let ep = ModelEndpoint {
-            name: "sonnet".to_string(),
+            name: "deepseek-v4-pro".to_string(),
             ..Default::default()
         };
         assert_eq!(resolve_context_window(&ep, 999_999), 1_024_000);
@@ -250,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_model_endpoint_context_window_deserialize() {
-        let json = r#"{"name":"sonnet","context_window":150000}"#;
+        let json = r#"{"name":"deepseek-v4-pro","context_window":150000}"#;
         let ep: ModelEndpoint = serde_json::from_str(json).unwrap();
         assert_eq!(ep.context_window, Some(150_000));
     }

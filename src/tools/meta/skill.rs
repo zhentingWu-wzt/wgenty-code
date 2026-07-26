@@ -1,4 +1,4 @@
-//! Skill Runtime Action — Claude Code-compatible `skill` tool for nested external skill loading.
+//! Skill Runtime Action — External `skill` tool for nested skill loading.
 //!
 //! When the external skill registry is not wired this tool returns a clear
 //! not-configured error, signalling that the runtime needs to be set up before
@@ -12,7 +12,7 @@ use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 
-/// Claude Code-compatible runtime action for loading external skills.
+/// Runtime action for loading external skills.
 ///
 /// When constructed via `SkillTool::new()` without a registry, the tool
 /// returns a clear not-configured error.  Call `with_registry()` to wire
@@ -73,7 +73,7 @@ impl Tool for SkillTool {
     }
 
     fn description(&self) -> &str {
-        "Load a Claude Code-compatible external skill by canonical name. \
+        "Load a compatible external skill by canonical name. \
          Use for nested skill invocation. \
          Leave skill name empty to list available external skills."
     }

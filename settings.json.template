@@ -7,7 +7,7 @@
       "beta_headers": []
     },
     "main": {
-      "name": "sonnet",
+      "name": "deepseek-v4-pro",
       "base_url": null,
       "api_key": null,
       "appkey": null,
