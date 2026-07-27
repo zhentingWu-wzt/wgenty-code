@@ -300,6 +300,7 @@ pub enum AppEvent {
     /// generated summary. `summary_chars` is the char length of the summary.
     ContextCompacted {
         summary_chars: usize,
+        compressed_len: usize,
     },
     /// Connecting to the LLM API (attempt N of M)
     Connecting {

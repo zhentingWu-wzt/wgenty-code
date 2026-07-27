@@ -277,7 +277,8 @@ impl App {
                 });
                 self.streaming_active = false;
             }
-            AppEvent::ContextCompacted { summary_chars } => {
+            AppEvent::ContextCompacted { summary_chars, compressed_len } => {
+                self.compaction_boundary = compressed_len;
                 // Compaction succeeded — surface it so the user can see the
                 // context window was compressed (and how much survived as a
                 // summary). Collapsed by default to avoid cluttering the chat.

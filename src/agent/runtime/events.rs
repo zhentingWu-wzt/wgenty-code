@@ -21,7 +21,7 @@ pub enum RuntimeEvent {
     /// Auto / manual compaction started.
     CompactionStarted,
     /// Compaction finished; `summary_chars` is the summary size for the status bar.
-    ContextCompacted { summary_chars: usize },
+    ContextCompacted { summary_chars: usize, compressed_len: usize },
     /// A tool invocation is about to run (or was scheduled).
     ToolStart {
         name: String,

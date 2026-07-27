@@ -133,6 +133,9 @@ pub struct App {
     /// finalized in `finalize_turn_end` (called from the `TurnComplete`
     /// handler).
     pub turn_records: Vec<TurnRecord>,
+    /// Current compaction boundary (index into conversation_history). Turns
+    /// before this index are summarized; `/undo` picker filters them out.
+    pub compaction_boundary: usize,
     pub mode: AgentMode,
     /// Previous mode before entering PlanMode via toggle (Ctrl+P or /plan).
     /// Used to restore the correct mode when toggling back.
@@ -472,6 +475,7 @@ impl App {
             last_claim_attempt: None,
             turn_count: 0,
             turn_records: Vec::new(),
+            compaction_boundary: 0,
             turn_contexts: Vec::with_capacity(TURN_CONTEXT_CAPACITY),
             pending_context: None,
             mode: if settings.agent.plan_mode {
