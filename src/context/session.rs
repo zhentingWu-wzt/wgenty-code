@@ -100,6 +100,7 @@ impl SessionManager {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             messages: Vec::new(),
+            turn_records: Vec::new(),
         };
 
         self.save(&session)?;
@@ -170,6 +171,29 @@ impl Default for SessionManager {
     }
 }
 
+/// A single TUI REPL turn record, persisted alongside [`Session`] messages.
+///
+/// Each entry captures the metadata needed by the `/undo` interactive rollback
+/// flow: which checkpoint to rewind to, how many messages belong to this turn,
+/// and how many files were edited.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TurnRecord {
+    /// Unique identifier for this turn (e.g. UUID or incrementing counter).
+    pub turn_id: String,
+    /// ISO-8601 timestamp marking when the turn was created.
+    pub created_at: String,
+    /// First sentence of the user's input, shown in the turn-picker popup.
+    pub user_summary: String,
+    /// Identifier of the file checkpoint taken **before** this turn's edits
+    /// (pre-edit snapshot).  Used by code-rollback to restore file state.
+    pub checkpoint_turn_id: String,
+    /// Index into `conversation_history` marking the end of this turn
+    /// (i.e. `conversation_history.len()` when the turn completed).
+    pub message_end_idx: usize,
+    /// Number of files edited during this turn (`0` = pure conversation).
+    pub file_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -177,6 +201,10 @@ pub struct Session {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub messages: Vec<ChatMessage>,
+    /// Per-turn records for `/undo` rollback.  `#[serde(default)]` ensures
+    /// old session files (without this field) deserialize to an empty Vec.
+    #[serde(default)]
+    pub turn_records: Vec<TurnRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,4 +216,44 @@ pub struct SessionInfo {
     pub message_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `Session` serialized to JSON must include the `turn_records` field so
+    /// that turn history is persisted alongside conversation messages.
+    #[test]
+    fn session_serialization_contains_turn_records() {
+        // Construct a Session via JSON round-trip so the test compiles even
+        // before the `turn_records` field exists (RED → runtime failure).
+        let json = r#"{"id":"x","name":"y","created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:00Z","messages":[]}"#;
+        let session: Session = serde_json::from_str(json).expect("parse session");
+        let serialized = serde_json::to_string(&session).expect("serialize session");
+        assert!(
+            serialized.contains("\"turn_records\""),
+            "serialized session JSON should contain turn_records field, got: {serialized}"
+        );
+    }
+
+    /// Old session files (saved before `turn_records` existed) must still
+    /// deserialize successfully, with `turn_records` defaulting to an empty Vec.
+    #[test]
+    fn old_session_without_turn_records_deserializes_to_empty_vec() {
+        let old_json = r#"{"id":"old","name":"old","created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:00Z","messages":[]}"#;
+        let session: Session =
+            serde_json::from_str(old_json).expect("old session should deserialize");
+        // Inspect via serde_json::Value so the test compiles without the field.
+        let value: serde_json::Value =
+            serde_json::to_value(&session).expect("convert session to json value");
+        let turn_records = value
+            .get("turn_records")
+            .expect("turn_records field should exist after deserialization");
+        assert!(turn_records.is_array(), "turn_records should be an array");
+        assert!(
+            turn_records.as_array().unwrap().is_empty(),
+            "turn_records should default to empty Vec for old sessions"
+        );
+    }
 }
