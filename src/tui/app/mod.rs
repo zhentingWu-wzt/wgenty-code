@@ -11,6 +11,7 @@ pub mod types;
 pub use types::*;
 
 use crate::api::ChatMessage;
+use crate::context::TurnRecord;
 use crate::prompts::{self, AssembledInstructions, PromptContext};
 use crate::runtime::command::CommandRouter;
 use crate::runtime::context::ContextAssembler;
@@ -127,6 +128,11 @@ pub struct App {
     last_claim_attempt: Option<std::time::Instant>,
     /// Number of completed turns (for UI / debugging).
     pub turn_count: usize,
+    /// Per-turn records for `/undo` interactive rollback.  Each entry is
+    /// pushed in `record_turn_start` (called from `spawn_agent_turn`) and
+    /// finalized in `finalize_turn_end` (called from the `TurnComplete`
+    /// handler).
+    pub turn_records: Vec<TurnRecord>,
     pub mode: AgentMode,
     /// Previous mode before entering PlanMode via toggle (Ctrl+P or /plan).
     /// Used to restore the correct mode when toggling back.
@@ -465,6 +471,7 @@ impl App {
             agent_generation: 0,
             last_claim_attempt: None,
             turn_count: 0,
+            turn_records: Vec::new(),
             turn_contexts: Vec::with_capacity(TURN_CONTEXT_CAPACITY),
             pending_context: None,
             mode: if settings.agent.plan_mode {

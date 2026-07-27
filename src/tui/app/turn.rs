@@ -5,6 +5,7 @@ use super::App;
 use crate::api::ChatMessage;
 use crate::config::resolve_context_window;
 use crate::context::inject::MemoryContextInjector;
+use crate::context::TurnRecord;
 use crate::state::agent_phase::{AgentPhase, TurnAbortReason, TurnId};
 use crate::tui::agent::{AgentError, AgentLoop};
 use crate::tui::util::truncate_session_name;
@@ -65,6 +66,10 @@ impl App {
         let _ = self.event_tx.send(AppEvent::TurnStarted {
             turn_id: turn_id.clone(),
         });
+        // Record this turn's metadata for the /undo interactive rollback flow.
+        // checkpoint_turn_id defaults to turn_id until Task 4 wires up the
+        // checkpoint manifest.
+        self.record_turn_start(turn_id.to_string(), &input_text, turn_id.to_string());
         let history = self.conversation_history.clone();
         let client = self.daemon_client.clone();
         let event_tx = self.event_tx.clone();
@@ -466,6 +471,70 @@ impl App {
     pub(super) fn pending_count(&self) -> usize {
         self.pending_inputs.len()
     }
+
+    /// Record the start of a new turn by pushing a [`TurnRecord`] onto
+    /// `turn_records`.  Called from `spawn_agent_turn` right after the
+    /// `turn_id` is created and before `tokio::spawn`.
+    ///
+    /// `checkpoint_turn_id` identifies the pre-edit file checkpoint for this
+    /// turn (used by code-rollback).  Until Task 4 wires up the checkpoint
+    /// manifest it defaults to the turn_id itself.
+    pub(super) fn record_turn_start(
+        &mut self,
+        turn_id: String,
+        input: &str,
+        checkpoint_turn_id: String,
+    ) {
+        let record = TurnRecord {
+            turn_id: turn_id.clone(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            user_summary: first_sentence(input),
+            checkpoint_turn_id,
+            message_end_idx: 0,
+            // TODO Task 4: from checkpoint manifest
+            file_count: 0,
+        };
+        self.turn_records.push(record);
+    }
+
+    /// Finalize the most recent `TurnRecord` by setting its `message_end_idx`.
+    /// Called from the `AppEvent::TurnComplete` handler with
+    /// `conversation_history.len()`.  No-op if `turn_records` is empty or the
+    /// last entry already has a non-zero `message_end_idx` (guards against a
+    /// duplicate `TurnComplete` event clobbering the real value).
+    pub(super) fn finalize_turn_end(&mut self, message_end_idx: usize) {
+        if let Some(last) = self.turn_records.last_mut() {
+            if last.message_end_idx == 0 {
+                last.message_end_idx = message_end_idx;
+            }
+        }
+    }
+}
+
+/// Extract the first sentence of `input` for display in the turn-picker
+/// popup.  A sentence ends at `.`, `!`, or `?` followed by whitespace (or
+/// end of string).  If no boundary is found the whole trimmed input is
+/// returned, capped at 100 characters with an ellipsis.
+fn first_sentence(input: &str) -> String {
+    let trimmed = input.trim();
+    for (i, ch) in trimmed.char_indices() {
+        if matches!(ch, '.' | '!' | '?') {
+            let after = &trimmed[i + ch.len_utf8()..];
+            if after.is_empty() || after.starts_with(char::is_whitespace) {
+                return trimmed[..i + ch.len_utf8()].to_string();
+            }
+        }
+        if ch == '\n' {
+            return trimmed[..i].trim_end().to_string();
+        }
+    }
+    // No sentence boundary found: cap at 100 chars to keep the popup readable.
+    let capped: String = trimmed.chars().take(100).collect();
+    if capped.chars().count() < trimmed.chars().count() {
+        format!("{capped}\u{2026}")
+    } else {
+        capped
+    }
 }
 
 #[cfg(test)]
@@ -531,5 +600,88 @@ mod tests {
             "preparing-tools hint should not be committed as Assistant content"
         );
         assert!(!app.streaming_active);
+    }
+
+    // ── TurnRecord tracking (Task 2: /undo interactive rollback) ─────────
+
+    #[tokio::test]
+    async fn record_turn_start_pushes_correct_turn_record() {
+        let mut app = build_app();
+        assert!(app.turn_records.is_empty(), "starts empty");
+
+        app.record_turn_start(
+            "turn-abc".to_string(),
+            "Hello world. This is a longer second sentence.",
+            "turn-abc".to_string(),
+        );
+
+        assert_eq!(app.turn_records.len(), 1, "one record pushed");
+        let rec = &app.turn_records[0];
+        assert_eq!(rec.turn_id, "turn-abc");
+        assert!(!rec.created_at.is_empty(), "created_at populated");
+        assert_eq!(
+            rec.user_summary, "Hello world.",
+            "user_summary is the first sentence"
+        );
+        assert_eq!(rec.checkpoint_turn_id, "turn-abc");
+        assert_eq!(rec.message_end_idx, 0, "message_end_idx starts at 0");
+        assert_eq!(rec.file_count, 0, "file_count starts at 0");
+    }
+
+    #[tokio::test]
+    async fn record_turn_start_handles_input_without_sentence_boundary() {
+        let mut app = build_app();
+        app.record_turn_start(
+            "turn-1".to_string(),
+            "just some words with no period",
+            "turn-1".to_string(),
+        );
+        let rec = &app.turn_records[0];
+        assert_eq!(
+            rec.user_summary, "just some words with no period",
+            "no boundary → whole input (capped)"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_turn_start_accumulates_multiple_turns() {
+        let mut app = build_app();
+        app.record_turn_start("t1".to_string(), "First turn.", "t1".to_string());
+        app.record_turn_start("t2".to_string(), "Second turn.", "t2".to_string());
+        assert_eq!(app.turn_records.len(), 2);
+        assert_eq!(app.turn_records[0].turn_id, "t1");
+        assert_eq!(app.turn_records[1].turn_id, "t2");
+    }
+
+    #[tokio::test]
+    async fn finalize_turn_end_sets_message_end_idx_on_last_record() {
+        let mut app = build_app();
+        app.record_turn_start("t1".to_string(), "Hello.", "t1".to_string());
+        assert_eq!(app.turn_records[0].message_end_idx, 0);
+
+        app.finalize_turn_end(42);
+
+        assert_eq!(
+            app.turn_records[0].message_end_idx, 42,
+            "message_end_idx updated"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_turn_end_does_not_overwrite_nonzero_end_idx() {
+        let mut app = build_app();
+        app.record_turn_start("t1".to_string(), "Hello.", "t1".to_string());
+        app.finalize_turn_end(10);
+        // A second TurnComplete should not clobber the already-set value.
+        app.finalize_turn_end(99);
+        assert_eq!(app.turn_records[0].message_end_idx, 10);
+    }
+
+    #[tokio::test]
+    async fn finalize_turn_end_no_panic_on_empty_records() {
+        let mut app = build_app();
+        // Should be a no-op, not a panic.
+        app.finalize_turn_end(5);
+        assert!(app.turn_records.is_empty());
     }
 }

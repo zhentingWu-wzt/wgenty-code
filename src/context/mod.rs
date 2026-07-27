@@ -30,6 +30,7 @@ pub use memory_session::{
     Session as MemorySession, SessionDiffData, SessionInfo as MemorySessionInfo,
     SessionManager as MemorySessionManager, SessionUiMessage,
 };
+pub use session::TurnRecord;
 pub use storage::{Storage, StorageBackend};
 
 /// Runtime parameters for [`MemoryEntry::effective_importance`].
