@@ -447,6 +447,12 @@ impl App {
                 self.current_turn_handle = None;
                 self.last_abort_reason = None; // normal completion clears
                 self.turn_started_at = None;
+                // Finalize the most recent TurnRecord's message_end_idx for
+                // /undo rollback. Uses the live conversation_history length so
+                // the record captures exactly how many messages exist at turn
+                // completion.
+                let hist_len = self.conversation_history.lock().await.len();
+                self.finalize_turn_end(hist_len);
                 self.spawn_save_session();
                 if !self.pending_inputs.is_empty() {
                     self.start_next_turn();
