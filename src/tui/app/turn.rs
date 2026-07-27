@@ -491,6 +491,7 @@ impl App {
             user_summary: first_sentence(input),
             checkpoint_turn_id,
             message_end_idx: 0,
+            committed_messages_end_idx: 0,
             // TODO Task 4: from checkpoint manifest
             file_count: 0,
         };
@@ -506,9 +507,66 @@ impl App {
         if let Some(last) = self.turn_records.last_mut() {
             if last.message_end_idx == 0 {
                 last.message_end_idx = message_end_idx;
+                last.committed_messages_end_idx = self.committed_messages.len();
             }
         }
     }
+
+    /// Roll back to `turn_id`, keeping that turn and everything before it.
+    /// `scope` selects code / chat / both. Code rollback is a stub until
+    /// CheckpointStore access is wired.
+    #[allow(dead_code)] // wired in Task 8 (/undo flow integration)
+    pub(super) async fn undo_to_turn(
+        &mut self,
+        turn_id: &str,
+        scope: UndoScope,
+    ) -> UndoReport {
+        let mut report = UndoReport::default();
+        let Some(idx) = self.turn_records.iter().position(|r| r.turn_id == turn_id) else {
+            return report; // turn not found, no-op
+        };
+        let target = self.turn_records[idx].clone();
+
+        if matches!(scope, UndoScope::Code | UndoScope::Both) {
+            // TUI does not hold CheckpointStore; code-rollback via daemon HTTP
+            // is wired in a later task. Mark skipped for now.
+            report.code_skipped = true;
+        }
+        if matches!(scope, UndoScope::Chat | UndoScope::Both) {
+            {
+                let mut hist = self.conversation_history.lock().await;
+                let prev = hist.len();
+                hist.truncate(target.message_end_idx);
+                report.messages_truncated = prev.saturating_sub(hist.len());
+            }
+            let prev_ui = self.committed_messages.len();
+            self.committed_messages.truncate(target.committed_messages_end_idx);
+            report.ui_messages_truncated = prev_ui.saturating_sub(self.committed_messages.len());
+            let prev_turns = self.turn_records.len();
+            self.turn_records.truncate(idx + 1);
+            report.turns_removed = prev_turns.saturating_sub(self.turn_records.len());
+        }
+        report
+    }
+}
+
+/// Scope of an `/undo` rollback operation.
+#[allow(dead_code)] // wired in Task 8
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum UndoScope {
+    Code,
+    Chat,
+    Both,
+}
+
+/// Result of an `/undo` rollback.
+#[allow(dead_code)] // wired in Task 8
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct UndoReport {
+    pub messages_truncated: usize,
+    pub ui_messages_truncated: usize,
+    pub turns_removed: usize,
+    pub code_skipped: bool,
 }
 
 /// Extract the first sentence of `input` for display in the turn-picker

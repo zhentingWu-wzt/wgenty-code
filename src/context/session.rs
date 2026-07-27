@@ -192,6 +192,10 @@ pub struct TurnRecord {
     pub message_end_idx: usize,
     /// Number of files edited during this turn (`0` = pure conversation).
     pub file_count: usize,
+    /// Index into `committed_messages` (UI display) at turn completion;
+    /// `/undo` syncs the UI by truncating to this index.
+    #[serde(default)]
+    pub committed_messages_end_idx: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
