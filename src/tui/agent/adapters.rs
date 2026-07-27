@@ -49,8 +49,8 @@ impl EventSink for TuiEventSink {
             RuntimeEvent::StreamDone { finish_reason } => AppEvent::StreamDone { finish_reason },
             RuntimeEvent::StreamError(msg) => AppEvent::StreamError(msg),
             RuntimeEvent::CompactionStarted => AppEvent::CompactionStarted,
-            RuntimeEvent::ContextCompacted { summary_chars } => {
-                AppEvent::ContextCompacted { summary_chars }
+            RuntimeEvent::ContextCompacted { summary_chars, compressed_len } => {
+                AppEvent::ContextCompacted { summary_chars, compressed_len }
             }
             RuntimeEvent::ToolStart { name, args } => AppEvent::ToolStart { name, args },
             RuntimeEvent::ToolResult {
@@ -541,7 +541,7 @@ impl Compactor for TuiCompactor {
         let history_snapshot = history.get().await;
         archive_transcript(&history_snapshot).await;
 
-        let (_tail, transcript_text) =
+        let (tail, transcript_text) =
             crate::agent::runtime::compactor::prepare_compaction_transcript(&history_snapshot);
 
         let summary_messages = vec![
@@ -636,9 +636,10 @@ impl Compactor for TuiCompactor {
         }
 
         let summary_chars = summary.chars().count();
+        let compressed_len = history_snapshot.len().saturating_sub(tail.len());
         let _ = self
             .event_tx
-            .send(AppEvent::ContextCompacted { summary_chars });
+            .send(AppEvent::ContextCompacted { summary_chars, compressed_len });
         Some(summary)
     }
 }

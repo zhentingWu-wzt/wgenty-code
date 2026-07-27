@@ -49,7 +49,7 @@ impl EventSink for CliEventSink {
             RuntimeEvent::CompactionStarted => {
                 eprintln!("[compact] summarizing conversation…");
             }
-            RuntimeEvent::ContextCompacted { summary_chars } => {
+            RuntimeEvent::ContextCompacted { summary_chars, compressed_len: _ } => {
                 eprintln!("[compact] done (summary ~{} chars)", summary_chars);
             }
             RuntimeEvent::ToolStart { name, .. } if self.verbose => {

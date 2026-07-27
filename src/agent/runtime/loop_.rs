@@ -298,6 +298,7 @@ async fn run_agent_loop_inner(args: RunLoopArgs<'_>) -> Result<String, RuntimeEr
                         }
                         events.emit(RuntimeEvent::ContextCompacted {
                             summary_chars: summary.chars().count(),
+                            compressed_len: new_boundary,
                         });
                         if needs_compaction(
                             &view,
