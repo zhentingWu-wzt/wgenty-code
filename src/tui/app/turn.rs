@@ -516,11 +516,7 @@ impl App {
     /// `scope` selects code / chat / both. Code rollback is a stub until
     /// CheckpointStore access is wired.
     #[allow(dead_code)] // wired in Task 8 (/undo flow integration)
-    pub(super) async fn undo_to_turn(
-        &mut self,
-        turn_id: &str,
-        scope: UndoScope,
-    ) -> UndoReport {
+    pub(super) async fn undo_to_turn(&mut self, turn_id: &str, scope: UndoScope) -> UndoReport {
         let mut report = UndoReport::default();
         let Some(idx) = self.turn_records.iter().position(|r| r.turn_id == turn_id) else {
             return report; // turn not found, no-op
@@ -540,7 +536,8 @@ impl App {
                 report.messages_truncated = prev.saturating_sub(hist.len());
             }
             let prev_ui = self.committed_messages.len();
-            self.committed_messages.truncate(target.committed_messages_end_idx);
+            self.committed_messages
+                .truncate(target.committed_messages_end_idx);
             report.ui_messages_truncated = prev_ui.saturating_sub(self.committed_messages.len());
             let prev_turns = self.turn_records.len();
             self.turn_records.truncate(idx + 1);
@@ -553,7 +550,7 @@ impl App {
 /// Scope of an `/undo` rollback operation.
 #[allow(dead_code)] // wired in Task 8
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum UndoScope {
+pub enum UndoScope {
     Code,
     Chat,
     Both,
