@@ -71,8 +71,6 @@ impl TurnPickerState {
 /// [`crate::tui::util::centered_rect`]).  When `state.open` is `false` this
 /// is a no-op.
 //
-// Not wired into the app render pipeline yet — integrated in Task 8.
-#[allow(dead_code)]
 pub fn render(f: &mut Frame, state: &TurnPickerState, area: Rect) {
     if !state.open {
         return;
@@ -126,9 +124,7 @@ pub fn render(f: &mut Frame, state: &TurnPickerState, area: Rect) {
 
 /// Format an ISO-8601 timestamp to a compact display: "MM/DD HH:MM".
 //
-// Only called from `render`; kept private.  Marked dead_code because `render`
-// itself is not wired in until Task 8.
-#[allow(dead_code)]
+/// Only called from `render`; kept private.
 fn format_timestamp(iso: &str) -> String {
     // ISO 8601: "2025-06-01T14:30:00..." -> "06/01 14:30"
     if iso.len() >= 16 {

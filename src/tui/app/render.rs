@@ -155,6 +155,16 @@ impl App {
         components::session::render(f, &self.session_state, centered_rect);
         // Memory browser overlay (hygiene L1)
         components::memory::render(f, &self.memory_state, centered_rect);
+        // /undo pickers (turn selection, then scope selection). Each is an
+        // independent centered popup; only one is ever open at a time.
+        if let Some(ref picker) = self.turn_picker {
+            let area = centered_rect(70, 60, f.area());
+            components::turn_picker::render(f, picker, area);
+        }
+        if let Some(ref picker) = self.scope_picker {
+            let area = centered_rect(40, 35, f.area());
+            components::undo_scope_picker::render(f, picker, area);
+        }
     }
 
     fn render_chat(&self, f: &mut Frame, area: Rect) {

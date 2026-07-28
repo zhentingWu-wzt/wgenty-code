@@ -28,6 +28,8 @@ use crate::tui::components::question::QuestionState;
 use crate::tui::components::session::SessionState;
 use crate::tui::components::subagent_focus_view::FocusViewState;
 use crate::tui::components::subagent_tree::SubagentTree;
+use crate::tui::components::turn_picker::TurnPickerState;
+use crate::tui::components::undo_scope_picker::UndoScopePickerState;
 use crossterm::event::EnableBracketedPaste;
 use ratatui::Terminal;
 use std::collections::{HashMap, VecDeque};
@@ -138,6 +140,15 @@ pub struct App {
     pub compaction_boundary: usize,
     /// Whether the `/undo` turn-picker popup is open.
     pub undo_picker_open: bool,
+    /// Active turn-picker popup state for the `/undo` flow (`None` when closed).
+    /// Set by `open_undo_picker`; consumed by Enter (-> scope picker) / Esc.
+    pub turn_picker: Option<TurnPickerState>,
+    /// Active undo-scope picker popup state for the `/undo` flow (`None` when
+    /// closed).  Set after a turn is selected in the turn picker.
+    pub scope_picker: Option<UndoScopePickerState>,
+    /// Turn id chosen in the turn picker, held until the scope is confirmed in
+    /// the scope picker (then consumed by the `UndoRequested` event handler).
+    pub pending_undo_turn_id: Option<String>,
     pub mode: AgentMode,
     /// Previous mode before entering PlanMode via toggle (Ctrl+P or /plan).
     /// Used to restore the correct mode when toggling back.
@@ -479,6 +490,9 @@ impl App {
             turn_records: Vec::new(),
             compaction_boundary: 0,
             undo_picker_open: false,
+            turn_picker: None,
+            scope_picker: None,
+            pending_undo_turn_id: None,
             turn_contexts: Vec::with_capacity(TURN_CONTEXT_CAPACITY),
             pending_context: None,
             mode: if settings.agent.plan_mode {

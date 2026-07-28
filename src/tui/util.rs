@@ -454,7 +454,8 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::GlobalMemoriesReady(_)
         | AppEvent::SkillsReady(_)
         | AppEvent::TurnContextCaptured(_)
-        | AppEvent::SystemNotice(_) => None,
+        | AppEvent::SystemNotice(_)
+        | AppEvent::UndoRequested { .. } => None,
     }
 }
 
