@@ -118,6 +118,9 @@ pub struct MemorySettings {
     pub enable_auto_consolidation: bool,
     #[serde(default = "default_recall_top_n")]
     pub recall_top_n: usize,
+    /// Minimum **effective importance** floor for recall injection. Despite the
+    /// legacy name, this filters by effective importance (decay × hit-rate ×
+    /// staleness), not Jaccard text similarity.
     #[serde(default = "default_recall_similarity_threshold")]
     pub recall_similarity_threshold: f32,
     #[serde(default = "default_write_importance_threshold")]
