@@ -5,6 +5,7 @@
 # Subcommands:
 #   init <change-name> <workflow>  — Initialize .comet.yaml with workflow defaults
 #   get <change-name> <field>       — Read a field value from .comet.yaml
+#   current <change-name> [--json]  - Print current state (phase/workflow/base_ref)
 #   set <change-name> <field> <val> — Update a field value
 #   transition <change-name> <event> — Apply a validated state transition
 #   check <change-name> <phase>    — Verify entry requirements for a phase
@@ -332,6 +333,42 @@ cmd_get() {
     value="$(project_auto_transition_default)"
   fi
   echo "${value:-}"
+}
+
+cmd_current() {
+  local change_name="$1"
+  local json=0
+  [ "${2:-}" = "--json" ] && json=1
+
+  validate_change_name "$change_name"
+
+  local yaml_file
+  yaml_file=$(yaml_file_for "$change_name")
+  if [ ! -f "$yaml_file" ]; then
+    red "ERROR: .comet.yaml not found at $yaml_file"
+    exit 1
+  fi
+
+  local phase workflow base_ref archived verify_result
+  phase=$(yaml_field "phase" "$yaml_file")
+  workflow=$(yaml_field "workflow" "$yaml_file")
+  base_ref=$(yaml_field "base_ref" "$yaml_file")
+  archived=$(yaml_field "archived" "$yaml_file" 2>/dev/null || true)
+  verify_result=$(yaml_field "verify_result" "$yaml_file" 2>/dev/null || true)
+
+  if [ "$json" -eq 1 ]; then
+    # All values are constrained (validated change name, enum phases/workflows,
+    # git ref) so quoting as strings is safe and yields valid JSON.
+    printf '{"change":"%s","phase":"%s","workflow":"%s","base_ref":"%s","archived":"%s","verify_result":"%s"}\n' \
+      "$change_name" "${phase:-}" "${workflow:-}" "${base_ref:-}" "${archived:-}" "${verify_result:-}"
+  else
+    printf 'change:        %s\n' "$change_name"
+    printf 'phase:         %s\n' "${phase:-}"
+    printf 'workflow:      %s\n' "${workflow:-}"
+    printf 'base_ref:      %s\n' "${base_ref:-}"
+    printf 'archived:      %s\n' "${archived:-false}"
+    printf 'verify_result: %s\n' "${verify_result:-}"
+  fi
 }
 
 cmd_set() {
@@ -1174,6 +1211,13 @@ case "$SUBCOMMAND" in
     fi
     cmd_get "$@"
     ;;
+  current)
+    if [ $# -lt 1 ]; then
+      red "Usage: comet-state.sh current <change-name> [--json]" >&2
+      exit 1
+    fi
+    cmd_current "$@"
+    ;;
   set)
     if [ $# -lt 3 ]; then
       red "Usage: comet-state.sh set <change-name> <field> <value>" >&2
@@ -1231,6 +1275,7 @@ case "$SUBCOMMAND" in
     echo "Subcommands:" >&2
     echo "  init <change-name> <workflow>  — Initialize .comet.yaml with workflow defaults" >&2
     echo "  get <change-name> <field>       — Read a field value from .comet.yaml" >&2
+    echo "  current <change-name> [--json]  - Print current state (phase/workflow/base_ref)" >&2
     echo "  set <change-name> <field> <val> — Update a field value in .comet.yaml" >&2
     echo "  transition <change-name> <event> — Apply a validated state transition" >&2
     echo "  check <change-name> <phase>    — Verify entry requirements for a phase" >&2
