@@ -11,9 +11,11 @@ entry_commands:
 
 state:
   read:
-    script: "${COMET_STATE} current --json"
+    script: "${COMET_STATE} current ${CHANGE} --json"
   write:
-    script: "${COMET_STATE} set"
+    # Low-level field write; validated phase changes go through the `transitions:`
+    # guards (which call `${COMET_GUARD} ${CHANGE} <phase> --apply`), not this generic write.
+    script: "${COMET_STATE} set ${CHANGE} phase <new-phase>"
 
 hooks:
   SlashCommand:
