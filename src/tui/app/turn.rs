@@ -69,8 +69,9 @@ impl App {
             turn_id: turn_id.clone(),
         });
         // Record this turn's metadata for the /undo interactive rollback flow.
-        // checkpoint_turn_id defaults to turn_id until Task 4 wires up the
-        // checkpoint manifest.
+        // checkpoint_turn_id == turn_id: the per-turn checkpoint dir is keyed
+        // by turn_id (daemon `begin_turn`). file_count is filled lazily from
+        // the checkpoint manifest when the /undo picker opens.
         self.record_turn_start(turn_id.to_string(), &input_text, turn_id.to_string());
         let history = self.conversation_history.clone();
         let client = self.daemon_client.clone();
@@ -479,8 +480,10 @@ impl App {
     /// `turn_id` is created and before `tokio::spawn`.
     ///
     /// `checkpoint_turn_id` identifies the pre-edit file checkpoint for this
-    /// turn (used by code-rollback).  Until Task 4 wires up the checkpoint
-    /// manifest it defaults to the turn_id itself.
+    /// turn (used by code-rollback); it equals the turn_id because the daemon
+    /// keys per-turn checkpoint dirs by turn_id (`begin_turn`). `file_count`
+    /// starts at 0 and is filled lazily from the checkpoint manifest by
+    /// `apply_file_counts` when the `/undo` picker opens.
     pub(super) fn record_turn_start(
         &mut self,
         turn_id: String,
@@ -494,7 +497,7 @@ impl App {
             checkpoint_turn_id,
             message_end_idx: 0,
             committed_messages_end_idx: 0,
-            // TODO Task 4: from checkpoint manifest
+            // Filled lazily via RefreshUndoFileCounts -> apply_file_counts.
             file_count: 0,
         };
         self.turn_records.push(record);
@@ -515,8 +518,14 @@ impl App {
     }
 
     /// Roll back to `turn_id`, keeping that turn and everything before it.
-    /// `scope` selects code / chat / both. Code rollback is a stub until
-    /// CheckpointStore access is wired.
+    /// `scope` selects code / chat / both.
+    ///
+    /// Code rollback rewinds every turn *after* the target (oldest-first) via
+    /// the daemon `CheckpointStore`, restoring the working tree to its
+    /// end-of-target-turn state. The TUI does not hold `CheckpointStore`
+    /// directly, so this goes over HTTP (`POST /api/v1/tools/undo-turn`).
+    /// `Both` runs code before chat so the later-turn ids are collected before
+    /// the chat branch truncates `turn_records`.
     pub(super) async fn undo_to_turn(&mut self, turn_id: &str, scope: UndoScope) -> UndoReport {
         let mut report = UndoReport::default();
         let Some(idx) = self.turn_records.iter().position(|r| r.turn_id == turn_id) else {
@@ -525,9 +534,30 @@ impl App {
         let target = self.turn_records[idx].clone();
 
         if matches!(scope, UndoScope::Code | UndoScope::Both) {
-            // TUI does not hold CheckpointStore; code-rollback via daemon HTTP
-            // is wired in a later task. Mark skipped for now.
-            report.code_skipped = true;
+            let later_turn_ids: Vec<String> = self.turn_records[idx + 1..]
+                .iter()
+                .map(|t| t.turn_id.clone())
+                .collect();
+            if later_turn_ids.is_empty() {
+                // Target is the latest turn: nothing after it to rewind.
+                report.code_skipped = true;
+            } else {
+                match self.daemon_client.undo_turn_range(&later_turn_ids).await {
+                    Ok(result) => {
+                        report.files_restored = result.restored;
+                        // No later turn had a non-empty checkpoint (e.g. all
+                        // were pure-chat turns) -> nothing was actually rolled
+                        // back.
+                        if result.rewound_turns.is_empty() {
+                            report.code_skipped = true;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "code rollback (undo-turn) failed");
+                        report.code_skipped = true;
+                    }
+                }
+            }
         }
         if matches!(scope, UndoScope::Chat | UndoScope::Both) {
             {
@@ -572,6 +602,10 @@ impl App {
             return;
         }
         self.turn_picker = Some(TurnPickerState::new(turns));
+        // Asynchronously refresh file_count from the daemon checkpoint store so
+        // the turn-picker can show "✓N" per turn. The picker renders fine with
+        // file_count = 0 until the refresh lands.
+        let _ = self.event_tx.send(AppEvent::RefreshUndoFileCounts);
     }
 
     /// Rebuild the turn-picker popup from the current `turn_records`,
@@ -589,6 +623,20 @@ impl App {
             }
         }
         self.turn_picker = Some(picker);
+    }
+
+    /// Fill `turn_records[*].file_count` from daemon checkpoint infos (matched
+    /// by turn id), then rebuild the turn picker if it is open so the "✓N"
+    /// markers appear. Called from the `UndoFileCountsReady` event handler.
+    pub(super) fn apply_file_counts(&mut self, infos: &[crate::tui::client::CheckpointInfo]) {
+        for rec in &mut self.turn_records {
+            if let Some(info) = infos.iter().find(|i| i.turn_id == rec.turn_id) {
+                rec.file_count = info.file_count;
+            }
+        }
+        if self.undo_picker_open && self.turn_picker.is_some() {
+            self.rebuild_turn_picker();
+        }
     }
 
     /// Confirm the turn selected in the turn picker and advance to the
@@ -637,6 +685,8 @@ pub(super) struct UndoReport {
     pub messages_truncated: usize,
     pub ui_messages_truncated: usize,
     pub turns_removed: usize,
+    /// Files restored by code-rollback (0 when `code_skipped`).
+    pub files_restored: usize,
     pub code_skipped: bool,
 }
 
@@ -671,7 +721,7 @@ mod tests {
     use super::*;
     use crate::config::watcher::SettingsHandle;
     use crate::config::Settings;
-    use crate::tui::client::DaemonClient;
+    use crate::tui::client::{CheckpointInfo, DaemonClient};
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
@@ -1038,5 +1088,111 @@ mod tests {
             Some("t1"),
             "current_turn_id must survive when its turn is retained"
         );
+    }
+
+    // ── Task 4: code rollback wiring (UndoScope::Code) ───────────────────
+
+    #[tokio::test]
+    async fn undo_to_turn_code_only_does_not_truncate_chat() {
+        let mut app = build_app_with_two_turns().await;
+        // Code-only scope must not touch chat history / turn records, even
+        // though the code-rollback HTTP call is attempted (and fails: the
+        // test daemon at localhost:0 is unreachable).
+        let report = app.undo_to_turn("t1", UndoScope::Code).await;
+        assert_eq!(app.turn_records.len(), 2, "Code scope keeps all turns");
+        let h = app.conversation_history.lock().await;
+        assert_eq!(h.len(), 4, "Code scope keeps all messages");
+        assert!(report.code_skipped, "unreachable daemon -> code_skipped");
+        assert_eq!(report.files_restored, 0);
+    }
+
+    #[tokio::test]
+    async fn undo_to_turn_code_scope_last_turn_is_skipped() {
+        let mut app = build_app_with_two_turns().await;
+        // Rolling back to the last turn (t2): no later turns to rewind.
+        let report = app.undo_to_turn("t2", UndoScope::Code).await;
+        assert!(report.code_skipped, "no later turns -> code_skipped");
+        assert_eq!(report.files_restored, 0);
+    }
+
+    #[tokio::test]
+    async fn undo_to_turn_both_scope_runs_code_then_chat() {
+        let mut app = build_app_with_two_turns().await;
+        app.current_turn_id = Some(TurnId("t2".to_string()));
+
+        let report = app.undo_to_turn("t1", UndoScope::Both).await;
+
+        // Code attempted first (daemon unreachable -> skipped), then chat
+        // truncated. The code branch must read later turn ids *before* the
+        // chat branch truncates turn_records.
+        assert!(report.code_skipped, "code attempted but daemon unreachable");
+        assert_eq!(report.turns_removed, 1, "t2 removed by chat rollback");
+        assert_eq!(app.turn_records.len(), 1, "only t1 remains");
+        assert_eq!(app.turn_records[0].turn_id, "t1");
+        assert!(app.current_turn_id.is_none(), "t2 cleared");
+    }
+
+    // ── Task 4: file_count refresh from checkpoint manifest ─────────────
+
+    #[tokio::test]
+    async fn apply_file_counts_updates_turn_records_and_rebuilds_picker() {
+        let mut app = build_app_with_two_turns().await;
+        assert_eq!(app.turn_records[0].file_count, 0);
+        assert_eq!(app.turn_records[1].file_count, 0);
+        app.open_undo_picker();
+        assert!(app.turn_picker.is_some());
+
+        let infos = vec![
+            CheckpointInfo {
+                turn_id: "t1".to_string(),
+                created_at: String::new(),
+                file_count: 3,
+            },
+            CheckpointInfo {
+                turn_id: "t2".to_string(),
+                created_at: String::new(),
+                file_count: 1,
+            },
+        ];
+        app.apply_file_counts(&infos);
+
+        assert_eq!(app.turn_records[0].file_count, 3);
+        assert_eq!(app.turn_records[1].file_count, 1);
+        let picker = app.turn_picker.as_ref().expect("picker still open");
+        assert_eq!(picker.turns[0].file_count, 3);
+        assert_eq!(picker.turns[1].file_count, 1);
+    }
+
+    #[tokio::test]
+    async fn apply_file_counts_ignores_unknown_turn_ids() {
+        let mut app = build_app_with_two_turns().await;
+        let infos = vec![CheckpointInfo {
+            turn_id: "unknown".to_string(),
+            created_at: String::new(),
+            file_count: 9,
+        }];
+        app.apply_file_counts(&infos);
+        assert_eq!(app.turn_records[0].file_count, 0);
+        assert_eq!(app.turn_records[1].file_count, 0);
+    }
+
+    #[tokio::test]
+    async fn undo_file_counts_ready_event_fills_counts() {
+        let mut app = build_app_with_two_turns().await;
+        let infos = vec![
+            CheckpointInfo {
+                turn_id: "t1".to_string(),
+                created_at: String::new(),
+                file_count: 5,
+            },
+            CheckpointInfo {
+                turn_id: "t2".to_string(),
+                created_at: String::new(),
+                file_count: 2,
+            },
+        ];
+        app.handle_event(AppEvent::UndoFileCountsReady(infos)).await;
+        assert_eq!(app.turn_records[0].file_count, 5);
+        assert_eq!(app.turn_records[1].file_count, 2);
     }
 }

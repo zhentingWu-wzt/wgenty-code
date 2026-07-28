@@ -70,6 +70,9 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             "/api/v1/tools/resolve-permission",
             post(handlers::resolve_subagent_permission),
         )
+        // Undo (per-turn file checkpoint rollback)
+        .route("/api/v1/tools/undo-turn", post(handlers::undo_turn_range))
+        .route("/api/v1/checkpoints", get(handlers::list_checkpoints))
         // Permission mode (root agent runtime mode: Yolo/AcceptEdits/Normal)
         .route(
             "/api/v1/permission-mode",

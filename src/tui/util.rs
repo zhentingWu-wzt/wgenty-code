@@ -455,7 +455,9 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::SkillsReady(_)
         | AppEvent::TurnContextCaptured(_)
         | AppEvent::SystemNotice(_)
-        | AppEvent::UndoRequested { .. } => None,
+        | AppEvent::UndoRequested { .. }
+        | AppEvent::RefreshUndoFileCounts
+        | AppEvent::UndoFileCountsReady(_) => None,
     }
 }
 

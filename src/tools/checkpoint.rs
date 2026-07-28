@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use crate::tools::checkpoint_store::CheckpointStore;
+use crate::tools::checkpoint_store::{CheckpointStore, RewindRangeReport};
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 
@@ -80,6 +80,18 @@ impl CheckpointManager {
         self.store
             .rewind(&turn_id)
             .map_err(|e| format!("rewind failed: {e:#}"))
+    }
+
+    /// Rewind a range of turns (oldest-first) in reverse, restoring files to
+    /// the state before the oldest turn in the range. Backs the `/undo`
+    /// code-rollback flow: pass `[turn_{N+1}, ..., turn_end]` to roll the
+    /// working tree back to its end-of-turn-N state. Turns with missing/empty
+    /// manifests are skipped and reported in `rewound_turns` (only the turns
+    /// actually rewound, newest-first).
+    pub async fn undo_range(&self, turn_ids: Vec<String>) -> Result<RewindRangeReport, String> {
+        self.store
+            .rewind_range(&turn_ids)
+            .map_err(|e| format!("undo_range failed: {e:#}"))
     }
 
     /// List recent turn snapshots.

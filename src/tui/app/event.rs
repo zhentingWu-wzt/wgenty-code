@@ -750,11 +750,35 @@ impl App {
                 });
             }
             AppEvent::UndoRequested { turn_id, scope } => {
-                // Run the async rollback (chat truncation + code-skip stub),
-                // then echo the resulting `UndoReport` as a system message so
-                // the user sees what was rolled back.
+                // Run the async rollback (chat truncation + code rollback via
+                // the daemon CheckpointStore), then echo the resulting
+                // `UndoReport` as a system message so the user sees what was
+                // rolled back.
                 let report = self.undo_to_turn(&turn_id, scope).await;
                 self.push_system_message(format!("{:?}", report));
+            }
+            AppEvent::RefreshUndoFileCounts => {
+                // Spawn an async fetch of per-turn checkpoint file counts; the
+                // result lands via `UndoFileCountsReady`. Failure is non-fatal:
+                // the turn picker keeps rendering with file_count = 0.
+                let client = self.daemon_client.clone();
+                let event_tx = self.event_tx.clone();
+                tokio::spawn(async move {
+                    match client.list_checkpoints().await {
+                        Ok(infos) => {
+                            let _ = event_tx.send(AppEvent::UndoFileCountsReady(infos));
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                error = %e,
+                                "list_checkpoints failed; /undo file counts stay 0"
+                            );
+                        }
+                    }
+                });
+            }
+            AppEvent::UndoFileCountsReady(infos) => {
+                self.apply_file_counts(&infos);
             }
             AppEvent::AgentLocalView { view, generation } => {
                 // P1: Discard stale views from a previous generation. After

@@ -9,6 +9,33 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::{Method, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
+/// Result of `POST /api/v1/tools/undo-turn` (code rollback of a turn range).
+///
+/// Mirrors `CheckpointStore::RewindRangeReport`. The TUI uses `restored` for
+/// the `UndoReport` and `rewound_turns.is_empty()` to detect "nothing to roll
+/// back" (`code_skipped`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UndoRangeResult {
+    /// Files restored (written back or deleted) across all rewound turns.
+    pub restored: usize,
+    /// Files skipped (e.g. binary) across all rewound turns.
+    pub skipped: usize,
+    /// Paths that could not be restored.
+    pub failed: Vec<String>,
+    /// Turn ids actually rewound (newest-first), excluding skipped/missing.
+    pub rewound_turns: Vec<String>,
+}
+
+/// One entry of `GET /api/v1/checkpoints` - a per-turn checkpoint snapshot's
+/// metadata. Mirrors `CheckpointStore::TurnInfo`. The TUI uses `file_count` to
+/// populate `TurnRecord::file_count` for the `/undo` turn-picker display.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CheckpointInfo {
+    pub turn_id: String,
+    pub created_at: String,
+    pub file_count: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct DaemonClient {
     /// Client for SSE streaming requests (no timeout — streams can run for minutes).
@@ -496,6 +523,68 @@ impl DaemonClient {
         let url = format!("{}/api/v1/tools/undo", self.base_url);
         let resp = self.http().get(&url).send().await?;
         Ok(resp.text().await?)
+    }
+
+    /// POST /api/v1/tools/undo-turn - rewind a range of turns (oldest-first)
+    /// in reverse, restoring files to the state before the oldest turn. Backs
+    /// the TUI `/undo` code-rollback flow. Returns the aggregated result;
+    /// `rewound_turns.is_empty()` signals "no checkpointed turn to roll back".
+    pub async fn undo_turn_range(&self, turn_ids: &[String]) -> anyhow::Result<UndoRangeResult> {
+        let url = format!("{}/api/v1/tools/undo-turn", self.base_url);
+        let resp = self
+            .http_tools()
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "turn_ids": turn_ids }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("undo-turn failed ({})", resp.status());
+        }
+        let v: serde_json::Value = resp.json().await?;
+        Ok(UndoRangeResult {
+            restored: v["restored"].as_u64().unwrap_or(0) as usize,
+            skipped: v["skipped"].as_u64().unwrap_or(0) as usize,
+            failed: v["failed"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            rewound_turns: v["rewound_turns"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+    }
+
+    /// GET /api/v1/checkpoints - list per-turn checkpoint snapshots
+    /// (newest-first). Each entry carries the turn id, creation timestamp, and
+    /// file count, used by the TUI `/undo` turn-picker to show how many files
+    /// each turn touched. Failures return an empty vec so the picker keeps
+    /// rendering with `file_count = 0`.
+    pub async fn list_checkpoints(&self) -> anyhow::Result<Vec<CheckpointInfo>> {
+        let url = format!("{}/api/v1/checkpoints", self.base_url);
+        let resp = self.http_tools().get(&url).send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("list checkpoints failed ({})", resp.status());
+        }
+        let v: serde_json::Value = resp.json().await?;
+        let arr = v.as_array().cloned().unwrap_or_default();
+        Ok(arr
+            .into_iter()
+            .map(|e| CheckpointInfo {
+                turn_id: e["turn_id"].as_str().unwrap_or("").to_string(),
+                created_at: e["created_at"].as_str().unwrap_or("").to_string(),
+                file_count: e["file_count"].as_u64().unwrap_or(0) as usize,
+            })
+            .collect())
     }
 
     /// GET /api/v1/background/results
