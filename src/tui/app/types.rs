@@ -361,6 +361,15 @@ pub enum AppEvent {
         turn_id: String,
         scope: super::turn::UndoScope,
     },
+    /// Request an asynchronous refresh of `TurnRecord::file_count` from the
+    /// daemon checkpoint store, so the `/undo` turn-picker can show "✓N" per
+    /// turn. Sent by `open_undo_picker`; the result arrives as
+    /// [`AppEvent::UndoFileCountsReady`].
+    RefreshUndoFileCounts,
+    /// Per-turn checkpoint file counts arrived from the daemon. The handler
+    /// fills `turn_records[*].file_count` (matched by turn id) and rebuilds
+    /// the turn picker if it is open.
+    UndoFileCountsReady(Vec<crate::tui::client::CheckpointInfo>),
     /// Settings were hot-reloaded from disk
     ConfigChanged(Box<crate::config::Settings>),
     /// A scoped agent local view (self + direct children) from the daemon.

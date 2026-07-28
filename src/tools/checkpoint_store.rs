@@ -59,6 +59,27 @@ pub struct TurnInfo {
     pub file_count: usize,
 }
 
+/// Aggregated result of [`CheckpointStore::rewind_range`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RewindRangeReport {
+    /// Total files restored (written back or deleted) across all rewound turns.
+    pub restored: usize,
+    /// Total files skipped (e.g. binary) across all rewound turns.
+    pub skipped: usize,
+    /// Paths that could not be restored, across all rewound turns.
+    pub failed: Vec<String>,
+    /// Turn ids actually rewound (newest-first), excluding skipped/missing ones.
+    pub rewound_turns: Vec<String>,
+}
+
+/// Per-turn rewind tallies (internal). Backs [`CheckpointStore::rewind`] and
+/// [`CheckpointStore::rewind_range`].
+struct RewindOutcome {
+    restored: usize,
+    skipped: usize,
+    failed: Vec<String>,
+}
+
 pub struct CheckpointStore {
     root: PathBuf,
     project_root: PathBuf,
@@ -208,8 +229,11 @@ impl CheckpointStore {
         Ok(())
     }
 
-    pub fn rewind(&self, turn_id: &str) -> Result<String> {
-        let manifest = self.read_manifest(turn_id)?;
+    /// Restore every file recorded in `turn_id`'s manifest. Internal core of
+    /// both [`rewind`](Self::rewind) and [`rewind_range`](Self::rewind_range):
+    /// it operates on an already-read `manifest` so a range rewind reads each
+    /// manifest only once. Returns per-turn tallies.
+    fn rewind_manifest(&self, turn_id: &str, manifest: &Manifest) -> RewindOutcome {
         let mut restored = 0usize;
         let mut skipped = 0usize;
         let mut failed: Vec<String> = Vec::new();
@@ -260,13 +284,26 @@ impl CheckpointStore {
                 }
             }
         }
+        RewindOutcome {
+            restored,
+            skipped,
+            failed,
+        }
+    }
+
+    /// Read `turn_id`'s manifest and restore its files. Returns a
+    /// human-readable summary string (kept for the `undo` tool/HTTP endpoint
+    /// that pre-dates [`rewind_range`](Self::rewind_range)).
+    pub fn rewind(&self, turn_id: &str) -> Result<String> {
+        let manifest = self.read_manifest(turn_id)?;
+        let outcome = self.rewind_manifest(turn_id, &manifest);
         Ok(format!(
             "Rewind {}: restored {}, skipped {}, failed {}: [{}]",
             turn_id,
-            restored,
-            skipped,
-            failed.len(),
-            failed.join(", ")
+            outcome.restored,
+            outcome.skipped,
+            outcome.failed.len(),
+            outcome.failed.join(", ")
         ))
     }
 
@@ -327,6 +364,42 @@ impl CheckpointStore {
         }
         infos.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         Ok(infos)
+    }
+
+    /// Rewind a range of turns in reverse order (newest first), restoring
+    /// files to the state before the **oldest** turn in the range.
+    ///
+    /// `turn_ids` is given oldest-first. The store rewinds them newest-first so
+    /// that, for a file edited across several turns in the range, the oldest
+    /// turn's pre-edit content (the desired "before this range" state) is the
+    /// last write and therefore wins.
+    ///
+    /// Turns whose manifest is missing or empty (e.g. a pure-chat turn that
+    /// captured no files) are skipped and excluded from `rewound_turns`.
+    ///
+    /// This is the primitive backing `/undo` code-rollback: to roll back all
+    /// turns after the kept turn N, pass `[turn_{N+1}, ..., turn_end]` and the
+    /// working tree is restored to its end-of-turn-N state.
+    pub fn rewind_range(&self, turn_ids: &[String]) -> Result<RewindRangeReport> {
+        let mut report = RewindRangeReport::default();
+        for turn_id in turn_ids.iter().rev() {
+            if !self.manifest_path(turn_id).exists() {
+                continue;
+            }
+            let manifest = match self.read_manifest(turn_id) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if manifest.files.is_empty() {
+                continue;
+            }
+            let outcome = self.rewind_manifest(turn_id, &manifest);
+            report.restored += outcome.restored;
+            report.skipped += outcome.skipped;
+            report.failed.extend(outcome.failed);
+            report.rewound_turns.push(turn_id.clone());
+        }
+        Ok(report)
     }
 }
 
@@ -594,5 +667,89 @@ mod tests {
             .unwrap();
         let m = store.read_manifest("t1").unwrap();
         assert_eq!(m.files.len(), 2);
+    }
+
+    // ── rewind_range (undo code rollback) ────────────────────────────────
+
+    #[test]
+    fn rewind_range_restores_file_to_state_before_oldest_turn() {
+        // turn N+1 edits a.txt v1->v2, turn N+2 edits a.txt v2->v3.
+        // rewind_range([t_n1, t_n2]) must restore a.txt to v1 (end of turn N):
+        // reverse order rewinds t_n2 first (->v2) then t_n1 (->v1).
+        let dir = temp_project();
+        let store = CheckpointStore::new(dir.path());
+        write_file(dir.path(), "a.txt", "v1");
+        store.begin_turn("t_n1").unwrap();
+        store.try_capture_file("t_n1", "a.txt").unwrap();
+        write_file(dir.path(), "a.txt", "v2");
+        store.begin_turn("t_n2").unwrap();
+        store.try_capture_file("t_n2", "a.txt").unwrap();
+        write_file(dir.path(), "a.txt", "v3");
+        assert_eq!(read_file(dir.path(), "a.txt"), Some("v3".into()));
+
+        let report = store
+            .rewind_range(&["t_n1".to_string(), "t_n2".to_string()])
+            .unwrap();
+
+        assert_eq!(read_file(dir.path(), "a.txt"), Some("v1".into()));
+        assert!(report.restored >= 1, "at least one file restored");
+        // rewound newest-first: t_n2 then t_n1
+        assert_eq!(
+            report.rewound_turns,
+            vec!["t_n2".to_string(), "t_n1".to_string()]
+        );
+    }
+
+    #[test]
+    fn rewind_range_skips_empty_manifest_turns() {
+        // A turn that began but captured no files has an empty manifest and is
+        // skipped (not rewound, not in rewound_turns).
+        let dir = temp_project();
+        let store = CheckpointStore::new(dir.path());
+        write_file(dir.path(), "a.txt", "v1");
+        store.begin_turn("t_empty").unwrap();
+        store.begin_turn("t_edit").unwrap();
+        store.try_capture_file("t_edit", "a.txt").unwrap();
+        write_file(dir.path(), "a.txt", "v2");
+
+        let report = store
+            .rewind_range(&["t_empty".to_string(), "t_edit".to_string()])
+            .unwrap();
+
+        assert_eq!(read_file(dir.path(), "a.txt"), Some("v1".into()));
+        assert_eq!(report.rewound_turns, vec!["t_edit".to_string()]);
+    }
+
+    #[test]
+    fn rewind_range_skips_missing_manifests() {
+        let dir = temp_project();
+        let store = CheckpointStore::new(dir.path());
+        let report = store.rewind_range(&["never_existed".to_string()]).unwrap();
+        assert_eq!(report.restored, 0);
+        assert!(report.rewound_turns.is_empty());
+    }
+
+    #[test]
+    fn rewind_range_deletes_files_created_in_range() {
+        // File created during a turn (tombstone) is deleted on rewind.
+        let dir = temp_project();
+        let store = CheckpointStore::new(dir.path());
+        store.begin_turn("t_n1").unwrap();
+        store.try_capture_file("t_n1", "new.txt").unwrap();
+        write_file(dir.path(), "new.txt", "created");
+        assert!(dir.path().join("new.txt").exists());
+
+        let report = store.rewind_range(&["t_n1".to_string()]).unwrap();
+        assert!(!dir.path().join("new.txt").exists());
+        assert!(report.restored >= 1);
+    }
+
+    #[test]
+    fn rewind_range_empty_input_is_noop() {
+        let dir = temp_project();
+        let store = CheckpointStore::new(dir.path());
+        let report = store.rewind_range(&[]).unwrap();
+        assert_eq!(report.restored, 0);
+        assert!(report.rewound_turns.is_empty());
     }
 }

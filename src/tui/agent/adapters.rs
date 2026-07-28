@@ -49,9 +49,13 @@ impl EventSink for TuiEventSink {
             RuntimeEvent::StreamDone { finish_reason } => AppEvent::StreamDone { finish_reason },
             RuntimeEvent::StreamError(msg) => AppEvent::StreamError(msg),
             RuntimeEvent::CompactionStarted => AppEvent::CompactionStarted,
-            RuntimeEvent::ContextCompacted { summary_chars, compressed_len } => {
-                AppEvent::ContextCompacted { summary_chars, compressed_len }
-            }
+            RuntimeEvent::ContextCompacted {
+                summary_chars,
+                compressed_len,
+            } => AppEvent::ContextCompacted {
+                summary_chars,
+                compressed_len,
+            },
             RuntimeEvent::ToolStart { name, args } => AppEvent::ToolStart { name, args },
             RuntimeEvent::ToolResult {
                 name,
@@ -637,9 +641,10 @@ impl Compactor for TuiCompactor {
 
         let summary_chars = summary.chars().count();
         let compressed_len = history_snapshot.len().saturating_sub(tail.len());
-        let _ = self
-            .event_tx
-            .send(AppEvent::ContextCompacted { summary_chars, compressed_len });
+        let _ = self.event_tx.send(AppEvent::ContextCompacted {
+            summary_chars,
+            compressed_len,
+        });
         Some(summary)
     }
 }
