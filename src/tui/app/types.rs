@@ -354,6 +354,13 @@ pub enum AppEvent {
     ToggleCollapseLatest,
     /// Undo checkpoint result with diff
     UndoResult(String),
+    /// User confirmed an `/undo` scope selection in the UndoScopePicker.
+    /// Carries the target turn id and chosen scope; the async event loop runs
+    /// `App::undo_to_turn` and echoes the resulting `UndoReport`.
+    UndoRequested {
+        turn_id: String,
+        scope: super::turn::UndoScope,
+    },
     /// Settings were hot-reloaded from disk
     ConfigChanged(Box<crate::config::Settings>),
     /// A scoped agent local view (self + direct children) from the daemon.

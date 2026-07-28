@@ -8,6 +8,8 @@ use crate::context::inject::MemoryContextInjector;
 use crate::context::TurnRecord;
 use crate::state::agent_phase::{AgentPhase, TurnAbortReason, TurnId};
 use crate::tui::agent::{AgentError, AgentLoop};
+use crate::tui::components::turn_picker::TurnPickerState;
+use crate::tui::components::undo_scope_picker::UndoScopePickerState;
 use crate::tui::util::truncate_session_name;
 
 impl App {
@@ -515,7 +517,6 @@ impl App {
     /// Roll back to `turn_id`, keeping that turn and everything before it.
     /// `scope` selects code / chat / both. Code rollback is a stub until
     /// CheckpointStore access is wired.
-    #[allow(dead_code)] // wired in Task 8 (/undo flow integration)
     pub(super) async fn undo_to_turn(&mut self, turn_id: &str, scope: UndoScope) -> UndoReport {
         let mut report = UndoReport::default();
         let Some(idx) = self.turn_records.iter().position(|r| r.turn_id == turn_id) else {
@@ -545,10 +546,74 @@ impl App {
         }
         report
     }
+
+    // ── /undo interactive rollback flow (Task 8) ──────────────────────
+
+    /// Open the `/undo` turn-picker popup, pre-filtering `turn_records` to
+    /// only undo-able turns (those ending at or after the compaction
+    /// boundary).  When nothing is undo-able a "No turns to undo" system
+    /// message is pushed instead and no picker is opened.
+    pub(super) fn open_undo_picker(&mut self) {
+        self.undo_picker_open = true;
+        let turns = filter_undo_turns(&self.turn_records, self.compaction_boundary);
+        if turns.is_empty() {
+            self.push_system_message("No turns to undo.");
+            self.undo_picker_open = false;
+            return;
+        }
+        self.turn_picker = Some(TurnPickerState::new(turns));
+    }
+
+    /// Rebuild the turn-picker popup from the current `turn_records`,
+    /// preserving the previously selected turn (via `pending_undo_turn_id`)
+    /// when it is still present.  Used to fall back from the scope picker on
+    /// Esc without losing the user's selection.
+    pub(super) fn rebuild_turn_picker(&mut self) {
+        let mut picker = TurnPickerState::new(filter_undo_turns(
+            &self.turn_records,
+            self.compaction_boundary,
+        ));
+        if let Some(ref id) = self.pending_undo_turn_id {
+            if let Some(i) = picker.turns.iter().position(|t| &t.turn_id == id) {
+                picker.selected = i;
+            }
+        }
+        self.turn_picker = Some(picker);
+    }
+
+    /// Confirm the turn selected in the turn picker and advance to the
+    /// scope picker.  Captures the selected `turn_id` into
+    /// `pending_undo_turn_id`, opens the scope picker, and closes the turn
+    /// picker.  No-op (closes the turn picker) if no turn is selected.
+    pub(super) fn confirm_turn_selection(&mut self) {
+        let selected = self
+            .turn_picker
+            .as_ref()
+            .and_then(|p| p.selected_turn_id().map(String::from));
+        self.turn_picker = None;
+        let Some(turn_id) = selected else {
+            return;
+        };
+        self.pending_undo_turn_id = Some(turn_id);
+        self.scope_picker = Some(UndoScopePickerState::new());
+    }
+}
+
+/// Filter `turn_records` down to those eligible for `/undo`: a turn is
+/// undo-able only if it ends at or after the compaction boundary
+/// (`message_end_idx >= boundary`).  Turns whose messages have already been
+/// summarized away by compaction cannot be cleanly rolled back and are
+/// excluded.  A pure function so the filtering logic is unit-testable
+/// independently of `App`.
+pub(super) fn filter_undo_turns(turns: &[TurnRecord], boundary: usize) -> Vec<TurnRecord> {
+    turns
+        .iter()
+        .filter(|t| t.message_end_idx >= boundary)
+        .cloned()
+        .collect()
 }
 
 /// Scope of an `/undo` rollback operation.
-#[allow(dead_code)] // wired in Task 8
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UndoScope {
     Code,
@@ -557,7 +622,6 @@ pub enum UndoScope {
 }
 
 /// Result of an `/undo` rollback.
-#[allow(dead_code)] // wired in Task 8
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct UndoReport {
     pub messages_truncated: usize,
@@ -738,5 +802,153 @@ mod tests {
         // Should be a no-op, not a panic.
         app.finalize_turn_end(5);
         assert!(app.turn_records.is_empty());
+    }
+
+    // ── /undo flow integration (Task 8) ───────────────────────────────
+
+    /// Helper: build a finalized `TurnRecord` with a given `message_end_idx`.
+    fn make_turn_with_end(id: &str, message_end_idx: usize) -> TurnRecord {
+        TurnRecord {
+            turn_id: id.to_string(),
+            created_at: "2025-06-01T14:30:00Z".to_string(),
+            user_summary: format!("Turn {}", id),
+            checkpoint_turn_id: String::new(),
+            message_end_idx,
+            file_count: 0,
+            committed_messages_end_idx: 0,
+        }
+    }
+
+    #[test]
+    fn filter_undo_turns_keeps_turns_at_or_after_boundary() {
+        let turns = vec![
+            make_turn_with_end("t1", 2),
+            make_turn_with_end("t2", 5),
+            make_turn_with_end("t3", 8),
+        ];
+        // boundary=5: keep t2 (5>=5) and t3 (8>=5); drop t1 (2<5, compacted).
+        let filtered = filter_undo_turns(&turns, 5);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].turn_id, "t2");
+        assert_eq!(filtered[1].turn_id, "t3");
+    }
+
+    #[test]
+    fn filter_undo_turns_boundary_zero_keeps_all() {
+        let turns = vec![make_turn_with_end("t1", 0), make_turn_with_end("t2", 4)];
+        let filtered = filter_undo_turns(&turns, 0);
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn filter_undo_turns_empty_when_all_before_boundary() {
+        let turns = vec![make_turn_with_end("t1", 2), make_turn_with_end("t2", 3)];
+        let filtered = filter_undo_turns(&turns, 10);
+        assert!(filtered.is_empty());
+    }
+
+    #[tokio::test]
+    async fn open_undo_picker_populates_turn_picker_filtered_by_boundary() {
+        let mut app = build_app();
+        app.turn_records = vec![
+            make_turn_with_end("t1", 2),
+            make_turn_with_end("t2", 5),
+            make_turn_with_end("t3", 8),
+        ];
+        app.compaction_boundary = 5;
+        app.open_undo_picker();
+        let picker = app.turn_picker.expect("turn_picker should be open");
+        assert_eq!(picker.turns.len(), 2, "only turns at/after boundary");
+        assert_eq!(picker.turns[0].turn_id, "t2");
+        assert_eq!(picker.turns[1].turn_id, "t3");
+        assert!(picker.open);
+        assert!(app.undo_picker_open);
+    }
+
+    #[tokio::test]
+    async fn open_undo_picker_empty_pushes_no_turns_message() {
+        let mut app = build_app();
+        app.turn_records = vec![make_turn_with_end("t1", 2)];
+        app.compaction_boundary = 10;
+        app.open_undo_picker();
+        assert!(app.turn_picker.is_none(), "no picker when nothing to undo");
+        assert!(
+            app.committed_messages
+                .iter()
+                .any(|m| m.content.contains("No turns to undo")),
+            "should push a no-turns message"
+        );
+        assert!(!app.undo_picker_open);
+    }
+
+    #[tokio::test]
+    async fn confirm_turn_selection_switches_to_scope_picker() {
+        let mut app = build_app();
+        app.turn_records = vec![make_turn_with_end("t1", 2), make_turn_with_end("t2", 5)];
+        app.compaction_boundary = 0;
+        app.open_undo_picker();
+        // Move selection to the second turn (index 1).
+        app.turn_picker.as_mut().unwrap().down();
+        app.confirm_turn_selection();
+        assert!(app.turn_picker.is_none(), "turn picker closed");
+        let scope = app.scope_picker.expect("scope picker open");
+        assert!(scope.open);
+        assert_eq!(
+            app.pending_undo_turn_id.as_deref(),
+            Some("t2"),
+            "pending turn id captured"
+        );
+    }
+
+    #[tokio::test]
+    async fn undo_requested_event_runs_undo_and_pushes_report() {
+        let mut app = build_app();
+        // Two finalized turns; t1 ends at idx 2, t2 ends at idx 4.
+        app.turn_records = vec![make_turn_with_end("t1", 2), make_turn_with_end("t2", 4)];
+        app.turn_records[0].committed_messages_end_idx = 2;
+        app.turn_records[1].committed_messages_end_idx = 4;
+        app.compaction_boundary = 0;
+        // Populate conversation history with 4 messages.
+        {
+            let mut h = app.conversation_history.lock().await;
+            for i in 0..4 {
+                h.push(ChatMessage::user(format!("msg {}", i)));
+            }
+        }
+        // Populate committed (UI) messages.
+        for i in 0..4 {
+            app.committed_messages.push(UIMessage {
+                role: MessageRole::User,
+                content: format!("ui {}", i),
+                tool_name: None,
+                content_collapsed: false,
+                tool_collapsed: false,
+                tool_running: false,
+                tool_args: None,
+                diff_data: None,
+                tool_metadata: None,
+            });
+        }
+        app.pending_undo_turn_id = Some("t1".to_string());
+
+        app.handle_event(AppEvent::UndoRequested {
+            turn_id: "t1".to_string(),
+            scope: UndoScope::Chat,
+        })
+        .await;
+
+        // The UndoReport should be echoed as a system message.
+        assert!(
+            app.committed_messages
+                .iter()
+                .any(|m| m.content.contains("messages_truncated")),
+            "undo report pushed as system message"
+        );
+        // History truncated to t1's message_end_idx (2).
+        let h = app.conversation_history.lock().await;
+        assert_eq!(h.len(), 2);
+        // turn_records truncated to just t1.
+        assert_eq!(app.turn_records.len(), 1);
+        assert_eq!(app.turn_records[0].turn_id, "t1");
     }
 }

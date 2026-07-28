@@ -201,7 +201,7 @@ impl App {
             return;
         }
         if matches!(slash, "/undo") {
-            self.undo_picker_open = true;
+            self.open_undo_picker();
             return;
         }
         if text.trim() == "/help" {

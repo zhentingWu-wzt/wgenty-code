@@ -14,4 +14,6 @@ pub mod status;
 pub mod subagent_focus_view;
 pub mod subagent_status_bar;
 pub mod subagent_tree;
+pub mod turn_picker;
+pub mod undo_scope_picker;
 pub mod welcome;

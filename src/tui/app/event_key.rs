@@ -114,6 +114,66 @@ impl App {
             self.inspector.visible = self.inspector.was_visible_before_focus;
             return;
         }
+        // /undo turn-picker popup: ↑↓ navigate, Enter confirms the selection
+        // (advances to the scope picker), Esc cancels the whole flow.
+        if self.turn_picker.is_some() {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if let Some(ref mut p) = self.turn_picker {
+                        p.up();
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if let Some(ref mut p) = self.turn_picker {
+                        p.down();
+                    }
+                }
+                KeyCode::Enter => self.confirm_turn_selection(),
+                KeyCode::Esc => {
+                    self.turn_picker = None;
+                    self.undo_picker_open = false;
+                    self.pending_undo_turn_id = None;
+                }
+                _ => {}
+            }
+            return;
+        }
+        // /undo scope-picker popup: ↑↓ navigate, Enter runs the rollback
+        // (dispatched to the async event loop since `undo_to_turn` is async),
+        // Esc falls back to the turn picker (selection preserved).
+        if self.scope_picker.is_some() {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if let Some(ref mut p) = self.scope_picker {
+                        p.up();
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if let Some(ref mut p) = self.scope_picker {
+                        p.down();
+                    }
+                }
+                KeyCode::Enter => {
+                    let scope = self.scope_picker.as_ref().map(|p| p.selected());
+                    let turn_id = self.pending_undo_turn_id.take();
+                    // Close pickers immediately for responsiveness; the actual
+                    // rollback runs in the async `UndoRequested` handler.
+                    self.scope_picker = None;
+                    self.undo_picker_open = false;
+                    if let (Some(scope), Some(turn_id)) = (scope, turn_id) {
+                        let _ = self
+                            .event_tx
+                            .send(AppEvent::UndoRequested { turn_id, scope });
+                    }
+                }
+                KeyCode::Esc => {
+                    self.scope_picker = None;
+                    self.rebuild_turn_picker();
+                }
+                _ => {}
+            }
+            return;
+        }
         // Permission panel handling (inline, not popup)
         // Shift+Tab: cycle agent mode (but not when completion panel or inspector is active)
         if key.code == KeyCode::BackTab

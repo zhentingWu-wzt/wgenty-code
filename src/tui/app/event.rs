@@ -277,7 +277,10 @@ impl App {
                 });
                 self.streaming_active = false;
             }
-            AppEvent::ContextCompacted { summary_chars, compressed_len } => {
+            AppEvent::ContextCompacted {
+                summary_chars,
+                compressed_len,
+            } => {
                 self.compaction_boundary = compressed_len;
                 // Compaction succeeded — surface it so the user can see the
                 // context window was compressed (and how much survived as a
@@ -745,6 +748,13 @@ impl App {
                     tool_running: false,
                     diff_data: extract_diff_data("undo", &serde_json::json!({}), &output),
                 });
+            }
+            AppEvent::UndoRequested { turn_id, scope } => {
+                // Run the async rollback (chat truncation + code-skip stub),
+                // then echo the resulting `UndoReport` as a system message so
+                // the user sees what was rolled back.
+                let report = self.undo_to_turn(&turn_id, scope).await;
+                self.push_system_message(format!("{:?}", report));
             }
             AppEvent::AgentLocalView { view, generation } => {
                 // P1: Discard stale views from a previous generation. After

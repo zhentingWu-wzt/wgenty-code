@@ -75,8 +75,6 @@ impl Default for UndoScopePickerState {
 /// [`crate::tui::util::centered_rect`]).  When `state.open` is `false` this
 /// is a no-op.
 //
-// Not wired into the app render pipeline yet - integrated in Task 8.
-#[allow(dead_code)]
 pub fn render(f: &mut Frame, state: &UndoScopePickerState, area: Rect) {
     if !state.open {
         return;
@@ -112,9 +110,7 @@ pub fn render(f: &mut Frame, state: &UndoScopePickerState, area: Rect) {
 
 /// Map an [`UndoScope`] to its 0-based display index (Code=0, Chat=1, Both=2).
 //
-// Only called from `render`; kept private.  Marked dead_code because `render`
-// itself is not wired in until Task 8.
-#[allow(dead_code)]
+/// Only called from `render`; kept private.
 fn scope_index(scope: UndoScope) -> usize {
     match scope {
         UndoScope::Code => 0,
