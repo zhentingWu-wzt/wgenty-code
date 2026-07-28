@@ -5,7 +5,7 @@ mod event;
 mod event_key;
 mod input;
 mod render;
-mod turn;
+pub mod turn;
 pub mod types;
 
 pub use types::*;
