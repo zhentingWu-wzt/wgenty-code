@@ -149,6 +149,11 @@ The system SHALL provide a `memory_add` tool that allows the agent to proactivel
 - **WHEN** the agent calls `memory_add` with content that has >= 0.6 similarity to an existing memory and the relation is classified Compatible
 - **THEN** `MemoryManager::add_memory()` merges the new content into the existing memory entry, increments the existing memory's `hit_count`, refreshes its `last_reinforced_at`, and the tool output indicates a merge occurred
 
+#### Scenario: Dedup merges similar memory
+
+- **WHEN** the agent calls `memory_add` with content that has >= 0.6 similarity to an existing memory in the same scope
+- **THEN** instead of unconditionally merging, `MemoryManager::add_memory()` classifies the relation (Compatible/Contradicts/Ambiguous) and dispatches accordingly: Compatible merges and reinforces (see "Compatible similar memory merges and reinforces"), Contradicts supersedes the existing entry via tombstone (see "Contradicting similar memory supersedes via tombstone"), and Ambiguous merges and flags (see "Ambiguous similar memory merges and flags without LLM"); the previous unconditional-merge behavior is superseded by this relation-based dispatch
+
 #### Scenario: Contradicting similar memory supersedes via tombstone
 
 - **WHEN** the agent calls `memory_add` with content that has >= 0.6 similarity to an existing memory and the relation is classified Contradicts (e.g. existing "auth bug exists", new "auth bug fixed")
