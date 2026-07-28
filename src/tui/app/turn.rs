@@ -543,6 +543,16 @@ impl App {
             let prev_turns = self.turn_records.len();
             self.turn_records.truncate(idx + 1);
             report.turns_removed = prev_turns.saturating_sub(self.turn_records.len());
+            // Keep `turn_count` in sync with the (now-truncated) turn_records
+            // and clear `current_turn_id` if it pointed at a turn that was just
+            // rolled back. A stale `current_turn_id`/`turn_count` would desync
+            // the UI (e.g. the status bar's turn counter) from the real history.
+            self.turn_count = self.turn_records.len();
+            if let Some(tid) = &self.current_turn_id {
+                if !self.turn_records.iter().any(|t| t.turn_id == tid.0) {
+                    self.current_turn_id = None;
+                }
+            }
         }
         report
     }
@@ -950,5 +960,83 @@ mod tests {
         // turn_records truncated to just t1.
         assert_eq!(app.turn_records.len(), 1);
         assert_eq!(app.turn_records[0].turn_id, "t1");
+    }
+
+    // ── Task 9: post-undo state adjustment ─────────────────────────────
+
+    /// Build an app with two finalized turns (t1, t2) and matching
+    /// conversation/UI history, ready for `undo_to_turn` state-sync tests.
+    async fn build_app_with_two_turns() -> App {
+        let mut app = build_app();
+        app.turn_records = vec![make_turn_with_end("t1", 2), make_turn_with_end("t2", 4)];
+        app.turn_records[0].committed_messages_end_idx = 2;
+        app.turn_records[1].committed_messages_end_idx = 4;
+        app.compaction_boundary = 0;
+        app.turn_count = 2;
+        {
+            let mut h = app.conversation_history.lock().await;
+            for i in 0..4 {
+                h.push(ChatMessage::user(format!("msg {}", i)));
+            }
+        }
+        for i in 0..4 {
+            app.committed_messages.push(UIMessage {
+                role: MessageRole::User,
+                content: format!("ui {}", i),
+                tool_name: None,
+                tool_args: None,
+                content_collapsed: false,
+                tool_collapsed: false,
+                tool_running: false,
+                diff_data: None,
+                tool_metadata: None,
+            });
+        }
+        app
+    }
+
+    #[tokio::test]
+    async fn undo_to_turn_syncs_turn_count_with_turn_records() {
+        let mut app = build_app_with_two_turns().await;
+        assert_eq!(app.turn_count, 2, "precondition: two turns recorded");
+
+        // Roll back to t1, dropping t2 from turn_records.
+        app.undo_to_turn("t1", UndoScope::Chat).await;
+
+        assert_eq!(
+            app.turn_count,
+            app.turn_records.len(),
+            "turn_count must mirror turn_records.len() after undo"
+        );
+        assert_eq!(app.turn_count, 1, "one turn remains");
+    }
+
+    #[tokio::test]
+    async fn undo_to_turn_clears_current_turn_id_when_pointing_at_removed_turn() {
+        let mut app = build_app_with_two_turns().await;
+        // current_turn_id points at t2, which gets removed by rolling back to t1.
+        app.current_turn_id = Some(TurnId("t2".to_string()));
+
+        app.undo_to_turn("t1", UndoScope::Chat).await;
+
+        assert!(
+            app.current_turn_id.is_none(),
+            "current_turn_id must be cleared when its turn was rolled back"
+        );
+    }
+
+    #[tokio::test]
+    async fn undo_to_turn_preserves_current_turn_id_when_pointing_at_kept_turn() {
+        let mut app = build_app_with_two_turns().await;
+        // current_turn_id points at t1, the rollback target which is kept.
+        app.current_turn_id = Some(TurnId("t1".to_string()));
+
+        app.undo_to_turn("t1", UndoScope::Chat).await;
+
+        assert_eq!(
+            app.current_turn_id.as_ref().map(|t| t.0.as_str()),
+            Some("t1"),
+            "current_turn_id must survive when its turn is retained"
+        );
     }
 }
