@@ -27,7 +27,11 @@ _comet_bash_is_usable() {
       return 1
       ;;
   esac
-  "$_comet_bash_candidate" -lc 'printf comet-bash-ok' >/dev/null 2>&1
+  # Probe with a bashism the comet scripts rely on (process substitution).
+  # macOS /bin/sh is bash in POSIX mode: it passes a plain `printf` probe but
+  # disables `< <(...)`, which breaks comet-handoff.sh / comet-guard.sh.
+  # The trailing newline lets `read` return 0 so the && chain reaches the test.
+  "$_comet_bash_candidate" -lc 'read -r _comet_probe < <(printf "comet-bash-ok\n") && [ "$_comet_probe" = "comet-bash-ok" ]' >/dev/null 2>&1
 }
 
 _comet_resolve_bash() {
