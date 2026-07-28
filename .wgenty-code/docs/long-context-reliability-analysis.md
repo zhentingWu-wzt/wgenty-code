@@ -28,7 +28,10 @@
 
 | 机制 | 实现位置 | 行为 |
 |------|---------|------|
-| **StuckDetector** | `src/utils/stuck_detector.rs` | 检测 3 次连续完全相同的 tool call 或 assistant 消息 → warning；5 次 → force abort。基于消息序列的哈希比较 |
+| **StuckDetector** | `src/utils/stuck_detector.rs` | 检测连续完全相同的 tool call（通过 `args_signature` 对参数 key-value 排序做字符串比较）。阈值：0-7 次正常，8-9 次 warning，10+ 次 force abort |
+| **Auto Compaction** | `src/agent/runtime/loop_.rs:263-270` | 每轮结束后自动检查 token 估算是否超过 context_window 的 80%（通过 `needs_compaction()`），超过则自动压缩：前半部分替换为摘要，后半部分保留。支持手动触发（`compact_requested` 标志）和自动触发双路径 |
+| **Micro Compaction** | `src/agent/runtime/compaction.rs` | 把压缩边界之前的旧 tool result 替换为 `[tool result truncated by compaction]` 标记，进一步缩减 token 占用 |
+| **Calibration** | `src/agent/runtime/compaction.rs` | 用真实的 `usage.prompt_tokens` 校准 token 估算，比 chars/4 更精确 |
 | **RLM Replan** | `src/tools/meta/rlm/pipeline.rs:472-650` | 子任务失败后最多 2 次增量重规划。把失败的任务发给 Planner 重新分解，Jaccard 去重后重新执行 |
 | **80% warning** | `src/agent/runtime/loop_.rs` | 到达 max_rounds 的 80% 时打 warning 日志（`warn_rounds = max_rounds * 8 / 10`） |
 | **Stepped timeout** | RLM pipeline | `PlanTimeout`, `ExecTimeout1`, `ExecTimeout2` 多级超时管理 |
@@ -46,22 +49,23 @@
 
 ## 二、核心问题诊断
 
-### 2.1 上下文累积是线性的，没有"遗忘"机制
+### 2.1 现有 compaction 机制有效但不够细粒度
 
-当前 Agent 循环：**每一轮的 user/assistant/tool_result 全部追加到 history，不做中间压缩**。
+系统**已有自动 compaction**（`loop_.rs:263-270`）：每轮结束后通过 `needs_compaction()` 检查校准后的 token 估算，超过 `context_window` 的 80% 时自动触发压缩。压缩流程：
+- 前半部分消息 → LLM 生成摘要
+- 后半部分消息 → 完整保留
+- `compaction_boundary` 推进，后续 API 请求只发送 boundary 之后的内容
+- `micro_compact_messages` 把旧 tool result 替换为 `[tool result truncated by compaction]` 标记
 
-```
-轮次    上下文占用（估算）
-10      ~5K tokens
-30      ~15K tokens
-50      ~25K tokens
-80      ~40K tokens  ← 模型开始"遗忘"早期指令
-100     ~50K tokens  ← 硬截断
-```
+同时还支持模型通过 `compact_requested` 标志主动触发，以及 `compaction_failed` 保护防止死循环重试。
 
-**关键问题**：在 80-100 轮之间，模型已因上下文窗口接近饱和而行为退化——重复工具调用、忘记任务目标、产生幻觉——但系统无任何机制在此之前"主动整理"。
+**但现有机制有三个关键缺口**：
 
-`compact` 工具存在，但需模型自己决定调用，且它做的是语义记忆抽取（"有什么值得记住的"），不是对话历史的压缩续传（"把前 50 轮压缩成摘要，让第 51 轮能接着干活"）。
+**缺口 1：摘要非结构化**。当前 compaction 产生的是**自由文本摘要**，模型可以自由描述，但也容易遗漏关键信息。没有结构化的字段约束（哪个文件被改了、改了什么、测试结果、子任务状态等），导致摘要质量方差大。
+
+**缺口 2：压缩后不可检索**。compaction 是"压缩后丢弃"模型——老消息被摘要替代后就没了。后续轮次中如果模型需要回顾第 30 轮读过的一个具体文件内容，只能依赖摘要里是否提到了它。缺少**按需检索的"冷层"**——按文件路径或主题从磁盘取回历史上下文。
+
+**缺口 3：触发条件单一**。当前仅按 token 阈值触发，不与任务状态联动。更理想的情况是：连续 N 轮无进度 → 触发整理；接近 max_rounds → 主动压缩释放空间；模型行为退化 → 注入 refocus 提示。
 
 ### 2.2 StuckDetector 太粗粒度
 
@@ -81,7 +85,7 @@ tool_call_2: grep("Error")           → 找到了，读了文件
 tool_call_3: grep("error handling")  → 忘了已经搜过，又搜一遍
 ```
 
-这种循环的 tool call 不完全相同（参数变了），哈希比较检测不到——**隐性卡死**。
+这种循环的 tool call 不完全相同（参数变了），字符串比较检测不到——**隐性卡死**。
 
 ### 2.3 子 Agent 失败后缺少"状态继承"
 
@@ -93,7 +97,7 @@ tool_call_3: grep("error handling")  → 忘了已经搜过，又搜一遍
 
 ### 2.4 Memory 系统与会话上下文是两个割裂的世界
 
-当前记忆系统定位是**跨会话长期记忆**，不是**当前会话上下文管理**。二者之间唯一桥梁是 `compact` 工具——一次性、模型主动调用、不可逆。
+当前记忆系统定位是**跨会话长期记忆**，不是**当前会话上下文管理**。compact 过程会同时做两件事——自动压缩触发时的对话历史摘要和 LLM 语义记忆抽取——但二者的联动是单向的：compaction → memory 写入，没有 memory → compaction 的反向指导。缺失的能力是：让持久化的项目知识（文件结构、之前修过的 bug、惯用模式）在压缩时**主动注入摘要**，而非仅作为独立 `<relevant_memories>` 层。
 
 理想模型：
 ```
@@ -133,7 +137,7 @@ Layer 3: 持久层 —— 跨中断恢复和跨任务学习
 
 #### 3.1.1 语义 StuckDetector
 
-升级当前哈希比较为语义嵌入比较：
+升级当前字符串比较为语义嵌入比较：
 
 ```rust
 struct SemanticStuckDetector {
@@ -174,6 +178,8 @@ struct ProgressTracker {
 ### Layer 2: 恢复层
 
 #### 3.2.1 会话级分层上下文（热/温/冷三级）
+
+**基础**：当前系统已有自动 compaction（token 达 80% 触发）和 micro-compaction（tool result 截断）。以下方案是在此基础上的**升级**——把自由文本摘要替换为结构化摘要，并新增冷层按需检索能力。
 
 | 层级 | 范围 | 内容 | 注入方式 |
 |------|------|------|---------|
@@ -270,14 +276,14 @@ Session 结束时由 LLM 从 trace 中抽取，写入 project memory。下一次
 
 ### 阶段 1：最小可行改进（1-2 周）
 
-1. **Semantic StuckDetector**：替换当前哈希比较，用 embedding API
+1. **Semantic StuckDetector**：替换当前字符串比较，用 embedding API
 2. **ProgressTracker**：Agent Loop 中增加进度信号追踪
 3. **自动 refocus 注入**：接近 80% 轮次时注入 refocus/reframe 提示
 4. **Subagent 失败上下文保留**：失败时保留最后 N 轮消息传给 replan
 
 ### 阶段 2：分层上下文（3-4 周）
 
-5. **温层压缩引擎**：小模型驱动的 15 轮界会话压缩
+5. **结构化温层压缩升级**：在现有 auto compaction 基础上，用小模型驱动生成结构化 JSON 摘要（替代自由文本），含文件操作序列、决策记录、子任务状态
 6. **冷层磁盘存储 + embedding 索引**：`fastembed` 或 `text-embedding-3-small`
 7. **冷层自动注入**：工具调用时按文件路径检索并追加历史上下文
 
@@ -310,7 +316,7 @@ Session 结束时由 LLM 从 trace 中抽取，写入 project memory。下一次
 |------|------|
 | `src/agent/runtime/loop_.rs` | Agent 主循环，max_rounds 检查，stuck detection |
 | `src/agent/runtime/config.rs` | RuntimeConfig，max_rounds 默认值 |
-| `src/utils/stuck_detector.rs` | 当前 StuckDetector（哈希比较） |
+| `src/utils/stuck_detector.rs` | 当前 StuckDetector（`args_signature` 字符串比较） |
 | `src/context/consolidation.rs` | ConsolidationEngine，记忆合并 |
 | `src/context/memory.rs` | MemoryManager，双源存储 |
 | `src/tools/meta/rlm/pipeline.rs` | RLM 管线，replan 逻辑 |
