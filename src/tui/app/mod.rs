@@ -136,6 +136,8 @@ pub struct App {
     /// Current compaction boundary (index into conversation_history). Turns
     /// before this index are summarized; `/undo` picker filters them out.
     pub compaction_boundary: usize,
+    /// Whether the `/undo` turn-picker popup is open.
+    pub undo_picker_open: bool,
     pub mode: AgentMode,
     /// Previous mode before entering PlanMode via toggle (Ctrl+P or /plan).
     /// Used to restore the correct mode when toggling back.
@@ -476,6 +478,7 @@ impl App {
             turn_count: 0,
             turn_records: Vec::new(),
             compaction_boundary: 0,
+            undo_picker_open: false,
             turn_contexts: Vec::with_capacity(TURN_CONTEXT_CAPACITY),
             pending_context: None,
             mode: if settings.agent.plan_mode {

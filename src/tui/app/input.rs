@@ -168,26 +168,6 @@ impl App {
             }
             return;
         }
-        if text.trim() == "/undo" {
-            self.committed_messages.push(UIMessage {
-                role: MessageRole::System,
-                content: "Undo requested".to_string(),
-                tool_name: None,
-                content_collapsed: false,
-                tool_collapsed: false,
-                tool_running: false,
-                tool_args: None,
-                diff_data: None,
-                tool_metadata: None,
-            });
-            self.pending_inputs.push_back(PendingInput::new(
-                "undo the most recent operation".to_string(),
-            ));
-            if self.current_turn_handle.is_none() {
-                self.start_next_turn();
-            }
-            return;
-        }
         if text.trim() == "/init" {
             self.push_system_message(
                 "🔄 Running /init — 正在分析代码库以生成 WGENTY.md 和 AGENTS.md...",
@@ -218,6 +198,10 @@ impl App {
         }
         if matches!(slash, "/memory" | "/memories") {
             let _ = self.event_tx.send(AppEvent::ToggleMemory);
+            return;
+        }
+        if matches!(slash, "/undo") {
+            self.undo_picker_open = true;
             return;
         }
         if text.trim() == "/help" {
