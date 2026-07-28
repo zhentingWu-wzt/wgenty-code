@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
@@ -14,6 +14,10 @@ use super::{MemoryEntry, MemoryType};
 /// Matches tokens that look like repo-relative source paths (e.g. `src/foo.rs`,
 /// `lib/bar/baz.ts:12`). Bare URLs are ignored. Returns unique paths in
 /// encounter order, with optional `:line` / `:line:col` suffixes stripped.
+///
+/// **Path-traversal guard:** any extracted path containing a `..` component
+/// (e.g. `src/../etc/passwd.rs`) is rejected, so a crafted memory cannot probe
+/// file existence outside `project_root` via the staleness check.
 pub fn extract_memory_paths(content: &str) -> Vec<PathBuf> {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
@@ -41,6 +45,16 @@ pub fn extract_memory_paths(content: &str) -> Vec<PathBuf> {
             continue;
         }
         let path = PathBuf::from(m.as_str());
+        // Defense-in-depth: reject paths that escape project_root via `..`.
+        // The regex character class permits `..` segments; without this guard
+        // a memory like "src/../.ssh/id_rsa.rs" would probe outside the repo.
+        if path.components().any(|c| matches!(c, Component::ParentDir)) {
+            tracing::debug!(
+                path = %path.display(),
+                "staleness path rejected: contains parent-dir component"
+            );
+            continue;
+        }
         if !out.iter().any(|p| p == &path) {
             out.push(path);
         }
@@ -554,6 +568,16 @@ impl ConsolidationEngine {
                 break;
             }
 
+            // Tombstones (superseded entries) are retained on disk for audit
+            // and rollback (spec: "the memory is NOT hard-deleted"). They have
+            // effective importance 0 so they never pollute recall ranking, and
+            // they MUST NOT participate in similarity-based merging — they are
+            // audit-only. Push them directly so `reconcile` keeps their files.
+            if memory.superseded_by.is_some() {
+                consolidated.push(memory.clone());
+                continue;
+            }
+
             if self.should_keep(memory) {
                 if self.is_similar_to_any(memory, &consolidated) {
                     to_merge.push(memory);
@@ -596,9 +620,12 @@ impl ConsolidationEngine {
     }
 
     fn should_keep(&self, memory: &MemoryEntry) -> bool {
-        // Tombstones are audit-only on list; consolidate drops them.
+        // Tombstones are handled by the caller (retained for audit, bypassing
+        // merge). This function only governs retention of *live* memories, so
+        // a tombstone reaching here is a programming error — treat as keep to
+        // avoid accidental data loss.
         if memory.superseded_by.is_some() {
-            return false;
+            return true;
         }
 
         // Retention uses effective importance (decay + hit-rate + staleness),
@@ -964,6 +991,30 @@ mod tests {
     }
 
     #[test]
+    fn extract_memory_paths_rejects_parent_dir_traversal() {
+        // Defense-in-depth: a crafted memory must not probe file existence
+        // outside project_root via `..` segments. All such paths are dropped.
+        let paths = extract_memory_paths("old note: src/../etc/passwd.rs was removed");
+        assert!(
+            paths.is_empty(),
+            "parent-dir traversal path must be rejected: {paths:?}"
+        );
+        // Multiple traversal variants all rejected.
+        let paths = extract_memory_paths("see src/../.ssh/id_rsa.rs and lib/../../secret/key.toml");
+        assert!(
+            paths.is_empty(),
+            "all parent-dir traversal paths must be rejected: {paths:?}"
+        );
+        // A clean path alongside a traversal path: only the clean one survives.
+        let paths = extract_memory_paths("src/foo.rs and src/../etc/passwd.rs");
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("src/foo.rs")],
+            "clean path kept, traversal path dropped"
+        );
+    }
+
+    #[test]
     fn merge_memories_preserves_provenance() {
         let engine = ConsolidationEngine::default();
 
@@ -1079,15 +1130,21 @@ mod tests {
     }
 
     #[test]
-    fn should_not_keep_superseded_even_with_high_raw_importance() {
+    fn should_keep_retains_superseded_for_audit() {
+        // Spec invariant: superseded memories are NOT hard-deleted. Their files
+        // remain on disk for audit/rollback. `should_keep` therefore returns
+        // true for tombstones so `consolidate`'s `reconcile` step keeps them.
+        // (The consolidate loop bypasses similarity/merge for tombstones, and
+        // recall/search exclude them via effective_importance=0 + an explicit
+        // superseded filter at the search boundary.)
         let engine = ConsolidationEngine::default();
         let mut entry =
             MemoryEntry::new(MemoryType::Knowledge, "tombstoned fact").with_importance(0.99);
         entry.superseded_by = Some("newer-id".into());
         entry.timestamp = chrono::Utc::now();
         assert!(
-            !engine.should_keep(&entry),
-            "superseded entries have effective 0 and must not be kept"
+            engine.should_keep(&entry),
+            "superseded entries must be retained on disk for audit (spec: NOT hard-deleted)"
         );
     }
 

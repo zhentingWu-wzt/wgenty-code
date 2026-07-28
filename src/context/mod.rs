@@ -799,6 +799,10 @@ impl MemoryManager {
             ranked
                 .into_iter()
                 .filter_map(|(idx, _score)| memories.get(idx).cloned())
+                // Spec: a superseded memory SHALL be excluded from recall.
+                // Tombstones are retained on disk for audit (see consolidate),
+                // so the exclusion must be applied here at the search boundary.
+                .filter(|m| m.superseded_by.is_none())
                 .collect()
         } else {
             // Graceful degradation: substring fallback when index is cold.
@@ -806,10 +810,11 @@ impl MemoryManager {
             memories
                 .iter()
                 .filter(|m| {
-                    m.content.to_lowercase().contains(&query_lower)
-                        || m.tags
-                            .iter()
-                            .any(|t| t.to_lowercase().contains(&query_lower))
+                    m.superseded_by.is_none()
+                        && (m.content.to_lowercase().contains(&query_lower)
+                            || m.tags
+                                .iter()
+                                .any(|t| t.to_lowercase().contains(&query_lower)))
                 })
                 .cloned()
                 .collect()
@@ -2827,7 +2832,11 @@ mod tests {
         v3.superseded_by = Some(v2_id);
         mm.add_memory(v3, MemoryOrigin::Project).await.unwrap();
 
-        // Consolidate to remove tombstones
+        // Consolidate. Tombstones MUST be retained on disk for audit/rollback
+        // (spec: "the memory is NOT hard-deleted", "its JSON file remains on
+        // disk (auditable)"). Consolidate excludes them from the similarity/
+        // merge loop and from recall (effective importance 0), but it MUST NOT
+        // delete their files.
         mm.consolidate().await.unwrap();
 
         let mems = mm.memories.read().await;
@@ -2845,8 +2854,91 @@ mod tests {
             active[0].content
         );
 
-        // v2 and v3 should be superseded (tombstones removed via consolidate)
+        // Tombstones are retained for audit (NOT hard-deleted by consolidate).
         let superseded_count = mems.iter().filter(|m| m.superseded_by.is_some()).count();
-        assert_eq!(superseded_count, 0, "tombstones should be fully cleaned up");
+        assert_eq!(
+            superseded_count, 2,
+            "v2 and v3 tombstones must be retained for audit, not hard-deleted"
+        );
+        drop(mems);
+
+        // Tombstone files must still exist on disk after consolidate.
+        for content_fragment in &["200", "300"] {
+            let still_on_disk = mm
+                .project_storage
+                .load_all()
+                .await
+                .unwrap()
+                .iter()
+                .any(|m| m.content.contains(*content_fragment));
+            assert!(
+                still_on_disk,
+                "tombstone with '{content_fragment}' must remain on disk after consolidate"
+            );
+        }
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    //  Regression: consolidate() must NOT delete tombstone files
+    //  (spec invariant: superseded memories retained on disk, auditable)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[tokio::test]
+    async fn consolidate_retains_superseded_tombstones_on_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        // Existing memory.
+        let existing = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "the auth module login bug exists in codebase today",
+        )
+        .with_importance(0.8);
+        let old_id = existing.id.clone();
+        mm.add_memory(existing, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        // Contradicting new memory → existing is tombstoned.
+        let incoming = MemoryEntry::new(
+            MemoryType::Knowledge,
+            "the auth module login bug fixed in codebase today",
+        )
+        .with_importance(0.7);
+        mm.add_memory(incoming, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        // Tombstone file exists before consolidate.
+        let old_path = mm.project_storage.path().join(format!("{old_id}.json"));
+        assert!(
+            tokio::fs::try_exists(&old_path).await.unwrap(),
+            "tombstone file must exist before consolidate"
+        );
+
+        // The bug (C1): consolidate previously deleted tombstone files via
+        // should_keep→false → reconcile orphan-deletion.
+        mm.consolidate().await.unwrap();
+
+        // Tombstone file MUST still exist after consolidate.
+        assert!(
+            tokio::fs::try_exists(&old_path).await.unwrap(),
+            "tombstone file MUST be retained on disk after consolidate (spec: NOT hard-deleted)"
+        );
+
+        // And it must still carry the superseded_by mark.
+        let on_disk: MemoryEntry =
+            serde_json::from_str(&tokio::fs::read_to_string(&old_path).await.unwrap()).unwrap();
+        assert!(
+            on_disk.superseded_by.is_some(),
+            "retained tombstone must still carry superseded_by"
+        );
+
+        // And it must still be present in the in-memory pool (audit listable).
+        let mems = mm.memories.read().await;
+        assert!(
+            mems.iter().any(|m| m.id == old_id),
+            "tombstone must remain in the in-memory pool for list_memories audit"
+        );
     }
 }

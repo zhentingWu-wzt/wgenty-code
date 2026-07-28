@@ -101,6 +101,16 @@ impl MemoryContextInjector {
             .collect();
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         const SOFT_CAP: usize = 50;
+        // Spec scenario "Global memory soft cap exceeded": when more than 50
+        // global memories exist, only the top 50 by effective importance are
+        // injected AND a warning is logged so operators notice the truncation.
+        if scored.len() > SOFT_CAP {
+            tracing::warn!(
+                total = scored.len(),
+                cap = SOFT_CAP,
+                "global memory soft cap exceeded; excess memories dropped from injection"
+            );
+        }
         scored
             .into_iter()
             .take(SOFT_CAP)

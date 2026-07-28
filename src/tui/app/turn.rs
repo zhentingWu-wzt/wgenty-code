@@ -120,9 +120,15 @@ impl App {
         let turn_id_for_loop = turn_id.clone();
 
         // Per-turn smart memory recall — runs inside the tokio task.
-        let recall_top_n = {
+        let (recall_top_n, recall_threshold) = {
             let s = self.settings_lock.read().expect("lock poisoned: settings");
-            s.storage.memory.recall_top_n
+            (
+                s.storage.memory.recall_top_n,
+                // Read the effective-importance floor from settings so the TUI
+                // path matches the headless path (which already reads this key).
+                // Previously hardcoded to 0.5, silently ignoring user config.
+                s.storage.memory.recall_similarity_threshold as f64,
+            )
         };
 
         // Capture pre-turn layer metadata for the turn-context inspector.
@@ -140,8 +146,7 @@ impl App {
                 &input_agent,
                 &memory_manager,
                 recall_top_n,
-                // Use the importance threshold from settings for filtering.
-                0.5,
+                recall_threshold,
                 None,
             )
             .await;
