@@ -1,0 +1,14 @@
+{
+  "change": "add-multi-provider-login",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "94445f2c6c0a170f1281cd945cf8fb74d7ef531feaf98047bcf0c8cfb520887e",
+  "files": [
+    { "path": "openspec/changes/add-multi-provider-login/proposal.md", "sha256": "278c9faff8e97d008ff4e3a1bff898945a82e35226687d2be1a4a3e25e693802" },
+    { "path": "openspec/changes/add-multi-provider-login/design.md", "sha256": "0f0b63e70ffca9742fb5cc1a8bd6c6a3f71cf6d0a95c5c7f082d3fdf7b917159" },
+    { "path": "openspec/changes/add-multi-provider-login/tasks.md", "sha256": "73b22a19ababd04f040d14ef9d3429c8d549ab4f5b8ed838ad61d50e43a6b1bc" },
+    { "path": "openspec/changes/add-multi-provider-login/specs/provider-auth/spec.md", "sha256": "5666e362a30a5d10bdeca54556e64b6036b3ebad5feab66f6e66ce03dc3a7da9" }
+  ]
+}
