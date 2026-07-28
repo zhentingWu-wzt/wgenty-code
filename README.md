@@ -4,21 +4,99 @@
 
 # Wgenty Code 🦀
 
-Supports multiple AI providers: **Anthropic (Claude)**, **Openai**.
+> A high-performance AI coding agent that lives in your terminal. Explore, edit, search, and refactor entire codebases through natural language — with fast startup, a tiny binary, and zero runtime dependencies.
+
+Wgenty Code is an LLM-driven coding assistant built in Rust. Instead of copy-pasting snippets into a chat box, you point it at a real project: it reads files, runs searches, executes commands, applies edits, and iterates until the task is done — all from a single self-contained binary with no Node.js or Python runtime required.
+
+It ships with **25 built-in tools** (filesystem, code search, command execution, web access, …), a **two-stage command guardian**, and **OS-level sandboxing** on every platform, so the agent can act autonomously while staying safe by default. It supports multiple AI providers with automatic routing — **Anthropic (Claude)**, **OpenAI**, **DeepSeek**, and any OpenAI-compatible endpoint (DashScope, Ollama, vLLM, …) — and model aliases like `sonnet`, `haiku`, `opus` are mapped transparently.
+
+[中文文档](README.zh.md)
 
 ---
 
 ## Features
 
-- **Interactive TUI** - turn-based chat, structured plan panel, collapsed tool outputs, agent mode switching (`Normal / Plan / Accept Edits / Yolo`)
-- **Plan Mode** - agent explores and proposes a plan before executing any mutations (`Ctrl+P` to toggle)
-- **25 built-in tools** - file operations, code search, command execution, web access, and more
-- **Multi-provider routing** - automatically detects and routes to the configured AI provider; model aliases like `sonnet`, `haiku`, `opus` are transparently mapped
-- **Security by default** - all commands pass through a two-stage guardian review (rule-based + optional LLM review); critical-risk operations are auto-denied; OS-level sandboxing on all platforms
-- **Sub-agent delegation** - complex tasks automatically decompose into parallel sub-tasks with recursion control
-- **Session management** - save, load, and search past sessions
-- **i18n** - 10-language support via Fluent localization
-- **MCP support** - connect external MCP servers and use their tools transparently
+- **Interactive TUI** — turn-based chat, a structured plan panel, collapsible tool output, and agent mode switching (`Normal / Plan / Accept Edits / Yolo`)
+- **Plan Mode** — the agent explores the codebase and proposes a plan *before* executing any mutations (`Ctrl+P` to toggle); nothing changes until you approve
+- **25 built-in tools** — file read/write/edit, code search (grep/glob/LSP), command execution, web search/fetch, and more
+- **Multi-provider routing** — auto-detects the provider from the base URL; switch between Claude, OpenAI, DeepSeek, or self-hosted endpoints by changing one setting
+- **Security by default** — every command passes a two-stage guardian review (rule-based + optional LLM review); critical-risk operations are auto-denied; OS-level sandboxing on macOS (Seatbelt), Linux (seccomp-bpf), and Windows (Job Objects)
+- **Sub-agent delegation** — complex tasks automatically decompose into parallel sub-tasks with recursion control (RLM pipeline: Planner → Executor → Aggregator)
+- **Session & memory management** — save, load, and search past sessions; project-scoped + global memory with TF-IDF recall
+- **MCP support** — connect external MCP servers and use their tools transparently inside the agent loop
+- **i18n** — 10-language support via Fluent localization
+
+---
+
+## Why Rust?
+
+The original TypeScript implementation carried an entire Node.js runtime — 164 MB of dependencies, 100 MB idle memory, and JIT warm-up latency on every call. The Rust rewrite eliminates all of that:
+
+| Metric | Rust | TypeScript | Improvement |
+|:-------|:----:|:----------:|:-----------:|
+| Cold start | **58 ms** | 152 ms | **2.6× faster** |
+| Binary size | **5 MB** | 164 MB | **97% smaller** |
+| Idle memory | **10 MB** | 100 MB | **90% less** |
+| Config read | **6 ms** | 150 ms | **25× faster** |
+| REPL key latency | **<1 ms** | 100 ms | **instant** |
+
+Beyond the numbers, Rust's ownership model eliminates whole classes of bugs — no null-pointer exceptions, no data races, no GC pauses. The compiler proves memory and thread safety at build time.
+
+See [PERFORMANCE_BENCHMARKS.md](PERFORMANCE_BENCHMARKS.md) for full data.
+
+---
+
+## How It Works
+
+### 🔒 Secure by default
+
+Every command the agent wants to run goes through a **two-stage Guardian review**:
+
+1. **Rule filtering** — static patterns block obviously dangerous operations (e.g. `rm -rf /`, `curl | sh`)
+2. **LLM review** *(optional)* — a model evaluates ambiguous commands and classifies risk as `Low / Medium / High / Critical`
+
+Critical-risk operations are auto-denied. The execution surface is further isolated by an **OS-level sandbox** (macOS Seatbelt, Linux seccomp-bpf, Windows Job Objects), degrading gracefully to a no-op when kernel support is unavailable.
+
+### 🧩 25 tools, one abstraction
+
+All agent capabilities — file ops, code search, command execution, web access — implement a single `Tool` trait. A key design choice: **`is_read_only()` defaults to `false`**. Every read-only tool must explicitly declare itself safe, so the guardian always errs on the side of caution.
+
+### 📐 8-layer prompt assembly
+
+The system prompt is assembled from 8 independently toggleable layers:
+
+```
+base_instructions -> permissions -> developer -> collaboration
+  -> environment -> skills -> agents_md -> wgenty_md
+```
+
+### 👥 RLM — recursive task decomposition
+
+Complex tasks flow through a **Planner → Executor → Aggregator** pipeline:
+
+- `task` tool — simple, single-shot delegation; auto-routes complex prompts to the RLM pipeline
+- `delegate` tool — decomposes a task into structured sub-tasks, runs them in parallel by dependency layer, and merges results
+- Recursion is hard-limited by `agent.subagent.max_depth` (default `1`)
+
+### 🏗️ Plan Mode
+
+Enable `plan_mode` in config or press `Ctrl+P` in the REPL:
+
+1. The agent explores the codebase, reads relevant files, and asks clarifying questions
+2. It calls `update_plan` to render a structured plan in the UI panel
+3. It waits for your approval before making any changes
+
+The plan panel shows per-step status: `○ pending / ◐ in_progress / ✓ done`.
+
+### 🖥️ TUI
+
+A terminal interface built on [ratatui](https://ratatui.rs/):
+
+- **Turn-based chat** — solid separators between turns, dashed within
+- **Structured plan panel** — inline plan rendering with status markers
+- **Collapsible tool output** — `Ctrl+O` to expand, keeping noise down
+- **Agent mode switching** — `Normal / Plan / Accept Edits / Yolo` with color-coded labels
+- **Multi-line input** — `Shift+Enter` for newline, full IME/CJK support
 
 ---
 
@@ -26,7 +104,7 @@ Supports multiple AI providers: **Anthropic (Claude)**, **Openai**.
 
 ### Install via npm (recommended)
 
-Requires [Node.js](https://nodejs.org/) 14+. The npm package downloads the correct prebuilt binary for your platform automatically—no Rust toolchain needed.
+Requires [Node.js](https://nodejs.org/) 14+. The npm package downloads the correct prebuilt binary for your platform automatically — no Rust toolchain needed.
 
 ```bash
 npm install -g wgenty-code
@@ -60,7 +138,7 @@ wgenty-code                            # if installed via npm
 # ./target/release/wgenty-code         # if built from source
 ```
 
-> Alternatively, set `api_key` in `~/.wgenty-code/settings.json`. Environment variables take priority.
+> Alternatively, set `api_key` in `~/.wgenty-code/settings.json`. Environment variables take priority over the config file.
 
 ### Docker
 
@@ -71,7 +149,7 @@ docker run -it --rm -v ~/.wgenty-code:/root/.wgenty-code wgenty-code:latest repl
 
 ### Configuration
 
-Settings live in `~/.wgenty-code/settings.json` (auto-generated). Key options:
+Settings live in `~/.wgenty-code/settings.json` (auto-generated on first run). Key options:
 
 | Setting | Default | Purpose |
 |:--------|:--------|:--------|
@@ -87,8 +165,6 @@ Settings live in `~/.wgenty-code/settings.json` (auto-generated). Key options:
 | `storage.transcript.max_age_days` | `30` | Days to retain subagent transcripts |
 
 > Use `wgenty-code config set <dotted.path> <value>` to change any setting, e.g. `config set agent.subagent.max_depth 5`.
-
-Environment variable priority: `ANTHROPIC_API_KEY` > `DASHSCOPE_API_KEY` > `DEEPSEEK_API_KEY`. You can also set `api_key` directly in `settings.json`.
 
 ---
 
@@ -144,3 +220,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for branch conventions, commit format, an
 ## License
 
 MIT - see [LICENSE](LICENSE).
+
+**Repository**: [github.com/zhentingWu-wzt/wgenty-code](https://github.com/zhentingWu-wzt/wgenty-code)
