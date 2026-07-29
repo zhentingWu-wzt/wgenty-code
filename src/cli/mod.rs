@@ -343,6 +343,9 @@ pub enum MemoryCommands {
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
+
+    /// Audit tombstoned memories (superseded entries retained for audit)
+    Audit,
 }
 
 #[derive(Subcommand, Debug)]

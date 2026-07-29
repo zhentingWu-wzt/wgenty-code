@@ -28,7 +28,8 @@ use anyhow::Context as _;
 use lock::{ConsolidatingGuard, ConsolidationFileLock};
 
 pub use consolidation::{
-    classify_relation, ConsolidationConfig, ConsolidationEngine, MemoryRelation,
+    classify_relation, classify_relation_with_reason, ConsolidationConfig, ConsolidationEngine,
+    MemoryRelation,
 };
 pub use history::{HistoryEntry, HistoryFilter, HistoryManager};
 pub use memory_session::{
@@ -80,6 +81,16 @@ pub struct MemoryManager {
     project_root: PathBuf,
     /// Session/process-local ids recently chosen by recall exploration (v1).
     recently_explored: Arc<RwLock<HashSet<String>>>,
+    /// Optional tier-2 LLM for reviewing ambiguous relations at add-time.
+    /// When `None`, ambiguous pairs fall back to the legacy merge+tag path.
+    /// Injected by daemon/agent paths that have a real LLM; CLI `memory`
+    /// commands construct `MemoryManager` without one.
+    review_llm: RwLock<Option<Arc<dyn consolidation::MemoryReviewLlm>>>,
+    /// Per-session ids injected in the most recent recall turn. The next turn
+    /// reinforces these (user continued the conversation → "useful"), then
+    /// clears the set so reinforcement is not repeated. Session-local like
+    /// `recently_explored`.
+    last_injected_ids: Arc<RwLock<HashSet<String>>>,
 }
 
 impl MemoryManager {
@@ -154,6 +165,8 @@ impl MemoryManager {
             age_threshold_hours: 48,
             project_root,
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
+            review_llm: RwLock::new(None),
+            last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -195,6 +208,8 @@ impl MemoryManager {
             age_threshold_hours: mem.age_threshold_hours,
             project_root,
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
+            review_llm: RwLock::new(None),
+            last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -225,6 +240,8 @@ impl MemoryManager {
             age_threshold_hours: 48,
             project_root,
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
+            review_llm: RwLock::new(None),
+            last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -287,6 +304,15 @@ impl MemoryManager {
             age_threshold_hours: self.age_threshold_hours,
             staleness_penalty: self.staleness_penalty,
         }
+    }
+
+    /// Attach a tier-2 LLM for ambiguous-relation review at add-time.
+    ///
+    /// Daemon/agent paths call this with a real LLM (adapted from their
+    /// `LlmPort`); CLI `memory` commands leave it `None` so ambiguous pairs
+    /// fall back to the legacy merge+tag behavior. Replaces any prior LLM.
+    pub async fn set_review_llm(&self, llm: Option<Arc<dyn consolidation::MemoryReviewLlm>>) {
+        *self.review_llm.write().await = llm;
     }
 
     pub async fn status(&self) -> anyhow::Result<MemoryStatus> {
@@ -352,8 +378,8 @@ impl MemoryManager {
                 self.consolidation
                     .find_similar(&entry, &mem, DEDUP_THRESHOLD, false)
             {
-                match classify_relation(&entry, &mem[existing_idx]) {
-                    MemoryRelation::Compatible => {
+                match classify_relation_with_reason(&entry, &mem[existing_idx]) {
+                    (MemoryRelation::Compatible, _) => {
                         let mut merged =
                             ConsolidationEngine::merge_into(&mem[existing_idx], &entry);
                         merged.reinforce(Utc::now());
@@ -370,30 +396,106 @@ impl MemoryManager {
                             merged: true,
                         });
                     }
-                    MemoryRelation::Ambiguous => {
-                        let mut merged =
-                            ConsolidationEngine::merge_into(&mem[existing_idx], &entry);
-                        merged
-                            .metadata
-                            .insert("relation_ambiguous".into(), serde_json::Value::Bool(true));
-                        storage.save_memory(&merged).await?;
-                        mem[existing_idx] = merged.clone();
-                        if is_project {
-                            self.index
-                                .write()
+                    (MemoryRelation::Ambiguous, _) => {
+                        // Tier-2 review: if an LLM is attached, ask it to
+                        // resolve the ambiguity. Otherwise fall back to the
+                        // legacy "merge + relation_ambiguous tag" path.
+                        let verdict = {
+                            let llm_guard = self.review_llm.read().await;
+                            if let Some(llm) = llm_guard.as_ref() {
+                                consolidation::review_ambiguous(
+                                    llm.as_ref(),
+                                    &mem[existing_idx],
+                                    &entry,
+                                )
                                 .await
-                                .replace_entry(&merged, existing_idx);
+                            } else {
+                                None
+                            }
+                        };
+
+                        match verdict {
+                            // LLM says new supersedes existing → tombstone existing.
+                            Some(consolidation::AmbiguousVerdict::Contradicts) => {
+                                let old_importance = mem[existing_idx].importance;
+                                mem[existing_idx].superseded_by = Some(entry.id.clone());
+                                mem[existing_idx].metadata.insert(
+                                    "supersede_reason".into(),
+                                    serde_json::Value::String("llm_review: contradicts".into()),
+                                );
+                                mem[existing_idx].metadata.insert(
+                                    "superseded_at".into(),
+                                    serde_json::Value::String(Utc::now().to_rfc3339()),
+                                );
+                                debug_assert!(
+                                    (mem[existing_idx].importance - old_importance).abs()
+                                        < f32::EPSILON
+                                );
+                                storage.save_memory(&mem[existing_idx]).await?;
+                                // Fall through to insert `entry` as a new live memory.
+                            }
+                            // LLM says same-direction refinement → merge + reinforce.
+                            Some(consolidation::AmbiguousVerdict::Compatible) => {
+                                let mut merged =
+                                    ConsolidationEngine::merge_into(&mem[existing_idx], &entry);
+                                merged.reinforce(Utc::now());
+                                storage.save_memory(&merged).await?;
+                                mem[existing_idx] = merged.clone();
+                                if is_project {
+                                    self.index
+                                        .write()
+                                        .await
+                                        .replace_entry(&merged, existing_idx);
+                                }
+                                return Ok(MemoryAddResult {
+                                    id: merged.id.clone(),
+                                    merged: true,
+                                });
+                            }
+                            // LLM says unrelated → keep both as live entries.
+                            // Clear the ambiguous tag if set, insert incoming standalone.
+                            Some(consolidation::AmbiguousVerdict::Unrelated) => {
+                                // Existing stays as-is (no tag); fall through to
+                                // insert `entry` as a separate live memory.
+                            }
+                            // No LLM, or LLM failed/unrecognized → legacy path.
+                            None => {
+                                let mut merged =
+                                    ConsolidationEngine::merge_into(&mem[existing_idx], &entry);
+                                merged.metadata.insert(
+                                    "relation_ambiguous".into(),
+                                    serde_json::Value::Bool(true),
+                                );
+                                storage.save_memory(&merged).await?;
+                                mem[existing_idx] = merged.clone();
+                                if is_project {
+                                    self.index
+                                        .write()
+                                        .await
+                                        .replace_entry(&merged, existing_idx);
+                                }
+                                return Ok(MemoryAddResult {
+                                    id: merged.id.clone(),
+                                    merged: true,
+                                });
+                            }
                         }
-                        return Ok(MemoryAddResult {
-                            id: merged.id.clone(),
-                            merged: true,
-                        });
                     }
-                    MemoryRelation::Contradicts => {
+                    (MemoryRelation::Contradicts, reason) => {
                         // Tombstone existing (keep base importance); write new standalone.
                         // Do not change existing base importance (design open Q #2).
                         let old_importance = mem[existing_idx].importance;
                         mem[existing_idx].superseded_by = Some(entry.id.clone());
+                        // Record why + when for the tombstone audit trail.
+                        let reason_str = reason.unwrap_or_else(|| "contradicts".to_string());
+                        mem[existing_idx].metadata.insert(
+                            "supersede_reason".into(),
+                            serde_json::Value::String(reason_str),
+                        );
+                        mem[existing_idx].metadata.insert(
+                            "superseded_at".into(),
+                            serde_json::Value::String(Utc::now().to_rfc3339()),
+                        );
                         debug_assert!(
                             (mem[existing_idx].importance - old_importance).abs() < f32::EPSILON
                         );
@@ -450,6 +552,48 @@ impl MemoryManager {
                 self.project_storage.save_memory(entry).await?;
             }
         }
+        drop(mem);
+
+        // Remember this turn's injected ids so the next turn can reinforce them
+        // (implicit "user continued → useful" reward). Replaces the prior set.
+        *self.last_injected_ids.write().await = ids.iter().map(|s| s.to_string()).collect();
+        Ok(())
+    }
+
+    /// Reinforce the memories injected in the previous turn, then clear the
+    /// set. Called at the start of each turn: the fact that the user continued
+    /// the conversation (rather than starting a new session) is an implicit
+    /// positive reward for whatever was injected last turn.
+    ///
+    /// This closes the ε-greedy feedback loop: previously `hit_count` only
+    /// grew on Compatible merges, so exploration could never learn. Now a cold
+    /// memory that gets explored into injection and is followed by continued
+    /// conversation gets reinforced, raising its effective importance.
+    pub async fn reinforce_last_injected(&self) -> anyhow::Result<()> {
+        let ids: Vec<String> = {
+            let ids = self.last_injected_ids.read().await;
+            ids.iter().cloned().collect()
+        };
+        if ids.is_empty() {
+            return Ok(());
+        }
+
+        while self.consolidating.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let now = Utc::now();
+        let mut mem = self.memories.write().await;
+        for id in &ids {
+            if let Some(entry) = mem.iter_mut().find(|m| &m.id == id) {
+                entry.reinforce(now);
+                self.project_storage.save_memory(entry).await?;
+            }
+        }
+        drop(mem);
+
+        // Clear so reinforcement is not repeated on subsequent turns.
+        self.last_injected_ids.write().await.clear();
         Ok(())
     }
 
@@ -1045,6 +1189,8 @@ mod tests {
             age_threshold_hours: 48,
             project_root: tmp.path().to_path_buf(),
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
+            review_llm: RwLock::new(None),
+            last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // Pre-populate with one memory.
@@ -1098,6 +1244,8 @@ mod tests {
             age_threshold_hours: 48,
             project_root: tmp.path().to_path_buf(),
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
+            review_llm: RwLock::new(None),
+            last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // Before consolidation, last_consolidation should be None.
@@ -1231,6 +1379,8 @@ mod tests {
             age_threshold_hours: 48,
             project_root: tmp.path().to_path_buf(),
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
+            review_llm: RwLock::new(None),
+            last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // Pre-populate a session and a history entry on disk.
@@ -1263,6 +1413,8 @@ mod tests {
             age_threshold_hours: 48,
             project_root: tmp.path().to_path_buf(),
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
+            review_llm: RwLock::new(None),
+            last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // Before load(), the in-memory caches are empty.
@@ -1324,6 +1476,8 @@ mod tests {
             age_threshold_hours: 48,
             project_root: tmp.path().to_path_buf(),
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
+            review_llm: RwLock::new(None),
+            last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // First extraction: a decision captured during compaction.
@@ -1406,6 +1560,8 @@ mod tests {
             age_threshold_hours: 48,
             project_root: tmp.path().to_path_buf(),
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
+            review_llm: RwLock::new(None),
+            last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
         };
 
         let entry = MemoryEntry::new(MemoryType::Knowledge, "a brand new fact");
@@ -1445,6 +1601,8 @@ mod tests {
             age_threshold_hours: 48,
             project_root: tmp.path().to_path_buf(),
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
+            review_llm: RwLock::new(None),
+            last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // First entry.
@@ -1495,6 +1653,8 @@ mod tests {
             age_threshold_hours: 48,
             project_root: tmp.path().to_path_buf(),
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
+            review_llm: RwLock::new(None),
+            last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
         };
 
         // idx 0: survives consolidation (Knowledge is always kept).
@@ -1705,6 +1865,220 @@ mod tests {
             !recall.contains("bug exists"),
             "superseded old content must be excluded from recall: {recall}"
         );
+    }
+
+    #[tokio::test]
+    async fn add_memory_contradicts_records_supersede_reason_metadata() {
+        // P2-C: the Contradicts branch must write supersede_reason + superseded_at
+        // into the tombstone's metadata so `memory audit` can explain the why.
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "api chat uses max_tokens=128000")
+            .with_importance(0.8);
+        let old_id = existing.id.clone();
+        mm.add_memory(existing, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        let incoming = MemoryEntry::new(MemoryType::Knowledge, "api chat uses max_tokens=4096")
+            .with_importance(0.7);
+        mm.add_memory(incoming, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        let memories = mm.memories.read().await;
+        let old = memories
+            .iter()
+            .find(|m| m.id == old_id)
+            .expect("tombstone retained");
+        let reason = old
+            .metadata
+            .get("supersede_reason")
+            .and_then(|v| v.as_str())
+            .expect("supersede_reason must be recorded");
+        assert!(
+            reason.contains("numeric_drift"),
+            "reason should record numeric_drift: {reason}"
+        );
+        assert!(
+            old.metadata.contains_key("superseded_at"),
+            "superseded_at timestamp must be recorded"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_memory_ambiguous_with_llm_contradicts_supersedes() {
+        // P2-B: when an LLM is attached and classify returns Ambiguous, the LLM
+        // verdict drives the outcome. Here the LLM says "contradicts" → existing
+        // is tombstoned with an llm_review reason.
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        // Two memories with high token overlap but no state-change/numeric/subset
+        // signal → classify_relation returns Ambiguous.
+        let existing = MemoryEntry::new(
+            MemoryType::Preference,
+            "prefer postgres database for storage",
+        )
+        .with_importance(0.8);
+        let old_id = existing.id.clone();
+        mm.add_memory(existing, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        // Attach a mock LLM that always says "contradicts".
+        struct ContradictsLlm;
+        #[async_trait::async_trait]
+        impl crate::context::consolidation::MemoryReviewLlm for ContradictsLlm {
+            async fn ask(&self, _: &str, _: &str) -> anyhow::Result<String> {
+                Ok("contradicts".into())
+            }
+        }
+        mm.set_review_llm(Some(std::sync::Arc::new(ContradictsLlm)))
+            .await;
+
+        let incoming =
+            MemoryEntry::new(MemoryType::Preference, "prefer mysql database for storage")
+                .with_importance(0.7);
+        mm.add_memory(incoming, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        let memories = mm.memories.read().await;
+        let old = memories
+            .iter()
+            .find(|m| m.id == old_id)
+            .expect("old retained");
+        assert!(
+            old.superseded_by.is_some(),
+            "LLM contradicts → existing tombstoned"
+        );
+        let reason = old
+            .metadata
+            .get("supersede_reason")
+            .and_then(|v| v.as_str())
+            .expect("llm_review reason recorded");
+        assert!(
+            reason.contains("llm_review"),
+            "reason should be llm_review: {reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_memory_ambiguous_without_llm_keeps_legacy_tag() {
+        // P2-B degradation: no LLM attached → Ambiguous falls back to the legacy
+        // merge + relation_ambiguous tag (behavior unchanged from before P2-B).
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let existing = MemoryEntry::new(
+            MemoryType::Preference,
+            "prefer postgres database for storage",
+        )
+        .with_importance(0.8);
+        mm.add_memory(existing, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        let incoming =
+            MemoryEntry::new(MemoryType::Preference, "prefer mysql database for storage")
+                .with_importance(0.7);
+        let result = mm
+            .add_memory(incoming, MemoryOrigin::Project)
+            .await
+            .unwrap();
+        assert!(result.merged, "legacy path merges ambiguous pair");
+
+        let memories = mm.memories.read().await;
+        let merged = memories
+            .iter()
+            .find(|m| m.id == result.id)
+            .expect("merged entry");
+        assert_eq!(
+            merged
+                .metadata
+                .get("relation_ambiguous")
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "legacy path must tag relation_ambiguous"
+        );
+        assert!(
+            merged.superseded_by.is_none(),
+            "legacy path does NOT tombstone"
+        );
+    }
+
+    #[tokio::test]
+    async fn reinforce_last_injected_rewards_previous_turn_memories() {
+        // P2-A: record_recall_injections stores ids; reinforce_last_injected
+        // bumps hit_count for exactly those entries, then clears the set.
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let a = MemoryEntry::new(MemoryType::Knowledge, "alpha fact").with_importance(0.8);
+        let b = MemoryEntry::new(MemoryType::Knowledge, "beta fact").with_importance(0.8);
+        let a_id = a.id.clone();
+        let b_id = b.id.clone();
+        mm.add_memory(a, MemoryOrigin::Project).await.unwrap();
+        mm.add_memory(b, MemoryOrigin::Project).await.unwrap();
+
+        // Simulate turn N injecting memory A (not B).
+        mm.record_recall_injections(&[&a_id]).await.unwrap();
+
+        // Turn N+1: reinforce last injected.
+        mm.reinforce_last_injected().await.unwrap();
+
+        let memories = mm.memories.read().await;
+        let a_entry = memories.iter().find(|m| m.id == a_id).unwrap();
+        let b_entry = memories.iter().find(|m| m.id == b_id).unwrap();
+        assert_eq!(a_entry.hit_count, 1, "injected A should be reinforced");
+        assert_eq!(b_entry.hit_count, 0, "non-injected B should be untouched");
+        assert!(a_entry.last_reinforced_at.is_some(), "A anchor updated");
+    }
+
+    #[tokio::test]
+    async fn reinforce_last_injected_clears_set_no_double_reward() {
+        // P2-A: calling reinforce twice must not double-reward — the set is
+        // cleared after the first call.
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let a = MemoryEntry::new(MemoryType::Knowledge, "alpha fact").with_importance(0.8);
+        let a_id = a.id.clone();
+        mm.add_memory(a, MemoryOrigin::Project).await.unwrap();
+        mm.record_recall_injections(&[&a_id]).await.unwrap();
+
+        mm.reinforce_last_injected().await.unwrap();
+        mm.reinforce_last_injected().await.unwrap(); // second call: no-op
+
+        let memories = mm.memories.read().await;
+        let a_entry = memories.iter().find(|m| m.id == a_id).unwrap();
+        assert_eq!(a_entry.hit_count, 1, "second reinforce must be a no-op");
+    }
+
+    #[tokio::test]
+    async fn record_recall_injections_replaces_previous_set() {
+        // P2-A: turn N injects A, turn N+1 injects B → reinforce only touches B.
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let a = MemoryEntry::new(MemoryType::Knowledge, "alpha fact").with_importance(0.8);
+        let b = MemoryEntry::new(MemoryType::Knowledge, "beta fact").with_importance(0.8);
+        let a_id = a.id.clone();
+        let b_id = b.id.clone();
+        mm.add_memory(a, MemoryOrigin::Project).await.unwrap();
+        mm.add_memory(b, MemoryOrigin::Project).await.unwrap();
+
+        mm.record_recall_injections(&[&a_id]).await.unwrap();
+        mm.record_recall_injections(&[&b_id]).await.unwrap();
+        mm.reinforce_last_injected().await.unwrap();
+
+        let memories = mm.memories.read().await;
+        let a_entry = memories.iter().find(|m| m.id == a_id).unwrap();
+        let b_entry = memories.iter().find(|m| m.id == b_id).unwrap();
+        assert_eq!(a_entry.hit_count, 0, "A was replaced, not reinforced");
+        assert_eq!(b_entry.hit_count, 1, "B is the latest injected, reinforced");
     }
 
     #[tokio::test]
@@ -1966,6 +2340,8 @@ mod tests {
             age_threshold_hours: 48,
             project_root: tmp.path().to_path_buf(),
             recently_explored: Arc::new(RwLock::new(HashSet::new())),
+            review_llm: RwLock::new(None),
+            last_injected_ids: Arc::new(RwLock::new(HashSet::new())),
         };
 
         let entry = MemoryEntry::new(

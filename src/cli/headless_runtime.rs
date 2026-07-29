@@ -245,6 +245,12 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
     let llm = ApiLlmPort::new(client);
     // Same client for summarization (tools omitted in chat_completion call).
     let llm_for_compact: Arc<dyn crate::agent::runtime::LlmPort> = Arc::new(llm.clone());
+    // Attach the LLM for tier-2 ambiguous-relation review at add-time.
+    // The adapter bridges agent's LlmPort to context's MemoryReviewLlm.
+    let review = Arc::new(crate::agent::runtime::adapters::MemoryReviewAdapter::new(
+        llm_for_compact.clone(),
+    ));
+    memory_manager.set_review_llm(Some(review)).await;
     let registry = Arc::new(
         ToolRegistry::with_project_root(
             settings.storage.working_dir.clone(),

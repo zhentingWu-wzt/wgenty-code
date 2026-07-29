@@ -44,6 +44,8 @@
 | `ConsolidationFileLock` / `ConsolidatingGuard` | `context/lock.rs` | 跨进程 consolidation 锁 + in-process 重入 guard |
 | `ConsolidationEngine` | `context/consolidation.rs` | 相似度（Jaccard）、合并、TTL 衰减、状态分类（含中文） |
 | `MemoryContextInjector` | `context/inject.rs` | 召回：关键词提取 + 搜索 + 拼块 |
+| `MemoryReviewLlm` / `review_ambiguous` | `context/consolidation.rs` | tier-2 LLM 复核歧义关系（依赖倒置 trait，无 LLM 时降级） |
+| `MemoryReviewAdapter` | `agent/runtime/adapters/llm_api.rs` | 把 agent 的 `LlmPort` 适配成 `MemoryReviewLlm`，跨层桥接 |
 | `ApiCompactor` / daemon compactor | `agent/runtime/compactor.rs`, `tui/agent/adapters.rs` | 记忆生产者：压缩时让 LLM 提取 |
 | `AutoDreamService` | `services/auto_dream.rs` | 整理触发者：daemon/headless 启动时按门控跑一次（TUI app 不再启动，D4） |
 
@@ -93,6 +95,18 @@
 - 去重在 `add_memory` 入口完成：按内容相似度（阈值 0.6 + 子集捷径 + 跨 type + 大小写不敏感）合并到既有条目，覆盖原文件，不留重复。
 - `MemoryEntry::new` 每次生成新 UUID，所以存储层按 id 去重对新提取记忆永远不生效；去重完全靠 `find_similar`。
 - `consolidating` 标志保证整理期间 `add_memory` 自旋等待，不读到过渡态。
+
+**关系分类与 tier-2 复核（P2-B）**
+
+`add_memory` 对相似条目调 `classify_relation_with_reason`，按结果分流：
+
+- **Compatible**（同向细化）：`merge_into` + `reinforce`（hit_count++）。
+- **Contradicts**（矛盾/状态翻转）：把既有条目打成 tombstone（`superseded_by` + `supersede_reason` + `superseded_at` metadata），新条目独立落盘。`supersede_reason` 记录触发原因（`numeric_drift: <key>` / `state_change` / `llm_review: contradicts`），供 `memory audit` 审计。
+- **Ambiguous**（歧义）：若注入了 tier-2 LLM（`MemoryManager::set_review_llm`），调 `review_ambiguous` 让 LLM 裁决 contradicts/compatible/unrelated；无 LLM 时降级为合并 + `relation_ambiguous` 标记（旧行为）。daemon/headless 路径注入 LLM，CLI `memory` 路径降级。
+
+**tombstone 审计（P2-C）**
+
+`memory audit` CLI 子命令列出所有 `superseded_by.is_some()` 的 tombstone，显示取代目标、时间、原因。`memory list` 对 tombstone 加 `[tombstone]` 标记以区分活记忆。
 
 ## 3. 召回流程（每轮 recall）
 
@@ -170,6 +184,17 @@
 - **JiebaTokenizer**（`zh-segmentation` feature，opt-in）：用 jieba-rs 精确切分。因内嵌词典会使二进制增大 ~2MB（超过 500KB 预算），默认关闭；需要高质量中文分词时用 `cargo build --features zh-segmentation` 编译。
 
 两个实现共享同一份停用词表（英文 + 中文高频虚词），输出语义一致（小写 + 停用词过滤 + 短词过滤）。`build_tokenizer()` 按编译 feature 返回对应实现，业务代码零感知。
+
+**探索反馈闭环（P2-A）**
+
+ε-greedy 探索注入冷记忆后，原本没有 reward 信号——`hit_count` 只在 Compatible 合并时增长，与"注入是否有用"无关，探索 learn 不到东西。
+
+闭环机制（仅 TUI 多轮会话，headless 单次进程无意义）：
+- `record_recall_injections` 记录本轮注入的 id 到 `last_injected_ids`（覆盖上一轮）。
+- 每轮 turn 开始时，TUI 先调 `reinforce_last_injected()`：用户继续对话 = 上一轮注入的记忆"有用" → 对它们 `reinforce`（hit_count++），然后清空集合。
+- 之后才执行本轮 recall（更新 `last_injected_ids` 为本轮）。
+
+效果：被探索注入且用户继续对话的冷记忆，hitrate 上升，effective importance 提升，排名上涨；被注入后用户忽视（换 session）的，recall_count 涨但 hit_count 不涨，hitrate 下降，自然降权。这让 `effective_importance` 的 hit_factor 公式真正有了探索维度的 reward 输入。
 
 ## 4. 整理流程（consolidate / AutoDream）
 
