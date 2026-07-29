@@ -69,7 +69,7 @@ impl Default for StorageConfig {
                 age_threshold_hours: default_age_threshold_hours(),
                 enable_auto_consolidation: default_enable_auto_consolidation(),
                 recall_top_n: default_recall_top_n(),
-                recall_similarity_threshold: default_recall_similarity_threshold(),
+                recall_min_effective_importance: default_recall_min_effective_importance(),
                 write_importance_threshold: default_write_importance_threshold(),
                 max_extract_per_compaction: default_max_extract_per_compaction(),
                 exploration_epsilon: default_exploration_epsilon(),
@@ -118,11 +118,19 @@ pub struct MemorySettings {
     pub enable_auto_consolidation: bool,
     #[serde(default = "default_recall_top_n")]
     pub recall_top_n: usize,
-    /// Minimum **effective importance** floor for recall injection. Despite the
-    /// legacy name, this filters by effective importance (decay × hit-rate ×
-    /// staleness), not Jaccard text similarity.
-    #[serde(default = "default_recall_similarity_threshold")]
-    pub recall_similarity_threshold: f32,
+    /// Minimum **effective importance** floor for recall injection. Memories
+    /// whose effective importance falls below this are not injected into the
+    /// `<memory-context>` block.
+    ///
+    /// Serde alias keeps the legacy `recall_similarity_threshold` name working
+    /// for existing config files — the field was renamed because it filters by
+    /// effective importance (decay × hit-rate × staleness), not by Jaccard
+    /// text similarity as the old name implied.
+    #[serde(
+        default = "default_recall_min_effective_importance",
+        alias = "recall_similarity_threshold"
+    )]
+    pub recall_min_effective_importance: f32,
     #[serde(default = "default_write_importance_threshold")]
     pub write_importance_threshold: f32,
     #[serde(default = "default_max_extract_per_compaction")]
@@ -148,7 +156,7 @@ impl Default for MemorySettings {
             age_threshold_hours: default_age_threshold_hours(),
             enable_auto_consolidation: default_enable_auto_consolidation(),
             recall_top_n: default_recall_top_n(),
-            recall_similarity_threshold: default_recall_similarity_threshold(),
+            recall_min_effective_importance: default_recall_min_effective_importance(),
             write_importance_threshold: default_write_importance_threshold(),
             max_extract_per_compaction: default_max_extract_per_compaction(),
             exploration_epsilon: default_exploration_epsilon(),
@@ -173,7 +181,7 @@ fn default_enable_auto_consolidation() -> bool {
 fn default_recall_top_n() -> usize {
     3
 }
-fn default_recall_similarity_threshold() -> f32 {
+fn default_recall_min_effective_importance() -> f32 {
     0.3
 }
 fn default_write_importance_threshold() -> f32 {
@@ -235,6 +243,23 @@ mod tests {
         assert!((settings.exploration_epsilon - 0.0).abs() < f32::EPSILON);
         assert!(settings.staleness_check);
         assert!((settings.staleness_penalty - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn memory_settings_legacy_recall_similarity_threshold_alias() {
+        // Existing config files use the pre-rename key `recall_similarity_threshold`.
+        // The serde alias must keep them deserializing into the renamed field.
+        let json = r#"{
+            "enabled": true,
+            "path": "/tmp/memory.json",
+            "consolidation_interval": 24,
+            "recall_similarity_threshold": 0.45
+        }"#;
+        let settings: MemorySettings = serde_json::from_str(json).unwrap();
+        assert!(
+            (settings.recall_min_effective_importance - 0.45).abs() < f32::EPSILON,
+            "legacy alias should populate renamed field"
+        );
     }
 
     #[test]

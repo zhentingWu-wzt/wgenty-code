@@ -177,10 +177,14 @@ pub fn classify_relation(new: &MemoryEntry, existing: &MemoryEntry) -> MemoryRel
 }
 
 fn meaningful_token_set(content: &str) -> std::collections::HashSet<String> {
-    content
-        .split_whitespace()
-        .filter(|w| ConsolidationEngine::is_meaningful_token(w))
-        .map(|w| w.to_lowercase())
+    use crate::context::tokenizer::DefaultTokenizer;
+    use crate::context::tokenizer::Tokenizer as _;
+    // DefaultTokenizer already lowercases + filters stop words / short tokens,
+    // and additionally segments CJK into bigrams (unlike the old
+    // split_whitespace path which left Chinese as one unusable blob).
+    DefaultTokenizer
+        .meaningful_tokens(content)
+        .into_iter()
         .collect()
 }
 
@@ -207,6 +211,36 @@ const OPEN_STATE_MARKERS: &[&str] = &[
     "pending",
     "exists",
     "broken",
+];
+
+/// Chinese closed-state markers. Matched via substring `contains` because CJK
+/// has no word-boundary ambiguity like English (`fixed` vs `fixed-width`): the
+/// "已" prefix on closed markers and the "未"/"待" prefix on open markers keep
+/// the two polarities disjoint even with substring matching. "尚未修复" contains
+/// "未修复" (open), not "已修复" (closed), so it correctly reads as Open.
+const CLOSED_STATE_MARKERS_ZH: &[&str] = &[
+    "已修复",
+    "已解决",
+    "已移除",
+    "已删除",
+    "已废弃",
+    "已弃用",
+    "已禁用",
+    "已替换",
+    "已迁移",
+    "已关闭",
+    "不再使用",
+];
+
+/// Chinese open-state markers (still pending / unresolved).
+const OPEN_STATE_MARKERS_ZH: &[&str] = &[
+    "未解决",
+    "未修复",
+    "待处理",
+    "待办",
+    "尚未",
+    "仍存在",
+    "仍有问题",
 ];
 
 /// Multi-word closed phrase kept as a phrase (not split for matching).
@@ -291,8 +325,12 @@ fn state_polarity(content: &str) -> StatePolarity {
         .iter()
         .any(|m| has_whole_token(&lower, m));
 
-    let open = has_open_phrase || has_open_token;
-    let closed = has_closed_phrase || has_closed_token;
+    // CJK markers use substring matching (see CLOSED_STATE_MARKERS_ZH doc).
+    let has_closed_zh = CLOSED_STATE_MARKERS_ZH.iter().any(|m| lower.contains(m));
+    let has_open_zh = OPEN_STATE_MARKERS_ZH.iter().any(|m| lower.contains(m));
+
+    let open = has_open_phrase || has_open_token || has_open_zh;
+    let closed = has_closed_phrase || has_closed_token || has_closed_zh;
 
     // Negated / open language dominates if both fire (e.g. "not fixed").
     if open && !closed {
@@ -683,21 +721,21 @@ impl ConsolidationEngine {
     /// "use jwt authentication". The `min_len` guard keeps single-token
     /// memories from over-merging into anything that happens to mention them.
     pub(crate) fn content_similarity(a: &MemoryEntry, b: &MemoryEntry) -> f32 {
-        // Tokens are lowercased so similarity is case-insensitive, matching the
-        // TF-IDF index (which also lowercases). Previously "Use JWT" and
-        // "use jwt" were disjoint token sets and never matched, so the same
-        // fact re-extracted with different capitalization would not dedup.
-        let a_words: std::collections::HashSet<String> = a
-            .content
-            .split_whitespace()
-            .filter(|w| Self::is_meaningful_token(w))
-            .map(|w| w.to_lowercase())
+        // Tokens come from DefaultTokenizer (lowercased + stop-word filtered +
+        // CJK bigram-segmented), matching the TF-IDF index. Previously this
+        // used split_whitespace + is_meaningful_token, which (a) was case-
+        // sensitive until a later fix and (b) left Chinese as one unusable
+        // blob. Centralizing on DefaultTokenizer keeps similarity consistent
+        // with recall.
+        use crate::context::tokenizer::DefaultTokenizer;
+        use crate::context::tokenizer::Tokenizer as _;
+        let a_words: std::collections::HashSet<String> = DefaultTokenizer
+            .meaningful_tokens(&a.content)
+            .into_iter()
             .collect();
-        let b_words: std::collections::HashSet<String> = b
-            .content
-            .split_whitespace()
-            .filter(|w| Self::is_meaningful_token(w))
-            .map(|w| w.to_lowercase())
+        let b_words: std::collections::HashSet<String> = DefaultTokenizer
+            .meaningful_tokens(&b.content)
+            .into_iter()
             .collect();
 
         if a_words.is_empty() || b_words.is_empty() {
@@ -744,29 +782,6 @@ impl ConsolidationEngine {
         })
     }
 
-    /// Determine whether a whitespace token is meaningful for similarity
-    /// comparison.
-    ///
-    /// Filters out common English stop words and tokens shorter than 3
-    /// characters. Previously every token (including "the", "a", "is")
-    /// contributed equally to the Jaccard index, inflating similarity
-    /// between unrelated memories that happen to share high-frequency words.
-    pub(crate) fn is_meaningful_token(token: &str) -> bool {
-        const STOP_WORDS: &[&str] = &[
-            "the", "a", "an", "and", "or", "but", "is", "are", "was", "were", "be", "been",
-            "being", "to", "of", "in", "on", "at", "by", "for", "with", "from", "as", "into",
-            "than", "then", "this", "that", "these", "those", "it", "its", "i", "you", "he", "she",
-            "we", "they", "not", "no", "do", "does", "did", "has", "have", "had", "will", "would",
-            "can", "could", "should", "may", "might", "must", "if", "so", "up", "out", "about",
-        ];
-
-        let lower = token.to_lowercase();
-        if lower.len() < 3 {
-            return false;
-        }
-        !STOP_WORDS.contains(&lower.as_str())
-    }
-
     fn merge_memories(&self, memories: &[&MemoryEntry]) -> MemoryEntry {
         let mut combined_content = String::new();
         let mut max_importance: f32 = 0.0;
@@ -796,6 +811,10 @@ impl ConsolidationEngine {
         all_tags.sort();
         all_tags.dedup();
 
+        // Merging near-duplicates is weak positive signal: bump importance by
+        // 0.1 so a repeatedly extracted fact ranks slightly higher than its
+        // peers. `with_importance` clamps to [0,1], so a max of 0.95 stays at
+        // 1.0 rather than overflowing to 1.05.
         let merged = MemoryEntry::new(memories[0].memory_type.clone(), &combined_content)
             .with_importance(max_importance + 0.1)
             .with_tags(all_tags);
@@ -1420,6 +1439,67 @@ mod tests {
             classify_relation(&new, &existing),
             MemoryRelation::Contradicts,
             "'fixed-width' must not count as state-change marker 'fixed'"
+        );
+    }
+
+    #[test]
+    fn classify_relation_chinese_closed_supersedes_open() {
+        // 中文: "登录bug未修复" (open) → "登录bug已修复" (closed) 应判定 Contradicts。
+        // 这是 P1-B 的核心场景：中文状态变更必须触发 supersede。
+        let existing = MemoryEntry::new(MemoryType::Error, "登录bug未修复");
+        let new = MemoryEntry::new(MemoryType::Error, "登录bug已修复");
+        assert_eq!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Contradicts,
+            "中文 open→closed (未修复→已修复) 必须触发 supersede"
+        );
+    }
+
+    #[test]
+    fn classify_relation_chinese_open_does_not_supersede() {
+        // 中文 open → open 不应 supersede（同极性，不是状态翻转）。
+        let existing = MemoryEntry::new(MemoryType::Error, "登录bug待处理");
+        let new = MemoryEntry::new(MemoryType::Error, "登录bug未修复");
+        assert_ne!(
+            classify_relation(&new, &existing),
+            MemoryRelation::Contradicts,
+            "中文 open→open 不应 supersede"
+        );
+    }
+
+    #[test]
+    fn state_polarity_chinese_closed_markers() {
+        // 各中文 closed marker 都应识别为 Closed 极性。
+        for marker in &["已修复", "已废弃", "已删除", "不再使用"] {
+            assert_eq!(
+                state_polarity(marker),
+                StatePolarity::Closed,
+                "'{marker}' 应识别为 Closed"
+            );
+        }
+    }
+
+    #[test]
+    fn state_polarity_chinese_open_markers() {
+        // 各中文 open marker 都应识别为 Open 极性。
+        for marker in &["未解决", "待处理", "尚未"] {
+            assert_eq!(
+                state_polarity(marker),
+                StatePolarity::Open,
+                "'{marker}' 应识别为 Open"
+            );
+        }
+    }
+
+    #[test]
+    fn state_polarity_chinese_negation_not_false_closed() {
+        // 关键否定场景："尚未修复" 含 "修复" 子串，但 closed marker 是 "已修复"
+        // （以"已"开头），"尚未修复" 不含 "已修复"，所以不应误判为 Closed。
+        // 它含 "尚未" → Open。
+        assert_eq!(
+            state_polarity("该问题尚未修复"),
+            StatePolarity::Open,
+            "'尚未修复' 应是 Open，不应因子串 '修复' 误匹配 closed marker '已修复'"
         );
     }
 

@@ -193,7 +193,7 @@ Prompt 8 层：base_instructions → permissions → developer → environment �
 | `storage.memory.write_importance_threshold` | f32 | 0.6 | compact 抽取写入门槛 |
 | `storage.memory.max_extract_per_compaction` | usize | 3 | 单次 compact 最多写入条数 |
 | `storage.memory.recall_top_n` | usize | 3 | 每轮召回注入条数 |
-| `storage.memory.recall_similarity_threshold` | f32 | 0.3 | 召回注入的 **effective importance** 最低门槛（低于此值的记忆不注入）。注意：尽管名字含 "similarity"，实际作用是 effective importance 过滤，而非 Jaccard 文本相似度 |
+| `storage.memory.recall_min_effective_importance` | f32 | 0.3 | 召回注入的 **effective importance** 最低门槛（低于此值的记忆不注入）。旧配置文件中的 `recall_similarity_threshold` 仍可通过 serde alias 向后兼容 |
 | `storage.memory.exploration_epsilon` | f32 | 0.0 | 召回时以该概率用冷门候选替换最低排名条（0=关闭） |
 | `storage.memory.staleness_check` | bool | true | consolidate 时检查记忆引用路径是否全部缺失 |
 | `storage.memory.staleness_penalty` | f32 | 0.5 | 已标记 stale 的记忆 effective importance 乘数 |

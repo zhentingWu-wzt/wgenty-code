@@ -230,7 +230,7 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
 
     if memories_loaded {
         let recall_top_n = settings.storage.memory.recall_top_n;
-        let recall_threshold = settings.storage.memory.recall_similarity_threshold;
+        let recall_threshold = settings.storage.memory.recall_min_effective_importance;
         crate::context::inject::MemoryContextInjector::inject(
             &mut seed,
             memory_manager.as_ref(),

@@ -38,8 +38,11 @@
 |------|------|------|
 | `MemoryManager` | `context/mod.rs` | 编排：增/查/整理/加载，持有 memories Vec、index、storage、consolidation |
 | `Storage` | `context/storage.rs` | 文件后端，`{id}.json` 原子写、`load_all`、`reconcile` 删孤儿 |
-| `MemoryIndex` | `context/mod.rs` | 内存 TF-IDF 倒排索引，`search`/`rebuild`/`add_entry`/`replace_entry` |
-| `ConsolidationEngine` | `context/consolidation.rs` | 相似度（Jaccard）、合并、TTL 衰减 |
+| `MemoryEntry` / `MemoryType` / `EffectiveImportanceCfg` | `context/entry.rs` | 记忆数据模型 + effective importance 衰减公式 |
+| `MemoryIndex` | `context/index.rs` | 内存 TF-IDF 倒排索引，`search`/`rebuild`/`add_entry`/`replace_entry` |
+| `Tokenizer` / `DefaultTokenizer` / `JiebaTokenizer` | `context/tokenizer.rs` | 统一分词：英文空白 + 中文 CJK bigram（或 jieba 精确切分，需 feature） |
+| `ConsolidationFileLock` / `ConsolidatingGuard` | `context/lock.rs` | 跨进程 consolidation 锁 + in-process 重入 guard |
+| `ConsolidationEngine` | `context/consolidation.rs` | 相似度（Jaccard）、合并、TTL 衰减、状态分类（含中文） |
 | `MemoryContextInjector` | `context/inject.rs` | 召回：关键词提取 + 搜索 + 拼块 |
 | `ApiCompactor` / daemon compactor | `agent/runtime/compactor.rs`, `tui/agent/adapters.rs` | 记忆生产者：压缩时让 LLM 提取 |
 | `AutoDreamService` | `services/auto_dream.rs` | 整理触发者：daemon/headless 启动时按门控跑一次（TUI app 不再启动，D4） |
@@ -158,6 +161,15 @@
 - 候选池硬上限 10（`index.search(query, 10)`），与 `recall_top_n` 无关；`recall_top_n` 只在 importance 重排后截断。
 - 关键词 < 2 或命中为空则该轮不注入。
 - substring 兜底用 `keywords.join(" ")` 整串做 `contains`，多词查询几乎不会连续命中，索引冷启动时召回基本失效。
+
+**分词（tokenizer）**
+
+所有内容分词（TF-IDF 索引、相似度、关键词提取）统一走 `context/tokenizer.rs` 的 `Tokenizer` trait，不再各自 `split_whitespace`：
+
+- **DefaultTokenizer**（默认，零外部依赖）：英文走空白分词 + 停用词过滤；中文走 CJK bigram（"用户登录" → `[用户, 户登, 登录]`）。修复了原来 `split_whitespace` 对纯中文不切词、导致整句中文成为一个无效 token 的召回失效问题。
+- **JiebaTokenizer**（`zh-segmentation` feature，opt-in）：用 jieba-rs 精确切分。因内嵌词典会使二进制增大 ~2MB（超过 500KB 预算），默认关闭；需要高质量中文分词时用 `cargo build --features zh-segmentation` 编译。
+
+两个实现共享同一份停用词表（英文 + 中文高频虚词），输出语义一致（小写 + 停用词过滤 + 短词过滤）。`build_tokenizer()` 按编译 feature 返回对应实现，业务代码零感知。
 
 ## 4. 整理流程（consolidate / AutoDream）
 

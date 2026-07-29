@@ -219,17 +219,15 @@ async fn maybe_explore_replace(
 }
 
 /// Extract meaningful keywords from a user message for memory retrieval.
-/// Filters stop words and short tokens, then sorts by token length descending
-/// (longer = more specific).
+/// Routes through `DefaultTokenizer` so CJK queries are bigram-segmented (a
+/// pure-Chinese message used to collapse into one unusable token). Then sorts
+/// by char length descending (longer = more specific) and caps the query.
 fn extract_keywords(msg: &str) -> Vec<String> {
-    use crate::context::ConsolidationEngine;
-    let mut keywords: Vec<String> = msg
-        .split_whitespace()
-        .filter(|w| ConsolidationEngine::is_meaningful_token(w))
-        .map(|w| w.to_lowercase())
-        .collect();
-    // Sort by length descending: longer words are more specific.
-    keywords.sort_by_key(|b| std::cmp::Reverse(b.len()));
+    use crate::context::tokenizer::DefaultTokenizer;
+    use crate::context::tokenizer::Tokenizer as _;
+    let mut keywords = DefaultTokenizer.meaningful_tokens(msg);
+    // Sort by char length descending: longer words are more specific.
+    keywords.sort_by_key(|b| std::cmp::Reverse(b.chars().count()));
     keywords.dedup();
     // Keep top-N keywords to avoid query noise.
     const MAX_KEYWORDS: usize = 6;
@@ -990,5 +988,41 @@ mod tests {
             !result.iter().any(|l| l.contains("old-superseded-global")),
             "superseded global must be excluded: {result:?}"
         );
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    //  extract_keywords (regression net for tokenizer refactor)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    #[test]
+    fn extract_keywords_filters_stop_words_and_short_tokens() {
+        // Locks in current English behavior: stop words and <3-char tokens
+        // are dropped, output is lowercased and deduped.
+        let kws = extract_keywords("the Rust is a great language for systems");
+        assert!(kws.iter().all(|k| k.len() >= 3), "no short tokens");
+        assert!(
+            !kws.iter()
+                .any(|k| matches!(k.as_str(), "the" | "is" | "a" | "for")),
+            "stop words must be filtered: {kws:?}"
+        );
+        assert!(
+            kws.iter().any(|k| k == "rust"),
+            "rust should survive filtering: {kws:?}"
+        );
+    }
+
+    #[test]
+    fn extract_keywords_truncates_to_max() {
+        // Long input must be capped at MAX_KEYWORDS (6).
+        let kws = extract_keywords("alpha beta gamma delta epsilon zeta eta theta");
+        assert!(kws.len() <= 6, "must cap at 6 keywords, got {}", kws.len());
+    }
+
+    #[test]
+    fn extract_keywords_too_few_returns_empty() {
+        // recall() bails when keywords.len() < 2; a single meaningful token
+        // must therefore yield a 1-element vec (caller decides the gate).
+        let kws = extract_keywords("hi");
+        assert!(kws.is_empty(), "single short token → empty: {kws:?}");
     }
 }
