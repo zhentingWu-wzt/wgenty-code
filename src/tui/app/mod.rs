@@ -22,6 +22,7 @@ use crate::state::agent_phase::{AgentPhase, TurnAbortReason, TurnId};
 use crate::tui::client::DaemonClient;
 use crate::tui::components::input::InputBox;
 use crate::tui::components::inspector::InspectorComponent;
+use crate::tui::components::model_picker::ModelPickerState;
 use crate::tui::components::permission::PermissionState;
 use crate::tui::components::plan_panel::PlanPanelState;
 use crate::tui::components::question::QuestionState;
@@ -149,6 +150,9 @@ pub struct App {
     /// Turn id chosen in the turn picker, held until the scope is confirmed in
     /// the scope picker (then consumed by the `UndoRequested` event handler).
     pub pending_undo_turn_id: Option<String>,
+    /// Active model picker popup state for the `/model` flow (`None` when
+    /// closed). Set by `open_model_picker`; consumed by Enter / Esc.
+    pub model_picker: Option<ModelPickerState>,
     pub mode: AgentMode,
     /// Previous mode before entering PlanMode via toggle (Ctrl+P or /plan).
     /// Used to restore the correct mode when toggling back.
@@ -493,6 +497,7 @@ impl App {
             turn_picker: None,
             scope_picker: None,
             pending_undo_turn_id: None,
+            model_picker: None,
             turn_contexts: Vec::with_capacity(TURN_CONTEXT_CAPACITY),
             pending_context: None,
             mode: if settings.agent.plan_mode {

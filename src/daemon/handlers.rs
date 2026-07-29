@@ -67,7 +67,11 @@ pub async fn health() -> Json<HealthResponse> {
 // ── Config ───────────────────────────────────────────────────────────────────
 
 pub async fn get_config(State(state): State<Arc<DaemonState>>) -> Json<ConfigResponse> {
-    let s = &state.app_state.settings;
+    // Read from the live handle so a `/model` switch is reflected here too.
+    let s = state
+        .settings_handle
+        .read()
+        .expect("lock poisoned: settings");
     Json(ConfigResponse {
         model: s.models.main.name.clone(),
         api_base: s.models.main.endpoint_base_url(),
@@ -77,17 +81,109 @@ pub async fn get_config(State(state): State<Arc<DaemonState>>) -> Json<ConfigRes
     })
 }
 
+/// GET /api/v1/models - list switchable model profiles for the `/model` picker.
+/// Always includes the currently active one (marked `active: true`). If
+/// `models.profiles` is empty, returns an empty list (picker can show a hint).
+pub async fn list_models(State(state): State<Arc<DaemonState>>) -> Json<ListModelsResponse> {
+    let s = state
+        .settings_handle
+        .read()
+        .expect("lock poisoned: settings");
+    let active = s.models.active_profile.as_deref();
+    let mut profiles: Vec<ModelProfileInfo> = s
+        .models
+        .profiles
+        .iter()
+        .map(|(key, ep)| ModelProfileInfo {
+            key: key.clone(),
+            label: ep.display_name.clone().unwrap_or_else(|| ep.name.clone()),
+            model_name: ep.name.clone(),
+            provider: ep.provider.clone(),
+            tier: ep.tier.map(|t| {
+                match t {
+                    crate::config::models::ModelTier::Light => "light",
+                    crate::config::models::ModelTier::Medium => "medium",
+                    crate::config::models::ModelTier::Heavy => "heavy",
+                }
+                .to_string()
+            }),
+            active: active == Some(key.as_str()),
+        })
+        .collect();
+    // Stable, alphabetical ordering for a predictable picker.
+    profiles.sort_by(|a, b| a.key.cmp(&b.key));
+    Json(ListModelsResponse { profiles })
+}
+
+/// POST /api/v1/model/switch - activate a named profile. Copies the profile
+/// endpoint into `models.main`, records `active_profile`, persists to disk,
+/// and updates the live handle so the next chat turn uses the new model.
+///
+/// Returns 400 with an actionable message (listing available profiles) when
+/// the profile key is unknown.
+pub async fn switch_model(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<SwitchModelRequest>,
+) -> Result<Json<SwitchModelResponse>, (StatusCode, String)> {
+    // 1. Read current settings, switch in a clone, validate the profile exists.
+    let mut settings = state
+        .settings_handle
+        .read()
+        .expect("lock poisoned: settings")
+        .clone();
+    settings
+        .switch_to_profile(&body.profile)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+
+    // 2. Persist so the choice survives a restart. Use the disk-load form to
+    //    avoid writing back a runtime-resolved absolute working_dir.
+    let mut disk = crate::config::Settings::load_from_disk().unwrap_or_else(|_| settings.clone());
+    disk.switch_to_profile(&body.profile)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    if let Err(e) = disk.save() {
+        tracing::warn!(error = %e, "failed to persist settings.json after model switch");
+    }
+
+    let label = settings.main_model_label();
+    let model_name = settings.models.main.name.clone();
+    let provider = settings.models.main.provider.clone();
+
+    // 3. Publish to the live handle — next chat_stream reads this.
+    *state
+        .settings_handle
+        .write()
+        .expect("lock poisoned: settings") = settings;
+
+    tracing::info!(
+        profile = %body.profile,
+        model = %model_name,
+        provider = ?provider,
+        "model switched via /model"
+    );
+
+    Ok(Json(SwitchModelResponse {
+        success: true,
+        profile: body.profile,
+        label,
+        model_name,
+        provider,
+    }))
+}
+
 // ── Chat / Stream ────────────────────────────────────────────────────────────
 
 pub async fn chat_stream(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<ChatStreamRequest>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let settings = state.app_state.settings.clone();
-    // Reuse the daemon's shared pooled HTTP clients so the keep-alive pool +
-    // TLS session cache survive across requests - avoids a fresh TCP + TLS
-    // handshake on every chat turn. `settings` is still fresh per request for
-    // API key / base URL / model / provider.
+    // Clone from the live handle so a `/model` switch takes effect on the
+    // very next turn. The shared pooled HTTP clients below keep their
+    // keep-alive pool + TLS session cache across requests.
+    let settings = state
+        .settings_handle
+        .read()
+        .expect("lock poisoned: settings")
+        .clone();
     let client = ApiClient::with_clients(
         settings,
         state.http_client.clone(),

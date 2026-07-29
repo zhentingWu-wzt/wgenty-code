@@ -204,6 +204,17 @@ impl App {
             self.open_undo_picker();
             return;
         }
+        // /model            → open the model picker popup
+        // /model <profile>  → switch directly to that profile (no popup)
+        if slash == "/model" {
+            let rest = text.trim().strip_prefix("/model").unwrap_or("").trim();
+            if rest.is_empty() {
+                self.open_model_picker();
+            } else {
+                self.switch_model_direct(rest);
+            }
+            return;
+        }
         if text.trim() == "/help" {
             let commands = crate::tui::completion::CompletionEngine::default_builtin_commands()
                 .into_iter()

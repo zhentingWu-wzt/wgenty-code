@@ -5,6 +5,7 @@ pub mod diff;
 pub mod input;
 pub mod inspector;
 pub mod memory;
+pub mod model_picker;
 pub mod permission;
 
 pub mod plan_panel;

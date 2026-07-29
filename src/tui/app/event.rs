@@ -780,6 +780,83 @@ impl App {
             AppEvent::UndoFileCountsReady(infos) => {
                 self.apply_file_counts(&infos);
             }
+            AppEvent::RefreshModels => {
+                // Async fetch of the switchable profile list; result lands via
+                // ModelsReady. Failure is non-fatal: the picker shows a hint.
+                let client = self.daemon_client.clone();
+                let event_tx = self.event_tx.clone();
+                tokio::spawn(async move {
+                    match client.list_models().await {
+                        Ok(options) => {
+                            let _ = event_tx.send(AppEvent::ModelsReady(options));
+                        }
+                        Err(e) => {
+                            tracing::debug!(error = %e, "list_models failed; /model picker empty");
+                            let _ = event_tx.send(AppEvent::ModelsReady(Vec::new()));
+                        }
+                    }
+                });
+            }
+            AppEvent::ModelsReady(options) => {
+                if options.is_empty() {
+                    self.push_system_message(
+                        "No model profiles configured. Add a `models.profiles` map to \
+                         ~/.wgenty-code/settings.json (see WGENTY.md) to enable switching.",
+                    );
+                    return;
+                }
+                // Drop the "Loading…" placeholder by opening the picker; the
+                // picker overlay visually replaces the trailing system message.
+                self.model_picker = Some(
+                    crate::tui::components::model_picker::ModelPickerState::new(options),
+                );
+            }
+            AppEvent::ModelSwitchRequested { profile } => {
+                let client = self.daemon_client.clone();
+                let event_tx = self.event_tx.clone();
+                let profile_clone = profile.clone();
+                tokio::spawn(async move {
+                    match client.switch_model(&profile_clone).await {
+                        Ok(result) => {
+                            let _ = event_tx.send(AppEvent::ModelSwitched {
+                                profile: profile_clone,
+                                label: result.label,
+                                model_name: result.model_name,
+                                provider: result.provider,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(AppEvent::ModelSwitchFailed(format!("{e:#}")));
+                        }
+                    }
+                });
+            }
+            AppEvent::ModelSwitched {
+                profile,
+                label,
+                model_name,
+                provider,
+            } => {
+                // The daemon already persisted to disk and updated its live
+                // handle. Reload our local settings_lock from disk so every
+                // TUI read (welcome banner, status bar, context bar) reflects
+                // the new active model on the next frame.
+                match crate::config::Settings::load() {
+                    Ok(s) => *self.settings_lock.write().expect("lock poisoned: settings") = s,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to reload settings after model switch")
+                    }
+                }
+                let provider_str = provider.as_deref().unwrap_or("");
+                self.push_system_message(format!(
+                    "✓ Switched to {label}  ({model_name} · {provider_str})  [profile: {profile}]"
+                ));
+                self.phase = crate::state::agent_phase::AgentPhase::Idle;
+            }
+            AppEvent::ModelSwitchFailed(msg) => {
+                self.push_system_message(format!("Model switch failed: {msg}"));
+                self.phase = crate::state::agent_phase::AgentPhase::Idle;
+            }
             AppEvent::AgentLocalView { view, generation } => {
                 // P1: Discard stale views from a previous generation. After
                 // `/clear` or a generation reset, old polling loops (if still

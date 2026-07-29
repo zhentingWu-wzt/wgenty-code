@@ -79,6 +79,7 @@ impl Settings {
     pub fn load() -> anyhow::Result<Self> {
         let mut settings = Self::load_from_disk()?;
         settings.resolve_working_dir();
+        settings.reconcile_routing();
         Ok(settings)
     }
 
@@ -105,6 +106,19 @@ impl Settings {
         self.storage.working_dir = candidate
             .canonicalize()
             .unwrap_or_else(|_| crate::utils::current_project_root());
+    }
+
+    /// Reconcile the legacy `agent.rlm.auto_routing` switch with the newer
+    /// `models.routing.enabled` master switch.
+    ///
+    /// Routing is enabled only when **both** are on: `models.routing` is the
+    /// granular, per-tier control surface, while `auto_routing` is the legacy
+    /// kill-switch that long-time users may have set to `false`. Treating the
+    /// two as an AND preserves the meaning of disabling `auto_routing`.
+    pub fn reconcile_routing(&mut self) {
+        if !self.agent.rlm.auto_routing {
+            self.models.routing.enabled = false;
+        }
     }
 
     /// Save settings to file (~/.wgenty-code/settings.json) as pretty JSON.
@@ -166,6 +180,48 @@ impl Settings {
         let mut s = self.clone();
         s.models.main.name = model_name.to_string();
         s
+    }
+
+    /// Activate a named profile in place: copy the profile's full
+    /// [`ModelEndpoint`] into `models.main` and record `active_profile`.
+    /// Returns `Err` if the profile key is not in `models.profiles`, with the
+    /// list of available keys for actionable feedback.
+    ///
+    /// This is the single source of truth for the `/model` switch — the daemon
+    /// handler and any future switch surface should call this so behavior stays
+    /// consistent. Because it replaces `models.main`, every downstream consumer
+    /// (subagent `small_model_settings`, fallback, planner) follows
+    /// automatically on the next request.
+    pub fn switch_to_profile(&mut self, profile: &str) -> anyhow::Result<()> {
+        match self.models.profiles.get(profile) {
+            Some(endpoint) => {
+                self.models.main = endpoint.clone();
+                self.models.active_profile = Some(profile.to_string());
+                Ok(())
+            }
+            None => {
+                let mut keys: Vec<&String> = self.models.profiles.keys().collect();
+                keys.sort();
+                Err(anyhow::anyhow!(
+                    "unknown model profile '{}'; available: [{}]",
+                    profile,
+                    keys.iter()
+                        .map(|k| k.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            }
+        }
+    }
+
+    /// Human-readable label for `models.main`: `display_name` if set, else
+    /// `name`. Used by the TUI picker and status bar.
+    pub fn main_model_label(&self) -> String {
+        self.models
+            .main
+            .display_name
+            .clone()
+            .unwrap_or_else(|| self.models.main.name.clone())
     }
 
     /// Select the first fallback model name different from `failed_model`.

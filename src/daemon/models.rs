@@ -134,6 +134,44 @@ pub struct SetPermissionModeRequest {
     pub effective_mode: Option<crate::sandbox::EffectiveMode>,
 }
 
+// ── Model Switch ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct SwitchModelRequest {
+    /// Profile key in `models.profiles` to activate.
+    pub profile: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SwitchModelResponse {
+    pub success: bool,
+    /// The activated profile key.
+    pub profile: String,
+    /// Human-readable label (`display_name` or model name).
+    pub label: String,
+    /// The underlying model name now in `models.main`.
+    pub model_name: String,
+    /// Resolved provider, if any.
+    pub provider: Option<String>,
+}
+
+/// One selectable entry for the `/model` picker, returned by `list_models`.
+#[derive(Debug, Serialize)]
+pub struct ModelProfileInfo {
+    pub key: String,
+    pub label: String,
+    pub model_name: String,
+    pub provider: Option<String>,
+    /// Declared tier (`"light"`/`"medium"`/`"heavy"`), if the profile set one.
+    pub tier: Option<String>,
+    pub active: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListModelsResponse {
+    pub profiles: Vec<ModelProfileInfo>,
+}
+
 // ── MCP ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]

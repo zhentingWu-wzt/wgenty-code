@@ -165,6 +165,11 @@ impl App {
             let area = centered_rect(40, 35, f.area());
             components::undo_scope_picker::render(f, picker, area);
         }
+        // /model picker: centered popup listing switchable profiles.
+        if let Some(ref picker) = self.model_picker {
+            let area = centered_rect(60, 50, f.area());
+            components::model_picker::render(f, picker, area);
+        }
     }
 
     fn render_chat(&self, f: &mut Frame, area: Rect) {
@@ -238,6 +243,18 @@ impl App {
 
         // CodeGraph MCP connection status indicator
         if area.width >= 60 {
+            // Active model label (live from settings_lock so `/model` switches
+            // are reflected on the next frame without a restart).
+            let model_label = self
+                .settings_lock
+                .read()
+                .expect("lock poisoned: settings")
+                .main_model_label();
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!("⚙ {model_label}"),
+                Style::default().fg(theme::DIM),
+            ));
             spans.push(Span::raw(" "));
             spans.push(codegraph_status_span(&self.codegraph_status));
         }

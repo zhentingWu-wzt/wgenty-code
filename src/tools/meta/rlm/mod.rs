@@ -11,6 +11,7 @@
 //! complex tasks use `delegate` to trigger the full RLM pipeline.
 
 pub mod budget;
+pub mod classifier;
 pub mod formats;
 mod pipeline;
 pub mod planner;

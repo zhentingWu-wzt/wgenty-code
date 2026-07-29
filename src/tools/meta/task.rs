@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 
 mod heuristic;
+mod routing;
 pub(crate) mod transcript;
 
 use self::transcript::{new_transcript_id, save_minimal_transcript};
@@ -728,15 +729,81 @@ impl Tool for TaskTool {
         let child_context = reservation.context.clone();
         let child_id = child_context.agent_id.clone();
 
-        // Use small model when requested and configured.
-        // small_model_settings() returns a clone with main endpoint overridden
-        // by models.small (or self unchanged when models.small is None).
-        let use_small = input["use_small_model"].as_bool().unwrap_or(false);
-        let api_client = if use_small && self.settings.models.small.is_some() {
-            ApiClient::new(self.settings.small_model_settings())
-        } else {
-            ApiClient::new(self.settings.clone())
+        // Resolve the model for this subagent.
+        //
+        // Priority chain (see `routing::decide`):
+        //   1. Explicit `use_small_model` from the caller LLM → Light/Heavy
+        //      (preserves the pre-routing binary behavior exactly).
+        //   2. Absent hint + auto-routing enabled → heuristic complexity score
+        //      picks a tier (Light/Medium/Heavy), with optional LLM fallback
+        //      for borderline scores.
+        //   3. Routing disabled / no tier profiles / LLM fails → main model.
+        //
+        // `use_small_model` is read as Option<bool> so we can distinguish
+        // "absent" (eligible for auto-routing) from "explicitly false".
+        let use_small_model_opt = input.get("use_small_model").and_then(|v| v.as_bool());
+        let models = &self.settings.models;
+        let routing_cfg = &models.routing;
+        let has_light = models.has_tier(crate::config::models::ModelTier::Light);
+        let has_heavy = models.has_tier(crate::config::models::ModelTier::Heavy);
+
+        let choice = routing::decide(
+            use_small_model_opt,
+            &full_prompt,
+            routing_cfg,
+            has_light,
+            has_heavy,
+        );
+
+        let tier = match choice {
+            routing::ModelChoice::NeedsLlm { .. } if routing_cfg.llm_fallback => {
+                // Borderline + LLM fallback enabled: ask the small model for a
+                // sharper score. On any failure, fall back to Medium.
+                let classifier_client = ApiClient::new(self.settings.small_model_settings());
+                match crate::tools::meta::rlm::classifier::classify_complexity(
+                    &classifier_client,
+                    &full_prompt,
+                )
+                .await
+                {
+                    Ok(score) => {
+                        if score < routing_cfg.boundary_low && has_light {
+                            crate::config::models::ModelTier::Light
+                        } else if score > routing_cfg.boundary_high && has_heavy {
+                            crate::config::models::ModelTier::Heavy
+                        } else {
+                            crate::config::models::ModelTier::Medium
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            target: "routing",
+                            error = %e,
+                            "LLM complexity classifier failed, falling back to Medium"
+                        );
+                        crate::config::models::ModelTier::Medium
+                    }
+                }
+            }
+            other => other.tier_or_medium(),
         };
+
+        let tier_endpoint = models.endpoint_for_tier(tier);
+        tracing::debug!(
+            target: "routing",
+            tier = ?tier,
+            model = %tier_endpoint.name,
+            explicit = ?use_small_model_opt,
+            "subagent model routed"
+        );
+
+        // Build a Settings clone with `models.main` set to the chosen tier's
+        // endpoint, mirroring how `small_model_settings()` worked but for any
+        // tier. This keeps every downstream path (subagent loop, fallback,
+        // transcript) reading the correct model from `settings.models.main`.
+        let mut child_settings = self.settings.clone();
+        child_settings.models.main = tier_endpoint;
+        let api_client = ApiClient::new(child_settings.clone());
 
         // ── Unified spawn: progress record + spawned child future ──────
         let timeout_secs = self.settings.agent.subagent.timeout_secs;
@@ -790,17 +857,11 @@ impl Tool for TaskTool {
         let reg = tool_registry.clone();
         let tools = allowed_tools.clone();
         let progress_store_for_transcript = self.progress_store.clone();
-        // `settings_bg` must reflect the child's actual model so interception-2
-        // fallback reads the correct `failed_model`. When `use_small_model` is
-        // set, the child runs with `small_model_settings()` (which overrides
-        // `models.main.name` to the small model); mirror that here so
-        // `SubagentSynthesis.settings.models.main.name` matches the child's
-        // api_client, and `select_fallback_model` does not pick the same model.
-        let settings_bg = if use_small && self.settings.models.small.is_some() {
-            self.settings.small_model_settings()
-        } else {
-            self.settings.clone()
-        };
+        // `settings_bg` mirrors the child's actual model so interception-2
+        // fallback reads the correct `failed_model` and `select_fallback_model`
+        // does not pick the same model. `child_settings` already has
+        // `models.main` set to the routed tier endpoint, so reuse it directly.
+        let settings_bg = child_settings.clone();
         let coordinator_bg = self.coordinator.clone();
         let permission_ctx = self.build_permission_context(child_context.agent_id.as_str());
         // Fold subagent file edits into the root turn's checkpoint snapshot.
