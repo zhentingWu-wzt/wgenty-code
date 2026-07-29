@@ -9,6 +9,68 @@ use tokio::sync::RwLock;
 
 use super::{MemoryEntry, MemoryType};
 
+/// Dependency-inverted LLM port for tier-2 relation review.
+///
+/// `context/` must not depend on `agent/` (layering rule), so instead of
+/// importing `LlmPort` directly we define this minimal trait. The `agent/`
+/// side supplies an adapter that forwards to its real `LlmPort::chat`. When
+/// `None` is supplied, ambiguous-relation review degrades to the legacy
+/// "merge + tag" behavior.
+#[async_trait::async_trait]
+pub trait MemoryReviewLlm: Send + Sync {
+    /// Run a single non-streaming prompt and return the raw text reply.
+    async fn ask(&self, system: &str, user: &str) -> anyhow::Result<String>;
+}
+
+/// Tier-2 verdict returned by reviewing an ambiguous pair with an LLM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AmbiguousVerdict {
+    /// The new memory invalidates the existing one → supersede the existing.
+    Contradicts,
+    /// Same-direction refinement → reinforce the existing, drop the new.
+    Compatible,
+    /// Genuinely unrelated despite token overlap → keep both as live entries.
+    Unrelated,
+}
+
+/// Tier-2 review of an ambiguous pair via the supplied LLM.
+///
+/// Returns `Ok(Some(verdict))` when the LLM answered coherently; `Ok(None)`
+/// when the call or parse failed (caller keeps the ambiguous tag for a future
+/// pass). Caller must supply an LLM — pass `None` at the call site instead to
+/// take the legacy merge+tag branch without calling this.
+pub async fn review_ambiguous(
+    llm: &dyn MemoryReviewLlm,
+    existing: &MemoryEntry,
+    incoming: &MemoryEntry,
+) -> Option<AmbiguousVerdict> {
+    let system =
+        "You classify how a new memory relates to an existing one. Reply with exactly one word:\n\
+        - contradicts (the new invalidates/supersedes the existing)\n\
+        - compatible (the new is a same-direction refinement of the existing)\n\
+        - unrelated (they cover different things despite word overlap)";
+    let user = format!("EXISTING: {}\nNEW: {}", existing.content, incoming.content);
+
+    let reply = match llm.ask(system, &user).await {
+        Ok(text) => text.trim().to_lowercase(),
+        Err(e) => {
+            tracing::warn!(error = %e, "tier-2 memory review LLM call failed");
+            return None;
+        }
+    };
+    let verdict = if reply.starts_with("contradict") {
+        AmbiguousVerdict::Contradicts
+    } else if reply.starts_with("compatible") {
+        AmbiguousVerdict::Compatible
+    } else if reply.starts_with("unrelated") {
+        AmbiguousVerdict::Unrelated
+    } else {
+        tracing::warn!(reply = %reply, "tier-2 review returned unrecognized verdict");
+        return None;
+    };
+    Some(verdict)
+}
+
 /// Conservative filesystem-relative path extractor for codebase staleness.
 ///
 /// Matches tokens that look like repo-relative source paths (e.g. `src/foo.rs`,
@@ -151,18 +213,36 @@ pub enum MemoryRelation {
 ///   other (same-direction refinement), without contradiction signals.
 /// - **Ambiguous**: everything else (including competing alternatives).
 pub fn classify_relation(new: &MemoryEntry, existing: &MemoryEntry) -> MemoryRelation {
+    classify_relation_with_reason(new, existing).0
+}
+
+/// Like [`classify_relation`] but also returns a human-readable reason for the
+/// verdict. The reason is `Some` only for `Contradicts` (where it records the
+/// trigger: `"numeric_drift: <key>"` or `"state_change"`), so tombstone audit
+/// can explain *why* a memory was superseded.
+pub fn classify_relation_with_reason(
+    new: &MemoryEntry,
+    existing: &MemoryEntry,
+) -> (MemoryRelation, Option<String>) {
     let new_tokens = meaningful_token_set(&new.content);
     let existing_tokens = meaningful_token_set(&existing.content);
 
-    if has_numeric_value_drift(&new.content, &existing.content)
-        || has_state_change_contradiction(
-            &new.content,
-            &existing.content,
-            &new_tokens,
-            &existing_tokens,
-        )
-    {
-        return MemoryRelation::Contradicts;
+    if let Some(key) = numeric_drift_key(&new.content, &existing.content) {
+        return (
+            MemoryRelation::Contradicts,
+            Some(format!("numeric_drift: {key}")),
+        );
+    }
+    if has_state_change_contradiction(
+        &new.content,
+        &existing.content,
+        &new_tokens,
+        &existing_tokens,
+    ) {
+        return (
+            MemoryRelation::Contradicts,
+            Some("state_change".to_string()),
+        );
     }
 
     // Subset / same-direction refinement (mirrors content_similarity's subset boost).
@@ -170,10 +250,10 @@ pub fn classify_relation(new: &MemoryEntry, existing: &MemoryEntry) -> MemoryRel
     if min_len >= 1
         && (new_tokens.is_subset(&existing_tokens) || existing_tokens.is_subset(&new_tokens))
     {
-        return MemoryRelation::Compatible;
+        return (MemoryRelation::Compatible, None);
     }
 
-    MemoryRelation::Ambiguous
+    (MemoryRelation::Ambiguous, None)
 }
 
 fn meaningful_token_set(content: &str) -> std::collections::HashSet<String> {
@@ -422,21 +502,23 @@ fn has_state_change_contradiction(
 
 /// Detect shared key-like stems with differing numeric values, e.g.
 /// `max_tokens=128000` vs `max_tokens=4096`, or `port:8080` vs `port:3000`.
-fn has_numeric_value_drift(new_content: &str, existing_content: &str) -> bool {
+/// Returns the first differing key, or `None`. (Replaces the former bool-only
+/// `has_numeric_value_drift` so the tombstone audit can record *which* key
+/// drifted.)
+fn numeric_drift_key(new_content: &str, existing_content: &str) -> Option<String> {
     let new_pairs = extract_key_numeric_pairs(new_content);
     let existing_pairs = extract_key_numeric_pairs(existing_content);
     if new_pairs.is_empty() || existing_pairs.is_empty() {
-        return false;
+        return None;
     }
-
     for (key, new_val) in &new_pairs {
         if let Some(old_val) = existing_pairs.get(key) {
             if new_val != old_val {
-                return true;
+                return Some(key.clone());
             }
         }
     }
-    false
+    None
 }
 
 fn extract_key_numeric_pairs(content: &str) -> std::collections::HashMap<String, String> {
@@ -967,6 +1049,65 @@ mod tests {
     use crate::context::MemoryEntry;
     use std::path::PathBuf;
 
+    /// Mock MemoryReviewLlm that returns a canned reply.
+    struct MockReview {
+        reply: String,
+    }
+    #[async_trait::async_trait]
+    impl MemoryReviewLlm for MockReview {
+        async fn ask(&self, _system: &str, _user: &str) -> anyhow::Result<String> {
+            Ok(self.reply.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn review_ambiguous_parses_verdicts() {
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "auth uses jwt");
+        let incoming = MemoryEntry::new(MemoryType::Knowledge, "auth uses opaque tokens");
+
+        for (reply, expected) in [
+            ("contradicts", AmbiguousVerdict::Contradicts),
+            ("compatible", AmbiguousVerdict::Compatible),
+            ("unrelated", AmbiguousVerdict::Unrelated),
+        ] {
+            let llm = MockReview {
+                reply: reply.into(),
+            };
+            let v = review_ambiguous(&llm, &existing, &incoming).await;
+            assert_eq!(
+                v,
+                Some(expected),
+                "reply '{reply}' should map to {expected:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn review_ambiguous_unrecognized_returns_none() {
+        let llm = MockReview {
+            reply: "maybe".into(),
+        };
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "x");
+        let incoming = MemoryEntry::new(MemoryType::Knowledge, "y");
+        assert!(review_ambiguous(&llm, &existing, &incoming).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn review_ambiguous_error_returns_none() {
+        struct ErrLlm;
+        #[async_trait::async_trait]
+        impl MemoryReviewLlm for ErrLlm {
+            async fn ask(&self, _: &str, _: &str) -> anyhow::Result<String> {
+                anyhow::bail!("network down")
+            }
+        }
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "x");
+        let incoming = MemoryEntry::new(MemoryType::Knowledge, "y");
+        assert!(review_ambiguous(&ErrLlm, &existing, &incoming)
+            .await
+            .is_none());
+    }
+
     #[test]
     fn extract_memory_paths_finds_src_relative_files() {
         let paths = extract_memory_paths("logic lives in src/does_not_exist_xyz.rs only");
@@ -1365,6 +1506,47 @@ mod tests {
             MemoryRelation::Contradicts,
             "shared key-like token with differing numeric value must supersede"
         );
+    }
+
+    #[test]
+    fn classify_relation_with_reason_numeric_drift_key() {
+        // The reason variant must surface *which* key drifted, for audit.
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "API chat uses max_tokens=128000");
+        let new = MemoryEntry::new(MemoryType::Knowledge, "API chat uses max_tokens=4096");
+        let (relation, reason) = classify_relation_with_reason(&new, &existing);
+        assert_eq!(relation, MemoryRelation::Contradicts);
+        let reason = reason.expect("contradicts must carry a reason");
+        assert!(
+            reason.contains("numeric_drift"),
+            "reason should mention numeric_drift: {reason}"
+        );
+        assert!(
+            reason.contains("max_tokens"),
+            "reason should name the drifted key: {reason}"
+        );
+    }
+
+    #[test]
+    fn classify_relation_with_reason_state_change() {
+        // state_change reason has no specific marker key, just the category.
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "auth bug exists");
+        let new = MemoryEntry::new(MemoryType::Knowledge, "auth bug fixed");
+        let (relation, reason) = classify_relation_with_reason(&new, &existing);
+        assert_eq!(relation, MemoryRelation::Contradicts);
+        let reason = reason.expect("contradicts must carry a reason");
+        assert!(
+            reason.contains("state_change"),
+            "reason should mention state_change: {reason}"
+        );
+    }
+
+    #[test]
+    fn classify_relation_with_reason_compatible_has_no_reason() {
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "use jwt authentication");
+        let new = MemoryEntry::new(MemoryType::Knowledge, "use jwt");
+        let (relation, reason) = classify_relation_with_reason(&new, &existing);
+        assert_eq!(relation, MemoryRelation::Compatible);
+        assert!(reason.is_none(), "compatible carries no reason");
     }
 
     #[test]

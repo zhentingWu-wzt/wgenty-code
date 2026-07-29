@@ -6,6 +6,7 @@ use crate::api::{ApiClient, ChatMessage, ToolDefinition};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::{BoxStream, StreamExt};
+use std::sync::Arc;
 
 /// Direct provider access (CLI headless, tests, optional in-process daemon).
 #[derive(Clone)]
@@ -73,5 +74,35 @@ impl LlmPort for ApiLlmPort {
             finish_reason: choice.finish_reason.unwrap_or_default(),
             usage: response.usage,
         })
+    }
+}
+
+/// Adapter that bridges the agent-layer [`LlmPort`] to the context-layer
+/// [`MemoryReviewLlm`] trait, so `MemoryManager` can do tier-2 ambiguous-
+/// relation review without `context/` depending on `agent/` (dependency
+/// inversion: this adapter lives on the `agent/` side).
+pub struct MemoryReviewAdapter {
+    llm: Arc<dyn LlmPort>,
+}
+
+impl MemoryReviewAdapter {
+    pub fn new(llm: Arc<dyn LlmPort>) -> Self {
+        Self { llm }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::context::consolidation::MemoryReviewLlm for MemoryReviewAdapter {
+    async fn ask(&self, system: &str, user: &str) -> anyhow::Result<String> {
+        let messages = vec![
+            ChatMessage::system(system.to_string()),
+            ChatMessage::user(user.to_string()),
+        ];
+        let reply = self
+            .llm
+            .chat(messages, None)
+            .await
+            .map_err(|e| anyhow::anyhow!("memory review LLM call failed: {e}"))?;
+        Ok(reply.content.unwrap_or_default())
     }
 }

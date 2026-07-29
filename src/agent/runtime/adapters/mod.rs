@@ -2,4 +2,4 @@
 
 pub mod llm_api;
 
-pub use llm_api::ApiLlmPort;
+pub use llm_api::{ApiLlmPort, MemoryReviewAdapter};

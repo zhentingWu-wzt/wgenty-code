@@ -514,11 +514,61 @@ impl Cli {
                             crate::context::MemoryOrigin::Global => "global",
                         };
                         let preview: String = m.content.chars().take(120).collect();
+                        let tombstone_tag = if m.superseded_by.is_some() {
+                            " [tombstone]"
+                        } else {
+                            ""
+                        };
                         println!(
-                            "[{scope_label}] {imp:.2} {ty:?} {ts} | {preview}",
+                            "[{scope_label}] {imp:.2} {ty:?} {ts}{tombstone_tag} | {preview}",
                             imp = m.importance,
                             ty = m.memory_type,
                             ts = m.timestamp.format("%Y-%m-%d"),
+                        );
+                    }
+                }
+            }
+            super::MemoryCommands::Audit => {
+                // list_memories retains tombstones (effective_importance 0);
+                // filter to superseded entries for the audit view.
+                let entries = manager.list_memories(None, 500).await;
+                let tombs: Vec<_> = entries
+                    .into_iter()
+                    .filter(|(_, m)| m.superseded_by.is_some())
+                    .collect();
+                if tombs.is_empty() {
+                    println!("No tombstoned memories.");
+                } else {
+                    println!(
+                        "Showing {} tombstoned memor{}:",
+                        tombs.len(),
+                        if tombs.len() == 1 { "y" } else { "ies" }
+                    );
+                    for (scope, m) in tombs {
+                        let scope_label = match scope {
+                            crate::context::MemoryOrigin::Project => "project",
+                            crate::context::MemoryOrigin::Global => "global",
+                        };
+                        let target = m.superseded_by.as_deref().unwrap_or("?");
+                        let reason = m
+                            .metadata
+                            .get("supersede_reason")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("(no reason recorded)");
+                        let at = m
+                            .metadata
+                            .get("superseded_at")
+                            .and_then(|v| v.as_str())
+                            .map(|s| {
+                                chrono::DateTime::parse_from_rfc3339(s)
+                                    .map(|t| t.format("%Y-%m-%d").to_string())
+                                    .unwrap_or_else(|_| s.to_string())
+                            })
+                            .unwrap_or_else(|| m.timestamp.format("%Y-%m-%d").to_string());
+                        let preview: String = m.content.chars().take(80).collect();
+                        println!(
+                            "[{scope_label}] {ty:?} superseded by {target} at {at} | reason: {reason} | {preview}",
+                            ty = m.memory_type,
                         );
                     }
                 }

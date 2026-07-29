@@ -140,6 +140,12 @@ impl App {
         let history_for_snapshot = self.conversation_history.clone();
 
         self.current_turn_handle = Some(tokio::spawn(async move {
+            // Reward the memories injected last turn: the user continuing the
+            // conversation is an implicit "those were useful" signal. Must run
+            // before this turn's recall, which overwrites last_injected_ids.
+            if let Err(e) = memory_manager.reinforce_last_injected().await {
+                tracing::warn!(error = %e, "failed to reinforce last injected memories");
+            }
             // Per-turn recall: use MemoryContextInjector for keyword extraction
             // and TF-IDF search over cross-session memories.
             let recalled_text = MemoryContextInjector::recall(
