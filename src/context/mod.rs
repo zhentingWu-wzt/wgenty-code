@@ -5,22 +5,27 @@
 //! persistence, and memory consolidation.
 
 pub mod consolidation;
+mod entry;
 pub mod history;
+mod index;
 pub mod inject;
+mod lock;
 pub mod memory_session;
 pub mod migration;
 mod session;
 pub mod storage;
+pub mod tokenizer;
 
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use chrono::Utc;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use anyhow::Context as _;
+
+use lock::{ConsolidatingGuard, ConsolidationFileLock};
 
 pub use consolidation::{
     classify_relation, ConsolidationConfig, ConsolidationEngine, MemoryRelation,
@@ -33,346 +38,15 @@ pub use memory_session::{
 pub use session::TurnRecord;
 pub use storage::{Storage, StorageBackend};
 
-/// Runtime parameters for [`MemoryEntry::effective_importance`].
-#[derive(Debug, Clone, Copy)]
-pub struct EffectiveImportanceCfg {
-    pub age_threshold_hours: u64,
-    pub staleness_penalty: f32,
-}
+// Re-export the entry data model so the public API (`crate::context::MemoryEntry`
+// etc.) is unchanged after the split into entry.rs / index.rs. These names are
+// also how `MemoryManager` refers to them internally.
+pub use entry::{
+    EffectiveImportanceCfg, MemoryAddResult, MemoryEntry, MemoryOrigin, MemoryStatus, MemoryType,
+    PruneResult, RetrievalMode,
+};
 
-/// Controls how a [`MemoryEntry`] is retrieved for prompt injection.
-///
-/// - `Auto`: Every-turn TF-IDF recall automatically injects this entry
-///   (current behaviour, default).  Suitable for short atomic facts (1–3
-///   sentences) that the agent should "just know" when processing a related
-///   task.
-/// - `OnDemand`: This entry is **never** injected automatically.  The agent
-///   (or user) must call `memory list` (CLI) or `memory_add` (search) to
-///   retrieve it.  Suitable for longer structured documents (design docs,
-///   analysis notes, checklists) that would bloat the context window if
-///   injected every turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-#[derive(Default)]
-pub enum RetrievalMode {
-    #[default]
-    Auto,
-    OnDemand,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MemoryEntry {
-    pub id: String,
-    pub memory_type: MemoryType,
-    pub content: String,
-    pub timestamp: DateTime<Utc>,
-    pub importance: f32,
-    pub tags: Vec<String>,
-    pub metadata: HashMap<String, serde_json::Value>,
-    /// Times injected into `<memory-context>`.
-    #[serde(default)]
-    pub recall_count: u32,
-    /// Positive feedback count (Compatible `reinforce`).
-    #[serde(default)]
-    pub hit_count: u32,
-    /// Decay anchor; `None` → use `timestamp` until first consolidate anchors.
-    #[serde(default)]
-    pub last_reinforced_at: Option<DateTime<Utc>>,
-    /// Tombstone target id when this entry is superseded.
-    #[serde(default)]
-    pub superseded_by: Option<String>,
-    /// Idempotent codebase-staleness mark.
-    #[serde(default)]
-    pub stale_marked_at: Option<DateTime<Utc>>,
-    /// Injection strategy: `Auto` (every-turn TF-IDF recall) or `OnDemand`
-    /// (explicit search only).  Defaults to `Auto`.
-    #[serde(default)]
-    pub retrieval_mode: RetrievalMode,
-    // Note: the `embedding` field was removed — it was never populated
-    // anywhere and inflated every serialized JSON file. Old JSON files
-    // containing `"embedding": null` still deserialize correctly because
-    // serde ignores unknown fields by default.
-}
-
-impl MemoryEntry {
-    pub fn new(memory_type: MemoryType, content: &str) -> Self {
-        Self {
-            id: uuid::Uuid::new_v4().to_string(),
-            memory_type,
-            content: content.to_string(),
-            timestamp: Utc::now(),
-            importance: 0.5,
-            tags: Vec::new(),
-            metadata: HashMap::new(),
-            recall_count: 0,
-            hit_count: 0,
-            last_reinforced_at: None,
-            superseded_by: None,
-            stale_marked_at: None,
-            retrieval_mode: RetrievalMode::Auto,
-        }
-    }
-
-    pub fn with_importance(mut self, importance: f32) -> Self {
-        self.importance = importance.clamp(0.0, 1.0);
-        self
-    }
-
-    pub fn with_tags(mut self, tags: Vec<String>) -> Self {
-        self.tags = tags;
-        self
-    }
-
-    pub fn with_metadata(mut self, key: &str, value: serde_json::Value) -> Self {
-        self.metadata.insert(key.to_string(), value);
-        self
-    }
-
-    /// Record positive feedback. Does **not** raise base `importance`.
-    pub fn reinforce(&mut self, now: DateTime<Utc>) {
-        self.hit_count = self.hit_count.saturating_add(1);
-        self.last_reinforced_at = Some(now);
-    }
-
-    /// Pure effective importance used for recall ranking / retention.
-    pub fn effective_importance(&self, now: DateTime<Utc>, cfg: &EffectiveImportanceCfg) -> f32 {
-        if self.superseded_by.is_some() {
-            return 0.0;
-        }
-        let anchor = self.last_reinforced_at.unwrap_or(self.timestamp);
-        let hours = (now - anchor).num_minutes().max(0) as f64 / 60.0;
-        let half =
-            consolidation::type_half_life_hours(self.memory_type.clone(), cfg.age_threshold_hours)
-                .max(1e-6);
-        let decay = (-std::f64::consts::LN_2 * hours / half).exp() as f32;
-        let hitrate =
-            ((self.hit_count as f32 + 1.0) / (self.recall_count as f32 + 2.0)).clamp(0.0, 1.0);
-        // Laplace prior hitrate=0.5 maps to neutral 1.0 (neither reward nor penalty).
-        let hit_factor = 0.5 + hitrate; // 0.5..1.5 with clamp on hitrate
-        let stale_mul = if self.stale_marked_at.is_some() {
-            cfg.staleness_penalty
-        } else {
-            1.0
-        };
-        self.importance * decay * hit_factor * stale_mul
-    }
-}
-
-/// Result of adding a memory: the stored entry's id and whether it was
-/// merged into an existing entry via dedup.
-#[derive(Debug, Clone)]
-pub struct MemoryAddResult {
-    pub id: String,
-    pub merged: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum MemoryType {
-    Session,
-    Conversation,
-    Knowledge,
-    Preference,
-    Task,
-    Error,
-    Insight,
-    Decision,
-}
-
-/// Memory scope: determines physical storage location. Not serialized--
-/// the origin is decided at load time by which Storage the file was read
-/// from, and at write time by which Storage the caller routes to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemoryOrigin {
-    Project,
-    Global,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PruneResult {
-    pub before: usize,
-    pub after: usize,
-    pub removed: usize,
-    pub project_before: usize,
-    pub project_after: usize,
-    pub global_before: usize,
-    pub global_after: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MemoryStatus {
-    pub total_memories: usize,
-    pub session_count: usize,
-    pub conversation_count: usize,
-    pub knowledge_count: usize,
-    pub last_consolidation: Option<DateTime<Utc>>,
-    pub storage_size_bytes: u64,
-    /// Number of memories stored in the project-local pool.
-    #[serde(default)]
-    pub project_count: usize,
-    /// Number of memories stored in the global pool.
-    #[serde(default)]
-    pub global_count: usize,
-}
-
-// ── MemoryIndex: TF-IDF inverted index for memory retrieval ──────────
-
-/// In-memory inverted index with TF-IDF weighting for keyword search
-/// over the memory corpus. Built lazily on `load()` and kept in sync
-/// with `add_memory()` / `consolidate()`.
-struct MemoryIndex {
-    /// word → [(entry_index, normalized_tf)]
-    inverted: HashMap<String, Vec<(usize, f32)>>,
-    /// word → inverse document frequency
-    idf: HashMap<String, f32>,
-    /// total number of indexed entries
-    doc_count: usize,
-}
-
-impl MemoryIndex {
-    fn new() -> Self {
-        Self {
-            inverted: HashMap::new(),
-            idf: HashMap::new(),
-            doc_count: 0,
-        }
-    }
-
-    /// Rebuild the entire index from a slice of MemoryEntry.
-    fn rebuild(&mut self, entries: &[MemoryEntry]) {
-        self.inverted.clear();
-        self.idf.clear();
-        self.doc_count = entries.len();
-
-        if entries.is_empty() {
-            return;
-        }
-
-        // Phase 1: count term frequencies per document.
-        for (i, entry) in entries.iter().enumerate() {
-            let mut tf_counts: HashMap<String, u32> = HashMap::new();
-            for word in entry.content.split_whitespace() {
-                if crate::context::ConsolidationEngine::is_meaningful_token(word) {
-                    let lower = word.to_lowercase();
-                    *tf_counts.entry(lower).or_insert(0) += 1;
-                }
-            }
-            for (word, tf) in tf_counts {
-                // Sub-linear TF scaling: 1 + log(tf)
-                let tf_norm = 1.0 + (tf as f32).ln();
-                self.inverted.entry(word).or_default().push((i, tf_norm));
-            }
-        }
-
-        // Phase 2: compute IDF = log(N / df).
-        let n = self.doc_count as f32;
-        for (word, postings) in &self.inverted {
-            let df = postings.len() as f32;
-            if df > 0.0 {
-                self.idf.insert(word.clone(), (n / df).ln());
-            }
-        }
-    }
-
-    /// Search the index for entries matching `query` (whitespace-split,
-    /// stop-word filtered). Returns a list of `(entry_index, score)`
-    /// sorted by descending TF-IDF score, limited to `top_n`.
-    fn search(&self, query: &str, top_n: usize) -> Vec<(usize, f32)> {
-        // Tokenize and filter query terms.
-        let terms: Vec<String> = query
-            .split_whitespace()
-            .filter(|w| crate::context::ConsolidationEngine::is_meaningful_token(w))
-            .map(|w| w.to_lowercase())
-            .collect();
-
-        if terms.is_empty() || self.inverted.is_empty() {
-            return Vec::new();
-        }
-
-        // Accumulate TF-IDF scores per entry.
-        let mut scores: HashMap<usize, f32> = HashMap::new();
-        for term in &terms {
-            if let Some(postings) = self.inverted.get(term.as_str()) {
-                let idf = self.idf.get(term.as_str()).copied().unwrap_or(0.0);
-                for &(idx, tf) in postings {
-                    *scores.entry(idx).or_insert(0.0) += tf * idf;
-                }
-            }
-        }
-
-        // Sort by score descending, return top N.
-        let mut ranked: Vec<(usize, f32)> = scores.into_iter().collect();
-        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        ranked.truncate(top_n);
-        ranked
-    }
-
-    /// Add a single entry to the index incrementally.
-    fn add_entry(&mut self, entry: &MemoryEntry, idx: usize) {
-        self.doc_count += 1;
-
-        let mut tf_counts: HashMap<String, u32> = HashMap::new();
-        for word in entry.content.split_whitespace() {
-            if crate::context::ConsolidationEngine::is_meaningful_token(word) {
-                *tf_counts.entry(word.to_lowercase()).or_insert(0) += 1;
-            }
-        }
-
-        for (word, tf) in tf_counts {
-            let tf_norm = 1.0 + (tf as f32).ln();
-            self.inverted
-                .entry(word.clone())
-                .or_default()
-                .push((idx, tf_norm));
-            // Recompute IDF for this word (doc_count changed).
-            if let Some(postings) = self.inverted.get(&word) {
-                let df = postings.len() as f32;
-                let n = self.doc_count as f32;
-                self.idf.insert(word, (n / df).ln());
-            }
-        }
-    }
-
-    /// Replace the indexed content for the entry at `idx` with `entry`'s
-    /// content, in place.
-    ///
-    /// Removes all stale postings for `idx`, re-indexes from `entry`, and
-    /// recomputes IDF. `doc_count` is unchanged because no document is added
-    /// or removed. Used by `add_memory` after an in-place merge folds a
-    /// near-duplicate into an existing entry, so the TF-IDF index stays
-    /// consistent with the merged content.
-    fn replace_entry(&mut self, entry: &MemoryEntry, idx: usize) {
-        // Drop every posting that referenced the old content at `idx`.
-        for postings in self.inverted.values_mut() {
-            postings.retain(|(i, _)| *i != idx);
-        }
-        // Remove words that no longer have any postings.
-        self.inverted.retain(|_, postings| !postings.is_empty());
-
-        // Re-add postings from the new (merged) content.
-        let mut tf_counts: HashMap<String, u32> = HashMap::new();
-        for word in entry.content.split_whitespace() {
-            if crate::context::ConsolidationEngine::is_meaningful_token(word) {
-                *tf_counts.entry(word.to_lowercase()).or_insert(0) += 1;
-            }
-        }
-        for (word, tf) in tf_counts {
-            let tf_norm = 1.0 + (tf as f32).ln();
-            self.inverted
-                .entry(word.clone())
-                .or_default()
-                .push((idx, tf_norm));
-        }
-
-        // Recompute IDF for every word (doc_count is unchanged).
-        let n = self.doc_count as f32;
-        for (word, postings) in &self.inverted {
-            let df = postings.len() as f32;
-            self.idf.insert(word.clone(), (n / df).ln());
-        }
-        // Drop IDF entries for words that disappeared.
-        self.idf.retain(|w, _| self.inverted.contains_key(w));
-    }
-}
+use index::MemoryIndex;
 
 // ── MemoryManager ────────────────────────────────────────────────────
 
@@ -1133,162 +807,6 @@ impl Default for MemoryManager {
     }
 }
 
-/// Cross-process advisory lock for memory consolidation.
-///
-/// `MemoryManager::consolidate()` holds an in-process `RwLock`, but that does
-/// not protect against two separate `wgenty-code memory dream` processes
-/// running concurrently against the same `~/.wgenty-code/memory` directory.
-/// This lock uses a lock-file with a PID + timestamp to serialize
-/// consolidation across processes.
-///
-/// Stale locks (older than `STALE_AFTER` or whose PID is no longer alive) are
-/// reclaimed so a crashed process does not permanently block consolidation.
-struct ConsolidationFileLock {
-    lock_path: PathBuf,
-}
-
-/// A lock is considered stale after this duration and can be reclaimed.
-const LOCK_STALE_AFTER_SECS: i64 = 30 * 60;
-
-impl ConsolidationFileLock {
-    async fn acquire(storage: &Storage) -> anyhow::Result<Self> {
-        use tokio::io::AsyncWriteExt;
-
-        let lock_path = storage.path().join(".consolidation.lock");
-
-        // Ensure the directory exists.
-        if let Some(parent) = lock_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-
-        loop {
-            // Atomically create the lock file with create_new(true) so that
-            // only one process can hold it at a time.
-            let create_result = tokio::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&lock_path)
-                .await;
-
-            match create_result {
-                Ok(mut file) => {
-                    // We created the file — write our PID + timestamp.
-                    let pid = std::process::id();
-                    let ts = chrono::Utc::now().to_rfc3339();
-                    let content = format!("{}\n{}\n", pid, ts);
-                    file.write_all(content.as_bytes())
-                        .await
-                        .context("failed to write consolidation lock file")?;
-                    drop(file);
-                    return Ok(Self { lock_path });
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    // Lock exists — check if it's stale.
-                    if Self::is_stale(&lock_path).await {
-                        tracing::warn!("consolidation lock is stale; reclaiming");
-                        // Best-effort removal; race is acceptable (worst case
-                        // both processes remove then one wins create_new).
-                        let _ = tokio::fs::remove_file(&lock_path).await;
-                        continue;
-                    }
-                    // Wait and retry.
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                }
-                Err(e) => {
-                    return Err(e).context("failed to create consolidation lock file");
-                }
-            }
-        }
-    }
-
-    async fn is_stale(lock_path: &std::path::Path) -> bool {
-        let content = match tokio::fs::read_to_string(lock_path).await {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-        let mut lines = content.lines();
-        let pid_str = lines.next().and_then(|s| s.trim().parse::<u32>().ok());
-        let ts_str = lines.next().map(|s| s.trim());
-
-        // If we can read the PID, check liveness portably without pulling in
-        // a `libc` dependency: spawn the platform-native `kill -0` (Unix) or
-        // `tasklist` filter (Windows). If the check itself fails (e.g. the
-        // helper binary is missing), fall through to the timestamp guard so
-        // we never block consolidation forever.
-        if let Some(pid) = pid_str {
-            if Self::pid_alive(pid) {
-                return false;
-            }
-        }
-
-        // PID is dead or unparseable — check timestamp as a secondary guard.
-        if let Some(ts) = ts_str {
-            if let Ok(lock_time) = chrono::DateTime::parse_from_rfc3339(ts) {
-                let lock_time: chrono::DateTime<chrono::Utc> =
-                    lock_time.with_timezone(&chrono::Utc);
-                let age = (chrono::Utc::now() - lock_time).num_seconds();
-                return age > LOCK_STALE_AFTER_SECS;
-            }
-        }
-
-        // Can't parse anything — treat as stale so we don't block forever.
-        true
-    }
-
-    /// Check whether a process is alive, portably, without a `libc` dependency.
-    ///
-    /// Uses the platform-native helper (`kill -0` on Unix, `tasklist` on
-    /// Windows). If the helper is unavailable or errors, returns `false` so
-    /// the caller falls back to the timestamp-based staleness guard.
-    fn pid_alive(pid: u32) -> bool {
-        #[cfg(unix)]
-        {
-            std::process::Command::new("kill")
-                .arg("-0")
-                .arg(pid.to_string())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
-        #[cfg(not(unix))]
-        {
-            // On Windows, `tasklist /FI "PID eq <pid>"` lists the process if
-            // it is running. This is heavier than Unix `kill -0` but avoids
-            // a Win32 API dependency.
-            std::process::Command::new("tasklist")
-                .args(["/FI", &format!("PID eq {}", pid), "/NH"])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-                .unwrap_or(false)
-        }
-    }
-}
-
-impl Drop for ConsolidationFileLock {
-    fn drop(&mut self) {
-        // Best-effort lock removal on drop. Synchronous removal is fine here
-        // because this runs at the end of `consolidate()` and must not be
-        // skipped even if the async runtime is shutting down.
-        let _ = std::fs::remove_file(&self.lock_path);
-    }
-}
-
-/// RAII guard that resets the `consolidating` flag on drop, ensuring
-/// it is always cleared even when `consolidate()` returns early via `?`.
-struct ConsolidatingGuard {
-    flag: Arc<AtomicBool>,
-}
-
-impl Drop for ConsolidatingGuard {
-    fn drop(&mut self) {
-        self.flag.store(false, Ordering::SeqCst);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1416,6 +934,57 @@ mod tests {
         assert!(
             (eff_aged - expected_aged).abs() < 1e-3,
             "expected ~{expected_aged}, got {eff_aged}"
+        );
+    }
+
+    #[test]
+    fn effective_importance_clamped_to_unit_interval() {
+        // Max inputs: importance 1.0, no decay (fresh), perfect hit rate,
+        // no staleness. Raw product = 1.0 * 1.0 * 1.5 * 1.0 = 1.5, but the
+        // public value must stay in [0,1] so injection labels never show >1.
+        let now = Utc::now();
+        let mut e = MemoryEntry::new(MemoryType::Knowledge, "x").with_importance(1.0);
+        e.timestamp = now;
+        e.last_reinforced_at = Some(now);
+        // hit_count high, recall_count just above → hitrate ≈ 1.0
+        e.recall_count = 10;
+        e.hit_count = 10;
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+        let eff = e.effective_importance(now, &cfg);
+        assert!((eff - 1.0).abs() < 1e-5, "expected clamped 1.0, got {eff}");
+    }
+
+    #[test]
+    fn effective_importance_hit_factor_respects_bounds() {
+        // hit_factor ∈ [0.5, 1.5] regardless of hit_count / recall_count.
+        // Zero hits, many recalls → hitrate → 0 → hit_factor ≈ 0.5 (floor).
+        // hitrate never reaches exactly 0 (Laplace prior), so compute the
+        // expected value from the actual hitrate rather than hardcoding 0.5.
+        let now = Utc::now();
+        let cfg = EffectiveImportanceCfg {
+            age_threshold_hours: 48,
+            staleness_penalty: 0.5,
+        };
+        let mut e = MemoryEntry::new(MemoryType::Knowledge, "x").with_importance(0.8);
+        e.timestamp = now;
+        e.last_reinforced_at = Some(now);
+        e.recall_count = 1000;
+        e.hit_count = 0;
+        let eff = e.effective_importance(now, &cfg);
+        // decay=1, stale_mul=1; hitrate=(0+1)/(1000+2)
+        let hitrate = (0.0_f32 + 1.0) / (1000.0 + 2.0);
+        let expected = 0.8 * (0.5 + hitrate);
+        assert!(
+            (eff - expected).abs() < 1e-5,
+            "expected hit_factor floor {expected}, got {eff}"
+        );
+        // And it must be strictly above the 0.5 floor × importance.
+        assert!(
+            eff > 0.8 * 0.5,
+            "effective {eff} should be above the 0.4 asymptotic floor"
         );
     }
 
@@ -1587,7 +1156,7 @@ mod tests {
             age_threshold_hours: 12,
             enable_auto_consolidation: false,
             recall_top_n: 5,
-            recall_similarity_threshold: 0.3,
+            recall_min_effective_importance: 0.3,
             write_importance_threshold: 0.65,
             max_extract_per_compaction: 2,
             exploration_epsilon: 0.15,

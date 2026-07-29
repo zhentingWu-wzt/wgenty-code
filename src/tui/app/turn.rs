@@ -127,7 +127,7 @@ impl App {
                 // Read the effective-importance floor from settings so the TUI
                 // path matches the headless path (which already reads this key).
                 // Previously hardcoded to 0.5, silently ignoring user config.
-                s.storage.memory.recall_similarity_threshold as f64,
+                s.storage.memory.recall_min_effective_importance as f64,
             )
         };
 

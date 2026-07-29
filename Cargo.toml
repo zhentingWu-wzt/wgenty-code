@@ -61,6 +61,11 @@ anyhow = "1.0"
 # Memory & Cache
 lru = "0.12"
 
+# Tokenization (memory recall). jieba-rs is opt-in via the `zh-segmentation`
+# feature because its embedded dictionary adds ~2MB to the binary. The default
+# build uses the zero-dependency CJK bigram fallback in tokenizer.rs.
+jieba-rs = { version = "0.10", optional = true, default-features = true }
+
 # Crypto & Auth
 sha2 = "0.10"
 
@@ -136,6 +141,10 @@ bundled-skills = ["rust-embed"]
 export-icon = ["image"]
 # Rhai-powered run_script tool. Off by default - rhai alone costs ~10s on clean builds.
 scripting = ["dep:rhai"]
+# Precise Chinese word segmentation via jieba-rs. Off by default because the
+# embedded dictionary adds ~2MB to the binary (exceeds the 500KB budget). With
+# this off, the DefaultTokenizer falls back to CJK bigram segmentation.
+zh-segmentation = ["dep:jieba-rs"]
 # Integration tests that require real API keys and network access.
 # Off by default so `cargo test --all` / `cargo clippy --all-targets` stay green.
 integration-tests = []
