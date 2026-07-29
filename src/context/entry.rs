@@ -113,6 +113,14 @@ impl MemoryEntry {
         self.last_reinforced_at = Some(now);
     }
 
+    /// Record negative feedback (saturation-subtracts from `hit_count`). Does
+    /// **not** lower base `importance`; it only weakens the Laplace hit-rate
+    /// that feeds `effective_importance`, so a memory that was injected then
+    /// superseded or explicitly down-voted sinks in recall ranking over time.
+    pub fn penalize(&mut self) {
+        self.hit_count = self.hit_count.saturating_sub(1);
+    }
+
     /// Pure effective importance used for recall ranking / retention.
     ///
     /// The raw product `importance × decay × hit_factor × stale_mul` is

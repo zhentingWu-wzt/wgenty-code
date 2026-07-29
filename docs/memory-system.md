@@ -196,6 +196,10 @@
 
 效果：被探索注入且用户继续对话的冷记忆，hitrate 上升，effective importance 提升，排名上涨；被注入后用户忽视（换 session）的，recall_count 涨但 hit_count 不涨，hitrate 下降，自然降权。这让 `effective_importance` 的 hit_factor 公式真正有了探索维度的 reward 输入。
 
+**负向惩罚**：当一条记忆被注入后又在同一会话被 supersede（Contradicts 路径），说明它误导了 agent——对其 `penalize`（`hit_count.saturating_sub(1)`）。两处 Contradicts 分支（classify_relation 和 LLM review）都检查 `last_injected_ids` 并就地扣分。`MemoryEntry::penalize` 是 `reinforce` 的对称操作，只削弱 Laplace hit-rate，不改 base importance。
+
+**显式用户反馈**：记忆面板（TUI）支持 `+`（reinforce）/`-`（penalize）键盘快捷键，对选中条目调 `MemoryManager::reinforce_memory(id)` / `penalize_memory(id)`。这是比隐式信号更干净的正/负 reward 来源，用户可以直接表达"这条有用/没用"。
+
 ## 4. 整理流程（consolidate / AutoDream）
 
 ```
