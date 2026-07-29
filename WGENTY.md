@@ -146,6 +146,14 @@ Prompt 8 层：base_instructions → permissions → developer → environment �
 | `models.main.base_url` | Option | `https://api.deepseek.com` | API 地址 |
 | `models.small` | Option | None | 子代理用小模型端点 |
 | `models.planner` | Option | None | 规划专用模型端点 |
+| `models.profiles` | Map | `{}` | 可切换的命名模型 profile。key 为 profile 名（`/model <name>` 使用），值为完整 `ModelEndpoint`。切换时整个 endpoint 复制进 `models.main`，子代理/fallback/规划自动跟随 |
+| `models.active_profile` | Option | null | 当前激活的 profile key。`/model` 切换后自动写入并持久化；重启后保持上次选择 |
+| `models.main.display_name` | Option | null | 人类可读标签（如 "Vanguard"），picker 与状态栏展示用；缺省回退到 `name` |
+| `models.profiles.*.tier` | Option | null | 该 profile 的能力层级（`light`/`medium`/`heavy`），供子 agent 自动路由使用。与 profile 名解耦，路由器只认 tier |
+| `models.routing.enabled` | bool | true | 子 agent 自动模型路由总开关。`agent.rlm.auto_routing=false` 也会强制关闭（AND 逻辑） |
+| `models.routing.llm_fallback` | bool | true | 启发式分数落在边界区间时，是否用 small 模型发一次 LLM 分类调用 |
+| `models.routing.boundary_low` | f64 | 0.3 | 复杂度分数 < 此值 → light tier |
+| `models.routing.boundary_high` | f64 | 0.7 | 复杂度分数 > 此值 → heavy tier |
 | `models.transport.max_tokens` | usize | 4096 | 最大 token 数 |
 | `models.transport.timeout` | u64 | 120 | 请求超时(秒) |
 | `agent.plan_mode` | bool | false | 规划模式 |
@@ -192,6 +200,53 @@ Prompt 8 层：base_instructions → permissions → developer → environment �
 | `storage.transcript.max_age_days` | u32 | 30 | 子代理记录保留天数 |
 
 **环境变量优先级**: `DEEPSEEK_API_KEY` > `ANTHROPIC_API_KEY` > `DASHSCOPE_API_KEY`，`API_BASE_URL` 覆盖配置文件，`RUST_LOG` 控制日志级别
+
+### 多模型切换（`/model`）
+
+在 `models.profiles` 里声明多个命名 profile，即可在 TUI 内用 `/model` 即时切换，下一轮请求生效，重启后保持选择。推荐用**卫星序列**命名（用户可自定义，名字不参与路由逻辑——路由只认 `tier`）：
+
+```json
+"models": {
+  "main": { "name": "deepseek-v4-pro", "base_url": "https://api.deepseek.com" },
+  "profiles": {
+    "vanguard": { "name": "claude-sonnet-4-5", "display_name": "Vanguard",
+                  "tier": "heavy",
+                  "base_url": "https://api.anthropic.com", "provider": "anthropic",
+                  "api_key": "sk-ant-…" },
+    "horizon":  { "name": "deepseek-r1",       "display_name": "Horizon",
+                  "tier": "heavy" },
+    "scout":    { "name": "deepseek-chat",     "display_name": "Scout",
+                  "tier": "light" }
+  }
+}
+```
+
+- `/model` → 弹出 picker，列出所有 profile（含 active 标记 `●`、tier 标签 `{tier:heavy}`），↑↓ 选择、Enter 确认、Esc 取消
+- `/model <name>` → 直接切换到指定 profile（如 `/model vanguard`）
+- 切换 = 把 profile 的完整 endpoint 复制进 `models.main`，子代理（`small_model_settings`）、fallback、规划路径**自动跟随**，无需额外配置
+- 跨 provider（DeepSeek ↔ Anthropic）切换由每请求重建 `ApiClient` 天然支持
+
+#### 自动模型路由（子代理）
+
+子 agent 的模型选择支持**三档自动路由**，优先级如下：
+
+1. **显式指定（最高）**：调用方 LLM 传 `use_small_model: true/false` → 固定 light/heavy（与旧行为完全一致）
+2. **启发式路由**：字段缺省时，分析任务 prompt 的结构信号（编号步骤数、文件引用、依赖标记、长度）得出 0.0–1.0 分数，低分→light、高分→heavy
+3. **LLM 兜底**：分数落在边界区间 `[boundary_low, boundary_high]` 时，用 small 模型发一次极简分类调用以求更准
+4. **回退**：路由关闭 / 无对应 tier 的 profile / LLM 失败 → 用主模型
+
+`tier` 字段（`light`/`medium`/`heavy`）声明每个 profile 在路由中的角色，**与 profile 名解耦**——路由器只认 tier，不认名字。`light` 缺省回退到 `models.small`，`medium`/`heavy` 回退到 `models.main`。
+
+```json
+"models": {
+  "routing": {
+    "enabled": true,           // 总开关（agent.rlm.auto_routing=false 也会关掉它）
+    "llm_fallback": true,      // 边界分数时是否调 LLM 兜底
+    "boundary_low": 0.3,       // < 此值 → light
+    "boundary_high": 0.7       // > 此值 → heavy
+  }
+}
+```
 
 ---
 

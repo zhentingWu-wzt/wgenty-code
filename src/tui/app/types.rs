@@ -410,6 +410,31 @@ pub enum AppEvent {
     SkillsReady(Box<SkillsReadyData>),
     /// Turn context snapshot captured from a completed agent turn.
     TurnContextCaptured(TurnContext),
+    /// Asynchronously fetch the switchable model profile list from the daemon
+    /// to populate the `/model` picker. Sent by `open_model_picker`; the
+    /// result arrives as [`AppEvent::ModelsReady`].
+    RefreshModels,
+    /// Model profile list arrived from the daemon. Opens the picker with these
+    /// options (or shows a hint when empty).
+    ModelsReady(Vec<crate::tui::client::ModelOption>),
+    /// User confirmed a `/model` selection (or typed `/model <name>`). The
+    /// async loop calls `DaemonClient::switch_model`, updates the live
+    /// `settings_lock`, and echoes a confirmation system message.
+    ModelSwitchRequested {
+        profile: String,
+    },
+    /// Daemon confirmed a model switch. The handler re-reads settings from disk
+    /// into `settings_lock` so every TUI read reflects the new active model,
+    /// then pushes a confirmation system message.
+    ModelSwitched {
+        profile: String,
+        label: String,
+        model_name: String,
+        provider: Option<String>,
+    },
+    /// A `/model` switch failed (unknown profile, daemon error, etc.). Carries
+    /// the actionable error message for display.
+    ModelSwitchFailed(String),
 }
 
 /// Payload for [`AppEvent::SkillsReady`].

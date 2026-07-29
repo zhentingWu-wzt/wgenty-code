@@ -114,6 +114,26 @@ impl App {
             self.inspector.visible = self.inspector.was_visible_before_focus;
             return;
         }
+        // /model picker popup: ↑↓ navigate, Enter confirms the selection
+        // (dispatches ModelSwitchRequested), Esc cancels.
+        if self.model_picker.is_some() {
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if let Some(ref mut p) = self.model_picker {
+                        p.up();
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if let Some(ref mut p) = self.model_picker {
+                        p.down();
+                    }
+                }
+                KeyCode::Enter => self.confirm_model_selection(),
+                KeyCode::Esc => self.model_picker = None,
+                _ => {}
+            }
+            return;
+        }
         // /undo turn-picker popup: ↑↓ navigate, Enter confirms the selection
         // (advances to the scope picker), Esc cancels the whole flow.
         if self.turn_picker.is_some() {

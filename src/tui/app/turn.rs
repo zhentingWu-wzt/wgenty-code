@@ -613,6 +613,42 @@ impl App {
         let _ = self.event_tx.send(AppEvent::RefreshUndoFileCounts);
     }
 
+    // ── /model switch flow ────────────────────────────────────────────
+
+    /// Open the `/model` picker. Asynchronously fetches the switchable profile
+    /// list from the daemon; the picker opens when `ModelsReady` lands. A
+    /// placeholder message is pushed immediately so the user sees feedback.
+    pub(super) fn open_model_picker(&mut self) {
+        self.push_system_message("Loading model profiles…");
+        let _ = self.event_tx.send(AppEvent::RefreshModels);
+    }
+
+    /// Switch directly to a profile by name (`/model <name>`), bypassing the
+    /// picker. Dispatched to the async loop since the daemon call is async.
+    pub(super) fn switch_model_direct(&mut self, profile: &str) {
+        let profile = profile.to_string();
+        self.push_system_message(format!("Switching to model '{profile}'…"));
+        let _ = self
+            .event_tx
+            .send(AppEvent::ModelSwitchRequested { profile });
+    }
+
+    /// Confirm the current `/model` picker selection: close the popup and
+    /// dispatch the switch to the async loop.
+    pub(super) fn confirm_model_selection(&mut self) {
+        let profile = self
+            .model_picker
+            .as_ref()
+            .and_then(|p| p.selected_option())
+            .map(|o| o.key.clone());
+        self.model_picker = None;
+        if let Some(profile) = profile {
+            let _ = self
+                .event_tx
+                .send(AppEvent::ModelSwitchRequested { profile });
+        }
+    }
+
     /// Rebuild the turn-picker popup from the current `turn_records`,
     /// preserving the previously selected turn (via `pending_undo_turn_id`)
     /// when it is still present.  Used to fall back from the scope picker on

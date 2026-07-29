@@ -83,6 +83,12 @@ impl CompletionEngine {
                 category: "Built-in".to_string(),
             },
             CommandEntry {
+                name: "model".to_string(),
+                description: "Switch the active model (opens picker, or /model <name>)".to_string(),
+                args_hint: Some("[profile]".to_string()),
+                category: "Built-in".to_string(),
+            },
+            CommandEntry {
                 name: "help".to_string(),
                 description: "Show available commands".to_string(),
                 args_hint: None,
@@ -392,7 +398,8 @@ mod tests {
             .collect();
 
         for expected in [
-            "clear", "plan", "continue", "undo", "init", "compact", "session", "memory", "help",
+            "clear", "plan", "continue", "undo", "init", "compact", "session", "memory", "model",
+            "help",
         ] {
             assert!(
                 command_names.contains(&expected),

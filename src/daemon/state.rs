@@ -34,13 +34,21 @@ impl SessionRules {
 /// Shared state for all daemon HTTP handlers.
 pub struct DaemonState {
     pub app_state: AppState,
+    /// Live, runtime-mutable settings handle. Seeded from `app_state.settings`
+    /// at startup, then updated in place by the `/model` switch endpoint.
+    /// Per-request handlers (e.g. `chat_stream`) read a fresh clone from here
+    /// so a model switch takes effect on the next turn without a daemon
+    /// restart. The startup-only derived resources below (tool registry,
+    /// checkpoint store, etc.) keep reading the frozen `app_state.settings`
+    /// snapshot since they don't depend on the active model identity.
+    pub settings_handle: crate::config::watcher::SettingsHandle,
     /// Shared pooled HTTP clients for LLM API calls. Built once at startup
     /// from `app_state.settings` so the reqwest keep-alive pool + TLS session
     /// cache are reused across every per-request `ApiClient` - avoids a fresh
-    /// TCP + TLS handshake on each chat turn. `app_state.settings` is a static
-    /// snapshot for the daemon lifetime (no runtime reload), so the
-    /// connect/read timeouts baked in here match what per-request
-    /// `ApiClient::new` would have produced anyway.
+    /// TCP + TLS handshake on each chat turn. Model identity (name/base_url/
+    /// api_key/provider) is resolved per request from [`Self::settings_handle`],
+    /// so only the connect/read timeouts baked in here are fixed for the
+    /// daemon lifetime.
     pub http_client: Arc<reqwest::Client>,
     pub http_client_stream: Arc<reqwest::Client>,
     pub tool_registry: Arc<ToolRegistry>,
@@ -369,8 +377,15 @@ impl DaemonState {
         let (http_client, http_client_stream) =
             crate::api::ApiClient::build_clients(&app_state.settings);
 
+        // Live settings handle seeded from the startup snapshot. Runtime
+        // handlers clone from here per request so `/model` switches take
+        // effect on the next turn without a restart.
+        let settings_handle: crate::config::watcher::SettingsHandle =
+            Arc::new(std::sync::RwLock::new(app_state.settings.clone()));
+
         Self {
             app_state,
+            settings_handle,
             tool_executor,
             tool_registry,
             checkpoint_manager,

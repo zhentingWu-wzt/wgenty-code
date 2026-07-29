@@ -457,7 +457,12 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::SystemNotice(_)
         | AppEvent::UndoRequested { .. }
         | AppEvent::RefreshUndoFileCounts
-        | AppEvent::UndoFileCountsReady(_) => None,
+        | AppEvent::UndoFileCountsReady(_)
+        | AppEvent::RefreshModels
+        | AppEvent::ModelsReady(_)
+        | AppEvent::ModelSwitchRequested { .. }
+        | AppEvent::ModelSwitched { .. }
+        | AppEvent::ModelSwitchFailed(_) => None,
     }
 }
 

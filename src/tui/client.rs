@@ -36,6 +36,32 @@ pub struct CheckpointInfo {
     pub file_count: usize,
 }
 
+/// One selectable model profile returned by `GET /api/v1/models`. Drives the
+/// `/model` picker rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelOption {
+    /// Profile key — what `POST /api/v1/model/switch` expects.
+    pub key: String,
+    /// Human-readable label (`display_name` or model name).
+    pub label: String,
+    /// Underlying model name (e.g. `claude-sonnet-4-5`).
+    pub model_name: String,
+    /// Forced provider, if any.
+    pub provider: Option<String>,
+    /// Declared tier (`"light"`/`"medium"`/`"heavy"`), if the profile set one.
+    pub tier: Option<String>,
+    /// Whether this is the currently active profile.
+    pub active: bool,
+}
+
+/// Result of `POST /api/v1/model/switch`, used for the TUI confirmation toast.
+#[derive(Debug, Clone, Default)]
+pub struct ModelSwitchResult {
+    pub label: String,
+    pub model_name: String,
+    pub provider: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct DaemonClient {
     /// Client for SSE streaming requests (no timeout — streams can run for minutes).
@@ -516,6 +542,87 @@ impl DaemonClient {
         Ok(serde_json::from_value(
             v.get("mode").cloned().unwrap_or(serde_json::Value::Null),
         )?)
+    }
+
+    /// GET /api/v1/models - list switchable model profiles for the `/model`
+    /// picker. Returns `(key, label, model_name, provider, active)` tuples in
+    /// alphabetical order by key.
+    pub async fn list_models(&self) -> anyhow::Result<Vec<ModelOption>> {
+        let url = format!("{}/api/v1/models", self.base_url);
+        let resp = self.http_tools().get(&url).send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("list-models failed ({})", resp.status());
+        }
+        let v: serde_json::Value = resp.json().await?;
+        let arr = v
+            .get("profiles")
+            .and_then(|x| x.as_array())
+            .ok_or_else(|| anyhow::anyhow!("list-models: malformed response"))?;
+        Ok(arr
+            .iter()
+            .map(|p| ModelOption {
+                key: p
+                    .get("key")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                label: p
+                    .get("label")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                model_name: p
+                    .get("model_name")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                provider: p
+                    .get("provider")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
+                tier: p
+                    .get("tier")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string()),
+                active: p.get("active").and_then(|x| x.as_bool()).unwrap_or(false),
+            })
+            .collect())
+    }
+
+    /// POST /api/v1/model/switch - activate a named profile. On success the
+    /// next chat turn uses the new model. Returns the daemon's response
+    /// (label/model_name/provider) for UI confirmation.
+    pub async fn switch_model(&self, profile: &str) -> anyhow::Result<ModelSwitchResult> {
+        let url = format!("{}/api/v1/model/switch", self.base_url);
+        let resp = self
+            .http_tools()
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "profile": profile }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            // Surface the daemon's actionable error (lists available profiles).
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("{body}");
+        }
+        let v: serde_json::Value = resp.json().await?;
+        Ok(ModelSwitchResult {
+            label: v
+                .get("label")
+                .and_then(|x| x.as_str())
+                .unwrap_or(profile)
+                .to_string(),
+            model_name: v
+                .get("model_name")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            provider: v
+                .get("provider")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+        })
     }
 
     /// GET /api/v1/undo — undo most recent checkpoint

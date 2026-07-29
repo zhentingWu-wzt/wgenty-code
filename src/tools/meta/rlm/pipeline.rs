@@ -130,11 +130,36 @@ pub async fn run_rlm_pipeline(
         .map(|a| a.distribute_to_tasks(sub_tasks.len()));
 
     // ── Executor phase ────────────────────────────────────────────────
-    let main_client = ApiClient::new(settings.clone());
-    let small_client = if settings.models.small.is_some() {
-        Some(ApiClient::new(settings.small_model_settings()))
+    // Build per-tier clients so RLM sub-tasks follow the same routing as the
+    // `task` tool. The planner's per-subtask `use_small_model` boolean maps to
+    // Heavy (false) / Light (true) tiers; `endpoint_for_tier` resolves each to
+    // the matching profile, falling back to `main`/`small` as appropriate.
+    use crate::config::models::ModelTier;
+    let heavy_endpoint = settings.models.endpoint_for_tier(ModelTier::Heavy);
+    let light_endpoint = settings.models.endpoint_for_tier(ModelTier::Light);
+
+    // Compare names first (cheap) so we only move the endpoints when they
+    // actually differ from what's already on `main`.
+    let heavy_differs = heavy_endpoint.name != settings.models.main.name;
+    let light_is_distinct = light_endpoint.name != heavy_endpoint.name;
+
+    let main_client = {
+        let mut s = settings.clone();
+        if heavy_differs {
+            s.models.main = heavy_endpoint;
+        }
+        ApiClient::new(s)
+    };
+    // `small_client` is Some only when a Light-tier endpoint is actually
+    // available (a profile with `tier: light`, or a legacy `models.small`).
+    // `endpoint_for_tier(Light)` falls back to `main` when neither exists, so
+    // detect that to preserve the old "no small model → use main" behavior.
+    let small_client = if light_is_distinct {
+        let mut s = settings.clone();
+        s.models.main = light_endpoint;
+        Some(ApiClient::new(s))
     } else {
-        tracing::warn!(target: "rlm", phase = "execute", "No small model configured, using main model");
+        tracing::warn!(target: "rlm", phase = "execute", "No light-tier model configured, using main model");
         None
     };
 

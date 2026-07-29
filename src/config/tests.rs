@@ -381,6 +381,38 @@ fn resolve_working_dir_makes_dot_absolute() {
     );
 }
 
+#[test]
+fn reconcile_routing_disables_models_routing_when_auto_routing_off() {
+    // Legacy kill switch off → models.routing.enabled forced off (AND logic).
+    let mut s = Settings::default();
+    s.agent.rlm.auto_routing = false;
+    assert!(s.models.routing.enabled, "default routing should be on");
+    s.reconcile_routing();
+    assert!(
+        !s.models.routing.enabled,
+        "auto_routing=false must disable models.routing"
+    );
+}
+
+#[test]
+fn reconcile_routing_keeps_models_routing_on_when_both_on() {
+    let mut s = Settings::default();
+    s.agent.rlm.auto_routing = true;
+    s.models.routing.enabled = true;
+    s.reconcile_routing();
+    assert!(s.models.routing.enabled);
+}
+
+#[test]
+fn reconcile_routing_off_independent_of_models_routing() {
+    // If user only disabled models.routing (new switch), auto_routing stays on
+    // but routing stays off — the AND is commutative here.
+    let mut s = Settings::default();
+    s.models.routing.enabled = false;
+    s.reconcile_routing();
+    assert!(!s.models.routing.enabled);
+}
+
 #[cfg(test)]
 mod fallback_config_tests {
     use super::*;
