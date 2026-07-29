@@ -19,10 +19,11 @@ Wgenty Code 是用 Rust 编写的 LLM 驱动编程助手。你不必再把代码
 - **交互式 TUI** - 基于 Turn 的聊天、结构化计划面板、可折叠的工具输出、Agent 模式切换（`Normal / Plan / Accept Edits / Yolo`）
 - **Plan 模式** - Agent 先探索代码库并提出计划，*再*执行任何修改（`Ctrl+P` 切换）；在你批准前不会改动任何东西
 - **25 种内置工具** - 文件读/写/编辑、代码搜索（grep/glob/LSP）、命令执行、网页搜索/获取等
-- **多提供商路由** - 根据 base_url 自动检测提供商；改一个设置即可在 Claude、OpenAI、DeepSeek 或自托管端点之间切换
+- **多提供商路由 & `/model` 切换** - 根据 base_url 自动检测提供商；在 REPL 中用 `/model` 实时切换 Claude、OpenAI、DeepSeek 或自托管端点，重启后保持选择，子代理自动跟随
 - **默认安全** - 每条命令都经过两级 Guardian 审查（规则 + 可选 LLM 审查）；严重风险操作自动拒绝；全平台 OS 级沙箱：macOS Seatbelt、Linux seccomp-bpf、Windows Job Objects
-- **子代理委派** - 复杂任务自动分解为并行子任务，带递归控制（RLM 管道：Planner -> Executor -> Aggregator）
-- **会话与记忆管理** - 保存/加载/搜索历史会话；项目级 + 全局记忆，带 TF-IDF 召回
+- **子代理委派** - 复杂任务自动分解为并行子任务，带递归控制（RLM 管道：Planner -> Executor -> Aggregator）；子代理模型按任务复杂度自动路由（light/medium/heavy 三档）
+- **会话与记忆管理** - 保存/加载/搜索历史会话；双源记忆（项目级 + 全局），带 TF-IDF 召回、tier-2 LLM 复核、召回反馈循环与陈旧度审计
+- **撤销与回滚** - 用 `/undo` 将文件编辑回退到任意按轮次检查点；交互式 turn 选择器，支持范围选择
 - **MCP 支持** - 连接外部 MCP 服务器，在 Agent 循环中透明使用其工具
 - **i18n** - 通过 Fluent 本地化支持 10 种语言
 
@@ -96,6 +97,8 @@ base_instructions -> permissions -> developer -> collaboration
 - **结构化 Plan 面板** - 带状态标记的内联计划渲染
 - **折叠的工具结果** - `Ctrl+O` 展开，减少噪音
 - **Agent 模式切换** - `Normal / Plan / Accept Edits / Yolo` 带颜色编码标签
+- **`/model` 切换器** - 实时选择命名模型 profile，子代理自动跟随
+- **`/undo` 回滚** - 将文件恢复到任意历史 turn 检查点
 - **多行输入** - `Shift+Enter` 换行，完整 IME/CJK 支持
 
 ---
@@ -161,6 +164,8 @@ docker run -it --rm -v ~/.wgenty-code:/root/.wgenty-code wgenty-code:latest repl
 | `agent.subagent.max_depth` | `1` | 嵌套子 agent 最大深度（1 = 子代理不能再派生子代理；调大以允许递归） |
 | `agent.subagent.max_concurrent` | `5` | 并行子 agent 最大数量 |
 | `agent.token_budget.main_k` | `0` | 累计 token 限制（0 = 无限制） |
+| `models.profiles` | `{}` | `/model` 切换用的命名模型 profile（每个可带 `tier`） |
+| `models.routing.enabled` | `true` | 子代理按任务复杂度自动路由模型 |
 | `integrations.guardian.enabled` | `true` | 命令安全审查开关 |
 | `storage.transcript.max_age_days` | `30` | 子代理记录保留天数 |
 
@@ -177,6 +182,9 @@ wgenty-code config set models.main.name haiku    # 切换模型
 wgenty-code mcp add --name fs         # 注册 MCP 服务器
 wgenty-code sandbox status            # 检查沙箱状态
 wgenty-code agent --agent-type plan --prompt "设计一个 API"
+wgenty-code subagent list             # 浏览子代理 transcript
+wgenty-code subagent trace <id>       # 渲染单次 trace（调用树 / 错误）
+wgenty-code subagent health           # 成功率 + 失败模式分布
 ```
 
 完整命令参考：`wgenty-code --help`
@@ -190,6 +198,8 @@ wgenty-code agent --agent-type plan --prompt "设计一个 API"
 | `Shift+Enter` | 输入中换行 |
 | `Enter` | 提交输入 |
 | `Ctrl+C`（双击） | 退出 |
+
+**Slash 命令**：`/model` 切换 profile · `/undo` 回滚编辑 · `/compact` 压缩历史 · `/memory` 管理记忆 · `/plan` 切换 Plan 模式 · `/clear` 重置会话 · `/help`
 
 ---
 

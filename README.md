@@ -19,10 +19,11 @@ It ships with **25 built-in tools** (filesystem, code search, command execution,
 - **Interactive TUI** — turn-based chat, a structured plan panel, collapsible tool output, and agent mode switching (`Normal / Plan / Accept Edits / Yolo`)
 - **Plan Mode** — the agent explores the codebase and proposes a plan *before* executing any mutations (`Ctrl+P` to toggle); nothing changes until you approve
 - **25 built-in tools** — file read/write/edit, code search (grep/glob/LSP), command execution, web search/fetch, and more
-- **Multi-provider routing** — auto-detects the provider from the base URL; switch between Claude, OpenAI, DeepSeek, or self-hosted endpoints by changing one setting
+- **Multi-provider routing & `/model` switching** — auto-detects the provider from the base URL; switch between Claude, OpenAI, DeepSeek, or self-hosted endpoints live in the REPL with `/model` — persisted across restarts, sub-agents follow automatically
 - **Security by default** — every command passes a two-stage guardian review (rule-based + optional LLM review); critical-risk operations are auto-denied; OS-level sandboxing on macOS (Seatbelt), Linux (seccomp-bpf), and Windows (Job Objects)
-- **Sub-agent delegation** — complex tasks automatically decompose into parallel sub-tasks with recursion control (RLM pipeline: Planner → Executor → Aggregator)
-- **Session & memory management** — save, load, and search past sessions; project-scoped + global memory with TF-IDF recall
+- **Sub-agent delegation** — complex tasks automatically decompose into parallel sub-tasks with recursion control (RLM pipeline: Planner -> Executor -> Aggregator); sub-agent models auto-routed by task complexity (light/medium/heavy tiers)
+- **Session & memory management** — save, load, and search past sessions; dual-scope memory (project + global) with TF-IDF recall, tier-2 LLM review, a recall feedback loop, and staleness auditing
+- **Undo & rollback** — rewind file edits to any per-turn checkpoint with `/undo`; interactive turn picker with scope selection
 - **MCP support** — connect external MCP servers and use their tools transparently inside the agent loop
 - **i18n** — 10-language support via Fluent localization
 
@@ -96,7 +97,9 @@ A terminal interface built on [ratatui](https://ratatui.rs/):
 - **Structured plan panel** — inline plan rendering with status markers
 - **Collapsible tool output** — `Ctrl+O` to expand, keeping noise down
 - **Agent mode switching** — `Normal / Plan / Accept Edits / Yolo` with color-coded labels
-- **Multi-line input** — `Shift+Enter` for newline, full IME/CJK support
+- **`/model` switcher** — pick a named model profile live; sub-agents follow automatically
+- **`/undo` rollback** — restore files to any past turn checkpoint
+- **Multi-line input** - `Shift+Enter` for newline, full IME/CJK support
 
 ---
 
@@ -161,6 +164,8 @@ Settings live in `~/.wgenty-code/settings.json` (auto-generated on first run). K
 | `agent.subagent.max_depth` | `1` | Max recursion depth for nested sub-agents (1 = subagents cannot spawn further subagents; raise to allow recursion) |
 | `agent.subagent.max_concurrent` | `5` | Max parallel sub-agents |
 | `agent.token_budget.main_k` | `0` | Cumulative token limit (0 = unlimited) |
+| `models.profiles` | `{}` | Named model profiles for `/model` switching (each with an optional `tier`) |
+| `models.routing.enabled` | `true` | Sub-agent auto model routing by task complexity |
 | `integrations.guardian.enabled` | `true` | Toggle command safety review |
 | `storage.transcript.max_age_days` | `30` | Days to retain subagent transcripts |
 
@@ -177,6 +182,9 @@ wgenty-code config set models.main.name haiku    # Switch models
 wgenty-code mcp add --name fs         # Register an MCP server
 wgenty-code sandbox status            # Check sandbox state
 wgenty-code agent --agent-type plan --prompt "Design an API"
+wgenty-code subagent list             # Browse sub-agent transcripts
+wgenty-code subagent trace <id>       # Render a trace (call tree / errors)
+wgenty-code subagent health           # Success rate + failure breakdown
 ```
 
 Full command reference: `wgenty-code --help`
@@ -190,6 +198,8 @@ Full command reference: `wgenty-code --help`
 | `Shift+Enter` | Newline in input |
 | `Enter` | Submit input |
 | `Ctrl+C` (double) | Quit |
+
+**Slash commands**: `/model` switch profile · `/undo` rollback edits · `/compact` shrink history · `/memory` manage memories · `/plan` toggle plan mode · `/clear` reset session · `/help`
 
 ---
 
