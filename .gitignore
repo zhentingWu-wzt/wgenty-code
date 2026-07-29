@@ -50,6 +50,7 @@ traces/
 # Internal tool configs (not part of the public project)
 .claude/
 .codex/
+.zcode/
 
 # OpenSpec development workflow artifacts
 
