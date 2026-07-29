@@ -1,0 +1,2 @@
+{"sequence":1,"timestamp":"2026-07-28T15:40:10.451Z","type":"run_started","runId":"3c905a72-cd84-4695-8b94-0996a0b2a926","data":{"skill":"comet-classic","skillVersion":"1","skillHash":"9bd4ffab011ae18aef91dc0db336ffc12d454b513229178c15b8b75d50930ba1"}}
+{"sequence":2,"timestamp":"2026-07-28T15:40:10.451Z","type":"state_migrated","runId":"3c905a72-cd84-4695-8b94-0996a0b2a926","data":{"kind":"classic","migrationVersion":1,"profile":"full","source":"pre-migration"}}
