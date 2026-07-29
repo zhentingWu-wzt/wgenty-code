@@ -428,6 +428,22 @@ impl App {
                 KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => {
                     self.memory_state.request_delete();
                 }
+                // 👍 reinforce selected memory (user positive feedback).
+                KeyCode::Char('+') | KeyCode::Char('=') => {
+                    if let Some(item) = self.memory_state.selected_item() {
+                        let origin = item.origin;
+                        let id = item.entry.id.clone();
+                        let _ = self.event_tx.send(AppEvent::ReinforceMemory(origin, id));
+                    }
+                }
+                // 👎 penalize selected memory (user negative feedback).
+                KeyCode::Char('-') | KeyCode::Char('_') => {
+                    if let Some(item) = self.memory_state.selected_item() {
+                        let origin = item.origin;
+                        let id = item.entry.id.clone();
+                        let _ = self.event_tx.send(AppEvent::PenalizeMemory(origin, id));
+                    }
+                }
                 KeyCode::Esc => {
                     if self.memory_state.detail_mode {
                         self.memory_state.detail_mode = false;

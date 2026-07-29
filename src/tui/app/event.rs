@@ -639,6 +639,54 @@ impl App {
                     let _ = tx.send(AppEvent::MemoryListLoaded(items));
                 });
             }
+            AppEvent::ReinforceMemory(origin, id) => {
+                let mm = self.memory_manager.clone();
+                let tx = self.event_tx.clone();
+                tokio::spawn(async move {
+                    if !mm.reinforce_memory(&id).await {
+                        tracing::warn!(memory_id = %id, origin = ?origin, "reinforce: memory not found");
+                    }
+                    // Reload + refresh so the displayed hit_count / importance
+                    // reflects the new effective_importance.
+                    if let Err(e) = mm.load().await {
+                        tracing::warn!(error = %e, "Failed to reload memories after reinforce");
+                    }
+                    let listed = mm.list_memories(None, 0).await;
+                    let items = listed
+                        .into_iter()
+                        .map(
+                            |(o, entry)| crate::tui::components::memory::MemoryListItem {
+                                origin: o,
+                                entry,
+                            },
+                        )
+                        .collect();
+                    let _ = tx.send(AppEvent::MemoryListLoaded(items));
+                });
+            }
+            AppEvent::PenalizeMemory(origin, id) => {
+                let mm = self.memory_manager.clone();
+                let tx = self.event_tx.clone();
+                tokio::spawn(async move {
+                    if !mm.penalize_memory(&id).await {
+                        tracing::warn!(memory_id = %id, origin = ?origin, "penalize: memory not found");
+                    }
+                    if let Err(e) = mm.load().await {
+                        tracing::warn!(error = %e, "Failed to reload memories after penalize");
+                    }
+                    let listed = mm.list_memories(None, 0).await;
+                    let items = listed
+                        .into_iter()
+                        .map(
+                            |(o, entry)| crate::tui::components::memory::MemoryListItem {
+                                origin: o,
+                                entry,
+                            },
+                        )
+                        .collect();
+                    let _ = tx.send(AppEvent::MemoryListLoaded(items));
+                });
+            }
             AppEvent::SessionListLoaded(sessions) => {
                 self.session_state.show(sessions);
             }

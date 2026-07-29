@@ -51,6 +51,12 @@ use index::MemoryIndex;
 
 // ── MemoryManager ────────────────────────────────────────────────────
 
+/// Direction of a single-entry hit_count adjustment (user feedback).
+enum HitAdjust {
+    Reinforce,
+    Penalize,
+}
+
 pub struct MemoryManager {
     sessions: Arc<MemorySessionManager>,
     history: Arc<HistoryManager>,
@@ -431,6 +437,14 @@ impl MemoryManager {
                                     (mem[existing_idx].importance - old_importance).abs()
                                         < f32::EPSILON
                                 );
+                                // Negative reward: if the just-superseded memory
+                                // was injected last turn, it misled the agent →
+                                // penalize its hit_count. `last_injected_ids` is
+                                // a separate lock; reading it here is safe.
+                                let existing_id = mem[existing_idx].id.clone();
+                                if self.last_injected_ids.read().await.contains(&existing_id) {
+                                    mem[existing_idx].penalize();
+                                }
                                 storage.save_memory(&mem[existing_idx]).await?;
                                 // Fall through to insert `entry` as a new live memory.
                             }
@@ -499,6 +513,12 @@ impl MemoryManager {
                         debug_assert!(
                             (mem[existing_idx].importance - old_importance).abs() < f32::EPSILON
                         );
+                        // Negative reward (same as the LLM-review Contradicts
+                        // branch): penalize if this was a recently-injected memory.
+                        let existing_id = mem[existing_idx].id.clone();
+                        if self.last_injected_ids.read().await.contains(&existing_id) {
+                            mem[existing_idx].penalize();
+                        }
                         storage.save_memory(&mem[existing_idx]).await?;
                         // Fall through to insert `entry` as a new live memory.
                     }
@@ -595,6 +615,54 @@ impl MemoryManager {
         // Clear so reinforcement is not repeated on subsequent turns.
         self.last_injected_ids.write().await.clear();
         Ok(())
+    }
+
+    /// Explicitly reinforce a single memory by id (user 👍 feedback). Returns
+    /// `false` if the id is not found. Searches both project and global pools.
+    pub async fn reinforce_memory(&self, id: &str) -> bool {
+        self.adjust_hit_count(id, HitAdjust::Reinforce).await
+    }
+
+    /// Explicitly penalize a single memory by id (user 👎 feedback, or
+    /// negative reward when an injected memory is superseded). Returns `false`
+    /// if the id is not found. Searches both project and global pools.
+    pub async fn penalize_memory(&self, id: &str) -> bool {
+        self.adjust_hit_count(id, HitAdjust::Penalize).await
+    }
+
+    /// Shared helper for single-entry hit_count adjustment (project + global).
+    async fn adjust_hit_count(&self, id: &str, adjust: HitAdjust) -> bool {
+        while self.consolidating.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let now = Utc::now();
+        let mut mem = self.memories.write().await;
+        for entry in mem.iter_mut() {
+            if entry.id == id {
+                match adjust {
+                    HitAdjust::Reinforce => entry.reinforce(now),
+                    HitAdjust::Penalize => entry.penalize(),
+                }
+                let _ = self.project_storage.save_memory(entry).await;
+                return true;
+            }
+        }
+        drop(mem);
+
+        // Try global pool.
+        let mut global = self.global_memories.write().await;
+        for entry in global.iter_mut() {
+            if entry.id == id {
+                match adjust {
+                    HitAdjust::Reinforce => entry.reinforce(now),
+                    HitAdjust::Penalize => entry.penalize(),
+                }
+                let _ = self.global_storage.save_memory(entry).await;
+                return true;
+            }
+        }
+        false
     }
 
     pub async fn search_memories(&self, query: &str) -> Vec<MemoryEntry> {
@@ -2079,6 +2147,84 @@ mod tests {
         let b_entry = memories.iter().find(|m| m.id == b_id).unwrap();
         assert_eq!(a_entry.hit_count, 0, "A was replaced, not reinforced");
         assert_eq!(b_entry.hit_count, 1, "B is the latest injected, reinforced");
+    }
+
+    #[tokio::test]
+    async fn reinforce_and_penalize_memory_by_id() {
+        // P2-A explicit feedback: reinforce_memory / penalize_memory adjust
+        // hit_count for a single entry identified by id.
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let a = MemoryEntry::new(MemoryType::Knowledge, "alpha fact").with_importance(0.8);
+        let a_id = a.id.clone();
+        mm.add_memory(a, MemoryOrigin::Project).await.unwrap();
+
+        // Reinforce twice → hit_count = 2.
+        assert!(mm.reinforce_memory(&a_id).await, "reinforce found");
+        assert!(mm.reinforce_memory(&a_id).await, "reinforce again");
+        {
+            let mem = mm.memories.read().await;
+            assert_eq!(mem.iter().find(|m| m.id == a_id).unwrap().hit_count, 2);
+        }
+
+        // Penalize once → hit_count = 1.
+        assert!(mm.penalize_memory(&a_id).await, "penalize found");
+        {
+            let mem = mm.memories.read().await;
+            assert_eq!(mem.iter().find(|m| m.id == a_id).unwrap().hit_count, 1);
+        }
+
+        // Penalize below zero saturates at 0.
+        assert!(mm.penalize_memory(&a_id).await);
+        assert!(mm.penalize_memory(&a_id).await);
+        {
+            let mem = mm.memories.read().await;
+            assert_eq!(mem.iter().find(|m| m.id == a_id).unwrap().hit_count, 0);
+        }
+
+        // Unknown id returns false.
+        assert!(
+            !mm.penalize_memory("nonexistent").await,
+            "unknown id → false"
+        );
+    }
+
+    #[tokio::test]
+    async fn penalize_triggers_on_supersede_of_injected_memory() {
+        // P2-A negative reward: when a memory that was injected last turn gets
+        // superseded (Contradicts), its hit_count is penalized.
+        let tmp = tempfile::tempdir().unwrap();
+        let mm = MemoryManager::new_for_test(tmp.path().to_path_buf(), tmp.path().join("global"));
+
+        let existing = MemoryEntry::new(MemoryType::Knowledge, "api uses max_tokens=128000")
+            .with_importance(0.8);
+        let old_id = existing.id.clone();
+        mm.add_memory(existing, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        // Simulate "existing was injected last turn".
+        mm.record_recall_injections(&[&old_id]).await.unwrap();
+        // Manually bump hit_count so we can observe the penalty.
+        {
+            let mut mem = mm.memories.write().await;
+            mem.iter_mut().find(|m| m.id == old_id).unwrap().hit_count = 3;
+        }
+
+        // Now add a contradicting memory → Contradicts supersede → penalty.
+        let incoming = MemoryEntry::new(MemoryType::Knowledge, "api uses max_tokens=4096")
+            .with_importance(0.7);
+        mm.add_memory(incoming, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        let mem = mm.memories.read().await;
+        let old = mem.iter().find(|m| m.id == old_id).unwrap();
+        assert_eq!(
+            old.hit_count, 2,
+            "supersede of injected memory → hit_count -= 1"
+        );
     }
 
     #[tokio::test]

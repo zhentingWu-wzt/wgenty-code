@@ -377,6 +377,27 @@ impl DaemonState {
         let (http_client, http_client_stream) =
             crate::api::ApiClient::build_clients(&app_state.settings);
 
+        // Attach a tier-2 LLM for ambiguous-relation review (P2-B). Uses the
+        // shared pooled clients so review calls reuse the keep-alive pool.
+        // Model identity comes from the startup snapshot; `/model` switches do
+        // not retroactively re-bind the reviewer, which is acceptable since
+        // review is low-frequency and model-quality-insensitive (one-word
+        // verdict). If construction fails, review degrades to the legacy
+        // merge+tag path — never blocks daemon startup.
+        {
+            let api_client = crate::api::ApiClient::with_clients(
+                app_state.settings.clone(),
+                http_client.clone(),
+                http_client_stream.clone(),
+            );
+            let llm: Arc<dyn crate::agent::runtime::LlmPort> =
+                Arc::new(crate::agent::runtime::ApiLlmPort::new(api_client));
+            let review = Arc::new(crate::agent::runtime::adapters::MemoryReviewAdapter::new(
+                llm,
+            ));
+            memory_manager.set_review_llm(Some(review)).await;
+        }
+
         // Live settings handle seeded from the startup snapshot. Runtime
         // handlers clone from here per request so `/model` switches take
         // effect on the next turn without a restart.

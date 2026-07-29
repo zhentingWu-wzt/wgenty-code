@@ -348,6 +348,10 @@ pub fn render(
             Span::raw(" detail  "),
             Span::styled("d", Style::default().fg(Color::Red)),
             Span::raw(" delete  "),
+            Span::styled("+", Style::default().fg(Color::Green)),
+            Span::raw(" "),
+            Span::styled("-", Style::default().fg(Color::Yellow)),
+            Span::raw(" feedback  "),
             Span::styled("Esc", Style::default().fg(Color::Cyan)),
             Span::raw(" close  "),
             Span::styled(
