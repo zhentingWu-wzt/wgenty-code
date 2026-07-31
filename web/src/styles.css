@@ -326,6 +326,66 @@ body {
   color: var(--bad);
 }
 
+/* ── Diff view (file_edit / apply_patch results) ────────────────────────────── */
+.diff-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.3rem;
+}
+.diff-file {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.diff-path {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.78rem;
+  padding: 0.25rem 0.6rem;
+  background: var(--bg-elev2);
+  color: var(--accent);
+  border-bottom: 1px solid var(--border);
+}
+.diff-body {
+  margin: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  overflow-x: auto;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.diff-line {
+  display: flex;
+  white-space: pre;
+}
+.diff-gutter {
+  flex-shrink: 0;
+  width: 1.5em;
+  text-align: center;
+  color: var(--fg-dim);
+  user-select: none;
+  padding: 0 0.2em;
+}
+.diff-text {
+  flex: 1;
+}
+.diff-add {
+  background: rgba(158, 206, 106, 0.12);
+}
+.diff-add .diff-text {
+  color: var(--ok);
+}
+.diff-del {
+  background: rgba(247, 118, 142, 0.12);
+}
+.diff-del .diff-text {
+  color: var(--bad);
+}
+.diff-ctx .diff-text {
+  color: var(--fg-dim);
+}
+
 /* ── Composer ───────────────────────────────────────────────────────────────── */
 .composer {
   display: flex;
