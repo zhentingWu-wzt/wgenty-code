@@ -121,13 +121,32 @@ body {
 }
 .msg-reasoning {
   margin: 0 0 0.5rem;
-  padding: 0.5rem;
   background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 0.8rem;
   color: var(--fg-dim);
+}
+.msg-reasoning > summary {
+  cursor: pointer;
+  padding: 0.3rem 0.5rem;
+  user-select: none;
+  list-style: none;
+}
+.msg-reasoning > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 0.4em;
+  transition: transform 0.15s;
+}
+.msg-reasoning[open] > summary::before {
+  transform: rotate(90deg);
+}
+.msg-reasoning > pre {
+  margin: 0;
+  padding: 0.5rem;
   white-space: pre-wrap;
-  max-height: 200px;
+  max-height: 240px;
   overflow-y: auto;
 }
 .msg-content {

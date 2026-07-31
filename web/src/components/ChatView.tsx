@@ -1,8 +1,10 @@
 import { useEffect, useRef } from "react";
+import type { ComponentPropsWithoutRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useChatStore } from "../state/chatStore";
 import { ToolCallCard } from "./ToolCallCard";
+import { CodeBlock } from "./CodeBlock";
 
 /**
  * Render assistant content as GFM Markdown. Re-parses on every render — for
@@ -12,11 +14,28 @@ import { ToolCallCard } from "./ToolCallCard";
  * Only assistant output is Markdown-rendered. User input stays plain text so a
  * user's literal typing (e.g. `## foo`) isn't misread as formatting.
  */
+
+/**
+ * react-markdown v10 routes both inline and fenced code through `code`, but
+ * only fenced blocks carry a `language-xxx` className. Route fenced blocks to
+ * <CodeBlock> (syntax highlighting); leave inline code to CSS styling.
+ */
+function MarkdownCode(props: ComponentPropsWithoutRef<"code">) {
+  const { className, children } = props;
+  const match = /language-(\w+)/.exec(className ?? "");
+  // Inline code (no language class) — render as-is; CSS handles styling.
+  if (!match) return <code className={className}>{children}</code>;
+
+  const text = String(children).replace(/\n$/, "");
+  return <CodeBlock language={match[1]} value={text} />;
+}
+
 function Markdown({ children }: { children: string }) {
   return (
     <div className="msg-content msg-markdown">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        components={{ code: MarkdownCode }}
         // Disallow raw HTML — assistant output must not inject markup. Images
         // are also disabled for now (no origin trust on tool-produced text).
         disallowedElements={["script", "style", "img", "iframe"]}
@@ -59,7 +78,12 @@ export function ChatView() {
             {m.round && m.round > 1 ? ` · round ${m.round}` : ""}
             {m.streaming ? " · …" : ""}
           </div>
-          {m.reasoning && <pre className="msg-reasoning">{m.reasoning}</pre>}
+          {m.reasoning && (
+            <details className="msg-reasoning">
+              <summary>reasoning</summary>
+              <pre>{m.reasoning}</pre>
+            </details>
+          )}
           {m.content &&
             (m.role === "assistant" ? (
               <Markdown>{m.content}</Markdown>
