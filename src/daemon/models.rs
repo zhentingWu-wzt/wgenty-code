@@ -406,3 +406,49 @@ pub struct ResetAgentGenerationRequest {
 pub struct ResetAgentGenerationResponse {
     pub generation: u64,
 }
+
+// ── Memory ops API (Tier 2 web-ops-console: ops-panel-api) ────────────────────
+// Wraps the existing MemoryManager so the web frontend can inspect/prune the
+// memory pools. MemoryOrigin is intentionally not Serialize on the model
+// (src/context/entry.rs), so the ops DTOs carry a lowercase `origin` string.
+
+/// `GET /api/v1/memory` query filters.
+#[derive(Debug, Deserialize, Default)]
+pub struct MemoryListQuery {
+    pub scope: Option<String>, // "project" | "global" | "all" (default all)
+    pub min_importance: Option<f32>,
+    pub limit: Option<usize>,
+}
+
+/// One memory item with its origin annotated (the model's MemoryOrigin is not
+/// serialized, so we project to a string here). MemoryEntry fields are flattened
+/// in so the client sees id/content/importance/etc. at the top level.
+#[derive(Debug, Serialize)]
+pub struct MemoryItemResponse {
+    pub origin: String, // "project" | "global"
+    #[serde(flatten)]
+    pub entry: crate::context::MemoryEntry,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MemoryListResponse {
+    pub items: Vec<MemoryItemResponse>,
+    pub total: usize,
+}
+
+/// `GET /api/v1/memory/:id` — single item with origin. MemoryEntry already
+/// serializes its own id/content/etc.; we just add `origin` alongside by
+/// projecting to a Value rather than flatten (avoids field-name coupling).
+#[derive(Debug, Serialize)]
+pub struct MemoryDetailResponse {
+    pub origin: String,
+    #[serde(flatten)]
+    pub entry: crate::context::MemoryEntry,
+}
+
+/// `POST /api/v1/memory/prune` request. `dry_run` defaults false.
+#[derive(Debug, Deserialize, Default)]
+pub struct PruneRequest {
+    #[serde(default)]
+    pub dry_run: bool,
+}
