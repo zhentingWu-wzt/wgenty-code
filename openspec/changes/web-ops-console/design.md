@@ -33,8 +33,8 @@ canonical_spec: openspec
 ### D1 —— 前端托管：现阶段独立 Vite app，未来 daemon 嵌入
 
 - **Tier 1 与 2**：前端保持 MVP 的独立 Vite app（`web/`）。dev 用 Vite 代理注入 token；CORS 已允许 `:5173`。
-- **Tier 3（生产）**：可选地通过 `tower-http::services::ServeDir`（或 `rust-embed`）从 daemon 托管生产构建。此项延后——对 dev/单用户场景，独立 app 已完全可用。
-- **为何不从第一天起同端口**（推翻原设计 D1）：MVP 已证明独立方式可行，且避免在 Tier 1 阶段把前端工具链强塞进 Rust 构建/CI。嵌入是打包层面的事，等真有跑不了 `npm run dev` 的终端用户时再决。
+- **Tier 3（生产）**：**本期决定不做**（保留 Vite dev server 双进程模式）。调研结论：ServeDir 二进制 0 增量但破坏单二进制分发（npm 包装器只发二进制）；rust-embed 保单二进制但烘进 ~415KB 几乎吃满 AGENTS.md 的 500KB 上限（jieba-rs 先例已因类似体积被拒），且破坏 `cargo run` dev 工作流。**等真有跑不了 `npm run dev` 的终端用户再决**，那时按"是否必须保单二进制分发"二选一。
+- **为何不从第一天起同端口**（推翻原设计 D1）：MVP 已证明独立方式可行，且避免在 Tier 1 阶段把前端工具链强塞进 Rust 构建/CI。
 
 ### D2 —— 客户端 agent loop 留在浏览器
 
@@ -78,6 +78,27 @@ canonical_spec: openspec
 - bearer token 模型不变。dev 用 Vite 代理注入；生产静态托管复用 daemon 鉴权。
 - `/config` 与 `/overview` 的密钥脱敏在服务端强制（绝不信任客户端）。`api_key` 字段掩码为 `set: true` 或 `****last4`。
 - prune / delete 需显式 POST/DELETE + UI 确认。
+
+### D7 —— 错误恢复（修复三个真实问题）
+
+调研发现三个问题（其中 #2 是回归 bug，优先级最高）：
+
+1. **状态栏撒谎**（`App.tsx:34-53`）：`connection` 只在启动探活一次，daemon 死后永远显示"已连接"。
+   - **修法**：把一次性探活改成周期性心跳（复用 `usePolling` 命中 `/health`，~10s 间隔；失败设 `disconnected`，成功恢复 `connected`）。
+2. **trace SSE 静默挂死**（`usePermissionTrace.ts:50-53`，**本变更引入的回归**）：bare `catch {}` 退出且不重连，依赖数组是稳定引用，effect 不会重跑。daemon 重启后子 agent 权限推送通道**永久死亡**，agent 看似在思考实则在等永不弹出的权限框。
+   - **修法**：在 catch 后用指数退避重连（初始 1s，上限 30s）；重连成功重置退避。把重连逻辑放进循环而非依赖 effect 重跑。
+3. **流式中断无重试**（`App.tsx:104-112`）：错误是纯字符串，无法区分 daemon 死 / LLM 拒绝 / 网络抖；半句话保留（好）但无"重试"入口。
+   - **修法**：给 `lastError` 加结构（区分 transport vs upstream），transport 类错误在错误条上加"重试"按钮（重发上一条 user message）。
+
+### D8 —— 响应式布局
+
+- 当前**零个 `@media` 查询**，主要硬编码是 `.sidebar { width: 280px }`（占 375px 屏 75%）。
+- 侧边栏已有 `collapsed` 布尔状态（按钮触发），改成移动端 overlay 抽屉很自然——无需新状态机，只需 CSS。
+- 断点策略（纯增量 `@media`，不拆现有 CSS）：
+  - **≤1024px（平板）**：侧边栏默认折叠成 28px rail。
+  - **≤768px（手机）**：侧边栏变 `position: fixed` 滑出抽屉 + backdrop 遮罩（复用 `collapsed` 切换）；`.chat-list { max-width }` 收起；`.app { height: 100dvh }`（修复移动浏览器工具栏导致的 `100vh` 跳动）。
+  - **≤375px（小手机）**：Composer 紧凑化、状态栏截断模型名。
+- 无客户端路由（纯状态切换），故无 SPA fallback 顾虑（也佐证 D1 托管方案无需 fallback 配置）。
 
 ## 风险 / 权衡
 
