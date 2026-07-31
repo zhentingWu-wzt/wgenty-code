@@ -1,18 +1,29 @@
-/* Minimal dark theme to match the TUI's aesthetic. No design-system ambition. */
+/* Codex-style command-center theme: near-black neutrals, restrained accent,
+   hierarchy by lightness not hue. UI font is the system sans stack; code uses
+   a monospace stack. */
 
 :root {
-  --bg: #1a1b26;
-  --bg-elev: #24253a;
-  --bg-elev2: #2e2f4a;
-  --fg: #c0caf5;
-  --fg-dim: #8b8fb8;
-  --accent: #7aa2f7;
-  --ok: #9ece6a;
-  --bad: #f7768e;
-  --warn: #e0af68;
-  --border: #3b3f5a;
-  --radius: 8px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --bg: #0d0d0d;
+  --bg-elev: #161616;
+  --bg-elev2: #1f1f1f;
+  --bg-hover: #262626;
+  --fg: #ededed;
+  --fg-dim: #8a8a8a;
+  --fg-mute: #5a5a5a;
+  --accent: #e5e5e5; /* restrained: accent is near-white, not a hue */
+  --accent-fg: #0d0d0d;
+  --accent-soft: rgba(255, 255, 255, 0.08);
+  --ok: #7ec880;
+  --bad: #e5606b;
+  --warn: #d9a441;
+  --border: #262626;
+  --border-strong: #333333;
+  --radius: 6px;
+  --radius-sm: 4px;
+  font-family:
+    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "SF Mono", ui-monospace, "Menlo", monospace;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
 * {
@@ -50,40 +61,70 @@ body {
   min-width: 0;
 }
 
-/* ── Status bar ─────────────────────────────────────────────────────────────── */
-.status-bar {
+/* ── Top control bar (Codex-style) ──────────────────────────────────────────── */
+.topbar {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.6rem 1rem;
-  background: var(--bg-elev);
+  justify-content: space-between;
+  height: 40px;
+  padding: 0 1rem;
+  background: var(--bg);
   border-bottom: 1px solid var(--border);
-  font-size: 0.85rem;
+  font-size: 0.82rem;
+  flex-shrink: 0;
 }
-
-.dot {
-  width: 8px;
-  height: 8px;
+.topbar-left,
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.topbar-dot {
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--fg-dim);
+  background: var(--fg-mute);
+  flex-shrink: 0;
 }
-.dot-ok {
+.topbar-dot-connected {
   background: var(--ok);
 }
-.dot-bad {
+.topbar-dot-disconnected {
   background: var(--bad);
 }
-
-.status-model {
-  color: var(--accent);
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 0.8rem;
+.topbar-status {
+  color: var(--fg-dim);
+  font-size: 0.78rem;
 }
-
-.status-running {
-  margin-left: auto;
-  color: var(--warn);
-  font-style: italic;
+.topbar-model {
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 0.76rem;
+}
+.topbar-running {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--fg-dim);
+  font-size: 0.78rem;
+}
+.topbar-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--border-strong);
+}
+.topbar-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--border-strong);
+  border-top-color: var(--fg-dim);
+  border-radius: 50%;
+  animation: topbar-spin 0.7s linear infinite;
+}
+@keyframes topbar-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* ── Main chat area ─────────────────────────────────────────────────────────── */
@@ -108,29 +149,39 @@ body {
 .chat-list {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-  max-width: 900px;
+  gap: 1.25rem;
+  max-width: 1100px;
   margin: 0 auto;
+  padding: 1.5rem 1.5rem 0;
 }
 
 .msg {
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 0.8rem 1rem;
-}
-.msg-user {
-  border-left: 3px solid var(--accent);
-}
-.msg-assistant {
-  border-left: 3px solid var(--ok);
+  /* Codex-style: no card boxes. Messages sit on the page background and are
+     separated by whitespace, not borders. Hierarchy comes from the role label
+     and content density. */
+  padding: 0;
 }
 .msg-role {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--fg-dim);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--fg);
   margin-bottom: 0.4rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.msg-role::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-mute);
+}
+.msg-user .msg-role::before {
+  background: var(--fg-dim);
+}
+.msg-assistant .msg-role::before {
+  background: var(--accent);
 }
 .msg-reasoning {
   margin: 0 0 0.5rem;
@@ -271,10 +322,10 @@ body {
   border-radius: var(--radius);
   padding: 0.6rem 0.8rem;
   color: var(--bad);
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-family: var(--mono);
   font-size: 0.85rem;
   white-space: pre-wrap;
-  max-width: 900px;
+  max-width: 1100px;
   margin: 0 auto;
   display: flex;
   align-items: center;
@@ -289,57 +340,92 @@ body {
 }
 
 /* ── Tool call card ─────────────────────────────────────────────────────────── */
+/* Tool call: collapsed summary line (Codex-style compact log). */
 .tool-card {
-  background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.5rem 0.7rem;
+  border-radius: var(--radius-sm);
   font-size: 0.82rem;
+  overflow: hidden;
 }
-.tool-ok {
-  border-left: 3px solid var(--ok);
+.tool-card[open] {
+  background: var(--bg-elev);
 }
-.tool-err {
-  border-left: 3px solid var(--bad);
-}
-.tool-denied {
-  border-left: 3px solid var(--warn);
-  opacity: 0.8;
-}
-.tool-head {
+.tool-summary {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.3rem;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  font-size: 0.8rem;
 }
-.tool-name {
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  color: var(--accent);
-  font-weight: 600;
+.tool-summary::-webkit-details-marker {
+  display: none;
 }
-.tool-badge {
+.tool-summary::before {
+  content: "▸";
+  color: var(--fg-mute);
   font-size: 0.7rem;
-  padding: 0.1rem 0.4rem;
-  border-radius: 3px;
-  text-transform: uppercase;
+  transition: transform 0.12s;
 }
-.tool-badge.ok {
-  background: rgba(158, 206, 106, 0.2);
+.tool-card[open] .tool-summary::before {
+  transform: rotate(90deg);
+}
+.tool-status-icon {
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+.tool-status-icon[data-status="ok"] {
   color: var(--ok);
 }
-.tool-badge.err {
-  background: rgba(247, 118, 142, 0.2);
+.tool-status-icon[data-status="error"] {
   color: var(--bad);
 }
-.tool-badge.denied {
-  background: rgba(224, 175, 104, 0.2);
+.tool-status-icon[data-status="denied"] {
   color: var(--warn);
+}
+.tool-name {
+  font-family: var(--mono);
+  color: var(--fg);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.tool-arg-summary {
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.tool-status-text {
+  margin-left: auto;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-mute);
+  flex-shrink: 0;
+}
+.tool-status-ok {
+  color: var(--ok);
+}
+.tool-status-error {
+  color: var(--bad);
+}
+.tool-status-denied {
+  color: var(--warn);
+}
+.tool-body {
+  padding: 0 0.6rem 0.5rem;
+  border-top: 1px solid var(--border);
 }
 .tool-args,
 .tool-output {
-  margin: 0.3rem 0 0;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 0.78rem;
+  margin: 0.4rem 0 0;
+  font-family: var(--mono);
+  font-size: 0.76rem;
   color: var(--fg-dim);
   white-space: pre-wrap;
   max-height: 220px;
@@ -410,34 +496,39 @@ body {
 }
 
 /* ── Composer ───────────────────────────────────────────────────────────────── */
+/* Composer: floating card pinned to the bottom of the main column, with
+   breathing room above it. Send/Stop sit inside the card on the right. */
 .composer {
   display: flex;
-  gap: 0.6rem;
-  padding: 1rem;
+  align-items: flex-end;
+  gap: 0.5rem;
+  padding: 0.75rem;
   background: var(--bg-elev);
-  border-top: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin: 0 1.5rem 1rem;
 }
 .composer-input {
   flex: 1;
   resize: none;
-  background: var(--bg);
+  background: transparent;
   color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 0.6rem 0.8rem;
+  border: none;
+  padding: 0.4rem 0.5rem;
   font-family: inherit;
   font-size: 0.9rem;
   line-height: 1.5;
+  max-height: 200px;
 }
 .composer-input:focus {
   outline: none;
-  border-color: var(--accent);
 }
 .composer-input::placeholder {
-  color: var(--fg-dim);
+  color: var(--fg-mute);
 }
 .composer-send {
-  align-self: stretch;
+  flex-shrink: 0;
+  padding: 0.45rem 0.9rem;
 }
 
 /* ── Buttons ────────────────────────────────────────────────────────────────── */
