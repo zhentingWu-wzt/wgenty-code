@@ -7,6 +7,7 @@ import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { Composer } from "./components/Composer";
 import { PermissionModal } from "./components/PermissionModal";
+import { usePermissionTrace } from "./hooks/usePermissionTrace";
 import type { ChatMessage } from "./api/types";
 
 /**
@@ -24,6 +25,10 @@ export function App() {
   const store = useChatStore;
   const setConnection = useChatStore((s) => s.setConnection);
   const setModelName = useChatStore((s) => s.setModelName);
+
+  // Subscribe to the trace SSE for pushed subagent permission prompts
+  // (design D2.1: replaces 500ms polling of /tools/pending-permissions).
+  usePermissionTrace(clientRef.current);
 
   // ── Startup: probe the daemon + read current model ─────────────────────────
   useEffect(() => {
@@ -119,7 +124,7 @@ export function App() {
           <Composer onSend={handleSend} />
         </div>
       </div>
-      <PermissionModal />
+      <PermissionModal client={clientRef.current} />
     </div>
   );
 }

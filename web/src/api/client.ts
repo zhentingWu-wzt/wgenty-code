@@ -147,6 +147,21 @@ export class DaemonClient {
     );
   }
 
+  /** Resolve a subagent async permission (from the trace SSE push channel). */
+  async resolveSubagentPermission(
+    requestId: string,
+    approved: boolean,
+    always = false,
+  ): Promise<void> {
+    await jsonOrThrow(
+      await fetch(`${this.base}/tools/resolve-permission`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ request_id: requestId, approved, always }),
+      }),
+    );
+  }
+
   // ── Models ─────────────────────────────────────────────────────────────────
 
   async listModels(): Promise<ListModelsResponse> {
@@ -238,5 +253,24 @@ export class DaemonClient {
         body: JSON.stringify({ dry_run: dryRun }),
       }),
     );
+  }
+
+  // ── Trace SSE (subagent progress + permission events) ──────────────────────
+
+  /**
+   * Open the global trace SSE stream (`GET /subagents/trace/stream`). Returns
+   * the raw byte stream; the caller parses newline-delimited JSON TraceEvents.
+   *
+   * This is the push channel for subagent permission prompts (design D2.1):
+   * instead of polling /tools/pending-permissions, the frontend subscribes here
+   * and dispatches on `event.kind`.
+   */
+  async traceStream(): Promise<{ body: ReadableStream<Uint8Array> }> {
+    const res = await fetch(`${this.base}/subagents/trace/stream`);
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => "");
+      throw new DaemonError(text || `${res.status} ${res.statusText}`, res.status);
+    }
+    return { body: res.body };
   }
 }
