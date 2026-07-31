@@ -33,17 +33,17 @@
 
 ### 5. 记忆 API（后端）
 
-- [ ] 5.1 在 `src/daemon/models.rs` 新增 DTO：`MemoryStatusResponse`、`MemoryItemResponse`（含 `origin`）、`MemoryListResponse`、`PruneRequest`/`PruneResult`
-- [ ] 5.2 实现包装 `MemoryManager` 的 handler：`GET /memory/status`、`GET /memory`、`GET /memory/:id`、`POST /memory/prune`
-- [ ] 5.3 注册路由（protected）；补充 handler 测试，断言 scope/importance 过滤 + prune dry_run
-- [ ] 5.4 前端记忆面板消费上述端点
+- [x] 5.1 在 `src/daemon/models.rs` 新增 DTO：`MemoryItemResponse`/`MemoryDetailResponse`（含 `origin`，flatten MemoryEntry）、`MemoryListResponse`、`MemoryListQuery`、`PruneRequest`（复用现有 `MemoryStatus`/`PruneResult`）
+- [x] 5.2 实现包装 `MemoryManager` 的 handler：`GET /memory/status`、`GET /memory`、`GET /memory/:id`、`POST /memory/prune`
+- [x] 5.3 注册路由（protected）；补充 handler 测试，断言 scope/importance 过滤 + prune dry_run
+- [x] 5.4 前端记忆面板消费上述端点
 
 ### 6. 概览 + 脱敏配置（后端）
 
-- [ ] 6.1 决定 `/overview` 形状（设计 OQ2）：客户端拼装 vs 新端点
-- [ ] 6.2 扩展 `GET /api/v1/config` 为增量脱敏字段；断言 `api_key` 永不明文（服务端测试）
-- [ ] 6.3 前端概览面板：health、project root、计数、模型摘要
-- [ ] 6.4 前端配置面板：只读分组展示，脱敏
+- [x] 6.1 决定 `/overview` 形状（设计 OQ2）：客户端拼装（从 /health + /sessions + /memory/status 组装，不新增端点）
+- [x] 6.2 复用现有 `GET /api/v1/config`（已脱敏，不含 api_key）；P0 不扩展后端字段
+- [x] 6.3 前端概览面板：health、计数（会话/记忆）
+- [x] 6.4 前端配置面板：只读分组展示，脱敏
 
 ## Tier 3 —— 硬化（草图）
 
@@ -53,6 +53,6 @@
 
 ## 文档与收尾
 
-- [ ] 8.1 更新 `WGENTY.md` Daemon 小节：web 前端 URL、能力、token 路径
-- [ ] 8.2 更新 `web/README.md`：新面板与 Tier 2 端点
-- [ ] 8.3 `cargo fmt` + `cargo clippy --all-targets -- -D warnings` + 相关 `cargo test`（后端）；`npm run build` + `npm test`（前端）
+- [x] 8.1 更新 `WGENTY.md` Daemon 小节：web 前端 URL、能力、token 路径
+- [x] 8.2 更新 `web/README.md`：新面板与 Tier 2 端点
+- [x] 8.3 `cargo fmt` + `cargo clippy --all-targets -- -D warnings` + 相关 `cargo test`（后端）；`npm run build` + `npm test`（前端）

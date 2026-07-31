@@ -4,20 +4,30 @@ A browser-based thin client for the wgenty-code daemon. Architecturally a
 **parallel sibling of `src/tui`** — both are thin frontends over the same HTTP
 daemon API. No Rust/daemon changes are required.
 
-## What works (MVP scope)
+## What works
 
 - Streaming chat with real-time token rendering
 - Client-side agent loop: the model can call tools across multiple rounds, and
   the browser executes them via `/api/v1/tools/execute` and feeds results back
+- **Stop button** to abort a running turn mid-stream (AbortController)
 - **Root-tool permission approval** (the in-band `permission_required` flow) via
   a modal — Allow once / Always allow / Deny
-- Connection health + current model in the status bar
+- **Markdown rendering** of assistant output (GFM + syntax-highlighted code)
+- **Diff preview** for `file_edit` / `apply_patch` tool results
+- Collapsible **reasoning** blocks
+- Collapsible **sidebar** with panels:
+  - **Sessions** — list / search / open / save / delete (`/sessions*`)
+  - **Todos** — live todo list (`/todos`)
+  - **Tasks** — ready/blocked progress + task graph (`/tasks*`)
+  - **Model** — profile picker (`/models`, `/model/switch`)
+  - **Memory** — status + filtered list + prune (`/memory*`, Tier 2 backend)
+  - **Config** — read-only overview + config (assembled client-side)
 
 ## Out of scope (phase 2)
 
 - Subagent async permission queue (`pending-permissions` polling)
 - Context compaction, stuck-detector, parallel `task` batches
-- Session picker, todo/plan panels, diff preview
+- Mobile-responsive layout, production daemon-hosted build
 - Guardian client-side short-circuit (we rely on the daemon's signal instead)
 
 ## How the architecture maps to the Rust codebase

@@ -93,7 +93,7 @@ full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqli
 基于 **Harness Component Model**（s01-s12 机制模块）：
 
 ```
-前端层 (CLI/TUI/Daemon)
+前端层 (CLI/TUI/Web + Daemon)
   -> Agent Loop (agent/)          s01+s02: 核心循环 + SSE 流
   -> Prompt Assembly (prompts/)   8 层指令注入
   -> 业务层
@@ -112,6 +112,8 @@ full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqli
 ```
 
 请求链路：`用户输入 -> CLI解析 -> Settings加载 -> Prompt组装(8层) -> API SSE -> 工具调用 -> Guardian审查 -> Sandbox执行 -> 流式返回`
+
+**Web 前端**（`web/`，React + Vite + TS）：与 TUI 平行的 thin client，通过 daemon 的 `/api/v1/*` 驱动 agent。daemon 的 `/chat/stream` 是纯透传代理，**工具执行与续轮循环在浏览器端**完成（镜像 `src/agent/runtime/loop_.rs`）。启动：`cargo run --features daemon -- daemon` 后 `cd web && npm install && npm run dev`，打开 `http://localhost:5173`（token 由 Vite dev server 从 `~/.wgenty-code/daemon.token` 注入）。能力：流式聊天、Markdown/diff 渲染、权限审批、停止中断、Sessions/Todos/Tasks/Model/Memory/Config 侧边面板。Memory 面板依赖 Tier 2 后端端点（`/api/v1/memory*`，包装 `MemoryManager`）。
 
 Prompt 8 层：base_instructions → permissions → developer → environment → agents_md → collaboration → skills_inventory → wgenty_md_sections
 

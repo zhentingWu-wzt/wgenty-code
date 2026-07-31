@@ -854,3 +854,176 @@ body {
   color: var(--fg-dim);
 }
 
+/* Memory */
+.memory-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.memory-status {
+  display: flex;
+  gap: 0.4rem;
+}
+.mem-stat {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem;
+  text-align: center;
+}
+.mem-stat-num {
+  display: block;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+.mem-stat-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+.memory-toolbar {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+}
+.mem-scope {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.15rem 0.3rem;
+  font-size: 0.75rem;
+}
+.mem-min-label {
+  font-size: 0.72rem;
+  color: var(--fg-dim);
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+.mem-min {
+  width: 3em;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.1rem 0.3rem;
+  font-size: 0.72rem;
+}
+.memory-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.memory-item {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.78rem;
+}
+.memory-item.origin-project {
+  border-left-color: var(--accent);
+}
+.memory-item.origin-global {
+  border-left-color: var(--warn);
+}
+.memory-head {
+  display: flex;
+  gap: 0.4rem;
+  align-items: baseline;
+  margin-bottom: 0.2rem;
+}
+.memory-origin {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  background: var(--bg-elev2);
+  color: var(--fg-dim);
+}
+.memory-type {
+  font-size: 0.7rem;
+  color: var(--fg-dim);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.memory-imp {
+  margin-left: auto;
+  font-size: 0.68rem;
+  color: var(--accent);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.memory-content {
+  line-height: 1.4;
+  color: var(--fg);
+}
+
+/* Overview + Config */
+.overview-panel {
+  margin-bottom: 0.6rem;
+}
+.ov-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.5rem;
+}
+.ov-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.78rem;
+}
+.ov-label {
+  color: var(--fg-dim);
+}
+.ov-value {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.ov-ok {
+  color: var(--ok);
+}
+.ov-bad {
+  color: var(--bad);
+}
+.config-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.config-row {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem 0.4rem;
+}
+.config-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+.config-value {
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+.config-value.mono {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.config-note {
+  font-size: 0.7rem;
+  color: var(--fg-dim);
+  padding: 0.3rem 0.2rem;
+  line-height: 1.4;
+}
+
+
