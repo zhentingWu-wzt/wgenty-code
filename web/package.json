@@ -12,7 +12,9 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@types/diff": "^7.0.2",
     "@types/react-syntax-highlighter": "^15.5.13",
+    "diff": "^9.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
