@@ -16,12 +16,12 @@ verification_report: openspec/changes/web-ops-console/verification-report.md
 branch_status: pending
 created_at: 2026-07-18
 verified_at: 2026-07-31
-archived: false
+archived: true
 language: zh-CN
 review_mode: standard
 bound_branch: feature/web-agent-frontend
 verify_failures: 0
-archive_confirmation: pending
+archive_confirmation: confirmed
 direct_override: true
 handoff_context: openspec/changes/web-ops-console/.comet/handoff/design-context.json
 handoff_hash: 88d3fe4f648e3bc93debbd9837958f09cfd5210d6d6eb145de9b4762ef5bdfc3
