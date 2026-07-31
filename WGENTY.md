@@ -281,7 +281,7 @@ Prompt 8 层：base_instructions → permissions → developer → environment �
 
 ## CI/CD
 
-`.github/workflows/ci.yml` — push main/develop 或 PR 触发：
+`.github/workflows/ci.yml` — push main/dev 或 PR 触发：
 
 | Job | 命令 |
 |-----|------|
