@@ -1,9 +1,0 @@
-{
-  "openspec_proposal": "openspec/changes/web-ops-console/proposal.md",
-  "openspec_design": "openspec/changes/web-ops-console/design.md",
-  "openspec_tasks": "openspec/changes/web-ops-console/tasks.md",
-  "openspec_delta_spec": "openspec/changes/web-ops-console/specs/ops-console-api/spec.md",
-  "design_document": "openspec/changes/web-ops-console/design.md",
-  "handoff_context": "openspec/changes/web-ops-console/.comet/handoff/design-context.json",
-  "handoff_markdown": "openspec/changes/web-ops-console/.comet/handoff/design-context.md"
-}
