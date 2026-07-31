@@ -1,7 +1,7 @@
 workflow: full
 phase: build
 context_compression: off
-build_mode: subagent-driven-development
+build_mode: direct
 build_pause: null
 subagent_dispatch: confirmed
 tdd_mode: direct
@@ -19,10 +19,10 @@ verified_at: null
 archived: false
 language: zh-CN
 review_mode: standard
-bound_branch: dev
+bound_branch: feature/web-agent-frontend
 verify_failures: 0
 archive_confirmation: null
-direct_override: null
+direct_override: true
 handoff_context: openspec/changes/web-ops-console/.comet/handoff/design-context.json
 handoff_hash: 88d3fe4f648e3bc93debbd9837958f09cfd5210d6d6eb145de9b4762ef5bdfc3
 classic_profile: full
