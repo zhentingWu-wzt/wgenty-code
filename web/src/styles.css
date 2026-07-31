@@ -276,6 +276,16 @@ body {
   white-space: pre-wrap;
   max-width: 900px;
   margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.msg-error-retry {
+  flex-shrink: 0;
+  background: var(--bad);
+  color: var(--bg);
+  border-color: var(--bad);
 }
 
 /* ── Tool call card ─────────────────────────────────────────────────────────── */
@@ -1026,4 +1036,100 @@ body {
   line-height: 1.4;
 }
 
+/* ── Responsive layout (design D8) ────────────────────────────────────────────
+   Pure additive @media blocks — no existing CSS is torn down. Three breakpoints:
+   tablet (≤1024), phone (≤768), small phone (≤375). The sidebar's existing
+   `collapsed` state doubles as the mobile drawer toggle. */
+
+/* Mobile sidebar backdrop: hidden on desktop, shown only on phone when open. */
+.sidebar-backdrop {
+  display: none;
+}
+
+/* ≤1024px (tablet): default-collapse the sidebar to the rail so chat has room. */
+@media (max-width: 1024px) {
+  .app-body:not(.drawer-open) .sidebar:not(.sidebar-collapsed) {
+    /* Nudge toward collapsed via narrower width rather than full hide, so the
+       rail is still reachable. Tab picks still expand (sidebarStore forces it). */
+    width: 220px;
+  }
+}
+
+/* ≤768px (phone): sidebar becomes a slide-over drawer + backdrop. */
+@media (max-width: 768px) {
+  .app {
+    /* 100dvh avoids the jump caused by mobile browser toolbars. */
+    height: 100dvh;
+  }
+
+  /* Sidebar: fixed overlay drawer, slides in from the left. */
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 60;
+    width: 280px;
+    max-width: 85vw;
+    transform: translateX(0);
+    transition: transform 0.2s ease;
+    box-shadow: 2px 0 12px rgba(0, 0, 0, 0.4);
+  }
+  /* Collapsed = drawer hidden off-screen. */
+  .sidebar-collapsed {
+    width: 280px;
+    max-width: 85vw;
+    transform: translateX(-100%);
+    /* The 28px rail markup still renders but is off-screen; no visible rail. */
+  }
+  /* The collapsed-state expand button is invisible off-screen; surface a
+     floating button to reopen the drawer. */
+  .sidebar-collapsed .sidebar-expand-btn {
+    position: fixed;
+    left: 0.5rem;
+    top: 0.5rem;
+    z-index: 61;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.3rem 0.5rem;
+  }
+
+  /* Backdrop: the component only renders it in the expanded branch, so on phone
+     it shows exactly when the drawer is open. Hidden on desktop via the default
+     `display: none` above. */
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 55;
+  }
+
+  /* Chat content: full width, no centered max cap. */
+  .chat-list,
+  .msg-error {
+    max-width: 100%;
+  }
+
+  /* Composer: tighten. */
+  .composer {
+    padding: 0.6rem;
+  }
+  .composer-input {
+    rows: 2;
+  }
+}
+
+/* ≤375px (small phone): compact further. */
+@media (max-width: 375px) {
+  .status-model {
+    max-width: 40vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .composer-send {
+    padding: 0.4rem 0.7rem;
+    font-size: 0.8rem;
+  }
+}
 

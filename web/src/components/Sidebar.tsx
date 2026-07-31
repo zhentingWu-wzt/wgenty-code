@@ -38,7 +38,15 @@ export function Sidebar({ client }: { client: DaemonClient }) {
   }
 
   return (
-    <aside className="sidebar">
+    <>
+      {/* Mobile backdrop: only visible on phone breakpoint when the drawer is
+          open. Clicking it collapses the sidebar. Hidden on desktop via CSS. */}
+      <div
+        className="sidebar-backdrop"
+        onClick={toggle}
+        aria-hidden="true"
+      />
+      <aside className="sidebar">
       <div className="sidebar-header">
         <span className="sidebar-title">Panels</span>
         <button type="button" className="sidebar-collapse-btn" onClick={toggle} title="Hide sidebar">
@@ -71,5 +79,6 @@ export function Sidebar({ client }: { client: DaemonClient }) {
         )}
       </div>
     </aside>
+    </>
   );
 }
