@@ -134,6 +134,99 @@ body {
   white-space: pre-wrap;
   line-height: 1.5;
 }
+
+/* Markdown-rendered assistant content. Overrides .msg-content's pre-wrap
+   (which would otherwise mangle lists/paragraphs). */
+.msg-markdown {
+  white-space: normal;
+}
+.msg-markdown > :first-child {
+  margin-top: 0;
+}
+.msg-markdown > :last-child {
+  margin-bottom: 0;
+}
+.msg-markdown p {
+  margin: 0.5em 0;
+  line-height: 1.6;
+}
+.msg-markdown h1,
+.msg-markdown h2,
+.msg-markdown h3,
+.msg-markdown h4 {
+  margin: 0.8em 0 0.4em;
+  line-height: 1.3;
+}
+.msg-markdown h1 {
+  font-size: 1.3em;
+}
+.msg-markdown h2 {
+  font-size: 1.15em;
+}
+.msg-markdown h3 {
+  font-size: 1.05em;
+}
+.msg-markdown ul,
+.msg-markdown ol {
+  margin: 0.4em 0;
+  padding-left: 1.4em;
+}
+.msg-markdown li {
+  margin: 0.2em 0;
+}
+.msg-markdown li > p {
+  margin: 0.2em 0;
+}
+.msg-markdown a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.msg-markdown a:hover {
+  text-decoration: underline;
+}
+.msg-markdown blockquote {
+  margin: 0.5em 0;
+  padding: 0.2em 0.9em;
+  border-left: 3px solid var(--border);
+  color: var(--fg-dim);
+}
+.msg-markdown code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.85em;
+  background: var(--bg);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+}
+.msg-markdown pre {
+  margin: 0.6em 0;
+  padding: 0.7em 0.9em;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.msg-markdown pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.82em;
+  line-height: 1.5;
+}
+.msg-markdown table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: 0.88em;
+}
+.msg-markdown th,
+.msg-markdown td {
+  border: 1px solid var(--border);
+  padding: 0.3em 0.6em;
+  text-align: left;
+}
+.msg-markdown hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.8em 0;
+}
 .msg-tools {
   margin-top: 0.6rem;
   display: flex;
