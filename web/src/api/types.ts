@@ -134,6 +134,58 @@ export interface TaskProgressResponse {
   ready: number;
 }
 
+// ── Memory (Tier 2 ops-panel-api) ────────────────────────────────────────────
+
+/** A single memory entry. Fields mirror MemoryEntry (src/context/entry.rs);
+ *  flattened with `origin` in the list/detail responses. Modeled loosely. */
+export interface MemoryEntry {
+  id: string;
+  memory_type: string;
+  content: string;
+  importance: number;
+  timestamp: string;
+  tags: string[];
+  recall_count?: number;
+  hit_count?: number;
+  retrieval_mode?: string;
+}
+
+export interface MemoryItem extends MemoryEntry {
+  origin: "project" | "global";
+}
+
+export interface MemoryListQuery {
+  scope?: "project" | "global" | "all";
+  min_importance?: number;
+  limit?: number;
+}
+
+export interface MemoryListResponse {
+  items: MemoryItem[];
+  total: number;
+}
+
+export interface MemoryStatus {
+  total_memories: number;
+  session_count: number;
+  conversation_count: number;
+  knowledge_count: number;
+  last_consolidation?: string;
+  storage_size_bytes: number;
+  project_count: number;
+  global_count: number;
+}
+
+export interface PruneResult {
+  before: number;
+  after: number;
+  removed: number;
+  project_before: number;
+  project_after: number;
+  global_before: number;
+  global_after: number;
+}
+
 // ── Tools ────────────────────────────────────────────────────────────────────
 
 export interface ToolInfo {

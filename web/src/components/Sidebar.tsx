@@ -4,12 +4,17 @@ import { SessionsPanel } from "./SessionsPanel";
 import { TodosPanel } from "./TodosPanel";
 import { TasksPanel } from "./TasksPanel";
 import { ModelPanel } from "./ModelPanel";
+import { MemoryPanel } from "./MemoryPanel";
+import { OverviewPanel } from "./OverviewPanel";
+import { ConfigPanel } from "./ConfigPanel";
 
 const TABS: Array<{ id: SidebarTab; label: string }> = [
   { id: "sessions", label: "Sessions" },
   { id: "todos", label: "Todos" },
   { id: "tasks", label: "Tasks" },
   { id: "model", label: "Model" },
+  { id: "memory", label: "Memory" },
+  { id: "config", label: "Config" },
 ];
 
 /**
@@ -57,6 +62,13 @@ export function Sidebar({ client }: { client: DaemonClient }) {
         {activeTab === "todos" && <TodosPanel client={client} />}
         {activeTab === "tasks" && <TasksPanel client={client} />}
         {activeTab === "model" && <ModelPanel client={client} />}
+        {activeTab === "memory" && <MemoryPanel client={client} />}
+        {activeTab === "config" && (
+          <>
+            <OverviewPanel client={client} />
+            <ConfigPanel client={client} />
+          </>
+        )}
       </div>
     </aside>
   );

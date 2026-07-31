@@ -22,6 +22,11 @@ import type {
   HealthResponse,
   ListModelsResponse,
   ListTasksResponse,
+  MemoryListQuery,
+  MemoryListResponse,
+  MemoryItem,
+  MemoryStatus,
+  PruneResult,
   SessionInfo,
   SessionResponse,
   SwitchModelRequest,
@@ -204,5 +209,34 @@ export class DaemonClient {
 
   async taskProgress(): Promise<TaskProgressResponse> {
     return jsonOrThrow(await fetch(`${this.base}/tasks/progress`));
+  }
+
+  // ── Memory (Tier 2 ops-panel-api) ──────────────────────────────────────────
+
+  async memoryStatus(): Promise<MemoryStatus> {
+    return jsonOrThrow(await fetch(`${this.base}/memory/status`));
+  }
+
+  async listMemory(query: MemoryListQuery = {}): Promise<MemoryListResponse> {
+    const params = new URLSearchParams();
+    if (query.scope) params.set("scope", query.scope);
+    if (query.min_importance !== undefined) params.set("min_importance", String(query.min_importance));
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    const qs = params.toString();
+    return jsonOrThrow(await fetch(`${this.base}/memory${qs ? `?${qs}` : ""}`));
+  }
+
+  async getMemory(id: string): Promise<MemoryItem> {
+    return jsonOrThrow(await fetch(`${this.base}/memory/${encodeURIComponent(id)}`));
+  }
+
+  async pruneMemory(dryRun = false): Promise<PruneResult> {
+    return jsonOrThrow(
+      await fetch(`${this.base}/memory/prune`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ dry_run: dryRun }),
+      }),
+    );
   }
 }
