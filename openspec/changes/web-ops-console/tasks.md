@@ -6,7 +6,7 @@
 
 ### 1. 渲染
 
-- [ ] 1.1 引入 `react-markdown` + `remark-gfm`；将 assistant 内容渲染为 GFM Markdown（替换 `ChatView.tsx` 中的 `pre-wrap`）
+- [x] 1.1 引入 `react-markdown` + `remark-gfm`；将 assistant 内容渲染为 GFM Markdown（替换 `ChatView.tsx` 中的 `pre-wrap`）
 - [ ] 1.2 为围栏代码块加语法高亮（按设计 OQ1 在 `shiki` 与 `prismjs` 间抉择）；评估 bundle 体积影响
 - [ ] 1.3 以区别样式渲染 `reasoning` 块（默认折叠）
 - [ ] 1.4 新增 `<DiffView>` 组件；将 `file_edit` 工具输出解析为统一 diff 并渲染
