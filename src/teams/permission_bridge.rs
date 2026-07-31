@@ -94,6 +94,9 @@ impl PermissionBridge {
         timeout: Duration,
     ) -> bool {
         let request_id = approval.request_id.clone();
+        // Keep a copy for trace events: `resolve()` removes the entry itself,
+        // so this waiter can't read the approval back after wake-up.
+        let approval_for_events = approval.clone();
         let (tx, rx) = oneshot::channel();
         {
             let mut guard = self.inner.lock().await;
@@ -101,15 +104,37 @@ impl PermissionBridge {
             guard.insert(request_id.clone(), PendingEntry { approval, tx });
         }
 
+        // Notify SSE subscribers (TUI / web) that a permission prompt is ready,
+        // so they don't have to poll /tools/pending-permissions. Use `from` as
+        // the session hint; the live stream is global anyway.
+        let pending_ev = crate::teams::trace_sink::TraceEvent::permission(
+            &approval_for_events,
+            &approval_for_events.from,
+            false,
+        );
+        let _ = crate::teams::trace_sink::trace_hub().send(pending_ev);
+
         let result = tokio::time::timeout(timeout, rx).await;
-        // Ensure waiter is cleaned up on timeout or drop.
+        // Ensure waiter is cleaned up on timeout or drop. `resolve()` may have
+        // already removed it — that's fine, remove is a no-op on a missing key.
         self.inner.lock().await.remove(&request_id);
 
-        match result {
+        let approved = match result {
             Ok(Ok(approved)) => approved,
             Ok(Err(_)) => false, // sender dropped
             Err(_) => false,     // timeout → deny
-        }
+        };
+
+        // Publish resolution (approved / denied / timed out) so the UI can
+        // dismiss a prompt answered elsewhere or expired.
+        let resolved_ev = crate::teams::trace_sink::TraceEvent::permission(
+            &approval_for_events,
+            &approval_for_events.from,
+            true,
+        );
+        let _ = crate::teams::trace_sink::trace_hub().send(resolved_ev);
+
+        approved
     }
 
     /// Snapshot of pending approvals for the root UI.
@@ -124,7 +149,10 @@ impl PermissionBridge {
 
     /// Resolve a pending request.
     ///
-    /// Returns `true` if a waiter was found and notified.
+    /// Removes the entry and signals its oneshot. The resolved trace event is
+    /// published by the waiter in `request_with_timeout` (which holds an
+    /// approval copy for exactly this purpose), so resolution emits exactly
+    /// one event regardless of path (explicit resolve, timeout, or drop).
     pub async fn resolve(&self, request_id: &str, approved: bool) -> bool {
         let entry = self.inner.lock().await.remove(request_id);
         match entry {

@@ -38,8 +38,16 @@ canonical_spec: openspec
 
 ### D2 —— 客户端 agent loop 留在浏览器
 
-- 浏览器始终驱动 `runAgentLoop`（`web/src/agent/loop.ts`）。Tier 1 扩展它：`AbortController` 实现取消；在 `task`/`delegate` 执行期间派生 pending-permissions 轮询器（镜像 `src/tui/agent/adapters.rs:152-235`）。
+- 浏览器始终驱动 `runAgentLoop`（`web/src/agent/loop.ts`）。Tier 1 扩展它：`AbortController` 实现取消。
 - daemon 永不运行该 loop。这保留了干净的透传契约，并使 `src/agent/runtime/loop_.rs` 保持唯一事实源（web 端移植持续跟踪它）。
+
+### D2.1 —— 子 agent 权限通知走 trace SSE（非轮询）
+
+- 原 tasks 草拟"前端 500ms 轮询 `/tools/pending-permissions`"（镜像 TUI 的 `adapters.rs:168-211`）。**改为推送模型**：复用 daemon 已有的进程级 `trace_hub()` broadcast + `/api/v1/subagents/trace/stream` SSE。
+- `TraceEvent` 增加可选的 `kind`（默认 `"progress"`）与 `permission` 字段。`PermissionBridge` 在请求注册 / 解决时往 `trace_hub()` 发一条 `permission_pending` / `permission_resolved` 事件。
+- 前端订阅已有 trace SSE，按 `kind` 分发：权限事件复用现有 `requestPermission` 弹窗，trace 事件走原 UI。
+- 收益：实时（毫秒级）取代 500ms 轮询；零新端点、零新总线；TUI 也可同步去轮询。权衡：trace 流里混入权限事件，但权限请求低频，消费端按 `kind` switch 即可。
+- 新字段对 cold-start replay 的旧 JSON 必须 `#[serde(default)]` 向后兼容。
 
 ### D3 —— 渲染管线
 
