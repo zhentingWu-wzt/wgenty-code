@@ -85,6 +85,7 @@ export class DaemonClient {
   async chatStream(
     messages: ChatMessage[],
     opts: ChatStreamOptions = {},
+    signal?: AbortSignal,
   ): Promise<{ body: ReadableStream<Uint8Array> }> {
     const body: ChatStreamRequest = {
       messages,
@@ -95,6 +96,9 @@ export class DaemonClient {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
+      // Passing the signal lets an in-flight stream be aborted mid-token (the
+      // fetch aborts and res.body errors out), not just between rounds.
+      signal,
     });
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => "");

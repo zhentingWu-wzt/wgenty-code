@@ -64,11 +64,17 @@ export function App() {
     // events can be appended to it. Reassigned each round.
     let currentAssistantId: string | null = null;
 
+    // AbortController for the Stop button — registered in the store so any
+    // component (Composer / StatusBar) can cancel the running turn.
+    const abort = new AbortController();
+    store.getState().registerAbort(abort);
+
     try {
       await runAgentLoop({
         client,
         messages,
         sessionId,
+        signal: abort.signal,
         callbacks: {
           onStreamEvent: (round, ev) => {
             // First event of a round → open a new assistant bubble.
@@ -91,8 +97,10 @@ export function App() {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      store.getState().setError(msg);
+      // User-initiated stop surfaces as "aborted" — don't show it as an error.
+      if (msg !== "aborted") store.getState().setError(msg);
     } finally {
+      store.getState().registerAbort(null);
       if (currentAssistantId) store.getState().finalizeAssistant(currentAssistantId);
       store.getState().setRunning(false);
     }

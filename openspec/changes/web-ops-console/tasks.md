@@ -13,7 +13,7 @@
 
 ### 2. agent loop 扩展
 
-- [ ] 2.1 将 `AbortController` 贯穿 `runAgentLoop` + `chatStream`；UI 加停止按钮，在轮次之间中断
+- [x] 2.1 将 `AbortController` 贯穿 `runAgentLoop` + `chatStream`；UI 加停止按钮，在轮次之间中断
 - [ ] 2.2 实现子 agent 异步权限：在 `task`/`delegate` 执行期间派生轮询器命中 `GET /api/v1/tools/pending-permissions`；每条作为权限弹窗呈现，经 `POST /api/v1/tools/resolve-permission` 解决
 - [x] 2.3 在 `<DiffView>` 中处理 `apply_patch` 多 hunk diff
 
