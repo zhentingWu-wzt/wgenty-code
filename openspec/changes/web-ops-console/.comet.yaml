@@ -1,14 +1,14 @@
 workflow: full
-phase: design
+phase: build
 context_compression: off
-build_mode: null
+build_mode: subagent-driven-development
 build_pause: null
-subagent_dispatch: null
-tdd_mode: null
-isolation: null
+subagent_dispatch: confirmed
+tdd_mode: direct
+isolation: branch
 verify_mode: null
 auto_transition: false
-base_ref: bafc8388ea5c3e8c559ee669eeae30d943a9d66a
+base_ref: a025634b10cf1e1d64e79f8158653bcae374d04c
 design_doc: openspec/changes/web-ops-console/design.md
 plan: null
 verify_result: pending
@@ -17,16 +17,14 @@ branch_status: pending
 created_at: 2026-07-18
 verified_at: null
 archived: false
-language: null
-review_mode: null
-bound_branch: null
+language: zh-CN
+review_mode: standard
+bound_branch: dev
 verify_failures: 0
 archive_confirmation: null
 direct_override: null
-handoff_context: null
-handoff_hash: null
+handoff_context: openspec/changes/web-ops-console/.comet/handoff/design-context.json
+handoff_hash: 88d3fe4f648e3bc93debbd9837958f09cfd5210d6d6eb145de9b4762ef5bdfc3
 classic_profile: full
 classic_migration: 1
 run_id: 6bd3a547-572e-46df-9a11-fc83f1b07e49
-
-# Product hold: team-oriented Web later; TUI first. See DEFERRED.md.
