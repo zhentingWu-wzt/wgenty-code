@@ -105,14 +105,21 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<string> {
 
     // ── 1. Stream one round ──────────────────────────────────────────────────
     const processor = new StreamProcessor();
-    const { body } = await client.chatStream(messages);
-    for await (const chunk of readChunks(body)) {
-      for (const ev of processor.feedBytes(chunk)) {
-        callbacks.onStreamEvent(round, ev);
-        if (ev.type === "streamError") {
-          throw new Error(`stream error: ${ev.message}`);
+    const { body } = await client.chatStream(messages, {}, args.signal);
+    try {
+      for await (const chunk of readChunks(body)) {
+        for (const ev of processor.feedBytes(chunk)) {
+          callbacks.onStreamEvent(round, ev);
+          if (ev.type === "streamError") {
+            throw new Error(`stream error: ${ev.message}`);
+          }
         }
       }
+    } catch (err) {
+      // An AbortError (user hit stop mid-stream) is expected — surface it as a
+      // clean "aborted" so the caller can finalize without showing an error.
+      if (err instanceof Error && err.name === "AbortError") throw new Error("aborted");
+      throw err;
     }
     const result = processor.finish();
 

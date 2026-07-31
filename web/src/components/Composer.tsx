@@ -9,6 +9,7 @@ interface ComposerProps {
 export function Composer({ onSend }: ComposerProps) {
   const [text, setText] = useState("");
   const isRunning = useChatStore((s) => s.isRunning);
+  const stopRunning = useChatStore((s) => s.stopRunning);
 
   const send = () => {
     const trimmed = text.trim();
@@ -35,9 +36,15 @@ export function Composer({ onSend }: ComposerProps) {
         rows={3}
         disabled={isRunning}
       />
-      <button type="button" className="btn btn-primary composer-send" onClick={send} disabled={isRunning || !text.trim()}>
-        Send
-      </button>
+      {isRunning ? (
+        <button type="button" className="btn btn-danger composer-send" onClick={stopRunning}>
+          Stop
+        </button>
+      ) : (
+        <button type="button" className="btn btn-primary composer-send" onClick={send} disabled={!text.trim()}>
+          Send
+        </button>
+      )}
     </div>
   );
 }

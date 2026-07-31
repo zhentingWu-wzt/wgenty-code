@@ -42,6 +42,11 @@ interface PendingPermission {
 let nextId = 1;
 const genId = (): string => `m${nextId++}`;
 
+// Module-level holder for the running turn's AbortController. Kept out of
+// React state on purpose: it's a mutable imperative handle, not render data,
+// and storing it in state would cause needless re-renders.
+let currentAbort: AbortController | null = null;
+
 interface ChatState {
   messages: DisplayMessage[];
   isRunning: boolean;
@@ -67,6 +72,10 @@ interface ChatState {
   /** Surface a permission prompt; returns a promise the modal resolves. */
   requestPermission: (info: PermissionRequiredInfo) => Promise<PermissionDecision>;
   resolvePermission: (decision: PermissionDecision) => void;
+  /** App registers the current turn's AbortController so Stop can abort it. */
+  registerAbort: (controller: AbortController | null) => void;
+  /** Abort the running turn (no-op if nothing running). */
+  stopRunning: () => void;
   clear: () => void;
 }
 
@@ -130,6 +139,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pending.resolve(decision);
       set({ pendingPermission: null });
     }
+  },
+
+  registerAbort: (controller) => {
+    currentAbort = controller;
+  },
+
+  stopRunning: () => {
+    if (currentAbort) {
+      currentAbort.abort();
+      currentAbort = null;
+    }
+    // isRunning is cleared by the loop's finally block once it unwinds; we
+    // don't set it here to avoid a double-state-write race with that finally.
   },
 
   clear: () =>
