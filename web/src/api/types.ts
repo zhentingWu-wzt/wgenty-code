@@ -186,6 +186,44 @@ export interface PruneResult {
   global_after: number;
 }
 
+// ── Trace SSE (subagent progress + permission events) ────────────────────────
+
+/** Mirrors `StructuredApproval` (src/teams/permission_bridge.rs). Carried in
+ *  TraceEvent.permission for permission_pending / permission_resolved events. */
+export interface StructuredApproval {
+  request_id: string;
+  from: string;
+  kind: string;
+  tool: string;
+  policy_reason: string;
+  session_rule: string;
+  paths?: string[];
+  command?: string;
+  risk?: string;
+  human_summary: string;
+}
+
+/** Mirrors `TraceEvent` (src/teams/trace_sink.rs). `kind` discriminates:
+ *  progress (subagent update) vs permission_pending / permission_resolved. */
+export interface TraceEvent {
+  ts: number;
+  session_id: string;
+  node_id: string;
+  parent_id?: string | null;
+  label: string;
+  status: string;
+  round?: number | null;
+  current_tool?: string | null;
+  current_params?: unknown;
+  elapsed_ms: number;
+  progress_delta?: number | null;
+  token_budget_k?: number | null;
+  cumulative_tokens: number;
+  error?: unknown;
+  kind?: "progress" | "permission_pending" | "permission_resolved";
+  permission?: StructuredApproval;
+}
+
 // ── Tools ────────────────────────────────────────────────────────────────────
 
 export interface ToolInfo {

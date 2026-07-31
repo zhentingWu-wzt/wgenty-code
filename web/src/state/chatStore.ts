@@ -10,7 +10,7 @@
  * testable in isolation and the React layer free of control-flow logic.
  */
 import { create } from "zustand";
-import type { PermissionDecision, PermissionRequiredInfo } from "../api/types";
+import type { PermissionDecision, PermissionRequiredInfo, StructuredApproval } from "../api/types";
 import type { StreamEvent } from "../api/sseParser";
 import type { ToolExecution } from "../agent/loop";
 
@@ -55,6 +55,8 @@ interface ChatState {
   connection: ConnectionStatus;
   modelName: string | null;
   pendingPermission: PendingPermission | null;
+  /** Subagent async permission (pushed via trace SSE). Null when none pending. */
+  pendingSubagent: StructuredApproval | null;
 
   // ── Actions ──────────────────────────────────────────────────────────────
   setConnection: (s: ConnectionStatus) => void;
@@ -74,6 +76,10 @@ interface ChatState {
   /** Surface a permission prompt; returns a promise the modal resolves. */
   requestPermission: (info: PermissionRequiredInfo) => Promise<PermissionDecision>;
   resolvePermission: (decision: PermissionDecision) => void;
+  /** Push a subagent permission prompt (from trace SSE). */
+  pushSubagentPermission: (approval: StructuredApproval) => void;
+  /** Dismiss the current subagent prompt (after the hook has resolved it). */
+  clearSubagentPermission: () => void;
   /** App registers the current turn's AbortController so Stop can abort it. */
   registerAbort: (controller: AbortController | null) => void;
   /** Abort the running turn (no-op if nothing running). */
@@ -88,6 +94,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   connection: "unknown",
   modelName: null,
   pendingPermission: null,
+  pendingSubagent: null,
 
   setConnection: (s) => set({ connection: s }),
   setModelName: (n) => set({ modelName: n }),
@@ -145,6 +152,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  pushSubagentPermission: (approval) => {
+    // Don't overwrite a prompt the user is actively looking at; the trace hook
+    // resolves the current one before the next pending event arrives in
+    // practice (the bridge blocks the subagent until resolved).
+    if (!get().pendingSubagent) set({ pendingSubagent: approval });
+  },
+
+  clearSubagentPermission: () => set({ pendingSubagent: null }),
+
   registerAbort: (controller) => {
     currentAbort = controller;
   },
@@ -159,5 +175,5 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clear: () =>
-    set({ messages: [], lastError: null, pendingPermission: null, isRunning: false }),
+    set({ messages: [], lastError: null, pendingPermission: null, pendingSubagent: null, isRunning: false }),
 }));

@@ -14,7 +14,7 @@
 ### 2. agent loop 扩展
 
 - [x] 2.1 将 `AbortController` 贯穿 `runAgentLoop` + `chatStream`；UI 加停止按钮，在轮次之间中断
-- [ ] 2.2 实现子 agent 异步权限：在 `task`/`delegate` 执行期间派生轮询器命中 `GET /api/v1/tools/pending-permissions`；每条作为权限弹窗呈现，经 `POST /api/v1/tools/resolve-permission` 解决
+- [x] 2.2 实现子 agent 异步权限（改为推送模型，见 design D2.1）：`TraceEvent` 增 `kind`/`permission` 字段；`PermissionBridge` 注册/解决时经 `trace_hub()` 广播；前端订阅 `/subagents/trace/stream` SSE，按 `kind` 分发到权限弹窗，经 `POST /tools/resolve-permission` 解决（取代 500ms 轮询）
 - [x] 2.3 在 `<DiffView>` 中处理 `apply_patch` 多 hunk diff
 
 ### 3. 会话管理
