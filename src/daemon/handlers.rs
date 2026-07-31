@@ -452,6 +452,8 @@ fn trace_event_from_header(
         token_budget_k: None,
         cumulative_tokens: h.total_tokens,
         error,
+        kind: crate::teams::trace_sink::TraceEventKind::Progress,
+        permission: None,
     }
 }
 
@@ -2095,6 +2097,8 @@ mod tests {
             token_budget_k: None,
             cumulative_tokens: 0,
             error: None,
+            kind: crate::teams::trace_sink::TraceEventKind::Progress,
+            permission: None,
         };
 
         // session filter keeps matching, drops non-matching.
