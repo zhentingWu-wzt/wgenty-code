@@ -49,15 +49,15 @@
 
 ### 7. 错误恢复（见 design D7；含回归修复，优先级最高）
 
-- [ ] 7.1 状态栏心跳：用 usePolling 周期探活 /health（~10s），失败设 disconnected、成功恢复 connected（修"状态栏撒谎"）
-- [ ] 7.2 trace SSE 自动重连：usePermissionTrace 在 catch 后指数退避重连（1s→30s 上限，重连成功重置）——修静默挂死回归 bug
-- [ ] 7.3 流式中断重试：lastError 加结构（transport vs upstream），transport 错误在错误条加"重试"按钮重发上一条 user message
+- [x] 7.1 状态栏心跳：用 usePolling 周期探活 /health（~10s），失败设 disconnected、成功恢复 connected（修"状态栏撒谎"）
+- [x] 7.2 trace SSE 自动重连：usePermissionTrace 在 catch 后指数退避重连（1s→30s 上限，重连成功重置）——修静默挂死回归 bug
+- [x] 7.3 流式中断重试：lastError 加结构（transport vs upstream），transport 错误在错误条加"重试"按钮重发上一条 user message
 
 ### 8. 响应式布局（见 design D8）
 
-- [ ] 8.1 平板断点 ≤1024px：侧边栏默认折叠成 rail
-- [ ] 8.2 手机断点 ≤768px：侧边栏变滑出抽屉 + backdrop；.chat-list max-width 收起；.app height 改 100dvh
-- [ ] 8.3 小手机 ≤375px：Composer 紧凑化、状态栏截断模型名
+- [x] 8.1 平板断点 ≤1024px：侧边栏收窄成 rail
+- [x] 8.2 手机断点 ≤768px：侧边栏变滑出抽屉 + backdrop；.chat-list max-width 收起；.app height 改 100dvh
+- [x] 8.3 小手机 ≤375px：Composer 紧凑化、状态栏截断模型名
 
 ### 9. 生产托管（本期不做，见 design D1）
 

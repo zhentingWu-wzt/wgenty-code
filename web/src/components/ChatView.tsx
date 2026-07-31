@@ -99,7 +99,16 @@ export function ChatView() {
           )}
         </div>
       ))}
-      {lastError && <div className="msg-error">{lastError}</div>}
+      {lastError && (
+        <div className="msg-error">
+          <span>{lastError.message}</span>
+          {lastError.retry && (
+            <button type="button" className="btn btn-xs msg-error-retry" onClick={lastError.retry}>
+              Retry
+            </button>
+          )}
+        </div>
+      )}
       <div ref={bottomRef} />
     </div>
   );

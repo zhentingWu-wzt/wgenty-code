@@ -34,6 +34,18 @@ export interface DisplayMessage {
 
 export type ConnectionStatus = "unknown" | "connected" | "disconnected";
 
+/**
+ * Structured turn error (design D7.3). `kind` distinguishes transport failures
+ * (daemon down / network) — which a retry can fix — from upstream LLM errors
+ * (rejected prompt, rate limit) which it can't. Only transport errors carry a
+ * `retry` callback.
+ */
+export interface TurnError {
+  message: string;
+  kind: "transport" | "upstream";
+  retry?: () => void;
+}
+
 interface PendingPermission {
   info: PermissionRequiredInfo;
   resolve: (decision: PermissionDecision) => void;
@@ -51,7 +63,7 @@ interface ChatState {
   messages: DisplayMessage[];
   isRunning: boolean;
   /** Error from the most recent turn (shown inline, cleared on next send). */
-  lastError: string | null;
+  lastError: TurnError | null;
   connection: ConnectionStatus;
   modelName: string | null;
   pendingPermission: PendingPermission | null;
@@ -71,7 +83,7 @@ interface ChatState {
   /** Mark the streaming assistant message done and attach tool executions. */
   attachToolExec: (assistantId: string, exec: ToolExecution) => void;
   finalizeAssistant: (id: string) => void;
-  setError: (msg: string | null) => void;
+  setError: (err: TurnError | null) => void;
   setRunning: (b: boolean) => void;
   /** Surface a permission prompt; returns a promise the modal resolves. */
   requestPermission: (info: PermissionRequiredInfo) => Promise<PermissionDecision>;

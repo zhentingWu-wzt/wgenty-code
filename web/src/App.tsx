@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import { DaemonClient } from "./api/client";
 import { runAgentLoop } from "./agent/loop";
 import { useChatStore } from "./state/chatStore";
@@ -8,6 +8,7 @@ import { ChatView } from "./components/ChatView";
 import { Composer } from "./components/Composer";
 import { PermissionModal } from "./components/PermissionModal";
 import { usePermissionTrace } from "./hooks/usePermissionTrace";
+import { usePolling } from "./hooks/usePolling";
 import type { ChatMessage } from "./api/types";
 
 /**
@@ -30,27 +31,28 @@ export function App() {
   // (design D2.1: replaces 500ms polling of /tools/pending-permissions).
   usePermissionTrace(clientRef.current);
 
-  // ── Startup: probe the daemon + read current model ─────────────────────────
-  useEffect(() => {
-    const client = clientRef.current!;
-    let cancelled = false;
-
-    (async () => {
+  // ── Daemon health heartbeat (design D7.1) ──────────────────────────────────
+  // Poll /health on a slow cadence so the status bar reflects daemon
+  // death/recovery (was: one-shot probe that lied forever after a restart).
+  // Model name is read once on first connect.
+  const modelLoadedRef = useRef(false);
+  usePolling(
+    async () => {
       try {
-        await client.health();
-        if (cancelled) return;
+        await clientRef.current!.health();
         setConnection("connected");
-        const cfg = await client.getConfig();
-        if (!cancelled) setModelName(cfg.model);
+        if (!modelLoadedRef.current) {
+          modelLoadedRef.current = true;
+          const cfg = await clientRef.current!.getConfig();
+          setModelName(cfg.model);
+        }
       } catch {
-        if (!cancelled) setConnection("disconnected");
+        setConnection("disconnected");
       }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [setConnection, setModelName]);
+    },
+    true,
+    10_000,
+  );
 
   // ── Send: push the user message, run a full agent turn ─────────────────────
   const handleSend = async (text: string) => {
@@ -104,7 +106,20 @@ export function App() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // User-initiated stop surfaces as "aborted" — don't show it as an error.
-      if (msg !== "aborted") store.getState().setError(msg);
+      if (msg === "aborted") {
+        // no-op
+      } else {
+        // Classify: transport failures (daemon down, network reset, stream
+        // interrupted) are retryable; upstream LLM errors (rejected prompt,
+        // stream error: ...) are not. Design D7.3.
+        const isTransport = /fetch|network|failed to fetch|stream interrupted|aborted/i.test(msg)
+          && !msg.startsWith("stream error:");
+        store.getState().setError({
+          message: msg,
+          kind: isTransport ? "transport" : "upstream",
+          retry: isTransport ? () => handleSend(text) : undefined,
+        });
+      }
     } finally {
       store.getState().registerAbort(null);
       if (currentAssistantId) store.getState().finalizeAssistant(currentAssistantId);
