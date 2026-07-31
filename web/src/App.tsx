@@ -3,6 +3,7 @@ import { DaemonClient } from "./api/client";
 import { runAgentLoop } from "./agent/loop";
 import { useChatStore } from "./state/chatStore";
 import { StatusBar } from "./components/StatusBar";
+import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { Composer } from "./components/Composer";
 import { PermissionModal } from "./components/PermissionModal";
@@ -109,10 +110,15 @@ export function App() {
   return (
     <div className="app">
       <StatusBar />
-      <main className="main">
-        <ChatView />
-      </main>
-      <Composer onSend={handleSend} />
+      <div className="app-body">
+        <Sidebar client={clientRef.current} />
+        <div className="app-main">
+          <main className="main">
+            <ChatView />
+          </main>
+          <Composer onSend={handleSend} />
+        </div>
+      </div>
       <PermissionModal />
     </div>
   );

@@ -97,6 +97,43 @@ export interface ConfigResponse {
   streaming: boolean;
 }
 
+// ── Todos / Tasks ────────────────────────────────────────────────────────────
+
+/** Mirrors `TodoItemResponse` (src/daemon/models.rs:231). */
+export interface TodoItem {
+  content: string;
+  status: string; // "pending" | "in_progress" | "completed"
+  active_form?: string;
+}
+
+/** Mirrors `GetTodosResponse`. */
+export interface GetTodosResponse {
+  items: TodoItem[];
+  has_open_items: boolean;
+  display: string;
+}
+
+/** Mirrors `TaskInfo` (src/daemon/models.rs:205). */
+export interface TaskInfo {
+  id: string;
+  subject: string;
+  description: string;
+  status: string; // "pending" | "in_progress" | "completed" | "deleted"
+  priority: string; // "low" | "medium" | "high" | "critical"
+  created_at: string;
+  updated_at: string;
+  tags: string[];
+}
+
+export interface ListTasksResponse {
+  tasks: TaskInfo[];
+}
+
+export interface TaskProgressResponse {
+  blocked: number;
+  ready: number;
+}
+
 // ── Tools ────────────────────────────────────────────────────────────────────
 
 export interface ToolInfo {

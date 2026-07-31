@@ -19,15 +19,15 @@
 
 ### 3. 会话管理
 
-- [ ] 3.1 新增会话侧边栏：列表 + 搜索（`/api/v1/sessions`、`/sessions/search`）
-- [ ] 3.2 打开 / 切换到既有会话（`GET /api/v1/sessions/:id`）；将历史接入 chat store
-- [ ] 3.3 在轮次边界持久化当前会话（`PUT /api/v1/sessions/:id`）；带确认的删除
+- [x] 3.1 新增会话侧边栏：列表 + 搜索（`/api/v1/sessions`、`/sessions/search`）
+- [x] 3.2 打开 / 切换到既有会话（`GET /api/v1/sessions/:id`）；将历史接入 chat store
+- [x] 3.3 在轮次边界持久化当前会话（`PUT /api/v1/sessions/:id`）；带确认的删除
 
 ### 4. 侧边面板（只读，现有 API）
 
-- [ ] 4.1 Todo 面板：运行中轮询 `GET /api/v1/todos`；渲染条目 + 状态
-- [ ] 4.2 任务进度面板：`GET /api/v1/tasks/progress` + `GET /api/v1/tasks`
-- [ ] 4.3 模型选择器 UI：`GET /api/v1/models` → `POST /api/v1/model/switch`
+- [x] 4.1 Todo 面板：运行中轮询 `GET /api/v1/todos`；渲染条目 + 状态
+- [x] 4.2 任务进度面板：`GET /api/v1/tasks/progress` + `GET /api/v1/tasks`
+- [x] 4.3 模型选择器 UI：`GET /api/v1/models` → `POST /api/v1/model/switch`
 
 ## Tier 2 —— 运维侧边面板（最小的后端新增）
 
