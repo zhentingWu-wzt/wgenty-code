@@ -59,6 +59,8 @@ interface ChatState {
   // ── Actions ──────────────────────────────────────────────────────────────
   setConnection: (s: ConnectionStatus) => void;
   setModelName: (n: string | null) => void;
+  /** Push a pre-built display message (used when loading a session's history). */
+  pushLoadedMessage: (m: DisplayMessage) => void;
   pushUserMessage: (text: string) => void;
   /** Start a new assistant message that will be streamed into. */
   beginAssistantRound: (round: number) => string;
@@ -92,6 +94,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   pushUserMessage: (text) =>
     set((s) => ({ messages: [...s.messages, { id: genId(), role: "user", content: text }] })),
+
+  pushLoadedMessage: (m) => set((s) => ({ messages: [...s.messages, m] })),
 
   beginAssistantRound: (round) => {
     const id = genId();

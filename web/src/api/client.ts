@@ -18,12 +18,15 @@ import type {
   CreateSessionRequest,
   ExecuteToolRequest,
   ExecuteToolResponse,
+  GetTodosResponse,
   HealthResponse,
   ListModelsResponse,
+  ListTasksResponse,
   SessionInfo,
   SessionResponse,
   SwitchModelRequest,
   SwitchModelResponse,
+  TaskProgressResponse,
   UpdateSessionRequest,
 } from "./types";
 
@@ -187,5 +190,19 @@ export class DaemonClient {
 
   async deleteSession(id: string): Promise<void> {
     await jsonOrThrow(await fetch(`${this.base}/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }));
+  }
+
+  // ── Todos / Tasks ──────────────────────────────────────────────────────────
+
+  async getTodos(): Promise<GetTodosResponse> {
+    return jsonOrThrow(await fetch(`${this.base}/todos`));
+  }
+
+  async listTasks(): Promise<ListTasksResponse> {
+    return jsonOrThrow(await fetch(`${this.base}/tasks`));
+  }
+
+  async taskProgress(): Promise<TaskProgressResponse> {
+    return jsonOrThrow(await fetch(`${this.base}/tasks/progress`));
   }
 }
