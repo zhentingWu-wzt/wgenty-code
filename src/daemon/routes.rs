@@ -86,6 +86,11 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         .route("/api/v1/tasks/progress", get(handlers::task_progress))
         // Todos (s03 TodoWrite state)
         .route("/api/v1/todos", get(handlers::get_todos))
+        // Memory ops (web-ops-console Tier 2): wrap MemoryManager
+        .route("/api/v1/memory/status", get(handlers::memory_status))
+        .route("/api/v1/memory", get(handlers::list_memory))
+        .route("/api/v1/memory/:id", get(handlers::get_memory))
+        .route("/api/v1/memory/prune", post(handlers::prune_memory))
         // Background tasks
         .route(
             "/api/v1/background/results",

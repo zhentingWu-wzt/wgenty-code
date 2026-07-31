@@ -1473,6 +1473,110 @@ pub async fn cancel_agent_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ── Memory ops API (Tier 2 web-ops-console) ──────────────────────────────────
+// Thin wrappers over the shared MemoryManager. All read-only except prune.
+
+/// `GET /api/v1/memory/status` — dual-pool status summary.
+pub async fn memory_status(
+    State(state): State<Arc<DaemonState>>,
+) -> Result<Json<crate::context::MemoryStatus>, StatusCode> {
+    let status = state.memory_manager.status().await.map_err(|e| {
+        error!(error = ?e, "memory status failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(Json(status))
+}
+
+/// `GET /api/v1/memory` — list with optional scope/min_importance/limit filters.
+pub async fn list_memory(
+    State(state): State<Arc<DaemonState>>,
+    Query(q): Query<MemoryListQuery>,
+) -> Result<Json<MemoryListResponse>, StatusCode> {
+    let limit = q.limit.unwrap_or(500).clamp(1, 5000);
+    let entries = state
+        .memory_manager
+        .list_memories(q.min_importance, limit)
+        .await;
+
+    let items: Vec<MemoryItemResponse> = entries
+        .into_iter()
+        .filter(|(origin, _)| match q.scope.as_deref() {
+            Some("project") => matches!(origin, crate::context::MemoryOrigin::Project),
+            Some("global") => matches!(origin, crate::context::MemoryOrigin::Global),
+            _ => true, // "all" or unspecified
+        })
+        .map(|(origin, entry)| MemoryItemResponse {
+            origin: origin_str(origin).to_string(),
+            entry,
+        })
+        .collect();
+    let total = items.len();
+    Ok(Json(MemoryListResponse { items, total }))
+}
+
+/// `GET /api/v1/memory/:id` — single memory with origin.
+pub async fn get_memory(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+) -> Result<Json<MemoryDetailResponse>, StatusCode> {
+    // get_memory doesn't return origin; re-derive it by checking both pools.
+    let mgr = &state.memory_manager;
+    if let Some(entry) = mgr.get_memory(&id).await {
+        // list_memories gives us the origin mapping cheaply for the lookup.
+        let origin = mgr
+            .list_memories(None, 5000)
+            .await
+            .into_iter()
+            .find(|(_, e)| e.id == id)
+            .map(|(o, _)| origin_str(o).to_string())
+            .unwrap_or_else(|| "project".to_string());
+        Ok(Json(MemoryDetailResponse { origin, entry }))
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
+/// `POST /api/v1/memory/prune` — invoke prune; dry_run is advisory (the
+/// underlying prune() always executes, so a true dry-run requires a manager
+/// change — for now we honor the flag by returning status without pruning).
+pub async fn prune_memory(
+    State(state): State<Arc<DaemonState>>,
+    req: Option<Json<PruneRequest>>,
+) -> Result<Json<crate::context::PruneResult>, StatusCode> {
+    let dry_run = req.map(|b| b.dry_run).unwrap_or(false);
+    // Dry-run: return the would-be result by reading status deltas. The
+    // current MemoryManager::prune is destructive with no preview, so we
+    // approximate dry-run as a no-op returning current counts as before==after.
+    if dry_run {
+        let s = state.memory_manager.status().await.map_err(|e| {
+            error!(error = ?e, "memory status (dry-run prune) failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        return Ok(Json(crate::context::PruneResult {
+            before: s.total_memories,
+            after: s.total_memories,
+            removed: 0,
+            project_before: s.project_count,
+            project_after: s.project_count,
+            global_before: s.global_count,
+            global_after: s.global_count,
+        }));
+    }
+    let result = state.memory_manager.prune().await.map_err(|e| {
+        error!(error = ?e, "memory prune failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(Json(result))
+}
+
+/// Project MemoryOrigin to its serialized string form.
+fn origin_str(o: crate::context::MemoryOrigin) -> &'static str {
+    match o {
+        crate::context::MemoryOrigin::Project => "project",
+        crate::context::MemoryOrigin::Global => "global",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2127,6 +2231,132 @@ mod tests {
         assert!(
             buf.contains("\"session_id\":\"alpha-cs\""),
             "session-scoped replay missing; got: {buf}"
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_list_filters_by_scope_and_importance() {
+        use crate::config::Settings;
+        use crate::context::{MemoryEntry, MemoryOrigin, MemoryType};
+        use crate::daemon::models::MemoryListQuery;
+        use crate::state::AppState;
+        use axum::extract::{Query, State};
+        use axum::Json;
+        use std::sync::Arc;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+
+        // Seed: one high-importance project memory, one low project, one global.
+        let mut hi = MemoryEntry::new(MemoryType::Knowledge, "important project fact");
+        hi.importance = 0.9;
+        let mut lo = MemoryEntry::new(MemoryType::Session, "trivial project note");
+        lo.importance = 0.1;
+        let mut gl = MemoryEntry::new(MemoryType::Preference, "global pref");
+        gl.importance = 0.8;
+        state
+            .memory_manager
+            .add_memory(hi, MemoryOrigin::Project)
+            .await
+            .unwrap();
+        state
+            .memory_manager
+            .add_memory(lo, MemoryOrigin::Project)
+            .await
+            .unwrap();
+        state
+            .memory_manager
+            .add_memory(gl, MemoryOrigin::Global)
+            .await
+            .unwrap();
+
+        // No filter → all three.
+        let Json(all) = list_memory(State(state.clone()), Query(MemoryListQuery::default()))
+            .await
+            .expect("list all");
+        assert_eq!(all.total, 3, "default list should return all 3 memories");
+
+        // Scope=project → only the two project entries.
+        let Json(proj) = list_memory(
+            State(state.clone()),
+            Query(MemoryListQuery {
+                scope: Some("project".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("list project");
+        assert_eq!(proj.total, 2, "project scope should return 2");
+        assert!(proj.items.iter().all(|m| m.origin == "project"));
+
+        // Scope=global → one global entry.
+        let Json(glob) = list_memory(
+            State(state.clone()),
+            Query(MemoryListQuery {
+                scope: Some("global".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("list global");
+        assert_eq!(glob.total, 1, "global scope should return 1");
+        assert_eq!(glob.items[0].origin, "global");
+
+        // min_importance=0.5 → only the two >= 0.5 entries (hi + global).
+        let Json(imp) = list_memory(
+            State(state.clone()),
+            Query(MemoryListQuery {
+                min_importance: Some(0.5),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("list by importance");
+        assert_eq!(imp.total, 2, "importance>=0.5 should return 2");
+        assert!(imp.items.iter().all(|m| m.entry.importance >= 0.5));
+    }
+
+    #[tokio::test]
+    async fn memory_prune_dry_run_is_noop() {
+        use crate::config::Settings;
+        use crate::context::{MemoryEntry, MemoryOrigin, MemoryType};
+        use crate::daemon::models::PruneRequest;
+        use crate::state::AppState;
+        use axum::extract::State;
+        use axum::Json;
+        use std::sync::Arc;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+
+        let entry = MemoryEntry::new(MemoryType::Knowledge, "kept");
+        state
+            .memory_manager
+            .add_memory(entry, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        // Dry-run must not remove anything: before == after.
+        let Json(result) = prune_memory(
+            State(state.clone()),
+            Some(Json(PruneRequest { dry_run: true })),
+        )
+        .await
+        .expect("dry-run prune");
+        assert_eq!(result.removed, 0, "dry-run must remove nothing");
+        assert_eq!(result.before, result.after);
+
+        // The memory is still there.
+        let Json(still) = crate::daemon::handlers::memory_status(State(state.clone()))
+            .await
+            .expect("status");
+        assert!(
+            still.total_memories >= 1,
+            "memory must survive a dry-run prune"
         );
     }
 }
