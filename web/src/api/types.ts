@@ -1,0 +1,225 @@
+/**
+ * TypeScript types mirroring the wgenty-code daemon API.
+ *
+ * Source of truth:
+ *   - src/daemon/models.rs        (request/response structs)
+ *   - src/api/types.rs            (ChatMessage, ToolCall, StreamChunk, Delta)
+ *   - src/tui/client.rs           (client-side view structs)
+ *
+ * Field names match the Rust serde names 1:1 so they can be fed straight to
+ * fetch() / JSON.parse without renaming. Optional Rust fields (Option<T> with
+ * serde default / skip_if_none) become `undefined`-able TS fields.
+ */
+
+// ── Chat / messages ──────────────────────────────────────────────────────────
+
+/** Mirrors `crate::api::ChatMessage` (src/api/types.rs:58). */
+export interface ChatMessage {
+  role: string;
+  content?: string;
+  reasoning_content?: string;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+}
+
+/** Mirrors `crate::api::ToolCall` — note `arguments` is a JSON **string**. */
+export interface ToolCall {
+  id: string;
+  /** serde field is `r#type`; serialized JSON key is `type`. */
+  type: string;
+  function: ToolCallFunction;
+}
+
+export interface ToolCallFunction {
+  name: string;
+  /** JSON-encoded argument string (as OpenAI tool-calling specifies). */
+  arguments: string;
+}
+
+/** Request body for `POST /api/v1/chat/stream`. Mirrors `ChatStreamRequest`. */
+export interface ChatStreamRequest {
+  messages: ChatMessage[];
+  model?: string;
+  max_tokens?: number;
+  plan_mode?: boolean;
+}
+
+// ── SSE stream shapes (OpenAI-compatible chat.completion.chunk) ──────────────
+
+/** Mirrors `crate::api::StreamChunk`. Each `data:` line in the chat stream. */
+export interface StreamChunk {
+  id: string;
+  object: string;
+  created: number;
+  model: string;
+  choices: StreamChoice[];
+  usage?: Usage;
+}
+
+export interface Usage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+}
+
+export interface StreamChoice {
+  index: number;
+  delta: Delta;
+  finish_reason?: string;
+}
+
+export interface Delta {
+  role?: string;
+  content?: string;
+  reasoning_content?: string;
+  tool_calls?: StreamToolCall[];
+}
+
+/** A single tool-call delta fragment (may carry only `index` + `arguments`). */
+export interface StreamToolCall {
+  index: number;
+  id?: string;
+  function?: { name?: string; arguments?: string };
+}
+
+// ── Health / config ──────────────────────────────────────────────────────────
+
+export interface HealthResponse {
+  status: string;
+  version: string;
+}
+
+export interface ConfigResponse {
+  model: string;
+  api_base: string;
+  max_tokens: number;
+  timeout: number;
+  streaming: boolean;
+}
+
+// ── Tools ────────────────────────────────────────────────────────────────────
+
+export interface ToolInfo {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  is_read_only: boolean;
+}
+
+export interface ListToolsResponse {
+  tools: ToolInfo[];
+}
+
+/** `POST /api/v1/tools/execute` request. Mirrors `ExecuteToolRequest`. */
+export interface ExecuteToolRequest {
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  session_id?: string;
+  turn_id?: string;
+}
+
+/** `POST /api/v1/tools/execute` response. Mirrors `ExecuteToolResponse`. */
+export interface ExecuteToolResponse {
+  success: boolean;
+  output_type?: string;
+  content?: string;
+  error?: string;
+  metadata?: Record<string, unknown>;
+  permission_required?: PermissionRequiredInfo;
+}
+
+export interface PermissionRequiredInfo {
+  tool_name: string;
+  reason: string;
+  session_rule: string;
+}
+
+// ── Permissions ──────────────────────────────────────────────────────────────
+
+/** Subagent async permission queue (second-phase; not in MVP but typed for later). */
+export interface PendingSubagentPermission {
+  request_id: string;
+  from: string;
+  kind: string;
+  tool: string;
+  policy_reason: string;
+  session_rule: string;
+  human_summary: string;
+}
+
+/** User's decision for a `permission_required` prompt. */
+export type PermissionDecision = "allowOnce" | "alwaysAllow" | "deny";
+
+// ── Models ───────────────────────────────────────────────────────────────────
+
+export interface ModelOption {
+  key: string;
+  label: string;
+  model_name: string;
+  provider?: string;
+  tier?: "light" | "medium" | "heavy";
+  active: boolean;
+}
+
+export interface ListModelsResponse {
+  profiles: ModelOption[];
+}
+
+export interface SwitchModelRequest {
+  profile: string;
+}
+
+export interface SwitchModelResponse {
+  success: boolean;
+  profile: string;
+  label: string;
+  model_name: string;
+  provider?: string;
+}
+
+// ── Sessions ─────────────────────────────────────────────────────────────────
+
+export interface SessionInfo {
+  id: string;
+  name: string;
+  project_path?: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  summary?: string;
+}
+
+export interface SessionMessage {
+  role: string;
+  content?: string;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+}
+
+export interface SessionResponse {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  messages: SessionMessage[];
+  ui_messages: unknown[];
+}
+
+export interface CreateSessionRequest {
+  name?: string;
+}
+
+export interface UpdateSessionRequest {
+  name?: string;
+  messages?: SessionMessage[];
+  ui_messages?: unknown[];
+}
+
+// ── Agent loop result (client-side, not from daemon) ─────────────────────────
+
+/** A full tool call reassembled from SSE fragments by `StreamProcessor`. */
+export interface AssembledToolCall {
+  id: string;
+  type: string;
+  function: { name: string; arguments: string };
+}
