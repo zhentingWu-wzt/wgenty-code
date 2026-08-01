@@ -9,6 +9,7 @@ import { SessionHeader } from "./components/SessionHeader";
 import { ChatView } from "./components/ChatView";
 import { Composer } from "./components/Composer";
 import { PermissionModal } from "./components/PermissionModal";
+import { ContextPanel } from "./components/ContextPanel";
 import { usePermissionTrace } from "./hooks/usePermissionTrace";
 import { usePolling } from "./hooks/usePolling";
 
@@ -93,6 +94,9 @@ export function App() {
     10_000,
   );
 
+  // Right rail (ContextPanel) open/closed — local state, not the sidebar store.
+  const [ctxOpen, setCtxOpen] = useState(true);
+
   // First render (before the bootstrap effect runs): no session yet.
   if (!activeStore) return null;
 
@@ -113,6 +117,15 @@ export function App() {
               }}
             />
           </div>
+          <button
+            type="button"
+            className="ctx-toggle"
+            onClick={() => setCtxOpen((o) => !o)}
+            title={ctxOpen ? "Hide context panel" : "Show context panel"}
+          >
+            {ctxOpen ? "▸" : "◂"}
+          </button>
+          {ctxOpen && <ContextPanel client={client} />}
         </div>
         <PermissionModal client={client} />
       </div>
