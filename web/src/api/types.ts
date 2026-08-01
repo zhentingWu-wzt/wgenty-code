@@ -350,3 +350,31 @@ export interface AssembledToolCall {
   type: string;
   function: { name: string; arguments: string };
 }
+
+// ── Command center (worktrees / skills / checkpoints) ────────────────────────
+
+export interface WorktreeInfo {
+  path: string;
+  head: string;
+  branch: string | null;
+  is_main: boolean;
+}
+
+export interface SkillInfoDto {
+  name: string;
+  description: string;
+  source_path: string;
+}
+
+export interface CheckpointInfo {
+  turn_id: string;
+  created_at: number;
+  file_count: number;
+}
+
+export interface UndoTurnResult {
+  restored: number;
+  skipped: number;
+  failed: number;
+  rewound_turns: number;
+}
