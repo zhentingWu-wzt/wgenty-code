@@ -69,6 +69,14 @@ describe("runSessionTurn", () => {
     expect(s.entries[b].store.getState().lastError).toBeNull();
   });
 
+  it("mints a per-turn id and passes it to the loop (checkpoint capture)", async () => {
+    vi.mocked(runAgentLoop).mockResolvedValue("ok");
+    const id = useSessionManager.getState().createLocalSession("s1");
+    await runSessionTurn(client, id, "hello");
+    const args = vi.mocked(runAgentLoop).mock.calls[0][0];
+    expect(args.turnId).toMatch(new RegExp(`^${id}-turn-\\d+$`));
+  });
+
   it("aborted turns are silent (no error state)", async () => {
     vi.mocked(runAgentLoop).mockRejectedValue(new Error("aborted"));
     const id = useSessionManager.getState().createLocalSession("s1");
