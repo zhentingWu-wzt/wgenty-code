@@ -1,6 +1,6 @@
-/* Codex-style command-center theme: near-black neutrals, restrained accent,
-   hierarchy by lightness not hue. UI font is the system sans stack; code uses
-   a monospace stack. */
+/* Codex-style command-center theme: near-black neutrals, brand-blue accent,
+   hierarchy by lightness not hue. UI font is the self-hosted Inter variable
+   font; code uses self-hosted JetBrains Mono. */
 
 :root {
   --bg: #0d0d0d;
@@ -10,9 +10,9 @@
   --fg: #ededed;
   --fg-dim: #8a8a8a;
   --fg-mute: #5a5a5a;
-  --accent: #e5e5e5; /* restrained: accent is near-white, not a hue */
+  --accent: #6e8efb; /* brand accent: CTAs, active states, links, streaming cursor */
   --accent-fg: #0d0d0d;
-  --accent-soft: rgba(255, 255, 255, 0.08);
+  --accent-soft: rgba(110, 142, 251, 0.14);
   --ok: #7ec880;
   --bad: #e5606b;
   --warn: #d9a441;
@@ -21,6 +21,7 @@
   --radius: 6px;
   --radius-sm: 4px;
   font-family:
+    "Inter Variable",
     "Inter",
     -apple-system,
     BlinkMacSystemFont,
@@ -463,7 +464,7 @@ body {
   font-size: 0.78rem;
   padding: 0.25rem 0.6rem;
   background: var(--bg-elev2);
-  color: var(--accent);
+  color: var(--fg);
   border-bottom: 1px solid var(--border);
 }
 .diff-body {
@@ -561,7 +562,7 @@ body {
 }
 .btn-primary {
   background: var(--accent);
-  color: var(--bg);
+  color: var(--accent-fg);
   border-color: var(--accent);
   font-weight: 600;
 }
@@ -1467,4 +1468,63 @@ body {
   .ctx-toggle {
     display: none;
   }
+}
+
+/* ── Message-flow details (streaming cursor, role surfaces, tool status bar) ── */
+/* Streaming cursor on the in-flight assistant message. */
+.msg-assistant[data-streaming="true"] .msg-markdown > :last-child::after {
+  content: "▍";
+  color: var(--accent);
+  animation: cursor-blink 0.9s step-end infinite;
+}
+@keyframes cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+/* User messages: subtle surface to distinguish roles at a glance. */
+.msg-user .msg-content {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.7rem;
+}
+/* Tool cards: status color bar on the left edge. */
+.tool-card {
+  border-left: 3px solid var(--border);
+}
+.tool-card[data-status="ok"] {
+  border-left-color: var(--ok);
+}
+.tool-card[data-status="error"] {
+  border-left-color: var(--bad);
+}
+.tool-card[data-status="denied"] {
+  border-left-color: var(--warn);
+}
+
+/* ── Lucide icon alignment ──────────────────────────────────────────────────── */
+.rail-section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.session-header-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.composer-send {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.btn-xs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.tool-status-icon {
+  display: inline-flex;
+  align-items: center;
 }

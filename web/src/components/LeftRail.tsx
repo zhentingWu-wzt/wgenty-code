@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import type { DaemonClient } from "../api/client";
 import { SessionList } from "./SessionList";
 import { WorktreePanel } from "./WorktreePanel";
@@ -25,7 +26,7 @@ export function LeftRail({ client }: { client: DaemonClient }) {
           onClick={toggle}
           title="Show sidebar"
         >
-          ▸
+          <PanelLeftOpen size={15} />
         </button>
       </aside>
     );
@@ -44,7 +45,7 @@ export function LeftRail({ client }: { client: DaemonClient }) {
             onClick={toggle}
             title="Hide sidebar"
           >
-            ◂
+            <PanelLeftClose size={15} />
           </button>
         </div>
         <div className="leftrail-scroll">

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Puzzle } from "lucide-react";
 import type { DaemonClient } from "../api/client";
 import type { SkillInfoDto } from "../api/types";
 
@@ -17,7 +18,9 @@ export function SkillPanel({ client }: { client: DaemonClient }) {
 
   return (
     <section className="rail-panel">
-      <span className="rail-section-title">Skills</span>
+      <span className="rail-section-title">
+        <Puzzle size={12} /> Skills
+      </span>
       {error && <div className="panel-error">{error}</div>}
       <ul className="skill-list">
         {(items ?? []).map((s) => (

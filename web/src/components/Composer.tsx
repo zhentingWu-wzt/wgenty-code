@@ -1,4 +1,5 @@
 import { useState, type KeyboardEvent } from "react";
+import { Send, Square } from "lucide-react";
 import { useSessionStore } from "../state/sessionContext";
 
 interface ComposerProps {
@@ -42,7 +43,7 @@ export function Composer({ onSend }: ComposerProps) {
       />
       {isRunning ? (
         <button type="button" className="btn btn-danger composer-send" onClick={stopRunning}>
-          Stop
+          <Square size={14} /> Stop
         </button>
       ) : (
         <button
@@ -51,7 +52,7 @@ export function Composer({ onSend }: ComposerProps) {
           onClick={send}
           disabled={!text.trim()}
         >
-          Send
+          <Send size={14} /> Send
         </button>
       )}
     </div>

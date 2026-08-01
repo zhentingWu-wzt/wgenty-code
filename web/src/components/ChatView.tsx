@@ -72,7 +72,11 @@ export function ChatView() {
   return (
     <div className="chat-list">
       {messages.map((m) => (
-        <div key={m.id} className={`msg msg-${m.role}`}>
+        <div
+          key={m.id}
+          className={`msg msg-${m.role}`}
+          {...(m.role === "assistant" ? { "data-streaming": m.streaming } : {})}
+        >
           <div className="msg-role">
             {m.role}
             {m.round && m.round > 1 ? ` · round ${m.round}` : ""}
