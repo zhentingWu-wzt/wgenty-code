@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
+import { GitBranch, Plus } from "lucide-react";
+import { toast } from "sonner";
 import type { DaemonClient } from "../api/client";
 import type { WorktreeInfo } from "../api/types";
 
@@ -25,6 +27,7 @@ export function WorktreePanel({ client }: { client: DaemonClient }) {
     const path = `.worktrees/${branch.trim().replaceAll("/", "-")}`;
     try {
       await client.createWorktree({ path, branch: branch.trim() });
+      toast.success(`Worktree ${branch.trim()} created`);
       refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -35,6 +38,7 @@ export function WorktreePanel({ client }: { client: DaemonClient }) {
     if (!window.confirm(`Remove worktree ${path}?`)) return;
     try {
       await client.deleteWorktree(path);
+      toast.success(`Worktree ${path} removed`);
       refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -44,9 +48,11 @@ export function WorktreePanel({ client }: { client: DaemonClient }) {
   return (
     <section className="rail-panel">
       <div className="session-list-head">
-        <span className="rail-section-title">Worktrees</span>
+        <span className="rail-section-title">
+          <GitBranch size={12} /> Worktrees
+        </span>
         <button type="button" className="btn-xs" onClick={create}>
-          + New
+          <Plus size={12} /> New
         </button>
       </div>
       {error && <div className="panel-error">{error}</div>}

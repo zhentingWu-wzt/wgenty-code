@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { CircleAlert, MessagesSquare, Plus } from "lucide-react";
 import type { DaemonClient } from "../api/client";
 import type { SessionInfo } from "../api/types";
 import { useSessionManager } from "../state/sessionManager";
@@ -51,13 +52,15 @@ export function SessionList({ client }: { client: DaemonClient }) {
   return (
     <div className="session-list-panel">
       <div className="session-list-head">
-        <span className="rail-section-title">Sessions</span>
+        <span className="rail-section-title">
+          <MessagesSquare size={12} /> Sessions
+        </span>
         <button
           type="button"
           className="btn-xs"
           onClick={() => useSessionManager.getState().createLocalSession()}
         >
-          + New session
+          <Plus size={12} /> New session
         </button>
       </div>
       <ul className="session-cards">
@@ -76,7 +79,9 @@ export function SessionList({ client }: { client: DaemonClient }) {
                   {e.lastPreview && <span className="session-card-preview">{e.lastPreview}</span>}
                 </span>
                 {e.status === "awaiting_approval" && (
-                  <span className="session-card-badge">!</span>
+                  <span className="session-card-badge">
+                    <CircleAlert size={11} />
+                  </span>
                 )}
               </button>
             </li>

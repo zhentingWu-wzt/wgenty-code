@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { Toaster, toast } from "sonner";
 import { DaemonClient } from "./api/client";
 import { runSessionTurn } from "./agent/sessionRunner";
 import { useSessionManager } from "./state/sessionManager";
@@ -68,11 +70,15 @@ export function App() {
   // death/recovery (was: one-shot probe that lied forever after a restart).
   // Model name is read once on first connect.
   const modelLoadedRef = useRef(false);
+  // Dedupes the "Daemon disconnected" toast — the poll runs every 10s and
+  // would otherwise re-toast on every failed tick while the daemon is down.
+  const disconnectToastedRef = useRef(false);
   usePolling(
     async () => {
       try {
         await client.health();
         setConnection("connected");
+        disconnectToastedRef.current = false;
         if (!modelLoadedRef.current) {
           modelLoadedRef.current = true;
           const cfg = await client.getConfig();
@@ -80,6 +86,10 @@ export function App() {
         }
       } catch {
         setConnection("disconnected");
+        if (!disconnectToastedRef.current) {
+          disconnectToastedRef.current = true;
+          toast.error("Daemon disconnected");
+        }
         // Daemon is gone — any in-flight turn is dead. Mark running sessions
         // errored so they don't sit in "running" forever.
         const m = useSessionManager.getState();
@@ -123,11 +133,12 @@ export function App() {
             onClick={() => setCtxOpen((o) => !o)}
             title={ctxOpen ? "Hide context panel" : "Show context panel"}
           >
-            {ctxOpen ? "▸" : "◂"}
+            {ctxOpen ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
           </button>
           {ctxOpen && <ContextPanel client={client} />}
         </div>
         <PermissionModal client={client} />
+        <Toaster theme="dark" position="bottom-right" />
       </div>
     </SessionStoreContext.Provider>
   );

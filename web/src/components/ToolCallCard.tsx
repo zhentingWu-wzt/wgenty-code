@@ -1,3 +1,4 @@
+import { Check, CircleSlash, X } from "lucide-react";
 import type { ToolExecution } from "../agent/loop";
 import { DiffView } from "./DiffView";
 import { hasDiff } from "./diffUtils";
@@ -23,10 +24,19 @@ export function ToolCallCard({ exec }: { exec: ToolExecution }) {
   }
 
   const status = denied ? "denied" : ok ? "ok" : "error";
-  const statusIcon = denied ? "⊘" : ok ? "✓" : "✕";
+  const statusIcon = denied ? (
+    <CircleSlash size={12} />
+  ) : ok ? (
+    <Check size={12} />
+  ) : (
+    <X size={12} />
+  );
 
   return (
-    <details className={`tool-card ${ok ? "tool-ok" : denied ? "tool-denied" : "tool-err"}`}>
+    <details
+      className={`tool-card ${ok ? "tool-ok" : denied ? "tool-denied" : "tool-err"}`}
+      data-status={status}
+    >
       <summary className="tool-summary">
         <span className="tool-status-icon" data-status={status}>
           {statusIcon}

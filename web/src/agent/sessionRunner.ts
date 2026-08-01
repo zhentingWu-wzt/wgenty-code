@@ -11,6 +11,7 @@
  */
 import type { DaemonClient } from "../api/client";
 import type { ChatMessage } from "../api/types";
+import { toast } from "sonner";
 import { runAgentLoop } from "./loop";
 import { useSessionManager } from "../state/sessionManager";
 import type { DisplayMessage } from "../state/sessionStore";
@@ -102,6 +103,7 @@ export async function runSessionTurn(
         retry: isTransport ? () => runSessionTurn(client, sessionId, text) : undefined,
       });
       useSessionManager.getState().setStatus(sessionId, "error");
+      toast.error(`${entry.name}: turn failed`);
     } else {
       useSessionManager.getState().setStatus(sessionId, "idle");
     }
