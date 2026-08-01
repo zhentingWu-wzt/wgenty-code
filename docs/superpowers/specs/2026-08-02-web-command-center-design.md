@@ -57,11 +57,12 @@ web/src/state/
 
 | 端点 | 说明 |
 |:--|:--|
-| `GET /api/v1/worktrees` | 列出 git worktree（path / branch / HEAD / 是否主仓），包装 `git worktree list` |
-| `POST /api/v1/worktrees` | 创建 worktree（branch + path），包装 `git worktree add` |
-| `DELETE /api/v1/worktrees/:path` | 删除，包装 `git worktree remove` |
-| `GET /api/v1/skills` | 列出 skill（name / 描述 / 来源 / 启用状态），复用 CLI `skills` 子命令背后的 manager |
-| `POST /api/v1/skills/:name/toggle` | 启停 skill |
+| `GET /api/v1/worktrees` | 列出 git worktree（path / branch / HEAD / 是否主仓），包装 `git worktree list --porcelain` |
+| `POST /api/v1/worktrees` | 创建 worktree（body: path + branch），包装 `git worktree add -b` |
+| `DELETE /api/v1/worktrees?path=` | 删除（query 传 path，避免路径斜杠进 URL 段），包装 `git worktree remove`；拒绝删除主 worktree |
+| `GET /api/v1/skills` | 列出 skill（name / 描述 / source_path），复用 `DaemonState.skill_loader` |
+
+> 范围修正：skill 的"启停"端点从本期移除——`src/knowledge/` 的 SkillLoader/registry 没有启用/禁用概念，实现启停需要改 agent 核心，超出"轻量端点"范围。SkillPanel v1 为只读列表。
 
 ### 3. 权限流（纯前端适配）
 
@@ -78,7 +79,7 @@ App
     ├── LeftRail           ← 新增（替代现 Sidebar）
     │   ├── SessionList        会话卡片：状态点 / 名称 / 最后消息摘要 / 待审批角标 / 新建按钮
     │   ├── WorktreePanel      列表 + 创建 / 删除（新端点）
-    │   ├── SkillPanel         列表 + 启停开关（新端点）
+    │   ├── SkillPanel         列表（只读，v1 不含启停）
     │   └── RailFooter         模型切换、权限模式、Config（复用现 ModelPanel / ConfigPanel）
     ├── CenterPane         ← 当前会话
     │   ├── SessionHeader      会话名、状态、undo-turn 入口（现成端点）
