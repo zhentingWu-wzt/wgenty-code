@@ -14,6 +14,7 @@
 import type {
   ChatMessage,
   ChatStreamRequest,
+  CheckpointInfo,
   ConfigResponse,
   CreateSessionRequest,
   ExecuteToolRequest,
@@ -29,10 +30,13 @@ import type {
   PruneResult,
   SessionInfo,
   SessionResponse,
+  SkillInfoDto,
   SwitchModelRequest,
   SwitchModelResponse,
   TaskProgressResponse,
+  UndoTurnResult,
   UpdateSessionRequest,
+  WorktreeInfo,
 } from "./types";
 
 /** Error thrown when the daemon returns a non-2xx response. */
@@ -52,7 +56,8 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
     const body = await res.text();
     throw new DaemonError(body || `${res.status} ${res.statusText}`, res.status);
   }
-  if (res.status === 204) return undefined as T;
+  // 204 No Content and 201 Created (e.g. POST /worktrees) carry no JSON body.
+  if (res.status === 204 || res.status === 201) return undefined as T;
   return (await res.json()) as T;
 }
 
@@ -209,7 +214,9 @@ export class DaemonClient {
   }
 
   async deleteSession(id: string): Promise<void> {
-    await jsonOrThrow(await fetch(`${this.base}/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }));
+    await jsonOrThrow(
+      await fetch(`${this.base}/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    );
   }
 
   // ── Todos / Tasks ──────────────────────────────────────────────────────────
@@ -235,7 +242,8 @@ export class DaemonClient {
   async listMemory(query: MemoryListQuery = {}): Promise<MemoryListResponse> {
     const params = new URLSearchParams();
     if (query.scope) params.set("scope", query.scope);
-    if (query.min_importance !== undefined) params.set("min_importance", String(query.min_importance));
+    if (query.min_importance !== undefined)
+      params.set("min_importance", String(query.min_importance));
     if (query.limit !== undefined) params.set("limit", String(query.limit));
     const qs = params.toString();
     return jsonOrThrow(await fetch(`${this.base}/memory${qs ? `?${qs}` : ""}`));
@@ -272,5 +280,47 @@ export class DaemonClient {
       throw new DaemonError(text || `${res.status} ${res.statusText}`, res.status);
     }
     return { body: res.body };
+  }
+
+  // ── Command center: worktrees / skills / checkpoints ───────────────────────
+
+  async listWorktrees(): Promise<WorktreeInfo[]> {
+    return jsonOrThrow(await fetch(`${this.base}/worktrees`));
+  }
+
+  async createWorktree(req: { path: string; branch: string }): Promise<void> {
+    await jsonOrThrow(
+      await fetch(`${this.base}/worktrees`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(req),
+      }),
+    );
+  }
+
+  async deleteWorktree(path: string): Promise<void> {
+    await jsonOrThrow(
+      await fetch(`${this.base}/worktrees?path=${encodeURIComponent(path)}`, {
+        method: "DELETE",
+      }),
+    );
+  }
+
+  async listSkills(): Promise<SkillInfoDto[]> {
+    return jsonOrThrow(await fetch(`${this.base}/skills`));
+  }
+
+  async listCheckpoints(): Promise<CheckpointInfo[]> {
+    return jsonOrThrow(await fetch(`${this.base}/checkpoints`));
+  }
+
+  async undoTurns(turnIds: string[]): Promise<UndoTurnResult> {
+    return jsonOrThrow(
+      await fetch(`${this.base}/tools/undo-turn`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ turn_ids: turnIds }),
+      }),
+    );
   }
 }
