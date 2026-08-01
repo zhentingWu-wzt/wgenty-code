@@ -1,25 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 import { DaemonClient } from "./api/client";
-import { runAgentLoop } from "./agent/loop";
-import { useSessionManager, getActiveSessionStore } from "./state/sessionManager";
+import { runSessionTurn } from "./agent/sessionRunner";
+import { useSessionManager } from "./state/sessionManager";
 import { SessionStoreContext } from "./state/sessionContext";
-import type { SessionState } from "./state/sessionStore";
 import { StatusBar } from "./components/StatusBar";
 import { Sidebar } from "./components/Sidebar";
+import { SessionHeader } from "./components/SessionHeader";
 import { ChatView } from "./components/ChatView";
 import { Composer } from "./components/Composer";
 import { PermissionModal } from "./components/PermissionModal";
 import { usePermissionTrace } from "./hooks/usePermissionTrace";
 import { usePolling } from "./hooks/usePolling";
-import type { ChatMessage } from "./api/types";
 
 /**
- * App — wires the agent loop to the UI store.
+ * App — wires the per-session agent runners to the UI stores.
  *
  * The architecture mirrors `src/tui` as a parallel thin client: this React app
- * is just another frontend over the same daemon API. The agent loop runs in the
+ * is just another frontend over the same daemon API. Agent loops run in the
  * browser (the daemon's `/chat/stream` is a pure passthrough proxy; tools are
- * executed client-side via `/tools/execute`).
+ * executed client-side via `/tools/execute`), one `runSessionTurn` per session,
+ * so sessions progress concurrently and independently.
  */
 export function App() {
   // One stable client for the app's lifetime. useState's lazy initializer is
@@ -29,9 +29,10 @@ export function App() {
 
   const setConnection = useSessionManager((s) => s.setConnection);
   const setModelName = useSessionManager((s) => s.setModelName);
+  const activeId = useSessionManager((s) => s.activeId);
 
-  // Active session's store. Still single-session: the bootstrap effect below
-  // creates one local session on first mount and nothing ever creates more.
+  // Active session's store. Each session keeps its own store; only the active
+  // one is provided to the center pane.
   const activeStore = useSessionManager((s) =>
     s.activeId ? s.entries[s.activeId].store : null,
   );
@@ -42,6 +43,19 @@ export function App() {
     if (!useSessionManager.getState().activeId) {
       useSessionManager.getState().createLocalSession();
     }
+  }, []);
+
+  // Warn before unloading the page while any session is mid-turn (the loops
+  // live in the browser; leaving kills them).
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      const running = Object.values(useSessionManager.getState().entries).filter(
+        (x) => x.status === "running" || x.status === "awaiting_approval",
+      ).length;
+      if (running > 0) e.preventDefault();
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
   }, []);
 
   // Subscribe to the trace SSE for pushed subagent permission prompts
@@ -65,6 +79,14 @@ export function App() {
         }
       } catch {
         setConnection("disconnected");
+        // Daemon is gone — any in-flight turn is dead. Mark running sessions
+        // errored so they don't sit in "running" forever.
+        const m = useSessionManager.getState();
+        for (const e of Object.values(m.entries)) {
+          if (e.status === "running" || e.status === "awaiting_approval") {
+            m.setStatus(e.id, "error");
+          }
+        }
       }
     },
     true,
@@ -81,129 +103,19 @@ export function App() {
         <div className="app-body">
           <Sidebar client={client} />
           <div className="app-main">
+            <SessionHeader />
             <main className="main">
               <ChatView />
             </main>
-            <Composer onSend={(text) => handleSend(client, text)} />
+            <Composer
+              onSend={(text) => {
+                if (activeId) void runSessionTurn(client, activeId, text);
+              }}
+            />
           </div>
         </div>
         <PermissionModal client={client} />
       </div>
     </SessionStoreContext.Provider>
   );
-}
-
-// ── Send: push the user message, run a full agent turn ───────────────────────
-// Module-level (not a component closure): it only touches the active session's
-// store and the passed-in client, so it needs no component state — and keeping
-// it out of the render scope keeps impure calls like Date.now() out of the
-// render path.
-async function handleSend(client: DaemonClient, text: string) {
-  const store = getActiveSessionStore();
-  if (!store) return;
-  const s = store.getState();
-
-  s.pushUserMessage(text);
-  s.setError(null);
-  s.setRunning(true);
-
-  // The working message history for this turn. In MVP we keep a single
-  // in-memory conversation; session persistence is a second-phase feature.
-  const messages: ChatMessage[] = [...toWireMessages(s.messages), { role: "user", content: text }];
-  const sessionId = `web-${Date.now()}`;
-
-  // Track which assistant display message is currently streaming so stream
-  // events can be appended to it. Reassigned each round.
-  let currentAssistantId: string | null = null;
-
-  // AbortController for the Stop button — registered in the store so any
-  // component (Composer / StatusBar) can cancel the running turn.
-  const abort = new AbortController();
-  store.getState().registerAbort(abort);
-
-  try {
-    await runAgentLoop({
-      client,
-      messages,
-      sessionId,
-      signal: abort.signal,
-      callbacks: {
-        onStreamEvent: (round, ev) => {
-          // First event of a round → open a new assistant bubble.
-          if (currentAssistantId === null) {
-            currentAssistantId = store.getState().beginAssistantRound(round);
-          }
-          store.getState().appendAssistant(currentAssistantId, ev);
-        },
-        onToolExecution: (exec) => {
-          // Attach the tool card to whichever assistant message is streaming
-          // (or the last assistant message if the round already finalized).
-          const id =
-            currentAssistantId ??
-            lastAssistantId(store.getState().messages) ??
-            store.getState().beginAssistantRound(0);
-          store.getState().attachToolExec(id, exec);
-        },
-        onPermissionRequired: (info) => store.getState().requestPermission(info),
-      },
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // User-initiated stop surfaces as "aborted" — don't show it as an error.
-    if (msg === "aborted") {
-      // no-op
-    } else {
-      // Classify: transport failures (daemon down, network reset, stream
-      // interrupted) are retryable; upstream LLM errors (rejected prompt,
-      // stream error: ...) are not. Design D7.3.
-      const isTransport =
-        /fetch|network|failed to fetch|stream interrupted|aborted/i.test(msg) &&
-        !msg.startsWith("stream error:");
-      store.getState().setError({
-        message: msg,
-        kind: isTransport ? "transport" : "upstream",
-        retry: isTransport ? () => handleSend(client, text) : undefined,
-      });
-    }
-  } finally {
-    store.getState().registerAbort(null);
-    if (currentAssistantId) store.getState().finalizeAssistant(currentAssistantId);
-    store.getState().setRunning(false);
-  }
-}
-
-/** Convert display messages back to wire `ChatMessage`s for the next turn. */
-function toWireMessages(display: SessionState["messages"]): ChatMessage[] {
-  const out: ChatMessage[] = [];
-  for (const m of display) {
-    if (m.role === "user") {
-      out.push({ role: "user", content: m.content });
-    } else if (m.role === "assistant") {
-      out.push({
-        role: "assistant",
-        content: m.content || undefined,
-        ...(m.toolExecs && m.toolExecs.length > 0
-          ? { tool_calls: m.toolExecs.map((e) => e.call) }
-          : {}),
-      });
-      // Append tool results so the next request is well-formed.
-      if (m.toolExecs) {
-        for (const exec of m.toolExecs) {
-          out.push({
-            role: "tool",
-            tool_call_id: exec.call.id,
-            content: JSON.stringify(exec.response),
-          });
-        }
-      }
-    }
-  }
-  return out;
-}
-
-function lastAssistantId(messages: SessionState["messages"]): string | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "assistant") return messages[i].id;
-  }
-  return null;
 }

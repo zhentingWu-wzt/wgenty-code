@@ -1238,3 +1238,42 @@ body {
     font-size: 0.8rem;
   }
 }
+
+/* ── Session header (center pane) + approval badge ─────────────────────────── */
+.session-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.session-header-name {
+  font-weight: 600;
+}
+.session-header-status {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 10px;
+  background: var(--bg-elev2);
+  color: var(--fg-dim);
+}
+.session-status-running {
+  color: var(--ok);
+}
+.session-status-awaiting_approval {
+  color: var(--warn);
+}
+.session-status-error {
+  color: var(--bad);
+}
+.topbar-approval-badge {
+  background: var(--warn);
+  color: var(--bg);
+  border-radius: 10px;
+  font-size: 0.68rem;
+  padding: 0.05rem 0.4rem;
+  font-weight: 600;
+}
