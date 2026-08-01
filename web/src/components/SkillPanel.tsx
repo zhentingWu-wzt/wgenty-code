@@ -1,7 +1,32 @@
+import { useEffect, useState } from "react";
 import type { DaemonClient } from "../api/client";
+import type { SkillInfoDto } from "../api/types";
 
-/** Placeholder for Task 10: skill list in the left rail. */
+/** Read-only skill list (GET /api/v1/skills). Enable/disable is out of scope:
+ *  the knowledge layer has no enabled concept. */
 export function SkillPanel({ client }: { client: DaemonClient }) {
-  void client; // Task 10 fetches and renders the skill list.
-  return null;
+  const [items, setItems] = useState<SkillInfoDto[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    client
+      .listSkills()
+      .then(setItems)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, [client]);
+
+  return (
+    <section className="rail-panel">
+      <span className="rail-section-title">Skills</span>
+      {error && <div className="panel-error">{error}</div>}
+      <ul className="skill-list">
+        {(items ?? []).map((s) => (
+          <li key={s.name} className="skill-item" title={s.source_path}>
+            <span className="skill-name">{s.name}</span>
+            <span className="skill-desc">{s.description}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
