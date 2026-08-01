@@ -1,16 +1,17 @@
 import { useEffect } from "react";
 import type { DaemonClient } from "../api/client";
 import type { TraceEvent } from "../api/types";
-import { getActiveSessionStore } from "../state/sessionManager";
+import { useSessionManager } from "../state/sessionManager";
 
 /**
  * Subscribe to the daemon's trace SSE stream and surface subagent permission
  * prompts as they arrive (design D2.1: push, not poll).
  *
- * On `permission_pending` we push the approval into the chat store; the
- * PermissionModal renders it and, on user choice, calls
- * `client.resolveSubagentPermission`. `permission_resolved` events clear a
- * prompt answered elsewhere.
+ * On `permission_pending` we push the approval into the session store the
+ * event's `session_id` points to (falling back to the active session — daemon
+ * session ids don't always match local session ids); the PermissionModal
+ * renders it and, on user choice, calls `client.resolveSubagentPermission`.
+ * `permission_resolved` events clear a prompt answered elsewhere.
  *
  * RECONNECT (design D7.2): if the stream dies (daemon restart, network drop),
  * reconnect with exponential backoff (1s → 30s cap, reset on success). Without
@@ -29,15 +30,26 @@ export function usePermissionTrace(client: DaemonClient | null): void {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
     const handleEvent = (ev: TraceEvent) => {
-      // Route to the active session's store (Task 7 minimal migration; Task 8
-      // will route by the trace event's session_id instead).
-      const store = getActiveSessionStore();
-      if (!store) return;
+      // Route by the trace event's session_id; fall back to the active session
+      // when the id doesn't match a local session (subagent trace ids are
+      // daemon-side and may not map 1:1 onto local sessions).
+      const m = useSessionManager.getState();
+      const target = m.entries[ev.session_id] ?? (m.activeId ? m.entries[m.activeId] : null);
+      if (!target) return;
       if (ev.kind === "permission_pending" && ev.permission) {
-        store.getState().pushSubagentPermission(ev.permission);
+        target.store.getState().pushSubagentPermission(ev.permission);
+        m.setStatus(target.id, "awaiting_approval");
       } else if (ev.kind === "permission_resolved") {
         // Resolved elsewhere (timeout, or another client) — dismiss.
-        store.getState().clearSubagentPermission();
+        target.store.getState().clearSubagentPermission();
+        // Back to running only if nothing else is still awaiting a decision
+        // (a root-tool prompt from the local loop may still be open).
+        if (
+          target.status === "awaiting_approval" &&
+          !target.store.getState().pendingPermission
+        ) {
+          m.setStatus(target.id, target.store.getState().isRunning ? "running" : "idle");
+        }
       }
     };
 

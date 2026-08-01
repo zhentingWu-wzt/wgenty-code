@@ -1,10 +1,10 @@
-import { useSessionManager } from "../state/sessionManager";
+import { selectPendingApprovalCount, useSessionManager } from "../state/sessionManager";
 import { useSessionStore } from "../state/sessionContext";
 
 /**
  * Codex-style top control bar. Left: connection + branch context. Right:
- * model + run state. Dense, single row, no decoration — the "command center"
- * strip at the top of the window.
+ * model + run state + global pending-approval badge. Dense, single row, no
+ * decoration — the "command center" strip at the top of the window.
  *
  * connection/modelName are app-level facts (sessionManager); isRunning is the
  * active session's run state (StatusBar renders inside the session Provider).
@@ -12,6 +12,7 @@ import { useSessionStore } from "../state/sessionContext";
 export function StatusBar() {
   const connection = useSessionManager((s) => s.connection);
   const modelName = useSessionManager((s) => s.modelName);
+  const pendingApprovals = useSessionManager(selectPendingApprovalCount);
   const isRunning = useSessionStore((s) => s.isRunning);
 
   const statusText =
@@ -28,6 +29,11 @@ export function StatusBar() {
         <span className="topbar-status">{statusText}</span>
       </div>
       <div className="topbar-right">
+        {pendingApprovals > 0 && (
+          <span className="topbar-approval-badge" title="sessions awaiting approval">
+            {pendingApprovals}
+          </span>
+        )}
         {isRunning && (
           <span className="topbar-running">
             <span className="topbar-spinner" /> working

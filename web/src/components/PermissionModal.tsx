@@ -8,8 +8,9 @@ interface PermissionModalProps {
 
 /**
  * Modal for BOTH permission kinds:
- * - Root-tool synchronous (`pendingPermission`): resolved via the chat store's
- *   promise, which drives the approve→execute→unapprove dance in the agent loop.
+ * - Root-tool synchronous (`pendingPermission`): resolved via the session
+ *   store's promise, which drives the approve→execute→unapprove dance in the
+ *   agent loop.
  * - Subagent async (`pendingSubagent`): pushed via trace SSE; resolved here by
  *   calling `client.resolveSubagentPermission` (POST /tools/resolve-permission).
  *
