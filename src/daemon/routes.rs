@@ -5,6 +5,7 @@
 
 use crate::daemon::auth;
 use crate::daemon::handlers;
+use crate::daemon::skills_api;
 use crate::daemon::state::DaemonState;
 use crate::daemon::worktrees;
 use axum::{
@@ -108,6 +109,8 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         )
         // MCP
         .route("/api/v1/mcp/servers", get(handlers::list_mcp_servers))
+        // Skills (web command center, read-only)
+        .route("/api/v1/skills", get(skills_api::list_skills))
         // Sessions
         .route(
             "/api/v1/sessions",
