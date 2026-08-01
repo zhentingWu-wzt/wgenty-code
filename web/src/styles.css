@@ -717,7 +717,10 @@ body {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--fg-mute);
+  /* Paint follows the status class's `color` (the .session-status-* rules only
+     set `color`, for SessionHeader text); default to muted when none applies. */
+  color: var(--fg-mute);
+  background: currentColor;
   flex-shrink: 0;
 }
 .session-card-main {

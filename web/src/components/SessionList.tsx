@@ -33,7 +33,8 @@ export function SessionList({ client }: { client: DaemonClient }) {
       useSessionManager.getState().setActive(existing.id);
       return;
     }
-    const full = await client.loadSession(info.id);
+    const full = await client.loadSession(info.id).catch(() => null);
+    if (!full) return; // daemon down → stay put, don't open an empty entry
     const m = useSessionManager.getState();
     const localId = m.createLocalSession(info.name ?? "Session");
     m.setDaemonId(localId, info.id);
