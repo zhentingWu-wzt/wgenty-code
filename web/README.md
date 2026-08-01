@@ -32,12 +32,12 @@ daemon API. No Rust/daemon changes are required.
 
 ## How the architecture maps to the Rust codebase
 
-| Web file | Mirrors |
-| --- | --- |
-| `src/api/sseParser.ts` | `src/agent/core.rs` (`StreamProcessor`) |
-| `src/api/client.ts` | `src/tui/client.rs` (`DaemonClient`) |
-| `src/api/types.ts` | `src/daemon/models.rs` + `src/api/types.rs` |
-| `src/agent/loop.ts` | `src/agent/runtime/loop_.rs` (`run_agent_loop_inner`, slimmed) |
+| Web file               | Mirrors                                                        |
+| ---------------------- | -------------------------------------------------------------- |
+| `src/api/sseParser.ts` | `src/agent/core.rs` (`StreamProcessor`)                        |
+| `src/api/client.ts`    | `src/tui/client.rs` (`DaemonClient`)                           |
+| `src/api/types.ts`     | `src/daemon/models.rs` + `src/api/types.rs`                    |
+| `src/agent/loop.ts`    | `src/agent/runtime/loop_.rs` (`run_agent_loop_inner`, slimmed) |
 
 The key fact: the daemon's `/api/v1/chat/stream` is a **pure passthrough
 proxy** — it forwards the upstream LLM's SSE but does not execute tools. The
@@ -74,18 +74,18 @@ DAEMON_PORT=9000 npm run dev
 
 ## Scripts
 
-| Command | What it does |
-| --- | --- |
-| `npm run dev` | Vite dev server with the daemon proxy |
-| `npm run build` | `tsc` type-check + production build |
-| `npm run typecheck` | type-check only |
-| `npm test` | run the SSE parser unit tests (vitest) |
+| Command             | What it does                           |
+| ------------------- | -------------------------------------- |
+| `npm run dev`       | Vite dev server with the daemon proxy  |
+| `npm run build`     | `tsc` type-check + production build    |
+| `npm run typecheck` | type-check only                        |
+| `npm test`          | run the SSE parser unit tests (vitest) |
 
 ## Verify it works
 
-1. **Read-only turn:** send *"summarize the README at ../README.md"*. You should
+1. **Read-only turn:** send _"summarize the README at ../README.md"_. You should
    see streamed tokens and (if the model uses a read tool) a green tool card —
    no approval needed.
-2. **Permission turn:** send *"create /tmp/wgenty-test/hello.txt with hi
-   inside"*. You should see a `file_write` tool card, a permission modal, and
+2. **Permission turn:** send _"create /tmp/wgenty-test/hello.txt with hi
+   inside"_. You should see a `file_write` tool card, a permission modal, and
    after approving, the tool executes and the agent confirms.
