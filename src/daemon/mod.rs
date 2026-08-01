@@ -11,6 +11,7 @@ pub mod auth;
 pub mod handlers;
 pub mod models;
 pub mod routes;
+pub(crate) mod skills_api;
 pub mod state;
 pub(crate) mod worktrees;
 
