@@ -1,14 +1,18 @@
-import { useChatStore } from "../state/chatStore";
+import { useSessionManager } from "../state/sessionManager";
+import { useSessionStore } from "../state/sessionContext";
 
 /**
  * Codex-style top control bar. Left: connection + branch context. Right:
  * model + run state. Dense, single row, no decoration — the "command center"
  * strip at the top of the window.
+ *
+ * connection/modelName are app-level facts (sessionManager); isRunning is the
+ * active session's run state (StatusBar renders inside the session Provider).
  */
 export function StatusBar() {
-  const connection = useChatStore((s) => s.connection);
-  const modelName = useChatStore((s) => s.modelName);
-  const isRunning = useChatStore((s) => s.isRunning);
+  const connection = useSessionManager((s) => s.connection);
+  const modelName = useSessionManager((s) => s.modelName);
+  const isRunning = useSessionStore((s) => s.isRunning);
 
   const statusText =
     connection === "connected"

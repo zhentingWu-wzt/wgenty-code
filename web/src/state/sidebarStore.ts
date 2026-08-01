@@ -2,8 +2,9 @@
  * Sidebar store — owns the side panel's tab selection, collapse state, and the
  * polled data for the read-only panels (todos, tasks, models, sessions).
  *
- * Kept separate from chatStore so chat re-renders don't drag panel data along
- * and vice versa. Polling is driven by the panels themselves via useEffect;
+ * Kept separate from the session stores so chat re-renders don't drag panel
+ * data along and vice versa. Polling is driven by the panels themselves via
+ * useEffect;
  * this store just holds the latest snapshot + an epoch counter components can
  * subscribe to for forced refreshes.
  */

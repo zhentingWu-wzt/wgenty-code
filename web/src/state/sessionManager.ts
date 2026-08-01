@@ -105,6 +105,16 @@ export const useSessionManager = create<SessionManagerState>((set, get) => ({
   setModelName: (modelName) => set({ modelName }),
 }));
 
+/**
+ * Imperative accessor for the active session's store, for code that runs
+ * outside React render (event handlers, module-level send loop, SSE hooks).
+ * Returns null when no session exists yet (pre-bootstrap).
+ */
+export function getActiveSessionStore(): SessionStore | null {
+  const m = useSessionManager.getState();
+  return m.activeId ? m.entries[m.activeId].store : null;
+}
+
 /** Selector helper: count of sessions waiting on a permission decision. */
 export const selectPendingApprovalCount = (s: SessionManagerState): number =>
   Object.values(s.entries).filter((e) => e.status === "awaiting_approval").length;

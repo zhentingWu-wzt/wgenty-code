@@ -16,11 +16,7 @@
  *
  * This module is pure (no React, no fetch) so it unit-tests trivially.
  */
-import type {
-  AssembledToolCall,
-  StreamChunk,
-  StreamToolCall,
-} from "./types";
+import type { AssembledToolCall, StreamChunk, StreamToolCall } from "./types";
 
 /** Discriminated union of events emitted while consuming the stream. */
 export type StreamEvent =

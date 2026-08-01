@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { DaemonClient } from "../api/client";
 import { useSidebarStore } from "../state/sidebarStore";
-import { useChatStore } from "../state/chatStore";
+import { useSessionManager } from "../state/sessionManager";
 
 /** Model profile picker via `GET /api/v1/models` + `POST /api/v1/model/switch`. */
 export function ModelPanel({ client }: { client: DaemonClient }) {
   const models = useSidebarStore((s) => s.models);
   const setModels = useSidebarStore((s) => s.setModels);
-  const setModelName = useChatStore((s) => s.setModelName);
+  const setModelName = useSessionManager((s) => s.setModelName);
   const [switching, setSwitching] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 

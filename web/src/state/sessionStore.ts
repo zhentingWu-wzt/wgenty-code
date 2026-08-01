@@ -11,7 +11,7 @@
  * testable in isolation and the React layer free of control-flow logic.
  *
  * Created via `createSessionStore()` so each session gets fully isolated
- * state; the legacy singleton re-export lives in `chatStore.ts`.
+ * state; components subscribe through `sessionContext.tsx`.
  */
 import { create } from "zustand";
 import type { PermissionDecision, PermissionRequiredInfo, StructuredApproval } from "../api/types";

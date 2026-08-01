@@ -50,7 +50,9 @@ function OvRow({ label, value, ok }: { label: string; value: string | number; ok
   return (
     <div className="ov-row">
       <span className="ov-label">{label}</span>
-      <span className={`ov-value ${ok === false ? "ov-bad" : ok === true ? "ov-ok" : ""}`}>{value}</span>
+      <span className={`ov-value ${ok === false ? "ov-bad" : ok === true ? "ov-ok" : ""}`}>
+        {value}
+      </span>
     </div>
   );
 }
