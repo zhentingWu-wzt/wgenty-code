@@ -24,6 +24,7 @@
 - agent loop 跑在浏览器：关闭页面会中断运行中的会话（设计用 `beforeunload` 提示缓解）。
 - daemon 的审批规则 / todos / tasks / 模型切换是进程级全局状态，并行会话会互相影响。UI 如实标注，不在本期修复。
 - 所有会话共享 daemon 的单一 working_dir，无 per-session worktree 隔离（Worktree 面板仅为管理入口，不与会话绑定）。
+- Subagent 权限推送的 trace 事件携带的是 subagent 的 agent_id 而非根会话 id，因此多会话并行时 subagent 权限弹窗会归因到当前活跃会话（终审发现，daemon 侧改动属核心范围，本期接受；解决流程不受影响，不会死锁）。
 
 ## 方案对比记录
 
