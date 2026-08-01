@@ -6,6 +6,7 @@
 use crate::daemon::auth;
 use crate::daemon::handlers;
 use crate::daemon::state::DaemonState;
+use crate::daemon::worktrees;
 use axum::{
     middleware,
     routing::{get, post},
@@ -112,6 +113,8 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             "/api/v1/sessions",
             get(handlers::list_sessions).post(handlers::create_session),
         )
+        // Worktrees (web command center)
+        .route("/api/v1/worktrees", get(worktrees::list_worktrees))
         .route("/api/v1/sessions/search", get(handlers::search_sessions))
         .route(
             "/api/v1/sessions/:id",
