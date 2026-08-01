@@ -1338,3 +1338,52 @@ body {
   padding: 0.05rem 0.4rem;
   font-weight: 600;
 }
+
+.wt-list,
+.skill-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.wt-item,
+.skill-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.45rem;
+  font-size: 0.78rem;
+}
+.wt-branch,
+.skill-name {
+  font-family: var(--mono);
+  font-weight: 500;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skill-item {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+}
+.skill-desc {
+  color: var(--fg-dim);
+  font-size: 0.72rem;
+  line-height: 1.3;
+}
+.wt-main-tag {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  background: var(--bg-elev2);
+  color: var(--fg-dim);
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+}
