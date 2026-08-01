@@ -12,6 +12,7 @@ pub mod handlers;
 pub mod models;
 pub mod routes;
 pub mod state;
+pub(crate) mod worktrees;
 
 use crate::state::AppState;
 use axum::extract::DefaultBodyLimit;
