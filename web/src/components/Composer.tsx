@@ -1,5 +1,5 @@
 import { useState, type KeyboardEvent } from "react";
-import { useChatStore } from "../state/chatStore";
+import { useSessionStore } from "../state/sessionContext";
 
 interface ComposerProps {
   onSend: (text: string) => void;
@@ -8,8 +8,8 @@ interface ComposerProps {
 /** Message input. Enter sends; Shift+Enter inserts a newline. */
 export function Composer({ onSend }: ComposerProps) {
   const [text, setText] = useState("");
-  const isRunning = useChatStore((s) => s.isRunning);
-  const stopRunning = useChatStore((s) => s.stopRunning);
+  const isRunning = useSessionStore((s) => s.isRunning);
+  const stopRunning = useSessionStore((s) => s.stopRunning);
 
   const send = () => {
     const trimmed = text.trim();
@@ -29,7 +29,11 @@ export function Composer({ onSend }: ComposerProps) {
     <div className="composer">
       <textarea
         className="composer-input"
-        placeholder={isRunning ? "Agent is working…" : "Message the agent (Enter to send, Shift+Enter for newline)"}
+        placeholder={
+          isRunning
+            ? "Agent is working…"
+            : "Message the agent (Enter to send, Shift+Enter for newline)"
+        }
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={onKeyDown}
@@ -41,7 +45,12 @@ export function Composer({ onSend }: ComposerProps) {
           Stop
         </button>
       ) : (
-        <button type="button" className="btn btn-primary composer-send" onClick={send} disabled={!text.trim()}>
+        <button
+          type="button"
+          className="btn btn-primary composer-send"
+          onClick={send}
+          disabled={!text.trim()}
+        >
           Send
         </button>
       )}

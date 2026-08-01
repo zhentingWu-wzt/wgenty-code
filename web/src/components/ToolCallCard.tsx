@@ -1,5 +1,6 @@
 import type { ToolExecution } from "../agent/loop";
-import { DiffView, hasDiff } from "./DiffView";
+import { DiffView } from "./DiffView";
+import { hasDiff } from "./diffUtils";
 
 /**
  * Collapsed-by-default tool call (Codex-style: one summary line, click to

@@ -21,7 +21,12 @@
   --radius: 6px;
   --radius-sm: 4px;
   font-family:
-    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    system-ui,
+    sans-serif;
   --mono: "JetBrains Mono", "SF Mono", ui-monospace, "Menlo", monospace;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
@@ -293,6 +298,11 @@ body {
   padding: 0;
   font-size: 0.82em;
   line-height: 1.5;
+}
+/* shiki emits an inline background-color on its <pre>; force our theme bg so
+   the code block blends into the chat surface. */
+.msg-markdown pre.shiki {
+  background-color: var(--bg) !important;
 }
 .msg-markdown table {
   border-collapse: collapse;
@@ -603,6 +613,11 @@ body {
   background: var(--bg);
   padding: 0.2rem 0.4rem;
   border-radius: 3px;
+}
+.modal-global-note {
+  margin: 0 0 1rem;
+  font-size: 0.75rem;
+  color: var(--fg-dim);
 }
 .modal-actions {
   display: flex;
@@ -1223,4 +1238,3 @@ body {
     font-size: 0.8rem;
   }
 }
-

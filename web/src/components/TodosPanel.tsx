@@ -1,13 +1,13 @@
 import { DaemonClient } from "../api/client";
 import { usePolling } from "../hooks/usePolling";
-import { useChatStore } from "../state/chatStore";
+import { useSessionStore } from "../state/sessionContext";
 import { useSidebarStore } from "../state/sidebarStore";
 
 const POLL_MS = 5000;
 
 /** Live todo list from `GET /api/v1/todos`. Polls while the agent is running. */
 export function TodosPanel({ client }: { client: DaemonClient }) {
-  const isRunning = useChatStore((s) => s.isRunning);
+  const isRunning = useSessionStore((s) => s.isRunning);
   const todos = useSidebarStore((s) => s.todos);
   const setTodos = useSidebarStore((s) => s.setTodos);
 

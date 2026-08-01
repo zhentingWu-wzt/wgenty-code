@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import type { DaemonClient } from "../api/client";
 import type { TraceEvent } from "../api/types";
-import { useChatStore } from "../state/chatStore";
+import { getActiveSessionStore } from "../state/sessionManager";
 
 /**
  * Subscribe to the daemon's trace SSE stream and surface subagent permission
@@ -23,20 +23,21 @@ const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
 
 export function usePermissionTrace(client: DaemonClient | null): void {
-  const pushSubagent = useChatStore((s) => s.pushSubagentPermission);
-  const clearSubagent = useChatStore((s) => s.clearSubagentPermission);
-
   useEffect(() => {
     if (!client) return;
     let cancelled = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
     const handleEvent = (ev: TraceEvent) => {
+      // Route to the active session's store (Task 7 minimal migration; Task 8
+      // will route by the trace event's session_id instead).
+      const store = getActiveSessionStore();
+      if (!store) return;
       if (ev.kind === "permission_pending" && ev.permission) {
-        pushSubagent(ev.permission);
+        store.getState().pushSubagentPermission(ev.permission);
       } else if (ev.kind === "permission_resolved") {
         // Resolved elsewhere (timeout, or another client) — dismiss.
-        clearSubagent();
+        store.getState().clearSubagentPermission();
       }
     };
 
@@ -95,5 +96,5 @@ export function usePermissionTrace(client: DaemonClient | null): void {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
     };
-  }, [client, pushSubagent, clearSubagent]);
+  }, [client]);
 }

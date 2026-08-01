@@ -15,12 +15,7 @@
  */
 import type { DaemonClient } from "../api/client";
 import { StreamProcessor, type StreamEvent } from "../api/sseParser";
-import type {
-  ChatMessage,
-  ExecuteToolResponse,
-  PermissionDecision,
-  ToolCall,
-} from "../api/types";
+import type { ChatMessage, ExecuteToolResponse, PermissionDecision, ToolCall } from "../api/types";
 
 /** Default round cap. Mirrors the TUI's `RuntimeConfig.max_rounds` spirit. */
 const MAX_ROUNDS = 30;
@@ -60,7 +55,9 @@ export interface AgentLoopCallbacks {
   /** Fired when a tool call starts and again when it resolves. */
   onToolExecution: (exec: ToolExecution) => void;
   /** Ask the user to approve a blocked tool. Resolves with their decision. */
-  onPermissionRequired: (info: NonNullable<ExecuteToolResponse["permission_required"]>) => Promise<PermissionDecision>;
+  onPermissionRequired: (
+    info: NonNullable<ExecuteToolResponse["permission_required"]>,
+  ) => Promise<PermissionDecision>;
 }
 
 export interface RunAgentLoopArgs {
@@ -178,7 +175,10 @@ async function executeOneTool(args: {
     // Malformed args — surface as a failed tool result so the model can react.
     callbacks.onToolExecution({
       call,
-      response: { success: false, error: `failed to parse tool arguments: ${call.function.arguments}` },
+      response: {
+        success: false,
+        error: `failed to parse tool arguments: ${call.function.arguments}`,
+      },
     });
     return;
   }

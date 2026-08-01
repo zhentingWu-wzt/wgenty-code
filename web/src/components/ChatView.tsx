@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import type { ComponentPropsWithoutRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useChatStore } from "../state/chatStore";
+import { useSessionStore } from "../state/sessionContext";
 import { ToolCallCard } from "./ToolCallCard";
 import { CodeBlock } from "./CodeBlock";
 
@@ -49,8 +49,8 @@ function Markdown({ children }: { children: string }) {
 
 /** Scrolling message list. Auto-scrolls to bottom while streaming. */
 export function ChatView() {
-  const messages = useChatStore((s) => s.messages);
-  const lastError = useChatStore((s) => s.lastError);
+  const messages = useSessionStore((s) => s.messages);
+  const lastError = useSessionStore((s) => s.lastError);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

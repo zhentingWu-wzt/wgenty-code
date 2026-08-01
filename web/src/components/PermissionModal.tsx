@@ -1,5 +1,5 @@
 import { DaemonClient } from "../api/client";
-import { useChatStore } from "../state/chatStore";
+import { useSessionStore } from "../state/sessionContext";
 import type { PermissionDecision } from "../api/types";
 
 interface PermissionModalProps {
@@ -17,15 +17,22 @@ interface PermissionModalProps {
  * prompt is pending.
  */
 export function PermissionModal({ client }: PermissionModalProps) {
-  const rootPending = useChatStore((s) => s.pendingPermission);
-  const resolveRoot = useChatStore((s) => s.resolvePermission);
-  const subagent = useChatStore((s) => s.pendingSubagent);
-  const clearSubagent = useChatStore((s) => s.clearSubagentPermission);
+  const rootPending = useSessionStore((s) => s.pendingPermission);
+  const resolveRoot = useSessionStore((s) => s.resolvePermission);
+  const subagent = useSessionStore((s) => s.pendingSubagent);
+  const clearSubagent = useSessionStore((s) => s.clearSubagentPermission);
 
   // Root permission wins when present.
   if (rootPending) {
     const { info } = rootPending;
-    return <ModalShell tool={info.tool_name} reason={info.reason} rule={info.session_rule} onChoose={resolveRoot} />;
+    return (
+      <ModalShell
+        tool={info.tool_name}
+        reason={info.reason}
+        rule={info.session_rule}
+        onChoose={resolveRoot}
+      />
+    );
   }
 
   if (subagent) {
@@ -73,6 +80,7 @@ function ModalShell({
         <p className="modal-rule">
           <code>{rule}</code>
         </p>
+        <p className="modal-global-note">Approvals are global — they apply to all sessions.</p>
         <div className="modal-actions">
           <button type="button" className="btn btn-primary" onClick={() => onChoose("allowOnce")}>
             Allow once

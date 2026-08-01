@@ -3,8 +3,8 @@ import { DaemonClient, DaemonError } from "../api/client";
 import type { ChatMessage, SessionResponse } from "../api/types";
 import { usePolling } from "../hooks/usePolling";
 import { useSidebarStore } from "../state/sidebarStore";
-import { useChatStore } from "../state/chatStore";
-import type { DisplayMessage } from "../state/chatStore";
+import { getActiveSessionStore } from "../state/sessionManager";
+import type { DisplayMessage } from "../state/sessionStore";
 
 const POLL_MS = 10000;
 
@@ -26,9 +26,9 @@ export function SessionsPanel({ client }: { client: DaemonClient }) {
   usePolling(
     async () => {
       const res = query
-        ? await client.listSessions().then((all) =>
-            all.filter((s) => s.name.toLowerCase().includes(query.toLowerCase())),
-          )
+        ? await client
+            .listSessions()
+            .then((all) => all.filter((s) => s.name.toLowerCase().includes(query.toLowerCase())))
         : await client.listSessions();
       setSessions(res);
     },
@@ -40,15 +40,15 @@ export function SessionsPanel({ client }: { client: DaemonClient }) {
     const display: DisplayMessage[] = session.messages.map((m, i) => ({
       id: `loaded-${session.id}-${i}`,
       role: (m.role === "user" ? "user" : m.role === "assistant" ? "assistant" : "tool") as
-        | "user"
-        | "assistant"
-        | "tool",
+        "user" | "assistant" | "tool",
       content: m.content ?? "",
       ...(m.tool_calls && m.tool_calls.length > 0 ? { toolExecs: [] } : {}),
     }));
-    useChatStore.getState().clear();
+    const store = getActiveSessionStore();
+    if (!store) return;
+    store.getState().clear();
     // Push loaded messages directly into the store.
-    for (const d of display) useChatStore.getState().pushLoadedMessage(d);
+    for (const d of display) store.getState().pushLoadedMessage(d);
     void session;
   };
 
@@ -97,7 +97,9 @@ export function SessionsPanel({ client }: { client: DaemonClient }) {
     setBusy("save");
     setError(null);
     try {
-      const msgs = useChatStore.getState().messages;
+      const store = getActiveSessionStore();
+      if (!store) return;
+      const msgs = store.getState().messages;
       const wire: ChatMessage[] = toWireForSave(msgs);
       const created = await client.createSession({});
       await client.saveSession(created.id, { messages: wire, ui_messages: [] });
@@ -122,7 +124,12 @@ export function SessionsPanel({ client }: { client: DaemonClient }) {
         <button type="button" className="btn btn-xs" onClick={onNew} disabled={busy !== null}>
           New
         </button>
-        <button type="button" className="btn btn-xs" onClick={onSaveCurrent} disabled={busy !== null}>
+        <button
+          type="button"
+          className="btn btn-xs"
+          onClick={onSaveCurrent}
+          disabled={busy !== null}
+        >
           Save current
         </button>
       </div>

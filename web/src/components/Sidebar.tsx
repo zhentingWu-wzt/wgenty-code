@@ -41,44 +41,45 @@ export function Sidebar({ client }: { client: DaemonClient }) {
     <>
       {/* Mobile backdrop: only visible on phone breakpoint when the drawer is
           open. Clicking it collapses the sidebar. Hidden on desktop via CSS. */}
-      <div
-        className="sidebar-backdrop"
-        onClick={toggle}
-        aria-hidden="true"
-      />
+      <div className="sidebar-backdrop" onClick={toggle} aria-hidden="true" />
       <aside className="sidebar">
-      <div className="sidebar-header">
-        <span className="sidebar-title">Panels</span>
-        <button type="button" className="sidebar-collapse-btn" onClick={toggle} title="Hide sidebar">
-          ◂
-        </button>
-      </div>
-      <nav className="sidebar-tabs">
-        {TABS.map((t) => (
+        <div className="sidebar-header">
+          <span className="sidebar-title">Panels</span>
           <button
-            key={t.id}
             type="button"
-            className={`sidebar-tab ${activeTab === t.id ? "active" : ""}`}
-            onClick={() => setActiveTab(t.id)}
+            className="sidebar-collapse-btn"
+            onClick={toggle}
+            title="Hide sidebar"
           >
-            {t.label}
+            ◂
           </button>
-        ))}
-      </nav>
-      <div className="sidebar-body">
-        {activeTab === "sessions" && <SessionsPanel client={client} />}
-        {activeTab === "todos" && <TodosPanel client={client} />}
-        {activeTab === "tasks" && <TasksPanel client={client} />}
-        {activeTab === "model" && <ModelPanel client={client} />}
-        {activeTab === "memory" && <MemoryPanel client={client} />}
-        {activeTab === "config" && (
-          <>
-            <OverviewPanel client={client} />
-            <ConfigPanel client={client} />
-          </>
-        )}
-      </div>
-    </aside>
+        </div>
+        <nav className="sidebar-tabs">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`sidebar-tab ${activeTab === t.id ? "active" : ""}`}
+              onClick={() => setActiveTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-body">
+          {activeTab === "sessions" && <SessionsPanel client={client} />}
+          {activeTab === "todos" && <TodosPanel client={client} />}
+          {activeTab === "tasks" && <TasksPanel client={client} />}
+          {activeTab === "model" && <ModelPanel client={client} />}
+          {activeTab === "memory" && <MemoryPanel client={client} />}
+          {activeTab === "config" && (
+            <>
+              <OverviewPanel client={client} />
+              <ConfigPanel client={client} />
+            </>
+          )}
+        </div>
+      </aside>
     </>
   );
 }
