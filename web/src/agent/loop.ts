@@ -66,6 +66,12 @@ export interface RunAgentLoopArgs {
   messages: ChatMessage[];
   /** Stable session id forwarded to `/tools/execute`. */
   sessionId: string;
+  /**
+   * Per-turn id forwarded to `/tools/execute` as `turn_id`. The daemon threads
+   * it into checkpoint capture (src/daemon/models.rs); omitting it disables
+   * checkpoints for the turn's file edits.
+   */
+  turnId?: string;
   callbacks: AgentLoopCallbacks;
   maxRounds?: number;
   /** Optional signal to abort the loop between rounds (e.g. user cancel). */
@@ -94,7 +100,7 @@ async function* readChunks(stream: ReadableStream<Uint8Array>): AsyncIterable<Ui
  * Ported from `run_agent_loop_inner` (src/agent/runtime/loop_.rs:191-959).
  */
 export async function runAgentLoop(args: RunAgentLoopArgs): Promise<string> {
-  const { client, messages, sessionId, callbacks } = args;
+  const { client, messages, sessionId, turnId, callbacks } = args;
   const maxRounds = args.maxRounds ?? MAX_ROUNDS;
 
   for (let round = 1; round <= maxRounds; round++) {
@@ -141,7 +147,7 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<string> {
 
     // ── 5. Execute every tool call, then loop back for another round ─────────
     for (const call of result.toolCalls) {
-      await executeOneTool({ client, call, sessionId, callbacks });
+      await executeOneTool({ client, call, sessionId, turnId, callbacks });
     }
     // loop continues → next chat/stream round carries the tool results.
   }
@@ -163,9 +169,10 @@ async function executeOneTool(args: {
   client: DaemonClient;
   call: ToolCall;
   sessionId: string;
+  turnId?: string;
   callbacks: AgentLoopCallbacks;
 }): Promise<void> {
-  const { client, call, sessionId, callbacks } = args;
+  const { client, call, sessionId, turnId, callbacks } = args;
 
   // Parse the JSON-encoded argument string into an object for the daemon.
   let parsedArgs: Record<string, unknown> = {};
@@ -187,6 +194,9 @@ async function executeOneTool(args: {
     tool_name: call.function.name,
     arguments: parsedArgs,
     session_id: sessionId,
+    // `undefined` is dropped by JSON.stringify — checkpoints stay off only
+    // when the runner didn't mint a turn id.
+    turn_id: turnId,
   });
 
   // No permission needed — done.
@@ -213,6 +223,7 @@ async function executeOneTool(args: {
       tool_name: call.function.name,
       arguments: parsedArgs,
       session_id: sessionId,
+      turn_id: turnId,
     });
     callbacks.onToolExecution({
       call,

@@ -2,11 +2,8 @@ import { useEffect, useState } from "react";
 import { CircleAlert, MessagesSquare, Plus } from "lucide-react";
 import type { DaemonClient } from "../api/client";
 import type { SessionInfo } from "../api/types";
+import { sessionMessagesToDisplay } from "../agent/sessionLoad";
 import { useSessionManager } from "../state/sessionManager";
-
-// Module-level counter for loaded-history message ids (same pattern as
-// sessionStore's genId; avoids impure Math.random in component scope).
-let loadedCounter = 0;
 
 /**
  * Open sessions (live, with status) on top; daemon-saved sessions below —
@@ -40,12 +37,8 @@ export function SessionList({ client }: { client: DaemonClient }) {
     const localId = m.createLocalSession(info.name ?? "Session");
     m.setDaemonId(localId, info.id);
     const store = useSessionManager.getState().entries[localId].store;
-    for (const msg of full.messages ?? []) {
-      store.getState().pushLoadedMessage({
-        id: `loaded-${++loadedCounter}`,
-        role: msg.role === "user" ? "user" : "assistant",
-        content: typeof msg.content === "string" ? msg.content : "",
-      });
+    for (const dm of sessionMessagesToDisplay(full.messages ?? [])) {
+      store.getState().pushLoadedMessage(dm);
     }
   };
 

@@ -46,11 +46,17 @@ export async function runSessionTurn(
   const abort = new AbortController();
   store.getState().registerAbort(abort);
 
+  // Per-turn id forwarded to `/tools/execute` as `turn_id` — without it the
+  // daemon skips checkpoint capture, so web-side file edits would never be
+  // undoable (src/daemon/models.rs ExecuteToolRequest.turn_id).
+  const turnId = `${sessionId}-turn-${Date.now()}`;
+
   try {
     await runAgentLoop({
       client,
       messages,
       sessionId,
+      turnId,
       signal: abort.signal,
       callbacks: {
         onStreamEvent: (round, ev) => {
@@ -143,6 +149,9 @@ function toWireMessages(display: DisplayMessage[]): ChatMessage[] {
   for (const m of display) {
     if (m.role === "user") {
       out.push({ role: "user", content: m.content });
+    } else if (m.role === "tool") {
+      // Standalone tool result (loaded history with no matching tool_calls).
+      out.push({ role: "tool", tool_call_id: m.toolCallId, content: m.content });
     } else if (m.role === "assistant") {
       out.push({
         role: "assistant",
