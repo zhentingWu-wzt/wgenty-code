@@ -4,7 +4,7 @@ import { runSessionTurn } from "./agent/sessionRunner";
 import { useSessionManager } from "./state/sessionManager";
 import { SessionStoreContext } from "./state/sessionContext";
 import { StatusBar } from "./components/StatusBar";
-import { Sidebar } from "./components/Sidebar";
+import { LeftRail } from "./components/LeftRail";
 import { SessionHeader } from "./components/SessionHeader";
 import { ChatView } from "./components/ChatView";
 import { Composer } from "./components/Composer";
@@ -101,7 +101,7 @@ export function App() {
       <div className="app">
         <StatusBar />
         <div className="app-body">
-          <Sidebar client={client} />
+          <LeftRail client={client} />
           <div className="app-main">
             <SessionHeader />
             <main className="main">
