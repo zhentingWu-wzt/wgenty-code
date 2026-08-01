@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { DaemonClient } from "../api/client";
+import type { TraceEvent } from "../api/types";
 import { useSessionManager } from "../state/sessionManager";
 
 interface TraceLine {
@@ -29,10 +30,14 @@ export function SubagentPanel({ client }: { client: DaemonClient }) {
   useEffect(() => {
     if (!activeId) return;
     const abort = new AbortController();
+    // Held at effect scope so the cleanup can cancel an in-flight read —
+    // abort.abort() alone does not resolve a pending reader.read(), and
+    // without cancel() every session switch would leak an SSE connection.
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     (async () => {
       try {
         const { body } = await client.traceStream();
-        const reader = body.getReader();
+        reader = body.getReader();
         const decoder = new TextDecoder();
         let buf = "";
         for (;;) {
@@ -44,9 +49,10 @@ export function SubagentPanel({ client }: { client: DaemonClient }) {
           for (const row of rows) {
             if (!row.trim()) continue;
             try {
-              const ev = JSON.parse(row);
+              const ev = JSON.parse(row) as TraceEvent;
               if (ev.session_id !== activeId) continue;
-              const text = `${ev.kind ?? "event"}: ${ev.summary ?? ev.message ?? ""}`;
+              const tool = ev.current_tool ? ` [${ev.current_tool}]` : "";
+              const text = `${ev.kind ?? "event"}: ${ev.label ?? ""}${tool}`;
               setLines((prev) => [...prev.slice(-99), { ts: Date.now(), text }]);
             } catch {
               // 半行/非 JSON 行忽略
@@ -57,7 +63,10 @@ export function SubagentPanel({ client }: { client: DaemonClient }) {
         // daemon down — the panel just stays empty; StatusBar shows connection
       }
     })();
-    return () => abort.abort();
+    return () => {
+      abort.abort();
+      reader?.cancel().catch(() => {});
+    };
   }, [client, activeId]);
 
   return (
