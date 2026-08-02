@@ -65,13 +65,11 @@ describe("sessionManager worktree binding", () => {
   });
 
   it("createLocalSession accepts explicit id and worktree", () => {
-    const id = useSessionManager
-      .getState()
-      .createLocalSession("bound", {
-        id: "daemon-1",
-        daemonId: "daemon-1",
-        worktree: { path: ".worktrees/a", branch: "a" },
-      });
+    const id = useSessionManager.getState().createLocalSession("bound", {
+      id: "daemon-1",
+      daemonId: "daemon-1",
+      worktree: { path: ".worktrees/a", branch: "a" },
+    });
     const e = useSessionManager.getState().entries[id];
     expect(id).toBe("daemon-1");
     expect(e.daemonId).toBe("daemon-1");

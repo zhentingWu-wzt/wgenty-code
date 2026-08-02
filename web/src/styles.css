@@ -1592,3 +1592,50 @@ body {
   display: inline-flex;
   align-items: center;
 }
+
+/* New session dialog + session branch tag */
+.new-session-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+.new-session-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--fg-dim);
+}
+.new-session-input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.5rem;
+  font-size: 0.85rem;
+}
+.new-session-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.new-session-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.new-session-mode {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.session-branch-tag {
+  margin-left: 0.4rem;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+}

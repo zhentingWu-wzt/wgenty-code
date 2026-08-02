@@ -4,6 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { SessionList } from "./SessionList";
 import { sessionMessagesToDisplay } from "../agent/sessionLoad";
 import { useSessionManager } from "../state/sessionManager";
+import { DaemonClient } from "../api/client";
+
+const client = new DaemonClient();
 import type { SessionMessage } from "../api/types";
 
 function reset() {
@@ -23,7 +26,7 @@ describe("SessionList", () => {
     const m = useSessionManager.getState();
     const a = m.createLocalSession("fix bug");
     m.setPreview(a, "reading files…");
-    render(<SessionList />);
+    render(<SessionList client={client} />);
     expect(screen.getByText("fix bug")).toBeInTheDocument();
     expect(screen.getByText("reading files…")).toBeInTheDocument();
   });
@@ -33,14 +36,20 @@ describe("SessionList", () => {
     const a = m.createLocalSession("first");
     const b = m.createLocalSession("second");
     m.setActive(a);
-    render(<SessionList />);
+    render(<SessionList client={client} />);
     await userEvent.setup().click(screen.getByText("second"));
     expect(useSessionManager.getState().activeId).toBe(b);
   });
 
-  it("new-session button creates and activates a session", async () => {
-    render(<SessionList />);
-    await userEvent.setup().click(screen.getByRole("button", { name: /new session/i }));
+  it("new-session button opens the dialog; Create makes a session", async () => {
+    const user = userEvent.setup();
+    render(<SessionList client={client} />);
+
+    await user.click(screen.getByRole("button", { name: /new session/i }));
+    // Dialog opens on the main-checkout default; Create makes a local session.
+    const dialog = await screen.findByRole("dialog", { name: "New session" });
+    expect(dialog).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Create" }));
     expect(useSessionManager.getState().order).toHaveLength(1);
   });
 });
