@@ -44,7 +44,7 @@ export function LeftRail({ client }: { client: DaemonClient }) {
           </button>
         </div>
         <div className="leftrail-scroll">
-          <SessionList />
+          <SessionList client={client} />
           <WorktreePanel client={client} />
           <SkillPanel client={client} />
         </div>
