@@ -246,6 +246,13 @@ pub struct GetTodosResponse {
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
+/// Worktree reference exposed in session responses (project → worktree → session).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeRef {
+    pub path: String,
+    pub branch: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SessionInfoResponse {
     pub id: String,
@@ -255,6 +262,8 @@ pub struct SessionInfoResponse {
     pub updated_at: String,
     pub message_count: usize,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeRef>,
 }
 
 #[derive(Debug, Serialize)]
@@ -267,6 +276,8 @@ pub struct SessionResponse {
     /// Human-facing TUI transcript; empty for legacy sessions.
     #[serde(default)]
     pub ui_messages: Vec<crate::context::SessionUiMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeRef>,
 }
 
 #[derive(Debug, Deserialize)]

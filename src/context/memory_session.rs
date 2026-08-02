@@ -177,6 +177,24 @@ pub enum SessionStatus {
     Error,
 }
 
+/// A session's worktree binding (project → worktree → session, N:1), persisted
+/// in `Session.metadata["worktree"]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionWorktree {
+    pub path: String,
+    pub branch: String,
+}
+
+/// Read the worktree binding from a session's metadata, if present and
+/// well-formed.
+pub fn worktree_of(session: &Session) -> Option<SessionWorktree> {
+    session
+        .metadata
+        .get("worktree")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,
@@ -186,6 +204,9 @@ pub struct SessionInfo {
     pub updated_at: DateTime<Utc>,
     pub message_count: usize,
     pub status: SessionStatus,
+    /// Worktree binding from metadata (None = main checkout).
+    #[serde(default)]
+    pub worktree: Option<SessionWorktree>,
 }
 
 pub struct SessionManager {
@@ -460,6 +481,7 @@ impl SessionManager {
                 updated_at: s.updated_at,
                 message_count: s.lazy_message_count.unwrap_or(s.messages.len()),
                 status: s.status.clone(),
+                worktree: worktree_of(s),
             })
             .collect();
         drop(sessions);
@@ -556,6 +578,56 @@ impl SessionManager {
         Ok(())
     }
 
+    pub async fn unarchive(&self, id: &str) -> anyhow::Result<()> {
+        // Hydrate lazy-loaded index entries before mutating (same as archive()).
+        let needs_hydrate = {
+            let sessions = self.sessions.read().await;
+            sessions
+                .get(id)
+                .map(|s| s.lazy_message_count.is_some())
+                .unwrap_or(false)
+        };
+        if needs_hydrate {
+            self.load(id).await?;
+        }
+        let snapshot = {
+            let mut sessions = self.sessions.write().await;
+            if let Some(session) = sessions.get_mut(id) {
+                session.status = SessionStatus::Active;
+                Some(session.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(session) = snapshot {
+            self.persist_to_disk(&session).await?;
+        }
+        Ok(())
+    }
+
+    /// Set (`Some`) or remove (`None`) a metadata key on a session and persist.
+    /// Returns false when the session does not exist.
+    pub async fn set_metadata(
+        &self,
+        id: &str,
+        key: &str,
+        value: Option<serde_json::Value>,
+    ) -> anyhow::Result<bool> {
+        let Some(mut session) = self.get(id).await else {
+            return Ok(false);
+        };
+        match value {
+            Some(v) => {
+                session.metadata.insert(key.to_string(), v);
+            }
+            None => {
+                session.metadata.remove(key);
+            }
+        }
+        self.save(&session).await?;
+        Ok(true)
+    }
+
     pub async fn search(&self, query: &str) -> Vec<SessionInfo> {
         let query_lower = query.to_lowercase();
         let sessions = self.sessions.read().await;
@@ -576,6 +648,7 @@ impl SessionManager {
                 updated_at: s.updated_at,
                 message_count: s.lazy_message_count.unwrap_or(s.messages.len()),
                 status: s.status.clone(),
+                worktree: worktree_of(s),
             })
             .collect()
     }

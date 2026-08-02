@@ -11,6 +11,7 @@ pub mod auth;
 pub mod handlers;
 pub mod models;
 pub mod routes;
+pub(crate) mod session_admin;
 pub(crate) mod skills_api;
 pub mod state;
 pub(crate) mod worktrees;
@@ -37,6 +38,9 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
     if let Err(e) = daemon_state.session_manager.load_index().await {
         tracing::warn!(error = %e, "Failed to load persisted sessions into daemon");
     }
+
+    // Restore session → worktree bindings persisted in session metadata.
+    session_admin::reconcile_worktree_bindings(&daemon_state).await;
 
     // Spawn background task to evict stale subagent progress sessions (60s TTL).
     let cleanup_state = daemon_state.clone();
