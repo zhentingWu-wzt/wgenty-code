@@ -147,7 +147,7 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<string> {
 
     // ── 5. Execute every tool call, then loop back for another round ─────────
     for (const call of result.toolCalls) {
-      await executeOneTool({ client, call, sessionId, turnId, callbacks });
+      await executeOneTool({ client, call, sessionId, turnId, callbacks, messages });
     }
     // loop continues → next chat/stream round carries the tool results.
   }
@@ -171,8 +171,22 @@ async function executeOneTool(args: {
   sessionId: string;
   turnId?: string;
   callbacks: AgentLoopCallbacks;
+  /** Wire history — the tool result message is pushed here on every outcome,
+   *  so the next round's request satisfies the API's "every tool_call_id must
+   *  be followed by a tool message" rule. */
+  messages: ChatMessage[];
 }): Promise<void> {
-  const { client, call, sessionId, turnId, callbacks } = args;
+  const { client, call, sessionId, turnId, callbacks, messages } = args;
+
+  /** Record the outcome in the UI callback AND in the wire history. */
+  const settle = (response: ExecuteToolResponse, permissionDecision?: PermissionDecision) => {
+    callbacks.onToolExecution({ call, response, permissionDecision });
+    messages.push({
+      role: "tool",
+      tool_call_id: call.id,
+      content: JSON.stringify(response),
+    });
+  };
 
   // Parse the JSON-encoded argument string into an object for the daemon.
   let parsedArgs: Record<string, unknown> = {};
@@ -180,12 +194,9 @@ async function executeOneTool(args: {
     parsedArgs = call.function.arguments ? JSON.parse(call.function.arguments) : {};
   } catch {
     // Malformed args — surface as a failed tool result so the model can react.
-    callbacks.onToolExecution({
-      call,
-      response: {
-        success: false,
-        error: `failed to parse tool arguments: ${call.function.arguments}`,
-      },
+    settle({
+      success: false,
+      error: `failed to parse tool arguments: ${call.function.arguments}`,
     });
     return;
   }
@@ -201,18 +212,17 @@ async function executeOneTool(args: {
 
   // No permission needed — done.
   if (!initial.permission_required) {
-    callbacks.onToolExecution({ call, response: initial });
+    settle(initial);
     return;
   }
 
   // Permission required → ask the user.
   const decision = await callbacks.onPermissionRequired(initial.permission_required);
   if (decision === "deny") {
-    callbacks.onToolExecution({
-      call,
-      response: initial,
-      permissionDecision: "deny",
-    });
+    settle(
+      { success: false, error: "permission denied by user" },
+      "deny",
+    );
     return;
   }
 
@@ -225,11 +235,7 @@ async function executeOneTool(args: {
       session_id: sessionId,
       turn_id: turnId,
     });
-    callbacks.onToolExecution({
-      call,
-      response: retried,
-      permissionDecision: decision,
-    });
+    settle(retried, decision);
   } finally {
     if (decision === "allowOnce") {
       // Best-effort revoke; a failure here shouldn't mask the tool result.
