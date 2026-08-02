@@ -1,5 +1,6 @@
-import { CircleAlert, MessagesSquare, Plus } from "lucide-react";
+import { CircleAlert, Plus } from "lucide-react";
 import { useSessionManager } from "../state/sessionManager";
+import { RailSection } from "./RailSection";
 
 /**
  * Open sessions with live status. Saved-session browsing moved to the
@@ -11,11 +12,9 @@ export function SessionList() {
   const activeId = useSessionManager((s) => s.activeId);
 
   return (
-    <div className="session-list-panel">
-      <div className="session-list-head">
-        <span className="rail-section-title">
-          <MessagesSquare size={12} /> Sessions
-        </span>
+    <RailSection
+      title="Sessions"
+      actions={
         <button
           type="button"
           className="btn-xs"
@@ -23,7 +22,8 @@ export function SessionList() {
         >
           <Plus size={12} /> New session
         </button>
-      </div>
+      }
+    >
       <ul className="session-cards">
         {order.map((id) => {
           const e = entries[id];
@@ -49,6 +49,6 @@ export function SessionList() {
           );
         })}
       </ul>
-    </div>
+    </RailSection>
   );
 }

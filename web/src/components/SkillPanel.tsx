@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { Puzzle } from "lucide-react";
 import type { DaemonClient } from "../api/client";
 import type { SkillInfoDto } from "../api/types";
+import { RailSection } from "./RailSection";
 
 /** Read-only skill list (GET /api/v1/skills). Enable/disable is out of scope:
- *  the knowledge layer has no enabled concept. */
+ *  the knowledge layer has no enabled concept. Collapsed by default. */
 export function SkillPanel({ client }: { client: DaemonClient }) {
   const [items, setItems] = useState<SkillInfoDto[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -17,10 +17,7 @@ export function SkillPanel({ client }: { client: DaemonClient }) {
   }, [client]);
 
   return (
-    <section className="rail-panel">
-      <span className="rail-section-title">
-        <Puzzle size={12} /> Skills
-      </span>
+    <RailSection title="Skills" defaultCollapsed>
       {error && <div className="panel-error">{error}</div>}
       <ul className="skill-list">
         {(items ?? []).map((s) => (
@@ -30,6 +27,6 @@ export function SkillPanel({ client }: { client: DaemonClient }) {
           </li>
         ))}
       </ul>
-    </section>
+    </RailSection>
   );
 }
