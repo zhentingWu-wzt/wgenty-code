@@ -102,10 +102,60 @@ impl Tool for GlobTool {
             metadata,
         })
     }
+
+    async fn execute_with_context(
+        &self,
+        context: &crate::agent::ToolContext<'_>,
+        mut input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        // s12: resolve the relative search root against the session's bound
+        // worktree (same adapter as list_files).
+        if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+            let resolved = crate::tools::resolve_path(path, context.workdir);
+            input["path"] = serde_json::Value::String(resolved.to_string_lossy().into_owned());
+        }
+        self.execute(input).await
+    }
 }
 
 impl Default for GlobTool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
+    use crate::tools::Tool;
+
+    fn make_ctx<'a>(
+        root: &'a AgentExecutionContext,
+        wd: Option<&'a std::path::Path>,
+    ) -> ToolContext<'a> {
+        ToolContext {
+            agent: root,
+            invocation_id: ToolInvocationId::new("inv"),
+            origin_turn_id: None,
+            workdir: wd,
+            effective_mode: crate::sandbox::EffectiveMode::default(),
+            checkpoint: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn glob_resolves_relative_path_against_workdir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("hit.txt"), "x").unwrap();
+        let root = AgentExecutionContext::root(SessionId::new("s"));
+        let wd = dir.path().to_path_buf();
+        let ctx = make_ctx(&root, Some(&wd));
+
+        let out = GlobTool::new()
+            .execute_with_context(&ctx, serde_json::json!({"pattern": "*.txt", "path": "."}))
+            .await
+            .unwrap();
+        assert!(out.content.contains("hit.txt"), "{}", out.content);
     }
 }
