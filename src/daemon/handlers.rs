@@ -507,13 +507,14 @@ pub async fn execute_tool(
                     tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
                 }
             }
+            let session_wd = crate::daemon::session_admin::effective_workdir(&state, session_id);
             let tool_context = crate::agent::ToolContext {
                 agent: &root_context,
                 invocation_id: crate::agent::ToolInvocationId::new(
                     uuid::Uuid::new_v4().to_string(),
                 ),
                 origin_turn_id: body.turn_id.as_deref(),
-                workdir: None,
+                workdir: session_wd.as_deref(),
                 effective_mode,
                 checkpoint: Some(state.checkpoint_store.as_ref()),
             };
@@ -567,13 +568,15 @@ pub async fn execute_tool(
                     .await
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                 let effective_mode = *state.effective_mode.read().unwrap();
+                let session_wd =
+                    crate::daemon::session_admin::effective_workdir(&state, session_id);
                 let tool_context = crate::agent::ToolContext {
                     agent: &root_context,
                     invocation_id: crate::agent::ToolInvocationId::new(
                         uuid::Uuid::new_v4().to_string(),
                     ),
                     origin_turn_id: body.turn_id.as_deref(),
-                    workdir: None,
+                    workdir: session_wd.as_deref(),
                     effective_mode,
                     checkpoint: Some(state.checkpoint_store.as_ref()),
                 };
