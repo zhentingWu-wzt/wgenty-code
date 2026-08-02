@@ -5,12 +5,13 @@
 
 use crate::daemon::auth;
 use crate::daemon::handlers;
+use crate::daemon::session_admin;
 use crate::daemon::skills_api;
 use crate::daemon::state::DaemonState;
 use crate::daemon::worktrees;
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 use std::sync::Arc;
@@ -129,6 +130,15 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             get(handlers::get_session)
                 .put(handlers::update_session)
                 .delete(handlers::delete_session),
+        )
+        // Session worktree binding + archive (project v1)
+        .route(
+            "/api/v1/sessions/:id/worktree",
+            put(session_admin::bind_worktree).delete(session_admin::unbind_worktree),
+        )
+        .route(
+            "/api/v1/sessions/:id/archive",
+            put(session_admin::set_archived),
         )
         .route_layer(middleware::from_fn_with_state(
             api_token,

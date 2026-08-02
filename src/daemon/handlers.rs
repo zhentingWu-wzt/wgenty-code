@@ -855,6 +855,10 @@ pub async fn list_sessions(
                 updated_at: s.updated_at.to_rfc3339(),
                 message_count: s.message_count,
                 status: format!("{:?}", s.status),
+                worktree: s.worktree.map(|w| WorktreeRef {
+                    path: w.path,
+                    branch: w.branch,
+                }),
             })
             .collect(),
     ))
@@ -871,6 +875,10 @@ pub async fn create_session(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(SessionResponse {
+        worktree: crate::context::memory_session::worktree_of(&session).map(|w| WorktreeRef {
+            path: w.path,
+            branch: w.branch,
+        }),
         id: session.id,
         name: session.name,
         created_at: session.created_at.to_rfc3339(),
@@ -892,6 +900,10 @@ pub async fn get_session(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(SessionResponse {
+        worktree: crate::context::memory_session::worktree_of(&session).map(|w| WorktreeRef {
+            path: w.path,
+            branch: w.branch,
+        }),
         id: session.id,
         name: session.name,
         created_at: session.created_at.to_rfc3339(),
@@ -940,6 +952,10 @@ pub async fn update_session(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(SessionResponse {
+        worktree: crate::context::memory_session::worktree_of(&session).map(|w| WorktreeRef {
+            path: w.path,
+            branch: w.branch,
+        }),
         id: session.id,
         name: session.name,
         created_at: session.created_at.to_rfc3339(),
@@ -982,6 +998,10 @@ pub async fn search_sessions(
                 updated_at: s.updated_at.to_rfc3339(),
                 message_count: s.message_count,
                 status: format!("{:?}", s.status),
+                worktree: s.worktree.map(|w| WorktreeRef {
+                    path: w.path,
+                    branch: w.branch,
+                }),
             })
             .collect(),
     ))
