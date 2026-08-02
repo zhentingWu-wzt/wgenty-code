@@ -105,3 +105,34 @@ describe("runAgentLoop turn_id threading", () => {
     expect(JSON.stringify(req)).not.toContain("turn_id");
   });
 });
+
+describe("runAgentLoop tool-result history", () => {
+  it("round 2 request pairs every tool_call with a tool message", async () => {
+    const { client } = mockClient();
+    const chatStream = client.chatStream as ReturnType<typeof vi.fn>;
+    await runAgentLoop({
+      client,
+      messages: [{ role: "user", content: "read it" }],
+      sessionId: "sess-1",
+      callbacks: noopCallbacks,
+    });
+
+    expect(chatStream).toHaveBeenCalledTimes(2);
+    const round2Messages = chatStream.mock.calls[1][0] as Array<{
+      role: string;
+      tool_call_id?: string;
+      tool_calls?: Array<{ id: string }>;
+    }>;
+
+    // The assistant message carrying the tool call…
+    const assistantIdx = round2Messages.findIndex((m) => m.role === "assistant");
+    expect(assistantIdx).toBeGreaterThan(-1);
+    expect(round2Messages[assistantIdx].tool_calls?.map((t) => t.id)).toEqual(["call_1"]);
+
+    // …must be immediately followed by a tool message per tool_call_id —
+    // otherwise the upstream rejects with invalid_request_error.
+    const toolMsg = round2Messages[assistantIdx + 1];
+    expect(toolMsg?.role).toBe("tool");
+    expect(toolMsg?.tool_call_id).toBe("call_1");
+  });
+});
