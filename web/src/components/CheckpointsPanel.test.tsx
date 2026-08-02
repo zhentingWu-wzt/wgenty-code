@@ -11,10 +11,9 @@ describe("CheckpointsPanel", () => {
     const spy = vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
       if (init?.method === "POST") {
         return Promise.resolve(
-          new Response(
-            JSON.stringify({ restored: 2, skipped: 0, failed: 0, rewound_turns: 1 }),
-            { status: 200 },
-          ),
+          new Response(JSON.stringify({ restored: 2, skipped: 0, failed: 0, rewound_turns: 1 }), {
+            status: 200,
+          }),
         );
       }
       return Promise.resolve(

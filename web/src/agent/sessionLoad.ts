@@ -72,8 +72,9 @@ export function sessionMessagesToDisplay(messages: SessionMessage[]): DisplayMes
     } else if (msg.role === "tool") {
       const response = parseToolResponse(msg.content);
       const exec =
-        pending.find((e) => e.call.id === msg.tool_call_id && e.response.error === MISSING_RESULT) ??
-        pending.find((e) => e.response.error === MISSING_RESULT);
+        pending.find(
+          (e) => e.call.id === msg.tool_call_id && e.response.error === MISSING_RESULT,
+        ) ?? pending.find((e) => e.response.error === MISSING_RESULT);
       if (exec) {
         exec.response = response;
       } else {

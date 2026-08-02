@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Toaster, toast } from "sonner";
 import { DaemonClient } from "./api/client";
 import { runSessionTurn } from "./agent/sessionRunner";
@@ -11,7 +10,12 @@ import { SessionHeader } from "./components/SessionHeader";
 import { ChatView } from "./components/ChatView";
 import { Composer } from "./components/Composer";
 import { PermissionModal } from "./components/PermissionModal";
-import { ContextPanel } from "./components/ContextPanel";
+import { CommandModal } from "./components/CommandModal";
+import { SessionsBrowserModal } from "./components/SessionsBrowserModal";
+import { ModelPanel } from "./components/ModelPanel";
+import { MemoryPanel } from "./components/MemoryPanel";
+import { CheckpointsPanel } from "./components/CheckpointsPanel";
+import type { SlashCommand } from "./components/slashCommands";
 import { usePermissionTrace } from "./hooks/usePermissionTrace";
 import { usePolling } from "./hooks/usePolling";
 
@@ -36,9 +40,7 @@ export function App() {
 
   // Active session's store. Each session keeps its own store; only the active
   // one is provided to the center pane.
-  const activeStore = useSessionManager((s) =>
-    s.activeId ? s.entries[s.activeId].store : null,
-  );
+  const activeStore = useSessionManager((s) => (s.activeId ? s.entries[s.activeId].store : null));
 
   // Bootstrap one local session. Must live in an effect — creating a session
   // during render is a render-phase side effect (react-hooks purity rules).
@@ -104,8 +106,10 @@ export function App() {
     10_000,
   );
 
-  // Right rail (ContextPanel) open/closed — local state, not the sidebar store.
-  const [ctxOpen, setCtxOpen] = useState(true);
+  // Slash-command modal (/model, /sessions, /memory, /undo) — the TUI-style
+  // replacement for permanent side panels.
+  const [openCommand, setOpenCommand] = useState<SlashCommand | null>(null);
+  const closeCommand = () => setOpenCommand(null);
 
   // First render (before the bootstrap effect runs): no session yet.
   if (!activeStore) return null;
@@ -125,19 +129,29 @@ export function App() {
               onSend={(text) => {
                 if (activeId) void runSessionTurn(client, activeId, text);
               }}
+              onCommand={setOpenCommand}
             />
           </div>
-          <button
-            type="button"
-            className="ctx-toggle"
-            onClick={() => setCtxOpen((o) => !o)}
-            title={ctxOpen ? "Hide context panel" : "Show context panel"}
-          >
-            {ctxOpen ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
-          </button>
-          {ctxOpen && <ContextPanel client={client} />}
         </div>
         <PermissionModal client={client} />
+        {openCommand?.name === "/model" && (
+          <CommandModal title="Switch model" onClose={closeCommand}>
+            <ModelPanel client={client} />
+          </CommandModal>
+        )}
+        {openCommand?.name === "/sessions" && (
+          <SessionsBrowserModal client={client} onClose={closeCommand} />
+        )}
+        {openCommand?.name === "/memory" && (
+          <CommandModal title="Memory" onClose={closeCommand}>
+            <MemoryPanel client={client} />
+          </CommandModal>
+        )}
+        {openCommand?.name === "/undo" && (
+          <CommandModal title="Undo turn" onClose={closeCommand}>
+            <CheckpointsPanel client={client} />
+          </CommandModal>
+        )}
         <Toaster theme="dark" position="bottom-right" />
       </div>
     </SessionStoreContext.Provider>

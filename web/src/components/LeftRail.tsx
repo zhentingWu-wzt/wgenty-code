@@ -4,11 +4,11 @@ import type { DaemonClient } from "../api/client";
 import { SessionList } from "./SessionList";
 import { WorktreePanel } from "./WorktreePanel";
 import { SkillPanel } from "./SkillPanel";
-import { ModelPanel } from "./ModelPanel";
 
 /**
- * Left column of the command center: sessions, worktrees, skills, and a
- * footer with global controls (model). Replaces the old tabbed Sidebar.
+ * Left column of the command center: sessions, worktrees, skills. Model
+ * switching and saved-session browsing live behind slash commands (/model,
+ * /sessions), mirroring the TUI — no permanent panels for them here.
  *
  * Collapse is a local toggle — on phone breakpoints the rail doubles as the
  * slide-over drawer (see the `@media (max-width: 768px)` rules in styles.css).
@@ -20,12 +20,7 @@ export function LeftRail({ client }: { client: DaemonClient }) {
   if (collapsed) {
     return (
       <aside className="leftrail leftrail-collapsed">
-        <button
-          type="button"
-          className="leftrail-expand-btn"
-          onClick={toggle}
-          title="Show sidebar"
-        >
+        <button type="button" className="leftrail-expand-btn" onClick={toggle} title="Show sidebar">
           <PanelLeftOpen size={15} />
         </button>
       </aside>
@@ -49,12 +44,9 @@ export function LeftRail({ client }: { client: DaemonClient }) {
           </button>
         </div>
         <div className="leftrail-scroll">
-          <SessionList client={client} />
+          <SessionList />
           <WorktreePanel client={client} />
           <SkillPanel client={client} />
-        </div>
-        <div className="leftrail-footer">
-          <ModelPanel client={client} />
         </div>
       </aside>
     </>

@@ -30,7 +30,6 @@ export function CheckpointsPanel({ client }: { client: DaemonClient }) {
 
   return (
     <section className="ctx-section">
-      <span className="rail-section-title">Checkpoints (global)</span>
       {error && <div className="panel-error">{error}</div>}
       {result && (
         <div className="cp-result">

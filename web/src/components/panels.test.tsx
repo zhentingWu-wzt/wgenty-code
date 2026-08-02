@@ -5,9 +5,7 @@ import { SkillPanel } from "./SkillPanel";
 import { DaemonClient } from "../api/client";
 
 function mockFetch(payload: unknown, status = 200) {
-  const spy = vi.fn().mockResolvedValue(
-    new Response(JSON.stringify(payload), { status }),
-  );
+  const spy = vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status }));
   vi.stubGlobal("fetch", spy);
   return spy;
 }

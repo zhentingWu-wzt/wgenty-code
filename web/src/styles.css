@@ -511,6 +511,7 @@ body {
 /* Composer: floating card pinned to the bottom of the main column, with
    breathing room above it. Send/Stop sit inside the card on the right. */
 .composer {
+  position: relative;
   display: flex;
   align-items: flex-end;
   gap: 0.5rem;
@@ -519,6 +520,96 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   margin: 0 1.5rem 1rem;
+}
+
+/* Slash command menu (/model, /sessions, …) — floats above the composer. */
+.slash-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: var(--bg-elev2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+  z-index: 20;
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.35);
+}
+.slash-item {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.45rem 0.7rem;
+  background: none;
+  border: none;
+  color: var(--fg);
+  font-size: 0.82rem;
+  cursor: pointer;
+  text-align: left;
+}
+.slash-item:hover {
+  background: var(--bg-hover);
+}
+.slash-name {
+  font-family: var(--mono);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.slash-desc {
+  color: var(--fg-dim);
+  font-size: 0.76rem;
+}
+
+/* Command modal (slash-command panels) — wider than the permission modal. */
+.command-modal {
+  max-width: 560px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+.command-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.command-modal-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.command-modal-close {
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+  padding: 0.2rem;
+}
+.command-modal-close:hover {
+  color: var(--fg);
+}
+.command-modal-body {
+  overflow-y: auto;
+  padding: 0.8rem 1rem;
+}
+
+/* Saved sessions browser rows (delete button beside the open card). */
+.saved-session-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.saved-session-row .session-card {
+  flex: 1;
+  min-width: 0;
+}
+.saved-session-delete {
+  color: var(--fg-dim);
+}
+.saved-session-delete:hover {
+  color: var(--bad);
 }
 .composer-input {
   flex: 1;
@@ -668,10 +759,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-}
-.leftrail-footer {
-  border-top: 1px solid var(--border);
-  padding: 0.5rem;
 }
 .rail-section-title {
   font-size: 0.7rem;
@@ -1390,44 +1477,13 @@ body {
   border-radius: 3px;
 }
 
-/* ── Right column: ContextPanel (subagents / todos / tasks / checkpoints / memory) */
-.contextpanel {
-  width: 300px;
-  flex-shrink: 0;
-  background: var(--bg-elev);
-  border-left: 1px solid var(--border);
-  overflow-y: auto;
-  padding: 0.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
+/* ── Checkpoint list (rendered inside the /undo command modal) ────────────── */
 .ctx-section {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
 }
-.ctx-toggle {
-  position: absolute;
-  top: 0.4rem;
-  right: 0.4rem;
-  z-index: 5;
-  width: 1.4rem;
-  height: 1.4rem;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-elev);
-  color: var(--fg-dim);
-  cursor: pointer;
-  line-height: 1;
-}
-.ctx-toggle:hover {
-  border-color: var(--fg-dim);
-  background: var(--bg-elev2);
-}
-.cp-list,
-.trace-list {
+.cp-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -1456,18 +1512,6 @@ body {
 .cp-result {
   color: var(--fg-dim);
   font-size: 0.72rem;
-}
-.trace-line {
-  font-size: 0.76rem;
-  color: var(--fg-dim);
-  font-family: var(--mono);
-  line-height: 1.4;
-}
-@media (max-width: 1024px) {
-  .contextpanel,
-  .ctx-toggle {
-    display: none;
-  }
 }
 
 /* ── Message-flow details (streaming cursor, role surfaces, tool status bar) ── */
