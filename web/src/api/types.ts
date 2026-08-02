@@ -306,6 +306,12 @@ export interface SwitchModelResponse {
 
 // ── Sessions ─────────────────────────────────────────────────────────────────
 
+/** A session's worktree binding (project → worktree → session, N:1). */
+export interface WorktreeBinding {
+  path: string;
+  branch: string;
+}
+
 export interface SessionInfo {
   id: string;
   name: string;
@@ -314,6 +320,11 @@ export interface SessionInfo {
   updated_at: string;
   message_count: number;
   summary?: string;
+  /** "Active" | "Paused" | "Archived" | "Error" — archived sessions are
+   *  hidden from default list views (client-side filtering). */
+  status: string;
+  /** Bound worktree; absent/null = main checkout. */
+  worktree?: WorktreeBinding | null;
 }
 
 export interface SessionMessage {

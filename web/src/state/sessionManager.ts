@@ -12,6 +12,7 @@
 import { create } from "zustand";
 import { createSessionStore, type SessionStore } from "./sessionStore";
 import type { ConnectionStatus } from "./sessionStore";
+import type { WorktreeBinding } from "../api/types";
 
 export type SessionStatus = "running" | "awaiting_approval" | "idle" | "error";
 
@@ -23,6 +24,16 @@ export interface SessionEntry {
   status: SessionStatus;
   lastPreview: string;
   updatedAt: number;
+  /** Bound worktree (N:1); undefined = main checkout. */
+  worktree?: WorktreeBinding;
+}
+
+/** Options for sessions created with a daemon-side identity (bound sessions
+ * use the daemon session id as their single identity). */
+export interface CreateSessionOptions {
+  id?: string;
+  daemonId?: string;
+  worktree?: WorktreeBinding;
 }
 
 interface SessionManagerState {
@@ -33,12 +44,14 @@ interface SessionManagerState {
   connection: ConnectionStatus;
   modelName: string | null;
 
-  createLocalSession: (name?: string) => string;
+  createLocalSession: (name?: string, opts?: CreateSessionOptions) => string;
   removeSession: (id: string) => void;
   setActive: (id: string) => void;
   setStatus: (id: string, status: SessionStatus) => void;
   setPreview: (id: string, text: string) => void;
   setDaemonId: (id: string, daemonId: string) => void;
+  /** Set (`WorktreeBinding`) or clear (`null`) a session's worktree binding. */
+  setWorktree: (id: string, wt: WorktreeBinding | null) => void;
   setConnection: (s: ConnectionStatus) => void;
   setModelName: (n: string | null) => void;
 }
@@ -62,16 +75,18 @@ export const useSessionManager = create<SessionManagerState>((set, get) => ({
   connection: "unknown",
   modelName: null,
 
-  createLocalSession: (name) => {
-    const id = `web-${Date.now()}-${counter++}`;
+  createLocalSession: (name, opts) => {
+    // opts.id (bound sessions) bypasses the web-* generator entirely.
+    const id = opts?.id ?? `web-${Date.now()}-${counter++}`;
     const entry: SessionEntry = {
       id,
-      daemonId: null,
+      daemonId: opts?.daemonId ?? null,
       name: name ?? `Session ${counter - 1}`,
       store: createSessionStore(),
       status: "idle",
       lastPreview: "",
       updatedAt: Date.now(),
+      ...(opts?.worktree ? { worktree: opts.worktree } : {}),
     };
     set((s) => ({
       entries: { ...s.entries, [id]: entry },
@@ -100,6 +115,11 @@ export const useSessionManager = create<SessionManagerState>((set, get) => ({
     set((s) => ({ entries: patchEntry(s.entries, id, { lastPreview: text.slice(0, 120) }) })),
 
   setDaemonId: (id, daemonId) => set((s) => ({ entries: patchEntry(s.entries, id, { daemonId }) })),
+
+  setWorktree: (id, wt) =>
+    set((s) => ({
+      entries: patchEntry(s.entries, id, { worktree: wt ?? undefined }),
+    })),
 
   setConnection: (connection) => set({ connection }),
   setModelName: (modelName) => set({ modelName }),

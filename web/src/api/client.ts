@@ -36,6 +36,7 @@ import type {
   TaskProgressResponse,
   UndoTurnResult,
   UpdateSessionRequest,
+  WorktreeBinding,
   WorktreeInfo,
 } from "./types";
 
@@ -320,6 +321,36 @@ export class DaemonClient {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ turn_ids: turnIds }),
+      }),
+    );
+  }
+
+  // ── Worktree binding / archive (project v1) ────────────────────────────────
+
+  async bindWorktree(sessionId: string, req: WorktreeBinding): Promise<void> {
+    await jsonOrThrow(
+      await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/worktree`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(req),
+      }),
+    );
+  }
+
+  async unbindWorktree(sessionId: string): Promise<void> {
+    await jsonOrThrow(
+      await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/worktree`, {
+        method: "DELETE",
+      }),
+    );
+  }
+
+  async setSessionArchived(sessionId: string, archived: boolean): Promise<void> {
+    await jsonOrThrow(
+      await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/archive`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ archived }),
       }),
     );
   }
