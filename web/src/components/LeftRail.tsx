@@ -1,14 +1,12 @@
 import { useState } from "react";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import type { DaemonClient } from "../api/client";
-import { SessionList } from "./SessionList";
-import { WorktreePanel } from "./WorktreePanel";
+import { ProjectTree } from "./ProjectTree";
 import { SkillPanel } from "./SkillPanel";
 
 /**
- * Left column of the command center: sessions, worktrees, skills. Model
- * switching and saved-session browsing live behind slash commands (/model,
- * /sessions), mirroring the TUI — no permanent panels for them here.
+ * Left column of the command center: the project tree (project → task/worktree
+ * → session) plus the collapsible skills section.
  *
  * Collapse is a local toggle — on phone breakpoints the rail doubles as the
  * slide-over drawer (see the `@media (max-width: 768px)` rules in styles.css).
@@ -44,8 +42,7 @@ export function LeftRail({ client }: { client: DaemonClient }) {
           </button>
         </div>
         <div className="leftrail-scroll">
-          <SessionList client={client} />
-          <WorktreePanel client={client} />
+          <ProjectTree client={client} />
           <SkillPanel client={client} />
         </div>
       </aside>
