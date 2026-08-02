@@ -166,6 +166,13 @@ pub async fn reconcile_worktree_bindings(state: &DaemonState) {
     }
 }
 
+/// Resolve the effective workdir for a tool call: the session's bound
+/// worktree, or None (= daemon cwd, pre-binding behavior for unbound sessions
+/// and the legacy "default" session).
+pub(crate) fn effective_workdir(state: &DaemonState, session_id: &str) -> Option<PathBuf> {
+    state.session_workdir(session_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
