@@ -1,13 +1,10 @@
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it } from "vitest";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionList } from "./SessionList";
 import { sessionMessagesToDisplay } from "../agent/sessionLoad";
 import { useSessionManager } from "../state/sessionManager";
-import { DaemonClient } from "../api/client";
 import type { SessionMessage } from "../api/types";
-
-const client = new DaemonClient();
 
 function reset() {
   useSessionManager.setState({
@@ -26,7 +23,7 @@ describe("SessionList", () => {
     const m = useSessionManager.getState();
     const a = m.createLocalSession("fix bug");
     m.setPreview(a, "reading files…");
-    render(<SessionList client={client} />);
+    render(<SessionList />);
     expect(screen.getByText("fix bug")).toBeInTheDocument();
     expect(screen.getByText("reading files…")).toBeInTheDocument();
   });
@@ -36,13 +33,13 @@ describe("SessionList", () => {
     const a = m.createLocalSession("first");
     const b = m.createLocalSession("second");
     m.setActive(a);
-    render(<SessionList client={client} />);
+    render(<SessionList />);
     await userEvent.setup().click(screen.getByText("second"));
     expect(useSessionManager.getState().activeId).toBe(b);
   });
 
   it("new-session button creates and activates a session", async () => {
-    render(<SessionList client={client} />);
+    render(<SessionList />);
     await userEvent.setup().click(screen.getByRole("button", { name: /new session/i }));
     expect(useSessionManager.getState().order).toHaveLength(1);
   });
@@ -106,59 +103,5 @@ describe("sessionMessagesToDisplay", () => {
     expect(execs).toHaveLength(2);
     expect(execs[0].response).toEqual({ success: true, content: "not json" });
     expect(execs[1].response.success).toBe(false);
-  });
-});
-
-describe("SessionList saved sessions", () => {
-  beforeEach(reset);
-  afterEach(() => vi.unstubAllGlobals());
-
-  it("loading a saved session preserves tool calls (no lossy rewrite)", async () => {
-    const full = {
-      id: "d1",
-      name: "saved one",
-      created_at: "2026-08-01",
-      updated_at: "2026-08-01",
-      messages: SAVED_MESSAGES,
-      ui_messages: [],
-    };
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input);
-        const payload =
-          url === "/api/v1/sessions"
-            ? [
-                {
-                  id: "d1",
-                  name: "saved one",
-                  created_at: "2026-08-01",
-                  updated_at: "2026-08-01",
-                  message_count: SAVED_MESSAGES.length,
-                },
-              ]
-            : full;
-        return new Response(JSON.stringify(payload), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }),
-    );
-
-    render(<SessionList client={client} />);
-    await userEvent.setup().click(await screen.findByText("saved one"));
-
-    await waitFor(() => {
-      const entry = Object.values(useSessionManager.getState().entries).find(
-        (e) => e.daemonId === "d1",
-      );
-      expect(entry).toBeDefined();
-      const msgs = entry!.store.getState().messages;
-      // No empty assistant bubble where the tool message was.
-      expect(msgs.filter((m) => m.role === "assistant" && m.content === "")).toHaveLength(0);
-      const withTools = msgs.find((m) => m.toolExecs && m.toolExecs.length > 0);
-      expect(withTools?.toolExecs?.[0].call.id).toBe("call_1");
-      expect(withTools?.toolExecs?.[0].response.content).toBe("file contents");
-    });
   });
 });

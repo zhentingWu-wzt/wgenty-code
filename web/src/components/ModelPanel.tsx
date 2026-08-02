@@ -1,29 +1,27 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { DaemonClient } from "../api/client";
-import { useSidebarStore } from "../state/sidebarStore";
+import type { ModelOption } from "../api/types";
 import { useSessionManager } from "../state/sessionManager";
 
-/** Model profile picker via `GET /api/v1/models` + `POST /api/v1/model/switch`. */
+/** Model profile picker via `GET /api/v1/models` + `POST /api/v1/model/switch`.
+ *  Rendered inside the `/model` command modal. */
 export function ModelPanel({ client }: { client: DaemonClient }) {
-  const models = useSidebarStore((s) => s.models);
-  const setModels = useSidebarStore((s) => s.setModels);
+  const [models, setModels] = useState<ModelOption[]>([]);
   const setModelName = useSessionManager((s) => s.setModelName);
   const [switching, setSwitching] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = async () => {
-    try {
-      const res = await client.listModels();
-      setModels(res.profiles);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
+  const refresh = useCallback(() => {
+    client
+      .listModels()
+      .then((res) => {
+        setModels(res.profiles);
+        setError(null);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, [client]);
 
-  // Load once on first render.
-  if (models.length === 0 && !error) {
-    void refresh();
-  }
+  useEffect(refresh, [refresh]);
 
   const onSwitch = async (key: string) => {
     setSwitching(key);
@@ -32,7 +30,7 @@ export function ModelPanel({ client }: { client: DaemonClient }) {
       const res = await client.switchModel({ profile: key });
       setModelName(res.model_name);
       // Refresh so the `active` marker updates.
-      await refresh();
+      refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

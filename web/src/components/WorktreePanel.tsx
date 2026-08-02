@@ -63,11 +63,7 @@ export function WorktreePanel({ client }: { client: DaemonClient }) {
             <span className="wt-branch">{w.branch ?? "(detached)"}</span>
             {w.is_main && <span className="wt-main-tag">main</span>}
             {!w.is_main && (
-              <button
-                type="button"
-                className="btn-xs wt-remove"
-                onClick={() => remove(w.path)}
-              >
+              <button type="button" className="btn-xs wt-remove" onClick={() => remove(w.path)}>
                 Remove
               </button>
             )}

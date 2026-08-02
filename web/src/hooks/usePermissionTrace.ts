@@ -44,10 +44,7 @@ export function usePermissionTrace(client: DaemonClient | null): void {
         target.store.getState().clearSubagentPermission();
         // Back to running only if nothing else is still awaiting a decision
         // (a root-tool prompt from the local loop may still be open).
-        if (
-          target.status === "awaiting_approval" &&
-          !target.store.getState().pendingPermission
-        ) {
+        if (target.status === "awaiting_approval" && !target.store.getState().pendingPermission) {
           m.setStatus(target.id, target.store.getState().isRunning ? "running" : "idle");
         }
       }

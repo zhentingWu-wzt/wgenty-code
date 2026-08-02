@@ -219,10 +219,7 @@ async function executeOneTool(args: {
   // Permission required → ask the user.
   const decision = await callbacks.onPermissionRequired(initial.permission_required);
   if (decision === "deny") {
-    settle(
-      { success: false, error: "permission denied by user" },
-      "deny",
-    );
+    settle({ success: false, error: "permission denied by user" }, "deny");
     return;
   }
 
