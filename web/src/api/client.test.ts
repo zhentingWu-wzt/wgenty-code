@@ -59,3 +59,31 @@ describe("DaemonClient command-center endpoints", () => {
     expect(res.restored).toBe(1);
   });
 });
+
+describe("DaemonClient worktree binding + archive", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const client = new DaemonClient();
+
+  it("bindWorktree PUTs the binding", async () => {
+    const spy = mockFetch({ session_id: "s1", worktree: { path: "/r/.worktrees/a", branch: "a" } });
+    await client.bindWorktree("s1", { path: ".worktrees/a", branch: "a" });
+    const [url, init] = spy.mock.calls[0];
+    expect(url).toBe("/api/v1/sessions/s1/worktree");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({ path: ".worktrees/a", branch: "a" });
+  });
+
+  it("unbindWorktree DELETEs the binding", async () => {
+    const spy = mockFetch(undefined, 204);
+    await client.unbindWorktree("s1");
+    expect(spy.mock.calls[0][0]).toBe("/api/v1/sessions/s1/worktree");
+    expect(spy.mock.calls[0][1].method).toBe("DELETE");
+  });
+
+  it("setSessionArchived PUTs the flag", async () => {
+    const spy = mockFetch({ session_id: "s1", archived: true });
+    await client.setSessionArchived("s1", true);
+    expect(spy.mock.calls[0][0]).toBe("/api/v1/sessions/s1/archive");
+    expect(JSON.parse(spy.mock.calls[0][1].body as string)).toEqual({ archived: true });
+  });
+});

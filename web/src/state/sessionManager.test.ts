@@ -52,3 +52,37 @@ describe("sessionManager", () => {
     expect(s.activeId).toBe(a);
   });
 });
+
+describe("sessionManager worktree binding", () => {
+  beforeEach(() => {
+    useSessionManager.setState({
+      entries: {},
+      order: [],
+      activeId: null,
+      connection: "unknown",
+      modelName: null,
+    });
+  });
+
+  it("createLocalSession accepts explicit id and worktree", () => {
+    const id = useSessionManager
+      .getState()
+      .createLocalSession("bound", {
+        id: "daemon-1",
+        daemonId: "daemon-1",
+        worktree: { path: ".worktrees/a", branch: "a" },
+      });
+    const e = useSessionManager.getState().entries[id];
+    expect(id).toBe("daemon-1");
+    expect(e.daemonId).toBe("daemon-1");
+    expect(e.worktree?.branch).toBe("a");
+  });
+
+  it("setWorktree updates and clears the binding", () => {
+    const id = useSessionManager.getState().createLocalSession("x");
+    useSessionManager.getState().setWorktree(id, { path: ".worktrees/a", branch: "a" });
+    expect(useSessionManager.getState().entries[id].worktree?.branch).toBe("a");
+    useSessionManager.getState().setWorktree(id, null);
+    expect(useSessionManager.getState().entries[id].worktree).toBeUndefined();
+  });
+});
