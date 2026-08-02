@@ -83,8 +83,8 @@ PUT /api/v1/sessions/:id/archive
   404 → session 不存在
 ```
 
-- 归档标志持久化到 `Session.metadata["archived"] = true/false`。
-- `SessionInfoResponse`（`GET /sessions` 列表项）增加 `archived: bool` 字段，由客户端过滤——**daemon 不做列表过滤**（`/sessions` 始终返回全部，浏览器默认视图隐藏归档项）。
+- 归档使用存储层已有的 `SessionStatus::Archived`（`SessionManager.archive()/unarchive()`），不引入 metadata 标志——单一事实来源。
+- `SessionInfoResponse`（`GET /sessions` 列表项）的 `status` 字段透出归档状态，由客户端过滤——**daemon 不做列表过滤**（`/sessions` 始终返回全部，浏览器默认视图隐藏归档项）。
 - 归档不影响绑定关系和消息内容，纯粹是列表可见性标志。
 
 ### 5. execute_tool 注入
@@ -128,7 +128,7 @@ Sessions 区内按工作区分组渲染：
 
 - **删会话**（卡片 hover 删除按钮）：确认后 `removeSession` + daemon `DELETE /sessions/:daemonId`。不问 worktree 的事——它只是删一条对话记录。
 - **归档会话**（卡片 hover 归档按钮 / `/sessions` 浏览器行内归档按钮）：daemon `PUT /sessions/:id/archive { archived: true }`；若归档的是当前打开的本地会话，同时关闭本地 entry。归档会话从 Sessions 列表和 `/sessions` 浏览器默认视图消失。
-- **取消归档**：`/sessions` 浏览器底部有 "Archived (N)" 折叠区（默认折叠，复用 RailSection 折叠交互），列出归档会话，行内提供 Unarchive 按钮（`archived: false`）→ 会话回到默认视图。
+- **取消归档**：`/sessions` 浏览器底部有 "Archived (N)" 折叠区（默认折叠，复用 RailSection 折叠交互），列出归档会话，行内提供 Unarchive 按钮（`archived: false` → `SessionStatus::Active`）→ 会话回到默认视图。
 - **删 worktree**（Worktrees 面板现有 Remove）：先反查名下会话——
   - 无绑定会话：现状确认后直接删
   - 有绑定会话：确认框列出 N 个会话，文案"这些会话将解绑并回到主检出"→ 确认后逐一对存活会话调 `DELETE /sessions/:id/worktree` 解绑（本地 entry 同步清 worktree 标记），再删 worktree
