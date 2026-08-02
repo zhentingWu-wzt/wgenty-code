@@ -1689,3 +1689,58 @@ body {
 .session-action-danger:hover {
   color: var(--bad);
 }
+
+/* Project tree (project → task/worktree → session) */
+.project-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.tree-node-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.tree-node-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: none;
+  border: none;
+  color: var(--fg);
+  cursor: pointer;
+  padding: 0.2rem 0;
+  font-size: 0.82rem;
+  min-width: 0;
+  flex: 1;
+  text-align: left;
+}
+.tree-node-title {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tree-node-subtitle {
+  color: var(--fg-mute);
+  font-size: 0.68rem;
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tree-branch-icon {
+  color: var(--accent);
+  font-size: 0.8rem;
+}
+.tree-node-actions {
+  display: flex;
+  gap: 0.2rem;
+  flex-shrink: 0;
+}
+.tree-children {
+  margin-left: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
