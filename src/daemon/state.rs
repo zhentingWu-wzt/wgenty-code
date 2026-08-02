@@ -81,6 +81,9 @@ pub struct DaemonState {
     viewer_tokens: Arc<RwLock<HashMap<String, crate::agent::capability::ViewerId>>>,
     /// Root execution context per session, created via `ensure_root`.
     root_contexts: Arc<RwLock<HashMap<String, crate::agent::AgentExecutionContext>>>,
+    /// Session → bound worktree path (project v1: project → worktree → session,
+    /// N:1). Sessions without an entry run in the main working_dir.
+    pub session_workdirs: SessionWorkdirs,
     /// Secret used to digest viewer bearer tokens.
     daemon_viewer_secret: [u8; 32],
     /// Shared subagent policy-Ask bridge (TUI/daemon drains pending approvals).
@@ -426,6 +429,7 @@ impl DaemonState {
             capability_service,
             viewer_tokens: Arc::new(RwLock::new(HashMap::new())),
             root_contexts: Arc::new(RwLock::new(HashMap::new())),
+            session_workdirs: Arc::new(std::sync::RwLock::new(HashMap::new())),
             daemon_viewer_secret,
             permission_bridge,
             root_mode,
@@ -565,4 +569,94 @@ fn hex_string(bytes: &[u8]) -> String {
         s.push_str(&format!("{:02x}", b));
     }
     s
+}
+
+// ── Session → worktree binding (project v1) ──────────────────────────────────
+
+/// Shared map type for session → bound worktree path. std RwLock: critical
+/// sections are a single HashMap op, never held across .await.
+pub type SessionWorkdirs = Arc<std::sync::RwLock<HashMap<String, PathBuf>>>;
+
+/// Bind `session_id` to a worktree path (multiple sessions may share one path).
+pub(crate) fn bind_in(map: &SessionWorkdirs, session_id: &str, path: PathBuf) {
+    map.write()
+        .expect("session_workdirs lock poisoned")
+        .insert(session_id.to_string(), path);
+}
+
+/// Remove a session's binding (the on-disk worktree is untouched).
+pub(crate) fn unbind_in(map: &SessionWorkdirs, session_id: &str) {
+    map.write()
+        .expect("session_workdirs lock poisoned")
+        .remove(session_id);
+}
+
+/// The session's bound worktree, or None (= main working_dir, current behavior).
+pub(crate) fn workdir_of(map: &SessionWorkdirs, session_id: &str) -> Option<PathBuf> {
+    map.read()
+        .expect("session_workdirs lock poisoned")
+        .get(session_id)
+        .cloned()
+}
+
+/// All sessions bound to `path` (reverse lookup, e.g. before worktree removal).
+pub(crate) fn sessions_of(map: &SessionWorkdirs, path: &std::path::Path) -> Vec<String> {
+    map.read()
+        .expect("session_workdirs lock poisoned")
+        .iter()
+        .filter(|(_, p)| p.as_path() == path)
+        .map(|(sid, _)| sid.clone())
+        .collect()
+}
+
+impl DaemonState {
+    /// Bind `session_id` to a worktree path.
+    pub fn bind_session_worktree(&self, session_id: &str, path: PathBuf) {
+        bind_in(&self.session_workdirs, session_id, path);
+    }
+
+    /// Remove a session's binding (session falls back to the main working_dir).
+    pub fn unbind_session_worktree(&self, session_id: &str) {
+        unbind_in(&self.session_workdirs, session_id);
+    }
+
+    /// The session's bound worktree, or None (= main working_dir).
+    pub fn session_workdir(&self, session_id: &str) -> Option<PathBuf> {
+        workdir_of(&self.session_workdirs, session_id)
+    }
+
+    /// All sessions bound to `path` (used before removing a worktree).
+    pub fn worktree_sessions(&self, path: &std::path::Path) -> Vec<String> {
+        sessions_of(&self.session_workdirs, path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_workdirs_bind_query_unbind() {
+        let map: SessionWorkdirs = Arc::new(std::sync::RwLock::new(HashMap::new()));
+        bind_in(&map, "s1", PathBuf::from("/repo/.worktrees/a"));
+        bind_in(&map, "s2", PathBuf::from("/repo/.worktrees/a"));
+        bind_in(&map, "s3", PathBuf::from("/repo/.worktrees/b"));
+
+        assert_eq!(
+            workdir_of(&map, "s1").unwrap(),
+            PathBuf::from("/repo/.worktrees/a")
+        );
+        assert!(workdir_of(&map, "nobody").is_none());
+
+        let mut sessions = sessions_of(&map, std::path::Path::new("/repo/.worktrees/a"));
+        sessions.sort();
+        assert_eq!(sessions, vec!["s1".to_string(), "s2".to_string()]);
+
+        unbind_in(&map, "s1");
+        assert!(workdir_of(&map, "s1").is_none());
+        assert_eq!(
+            sessions_of(&map, std::path::Path::new("/repo/.worktrees/a")),
+            vec!["s2".to_string()]
+        );
+    }
 }
