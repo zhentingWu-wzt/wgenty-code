@@ -31,7 +31,11 @@ const SAVED_INFO = {
   created_at: "2026-08-01",
   updated_at: "2026-08-01",
   message_count: SAVED_MESSAGES.length,
+  status: "Active",
+  worktree: null,
 };
+
+const ARCHIVED_INFO = { ...SAVED_INFO, id: "d2", name: "old chat", status: "Archived" };
 
 function stubSessionsFetch() {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -100,6 +104,76 @@ describe("SessionsBrowserModal", () => {
       const del = spy.mock.calls.find(([, init]) => init?.method === "DELETE");
       expect(del).toBeDefined();
       expect(String(del![0])).toBe("/api/v1/sessions/d1");
+    });
+  });
+});
+
+describe("SessionsBrowserModal archive view", () => {
+  beforeEach(() => {
+    useSessionManager.setState({
+      entries: {},
+      order: [],
+      activeId: null,
+      connection: "unknown",
+      modelName: null,
+    });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("hides archived sessions in the collapsed Archived section; unarchive restores", async () => {
+    const spy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/archive") && init?.method === "PUT") {
+        return new Response(JSON.stringify({ session_id: "d2", archived: false }), { status: 200 });
+      }
+      if (url === "/api/v1/sessions") {
+        return new Response(JSON.stringify([SAVED_INFO, ARCHIVED_INFO]), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", spy);
+    const user = userEvent.setup();
+    render(<SessionsBrowserModal client={client} onClose={() => {}} />);
+
+    // Default view: only the active session; archived one hidden.
+    expect(await screen.findByText("saved one")).toBeInTheDocument();
+    expect(screen.queryByText("old chat")).not.toBeInTheDocument();
+
+    // Expand the Archived section and unarchive it.
+    await user.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
+    await user.click(await screen.findByRole("button", { name: /unarchive old chat/i }));
+    await waitFor(() => {
+      const call = spy.mock.calls.find(
+        ([u, i]) => String(u).endsWith("/archive") && i?.method === "PUT",
+      );
+      expect(call).toBeDefined();
+      expect(JSON.parse(call![1]!.body as string)).toEqual({ archived: false });
+    });
+  });
+
+  it("archive button on a default row calls the API", async () => {
+    const spy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/archive") && init?.method === "PUT") {
+        return new Response(JSON.stringify({ session_id: "d1", archived: true }), { status: 200 });
+      }
+      if (url === "/api/v1/sessions") {
+        return new Response(JSON.stringify([SAVED_INFO]), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<SessionsBrowserModal client={client} onClose={() => {}} />);
+
+    await userEvent
+      .setup()
+      .click(await screen.findByRole("button", { name: /archive saved one/i }));
+    await waitFor(() => {
+      const call = spy.mock.calls.find(
+        ([u, i]) => String(u).endsWith("/archive") && i?.method === "PUT",
+      );
+      expect(call).toBeDefined();
+      expect(JSON.parse(call![1]!.body as string)).toEqual({ archived: true });
     });
   });
 });
