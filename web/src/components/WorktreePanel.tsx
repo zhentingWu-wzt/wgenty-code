@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { GitBranch, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { toast } from "sonner";
 import type { DaemonClient } from "../api/client";
 import type { WorktreeInfo } from "../api/types";
+import { RailSection } from "./RailSection";
 
 /** Git worktree list + create/remove. Data: GET/POST/DELETE /api/v1/worktrees. */
 export function WorktreePanel({ client }: { client: DaemonClient }) {
@@ -46,15 +47,14 @@ export function WorktreePanel({ client }: { client: DaemonClient }) {
   };
 
   return (
-    <section className="rail-panel">
-      <div className="session-list-head">
-        <span className="rail-section-title">
-          <GitBranch size={12} /> Worktrees
-        </span>
+    <RailSection
+      title="Worktrees"
+      actions={
         <button type="button" className="btn-xs" onClick={create}>
           <Plus size={12} /> New
         </button>
-      </div>
+      }
+    >
       {error && <div className="panel-error">{error}</div>}
       {items && items.length === 0 && <div className="panel-empty">No worktrees</div>}
       <ul className="wt-list">
@@ -70,6 +70,6 @@ export function WorktreePanel({ client }: { client: DaemonClient }) {
           </li>
         ))}
       </ul>
-    </section>
+    </RailSection>
   );
 }

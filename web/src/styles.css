@@ -768,6 +768,26 @@ body {
   padding: 0.3rem 0.2rem;
 }
 
+/* Collapsible rail sections (Sessions / Worktrees / Skills). */
+.rail-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.rail-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+  padding: 0.1rem 0;
+}
+.rail-section-toggle:hover .rail-section-title {
+  color: var(--fg);
+}
+
 /* Session list (open sessions + daemon-saved sessions) */
 .session-list-head {
   display: flex;
