@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SessionList } from "./SessionList";
@@ -112,5 +112,79 @@ describe("sessionMessagesToDisplay", () => {
     expect(execs).toHaveLength(2);
     expect(execs[0].response).toEqual({ success: true, content: "not json" });
     expect(execs[1].response.success).toBe(false);
+  });
+});
+
+describe("SessionList grouping and actions", () => {
+  beforeEach(() => {
+    useSessionManager.setState({
+      entries: {},
+      order: [],
+      activeId: null,
+      connection: "unknown",
+      modelName: null,
+    });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("groups sessions under Main checkout and worktree titles", () => {
+    const m = useSessionManager.getState();
+    m.createLocalSession("chat one");
+    m.createLocalSession("chat two");
+    m.createLocalSession("task a", {
+      id: "d1",
+      daemonId: "d1",
+      worktree: { path: ".worktrees/feat-x", branch: "feat-x" },
+    });
+    m.createLocalSession("task b", {
+      id: "d2",
+      daemonId: "d2",
+      worktree: { path: ".worktrees/feat-x", branch: "feat-x" },
+    });
+    render(<SessionList client={client} />);
+
+    expect(screen.getByText("Main checkout")).toBeInTheDocument();
+    expect(screen.getByText("⎇ feat-x")).toBeInTheDocument();
+    expect(screen.getByText("chat one")).toBeInTheDocument();
+    expect(screen.getByText("task a")).toBeInTheDocument();
+  });
+
+  it("archive button calls the API and closes the entry", async () => {
+    const spy = vi.fn().mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
+    vi.stubGlobal("fetch", spy);
+    const m = useSessionManager.getState();
+    m.createLocalSession("bound", {
+      id: "d1",
+      daemonId: "d1",
+      worktree: { path: ".worktrees/feat-x", branch: "feat-x" },
+    });
+    render(<SessionList client={client} />);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: /archive bound/i }));
+
+    expect(
+      spy.mock.calls.some(
+        ([u, i]) => String(u) === "/api/v1/sessions/d1/archive" && i?.method === "PUT",
+      ),
+    ).toBe(true);
+    expect(useSessionManager.getState().entries["d1"]).toBeUndefined();
+  });
+
+  it("delete button confirms, calls the API and removes the entry", async () => {
+    const spy = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", spy);
+    vi.stubGlobal("confirm", vi.fn().mockReturnValue(true));
+    const m = useSessionManager.getState();
+    m.createLocalSession("doomed", { id: "d9", daemonId: "d9" });
+    render(<SessionList client={client} />);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: /delete doomed/i }));
+
+    expect(
+      spy.mock.calls.some(
+        ([u, i]) => String(u) === "/api/v1/sessions/d9" && i?.method === "DELETE",
+      ),
+    ).toBe(true);
+    expect(useSessionManager.getState().entries["d9"]).toBeUndefined();
   });
 });

@@ -1639,3 +1639,53 @@ body {
   padding: 0.05rem 0.35rem;
   border-radius: 3px;
 }
+
+/* Session groups (workspace) + per-card hover actions */
+.session-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-bottom: 0.5rem;
+}
+.session-group-title {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-mute);
+  padding: 0.15rem 0.2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.session-group-count {
+  background: var(--bg-elev2);
+  border-radius: 8px;
+  padding: 0 0.3rem;
+  font-size: 0.62rem;
+}
+.session-card-row {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.session-card-row .session-card {
+  flex: 1;
+  min-width: 0;
+}
+.session-card-actions {
+  display: none;
+  gap: 0.15rem;
+  flex-shrink: 0;
+}
+.session-card-row:hover .session-card-actions {
+  display: flex;
+}
+.session-action {
+  color: var(--fg-dim);
+}
+.session-action:hover {
+  color: var(--fg);
+}
+.session-action-danger:hover {
+  color: var(--bad);
+}
