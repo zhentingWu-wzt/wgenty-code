@@ -7,6 +7,10 @@
 //! Task 3 scope: [`RootToolPort`], the fully-owned [`ToolPort`] the daemon's
 //! root run loop executes tools through (policy → session rules → indefinite
 //! bridge escalation → guardian → registry).
+//!
+//! Task 4 scope: the [`RunRegistry`] (one active run per session) and the
+//! `POST /sessions/:id/run` / `POST /sessions/:id/cancel` endpoints that spawn
+//! and cancel server-side agent turns.
 
 use crate::agent::runtime::{EventSink, RuntimeEvent};
 use serde::Serialize;
@@ -45,8 +49,6 @@ pub type SessionEventHub = tokio::sync::broadcast::Sender<SessionEvent>;
 /// [`EventSink`] that translates runtime events into [`SessionEvent`]s and
 /// broadcasts them on a per-run hub. Connection noise (Connecting,
 /// PreparingTools, CompactionStarted, …) is intentionally dropped in v1.
-// Constructed by the run-loop spawner in a later task; allow dead_code until then.
-#[allow(dead_code)]
 pub struct DaemonEventSink {
     session_id: String,
     run_id: String,
@@ -54,7 +56,6 @@ pub struct DaemonEventSink {
     next_seq: Arc<AtomicU64>,
 }
 
-#[allow(dead_code)] // used once the run-loop spawner lands (later task)
 impl DaemonEventSink {
     pub fn new(session_id: String, run_id: String, hub: SessionEventHub) -> Self {
         Self {
@@ -177,8 +178,6 @@ fn decide_ask(rule_approved: bool, mode_auto: bool) -> AskDecision {
 /// The shared `session_rules` handle comes from `DaemonState::tool_executor`,
 /// so a rule approved here ("AlwaysAllow") is also visible to `/tools/execute`
 /// and subagent ports, and vice versa.
-// Constructed by the run-loop spawner in a later task; allow dead_code until then.
-#[allow(dead_code)]
 pub struct RootToolPort {
     registry: Arc<ToolRegistry>,
     policy: ToolPermissionPolicy,
@@ -191,7 +190,6 @@ pub struct RootToolPort {
     session_id: String,
 }
 
-#[allow(dead_code)] // used once the run-loop spawner lands (later task)
 impl RootToolPort {
     /// Build the port for a server-side root run. `workdir` is the session's
     /// bound worktree (`None` = main working dir); it is injected into every
@@ -325,7 +323,6 @@ impl RootToolPort {
     }
 }
 
-#[allow(dead_code)] // used once the run-loop spawner lands (later task)
 #[async_trait]
 impl ToolPort for RootToolPort {
     async fn execute(&self, req: ToolRequest) -> ToolResponse {
@@ -403,6 +400,320 @@ impl ToolPort for RootToolPort {
             .map(|t| ToolDefinition::new(t.name(), t.description(), t.input_schema()))
             .collect()
     }
+}
+
+// ── Run registry + run/cancel endpoints (Task 4) ─────────────────────────────
+
+use crate::agent::runtime::{
+    run_agent_loop, ApiLlmPort, LoopHooks, LoopTurnState, MutexHistoryStore, RunLoopArgs,
+    RuntimeConfig, StreamStyle,
+};
+use crate::api::{ApiClient, ChatMessage};
+use crate::context::memory_session::SessionMessage;
+use crate::prompts::PromptContext;
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    Json,
+};
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::time::Instant;
+use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
+
+/// One active server-side run for a session (v1: at most one per session).
+pub struct SessionRun {
+    pub run_id: String,
+    pub cancel: CancellationToken,
+    pub started_at: std::time::Instant,
+}
+
+/// Per-session claim registry enforcing one active run per session.
+///
+/// std RwLock: critical sections are single HashMap ops, never held across
+/// `.await` (same rationale as `SessionWorkdirs` in state.rs).
+#[derive(Clone, Default)]
+pub struct RunRegistry {
+    inner: Arc<std::sync::RwLock<HashMap<String, SessionRun>>>,
+}
+
+impl RunRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Claim the session for `run`. Err(409) when a run is already active.
+    pub fn claim(&self, session_id: &str, run: SessionRun) -> Result<(), (StatusCode, String)> {
+        let mut runs = self.inner.write().expect("session_runs lock poisoned");
+        if runs.contains_key(session_id) {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("session {session_id} already has an active run"),
+            ));
+        }
+        runs.insert(session_id.to_string(), run);
+        Ok(())
+    }
+
+    /// Release the claim — only when the caller still owns it (run_id match),
+    /// so a stale task can never release a newer run's claim.
+    pub fn finish(&self, session_id: &str, run_id: &str) {
+        let mut runs = self.inner.write().expect("session_runs lock poisoned");
+        if runs.get(session_id).is_some_and(|r| r.run_id == run_id) {
+            if let Some(run) = runs.remove(session_id) {
+                tracing::debug!(
+                    session_id,
+                    run_id,
+                    elapsed_ms = run.started_at.elapsed().as_millis(),
+                    "session run finished"
+                );
+            }
+        }
+    }
+
+    /// Signal cancellation. The claim itself is released by the run task's
+    /// `finish` after its final save, so the final save always wins over a
+    /// new run. Returns false when no run is active.
+    pub fn cancel(&self, session_id: &str) -> bool {
+        let runs = self.inner.read().expect("session_runs lock poisoned");
+        match runs.get(session_id) {
+            Some(run) => {
+                run.cancel.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether a run currently holds the session's claim.
+    pub fn is_active(&self, session_id: &str) -> bool {
+        self.inner
+            .read()
+            .expect("session_runs lock poisoned")
+            .contains_key(session_id)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RunRequest {
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunResponse {
+    pub run_id: String,
+    pub session_id: String,
+}
+
+/// POST /api/v1/sessions/:id/run — spawn a server-side agent turn.
+///
+/// 400 empty message / 404 unknown session / 409 run already active; on
+/// success 202 with the run id and the turn proceeds in a spawned task.
+pub(crate) async fn post_run(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+    Json(body): Json<RunRequest>,
+) -> Result<(StatusCode, Json<RunResponse>), (StatusCode, String)> {
+    if body.message.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "message must not be empty".to_string(),
+        ));
+    }
+    if state.session_manager.get(&id).await.is_none() {
+        return Err((StatusCode::NOT_FOUND, format!("no such session: {id}")));
+    }
+
+    let run_id = Uuid::new_v4().to_string();
+    let cancel = CancellationToken::new();
+    let run = SessionRun {
+        run_id: run_id.clone(),
+        cancel: cancel.clone(),
+        started_at: Instant::now(),
+    };
+    state.session_runs.claim(&id, run)?;
+
+    let task_state = Arc::clone(&state);
+    let task_session = id.clone();
+    let task_run = run_id.clone();
+    tokio::spawn(async move {
+        run_session_turn(&task_state, &task_session, &task_run, body.message, cancel).await;
+        // Always release the claim, on every exit path.
+        task_state.session_runs.finish(&task_session, &task_run);
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(RunResponse {
+            run_id,
+            session_id: id,
+        }),
+    ))
+}
+
+/// POST /api/v1/sessions/:id/cancel — cancel the session's active run.
+/// 204 when a run was signalled, 404 when no run is active.
+pub(crate) async fn post_cancel(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+) -> StatusCode {
+    if state.session_runs.cancel(&id) {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+/// Persist `history` as the session's full message list. Runs twice per turn:
+/// the start save makes the user message durable even if the run dies, the
+/// final save records the completed conversation. Tool-call pairing is
+/// sanitized so a cancelled/failed run never leaves a dangling assistant
+/// `tool_calls` without its `tool` results. Errors are logged, never fatal.
+async fn save_session_history(state: &DaemonState, session_id: &str, history: &[ChatMessage]) {
+    let mut history = history.to_vec();
+    crate::api::types::sanitize_tool_call_pairing(&mut history);
+    // ChatMessage -> SessionMessage via serde round-trip (the same conversion
+    // update_session relies on from the TUI's PUT body).
+    let messages: Vec<SessionMessage> = match serde_json::to_value(&history)
+        .and_then(serde_json::from_value)
+    {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, session_id, "run: history conversion failed, save skipped");
+            return;
+        }
+    };
+    let Some(mut session) = state.session_manager.get(session_id).await else {
+        tracing::warn!(session_id, "run: session vanished before save");
+        return;
+    };
+    session.messages = messages;
+    session.updated_at = chrono::Utc::now();
+    // Fully materialised write — clear any lazy index marker (mirrors update_session).
+    session.lazy_message_count = None;
+    if let Err(e) = state.session_manager.save(&session).await {
+        tracing::warn!(error = %e, session_id, "run: session save failed");
+    }
+}
+
+/// Body of one spawned run: seed history from the persisted session, run the
+/// shared agent loop against the run's cancel token, then persist the final
+/// history. Terminal events (TurnDone/TurnError) flow through the sink.
+async fn run_session_turn(
+    state: &DaemonState,
+    session_id: &str,
+    run_id: &str,
+    message: String,
+    cancel: CancellationToken,
+) {
+    let sink = DaemonEventSink::new(
+        session_id.to_string(),
+        run_id.to_string(),
+        state.session_event_hub.clone(),
+    );
+
+    // 1. Seed history from the persisted session (SessionMessage -> ChatMessage
+    // serde round-trip) and append the new user message.
+    let Some(session) = state.session_manager.get(session_id).await else {
+        sink.emit(RuntimeEvent::StreamError(format!(
+            "session vanished before run start: {session_id}"
+        )));
+        return;
+    };
+    let mut seed: Vec<ChatMessage> =
+        match serde_json::to_value(&session.messages).and_then(serde_json::from_value) {
+            Ok(h) => h,
+            Err(e) => {
+                sink.emit(RuntimeEvent::StreamError(format!(
+                    "history conversion failed: {e}"
+                )));
+                return;
+            }
+        };
+    seed.push(ChatMessage::user(&message));
+
+    // 2. Start save: the user message is durable even if the run dies.
+    save_session_history(state, session_id, &seed).await;
+
+    // 3. Live settings + LLM port (same wiring as the chat_stream handler).
+    let settings = state
+        .settings_handle
+        .read()
+        .expect("lock poisoned: settings")
+        .clone();
+    let client = ApiClient::with_clients(
+        settings.clone(),
+        state.http_client.clone(),
+        state.http_client_stream.clone(),
+    );
+    let llm = ApiLlmPort::new(client);
+
+    // 4. Root tool port bound to the session's worktree (None = main working_dir).
+    let workdir = state.session_workdir(session_id);
+    let tools = RootToolPort::new(state, session_id, workdir.clone());
+
+    // 5. System prompt — same PromptContext chain as the headless runtime,
+    // with cwd = the bound worktree or the daemon working dir.
+    let cwd = workdir.unwrap_or_else(|| settings.storage.working_dir.clone());
+    let prompt_ctx = PromptContext::default()
+        .with_cwd(cwd.to_string_lossy().to_string())
+        .with_sandbox("workspace-write")
+        .with_approval("on-request")
+        .with_codegraph_state(crate::mcp::codegraph::probe_install_state(&settings));
+    let system_messages =
+        crate::prompts::assemble_instructions(&settings, &prompt_ctx).system_messages;
+
+    // 6. Per-run loop config/state; a fresh turn id per run.
+    let config = RuntimeConfig {
+        max_rounds: settings.agent.max_rounds.unwrap_or(100),
+        plan_mode: false,
+        subagent_timeout_secs: settings.agent.subagent.timeout_secs,
+        context_window: crate::config::resolve_context_window(
+            &settings.models.main,
+            settings.models.context_window,
+        ),
+        max_tokens: settings.models.transport.max_tokens,
+        session_id: session_id.to_string(),
+        turn_id: Some(Uuid::new_v4().to_string()),
+        agent_generation: 0,
+        stream_max_retries: 2,
+    };
+    let store = MutexHistoryStore::new(Arc::new(Mutex::new(seed)));
+    let history_handle = store.handle();
+    let mut turn_state = LoopTurnState::default();
+
+    // 7. Run the shared loop against the cancel token (subagent pattern):
+    // cancellation drops the loop future; the final save below still runs.
+    let loop_future = run_agent_loop(RunLoopArgs {
+        llm: &llm,
+        tools: &tools,
+        events: &sink,
+        history: &store,
+        config: &config,
+        state: &mut turn_state,
+        stream_style: StreamStyle::default(),
+        hooks: LoopHooks::default(),
+        system_messages: &system_messages,
+    });
+    tokio::pin!(loop_future);
+    let cancelled = cancel.cancelled();
+    tokio::pin!(cancelled);
+    tokio::select! {
+        biased;
+        _ = &mut cancelled => {
+            sink.emit(RuntimeEvent::StreamError("run cancelled".to_string()));
+        }
+        result = &mut loop_future => {
+            if let Err(e) = result {
+                sink.emit(RuntimeEvent::StreamError(format!("run failed: {e}")));
+            }
+        }
+    }
+
+    // 8. Final save: the full (sanitized) history replaces the session messages.
+    let final_history = history_handle.lock().await.clone();
+    save_session_history(state, session_id, &final_history).await;
 }
 
 #[cfg(test)]
@@ -561,5 +872,51 @@ mod tests {
             approved_rules.iter().any(|r| r.starts_with("path:")),
             "approved rule must be recorded: {approved_rules:?}"
         );
+    }
+
+    // ── RunRegistry ──────────────────────────────────────────────────────
+
+    fn test_run(run_id: &str) -> SessionRun {
+        SessionRun {
+            run_id: run_id.to_string(),
+            cancel: CancellationToken::new(),
+            started_at: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn claim_rejects_second_run() {
+        let registry = RunRegistry::new();
+        assert!(registry.claim("s1", test_run("r1")).is_ok());
+        let (status, _) = registry.claim("s1", test_run("r2")).unwrap_err();
+        assert_eq!(status, StatusCode::CONFLICT);
+        // A different session is unaffected.
+        assert!(registry.claim("s2", test_run("r3")).is_ok());
+    }
+
+    #[test]
+    fn finish_releases_claim() {
+        let registry = RunRegistry::new();
+        registry.claim("s1", test_run("r1")).unwrap();
+        // A stale run_id must not release the current owner's claim.
+        registry.finish("s1", "other");
+        assert!(registry.is_active("s1"));
+        registry.finish("s1", "r1");
+        assert!(!registry.is_active("s1"));
+        assert!(registry.claim("s1", test_run("r2")).is_ok());
+    }
+
+    #[test]
+    fn cancel_signals_token_and_reports_activity() {
+        let registry = RunRegistry::new();
+        assert!(!registry.cancel("nobody"));
+        let run = test_run("r1");
+        let token = run.cancel.clone();
+        registry.claim("s1", run).unwrap();
+        assert!(registry.cancel("s1"));
+        assert!(token.is_cancelled());
+        // The claim itself stays until the run task calls finish (final save
+        // must complete before a new run can start).
+        assert!(registry.is_active("s1"));
     }
 }

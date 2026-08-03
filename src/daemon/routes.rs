@@ -5,6 +5,7 @@
 
 use crate::daemon::auth;
 use crate::daemon::handlers;
+use crate::daemon::run_loop;
 use crate::daemon::session_admin;
 use crate::daemon::skills_api;
 use crate::daemon::state::DaemonState;
@@ -131,6 +132,9 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
                 .put(handlers::update_session)
                 .delete(handlers::delete_session),
         )
+        // Session server-side runs (spawn / cancel an agent turn)
+        .route("/api/v1/sessions/:id/run", post(run_loop::post_run))
+        .route("/api/v1/sessions/:id/cancel", post(run_loop::post_cancel))
         // Session worktree binding + archive (project v1)
         .route(
             "/api/v1/sessions/:id/worktree",

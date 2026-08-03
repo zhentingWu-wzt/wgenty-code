@@ -920,7 +920,15 @@ pub async fn update_session(
     State(state): State<Arc<DaemonState>>,
     Path(id): Path<String>,
     Json(body): Json<UpdateSessionRequest>,
-) -> Result<Json<SessionResponse>, StatusCode> {
+) -> Result<Json<SessionResponse>, (StatusCode, Json<serde_json::Value>)> {
+    // Run lock: mutating a session mid-run would race the run's final save.
+    if state.session_runs.is_active(&id) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "run active"})),
+        ));
+    }
+
     // Upsert must preserve the path id. Session::new() mints a fresh UUID and
     // previously caused every SaveSession to write a new file (duplicate names
     // in the session panel) while the TUI continued using the original id.
@@ -928,7 +936,12 @@ pub async fn update_session(
         .session_manager
         .load(&id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+        })?
         .unwrap_or_else(|| crate::context::memory_session::Session::with_id(id.clone(), None));
 
     // Defense in depth: even if a future constructor changes, never let the
@@ -948,11 +961,12 @@ pub async fn update_session(
     // Fully materialised write — clear any lazy index marker.
     session.lazy_message_count = None;
 
-    state
-        .session_manager
-        .save(&session)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    state.session_manager.save(&session).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+    })?;
 
     Ok(Json(SessionResponse {
         worktree: crate::context::memory_session::worktree_of(&session).map(|w| WorktreeRef {
