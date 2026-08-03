@@ -132,9 +132,13 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
                 .put(handlers::update_session)
                 .delete(handlers::delete_session),
         )
-        // Session server-side runs (spawn / cancel an agent turn)
+        // Session server-side runs (spawn / cancel an agent turn, live SSE events)
         .route("/api/v1/sessions/:id/run", post(run_loop::post_run))
         .route("/api/v1/sessions/:id/cancel", post(run_loop::post_cancel))
+        .route(
+            "/api/v1/sessions/:id/events",
+            get(run_loop::get_session_events),
+        )
         // Session worktree binding + archive (project v1)
         .route(
             "/api/v1/sessions/:id/worktree",

@@ -11,6 +11,10 @@
 //! Task 4 scope: the [`RunRegistry`] (one active run per session) and the
 //! `POST /sessions/:id/run` / `POST /sessions/:id/cancel` endpoints that spawn
 //! and cancel server-side agent turns.
+//!
+//! Task 5 scope: the `GET /sessions/:id/events` SSE endpoint (live fan-out
+//! from the hub, filtered by session id) and the mid-run persistence bridge
+//! that turns [`RuntimeEvent::SaveSession`] into a spawned history save.
 
 use crate::agent::runtime::{EventSink, RuntimeEvent};
 use serde::Serialize;
@@ -54,6 +58,17 @@ pub struct DaemonEventSink {
     run_id: String,
     hub: SessionEventHub,
     next_seq: Arc<AtomicU64>,
+    /// Mid-run persistence bridge (Task 5); `None` until the run task wires
+    /// the live history handle in via [`DaemonEventSink::set_save_bridge`].
+    save_bridge: Option<SaveBridge>,
+}
+
+/// Handles the persistence side of [`RuntimeEvent::SaveSession`]: a snapshot
+/// of the live history plus the daemon state needed to persist it. `emit` is
+/// sync, so the save itself is always spawned, never run inline.
+struct SaveBridge {
+    state: Arc<DaemonState>,
+    history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
 }
 
 impl DaemonEventSink {
@@ -63,7 +78,18 @@ impl DaemonEventSink {
             run_id,
             hub,
             next_seq: Arc::new(AtomicU64::new(1)),
+            save_bridge: None,
         }
+    }
+
+    /// Attach the mid-run persistence bridge: subsequent `SaveSession` events
+    /// spawn a history snapshot save in addition to broadcasting `Save`.
+    fn set_save_bridge(
+        &mut self,
+        state: Arc<DaemonState>,
+        history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
+    ) {
+        self.save_bridge = Some(SaveBridge { state, history });
     }
 
     fn publish(&self, kind: SessionEventKind, data: serde_json::Value) {
@@ -125,6 +151,18 @@ impl EventSink for DaemonEventSink {
             }
             RuntimeEvent::SaveSession => {
                 self.publish(SessionEventKind::Save, serde_json::json!({}));
+                // Mid-run persistence bridge (Task 5): snapshot the live
+                // history and persist it in a spawned task — `emit` is sync
+                // and must never block the run loop on disk I/O.
+                if let Some(bridge) = &self.save_bridge {
+                    let state = Arc::clone(&bridge.state);
+                    let history = Arc::clone(&bridge.history);
+                    let session_id = self.session_id.clone();
+                    tokio::spawn(async move {
+                        let snapshot = history.lock().await.clone();
+                        save_session_history(&state.session_manager, &session_id, &snapshot).await;
+                    });
+                }
             }
             // v1: connection noise and UI-only signals are not broadcast.
             _ => {}
@@ -410,16 +448,21 @@ use crate::agent::runtime::{
 };
 use crate::api::{ApiClient, ChatMessage};
 use crate::context::memory_session::SessionMessage;
+use crate::context::MemorySessionManager;
 use crate::prompts::PromptContext;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
+    response::sse::{Event, KeepAlive, Sse},
     Json,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::time::Instant;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
+use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::Stream;
 use tokio_util::sync::CancellationToken;
 
 /// One active server-side run for a session (v1: at most one per session).
@@ -587,12 +630,66 @@ pub(crate) async fn post_cancel(
     }
 }
 
-/// Persist `history` as the session's full message list. Runs twice per turn:
-/// the start save makes the user message durable even if the run dies, the
-/// final save records the completed conversation. Tool-call pairing is
+/// GET /api/v1/sessions/:id/events — SSE stream of the session's live
+/// [`SessionEvent`]s, filtered from the single global hub by session id.
+///
+/// Live-only (v1: no cold replay) — events published before the client
+/// connected are not resent; the persisted history (`GET /sessions/:id`)
+/// is the catch-up path. A slow subscriber observes `Lagged` (drop-oldest).
+/// 404 for an unknown session. Keep-alive comment every 15s.
+pub(crate) async fn get_session_events(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
+    if state.session_manager.get(&id).await.is_none() {
+        return Err((StatusCode::NOT_FOUND, format!("no such session: {id}")));
+    }
+
+    let (tx, rx) = mpsc::unbounded_channel::<Result<Event, Infallible>>();
+    // Subscribe before responding so no event is missed between connect and
+    // stream start.
+    let mut live = state.session_event_hub.subscribe();
+
+    tokio::spawn(async move {
+        loop {
+            match live.recv().await {
+                Ok(ev) => {
+                    if ev.session_id != id {
+                        continue;
+                    }
+                    let data = serde_json::to_string(&ev).unwrap_or_default();
+                    if tx.send(Ok(Event::default().data(data))).is_err() {
+                        return; // client disconnected
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(
+                        target: "wgenty::daemon",
+                        lagged = n,
+                        "session events SSE subscriber lagged; oldest events dropped for this subscriber"
+                    );
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
+    Ok(Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(KeepAlive::default()))
+}
+
+/// Persist `history` as the session's full message list. Runs at turn start
+/// and end, and mid-run whenever the loop emits `SaveSession` (via the sink's
+/// save bridge): the start save makes the user message durable even if the
+/// run dies, the mid-run saves checkpoint compaction/tool-round progress, and
+/// the final save records the completed conversation. Tool-call pairing is
 /// sanitized so a cancelled/failed run never leaves a dangling assistant
 /// `tool_calls` without its `tool` results. Errors are logged, never fatal.
-async fn save_session_history(state: &DaemonState, session_id: &str, history: &[ChatMessage]) {
+async fn save_session_history(
+    sessions: &MemorySessionManager,
+    session_id: &str,
+    history: &[ChatMessage],
+) {
     let mut history = history.to_vec();
     crate::api::types::sanitize_tool_call_pairing(&mut history);
     // ChatMessage -> SessionMessage via serde round-trip (the same conversion
@@ -606,7 +703,7 @@ async fn save_session_history(state: &DaemonState, session_id: &str, history: &[
             return;
         }
     };
-    let Some(mut session) = state.session_manager.get(session_id).await else {
+    let Some(mut session) = sessions.get(session_id).await else {
         tracing::warn!(session_id, "run: session vanished before save");
         return;
     };
@@ -614,7 +711,7 @@ async fn save_session_history(state: &DaemonState, session_id: &str, history: &[
     session.updated_at = chrono::Utc::now();
     // Fully materialised write — clear any lazy index marker (mirrors update_session).
     session.lazy_message_count = None;
-    if let Err(e) = state.session_manager.save(&session).await {
+    if let Err(e) = sessions.save(&session).await {
         tracing::warn!(error = %e, session_id, "run: session save failed");
     }
 }
@@ -623,13 +720,13 @@ async fn save_session_history(state: &DaemonState, session_id: &str, history: &[
 /// shared agent loop against the run's cancel token, then persist the final
 /// history. Terminal events (TurnDone/TurnError) flow through the sink.
 async fn run_session_turn(
-    state: &DaemonState,
+    state: &Arc<DaemonState>,
     session_id: &str,
     run_id: &str,
     message: String,
     cancel: CancellationToken,
 ) {
-    let sink = DaemonEventSink::new(
+    let mut sink = DaemonEventSink::new(
         session_id.to_string(),
         run_id.to_string(),
         state.session_event_hub.clone(),
@@ -656,7 +753,7 @@ async fn run_session_turn(
     seed.push(ChatMessage::user(&message));
 
     // 2. Start save: the user message is durable even if the run dies.
-    save_session_history(state, session_id, &seed).await;
+    save_session_history(&state.session_manager, session_id, &seed).await;
 
     // 3. Live settings + LLM port (same wiring as the chat_stream handler).
     let settings = state
@@ -703,6 +800,9 @@ async fn run_session_turn(
     };
     let store = MutexHistoryStore::new(Arc::new(Mutex::new(seed)));
     let history_handle = store.handle();
+    // Mid-run persistence bridge (Task 5): from here on, every SaveSession
+    // event the loop emits also triggers a spawned snapshot save.
+    sink.set_save_bridge(Arc::clone(state), Arc::clone(&history_handle));
     let mut turn_state = LoopTurnState::default();
 
     // 7. Run the shared loop against the cancel token (subagent pattern):
@@ -735,7 +835,7 @@ async fn run_session_turn(
 
     // 8. Final save: the full (sanitized) history replaces the session messages.
     let final_history = history_handle.lock().await.clone();
-    save_session_history(state, session_id, &final_history).await;
+    save_session_history(&state.session_manager, session_id, &final_history).await;
 }
 
 #[cfg(test)]
@@ -964,5 +1064,95 @@ mod tests {
         // The guard released the claim during unwinding: no 409 leak.
         assert!(!registry.is_active("s1"));
         assert!(registry.claim("s1", test_run("r2")).is_ok());
+    }
+
+    // ── Persistence bridge (Task 5) ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn save_session_history_preserves_tool_call_pairing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sessions = MemorySessionManager::with_project_root(temp.path().to_path_buf());
+        let session = sessions.create(Some("pairing")).await.expect("create");
+
+        // History shaped like a completed tool round: assistant tool_calls
+        // followed by the matching tool result.
+        let tool_call = crate::api::ToolCall {
+            id: "call_1".into(),
+            r#type: "function".into(),
+            function: crate::api::ToolCallFunction {
+                name: "file_write".into(),
+                arguments: r#"{"path":"a.txt","content":"x"}"#.into(),
+            },
+        };
+        let history = vec![
+            ChatMessage::user("write a.txt"),
+            ChatMessage::assistant_with_tools(vec![tool_call]),
+            ChatMessage::tool("call_1", r#"{"success":true}"#),
+            ChatMessage::assistant("done"),
+        ];
+        save_session_history(&sessions, &session.id, &history).await;
+
+        let persisted = sessions.get(&session.id).await.expect("session persists");
+        assert_eq!(persisted.messages.len(), 4);
+        let calls = persisted.messages[1]
+            .tool_calls
+            .as_ref()
+            .expect("assistant tool_calls persisted");
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].function.name, "file_write");
+        assert_eq!(persisted.messages[2].role, "tool");
+        assert_eq!(
+            persisted.messages[2].tool_call_id.as_deref(),
+            Some("call_1")
+        );
+
+        // Reload from disk through a fresh manager: the pairing must survive
+        // the JSON round-trip, not just the in-memory index.
+        let reloaded = MemorySessionManager::with_project_root(temp.path().to_path_buf());
+        let disk = reloaded
+            .load(&session.id)
+            .await
+            .expect("load")
+            .expect("session file on disk");
+        assert_eq!(
+            disk.messages[1]
+                .tool_calls
+                .as_ref()
+                .expect("tool_calls on disk")[0]
+                .id,
+            "call_1"
+        );
+        assert_eq!(disk.messages[2].tool_call_id.as_deref(), Some("call_1"));
+    }
+
+    #[tokio::test]
+    async fn save_session_history_repairs_dangling_tool_calls() {
+        // A cancelled run can snapshot a history whose assistant tool_calls
+        // have no results yet; the save must inject interrupted results so
+        // the restored history stays API-compliant.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sessions = MemorySessionManager::with_project_root(temp.path().to_path_buf());
+        let session = sessions.create(Some("repair")).await.expect("create");
+
+        let history = vec![
+            ChatMessage::user("hi"),
+            ChatMessage::assistant_with_tools(vec![crate::api::ToolCall {
+                id: "call_orphan".into(),
+                r#type: "function".into(),
+                function: crate::api::ToolCallFunction {
+                    name: "file_read".into(),
+                    arguments: r#"{"path":"a.txt"}"#.into(),
+                },
+            }]),
+        ];
+        save_session_history(&sessions, &session.id, &history).await;
+
+        let persisted = sessions.get(&session.id).await.expect("session persists");
+        assert_eq!(persisted.messages.len(), 3, "synthetic tool result added");
+        assert_eq!(persisted.messages[2].role, "tool");
+        assert_eq!(
+            persisted.messages[2].tool_call_id.as_deref(),
+            Some("call_orphan")
+        );
     }
 }
