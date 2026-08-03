@@ -11,6 +11,7 @@ pub mod auth;
 pub mod handlers;
 pub mod models;
 pub mod routes;
+pub(crate) mod run_loop;
 pub(crate) mod session_admin;
 pub(crate) mod skills_api;
 pub mod state;

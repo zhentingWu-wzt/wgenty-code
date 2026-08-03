@@ -98,6 +98,9 @@ pub struct DaemonState {
     /// the SSE trace endpoint for cold-start replay. `None` when the store
     /// failed to open at startup (SSE then streams live-only). See design D5.
     pub transcript_store: Option<Arc<crate::transcript::SubagentTranscriptStore>>,
+    /// Broadcast hub for daemon-run session events (`SessionEvent` envelope).
+    /// One hub per daemon; events carry session_id/run_id for filtering.
+    pub session_event_hub: crate::daemon::run_loop::SessionEventHub,
 }
 
 impl DaemonState {
@@ -435,6 +438,7 @@ impl DaemonState {
             root_mode,
             effective_mode,
             transcript_store: sse_transcript_store,
+            session_event_hub: tokio::sync::broadcast::channel(1024).0,
             http_client,
             http_client_stream,
         }
