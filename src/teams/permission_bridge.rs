@@ -88,14 +88,47 @@ impl PermissionBridge {
             .await
     }
 
+    /// Register a pending approval (fail closed on timeout, deny, or drop).
+    ///
+    /// Returns `true` if approved, `false` on deny or timeout (fail closed).
     pub async fn request_with_timeout(
         &self,
         approval: StructuredApproval,
         timeout: Duration,
     ) -> bool {
+        let (request_id, approval_for_events, rx) = self.enqueue(approval).await;
+        let result = tokio::time::timeout(timeout, rx).await;
+        let approved = match result {
+            Ok(Ok(approved)) => approved,
+            Ok(Err(_)) => false, // sender dropped
+            Err(_) => false,     // timeout → deny
+        };
+        self.finish(&request_id, &approval_for_events, approved)
+            .await
+    }
+
+    /// Register a pending approval and wait with no deadline.
+    ///
+    /// Used by root server loops where the human decides when to answer.
+    /// Returns `false` if the sender is dropped without resolving (fail closed).
+    pub async fn request_indefinite(&self, approval: StructuredApproval) -> bool {
+        let (request_id, approval_for_events, rx) = self.enqueue(approval).await;
+        let approved = rx.await.unwrap_or(false); // sender dropped → deny
+        self.finish(&request_id, &approval_for_events, approved)
+            .await
+    }
+
+    /// Shared body: insert the waiter into `inner` and publish the pending
+    /// trace event. Returns the request id, an approval copy for the resolved
+    /// trace, and the oneshot receiver.
+    ///
+    /// The approval copy is needed because `resolve()` removes the entry
+    /// itself, so the waiter can't read the approval back after wake-up.
+    async fn enqueue(
+        &self,
+        approval: StructuredApproval,
+    ) -> (String, StructuredApproval, oneshot::Receiver<bool>) {
         let request_id = approval.request_id.clone();
-        // Keep a copy for trace events: `resolve()` removes the entry itself,
-        // so this waiter can't read the approval back after wake-up.
         let approval_for_events = approval.clone();
         let (tx, rx) = oneshot::channel();
         {
@@ -114,24 +147,23 @@ impl PermissionBridge {
         );
         let _ = crate::teams::trace_sink::trace_hub().send(pending_ev);
 
-        let result = tokio::time::timeout(timeout, rx).await;
-        // Ensure waiter is cleaned up on timeout or drop. `resolve()` may have
-        // already removed it — that's fine, remove is a no-op on a missing key.
-        self.inner.lock().await.remove(&request_id);
+        (request_id, approval_for_events, rx)
+    }
 
-        let approved = match result {
-            Ok(Ok(approved)) => approved,
-            Ok(Err(_)) => false, // sender dropped
-            Err(_) => false,     // timeout → deny
-        };
+    /// Shared cleanup: remove the entry and publish the resolved trace event
+    /// (approved / denied / timed out) so the UI can dismiss a prompt answered
+    /// elsewhere or expired. `resolve()` may have already removed the entry —
+    /// remove is a no-op on a missing key.
+    async fn finish(
+        &self,
+        request_id: &str,
+        approval: &StructuredApproval,
+        approved: bool,
+    ) -> bool {
+        self.inner.lock().await.remove(request_id);
 
-        // Publish resolution (approved / denied / timed out) so the UI can
-        // dismiss a prompt answered elsewhere or expired.
-        let resolved_ev = crate::teams::trace_sink::TraceEvent::permission(
-            &approval_for_events,
-            &approval_for_events.from,
-            true,
-        );
+        let resolved_ev =
+            crate::teams::trace_sink::TraceEvent::permission(approval, &approval.from, true);
         let _ = crate::teams::trace_sink::trace_hub().send(resolved_ev);
 
         approved
@@ -150,9 +182,9 @@ impl PermissionBridge {
     /// Resolve a pending request.
     ///
     /// Removes the entry and signals its oneshot. The resolved trace event is
-    /// published by the waiter in `request_with_timeout` (which holds an
-    /// approval copy for exactly this purpose), so resolution emits exactly
-    /// one event regardless of path (explicit resolve, timeout, or drop).
+    /// published by the waiter in `finish` (which holds an approval copy for
+    /// exactly this purpose), so resolution emits exactly one event regardless
+    /// of path (explicit resolve, timeout, or drop).
     pub async fn resolve(&self, request_id: &str, approved: bool) -> bool {
         let entry = self.inner.lock().await.remove(request_id);
         match entry {
@@ -207,6 +239,26 @@ mod tests {
         let approved = bridge.request(sample("r2")).await;
         assert!(!approved);
         assert!(bridge.pending().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn indefinite_waits_until_resolved() {
+        let bridge = Arc::new(PermissionBridge::with_timeout_secs(1)); // timeout 与此路径无关
+        let approval = StructuredApproval::policy_ask(
+            "r1".to_string(),
+            "sess".to_string(),
+            "file_edit".to_string(),
+            "reason".to_string(),
+            "path:/x".to_string(),
+        );
+        let other = Arc::clone(&bridge);
+        let waiter = tokio::spawn(async move { other.request_indefinite(approval).await });
+        // 等 pending 注册后 resolve；不应在 1s 默认超时时返回
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(!waiter.is_finished()); // 超过了 default_timeout 仍在挂起
+        let pending = bridge.pending().await;
+        assert!(bridge.resolve(&pending[0].request_id, true).await);
+        assert!(waiter.await.expect("join"));
     }
 
     #[tokio::test]
