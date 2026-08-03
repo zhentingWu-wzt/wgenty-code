@@ -495,6 +495,24 @@ impl RunRegistry {
     }
 }
 
+/// Releases the session's run claim on drop. Instantiated at the top of the
+/// spawned run task so EVERY exit path — normal return, error, cancel, and
+/// panic/unwind — releases the claim; without it a panicking turn would leak
+/// the claim (409 on every future run/update until daemon restart). Drop
+/// delegates to [`RunRegistry::finish`], so the run_id ownership check still
+/// applies (a stale guard can never release a newer run's claim).
+struct RunClaimGuard {
+    registry: RunRegistry,
+    session_id: String,
+    run_id: String,
+}
+
+impl Drop for RunClaimGuard {
+    fn drop(&mut self) {
+        self.registry.finish(&self.session_id, &self.run_id);
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RunRequest {
     pub message: String,
@@ -538,9 +556,13 @@ pub(crate) async fn post_run(
     let task_session = id.clone();
     let task_run = run_id.clone();
     tokio::spawn(async move {
+        // Drop guard releases the claim on every exit path, including panic.
+        let _claim = RunClaimGuard {
+            registry: task_state.session_runs.clone(),
+            session_id: task_session.clone(),
+            run_id: task_run.clone(),
+        };
         run_session_turn(&task_state, &task_session, &task_run, body.message, cancel).await;
-        // Always release the claim, on every exit path.
-        task_state.session_runs.finish(&task_session, &task_run);
     });
 
     Ok((
@@ -918,5 +940,29 @@ mod tests {
         // The claim itself stays until the run task calls finish (final save
         // must complete before a new run can start).
         assert!(registry.is_active("s1"));
+    }
+
+    #[tokio::test]
+    async fn panic_releases_claim_via_drop_guard() {
+        let registry = RunRegistry::new();
+        registry.claim("s1", test_run("r1")).unwrap();
+
+        // Simulate a run task that panics mid-turn (e.g. a poisoned-lock
+        // expect in the turn body).
+        let guard_registry = registry.clone();
+        let handle = tokio::spawn(async move {
+            let _claim = RunClaimGuard {
+                registry: guard_registry,
+                session_id: "s1".to_string(),
+                run_id: "r1".to_string(),
+            };
+            panic!("simulated turn panic");
+        });
+        let err = handle.await.expect_err("task must panic");
+        assert!(err.is_panic());
+
+        // The guard released the claim during unwinding: no 409 leak.
+        assert!(!registry.is_active("s1"));
+        assert!(registry.claim("s1", test_run("r2")).is_ok());
     }
 }
