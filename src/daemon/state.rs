@@ -101,6 +101,9 @@ pub struct DaemonState {
     /// Broadcast hub for daemon-run session events (`SessionEvent` envelope).
     /// One hub per daemon; events carry session_id/run_id for filtering.
     pub session_event_hub: crate::daemon::run_loop::SessionEventHub,
+    /// One active server-side run per session (claim registry). Enforces the
+    /// 409 on `POST /sessions/:id/run` and the update_session run lock.
+    pub session_runs: crate::daemon::run_loop::RunRegistry,
 }
 
 impl DaemonState {
@@ -439,6 +442,7 @@ impl DaemonState {
             effective_mode,
             transcript_store: sse_transcript_store,
             session_event_hub: tokio::sync::broadcast::channel(1024).0,
+            session_runs: crate::daemon::run_loop::RunRegistry::new(),
             http_client,
             http_client_stream,
         }
