@@ -66,9 +66,15 @@ pub struct DaemonEventSink {
 /// Handles the persistence side of [`RuntimeEvent::SaveSession`]: a snapshot
 /// of the live history plus the daemon state needed to persist it. `emit` is
 /// sync, so the save itself is always spawned, never run inline.
+///
+/// `save_gen` / `save_lock` implement the stale-overwrite guard: every save
+/// (mid-run or turn-end) claims a generation and re-checks it under the write
+/// lock, so a task holding an older snapshot can never overwrite a newer one.
 struct SaveBridge {
     state: Arc<DaemonState>,
     history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
+    save_gen: Arc<AtomicU64>,
+    save_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl DaemonEventSink {
@@ -84,12 +90,21 @@ impl DaemonEventSink {
 
     /// Attach the mid-run persistence bridge: subsequent `SaveSession` events
     /// spawn a history snapshot save in addition to broadcasting `Save`.
+    /// `save_gen` / `save_lock` are shared with the run task so the turn-end
+    /// final save participates in the same generation sequence.
     fn set_save_bridge(
         &mut self,
         state: Arc<DaemonState>,
         history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
+        save_gen: Arc<AtomicU64>,
+        save_lock: Arc<tokio::sync::Mutex<()>>,
     ) {
-        self.save_bridge = Some(SaveBridge { state, history });
+        self.save_bridge = Some(SaveBridge {
+            state,
+            history,
+            save_gen,
+            save_lock,
+        });
     }
 
     fn publish(&self, kind: SessionEventKind, data: serde_json::Value) {
@@ -153,14 +168,27 @@ impl EventSink for DaemonEventSink {
                 self.publish(SessionEventKind::Save, serde_json::json!({}));
                 // Mid-run persistence bridge (Task 5): snapshot the live
                 // history and persist it in a spawned task — `emit` is sync
-                // and must never block the run loop on disk I/O.
+                // and must never block the run loop on disk I/O. The
+                // generation is claimed here (event order) so a stale task
+                // self-skips when a newer save was claimed meanwhile.
                 if let Some(bridge) = &self.save_bridge {
+                    let gen = claim_save_generation(&bridge.save_gen);
                     let state = Arc::clone(&bridge.state);
                     let history = Arc::clone(&bridge.history);
+                    let save_gen = Arc::clone(&bridge.save_gen);
+                    let save_lock = Arc::clone(&bridge.save_lock);
                     let session_id = self.session_id.clone();
                     tokio::spawn(async move {
                         let snapshot = history.lock().await.clone();
-                        save_session_history(&state.session_manager, &session_id, &snapshot).await;
+                        guarded_save(
+                            &state.session_manager,
+                            &session_id,
+                            &snapshot,
+                            gen,
+                            &save_gen,
+                            &save_lock,
+                        )
+                        .await;
                     });
                 }
             }
@@ -678,6 +706,35 @@ pub(crate) async fn get_session_events(
     Ok(Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(KeepAlive::default()))
 }
 
+/// Claim the next save generation for a run. Monotonic per run; claimed at
+/// event/save time so generation order matches the order snapshots logically
+/// supersede each other.
+fn claim_save_generation(save_gen: &AtomicU64) -> u64 {
+    save_gen.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// Persist `snapshot` unless a newer save was claimed after `gen`. The
+/// re-check happens under the per-run write lock, closing the check-then-write
+/// race: the write that lands last always belongs to the latest claimed
+/// generation, so a stale mid-run snapshot can never overwrite a newer save
+/// (in particular the turn-end final save).
+async fn guarded_save(
+    sessions: &MemorySessionManager,
+    session_id: &str,
+    snapshot: &[ChatMessage],
+    gen: u64,
+    save_gen: &AtomicU64,
+    save_lock: &tokio::sync::Mutex<()>,
+) {
+    let _write = save_lock.lock().await;
+    if save_gen.load(Ordering::SeqCst) != gen {
+        // A newer snapshot was claimed meanwhile; its save carries newer
+        // state — writing ours would be a stale overwrite.
+        return;
+    }
+    save_session_history(sessions, session_id, snapshot).await;
+}
+
 /// Persist `history` as the session's full message list. Runs at turn start
 /// and end, and mid-run whenever the loop emits `SaveSession` (via the sink's
 /// save bridge): the start save makes the user message durable even if the
@@ -801,8 +858,18 @@ async fn run_session_turn(
     let store = MutexHistoryStore::new(Arc::new(Mutex::new(seed)));
     let history_handle = store.handle();
     // Mid-run persistence bridge (Task 5): from here on, every SaveSession
-    // event the loop emits also triggers a spawned snapshot save.
-    sink.set_save_bridge(Arc::clone(state), Arc::clone(&history_handle));
+    // event the loop emits also triggers a spawned snapshot save. The save
+    // generation counter + write lock are shared with the sink bridge so the
+    // turn-end final save participates in the same sequence (a stale in-flight
+    // snapshot save can never overwrite a newer one).
+    let save_gen = Arc::new(AtomicU64::new(0));
+    let save_lock = Arc::new(Mutex::new(()));
+    sink.set_save_bridge(
+        Arc::clone(state),
+        Arc::clone(&history_handle),
+        Arc::clone(&save_gen),
+        Arc::clone(&save_lock),
+    );
     let mut turn_state = LoopTurnState::default();
 
     // 7. Run the shared loop against the cancel token (subagent pattern):
@@ -834,8 +901,19 @@ async fn run_session_turn(
     }
 
     // 8. Final save: the full (sanitized) history replaces the session messages.
+    // Claims the newest generation, so any still-in-flight mid-run save
+    // self-skips instead of overwriting this final state with a stale snapshot.
     let final_history = history_handle.lock().await.clone();
-    save_session_history(&state.session_manager, session_id, &final_history).await;
+    let gen = claim_save_generation(&save_gen);
+    guarded_save(
+        &state.session_manager,
+        session_id,
+        &final_history,
+        gen,
+        &save_gen,
+        &save_lock,
+    )
+    .await;
 }
 
 #[cfg(test)]
@@ -1154,5 +1232,71 @@ mod tests {
             persisted.messages[2].tool_call_id.as_deref(),
             Some("call_orphan")
         );
+    }
+
+    #[tokio::test]
+    async fn guarded_save_skips_stale_snapshot() {
+        // Regression: a spawned save holding an older snapshot must never
+        // overwrite a newer save (e.g. the turn-end final save). Two
+        // generations are claimed stale-then-new; the stale task reaches the
+        // write first and must self-skip, leaving the newer snapshot to win.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sessions = MemorySessionManager::with_project_root(temp.path().to_path_buf());
+        let session = sessions.create(Some("gen")).await.expect("create");
+        let save_gen = Arc::new(AtomicU64::new(0));
+        let save_lock = Arc::new(Mutex::new(()));
+
+        let stale_gen = claim_save_generation(&save_gen);
+        let new_gen = claim_save_generation(&save_gen);
+
+        // Stale writer arrives first: self-skips because a newer generation
+        // was claimed meanwhile.
+        guarded_save(
+            &sessions,
+            &session.id,
+            &[ChatMessage::user("stale")],
+            stale_gen,
+            &save_gen,
+            &save_lock,
+        )
+        .await;
+        assert!(
+            sessions
+                .get(&session.id)
+                .await
+                .expect("session")
+                .messages
+                .is_empty(),
+            "stale snapshot must not be persisted"
+        );
+
+        // The newer snapshot is still the latest claim: it persists.
+        guarded_save(
+            &sessions,
+            &session.id,
+            &[ChatMessage::user("new")],
+            new_gen,
+            &save_gen,
+            &save_lock,
+        )
+        .await;
+        let persisted = sessions.get(&session.id).await.expect("session persists");
+        assert_eq!(persisted.messages.len(), 1);
+        assert_eq!(persisted.messages[0].content, "new");
+
+        // A late stale retry (older snapshot finishing after the newer write,
+        // the interleaving from the review finding) still cannot overwrite.
+        guarded_save(
+            &sessions,
+            &session.id,
+            &[ChatMessage::user("stale")],
+            stale_gen,
+            &save_gen,
+            &save_lock,
+        )
+        .await;
+        let persisted = sessions.get(&session.id).await.expect("session persists");
+        assert_eq!(persisted.messages.len(), 1);
+        assert_eq!(persisted.messages[0].content, "new");
     }
 }
