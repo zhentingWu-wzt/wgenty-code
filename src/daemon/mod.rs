@@ -9,6 +9,7 @@
 
 pub mod auth;
 pub mod handlers;
+pub mod interaction_bridge;
 pub mod models;
 pub mod routes;
 pub(crate) mod run_loop;

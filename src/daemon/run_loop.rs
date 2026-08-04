@@ -200,7 +200,7 @@ impl EventSink for DaemonEventSink {
 
 // ── RootToolPort (Task 3) ────────────────────────────────────────────────────
 
-use crate::agent::runtime::ports::{ToolPort, ToolRequest, ToolResponse};
+use crate::agent::runtime::ports::{InteractionPort, ToolPort, ToolRequest, ToolResponse};
 use crate::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
 use crate::api::ToolDefinition;
 use crate::daemon::state::DaemonState;
@@ -249,6 +249,7 @@ pub struct RootToolPort {
     policy: ToolPermissionPolicy,
     session_rules: Arc<RwLock<HashSet<String>>>,
     bridge: Arc<PermissionBridge>,
+    interaction_bridge: Arc<crate::daemon::interaction_bridge::InteractionBridge>,
     root_mode: Arc<std::sync::RwLock<crate::config::RootPermissionMode>>,
     effective_mode: Arc<std::sync::RwLock<crate::sandbox::EffectiveMode>>,
     agent: AgentExecutionContext,
@@ -266,6 +267,7 @@ impl RootToolPort {
             policy: state.tool_executor.policy().clone(),
             session_rules: state.tool_executor.session_rules_handle(),
             bridge: Arc::clone(&state.permission_bridge),
+            interaction_bridge: Arc::clone(&state.interaction_bridge),
             root_mode: Arc::clone(&state.root_mode),
             effective_mode: Arc::clone(&state.effective_mode),
             agent: AgentExecutionContext::root(SessionId::new(session_id)),
@@ -292,6 +294,9 @@ impl RootToolPort {
             policy: ToolPermissionPolicy::new(policy_root),
             session_rules,
             bridge,
+            interaction_bridge: Arc::new(
+                crate::daemon::interaction_bridge::InteractionBridge::new(),
+            ),
             root_mode: Arc::new(std::sync::RwLock::new(
                 crate::config::RootPermissionMode::Normal,
             )),
@@ -465,6 +470,19 @@ impl ToolPort for RootToolPort {
             .into_iter()
             .map(|t| ToolDefinition::new(t.name(), t.description(), t.input_schema()))
             .collect()
+    }
+}
+
+#[async_trait]
+impl InteractionPort for RootToolPort {
+    /// Route `ask_user_question` through the InteractionBridge: mint a payload
+    /// from the tool args, block until a frontend resolves it, return the
+    /// answer string. The loop dispatches here (not ToolPort::execute) for
+    /// interaction-class tools (loop_.rs dispatch_ask).
+    async fn ask_user_question(&self, args: &serde_json::Value) -> String {
+        let payload =
+            crate::daemon::interaction_bridge::QuestionPayload::from_args(args, &self.session_id);
+        self.interaction_bridge.request(payload).await
     }
 }
 
@@ -882,7 +900,10 @@ async fn run_session_turn(
         config: &config,
         state: &mut turn_state,
         stream_style: StreamStyle::default(),
-        hooks: LoopHooks::default(),
+        hooks: LoopHooks {
+            interaction: Some(&tools),
+            ..LoopHooks::default()
+        },
         system_messages: &system_messages,
     });
     tokio::pin!(loop_future);

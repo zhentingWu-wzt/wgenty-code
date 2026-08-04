@@ -454,6 +454,7 @@ fn trace_event_from_header(
         error,
         kind: crate::teams::trace_sink::TraceEventKind::Progress,
         permission: None,
+        question: None,
     }
 }
 
@@ -695,6 +696,27 @@ pub async fn resolve_subagent_permission(
         "success": ok,
         "resolved": ok,
     }))
+}
+
+/// `POST /api/v1/interactions/:id/resolve` — answer a pending ask_user_question
+/// prompt from the server-side loop. The answer string unblocks the waiting
+/// InteractionBridge waiter.
+pub async fn resolve_interaction(
+    State(state): State<Arc<DaemonState>>,
+    Path(request_id): Path<String>,
+    Json(body): Json<crate::daemon::models::ResolveInteractionRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let ok = state
+        .interaction_bridge
+        .resolve(&request_id, body.answer)
+        .await;
+    if ok {
+        Ok(Json(serde_json::json!({ "resolved": true })))
+    } else {
+        // No pending question with this id (already resolved / timed out /
+        // never existed). 404 so the client can stop retrying.
+        Err(StatusCode::NOT_FOUND)
+    }
 }
 
 /// POST /api/v1/permission-mode - update the root agent's runtime permission
@@ -2136,6 +2158,7 @@ mod tests {
             error: None,
             kind: crate::teams::trace_sink::TraceEventKind::Progress,
             permission: None,
+            question: None,
         };
 
         // session filter keeps matching, drops non-matching.

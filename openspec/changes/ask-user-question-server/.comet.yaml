@@ -21,7 +21,7 @@ created_at: 2026-08-04
 verified_at: null
 archive_confirmation: null
 archived: false
-bound_branch: feature/ask-user-question-server
+bound_branch: feature/web-ui-redesign
 direct_override: true
 handoff_context: openspec/changes/ask-user-question-server/.comet/handoff/design-context.json
 handoff_hash: 64f1ec892edfd176063bf74b8164d7d092420c499e351c232838e8ce0a8309de

@@ -88,6 +88,9 @@ pub struct DaemonState {
     daemon_viewer_secret: [u8; 32],
     /// Shared subagent policy-Ask bridge (TUI/daemon drains pending approvals).
     pub permission_bridge: Arc<PermissionBridge>,
+    /// Shared ask_user_question bridge (server-side loop blocks until a client
+    /// resolves the prompt via POST /interactions/:id/resolve).
+    pub interaction_bridge: Arc<crate::daemon::interaction_bridge::InteractionBridge>,
     /// Shared root agent permission mode (Yolo/AcceptEdits/Normal).
     /// Updated by the TUI at runtime; subagents snapshot at spawn time.
     pub root_mode: Arc<std::sync::RwLock<RootPermissionMode>>,
@@ -168,6 +171,8 @@ impl DaemonState {
 
         let approval_timeout = app_state.settings.agent.subagent.approval_timeout_secs;
         let permission_bridge = Arc::new(PermissionBridge::with_timeout_secs(approval_timeout));
+        let interaction_bridge =
+            Arc::new(crate::daemon::interaction_bridge::InteractionBridge::new());
         let shared_session_rules = Arc::new(RwLock::new(HashSet::<String>::new()));
         let root_mode = Arc::new(std::sync::RwLock::new(RootPermissionMode::Normal));
         let effective_mode = Arc::new(std::sync::RwLock::new(
@@ -438,6 +443,7 @@ impl DaemonState {
             session_workdirs: Arc::new(std::sync::RwLock::new(HashMap::new())),
             daemon_viewer_secret,
             permission_bridge,
+            interaction_bridge,
             root_mode,
             effective_mode,
             transcript_store: sse_transcript_store,
