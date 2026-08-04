@@ -387,4 +387,15 @@ export class DaemonClient {
     }
     return { body: res.body };
   }
+
+  /** POST /interactions/:id/resolve — answer a pending ask_user_question. */
+  async resolveInteraction(requestId: string, answer: string): Promise<void> {
+    await jsonOrThrow(
+      await fetch(`${this.base}/interactions/${encodeURIComponent(requestId)}/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ answer }),
+      }),
+    );
+  }
 }

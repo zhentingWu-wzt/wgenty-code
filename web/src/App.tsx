@@ -10,6 +10,7 @@ import { SessionHeader } from "./components/SessionHeader";
 import { ChatView } from "./components/ChatView";
 import { Composer } from "./components/Composer";
 import { PermissionModal } from "./components/PermissionModal";
+import { QuestionModal } from "./components/QuestionModal";
 import { CommandModal } from "./components/CommandModal";
 import { SessionsBrowserModal } from "./components/SessionsBrowserModal";
 import { ModelPanel } from "./components/ModelPanel";
@@ -137,6 +138,7 @@ export function App() {
           </div>
         </div>
         <PermissionModal client={client} />
+        <QuestionModal client={client} />
         {openCommand?.name === "/model" && (
           <CommandModal title="Switch model" onClose={closeCommand}>
             <ModelPanel client={client} />

@@ -47,6 +47,14 @@ export function usePermissionTrace(client: DaemonClient | null): void {
         if (target.status === "awaiting_approval" && !target.store.getState().pendingPermission) {
           m.setStatus(target.id, target.store.getState().isRunning ? "running" : "idle");
         }
+      } else if (ev.kind === "question_pending" && ev.question) {
+        target.store.getState().pushQuestion(ev.question);
+        m.setStatus(target.id, "awaiting_approval");
+      } else if (ev.kind === "question_resolved") {
+        target.store.getState().clearQuestion();
+        if (target.status === "awaiting_approval") {
+          m.setStatus(target.id, target.store.getState().isRunning ? "running" : "idle");
+        }
       }
     };
 
