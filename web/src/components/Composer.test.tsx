@@ -10,10 +10,11 @@ function renderComposer(
   onSend: (t: string) => void,
   store: SessionStore = createSessionStore(),
   onCommand: (cmd: SlashCommand) => void = () => {},
+  onStop: () => void = () => {},
 ) {
   return render(
     <SessionStoreContext.Provider value={store}>
-      <Composer onSend={onSend} onCommand={onCommand} />
+      <Composer onSend={onSend} onCommand={onCommand} onStop={onStop} />
     </SessionStoreContext.Provider>,
   );
 }

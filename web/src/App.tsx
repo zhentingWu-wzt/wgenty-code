@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { DaemonClient } from "./api/client";
-import { runSessionTurn } from "./agent/sessionRunner";
+import { runSessionTurn, stopSessionTurn } from "./agent/sessionRunner";
 import { useSessionManager } from "./state/sessionManager";
 import { SessionStoreContext } from "./state/sessionContext";
 import { StatusBar } from "./components/StatusBar";
@@ -128,6 +128,9 @@ export function App() {
             <Composer
               onSend={(text) => {
                 if (activeId) void runSessionTurn(client, activeId, text);
+              }}
+              onStop={() => {
+                if (activeId) void stopSessionTurn(client, activeId);
               }}
               onCommand={setOpenCommand}
             />

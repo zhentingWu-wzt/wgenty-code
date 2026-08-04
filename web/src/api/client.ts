@@ -28,6 +28,7 @@ import type {
   MemoryItem,
   MemoryStatus,
   PruneResult,
+  RunResponse,
   SessionInfo,
   SessionResponse,
   SkillInfoDto,
@@ -353,5 +354,37 @@ export class DaemonClient {
         body: JSON.stringify({ archived }),
       }),
     );
+  }
+
+  // ── Server-side run (web as observer) ──────────────────────────────────────
+
+  /** POST /sessions/:id/run — daemon spawns the turn; returns immediately. */
+  async runSession(sessionId: string, message: string): Promise<RunResponse> {
+    return jsonOrThrow(
+      await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message }),
+      }),
+    );
+  }
+
+  /** POST /sessions/:id/cancel — cancel an active run. */
+  async cancelRun(sessionId: string): Promise<void> {
+    await jsonOrThrow(
+      await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/cancel`, {
+        method: "POST",
+      }),
+    );
+  }
+
+  /** GET /sessions/:id/events — SSE stream of SessionEvent from a server-side run. */
+  async sessionEvents(sessionId: string): Promise<{ body: ReadableStream<Uint8Array> }> {
+    const res = await fetch(`${this.base}/sessions/${encodeURIComponent(sessionId)}/events`);
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => "");
+      throw new DaemonError(text || `${res.status} ${res.statusText}`, res.status);
+    }
+    return { body: res.body };
   }
 }
