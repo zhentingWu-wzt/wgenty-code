@@ -463,3 +463,10 @@ pub struct PruneRequest {
     #[serde(default)]
     pub dry_run: bool,
 }
+
+/// `POST /api/v1/interactions/:id/resolve` — answer a pending ask_user_question.
+#[derive(Debug, Deserialize)]
+pub struct ResolveInteractionRequest {
+    /// The user's answer: a JSON string (selected option values or free text).
+    pub answer: String,
+}

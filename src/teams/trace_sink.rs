@@ -108,6 +108,11 @@ pub struct TraceEvent {
     /// without polling `/tools/pending-permissions`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<crate::teams::permission_bridge::StructuredApproval>,
+    /// Present only for question events (`kind` = question_pending /
+    /// question_resolved). Carries the ask_user_question payload so SSE
+    /// subscribers can render a question modal without polling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<crate::daemon::interaction_bridge::QuestionPayload>,
 }
 
 /// Broad class of a `TraceEvent`. Serialized as a lowercase string.
@@ -121,6 +126,10 @@ pub enum TraceEventKind {
     PermissionPending,
     /// A previously-pending policy-Ask has been resolved (approved/denied).
     PermissionResolved,
+    /// An ask_user_question prompt is awaiting a user answer.
+    QuestionPending,
+    /// A previously-pending question has been resolved.
+    QuestionResolved,
 }
 
 impl TraceEvent {
@@ -162,6 +171,7 @@ impl TraceEvent {
             error,
             kind: TraceEventKind::Progress,
             permission: None,
+            question: None,
         }
     }
 
@@ -198,6 +208,41 @@ impl TraceEvent {
                 TraceEventKind::PermissionPending
             },
             permission: Some(approval.clone()),
+            question: None,
+        }
+    }
+
+    /// Build a question-lifecycle event (ask_user_question pending/resolved).
+    pub fn question(
+        payload: &crate::daemon::interaction_bridge::QuestionPayload,
+        resolved: bool,
+    ) -> Self {
+        Self {
+            ts: chrono::Utc::now().timestamp_millis(),
+            session_id: payload.session_id.clone(),
+            node_id: format!("question:{}", payload.request_id),
+            parent_id: None,
+            label: payload.question.clone(),
+            status: if resolved {
+                "resolved".into()
+            } else {
+                "pending".into()
+            },
+            round: None,
+            current_tool: Some("ask_user_question".to_string()),
+            current_params: None,
+            elapsed_ms: 0,
+            progress_delta: None,
+            token_budget_k: None,
+            cumulative_tokens: 0,
+            error: None,
+            kind: if resolved {
+                TraceEventKind::QuestionResolved
+            } else {
+                TraceEventKind::QuestionPending
+            },
+            permission: None,
+            question: Some(payload.clone()),
         }
     }
 }
