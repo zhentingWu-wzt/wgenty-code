@@ -387,5 +387,32 @@ export interface UndoTurnResult {
   restored: number;
   skipped: number;
   failed: number;
-  rewound_turns: number;
+  rewound_turns: string[];
+}
+
+// ── Server-side run (web as observer) ────────────────────────────────────────
+
+export type SessionEventKind =
+  | "content_delta"
+  | "reasoning_delta"
+  | "tool_start"
+  | "tool_result"
+  | "turn_done"
+  | "turn_error"
+  | "save";
+
+/** Mirrors SessionEvent (src/daemon/run_loop.rs:26). Server-side run broadcasts
+ *  these on GET /sessions/:id/events (SSE). data shape varies by kind. */
+export interface SessionEvent {
+  seq: number;
+  session_id: string;
+  run_id: string;
+  kind: SessionEventKind;
+  data: Record<string, unknown>;
+}
+
+/** Response to POST /sessions/:id/run. */
+export interface RunResponse {
+  run_id: string;
+  session_id: string;
 }

@@ -5,6 +5,8 @@ import { filterSlashCommands, matchSlashCommand, type SlashCommand } from "./sla
 
 interface ComposerProps {
   onSend: (text: string) => void;
+  /** Stop the active server-side run (POST /cancel). */
+  onStop: () => void;
   /** Fired when the input is an exact slash command (e.g. /model) — the App
    *  opens the corresponding modal instead of sending a message. */
   onCommand: (cmd: SlashCommand) => void;
@@ -15,10 +17,9 @@ interface ComposerProps {
  * the slash-command menu (TUI-style); Enter on an exact command opens its
  * modal via `onCommand` instead of sending.
  */
-export function Composer({ onSend, onCommand }: ComposerProps) {
+export function Composer({ onSend, onStop, onCommand }: ComposerProps) {
   const [text, setText] = useState("");
   const isRunning = useSessionStore((s) => s.isRunning);
-  const stopRunning = useSessionStore((s) => s.stopRunning);
 
   const menuItems = filterSlashCommands(text);
 
@@ -81,7 +82,7 @@ export function Composer({ onSend, onCommand }: ComposerProps) {
         disabled={isRunning}
       />
       {isRunning ? (
-        <button type="button" className="btn btn-danger composer-send" onClick={stopRunning}>
+        <button type="button" className="btn btn-danger composer-send" onClick={onStop}>
           <Square size={13} /> Stop
         </button>
       ) : (
