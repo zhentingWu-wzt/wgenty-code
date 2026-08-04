@@ -14,7 +14,7 @@
  * state; components subscribe through `sessionContext.tsx`.
  */
 import { create } from "zustand";
-import type { PermissionDecision, PermissionRequiredInfo, StructuredApproval } from "../api/types";
+import type { PermissionDecision, PermissionRequiredInfo, QuestionPayload, StructuredApproval } from "../api/types";
 import type { StreamEvent } from "../api/sseParser";
 import type { ToolExecution } from "../agent/loop";
 
@@ -68,6 +68,8 @@ export interface SessionState {
   pendingPermission: PendingPermission | null;
   /** Subagent async permission (pushed via trace SSE). Null when none pending. */
   pendingSubagent: StructuredApproval | null;
+  /** ask_user_question prompt (pushed via trace SSE). Null when none pending. */
+  pendingQuestion: QuestionPayload | null;
 
   // ── Actions ──────────────────────────────────────────────────────────────
   setConnection: (s: ConnectionStatus) => void;
@@ -91,6 +93,10 @@ export interface SessionState {
   pushSubagentPermission: (approval: StructuredApproval) => void;
   /** Dismiss the current subagent prompt (after the hook has resolved it). */
   clearSubagentPermission: () => void;
+  /** Push an ask_user_question prompt (from trace SSE). */
+  pushQuestion: (q: QuestionPayload) => void;
+  /** Dismiss the current question prompt. */
+  clearQuestion: () => void;
   /** App registers the current turn's AbortController so Stop can abort it. */
   registerAbort: (controller: AbortController | null) => void;
   /** Abort the running turn (no-op if nothing running). */
@@ -113,6 +119,7 @@ export function createSessionStore() {
     modelName: null,
     pendingPermission: null,
     pendingSubagent: null,
+    pendingQuestion: null,
 
     setConnection: (s) => set({ connection: s }),
     setModelName: (n) => set({ modelName: n }),
@@ -178,6 +185,11 @@ export function createSessionStore() {
 
     clearSubagentPermission: () => set({ pendingSubagent: null }),
 
+    pushQuestion: (q) => {
+      if (!get().pendingQuestion) set({ pendingQuestion: q });
+    },
+    clearQuestion: () => set({ pendingQuestion: null }),
+
     registerAbort: (controller) => {
       currentAbort = controller;
     },
@@ -197,6 +209,7 @@ export function createSessionStore() {
         lastError: null,
         pendingPermission: null,
         pendingSubagent: null,
+    pendingQuestion: null,
         isRunning: false,
       }),
   }));

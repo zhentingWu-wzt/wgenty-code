@@ -220,8 +220,27 @@ export interface TraceEvent {
   token_budget_k?: number | null;
   cumulative_tokens: number;
   error?: unknown;
-  kind?: "progress" | "permission_pending" | "permission_resolved";
+  kind?: "progress" | "permission_pending" | "permission_resolved" | "question_pending" | "question_resolved";
   permission?: StructuredApproval;
+  question?: QuestionPayload;
+}
+
+// ── ask_user_question (server-side interaction) ──────────────────────────────
+
+export interface QuestionOption {
+  label: string;
+  description: string;
+  preview?: string;
+}
+
+/** Mirrors QuestionPayload (src/daemon/interaction_bridge.rs). Pushed via the
+ *  trace SSE when the server-side loop blocks on ask_user_question. */
+export interface QuestionPayload {
+  request_id: string;
+  session_id: string;
+  question: string;
+  options: QuestionOption[];
+  multi_select: boolean;
 }
 
 // ── Tools ────────────────────────────────────────────────────────────────────

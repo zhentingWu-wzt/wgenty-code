@@ -24,10 +24,10 @@
 
 ## 5. 前端
 
-- [ ] 5.1 `client.resolveInteraction(id, answer)` 方法
-- [ ] 5.2 store 加 `pendingQuestion` 字段 + push/clear actions
-- [ ] 5.3 `usePermissionTrace` 分发 `question_pending` / `question_resolved`
-- [ ] 5.4 QuestionModal 组件（question + options 列表 + Other 自由输入），resolve 调 client
+- [x] 5.1 `client.resolveInteraction(id, answer)` 方法
+- [x] 5.2 store 加 `pendingQuestion` 字段 + push/clear actions
+- [x] 5.3 `usePermissionTrace` 分发 `question_pending` / `question_resolved`
+- [x] 5.4 QuestionModal 组件（question + options 列表 + Other 自由输入），resolve 调 client
 
 ## 6. 验证与收尾
 

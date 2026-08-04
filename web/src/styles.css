@@ -1744,3 +1744,24 @@ body {
   flex-direction: column;
   gap: 0.2rem;
 }
+
+/* ── Question modal (ask_user_question) ─────────────────────────────────────── */
+.question-modal { max-width: 520px; }
+.question-text { margin: 0 0 0.8rem; line-height: 1.5; font-size: 0.92rem; }
+.question-options { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 0.6rem; }
+.question-option {
+  display: flex; flex-direction: column; gap: 0.2rem; text-align: left;
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 0.5rem 0.7rem; cursor: pointer; color: var(--fg);
+}
+.question-option:hover { border-color: var(--fg-dim); }
+.question-option.selected { border-color: var(--fg); background: var(--bg-hover); }
+.question-option-label { font-weight: 500; font-size: 0.85rem; }
+.question-option-desc { font-size: 0.78rem; color: var(--fg-dim); }
+.question-other { margin-bottom: 0.6rem; }
+.question-other-input {
+  width: 100%; background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 0.4rem 0.6rem; color: var(--fg);
+  font-size: 0.85rem; font-family: inherit;
+}
+.question-other-input:focus { outline: none; border-color: var(--fg-dim); }
