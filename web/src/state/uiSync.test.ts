@@ -16,6 +16,13 @@ describe("uiSync", () => {
     stop();
   });
 
+  it("backfills a tab for the session activated before subscribe (cold start)", () => {
+    const id = useSessionManager.getState().createLocalSession("S1");
+    const stop = startUiSync();
+    expect(useUiStore.getState().openTabs).toEqual([id]);
+    stop();
+  });
+
   it("prunes tabs of removed sessions", () => {
     const stop = startUiSync();
     const id = useSessionManager.getState().createLocalSession("S1");
