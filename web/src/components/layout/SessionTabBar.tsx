@@ -39,7 +39,11 @@ export function SessionTabBar() {
             key={id}
             data-active={active}
             draggable
-            onDragStart={() => (dragId.current = id)}
+            onDragStart={(e) => {
+              e.dataTransfer.setData("text/plain", id);
+              dragId.current = id;
+            }}
+            onDragEnd={() => (dragId.current = null)}
             onDragOver={(e) => e.preventDefault()}
             onDrop={() => {
               if (dragId.current && dragId.current !== id) {

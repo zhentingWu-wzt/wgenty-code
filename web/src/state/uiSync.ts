@@ -8,6 +8,13 @@ import { useSessionManager } from "./sessionManager";
 import { useUiStore } from "./uiStore";
 
 export function startUiSync(): () => void {
+  // 初始同步：订阅前的既有状态（冷启动 bootstrap 已建会话）也要补齐。
+  const s = useSessionManager.getState();
+  const ui = useUiStore.getState();
+  if (s.activeId && !ui.openTabs.includes(s.activeId)) ui.openTab(s.activeId);
+  const stale = ui.openTabs.filter((id) => !s.entries[id]);
+  if (stale.length > 0) ui.pruneTabs(stale);
+
   return useSessionManager.subscribe((s, prev) => {
     const ui = useUiStore.getState();
     if (s.activeId && s.activeId !== prev.activeId && !ui.openTabs.includes(s.activeId)) {
