@@ -12,15 +12,14 @@ import { Composer } from "./components/Composer";
 import { PermissionModal } from "./components/PermissionModal";
 import { QuestionModal } from "./components/QuestionModal";
 import { CommandModal } from "./components/CommandModal";
-import { SessionsBrowserModal } from "./components/SessionsBrowserModal";
+import { RightRail } from "./components/layout/RightRail";
 import { ModelPanel } from "./components/ModelPanel";
-import { MemoryPanel } from "./components/MemoryPanel";
-import { CheckpointsPanel } from "./components/CheckpointsPanel";
 import { AppTopbar } from "./components/layout/AppTopbar";
 import type { SlashCommand } from "./components/slashCommands";
 import { usePermissionTrace } from "./hooks/usePermissionTrace";
 import { usePolling } from "./hooks/usePolling";
 import { startUiSync } from "./state/uiSync";
+import { useUiStore } from "./state/uiStore";
 
 /**
  * App — wires the per-session agent runners to the UI stores.
@@ -112,10 +111,27 @@ export function App() {
     10_000,
   );
 
-  // Slash-command modal (/model, /sessions, /memory, /undo) — the TUI-style
-  // replacement for permanent side panels.
+  // Slash commands: `/model` opens a modal; `/sessions` `/memory` `/undo`
+  // toggle the corresponding right-rail panel.
   const [openCommand, setOpenCommand] = useState<SlashCommand | null>(null);
   const closeCommand = () => setOpenCommand(null);
+  const handleCommand = (cmd: SlashCommand) => {
+    const ui = useUiStore.getState();
+    switch (cmd.name) {
+      case "/model":
+        setOpenCommand(cmd);
+        break;
+      case "/sessions":
+        ui.toggleRightPanel("sessions");
+        break;
+      case "/memory":
+        ui.toggleRightPanel("memory");
+        break;
+      case "/undo":
+        ui.toggleRightPanel("checkpoints");
+        break;
+    }
+  };
 
   // First render (before the bootstrap effect runs): no session yet.
   if (!activeStore) return null;
@@ -138,30 +154,18 @@ export function App() {
               onStop={() => {
                 if (activeId) void stopSessionTurn(client, activeId);
               }}
-              onCommand={setOpenCommand}
+              onCommand={handleCommand}
             />
           </div>
           <PermissionModal client={client} />
           <QuestionModal client={client} />
         </SessionStoreContext.Provider>
+        <RightRail client={client} />
       </div>
       <StatusBar />
       {openCommand?.name === "/model" && (
         <CommandModal title="Switch model" onClose={closeCommand}>
           <ModelPanel client={client} />
-        </CommandModal>
-      )}
-      {openCommand?.name === "/sessions" && (
-        <SessionsBrowserModal client={client} onClose={closeCommand} />
-      )}
-      {openCommand?.name === "/memory" && (
-        <CommandModal title="Memory" onClose={closeCommand}>
-          <MemoryPanel client={client} />
-        </CommandModal>
-      )}
-      {openCommand?.name === "/undo" && (
-        <CommandModal title="Undo turn" onClose={closeCommand}>
-          <CheckpointsPanel client={client} />
         </CommandModal>
       )}
       <Toaster theme="dark" position="bottom-right" />

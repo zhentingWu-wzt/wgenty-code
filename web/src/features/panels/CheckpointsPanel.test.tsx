@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CheckpointsPanel } from "./CheckpointsPanel";
-import { DaemonClient } from "../api/client";
+import { DaemonClient } from "../../api/client";
 
 describe("CheckpointsPanel", () => {
   afterEach(() => vi.unstubAllGlobals());
