@@ -29,7 +29,9 @@ export function StatusBar() {
       </span>
       {isRunning && <span className="text-warning">working</span>}
       {pendingApprovals > 0 && (
-        <span className="rounded-sm bg-warning/20 px-1 text-warning">{pendingApprovals} approval</span>
+        <span className="rounded-sm bg-warning/20 px-1 text-warning">
+          {pendingApprovals} approval{pendingApprovals > 1 ? "s" : ""}
+        </span>
       )}
       <div className="flex-1" />
       {modelName && <span title="active model">{modelName}</span>}

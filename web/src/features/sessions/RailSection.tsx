@@ -19,16 +19,16 @@ export function RailSection({
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
 
   return (
-    <section className="rail-section">
-      <div className="rail-section-head">
+    <section className="flex flex-col">
+      <div className="flex items-center gap-1 rounded-sm px-1 py-0.5 hover:bg-accent">
         <button
           type="button"
-          className="rail-section-toggle"
+          className="flex min-w-0 flex-1 items-center gap-1 text-left text-[13px] text-muted-foreground"
           aria-expanded={!collapsed}
           onClick={() => setCollapsed((c) => !c)}
         >
           {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-          <span className="rail-section-title">{title}</span>
+          <span className="truncate font-medium">{title}</span>
         </button>
         {!collapsed && actions}
       </div>

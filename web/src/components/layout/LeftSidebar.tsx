@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { PanelLeftOpen } from "lucide-react";
 import type { DaemonClient } from "../../api/client";
 import { ProjectTree } from "../../features/sessions/ProjectTree";
@@ -10,7 +11,30 @@ import { Button } from "../ui/button";
  *  隐藏，由顶栏 PanelLeft 按钮唤起。 */
 export function LeftSidebar({ client }: { client: DaemonClient }) {
   const collapsed = useUiStore((s) => s.leftCollapsed);
+  const leftWidth = useUiStore((s) => s.leftWidth);
   const toggleLeft = useUiStore((s) => s.toggleLeft);
+
+  // 拖拽调宽：pointermove/up 挂在 window 上，结束时移除；ref 记录清理函数，
+  // unmount 时也兜底清理，避免监听泄漏。
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => dragCleanupRef.current?.(), []);
+
+  const startDrag = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = useUiStore.getState().leftWidth;
+    const onMove = (ev: PointerEvent) => {
+      useUiStore.getState().setLeftWidth(startWidth + ev.clientX - startX);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      dragCleanupRef.current = null;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    dragCleanupRef.current = onUp;
+  };
 
   if (collapsed) {
     return (
@@ -31,14 +55,21 @@ export function LeftSidebar({ client }: { client: DaemonClient }) {
         onClick={toggleLeft}
       />
       <aside
+        style={{ width: leftWidth }}
         className={cn(
-          "flex w-64 shrink-0 flex-col border-r border-border bg-sidebar text-sidebar-foreground",
+          "relative flex shrink-0 flex-col border-r border-border bg-sidebar text-sidebar-foreground",
           "max-md:fixed max-md:inset-y-10 max-md:left-0 max-md:z-40 max-md:shadow-xl",
         )}
       >
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           <ProjectTree client={client} />
         </div>
+        {/* 右边缘拖拽手柄：仅桌面端（移动端抽屉宽度固定）。 */}
+        <div
+          aria-hidden
+          onPointerDown={startDrag}
+          className="absolute inset-y-0 right-0 w-1 cursor-col-resize hover:bg-accent max-md:hidden"
+        />
       </aside>
     </>
   );

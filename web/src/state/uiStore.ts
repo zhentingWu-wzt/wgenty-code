@@ -10,10 +10,13 @@ export type RightPanelId = "sessions" | "skills" | "memory" | "checkpoints" | "t
 interface UiState {
   theme: ThemeMode;
   leftCollapsed: boolean;
+  /** 左栏展开态宽度（px），可拖拽调整，clamp 到 [180, 400]。 */
+  leftWidth: number;
   rightPanel: RightPanelId | null;
 
   setTheme: (t: ThemeMode) => void;
   toggleLeft: () => void;
+  setLeftWidth: (w: number) => void;
   setRightPanel: (p: RightPanelId | null) => void;
   /** 点已激活的图标 = 收起右栏；点其他图标 = 切换面板。 */
   toggleRightPanel: (p: RightPanelId) => void;
@@ -22,7 +25,7 @@ interface UiState {
   openTab: (id: string) => void;
   /** 移除 tab；返回应激活的邻居 id（无剩余 tab 时为 null）。 */
   closeTab: (id: string) => string | null;
-  /** 把 id 拖到 targetId 的位置。 */
+  /** 把 id 移动到 targetId 的位置（向下拖时落在其后）。 */
   moveTab: (id: string, targetId: string) => void;
   pruneTabs: (ids: string[]) => void;
 }
@@ -30,6 +33,7 @@ interface UiState {
 export const useUiStore = create<UiState>((set) => ({
   theme: readStoredTheme(),
   leftCollapsed: false,
+  leftWidth: 256,
   rightPanel: null,
 
   setTheme: (theme) => {
@@ -37,6 +41,7 @@ export const useUiStore = create<UiState>((set) => ({
     set({ theme });
   },
   toggleLeft: () => set((s) => ({ leftCollapsed: !s.leftCollapsed })),
+  setLeftWidth: (w) => set({ leftWidth: Math.min(400, Math.max(180, Math.round(w))) }),
   setRightPanel: (rightPanel) => set({ rightPanel }),
   toggleRightPanel: (p) => set((s) => ({ rightPanel: s.rightPanel === p ? null : p })),
 

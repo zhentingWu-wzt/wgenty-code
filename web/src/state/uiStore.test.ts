@@ -23,6 +23,15 @@ describe("uiStore", () => {
     useUiStore.getState().toggleRightPanel("memory");
     expect(useUiStore.getState().rightPanel).toBe("memory");
   });
+
+  it("setLeftWidth clamps to [180, 400]", () => {
+    useUiStore.getState().setLeftWidth(100);
+    expect(useUiStore.getState().leftWidth).toBe(180);
+    useUiStore.getState().setLeftWidth(500);
+    expect(useUiStore.getState().leftWidth).toBe(400);
+    useUiStore.getState().setLeftWidth(300);
+    expect(useUiStore.getState().leftWidth).toBe(300);
+  });
 });
 
 describe("uiStore tabs", () => {
