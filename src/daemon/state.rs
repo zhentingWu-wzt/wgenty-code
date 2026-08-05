@@ -14,6 +14,7 @@ use crate::tools::meta::team_message::TeamMessageTool;
 use crate::tools::{CheckpointManager, CheckpointStore, ToolExecutor, ToolRegistry};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
@@ -107,6 +108,12 @@ pub struct DaemonState {
     /// One active server-side run per session (claim registry). Enforces the
     /// 409 on `POST /sessions/:id/run` and the update_session run lock.
     pub session_runs: crate::daemon::run_loop::RunRegistry,
+    /// Per-session event sequence counters. `SessionEvent.seq` must be
+    /// monotonic per session across runs (client reconnect dedup/resume
+    /// contract), so the counter outlives any single run's `DaemonEventSink`.
+    /// std RwLock: critical sections are single HashMap ops, never held across
+    /// `.await` (same rationale as `SessionWorkdirs`).
+    session_seq_counters: Arc<std::sync::RwLock<HashMap<String, Arc<AtomicU64>>>>,
 }
 
 impl DaemonState {
@@ -449,6 +456,7 @@ impl DaemonState {
             transcript_store: sse_transcript_store,
             session_event_hub: tokio::sync::broadcast::channel(1024).0,
             session_runs: crate::daemon::run_loop::RunRegistry::new(),
+            session_seq_counters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             http_client,
             http_client_stream,
         }
@@ -642,6 +650,30 @@ impl DaemonState {
     /// All sessions bound to `path` (used before removing a worktree).
     pub fn worktree_sessions(&self, path: &std::path::Path) -> Vec<String> {
         sessions_of(&self.session_workdirs, path)
+    }
+
+    /// The session's event sequence counter (get-or-create, starts at 1).
+    ///
+    /// Shared by every `DaemonEventSink` the session spawns, so `SessionEvent`
+    /// `.seq` keeps increasing across runs of one session and clients can
+    /// dedup/order by seq alone.
+    pub fn session_seq_counter(&self, session_id: &str) -> Arc<AtomicU64> {
+        {
+            let counters = self
+                .session_seq_counters
+                .read()
+                .expect("session_seq_counters lock poisoned");
+            if let Some(counter) = counters.get(session_id) {
+                return Arc::clone(counter);
+            }
+        }
+        Arc::clone(
+            self.session_seq_counters
+                .write()
+                .expect("session_seq_counters lock poisoned")
+                .entry(session_id.to_string())
+                .or_insert_with(|| Arc::new(AtomicU64::new(1))),
+        )
     }
 }
 
