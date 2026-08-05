@@ -4,6 +4,7 @@ import { App } from "./App";
 import "@fontsource-variable/inter";
 import "@fontsource/jetbrains-mono";
 import "./styles.css";
+import "./styles/globals.css";
 
 const rootEl = document.getElementById("root");
 if (!rootEl) {
