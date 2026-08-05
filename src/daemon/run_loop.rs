@@ -24,7 +24,8 @@ use std::sync::Arc;
 /// A single event in a daemon-run session, envelope for SSE fan-out.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionEvent {
-    /// Monotonically increasing sequence number within one run, starting at 1.
+    /// Monotonically increasing sequence number within one session (across
+    /// runs), starting at 1 — clients dedup/order by seq on reconnect.
     pub seq: u64,
     pub session_id: String,
     pub run_id: String,
@@ -53,6 +54,10 @@ pub type SessionEventHub = tokio::sync::broadcast::Sender<SessionEvent>;
 /// [`EventSink`] that translates runtime events into [`SessionEvent`]s and
 /// broadcasts them on a per-run hub. Connection noise (Connecting,
 /// PreparingTools, CompactionStarted, …) is intentionally dropped in v1.
+///
+/// `next_seq` is the session's shared counter (from
+/// [`DaemonState::session_seq_counter`]), not per-sink: seq must stay
+/// monotonic across runs of one session for client dedup/resume.
 pub struct DaemonEventSink {
     session_id: String,
     run_id: String,
@@ -78,12 +83,17 @@ struct SaveBridge {
 }
 
 impl DaemonEventSink {
-    pub fn new(session_id: String, run_id: String, hub: SessionEventHub) -> Self {
+    pub fn new(
+        session_id: String,
+        run_id: String,
+        hub: SessionEventHub,
+        next_seq: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             session_id,
             run_id,
             hub,
-            next_seq: Arc::new(AtomicU64::new(1)),
+            next_seq,
             save_bridge: None,
         }
     }
@@ -805,6 +815,7 @@ async fn run_session_turn(
         session_id.to_string(),
         run_id.to_string(),
         state.session_event_hub.clone(),
+        state.session_seq_counter(session_id),
     );
 
     // 1. Seed history from the persisted session (SessionMessage -> ChatMessage
@@ -951,7 +962,7 @@ mod tests {
     #[test]
     fn maps_runtime_events_to_session_events() {
         let (hub, mut rx) = tokio::sync::broadcast::channel(16);
-        let sink = DaemonEventSink::new("s1".into(), "r1".into(), hub);
+        let sink = DaemonEventSink::new("s1".into(), "r1".into(), hub, Arc::new(AtomicU64::new(1)));
         sink.emit(RuntimeEvent::ContentDelta("hi".into()));
         sink.emit(RuntimeEvent::ReasoningDelta("think".into()));
         sink.emit(RuntimeEvent::ToolStart {
@@ -979,7 +990,7 @@ mod tests {
         // Connecting/PreparingTools/StreamDone/CompactionStarted 等不产生事件
         //（v1 不广播连接噪声）；StreamError → TurnError；StreamDone → TurnDone
         let (hub, mut rx) = tokio::sync::broadcast::channel(16);
-        let sink = DaemonEventSink::new("s1".into(), "r1".into(), hub);
+        let sink = DaemonEventSink::new("s1".into(), "r1".into(), hub, Arc::new(AtomicU64::new(1)));
         sink.emit(RuntimeEvent::Connecting {
             attempt: 1,
             max_retries: 2,
@@ -995,6 +1006,41 @@ mod tests {
             .try_recv()
             .is_ok_and(|e| e.kind == SessionEventKind::TurnError));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn seq_is_monotonic_per_session_across_runs() {
+        // Two sinks sharing one session counter (two runs of the same
+        // session): interleaved events keep a strictly increasing seq, so
+        // clients can dedup/order by seq alone on reconnect. A different
+        // session's counter starts at 1 independently.
+        let (hub, mut rx) = tokio::sync::broadcast::channel(16);
+        let counter = Arc::new(AtomicU64::new(1)); // DaemonState::session_seq_counter
+        let sink_run1 =
+            DaemonEventSink::new("s1".into(), "r1".into(), hub.clone(), Arc::clone(&counter));
+        let sink_run2 =
+            DaemonEventSink::new("s1".into(), "r2".into(), hub.clone(), Arc::clone(&counter));
+        let other_session =
+            DaemonEventSink::new("s2".into(), "r3".into(), hub, Arc::new(AtomicU64::new(1)));
+
+        sink_run1.emit(RuntimeEvent::ContentDelta("a".into()));
+        sink_run2.emit(RuntimeEvent::ContentDelta("b".into()));
+        sink_run1.emit(RuntimeEvent::ContentDelta("c".into()));
+        other_session.emit(RuntimeEvent::ContentDelta("x".into()));
+
+        let events: Vec<SessionEvent> = (0..4).filter_map(|_| rx.try_recv().ok()).collect();
+        let s1_seqs: Vec<u64> = events
+            .iter()
+            .filter(|e| e.session_id == "s1")
+            .map(|e| e.seq)
+            .collect();
+        assert_eq!(s1_seqs, vec![1, 2, 3], "seq must be per-session monotonic");
+        let s2_seqs: Vec<u64> = events
+            .iter()
+            .filter(|e| e.session_id == "s2")
+            .map(|e| e.seq)
+            .collect();
+        assert_eq!(s2_seqs, vec![1], "other sessions count independently");
     }
 
     // ── RootToolPort ───────────────────────────────────────────────────────
