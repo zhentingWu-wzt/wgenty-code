@@ -10,16 +10,16 @@
   --fg: #ededed;
   --fg-dim: #8a8a8a;
   --fg-mute: #5a5a5a;
-  --accent: #6e8efb; /* brand accent: CTAs, active states, links, streaming cursor */
+  --legacy-accent: #6e8efb; /* brand accent: CTAs, active states, links, streaming cursor */
   --accent-fg: #0d0d0d;
   --accent-soft: rgba(110, 142, 251, 0.14);
   --ok: #7ec880;
   --bad: #e5606b;
   --warn: #d9a441;
-  --border: #262626;
+  --legacy-border: #262626;
   --border-strong: #333333;
-  --radius: 6px;
-  --radius-sm: 4px;
+  --legacy-radius: 6px;
+  --legacy-radius-sm: 4px;
   font-family:
     "Inter Variable",
     "Inter",
@@ -76,7 +76,7 @@ body {
   height: 40px;
   padding: 0 1rem;
   background: var(--bg);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--legacy-border);
   font-size: 0.82rem;
   flex-shrink: 0;
 }
@@ -188,12 +188,12 @@ body {
   background: var(--fg-dim);
 }
 .msg-assistant .msg-role::before {
-  background: var(--accent);
+  background: var(--legacy-accent);
 }
 .msg-reasoning {
   margin: 0 0 0.5rem;
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--legacy-border);
   border-radius: 4px;
   font-size: 0.8rem;
   color: var(--fg-dim);
@@ -268,7 +268,7 @@ body {
   margin: 0.2em 0;
 }
 .msg-markdown a {
-  color: var(--accent);
+  color: var(--legacy-accent);
   text-decoration: none;
 }
 .msg-markdown a:hover {
@@ -277,7 +277,7 @@ body {
 .msg-markdown blockquote {
   margin: 0.5em 0;
   padding: 0.2em 0.9em;
-  border-left: 3px solid var(--border);
+  border-left: 3px solid var(--legacy-border);
   color: var(--fg-dim);
 }
 .msg-markdown code {
@@ -291,7 +291,7 @@ body {
   margin: 0.6em 0;
   padding: 0.7em 0.9em;
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--legacy-border);
   border-radius: 6px;
   overflow-x: auto;
 }
@@ -313,13 +313,13 @@ body {
 }
 .msg-markdown th,
 .msg-markdown td {
-  border: 1px solid var(--border);
+  border: 1px solid var(--legacy-border);
   padding: 0.3em 0.6em;
   text-align: left;
 }
 .msg-markdown hr {
   border: none;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--legacy-border);
   margin: 0.8em 0;
 }
 .msg-tools {
@@ -331,7 +331,7 @@ body {
 .msg-error {
   background: rgba(247, 118, 142, 0.1);
   border: 1px solid var(--bad);
-  border-radius: var(--radius);
+  border-radius: var(--legacy-radius);
   padding: 0.6rem 0.8rem;
   color: var(--bad);
   font-family: var(--mono);
@@ -354,8 +354,8 @@ body {
 /* ── Tool call card ─────────────────────────────────────────────────────────── */
 /* Tool call: collapsed summary line (Codex-style compact log). */
 .tool-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--legacy-border);
+  border-radius: var(--legacy-radius-sm);
   font-size: 0.82rem;
   overflow: hidden;
 }
@@ -431,7 +431,7 @@ body {
 }
 .tool-body {
   padding: 0 0.6rem 0.5rem;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--legacy-border);
 }
 .tool-args,
 .tool-output {
@@ -455,7 +455,7 @@ body {
   margin-top: 0.3rem;
 }
 .diff-file {
-  border: 1px solid var(--border);
+  border: 1px solid var(--legacy-border);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -465,7 +465,7 @@ body {
   padding: 0.25rem 0.6rem;
   background: var(--bg-elev2);
   color: var(--fg);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--legacy-border);
 }
 .diff-body {
   margin: 0;
@@ -517,8 +517,8 @@ body {
   gap: 0.5rem;
   padding: 0.75rem;
   background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 1px solid var(--legacy-border);
+  border-radius: var(--legacy-radius);
   margin: 0 1.5rem 1rem;
 }
 
@@ -530,7 +530,7 @@ body {
   right: 0;
   background: var(--bg-elev2);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
+  border-radius: var(--legacy-radius);
   overflow: hidden;
   z-index: 20;
   box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.35);
@@ -553,7 +553,7 @@ body {
 }
 .slash-name {
   font-family: var(--mono);
-  color: var(--accent);
+  color: var(--legacy-accent);
   flex-shrink: 0;
 }
 .slash-desc {
@@ -574,7 +574,7 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 0.7rem 1rem;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--legacy-border);
 }
 .command-modal-title {
   font-size: 0.85rem;
@@ -638,23 +638,23 @@ body {
 .btn {
   background: var(--bg-elev2);
   color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 1px solid var(--legacy-border);
+  border-radius: var(--legacy-radius);
   padding: 0.5rem 1rem;
   font-size: 0.85rem;
   cursor: pointer;
 }
 .btn:hover:not(:disabled) {
-  border-color: var(--accent);
+  border-color: var(--legacy-accent);
 }
 .btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 .btn-primary {
-  background: var(--accent);
+  background: var(--legacy-accent);
   color: var(--accent-fg);
-  border-color: var(--accent);
+  border-color: var(--legacy-accent);
   font-weight: 600;
 }
 .btn-danger {
@@ -675,8 +675,8 @@ body {
 }
 .modal {
   background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 1px solid var(--legacy-border);
+  border-radius: var(--legacy-radius);
   padding: 1.5rem;
   max-width: 480px;
   width: 90%;
@@ -689,7 +689,7 @@ body {
 }
 .modal-tool {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  color: var(--accent);
+  color: var(--legacy-accent);
   margin-bottom: 0.5rem;
 }
 .modal-reason {
@@ -723,7 +723,7 @@ body {
   width: 280px;
   flex-shrink: 0;
   background: var(--bg-elev);
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--legacy-border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -808,8 +808,8 @@ body {
   align-items: center;
   gap: 0.45rem;
   background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--legacy-border);
+  border-radius: var(--legacy-radius-sm);
   padding: 0.35rem 0.5rem;
   color: var(--fg);
   cursor: pointer;
@@ -921,7 +921,7 @@ body {
   background: var(--bg);
 }
 .todo-in_progress .todo-status {
-  color: var(--accent);
+  color: var(--legacy-accent);
 }
 .todo-content {
   line-height: 1.4;
@@ -960,7 +960,7 @@ body {
 }
 .task-item {
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--legacy-border);
   border-radius: 4px;
   padding: 0.35rem 0.5rem;
   font-size: 0.78rem;
@@ -987,7 +987,7 @@ body {
 }
 .task-priority[data-priority="medium"] {
   background: rgba(122, 162, 247, 0.15);
-  color: var(--accent);
+  color: var(--legacy-accent);
 }
 .task-priority[data-priority="low"] {
   background: var(--bg-elev2);
@@ -1016,7 +1016,7 @@ body {
   gap: 0.3rem;
 }
 .model-item {
-  border: 1px solid var(--border);
+  border: 1px solid var(--legacy-border);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -1064,7 +1064,7 @@ body {
 }
 .model-action {
   font-size: 0.72rem;
-  color: var(--accent);
+  color: var(--legacy-accent);
   align-self: flex-end;
 }
 
@@ -1083,14 +1083,14 @@ body {
   min-width: 0;
   background: var(--bg);
   color: var(--fg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--legacy-border);
   border-radius: 4px;
   padding: 0.25rem 0.4rem;
   font-size: 0.78rem;
 }
 .sessions-search:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--legacy-accent);
 }
 .session-list {
   list-style: none;
@@ -1105,7 +1105,7 @@ body {
   align-items: center;
   gap: 0.3rem;
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--legacy-border);
   border-radius: 4px;
   padding: 0.25rem 0.35rem;
 }
@@ -1126,7 +1126,7 @@ body {
   gap: 0.1rem;
 }
 .session-open:hover:not(:disabled) {
-  color: var(--accent);
+  color: var(--legacy-accent);
 }
 .session-name {
   font-size: 0.8rem;
@@ -1153,7 +1153,7 @@ body {
 .mem-stat {
   flex: 1;
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--legacy-border);
   border-radius: 4px;
   padding: 0.3rem;
   text-align: center;
@@ -1162,7 +1162,7 @@ body {
   display: block;
   font-size: 1rem;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--legacy-accent);
 }
 .mem-stat-label {
   font-size: 0.65rem;
@@ -1177,7 +1177,7 @@ body {
 .mem-scope {
   background: var(--bg);
   color: var(--fg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--legacy-border);
   border-radius: 4px;
   padding: 0.15rem 0.3rem;
   font-size: 0.75rem;
@@ -1193,7 +1193,7 @@ body {
   width: 3em;
   background: var(--bg);
   color: var(--fg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--legacy-border);
   border-radius: 4px;
   padding: 0.1rem 0.3rem;
   font-size: 0.72rem;
@@ -1208,14 +1208,14 @@ body {
 }
 .memory-item {
   background: var(--bg);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--border);
+  border: 1px solid var(--legacy-border);
+  border-left: 3px solid var(--legacy-border);
   border-radius: 4px;
   padding: 0.3rem 0.4rem;
   font-size: 0.78rem;
 }
 .memory-item.origin-project {
-  border-left-color: var(--accent);
+  border-left-color: var(--legacy-accent);
 }
 .memory-item.origin-global {
   border-left-color: var(--warn);
@@ -1242,7 +1242,7 @@ body {
 .memory-imp {
   margin-left: auto;
   font-size: 0.68rem;
-  color: var(--accent);
+  color: var(--legacy-accent);
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
 .memory-content {
@@ -1259,7 +1259,7 @@ body {
   flex-direction: column;
   gap: 0.2rem;
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--legacy-border);
   border-radius: 4px;
   padding: 0.4rem 0.5rem;
 }
@@ -1289,7 +1289,7 @@ body {
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--legacy-border);
   border-radius: 4px;
   padding: 0.3rem 0.4rem;
 }
@@ -1364,8 +1364,8 @@ body {
     top: 0.5rem;
     z-index: 61;
     background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border: 1px solid var(--legacy-border);
+    border-radius: var(--legacy-radius);
     padding: 0.3rem 0.5rem;
   }
 
@@ -1415,7 +1415,7 @@ body {
   align-items: center;
   gap: 0.6rem;
   padding: 0.5rem 1.5rem;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--legacy-border);
   font-size: 0.85rem;
 }
 .session-header-name {
@@ -1463,8 +1463,8 @@ body {
   align-items: center;
   gap: 0.4rem;
   background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--legacy-border);
+  border-radius: var(--legacy-radius-sm);
   padding: 0.3rem 0.45rem;
   font-size: 0.78rem;
 }
@@ -1516,8 +1516,8 @@ body {
   align-items: center;
   gap: 0.4rem;
   background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--legacy-border);
+  border-radius: var(--legacy-radius-sm);
   padding: 0.3rem 0.45rem;
   font-size: 0.78rem;
 }
@@ -1538,7 +1538,7 @@ body {
 /* Streaming cursor on the in-flight assistant message. */
 .msg-assistant[data-streaming="true"] .msg-markdown > :last-child::after {
   content: "▍";
-  color: var(--accent);
+  color: var(--legacy-accent);
   animation: cursor-blink 0.9s step-end infinite;
 }
 @keyframes cursor-blink {
@@ -1549,13 +1549,13 @@ body {
 /* User messages: subtle surface to distinguish roles at a glance. */
 .msg-user .msg-content {
   background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 1px solid var(--legacy-border);
+  border-radius: var(--legacy-radius);
   padding: 0.5rem 0.7rem;
 }
 /* Tool cards: status color bar on the left edge. */
 .tool-card {
-  border-left: 3px solid var(--border);
+  border-left: 3px solid var(--legacy-border);
 }
 .tool-card[data-status="ok"] {
   border-left-color: var(--ok);
@@ -1609,14 +1609,14 @@ body {
 .new-session-input {
   background: var(--bg);
   color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--legacy-border);
+  border-radius: var(--legacy-radius-sm);
   padding: 0.35rem 0.5rem;
   font-size: 0.85rem;
 }
 .new-session-input:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--legacy-accent);
 }
 .new-session-modes {
   display: flex;
@@ -1634,7 +1634,7 @@ body {
   margin-left: 0.4rem;
   font-family: var(--mono);
   font-size: 0.68rem;
-  color: var(--accent);
+  color: var(--legacy-accent);
   background: var(--accent-soft);
   padding: 0.05rem 0.35rem;
   border-radius: 3px;
@@ -1730,7 +1730,7 @@ body {
   white-space: nowrap;
 }
 .tree-branch-icon {
-  color: var(--accent);
+  color: var(--legacy-accent);
   font-size: 0.8rem;
 }
 .tree-node-actions {
@@ -1751,7 +1751,7 @@ body {
 .question-options { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 0.6rem; }
 .question-option {
   display: flex; flex-direction: column; gap: 0.2rem; text-align: left;
-  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg); border: 1px solid var(--legacy-border); border-radius: var(--legacy-radius-sm);
   padding: 0.5rem 0.7rem; cursor: pointer; color: var(--fg);
 }
 .question-option:hover { border-color: var(--fg-dim); }
@@ -1760,8 +1760,8 @@ body {
 .question-option-desc { font-size: 0.78rem; color: var(--fg-dim); }
 .question-other { margin-bottom: 0.6rem; }
 .question-other-input {
-  width: 100%; background: var(--bg); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); padding: 0.4rem 0.6rem; color: var(--fg);
+  width: 100%; background: var(--bg); border: 1px solid var(--legacy-border);
+  border-radius: var(--legacy-radius-sm); padding: 0.4rem 0.6rem; color: var(--fg);
   font-size: 0.85rem; font-family: inherit;
 }
 .question-other-input:focus { outline: none; border-color: var(--fg-dim); }
