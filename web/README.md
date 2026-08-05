@@ -6,22 +6,29 @@ daemon API. No Rust/daemon changes are required.
 
 ## What works
 
+- **Three-segment workbench layout**:
+  - **AppTopbar** — top bar: theme toggle and left/right sidebar switches
+  - **LeftSidebar** — session tree (project → worktree → session), width
+    draggable
+  - **SessionTabBar** — each open session is a tab (reorderable)
+  - **RightRail** — activity bar + five panels: **Sessions** / **Skills** /
+    **Memory** / **Checkpoints** / **Tasks**
+  - **StatusBar** — bottom bar: connection · run state · pending approvals ·
+    model
+- **Theme**: light / dark / system, switched from the topbar and persisted in
+  localStorage
+- **Slash commands**: `/model` opens a modal; `/sessions`, `/memory`, `/undo`
+  open the corresponding right-rail panel
 - Streaming chat with real-time token rendering
-- Client-side agent loop: the model can call tools across multiple rounds, and
-  the browser executes them via `/api/v1/tools/execute` and feeds results back
-- **Stop button** to abort a running turn mid-stream (AbortController)
+- **Server-side runs**: the daemon owns the agent loop — the client POSTs
+  `/sessions/:id/run` and mirrors the SSE session-event stream into the UI
+  (`src/agent/sessionRunner.ts` is the send entry point)
+- **Stop button** to abort a running turn (`POST /sessions/:id/cancel`)
 - **Root-tool permission approval** (the in-band `permission_required` flow) via
   a modal — Allow once / Always allow / Deny
 - **Markdown rendering** of assistant output (GFM + syntax-highlighted code)
 - **Diff preview** for `file_edit` / `apply_patch` tool results
 - Collapsible **reasoning** blocks
-- Collapsible **sidebar** with panels:
-  - **Sessions** — list / search / open / save / delete (`/sessions*`)
-  - **Todos** — live todo list (`/todos`)
-  - **Tasks** — ready/blocked progress + task graph (`/tasks*`)
-  - **Model** — profile picker (`/models`, `/model/switch`)
-  - **Memory** — status + filtered list + prune (`/memory*`, Tier 2 backend)
-  - **Config** — read-only overview + config (assembled client-side)
 
 ## Out of scope (phase 2)
 
@@ -39,10 +46,10 @@ daemon API. No Rust/daemon changes are required.
 | `src/api/types.ts`     | `src/daemon/models.rs` + `src/api/types.rs`                    |
 | `src/agent/loop.ts`    | `src/agent/runtime/loop_.rs` (`run_agent_loop_inner`, slimmed) |
 
-The key fact: the daemon's `/api/v1/chat/stream` is a **pure passthrough
-proxy** — it forwards the upstream LLM's SSE but does not execute tools. The
-client must drive the stream → tool → re-stream loop itself, exactly like the
-TUI does.
+The key fact: turns now run **server-side** — `POST /sessions/:id/run` spawns
+the agent loop on the daemon (LLM calls + tool execution + persistence), and
+the client observes it via `GET /sessions/:id/events` (SSE). Closing the
+browser no longer kills a turn.
 
 ## Run it
 
@@ -79,7 +86,7 @@ DAEMON_PORT=9000 npm run dev
 | `npm run dev`       | Vite dev server with the daemon proxy  |
 | `npm run build`     | `tsc` type-check + production build    |
 | `npm run typecheck` | type-check only                        |
-| `npm test`          | run the SSE parser unit tests (vitest) |
+| `npm test`          | run the full vitest suite               |
 
 ## Verify it works
 

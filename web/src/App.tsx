@@ -39,6 +39,7 @@ export function App() {
   const setConnection = useSessionManager((s) => s.setConnection);
   const setModelName = useSessionManager((s) => s.setModelName);
   const activeId = useSessionManager((s) => s.activeId);
+  const theme = useUiStore((s) => s.theme);
 
   // Active session's store. Each session keeps its own store; only the active
   // one is provided to the center pane.
@@ -168,7 +169,7 @@ export function App() {
           <ModelPanel client={client} />
         </CommandModal>
       )}
-      <Toaster theme="dark" position="bottom-right" />
+      <Toaster theme={theme} position="bottom-right" />
     </div>
   );
 }
