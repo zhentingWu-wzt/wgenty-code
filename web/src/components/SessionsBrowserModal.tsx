@@ -5,7 +5,7 @@ import type { SessionInfo } from "../api/types";
 import { sessionMessagesToDisplay } from "../agent/sessionLoad";
 import { useSessionManager } from "../state/sessionManager";
 import { CommandModal } from "./CommandModal";
-import { RailSection } from "./RailSection";
+import { RailSection } from "../features/sessions/RailSection";
 
 /**
  * `/sessions` browser: saved daemon sessions with open/archive/delete.
