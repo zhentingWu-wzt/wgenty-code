@@ -31,6 +31,6 @@
 
 ## 6. 验证与收尾
 
-- [ ] 6.1 `cargo fmt` + `cargo clippy --all-targets --features daemon -- -D warnings` + `cargo test`
-- [ ] 6.2 `cd web && npm run build && npm test`
-- [ ] 6.3 更新 WGENTY.md（如需记录交互端点）
+- [x] 6.1 `cargo fmt` + `cargo clippy --all-targets --features daemon -- -D warnings` + `cargo test`
+- [x] 6.2 `cd web && npm run build && npm test`
+- [x] 6.3 无需更新（WGENTY.md 不维护端点清单；端点在 openspec spec 中记录） WGENTY.md（如需记录交互端点）
