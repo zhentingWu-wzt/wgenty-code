@@ -24,3 +24,36 @@ describe("uiStore", () => {
     expect(useUiStore.getState().rightPanel).toBe("memory");
   });
 });
+
+describe("uiStore tabs", () => {
+  beforeEach(() => {
+    useUiStore.setState({ openTabs: [] });
+  });
+
+  it("openTab appends once", () => {
+    useUiStore.getState().openTab("a");
+    useUiStore.getState().openTab("a");
+    useUiStore.getState().openTab("b");
+    expect(useUiStore.getState().openTabs).toEqual(["a", "b"]);
+  });
+
+  it("closeTab returns the neighbor to activate", () => {
+    useUiStore.setState({ openTabs: ["a", "b", "c"] });
+    expect(useUiStore.getState().closeTab("b")).toBe("c");
+    expect(useUiStore.getState().openTabs).toEqual(["a", "c"]);
+    expect(useUiStore.getState().closeTab("c")).toBe("a");
+    expect(useUiStore.getState().closeTab("a")).toBeNull();
+  });
+
+  it("moveTab reorders to the target's position", () => {
+    useUiStore.setState({ openTabs: ["a", "b", "c"] });
+    useUiStore.getState().moveTab("a", "c");
+    expect(useUiStore.getState().openTabs).toEqual(["b", "c", "a"]);
+  });
+
+  it("pruneTabs removes gone sessions", () => {
+    useUiStore.setState({ openTabs: ["a", "b", "c"] });
+    useUiStore.getState().pruneTabs(["b"]);
+    expect(useUiStore.getState().openTabs).toEqual(["a", "c"]);
+  });
+});

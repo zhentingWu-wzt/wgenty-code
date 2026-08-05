@@ -6,7 +6,7 @@ import { useSessionManager } from "./state/sessionManager";
 import { SessionStoreContext } from "./state/sessionContext";
 import { StatusBar } from "./components/StatusBar";
 import { LeftSidebar } from "./components/layout/LeftSidebar";
-import { SessionHeader } from "./components/SessionHeader";
+import { SessionTabBar } from "./components/layout/SessionTabBar";
 import { ChatView } from "./components/ChatView";
 import { Composer } from "./components/Composer";
 import { PermissionModal } from "./components/PermissionModal";
@@ -20,6 +20,7 @@ import { AppTopbar } from "./components/layout/AppTopbar";
 import type { SlashCommand } from "./components/slashCommands";
 import { usePermissionTrace } from "./hooks/usePermissionTrace";
 import { usePolling } from "./hooks/usePolling";
+import { startUiSync } from "./state/uiSync";
 
 /**
  * App — wires the per-session agent runners to the UI stores.
@@ -51,6 +52,9 @@ export function App() {
       useSessionManager.getState().createLocalSession();
     }
   }, []);
+
+  // sessionManager → uiStore.openTabs 单向同步（激活补开 tab、删除剪 tab）。
+  useEffect(() => startUiSync(), []);
 
   // Warn before unloading the page while any session is mid-turn (the loops
   // live in the browser; leaving kills them).
@@ -123,7 +127,7 @@ export function App() {
         <LeftSidebar client={client} />
         <SessionStoreContext.Provider value={activeStore}>
           <div className="flex min-w-0 flex-1 flex-col">
-            <SessionHeader />
+            <SessionTabBar />
             <main className="main">
               <ChatView />
             </main>
