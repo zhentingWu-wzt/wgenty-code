@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * shadcn 风格 token 体系（neutral 灰阶 + 品牌蓝 accent）。
+ * 暗色值沿用旧 styles.css 的 Codex 风格调色板；亮色为新增。
+ */
+:root {
+  --background: #ffffff;
+  --foreground: #1a1a1a;
+  --card: #ffffff;
+  --card-foreground: #1a1a1a;
+  --popover: #ffffff;
+  --popover-foreground: #1a1a1a;
+  --primary: #3d63dd;
+  --primary-foreground: #ffffff;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #1a1a1a;
+  --muted: #f4f4f5;
+  --muted-foreground: #737373;
+  --accent: #f4f4f5;
+  --accent-foreground: #1a1a1a;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: #e5e5e5;
+  --input: #e5e5e5;
+  --ring: #3d63dd;
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --sidebar: #fafafa;
+  --sidebar-foreground: #1a1a1a;
+  --sidebar-border: #e5e5e5;
+  --sidebar-accent: #f4f4f5;
+  --sidebar-accent-foreground: #1a1a1a;
+  --radius: 0.375rem;
+}
+
+.dark {
+  --background: #0d0d0d;
+  --foreground: #ededed;
+  --card: #161616;
+  --card-foreground: #ededed;
+  --popover: #1f1f1f;
+  --popover-foreground: #ededed;
+  --primary: #6e8efb;
+  --primary-foreground: #0d0d0d;
+  --secondary: #1f1f1f;
+  --secondary-foreground: #ededed;
+  --muted: #1f1f1f;
+  --muted-foreground: #8a8a8a;
+  --accent: #262626;
+  --accent-foreground: #ededed;
+  --destructive: #e5606b;
+  --destructive-foreground: #0d0d0d;
+  --border: #262626;
+  --input: #333333;
+  --ring: #6e8efb;
+  --success: #7ec880;
+  --warning: #d9a441;
+  --danger: #e5606b;
+  --sidebar: #111111;
+  --sidebar-foreground: #ededed;
+  --sidebar-border: #262626;
+  --sidebar-accent: #1f1f1f;
+  --sidebar-accent-foreground: #ededed;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --font-sans: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Menlo", monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+}
