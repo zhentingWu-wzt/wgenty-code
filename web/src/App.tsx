@@ -137,11 +137,11 @@ export function App() {
               onCommand={setOpenCommand}
             />
           </div>
+          <PermissionModal client={client} />
+          <QuestionModal client={client} />
         </SessionStoreContext.Provider>
       </div>
       <StatusBar />
-      <PermissionModal client={client} />
-      <QuestionModal client={client} />
       {openCommand?.name === "/model" && (
         <CommandModal title="Switch model" onClose={closeCommand}>
           <ModelPanel client={client} />
