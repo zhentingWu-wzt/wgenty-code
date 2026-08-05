@@ -16,6 +16,7 @@ import { SessionsBrowserModal } from "./components/SessionsBrowserModal";
 import { ModelPanel } from "./components/ModelPanel";
 import { MemoryPanel } from "./components/MemoryPanel";
 import { CheckpointsPanel } from "./components/CheckpointsPanel";
+import { AppTopbar } from "./components/layout/AppTopbar";
 import type { SlashCommand } from "./components/slashCommands";
 import { usePermissionTrace } from "./hooks/usePermissionTrace";
 import { usePolling } from "./hooks/usePolling";
@@ -116,12 +117,12 @@ export function App() {
   if (!activeStore) return null;
 
   return (
-    <SessionStoreContext.Provider value={activeStore}>
-      <div className="app">
-        <StatusBar />
-        <div className="app-body">
-          <LeftRail client={client} />
-          <div className="app-main">
+    <div className="flex h-screen flex-col bg-background text-foreground">
+      <AppTopbar />
+      <div className="flex min-h-0 flex-1">
+        <LeftRail client={client} />
+        <SessionStoreContext.Provider value={activeStore}>
+          <div className="flex min-w-0 flex-1 flex-col">
             <SessionHeader />
             <main className="main">
               <ChatView />
@@ -136,29 +137,30 @@ export function App() {
               onCommand={setOpenCommand}
             />
           </div>
-        </div>
-        <PermissionModal client={client} />
-        <QuestionModal client={client} />
-        {openCommand?.name === "/model" && (
-          <CommandModal title="Switch model" onClose={closeCommand}>
-            <ModelPanel client={client} />
-          </CommandModal>
-        )}
-        {openCommand?.name === "/sessions" && (
-          <SessionsBrowserModal client={client} onClose={closeCommand} />
-        )}
-        {openCommand?.name === "/memory" && (
-          <CommandModal title="Memory" onClose={closeCommand}>
-            <MemoryPanel client={client} />
-          </CommandModal>
-        )}
-        {openCommand?.name === "/undo" && (
-          <CommandModal title="Undo turn" onClose={closeCommand}>
-            <CheckpointsPanel client={client} />
-          </CommandModal>
-        )}
-        <Toaster theme="dark" position="bottom-right" />
+        </SessionStoreContext.Provider>
       </div>
-    </SessionStoreContext.Provider>
+      <StatusBar />
+      <PermissionModal client={client} />
+      <QuestionModal client={client} />
+      {openCommand?.name === "/model" && (
+        <CommandModal title="Switch model" onClose={closeCommand}>
+          <ModelPanel client={client} />
+        </CommandModal>
+      )}
+      {openCommand?.name === "/sessions" && (
+        <SessionsBrowserModal client={client} onClose={closeCommand} />
+      )}
+      {openCommand?.name === "/memory" && (
+        <CommandModal title="Memory" onClose={closeCommand}>
+          <MemoryPanel client={client} />
+        </CommandModal>
+      )}
+      {openCommand?.name === "/undo" && (
+        <CommandModal title="Undo turn" onClose={closeCommand}>
+          <CheckpointsPanel client={client} />
+        </CommandModal>
+      )}
+      <Toaster theme="dark" position="bottom-right" />
+    </div>
   );
 }
