@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { DaemonClient } from "../api/client";
 import type { SkillInfoDto } from "../api/types";
-import { RailSection } from "./RailSection";
+import { RailSection } from "../features/sessions/RailSection";
 
 /** Read-only skill list (GET /api/v1/skills). Enable/disable is out of scope:
  *  the knowledge layer has no enabled concept. Collapsed by default. */

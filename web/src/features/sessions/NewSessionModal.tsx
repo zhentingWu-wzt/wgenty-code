@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import type { DaemonClient } from "../api/client";
-import type { WorktreeBinding, WorktreeInfo } from "../api/types";
-import { useSessionManager } from "../state/sessionManager";
-import { CommandModal } from "./CommandModal";
+import type { DaemonClient } from "../../api/client";
+import type { WorktreeBinding, WorktreeInfo } from "../../api/types";
+import { useSessionManager } from "../../state/sessionManager";
+import { CommandModal } from "../../components/CommandModal";
 
 type Mode = "main" | "existing" | "new";
 

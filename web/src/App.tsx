@@ -5,7 +5,7 @@ import { runSessionTurn, stopSessionTurn } from "./agent/sessionRunner";
 import { useSessionManager } from "./state/sessionManager";
 import { SessionStoreContext } from "./state/sessionContext";
 import { StatusBar } from "./components/StatusBar";
-import { LeftRail } from "./components/LeftRail";
+import { LeftSidebar } from "./components/layout/LeftSidebar";
 import { SessionHeader } from "./components/SessionHeader";
 import { ChatView } from "./components/ChatView";
 import { Composer } from "./components/Composer";
@@ -120,7 +120,7 @@ export function App() {
     <div className="flex h-screen flex-col bg-background text-foreground">
       <AppTopbar />
       <div className="flex min-h-0 flex-1">
-        <LeftRail client={client} />
+        <LeftSidebar client={client} />
         <SessionStoreContext.Provider value={activeStore}>
           <div className="flex min-w-0 flex-1 flex-col">
             <SessionHeader />
