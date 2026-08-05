@@ -1,6 +1,8 @@
 import { useState } from "react";
-import type { DaemonClient } from "../api/client";
-import { useSessionStore } from "../state/sessionContext";
+import type { DaemonClient } from "../../api/client";
+import { useSessionStore } from "../../state/sessionContext";
+import { cn } from "../../lib/utils";
+import { Button } from "../../components/ui/button";
 
 /**
  * Modal for ask_user_question prompts pushed from the server-side loop via
@@ -43,27 +45,36 @@ export function QuestionModal({ client }: { client: DaemonClient }) {
   };
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal question-modal">
-        <div className="modal-title">Question</div>
-        <p className="question-text">{question.question}</p>
-        <div className="question-options">
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    >
+      <div className="w-[520px] max-w-[90%] rounded-lg border border-border bg-popover p-4">
+        <div className="mb-2 text-[15px] font-semibold">Question</div>
+        <p className="mb-3 text-[13px] leading-relaxed">{question.question}</p>
+        <div className="mb-2 flex flex-col gap-1.5">
           {question.options.map((opt) => (
             <button
               key={opt.label}
               type="button"
-              className={`question-option ${selected === opt.label ? "selected" : ""}`}
+              className={cn(
+                "flex flex-col gap-0.5 rounded-md border px-3 py-2 text-left",
+                selected === opt.label
+                  ? "border-foreground bg-accent"
+                  : "border-border bg-background hover:bg-accent",
+              )}
               onClick={() => setSelected(opt.label)}
               disabled={submitting}
             >
-              <span className="question-option-label">{opt.label}</span>
-              <span className="question-option-desc">{opt.description}</span>
+              <span className="text-[13px] font-medium">{opt.label}</span>
+              <span className="text-[12px] text-muted-foreground">{opt.description}</span>
             </button>
           ))}
         </div>
-        <div className="question-other">
+        <div className="mb-2">
           <input
-            className="question-other-input"
+            className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-[13px] outline-none focus:border-ring"
             placeholder="Other…"
             value={otherText}
             onChange={(e) => setOtherText(e.target.value)}
@@ -71,15 +82,10 @@ export function QuestionModal({ client }: { client: DaemonClient }) {
             disabled={submitting}
           />
         </div>
-        <div className="modal-actions">
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => selected && submit(selected)}
-            disabled={!selected || submitting}
-          >
+        <div className="flex justify-end gap-2">
+          <Button onClick={() => selected && submit(selected)} disabled={!selected || submitting}>
             Submit
-          </button>
+          </Button>
         </div>
       </div>
     </div>

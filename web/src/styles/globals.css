@@ -4,7 +4,7 @@
 
 /*
  * shadcn 风格 token 体系（neutral 灰阶 + 品牌蓝 accent）。
- * 暗色值沿用旧 styles.css 的 Codex 风格调色板；亮色为新增。
+ * 暗色值沿用原 Codex 风格调色板；亮色为新增。
  */
 :root {
   --background: #ffffff;
@@ -110,6 +110,14 @@
     background: var(--background);
     color: var(--foreground);
     font-family: var(--font-sans);
+    font-size: 13px;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
+}
+
+/* streaming 光标（ChatView 中配合 animate-[pulse-cursor_1s_infinite] 使用）——
+   唯一保留的全局动画。 */
+@keyframes pulse-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }

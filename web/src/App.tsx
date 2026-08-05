@@ -7,13 +7,13 @@ import { SessionStoreContext } from "./state/sessionContext";
 import { StatusBar } from "./components/StatusBar";
 import { LeftSidebar } from "./components/layout/LeftSidebar";
 import { SessionTabBar } from "./components/layout/SessionTabBar";
-import { ChatView } from "./components/ChatView";
-import { Composer } from "./components/Composer";
-import { PermissionModal } from "./components/PermissionModal";
-import { QuestionModal } from "./components/QuestionModal";
-import { CommandModal } from "./components/CommandModal";
+import { ChatView } from "./features/chat/ChatView";
+import { Composer } from "./features/chat/Composer";
+import { PermissionModal } from "./features/permissions/PermissionModal";
+import { QuestionModal } from "./features/permissions/QuestionModal";
+import { CommandModal } from "./features/panels/CommandModal";
 import { RightRail } from "./components/layout/RightRail";
-import { ModelPanel } from "./components/ModelPanel";
+import { ModelPanel } from "./features/panels/ModelPanel";
 import { AppTopbar } from "./components/layout/AppTopbar";
 import type { SlashCommand } from "./components/slashCommands";
 import { usePermissionTrace } from "./hooks/usePermissionTrace";
@@ -144,7 +144,7 @@ export function App() {
         <SessionStoreContext.Provider value={activeStore}>
           <div className="flex min-w-0 flex-1 flex-col">
             <SessionTabBar />
-            <main className="main">
+            <main className="min-h-0 flex-1 overflow-y-auto">
               <ChatView />
             </main>
             <Composer

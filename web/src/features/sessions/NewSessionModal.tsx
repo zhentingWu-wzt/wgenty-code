@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import type { DaemonClient } from "../../api/client";
 import type { WorktreeBinding, WorktreeInfo } from "../../api/types";
 import { useSessionManager } from "../../state/sessionManager";
-import { CommandModal } from "../../components/CommandModal";
+import { CommandModal } from "../panels/CommandModal";
+import { Button } from "../../components/ui/button";
 
 type Mode = "main" | "existing" | "new";
 
@@ -85,19 +86,19 @@ export function NewSessionModal({
 
   return (
     <CommandModal title="New session" onClose={onClose}>
-      <div className="new-session-form">
-        <label className="new-session-label">
+      <div className="flex flex-col gap-3">
+        <label className="flex flex-col gap-1 text-[12px] text-muted-foreground">
           Name (optional)
           <input
-            className="new-session-input"
+            className="rounded-md border border-input bg-background px-2 py-1.5 text-[13px] text-foreground outline-none focus:border-ring"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Session name"
           />
         </label>
 
-        <div className="new-session-modes" role="radiogroup" aria-label="Workspace">
-          <label className="new-session-mode">
+        <div className="flex flex-col gap-1" role="radiogroup" aria-label="Workspace">
+          <label className="flex items-center gap-1.5 text-[13px]">
             <input
               type="radio"
               name="workspace"
@@ -106,7 +107,7 @@ export function NewSessionModal({
             />
             Main checkout
           </label>
-          <label className="new-session-mode">
+          <label className="flex items-center gap-1.5 text-[13px]">
             <input
               type="radio"
               name="workspace"
@@ -115,7 +116,7 @@ export function NewSessionModal({
             />
             Existing worktree
           </label>
-          <label className="new-session-mode">
+          <label className="flex items-center gap-1.5 text-[13px]">
             <input
               type="radio"
               name="workspace"
@@ -128,7 +129,7 @@ export function NewSessionModal({
 
         {mode === "existing" && (
           <select
-            className="new-session-input"
+            className="rounded-md border border-input bg-background px-2 py-1.5 text-[13px] text-foreground outline-none focus:border-ring"
             value={selectedPath}
             onChange={(e) => setSelectedPath(e.target.value)}
           >
@@ -143,27 +144,25 @@ export function NewSessionModal({
 
         {mode === "new" && (
           <input
-            className="new-session-input"
+            className="rounded-md border border-input bg-background px-2 py-1.5 text-[13px] text-foreground outline-none focus:border-ring"
             value={branch}
             onChange={(e) => setBranch(e.target.value)}
             placeholder="Branch name (e.g. feat-x)"
           />
         )}
 
-        {error && <div className="panel-error">{error}</div>}
+        {error && <div className="text-[12px] text-danger">{error}</div>}
 
-        <div className="modal-actions">
-          <button type="button" className="btn" onClick={onClose} disabled={busy}>
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose} disabled={busy}>
             Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
+          </Button>
+          <Button
             onClick={create}
             disabled={busy || (mode === "existing" && worktrees.length === 0)}
           >
             Create
-          </button>
+          </Button>
         </div>
       </div>
     </CommandModal>
