@@ -1,7 +1,15 @@
 import { Check, CircleSlash, X } from "lucide-react";
-import type { ToolExecution } from "../agent/loop";
+import type { ToolExecution } from "../../agent/loop";
+import { cn } from "../../lib/utils";
 import { DiffView } from "./DiffView";
 import { hasDiff } from "./diffUtils";
+
+/** Status → accent classes (left color bar + status text/icon color). */
+const STATUS_STYLES = {
+  ok: { bar: "border-l-success", text: "text-success" },
+  error: { bar: "border-l-danger", text: "text-danger" },
+  denied: { bar: "border-l-warning", text: "text-warning" },
+} as const;
 
 /**
  * Collapsed-by-default tool call (Codex-style: one summary line, click to
@@ -24,6 +32,7 @@ export function ToolCallCard({ exec }: { exec: ToolExecution }) {
   }
 
   const status = denied ? "denied" : ok ? "ok" : "error";
+  const styles = STATUS_STYLES[status];
   const statusIcon = denied ? (
     <CircleSlash size={12} />
   ) : ok ? (
@@ -34,24 +43,43 @@ export function ToolCallCard({ exec }: { exec: ToolExecution }) {
 
   return (
     <details
-      className={`tool-card ${ok ? "tool-ok" : denied ? "tool-denied" : "tool-err"}`}
+      className={cn(
+        "overflow-hidden rounded-md border border-border border-l-[3px] text-[12px] open:bg-card",
+        styles.bar,
+      )}
       data-status={status}
     >
-      <summary className="tool-summary">
-        <span className="tool-status-icon" data-status={status}>
-          {statusIcon}
+      <summary className="flex cursor-pointer items-center gap-2 px-2.5 py-1.5 text-[12px] select-none">
+        <span className={cn("inline-flex shrink-0", styles.text)}>{statusIcon}</span>
+        <span className="shrink-0 font-mono font-medium text-foreground">{toolName}</span>
+        {summary && (
+          <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
+            {summary}
+          </span>
+        )}
+        <span className={cn("ml-auto shrink-0 text-[10px] tracking-wide uppercase", styles.text)}>
+          {status}
         </span>
-        <span className="tool-name">{toolName}</span>
-        {summary && <span className="tool-arg-summary">{summary}</span>}
-        <span className={`tool-status-text tool-status-${status}`}>{status}</span>
       </summary>
-      <div className="tool-body">
-        {argsPreview && !showDiff && <pre className="tool-args">{argsPreview}</pre>}
-        {response.error && <pre className="tool-output tool-output-err">{response.error}</pre>}
+      <div className="border-t border-border px-2.5 pb-2">
+        {argsPreview && !showDiff && (
+          <pre className="mt-1.5 max-h-56 overflow-y-auto font-mono text-[11px] whitespace-pre-wrap text-muted-foreground">
+            {argsPreview}
+          </pre>
+        )}
+        {response.error && (
+          <pre className="mt-1.5 max-h-56 overflow-y-auto font-mono text-[11px] whitespace-pre-wrap text-danger">
+            {response.error}
+          </pre>
+        )}
         {showDiff ? (
           <DiffView toolName={toolName} response={response} />
         ) : (
-          response.content && <pre className="tool-output">{truncate(response.content, 2000)}</pre>
+          response.content && (
+            <pre className="mt-1.5 max-h-56 overflow-y-auto font-mono text-[11px] whitespace-pre-wrap text-muted-foreground">
+              {truncate(response.content, 2000)}
+            </pre>
+          )
         )}
       </div>
     </details>

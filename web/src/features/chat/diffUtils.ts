@@ -10,7 +10,7 @@
  *   file_edit:  metadata.old_content, metadata.new_content
  *   apply_patch: metadata.diffs = { "<path>": { old_content, new_content }, ... }
  */
-import type { ExecuteToolResponse } from "../api/types";
+import type { ExecuteToolResponse } from "../../api/types";
 
 /** One file's before/after, with a computed line diff. */
 export interface FileDiff {

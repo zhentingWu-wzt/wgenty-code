@@ -4,7 +4,7 @@ import type { DaemonClient } from "../api/client";
 import type { SessionInfo } from "../api/types";
 import { sessionMessagesToDisplay } from "../agent/sessionLoad";
 import { useSessionManager } from "../state/sessionManager";
-import { CommandModal } from "./CommandModal";
+import { CommandModal } from "../features/panels/CommandModal";
 import { RailSection } from "../features/sessions/RailSection";
 
 /**

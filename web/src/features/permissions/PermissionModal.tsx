@@ -1,6 +1,7 @@
-import { DaemonClient } from "../api/client";
-import { useSessionStore } from "../state/sessionContext";
-import type { PermissionDecision } from "../api/types";
+import { DaemonClient } from "../../api/client";
+import { useSessionStore } from "../../state/sessionContext";
+import type { PermissionDecision } from "../../api/types";
+import { Button } from "../../components/ui/button";
 
 interface PermissionModalProps {
   client: DaemonClient;
@@ -73,25 +74,31 @@ function ModalShell({
   onChoose: (d: PermissionDecision) => void;
 }) {
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal">
-        <div className="modal-title">Permission required</div>
-        <div className="modal-tool">{tool}</div>
-        <p className="modal-reason">{reason}</p>
-        <p className="modal-rule">
-          <code>{rule}</code>
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+    >
+      <div className="w-[480px] max-w-[90%] rounded-lg border border-border bg-popover p-4">
+        <div className="mb-2 text-[15px] font-semibold text-warning">Permission required</div>
+        <div className="mb-1 font-mono text-primary">{tool}</div>
+        <p className="mb-1.5 leading-relaxed">{reason}</p>
+        <p className="mb-3">
+          <code className="rounded-sm bg-background px-1.5 py-0.5 font-mono text-[12px] text-muted-foreground">
+            {rule}
+          </code>
         </p>
-        <p className="modal-global-note">Approvals are global — they apply to all sessions.</p>
-        <div className="modal-actions">
-          <button type="button" className="btn btn-primary" onClick={() => onChoose("allowOnce")}>
-            Allow once
-          </button>
-          <button type="button" className="btn" onClick={() => onChoose("alwaysAllow")}>
+        <p className="mb-3 text-[12px] text-muted-foreground">
+          Approvals are global — they apply to all sessions.
+        </p>
+        <div className="flex justify-end gap-2">
+          <Button onClick={() => onChoose("allowOnce")}>Allow once</Button>
+          <Button variant="outline" onClick={() => onChoose("alwaysAllow")}>
             Always allow
-          </button>
-          <button type="button" className="btn btn-danger" onClick={() => onChoose("deny")}>
+          </Button>
+          <Button variant="destructive" onClick={() => onChoose("deny")}>
             Deny
-          </button>
+          </Button>
         </div>
       </div>
     </div>

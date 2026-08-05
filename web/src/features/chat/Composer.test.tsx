@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Composer } from "./Composer";
-import { SessionStoreContext } from "../state/sessionContext";
-import { createSessionStore, type SessionStore } from "../state/sessionStore";
-import type { SlashCommand } from "./slashCommands";
+import { SessionStoreContext } from "../../state/sessionContext";
+import { createSessionStore, type SessionStore } from "../../state/sessionStore";
+import type { SlashCommand } from "../../components/slashCommands";
 
 function renderComposer(
   onSend: (t: string) => void,
