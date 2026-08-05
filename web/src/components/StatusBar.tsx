@@ -1,53 +1,38 @@
 import { selectPendingApprovalCount, useSessionManager } from "../state/sessionManager";
-import { useSessionStore } from "../state/sessionContext";
 
-/**
- * Codex-style top control bar. Left: connection + branch context. Right:
- * model + run state + global pending-approval badge. Dense, single row, no
- * decoration — the "command center" strip at the top of the window.
- *
- * connection/modelName are app-level facts (sessionManager); isRunning is the
- * active session's run state (StatusBar renders inside the session Provider).
- */
+/** 底部状态栏：daemon 连接 · 运行状态 · 待审批数 · 模型。 */
 export function StatusBar() {
   const connection = useSessionManager((s) => s.connection);
   const modelName = useSessionManager((s) => s.modelName);
   const pendingApprovals = useSessionManager(selectPendingApprovalCount);
-  const isRunning = useSessionStore((s) => s.isRunning);
+  const activeStatus = useSessionManager((s) =>
+    s.activeId ? s.entries[s.activeId]?.status : undefined,
+  );
+  const isRunning = activeStatus === "running" || activeStatus === "awaiting_approval";
 
   const statusText =
-    connection === "connected"
-      ? "online"
-      : connection === "disconnected"
-        ? "offline"
-        : "connecting";
+    connection === "connected" ? "online" : connection === "disconnected" ? "offline" : "connecting";
 
   return (
-    <header className="topbar">
-      <div className="topbar-left">
-        <span className={`topbar-dot topbar-dot-${connection}`} title={statusText} />
-        <span className="topbar-status">{statusText}</span>
-      </div>
-      <div className="topbar-right">
-        {pendingApprovals > 0 && (
-          <span className="topbar-approval-badge" title="sessions awaiting approval">
-            {pendingApprovals}
-          </span>
-        )}
-        {isRunning && (
-          <span className="topbar-running">
-            <span className="topbar-spinner" /> working
-          </span>
-        )}
-        {modelName && (
-          <>
-            {isRunning && <span className="topbar-sep" />}
-            <span className="topbar-model" title="active model">
-              {modelName}
-            </span>
-          </>
-        )}
-      </div>
-    </header>
+    <footer className="flex h-6 shrink-0 items-center gap-3 border-t border-border bg-background px-3 text-[11px] text-muted-foreground">
+      <span className="flex items-center gap-1.5">
+        <span
+          className={
+            connection === "connected"
+              ? "h-1.5 w-1.5 rounded-full bg-success"
+              : connection === "disconnected"
+                ? "h-1.5 w-1.5 rounded-full bg-danger"
+                : "h-1.5 w-1.5 rounded-full bg-warning"
+          }
+        />
+        {statusText}
+      </span>
+      {isRunning && <span className="text-warning">working</span>}
+      {pendingApprovals > 0 && (
+        <span className="rounded-sm bg-warning/20 px-1 text-warning">{pendingApprovals} approval</span>
+      )}
+      <div className="flex-1" />
+      {modelName && <span title="active model">{modelName}</span>}
+    </footer>
   );
 }
