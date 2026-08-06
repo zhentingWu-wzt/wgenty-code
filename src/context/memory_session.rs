@@ -209,6 +209,9 @@ pub struct SessionInfo {
     pub worktree: Option<SessionWorktree>,
 }
 
+/// Cheaply cloneable: the sessions dir plus shared in-memory index handles.
+/// Clones (e.g. the per-project manager cache in the daemon) share state.
+#[derive(Clone)]
 pub struct SessionManager {
     sessions_dir: PathBuf,
     active_session: Arc<RwLock<Option<Session>>>,

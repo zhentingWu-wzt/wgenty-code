@@ -71,15 +71,17 @@ pub struct DaemonEventSink {
     save_bridge: Option<SaveBridge>,
 }
 
-/// Handles the persistence side of [`RuntimeEvent::SaveSession`]: a snapshot
-/// of the live history plus the daemon state needed to persist it. `emit` is
-/// sync, so the save itself is always spawned, never run inline.
+/// Handles the persistence side of [`RuntimeEvent::SaveSession`]: the owning
+/// project's session store plus the live history handle. `emit` is sync, so
+/// the save itself is always spawned, never run inline.
 ///
 /// `save_gen` / `save_lock` implement the stale-overwrite guard: every save
 /// (mid-run or turn-end) claims a generation and re-checks it under the write
 /// lock, so a task holding an older snapshot can never overwrite a newer one.
 struct SaveBridge {
-    state: Arc<DaemonState>,
+    /// The session store that owns this session (multi-project routing);
+    /// captured at run start so an unregistered-project mid-run still saves.
+    sessions: MemorySessionManager,
     history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
     save_gen: Arc<AtomicU64>,
     save_lock: Arc<tokio::sync::Mutex<()>>,
@@ -108,13 +110,13 @@ impl DaemonEventSink {
     /// final save participates in the same generation sequence.
     fn set_save_bridge(
         &mut self,
-        state: Arc<DaemonState>,
+        sessions: MemorySessionManager,
         history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
         save_gen: Arc<AtomicU64>,
         save_lock: Arc<tokio::sync::Mutex<()>>,
     ) {
         self.save_bridge = Some(SaveBridge {
-            state,
+            sessions,
             history,
             save_gen,
             save_lock,
@@ -205,7 +207,7 @@ impl EventSink for DaemonEventSink {
                 // self-skips when a newer save was claimed meanwhile.
                 if let Some(bridge) = &self.save_bridge {
                     let gen = claim_save_generation(&bridge.save_gen);
-                    let state = Arc::clone(&bridge.state);
+                    let sessions = bridge.sessions.clone();
                     let history = Arc::clone(&bridge.history);
                     let save_gen = Arc::clone(&bridge.save_gen);
                     let save_lock = Arc::clone(&bridge.save_lock);
@@ -213,7 +215,7 @@ impl EventSink for DaemonEventSink {
                     tokio::spawn(async move {
                         let snapshot = history.lock().await.clone();
                         guarded_save(
-                            &state.session_manager,
+                            &sessions,
                             &session_id,
                             &snapshot,
                             gen,
@@ -285,25 +287,37 @@ pub struct RootToolPort {
     root_mode: Arc<std::sync::RwLock<crate::config::RootPermissionMode>>,
     effective_mode: Arc<std::sync::RwLock<crate::sandbox::EffectiveMode>>,
     agent: AgentExecutionContext,
-    workdir: Option<PathBuf>,
+    /// The session's effective working root (bound worktree > project root >
+    /// main working_dir). Injected into every [`ToolContext`] so relative
+    /// tool paths resolve there, and used as the permission-policy root so
+    /// validation and execution never diverge.
+    root: PathBuf,
+    /// Per-project checkpoint handles (snapshots live under the project the
+    /// session belongs to, not the daemon's main project).
+    checkpoint_manager: Arc<crate::tools::CheckpointManager>,
+    checkpoint_store: Arc<crate::tools::CheckpointStore>,
     session_id: String,
 }
 
 impl RootToolPort {
-    /// Build the port for a server-side root run. `workdir` is the session's
-    /// bound worktree (`None` = main working dir); it is injected into every
-    /// [`ToolContext`] so relative tool paths resolve inside the worktree.
-    pub fn new(state: &DaemonState, session_id: &str, workdir: Option<PathBuf>) -> Self {
+    /// Build the port for a server-side root run. `root` is the session's
+    /// effective working root (see [`DaemonState::effective_session_root`]):
+    /// tool path resolution, the permission-policy boundary, and checkpoint
+    /// storage all follow it.
+    pub fn new(state: &DaemonState, session_id: &str, root: PathBuf) -> Self {
+        let (checkpoint_manager, checkpoint_store) = state.checkpoints_for_project(&root);
         Self {
             registry: Arc::clone(&state.tool_registry),
-            policy: state.tool_executor.policy().clone(),
+            policy: ToolPermissionPolicy::new(root.clone()),
             session_rules: state.tool_executor.session_rules_handle(),
             bridge: Arc::clone(&state.permission_bridge),
             interaction_bridge: Arc::clone(&state.interaction_bridge),
             root_mode: Arc::clone(&state.root_mode),
             effective_mode: Arc::clone(&state.effective_mode),
             agent: AgentExecutionContext::root(SessionId::new(session_id)),
-            workdir,
+            root,
+            checkpoint_manager,
+            checkpoint_store,
             session_id: session_id.to_string(),
         }
     }
@@ -322,8 +336,10 @@ impl RootToolPort {
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         Self {
+            checkpoint_manager: registry.checkpoint_manager.clone(),
+            checkpoint_store: registry.checkpoint_store.clone(),
             registry,
-            policy: ToolPermissionPolicy::new(policy_root),
+            policy: ToolPermissionPolicy::new(policy_root.clone()),
             session_rules,
             bridge,
             interaction_bridge: Arc::new(
@@ -336,7 +352,7 @@ impl RootToolPort {
                 crate::sandbox::EffectiveMode::Normal,
             )),
             agent: AgentExecutionContext::root(SessionId::new("test")),
-            workdir,
+            root: policy_root,
             session_id: "test".to_string(),
         }
     }
@@ -458,7 +474,7 @@ impl ToolPort for RootToolPort {
             return resp;
         }
 
-        // 4. Registry execution with the session-bound workdir.
+        // 4. Registry execution with the session's effective root as workdir.
         let inv_id = req
             .invocation_id
             .clone()
@@ -467,7 +483,7 @@ impl ToolPort for RootToolPort {
         // (mirrors the /tools/execute handler; Plan mode skips capture inside
         // maybe_capture_pre_edit via EffectiveMode::Plan).
         if let Some(turn_id) = req.turn_id.as_deref() {
-            if let Err(e) = self.registry.checkpoint_manager.begin_turn(turn_id) {
+            if let Err(e) = self.checkpoint_manager.begin_turn(turn_id) {
                 tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
             }
         }
@@ -476,9 +492,9 @@ impl ToolPort for RootToolPort {
             agent: &self.agent,
             invocation_id: ToolInvocationId::new(inv_id),
             origin_turn_id: req.turn_id.as_deref(),
-            workdir: self.workdir.as_deref(),
+            workdir: Some(self.root.as_path()),
             effective_mode,
-            checkpoint: Some(self.registry.checkpoint_store.as_ref()),
+            checkpoint: Some(self.checkpoint_store.as_ref()),
         };
         match self
             .registry
@@ -660,7 +676,7 @@ pub(crate) async fn post_run(
             "message must not be empty".to_string(),
         ));
     }
-    if state.session_manager.get(&id).await.is_none() {
+    if state.resolve_session(&id).await.is_none() {
         return Err((StatusCode::NOT_FOUND, format!("no such session: {id}")));
     }
 
@@ -719,7 +735,7 @@ pub(crate) async fn get_session_events(
     State(state): State<Arc<DaemonState>>,
     Path(id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
-    if state.session_manager.get(&id).await.is_none() {
+    if state.resolve_session(&id).await.is_none() {
         return Err((StatusCode::NOT_FOUND, format!("no such session: {id}")));
     }
 
@@ -840,9 +856,11 @@ async fn run_session_turn(
         state.session_seq_counter(session_id),
     );
 
-    // 1. Seed history from the persisted session (SessionMessage -> ChatMessage
-    // serde round-trip) and append the new user message.
-    let Some(session) = state.session_manager.get(session_id).await else {
+    // 1. Resolve the owning session store + persisted session (multi-project
+    // routing), seed history from it (SessionMessage -> ChatMessage serde
+    // round-trip), and append the new user message. The manager is captured
+    // for every later save so an unregistered-project mid-run still persists.
+    let Some((sessions, session)) = state.resolve_session(session_id).await else {
         sink.emit(RuntimeEvent::StreamError(format!(
             "session vanished before run start: {session_id}"
         )));
@@ -861,7 +879,7 @@ async fn run_session_turn(
     seed.push(ChatMessage::user(&message));
 
     // 2. Start save: the user message is durable even if the run dies.
-    save_session_history(&state.session_manager, session_id, &seed).await;
+    save_session_history(&sessions, session_id, &seed).await;
 
     // 3. Live settings + LLM port (same wiring as the chat_stream handler).
     let settings = state
@@ -876,18 +894,22 @@ async fn run_session_turn(
     );
     let llm = ApiLlmPort::new(client);
 
-    // 4. Root tool port bound to the session's worktree (None = main working_dir).
-    let workdir = state.session_workdir(session_id);
-    let tools = RootToolPort::new(state, session_id, workdir.clone());
+    // 4. Root tool port bound to the session's effective root (bound worktree
+    // > the session's project > main working_dir). Tool path resolution, the
+    // permission-policy boundary, and checkpoint storage all follow it.
+    let root = state.effective_session_root(session_id).await;
+    let tools = RootToolPort::new(state, session_id, root.clone());
 
     // 5. System prompt — same PromptContext chain as the headless runtime,
-    // with cwd = the bound worktree or the daemon working dir.
-    let cwd = workdir.unwrap_or_else(|| settings.storage.working_dir.clone());
+    // with cwd = the session's effective root.
+    let cwd = root;
     let prompt_ctx = PromptContext::default()
         .with_cwd(cwd.to_string_lossy().to_string())
         .with_sandbox("workspace-write")
         .with_approval("on-request")
-        .with_codegraph_state(crate::mcp::codegraph::probe_install_state(&settings));
+        .with_codegraph_state(crate::mcp::codegraph::probe_install_state_for(
+            &cwd, &settings,
+        ));
     let system_messages =
         crate::prompts::assemble_instructions(&settings, &prompt_ctx).system_messages;
 
@@ -916,7 +938,7 @@ async fn run_session_turn(
     let save_gen = Arc::new(AtomicU64::new(0));
     let save_lock = Arc::new(Mutex::new(()));
     sink.set_save_bridge(
-        Arc::clone(state),
+        sessions.clone(),
         Arc::clone(&history_handle),
         Arc::clone(&save_gen),
         Arc::clone(&save_lock),
@@ -960,7 +982,7 @@ async fn run_session_turn(
     let final_history = history_handle.lock().await.clone();
     let gen = claim_save_generation(&save_gen);
     guarded_save(
-        &state.session_manager,
+        &sessions,
         session_id,
         &final_history,
         gen,

@@ -334,7 +334,8 @@ export interface WorktreeBinding {
 export interface SessionInfo {
   id: string;
   name: string;
-  project_path?: string;
+  /** Owning project's canonical path; null = main project (historical sessions). */
+  project_path?: string | null;
   created_at: string;
   updated_at: string;
   message_count: number;
@@ -364,6 +365,8 @@ export interface SessionResponse {
 
 export interface CreateSessionRequest {
   name?: string;
+  /** Registered project to create the session in; omitted = main project. */
+  project_path?: string;
 }
 
 export interface UpdateSessionRequest {
@@ -381,7 +384,20 @@ export interface AssembledToolCall {
   function: { name: string; arguments: string };
 }
 
-// ── Command center (worktrees / skills / checkpoints) ────────────────────────
+// ── Command center (projects / worktrees / skills / checkpoints) ─────────────
+
+/** Mirrors the daemon's project registry entry (GET /api/v1/projects). The
+ *  main project (daemon working dir) is always first. */
+export interface ProjectInfo {
+  /** Canonical absolute path — the registry key. */
+  path: string;
+  name: string;
+  is_main: boolean;
+  /** Non-git projects reject the worktree endpoints (400), so the UI must
+   *  skip worktree calls and git-only actions for them. */
+  is_git_repo: boolean;
+  added_at: string;
+}
 
 export interface WorktreeInfo {
   path: string;

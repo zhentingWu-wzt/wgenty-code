@@ -26,6 +26,9 @@ export interface SessionEntry {
   updatedAt: number;
   /** Bound worktree (N:1); undefined = main checkout. */
   worktree?: WorktreeBinding;
+  /** Owning project's canonical path; null = main project (local sessions
+   *  default to null and therefore group under the main project). */
+  projectPath: string | null;
 }
 
 /** Options for sessions created with a daemon-side identity (bound sessions
@@ -34,6 +37,7 @@ export interface CreateSessionOptions {
   id?: string;
   daemonId?: string;
   worktree?: WorktreeBinding;
+  projectPath?: string | null;
 }
 
 interface SessionManagerState {
@@ -52,6 +56,8 @@ interface SessionManagerState {
   setDaemonId: (id: string, daemonId: string) => void;
   /** Set (`WorktreeBinding`) or clear (`null`) a session's worktree binding. */
   setWorktree: (id: string, wt: WorktreeBinding | null) => void;
+  /** Reassign a session to a project (canonical path; null = main project). */
+  setProjectPath: (id: string, projectPath: string | null) => void;
   setConnection: (s: ConnectionStatus) => void;
   setModelName: (n: string | null) => void;
 }
@@ -86,6 +92,7 @@ export const useSessionManager = create<SessionManagerState>((set, get) => ({
       status: "idle",
       lastPreview: "",
       updatedAt: Date.now(),
+      projectPath: opts?.projectPath ?? null,
       ...(opts?.worktree ? { worktree: opts.worktree } : {}),
     };
     set((s) => ({
@@ -120,6 +127,9 @@ export const useSessionManager = create<SessionManagerState>((set, get) => ({
     set((s) => ({
       entries: patchEntry(s.entries, id, { worktree: wt ?? undefined }),
     })),
+
+  setProjectPath: (id, projectPath) =>
+    set((s) => ({ entries: patchEntry(s.entries, id, { projectPath }) })),
 
   setConnection: (connection) => set({ connection }),
   setModelName: (modelName) => set({ modelName }),

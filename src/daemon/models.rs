@@ -284,6 +284,10 @@ pub struct SessionResponse {
 pub struct CreateSessionRequest {
     #[serde(default)]
     pub name: Option<String>,
+    /// Project root the session belongs to (must be the main project or a
+    /// registered one). `None` = main project (legacy behavior).
+    #[serde(default)]
+    pub project_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -429,6 +433,17 @@ pub struct MemoryListQuery {
     pub scope: Option<String>, // "project" | "global" | "all" (default all)
     pub min_importance: Option<f32>,
     pub limit: Option<usize>,
+    /// Project whose memory pool to query (`None` = main project).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+/// Query for memory endpoints that only need the project selector.
+#[derive(Debug, Deserialize)]
+pub struct MemoryProjectQuery {
+    /// Project whose memory pool to use (`None` = main project).
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// One memory item with its origin annotated (the model's MemoryOrigin is not

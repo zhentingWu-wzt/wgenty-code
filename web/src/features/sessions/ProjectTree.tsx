@@ -5,28 +5,39 @@ import {
   ChevronRight,
   CircleAlert,
   FolderGit2,
-  Plus,
+  FolderMinus,
+  GitBranchPlus,
+  MessageSquarePlus,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import type { DaemonClient } from "../../api/client";
-import type { SessionInfo, WorktreeInfo } from "../../api/types";
+import type { ProjectInfo, SessionInfo, WorktreeInfo } from "../../api/types";
 import { cn } from "../../lib/utils";
 import { useSessionManager, type SessionEntry } from "../../state/sessionManager";
-import { NewSessionModal } from "./NewSessionModal";
+import { NewSessionModal, type NewSessionPreset } from "./NewSessionModal";
 
 /**
  * Project tree — the LeftSidebar's unified hierarchy:
- *   project (repo working dir)
+ *   project (registered repo, main project first)
  *   └── task (worktree, main checkout first)
  *       └── session (conversations running in that workspace)
  *
  * Replaces the old split Sessions / Worktrees panels. Worktree remove
  * unbinds bound sessions first (they return to the main checkout).
+ *
+ * Multi-project: the daemon keeps a project registry (main project = its
+ * working dir, always first). Sessions group under a project by
+ * `entry.projectPath` (null = main project). Non-git projects skip all
+ * worktree calls — the daemon 400s on them — and hide git-only actions.
+ *
+ * Action buttons are icon-only and live on the node they create under:
+ * "+ task" on the project node, "+ session" on each task node. Node actions
+ * reveal on hover/focus to keep the tree uncluttered.
  */
 
 const TREE_ACTION_BTN =
-  "inline-flex items-center gap-0.5 rounded-sm px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground";
+  "inline-flex items-center rounded-sm p-1 text-muted-foreground hover:bg-accent hover:text-foreground";
 
 const STATUS_DOT: Record<string, string> = {
   running: "text-success",
@@ -54,7 +65,7 @@ function TreeNode({
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   return (
     <div>
-      <div className="flex items-center gap-1 rounded-sm px-1 py-0.5 hover:bg-accent">
+      <div className="group flex items-center gap-1 rounded-sm px-1 py-0.5 hover:bg-accent">
         <button
           type="button"
           aria-expanded={!collapsed}
@@ -69,7 +80,11 @@ function TreeNode({
             <span className="ml-auto text-[11px] text-muted-foreground">{count}</span>
           )}
         </button>
-        {actions && <span className="flex items-center gap-0.5">{actions}</span>}
+        {actions && (
+          <span className="hidden items-center gap-0.5 group-hover:flex group-focus-within:flex">
+            {actions}
+          </span>
+        )}
       </div>
       {!collapsed && <div className="ml-4 flex flex-col gap-0.5">{children}</div>}
     </div>
@@ -137,35 +152,54 @@ function SessionCard({
   );
 }
 
-export function ProjectTree({ client }: { client: DaemonClient }) {
+export function ProjectTree({
+  client,
+  refreshKey = 0,
+}: {
+  client: DaemonClient;
+  /** Bumped by the parent (LeftSidebar's "Add project") to force a refetch. */
+  refreshKey?: number;
+}) {
   const order = useSessionManager((s) => s.order);
   const entries = useSessionManager((s) => s.entries);
   const activeId = useSessionManager((s) => s.activeId);
 
-  const [worktrees, setWorktrees] = useState<WorktreeInfo[] | null>(null);
+  const [projects, setProjects] = useState<ProjectInfo[] | null>(null);
+  const [worktreesByProject, setWorktreesByProject] = useState<Record<string, WorktreeInfo[]>>({});
   const [error, setError] = useState<string | null>(null);
-  const [showNewSession, setShowNewSession] = useState(false);
+  const [newSession, setNewSession] = useState<{ preset?: NewSessionPreset } | null>(null);
 
   const refresh = useCallback(() => {
     client
-      .listWorktrees()
-      .then((w) => {
-        setWorktrees(w);
+      .listProjects()
+      .then(async (ps) => {
+        setProjects(ps);
         setError(null);
+        // Worktrees are per-project; non-git projects 400 on the endpoint,
+        // so only query git repos.
+        const results = await Promise.all(
+          ps
+            .filter((p) => p.is_git_repo)
+            .map(
+              async (p) =>
+                [p.path, await client.listWorktrees(p.path).catch(() => [])] as const,
+            ),
+        );
+        setWorktreesByProject(Object.fromEntries(results));
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, [client]);
 
-  useEffect(refresh, [refresh]);
+  useEffect(refresh, [refresh, refreshKey]);
 
-  const main = worktrees?.find((w) => w.is_main) ?? null;
-  const linked = (worktrees ?? []).filter((w) => !w.is_main);
-  const projectName = main ? (main.path.split("/").filter(Boolean).pop() ?? main.path) : "Project";
+  // Sessions with projectPath null belong to the main project.
+  const mainPath = projects?.find((p) => p.is_main)?.path ?? null;
 
-  const sessionsIn = (wt: WorktreeInfo | null): SessionEntry[] =>
+  const sessionsIn = (project: ProjectInfo, wt: WorktreeInfo | null): SessionEntry[] =>
     order
       .map((id) => entries[id])
       .filter((e) => {
+        if ((e.projectPath ?? mainPath) !== project.path) return false;
         if (!wt) return !e.worktree;
         return e.worktree && (e.worktree.branch === wt.branch || e.worktree.path === wt.path);
       });
@@ -191,12 +225,12 @@ export function ProjectTree({ client }: { client: DaemonClient }) {
   };
 
   // ── Task (worktree) actions ────────────────────────────────────────────────
-  const createTask = async () => {
+  const createTask = async (project: ProjectInfo) => {
     const branch = window.prompt("New task (worktree) branch name:");
     if (!branch?.trim()) return;
     const path = `.worktrees/${branch.trim().replaceAll("/", "-")}`;
     try {
-      await client.createWorktree({ path, branch: branch.trim() });
+      await client.createWorktree({ path, branch: branch.trim(), project: project.path });
       toast.success(`Task ${branch.trim()} created`);
       refresh();
     } catch (e) {
@@ -204,13 +238,16 @@ export function ProjectTree({ client }: { client: DaemonClient }) {
     }
   };
 
-  const removeTask = async (w: WorktreeInfo) => {
+  const removeTask = async (project: ProjectInfo, w: WorktreeInfo) => {
     try {
       // Reverse-lookup bound sessions; unbind them first (they return to the
-      // main checkout).
+      // main checkout). Only this project's sessions can be bound here.
       const sessions = await client.listSessions().catch(() => [] as SessionInfo[]);
       const bound = sessions.filter(
-        (s) => s.worktree && (s.worktree.path === w.path || s.worktree.branch === w.branch),
+        (s) =>
+          (s.project_path ?? mainPath) === project.path &&
+          s.worktree &&
+          (s.worktree.path === w.path || s.worktree.branch === w.branch),
       );
       const msg =
         bound.length > 0
@@ -224,11 +261,32 @@ export function ProjectTree({ client }: { client: DaemonClient }) {
         const entry = Object.values(m.entries).find((e) => e.daemonId === s.id);
         if (entry) m.setWorktree(entry.id, null);
       }
-      await client.deleteWorktree(w.path);
+      await client.deleteWorktree(w.path, project.path);
       toast.success(`Worktree ${w.path} removed`);
       refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  // ── Project actions ────────────────────────────────────────────────────────
+  const removeProject = async (p: ProjectInfo) => {
+    if (
+      !window.confirm(`Remove project ${p.path} from the list? Files on disk are not touched.`)
+    )
+      return;
+    try {
+      await client.removeProject(p.path);
+      // uiSync only prunes tabs, it never rebuilds entries from the daemon —
+      // drop this project's local entries here or they would strand invisible.
+      const m = useSessionManager.getState();
+      for (const e of Object.values(m.entries)) {
+        if (e.projectPath === p.path) m.removeSession(e.id);
+      }
+      toast.success(`Project ${p.name} removed`);
+      refresh();
+    } catch (e) {
+      toast.error(`Remove failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -253,59 +311,111 @@ export function ProjectTree({ client }: { client: DaemonClient }) {
           {error}
         </div>
       )}
-      <TreeNode
-        icon={<FolderGit2 size={13} />}
-        title={projectName}
-        subtitle={main?.path}
-        actions={
-          <>
-            <button
-              type="button"
-              className={TREE_ACTION_BTN}
-              onClick={() => setShowNewSession(true)}
-            >
-              <Plus size={12} /> Session
-            </button>
-            <button type="button" className={TREE_ACTION_BTN} onClick={createTask}>
-              <Plus size={12} /> Task
-            </button>
-          </>
-        }
-      >
-        {/* Main checkout = default workspace (unbound sessions). */}
-        <TreeNode
-          icon={<span className="text-[13px] text-primary">⎇</span>}
-          title={main?.branch ?? "main"}
-          subtitle="main checkout"
-          count={sessionsIn(null).length}
-        >
-          {renderSessions(sessionsIn(null))}
-        </TreeNode>
-
-        {/* One task node per linked worktree. */}
-        {linked.map((w) => (
+      {(projects ?? []).map((p) => {
+        const wts = worktreesByProject[p.path] ?? [];
+        const main = wts.find((w) => w.is_main) ?? null;
+        const linked = wts.filter((w) => !w.is_main);
+        return (
           <TreeNode
-            key={w.path}
-            icon={<span className="text-[13px] text-primary">⎇</span>}
-            title={w.branch ?? "(detached)"}
-            count={sessionsIn(w).length}
+            key={p.path}
+            icon={<FolderGit2 size={13} />}
+            title={p.name}
+            subtitle={p.path}
             actions={
-              <button
-                type="button"
-                className={cn(TREE_ACTION_BTN, "hover:text-danger")}
-                title={`Remove worktree ${w.branch ?? w.path}`}
-                onClick={() => removeTask(w)}
-              >
-                <Trash2 size={11} />
-              </button>
+              <>
+                {p.is_git_repo && (
+                  <button
+                    type="button"
+                    className={TREE_ACTION_BTN}
+                    title={`New task in ${p.name}`}
+                    onClick={() => createTask(p)}
+                  >
+                    <GitBranchPlus size={12} />
+                  </button>
+                )}
+                {!p.is_main && (
+                  <button
+                    type="button"
+                    className={cn(TREE_ACTION_BTN, "hover:text-danger")}
+                    title={`Remove project ${p.name}`}
+                    onClick={() => removeProject(p)}
+                  >
+                    <FolderMinus size={12} />
+                  </button>
+                )}
+              </>
             }
           >
-            {renderSessions(sessionsIn(w))}
+            {/* Main checkout = default workspace (unbound sessions). Non-git
+                projects have no branch, so show the path instead of git terms. */}
+            <TreeNode
+              icon={<span className="text-[13px] text-primary">⎇</span>}
+              title={p.is_git_repo ? (main?.branch ?? "main") : "main"}
+              subtitle={p.is_git_repo ? "main checkout" : p.path}
+              count={sessionsIn(p, null).length}
+              actions={
+                <button
+                  type="button"
+                  className={TREE_ACTION_BTN}
+                  title="New session"
+                  onClick={() => setNewSession({ preset: { mode: "main", project: p.path } })}
+                >
+                  <MessageSquarePlus size={12} />
+                </button>
+              }
+            >
+              {renderSessions(sessionsIn(p, null))}
+            </TreeNode>
+
+            {/* One task node per linked worktree. */}
+            {linked.map((w) => (
+              <TreeNode
+                key={w.path}
+                icon={<span className="text-[13px] text-primary">⎇</span>}
+                title={w.branch ?? "(detached)"}
+                count={sessionsIn(p, w).length}
+                actions={
+                  <>
+                    <button
+                      type="button"
+                      className={TREE_ACTION_BTN}
+                      title={`New session in ${w.branch ?? w.path}`}
+                      onClick={() =>
+                        setNewSession({
+                          preset: {
+                            mode: "existing",
+                            project: p.path,
+                            path: w.path,
+                            branch: w.branch ?? "",
+                          },
+                        })
+                      }
+                    >
+                      <MessageSquarePlus size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      className={cn(TREE_ACTION_BTN, "hover:text-danger")}
+                      title={`Remove worktree ${w.branch ?? w.path}`}
+                      onClick={() => removeTask(p, w)}
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  </>
+                }
+              >
+                {renderSessions(sessionsIn(p, w))}
+              </TreeNode>
+            ))}
           </TreeNode>
-        ))}
-      </TreeNode>
-      {showNewSession && (
-        <NewSessionModal client={client} onClose={() => setShowNewSession(false)} />
+        );
+      })}
+      {newSession && (
+        <NewSessionModal
+          client={client}
+          preset={newSession.preset}
+          onClose={() => setNewSession(null)}
+        />
       )}
     </div>
   );

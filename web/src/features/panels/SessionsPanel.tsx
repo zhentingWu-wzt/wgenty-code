@@ -46,6 +46,7 @@ export function SessionsPanel({ client }: { client: DaemonClient }) {
     const localId = m.createLocalSession(info.name ?? "Session", {
       id: info.id,
       daemonId: info.id,
+      projectPath: info.project_path ?? null,
       ...(info.worktree ? { worktree: info.worktree } : {}),
     });
     const store = useSessionManager.getState().entries[localId].store;

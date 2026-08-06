@@ -28,6 +28,7 @@ import type {
   MemoryItem,
   MemoryStatus,
   PruneResult,
+  ProjectInfo,
   RunResponse,
   SessionInfo,
   SessionResponse,
@@ -58,8 +59,13 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
     const body = await res.text();
     throw new DaemonError(body || `${res.status} ${res.statusText}`, res.status);
   }
-  // 204 No Content and 201 Created (e.g. POST /worktrees) carry no JSON body.
-  if (res.status === 204 || res.status === 201) return undefined as T;
+  // 204 No Content carries no JSON body. 201 may (POST /projects returns the
+  // created ProjectInfo) or may not (POST /worktrees) — parse what is there.
+  if (res.status === 204) return undefined as T;
+  if (res.status === 201) {
+    const text = await res.text();
+    return (text ? JSON.parse(text) : undefined) as T;
+  }
   return (await res.json()) as T;
 }
 
@@ -284,13 +290,37 @@ export class DaemonClient {
     return { body: res.body };
   }
 
-  // ── Command center: worktrees / skills / checkpoints ───────────────────────
+  // ── Command center: projects / worktrees / skills / checkpoints ────────────
 
-  async listWorktrees(): Promise<WorktreeInfo[]> {
-    return jsonOrThrow(await fetch(`${this.base}/worktrees`));
+  async listProjects(): Promise<ProjectInfo[]> {
+    return jsonOrThrow(await fetch(`${this.base}/projects`));
   }
 
-  async createWorktree(req: { path: string; branch: string }): Promise<void> {
+  async addProject(path: string): Promise<ProjectInfo> {
+    return jsonOrThrow(
+      await fetch(`${this.base}/projects`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path }),
+      }),
+    );
+  }
+
+  /** Unregister a project (registry only — files on disk are untouched). */
+  async removeProject(path: string): Promise<void> {
+    await jsonOrThrow(
+      await fetch(`${this.base}/projects?path=${encodeURIComponent(path)}`, {
+        method: "DELETE",
+      }),
+    );
+  }
+
+  async listWorktrees(project?: string): Promise<WorktreeInfo[]> {
+    const qs = project ? `?project=${encodeURIComponent(project)}` : "";
+    return jsonOrThrow(await fetch(`${this.base}/worktrees${qs}`));
+  }
+
+  async createWorktree(req: { path: string; branch: string; project?: string }): Promise<void> {
     await jsonOrThrow(
       await fetch(`${this.base}/worktrees`, {
         method: "POST",
@@ -300,11 +330,11 @@ export class DaemonClient {
     );
   }
 
-  async deleteWorktree(path: string): Promise<void> {
+  async deleteWorktree(path: string, project?: string): Promise<void> {
+    const params = new URLSearchParams({ path });
+    if (project) params.set("project", project);
     await jsonOrThrow(
-      await fetch(`${this.base}/worktrees?path=${encodeURIComponent(path)}`, {
-        method: "DELETE",
-      }),
+      await fetch(`${this.base}/worktrees?${params.toString()}`, { method: "DELETE" }),
     );
   }
 

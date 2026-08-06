@@ -28,7 +28,7 @@ function stubFetch(failWorktreeCreate = false) {
     const method = init?.method ?? "GET";
     const json = (payload: unknown, status = 200) =>
       new Response(JSON.stringify(payload), { status });
-    if (url === "/api/v1/worktrees" && method === "GET") return json(WORKTREES);
+    if (url.startsWith("/api/v1/worktrees") && method === "GET") return json(WORKTREES);
     if (url === "/api/v1/worktrees" && method === "POST") {
       if (failWorktreeCreate) return new Response("already exists", { status: 400 });
       return new Response(null, { status: 201 });
@@ -124,6 +124,22 @@ describe("NewSessionModal", () => {
     });
   });
 
+  it("preset existing worktree preselects the bound workspace", async () => {
+    vi.stubGlobal("fetch", stubFetch());
+    render(
+      <NewSessionModal
+        client={client}
+        onClose={() => {}}
+        preset={{ mode: "existing", project: "/repo", path: "/repo/.worktrees/feat", branch: "feat" }}
+      />,
+    );
+
+    expect(screen.getByRole("radio", { name: /existing worktree/i })).toBeChecked();
+    await waitFor(() =>
+      expect(screen.getByRole("combobox")).toHaveValue("/repo/.worktrees/feat"),
+    );
+  });
+
   it("worktree creation failure shows inline error and creates no session", async () => {
     vi.stubGlobal("fetch", stubFetch(true));
     const onClose = vi.fn();
@@ -137,5 +153,81 @@ describe("NewSessionModal", () => {
     expect(await screen.findByText(/already exists/)).toBeInTheDocument();
     expect(useSessionManager.getState().order).toHaveLength(0);
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("preset main with a project creates a daemon session carrying project_path", async () => {
+    const spy = stubFetch();
+    vi.stubGlobal("fetch", spy);
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <NewSessionModal
+        client={client}
+        onClose={onClose}
+        preset={{ mode: "main", project: "/repo" }}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText(/session name/i), "proj chat");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => {
+      const create = spy.mock.calls.find(
+        ([u, i]) => String(u) === "/api/v1/sessions" && i?.method === "POST",
+      );
+      expect(create).toBeDefined();
+      expect(JSON.parse(create![1]!.body as string)).toEqual({
+        name: "proj chat",
+        project_path: "/repo",
+      });
+      const e = useSessionManager.getState().entries["d1"];
+      expect(e?.daemonId).toBe("d1");
+      expect(e?.projectPath).toBe("/repo");
+    });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("preset project scopes the worktree list and new-worktree creation to it", async () => {
+    const spy = stubFetch();
+    vi.stubGlobal("fetch", spy);
+    const user = userEvent.setup();
+    render(
+      <NewSessionModal
+        client={client}
+        onClose={() => {}}
+        preset={{ mode: "main", project: "/repo" }}
+      />,
+    );
+
+    // The dropdown data is fetched with the project query param.
+    await waitFor(() =>
+      expect(
+        spy.mock.calls.some(
+          ([u, i]) =>
+            String(u) === `/api/v1/worktrees?project=${encodeURIComponent("/repo")}` &&
+            (i?.method ?? "GET") === "GET",
+        ),
+      ).toBe(true),
+    );
+
+    await user.click(screen.getByRole("radio", { name: /new worktree/i }));
+    await user.type(screen.getByPlaceholderText(/branch name/i), "feat-y");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => {
+      const mk = spy.mock.calls.find(
+        ([u, i]) => String(u) === "/api/v1/worktrees" && i?.method === "POST",
+      );
+      expect(mk).toBeDefined();
+      expect(JSON.parse(mk![1]!.body as string)).toEqual({
+        path: ".worktrees/feat-y",
+        branch: "feat-y",
+        project: "/repo",
+      });
+      const created = spy.mock.calls.find(
+        ([u, i]) => String(u) === "/api/v1/sessions" && i?.method === "POST",
+      );
+      expect(JSON.parse(created![1]!.body as string)).toEqual({ project_path: "/repo" });
+    });
   });
 });
