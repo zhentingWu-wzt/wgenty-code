@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react";
-import { PanelLeftOpen } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { FolderPlus, PanelLeftOpen } from "lucide-react";
+import { toast } from "sonner";
 import type { DaemonClient } from "../../api/client";
 import { ProjectTree } from "../../features/sessions/ProjectTree";
 import { useUiStore } from "../../state/uiStore";
@@ -13,6 +14,24 @@ export function LeftSidebar({ client }: { client: DaemonClient }) {
   const collapsed = useUiStore((s) => s.leftCollapsed);
   const leftWidth = useUiStore((s) => s.leftWidth);
   const toggleLeft = useUiStore((s) => s.toggleLeft);
+
+  // Bumped after a successful "Add project" so the tree refetches its list
+  // (projects live inside ProjectTree; the key is the simplest cross-component
+  // invalidation).
+  const [treeRefreshKey, setTreeRefreshKey] = useState(0);
+
+  const addProject = async () => {
+    const path = window.prompt("Project absolute path:");
+    if (!path?.trim()) return;
+    try {
+      const info = await client.addProject(path.trim());
+      toast.success(`Project ${info.name} added`);
+      setTreeRefreshKey((k) => k + 1);
+    } catch (e) {
+      // The daemon returns plain-text 400s (missing dir / duplicate) — show as-is.
+      toast.error(`Add project failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
 
   // 拖拽调宽：pointermove/up 挂在 window 上，结束时移除；ref 记录清理函数，
   // unmount 时也兜底清理，避免监听泄漏。
@@ -61,8 +80,21 @@ export function LeftSidebar({ client }: { client: DaemonClient }) {
           "max-md:fixed max-md:inset-y-10 max-md:left-0 max-md:z-40 max-md:shadow-xl",
         )}
       >
+        <div className="flex h-8 shrink-0 items-center justify-between border-b border-sidebar-border px-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Projects
+          </span>
+          <button
+            type="button"
+            title="Add project"
+            className="inline-flex items-center rounded-sm p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={addProject}
+          >
+            <FolderPlus size={13} />
+          </button>
+        </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          <ProjectTree client={client} />
+          <ProjectTree client={client} refreshKey={treeRefreshKey} />
         </div>
         {/* 右边缘拖拽手柄：仅桌面端（移动端抽屉宽度固定）。 */}
         <div

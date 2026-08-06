@@ -70,31 +70,31 @@ pub async fn bind_worktree(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<BindWorktreeRequest>,
 ) -> Result<Json<BindWorktreeResponse>, (StatusCode, String)> {
-    let canon = resolve_worktree_path(&state.app_state.settings.storage.working_dir, &body.path)
-        .map_err(bad_request)?;
-
     // The daemon session must exist (single identity: this id is also the
-    // /tools/execute session_id).
-    let exists = state.session_manager.get(&id).await.is_some();
-    if !exists {
-        return Err((StatusCode::NOT_FOUND, format!("no such session: {id}")));
-    }
+    // /tools/execute session_id). Resolution spans all project stores.
+    let (mgr, session) = state
+        .resolve_session(&id)
+        .await
+        .ok_or((StatusCode::NOT_FOUND, format!("no such session: {id}")))?;
+
+    // The worktree must live inside the session's own project (not
+    // necessarily the daemon's main working_dir).
+    let root = state.session_project_root(&session);
+    let canon = resolve_worktree_path(&root, &body.path).map_err(bad_request)?;
 
     let wt = SessionWorktree {
         path: canon.to_string_lossy().to_string(),
         branch: body.branch,
     };
     state.bind_session_worktree(&id, canon);
-    state
-        .session_manager
-        .set_metadata(
-            &id,
-            "worktree",
-            // A two-field plain struct — serialization cannot fail.
-            Some(serde_json::to_value(&wt).expect("SessionWorktree serialization is infallible")),
-        )
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    mgr.set_metadata(
+        &id,
+        "worktree",
+        // A two-field plain struct — serialization cannot fail.
+        Some(serde_json::to_value(&wt).expect("SessionWorktree serialization is infallible")),
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(BindWorktreeResponse {
         session_id: id,
@@ -105,17 +105,16 @@ pub async fn bind_worktree(
     }))
 }
 
-/// DELETE /api/v1/sessions/:id/worktree — unbind (session returns to the main
-/// checkout; the on-disk worktree is untouched). Idempotent 204.
+/// DELETE /api/v1/sessions/:id/worktree — unbind (session returns to its
+/// project's main checkout; the on-disk worktree is untouched). Idempotent 204.
 pub async fn unbind_worktree(
     State(state): State<Arc<DaemonState>>,
     AxumPath(id): AxumPath<String>,
 ) -> StatusCode {
     state.unbind_session_worktree(&id);
-    let _ = state
-        .session_manager
-        .set_metadata(&id, "worktree", None)
-        .await;
+    if let Some((mgr, _)) = state.resolve_session(&id).await {
+        let _ = mgr.set_metadata(&id, "worktree", None).await;
+    }
     StatusCode::NO_CONTENT
 }
 
@@ -126,20 +125,16 @@ pub async fn set_archived(
     AxumPath(id): AxumPath<String>,
     Json(body): Json<SetArchivedRequest>,
 ) -> Result<Json<SetArchivedResponse>, (StatusCode, String)> {
-    let exists = state.session_manager.get(&id).await.is_some();
-    if !exists {
-        return Err((StatusCode::NOT_FOUND, format!("no such session: {id}")));
-    }
+    let (mgr, _session) = state
+        .resolve_session(&id)
+        .await
+        .ok_or((StatusCode::NOT_FOUND, format!("no such session: {id}")))?;
     if body.archived {
-        state
-            .session_manager
-            .archive(&id)
+        mgr.archive(&id)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     } else {
-        state
-            .session_manager
-            .unarchive(&id)
+        mgr.unarchive(&id)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
@@ -151,26 +146,26 @@ pub async fn set_archived(
 
 /// Rebuild the in-memory binding map from persisted session metadata. Called
 /// once at daemon startup after `load_index` so bindings survive restarts.
+/// Spans the main project and every registered project.
 pub async fn reconcile_worktree_bindings(state: &DaemonState) {
-    match state.session_manager.list().await {
-        Ok(sessions) => {
-            for info in sessions {
-                if let Some(wt) = info.worktree {
-                    state.bind_session_worktree(&info.id, PathBuf::from(wt.path));
+    let mut managers = vec![state.session_manager.clone()];
+    for root in state.projects.registered_roots() {
+        managers.push(state.session_manager_for_project(&root).await);
+    }
+    for mgr in managers {
+        match mgr.list().await {
+            Ok(sessions) => {
+                for info in sessions {
+                    if let Some(wt) = info.worktree {
+                        state.bind_session_worktree(&info.id, PathBuf::from(wt.path));
+                    }
                 }
             }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "reconcile_worktree_bindings failed");
+            Err(e) => {
+                tracing::warn!(error = %e, "reconcile_worktree_bindings failed");
+            }
         }
     }
-}
-
-/// Resolve the effective workdir for a tool call: the session's bound
-/// worktree, or None (= daemon cwd, pre-binding behavior for unbound sessions
-/// and the legacy "default" session).
-pub(crate) fn effective_workdir(state: &DaemonState, session_id: &str) -> Option<PathBuf> {
-    state.session_workdir(session_id)
 }
 
 #[cfg(test)]

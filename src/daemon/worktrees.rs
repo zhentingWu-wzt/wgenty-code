@@ -1,5 +1,6 @@
 //! Git worktree endpoints for the web command center's WorktreePanel.
-//! Thin wrappers around `git worktree` run in the daemon's working_dir.
+//! Thin wrappers around `git worktree` run in a project root (the daemon's
+//! main working_dir unless a registered `project` is given).
 
 use crate::daemon::state::DaemonState;
 use axum::{
@@ -8,6 +9,7 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -53,15 +55,30 @@ pub(crate) fn parse_worktree_list(input: &str) -> Vec<WorktreeInfo> {
     out
 }
 
-/// Run `git` in the daemon's working_dir; on non-zero exit return the stderr
-/// text so the web panel can show why (e.g. "already exists").
+/// Resolve the repo a worktree request targets: the given registered project,
+/// or the daemon's main project when absent.
+fn resolve_repo(
+    state: &DaemonState,
+    project: Option<&str>,
+) -> Result<PathBuf, (StatusCode, String)> {
+    match project {
+        Some(p) => state.projects.resolve(p).ok_or((
+            StatusCode::BAD_REQUEST,
+            format!("not a registered project: {p}"),
+        )),
+        None => Ok(state.projects.main_root()),
+    }
+}
+
+/// Run `git` in `repo`; on non-zero exit return the stderr text so the web
+/// panel can show why (e.g. "already exists", "not a git repository").
 pub(crate) async fn git(
     args: &[&str],
-    state: &DaemonState,
+    repo: &std::path::Path,
 ) -> Result<String, (StatusCode, String)> {
     let out = tokio::process::Command::new("git")
         .args(args)
-        .current_dir(&state.app_state.settings.storage.working_dir)
+        .current_dir(repo)
         .output()
         .await
         .map_err(|e| {
@@ -77,25 +94,40 @@ pub(crate) async fn git(
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-/// GET /api/v1/worktrees — list git worktrees (main first).
+#[derive(Debug, Deserialize)]
+pub struct WorktreeProjectQuery {
+    /// Registered project root (`None` = main project).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+/// GET /api/v1/worktrees?project=… — list git worktrees (main first).
 pub async fn list_worktrees(
     State(state): State<Arc<DaemonState>>,
+    Query(q): Query<WorktreeProjectQuery>,
 ) -> Result<Json<Vec<WorktreeInfo>>, (StatusCode, String)> {
-    let stdout = git(&["worktree", "list", "--porcelain"], &state).await?;
+    let repo = resolve_repo(&state, q.project.as_deref())?;
+    let stdout = git(&["worktree", "list", "--porcelain"], &repo).await?;
     Ok(Json(parse_worktree_list(&stdout)))
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateWorktreeRequest {
-    /// Target directory for the new worktree (absolute or relative to working_dir).
+    /// Target directory for the new worktree (absolute or relative to the repo).
     pub path: String,
     /// New branch name to create at HEAD (`git worktree add <path> -b <branch>`).
     pub branch: String,
+    /// Registered project root (`None` = main project).
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DeleteWorktreeQuery {
     pub path: String,
+    /// Registered project root (`None` = main project).
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// POST /api/v1/worktrees — create a worktree on a new branch at HEAD.
@@ -109,7 +141,8 @@ pub async fn create_worktree(
             "path and branch are required".into(),
         ));
     }
-    git(&["worktree", "add", &body.path, "-b", &body.branch], &state).await?;
+    let repo = resolve_repo(&state, body.project.as_deref())?;
+    git(&["worktree", "add", &body.path, "-b", &body.branch], &repo).await?;
     Ok(StatusCode::CREATED)
 }
 
@@ -119,7 +152,8 @@ pub async fn delete_worktree(
     State(state): State<Arc<DaemonState>>,
     Query(q): Query<DeleteWorktreeQuery>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let stdout = git(&["worktree", "list", "--porcelain"], &state).await?;
+    let repo = resolve_repo(&state, q.project.as_deref())?;
+    let stdout = git(&["worktree", "list", "--porcelain"], &repo).await?;
     let entries = parse_worktree_list(&stdout);
     let target = entries.iter().find(|w| w.path == q.path).ok_or((
         StatusCode::NOT_FOUND,
@@ -131,7 +165,7 @@ pub async fn delete_worktree(
             "refusing to remove the main worktree".into(),
         ));
     }
-    git(&["worktree", "remove", &q.path], &state).await?;
+    git(&["worktree", "remove", &q.path], &repo).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

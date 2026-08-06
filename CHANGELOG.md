@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added (Multi-Project, web + daemon)
+
+- daemon 新增项目注册表（`~/.wgenty-code/projects.json`）：`GET/POST/DELETE /api/v1/projects`，
+  主项目（daemon working_dir）恒为第一项；项目 = 任意目录（不要求 git 仓库）。
+- session 按项目路由：`POST /sessions` 接受 `project_path`，sessions 存于各项目
+  `.wgenty-code/sessions/`；list/get/update/delete/run/events 跨项目聚合与路由。
+- 权限 policy、checkpoint 快照（`<project>/.wgenty-code/checkpoints/`）、memory 池
+  （`<project>/.wgenty-code/memory/`）、codegraph 探测均按 session 所属项目隔离；
+  同时修复了"相对路径按主项目校验、按绑定 workdir 执行"的权限校验旁路。
+- worktree 端点支持 `project` 参数（list/create/delete），非 git 项目返回 400。
+- web 侧边栏升级为多项目树：添加/移除项目、按项目分组 task(worktree) 与 session，
+  非 git 项目隐藏 task 功能；新建 session 对话框按项目预填工作区。
+
 ### Fixed (Web)
 
 - 修复 web 端工具调用"不可见"：daemon 此前把每一轮 LLM 流结束（含

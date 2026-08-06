@@ -5,6 +5,7 @@
 
 use crate::daemon::auth;
 use crate::daemon::handlers;
+use crate::daemon::projects;
 use crate::daemon::run_loop;
 use crate::daemon::session_admin;
 use crate::daemon::skills_api;
@@ -122,6 +123,13 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         .route(
             "/api/v1/sessions",
             get(handlers::list_sessions).post(handlers::create_session),
+        )
+        // Projects (multi-project registry; main project = daemon working_dir)
+        .route(
+            "/api/v1/projects",
+            get(projects::list_projects)
+                .post(projects::add_project)
+                .delete(projects::remove_project),
         )
         // Worktrees (web command center)
         .route(

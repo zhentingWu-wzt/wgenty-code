@@ -13,7 +13,7 @@ use crate::tools::execution::background::{BackgroundManager, BackgroundTool};
 use crate::tools::meta::team_message::TeamMessageTool;
 use crate::tools::{CheckpointManager, CheckpointStore, ToolExecutor, ToolRegistry};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,6 +23,10 @@ use tokio::sync::RwLock;
 struct SessionRules {
     approved: HashSet<String>,
 }
+
+/// A project's checkpoint handle pair (manager + store), cached per project
+/// root in [`DaemonState::project_checkpoints`].
+type ProjectCheckpointHandles = (Arc<CheckpointManager>, Arc<CheckpointStore>);
 
 impl SessionRules {
     fn new() -> Self {
@@ -85,6 +89,24 @@ pub struct DaemonState {
     /// Session → bound worktree path (project v1: project → worktree → session,
     /// N:1). Sessions without an entry run in the main working_dir.
     pub session_workdirs: SessionWorkdirs,
+    /// Multi-project registry. The daemon `working_dir` is the implicit main
+    /// project; registered projects are arbitrary directories (git optional)
+    /// persisted at `~/.wgenty-code/projects.json`.
+    pub projects: crate::daemon::projects::ProjectRegistry,
+    /// Per-project memory routing (`memory_add` tool, memory HTTP handlers,
+    /// AutoDream fan-out). `memory_manager` above remains the main project's
+    /// manager.
+    pub memory_router: Arc<crate::daemon::memory_router::MemoryRouter>,
+    /// Per-project session managers (lazy). The main project's manager is
+    /// `session_manager`; each registered project gets one cached instance.
+    /// tokio RwLock: get-or-create runs `load_index` (async I/O).
+    project_session_managers: Arc<RwLock<HashMap<PathBuf, MemorySessionManager>>>,
+    /// Per-project checkpoint handles (lazy). The main project uses the tool
+    /// registry's `checkpoint_manager`/`checkpoint_store`; each registered
+    /// project gets a store under `<project>/.wgenty-code/checkpoints/`.
+    /// std RwLock: construction is pure path joins (no I/O), never held
+    /// across `.await`.
+    project_checkpoints: Arc<std::sync::RwLock<HashMap<PathBuf, ProjectCheckpointHandles>>>,
     /// Secret used to digest viewer bearer tokens.
     daemon_viewer_secret: [u8; 32],
     /// Shared subagent policy-Ask bridge (TUI/daemon drains pending approvals).
@@ -191,6 +213,17 @@ impl DaemonState {
             app_state.settings.storage.working_dir.clone(),
         ));
 
+        // Multi-project registry + per-project memory routing. Created before
+        // the tool registry so `memory_add` can route by invocation workdir.
+        let projects = crate::daemon::projects::ProjectRegistry::load_default(
+            app_state.settings.storage.working_dir.clone(),
+        );
+        let memory_router = Arc::new(crate::daemon::memory_router::MemoryRouter::new(
+            app_state.settings.clone(),
+            projects.clone(),
+            memory_manager.clone(),
+        ));
+
         // Shared read connection to the global transcript db for the SSE trace
         // endpoint's cold-start replay (Task 3.4). `None` on failure -> the SSE
         // stream degrades to live-only. Built at the body level (not inside the
@@ -228,9 +261,10 @@ impl DaemonState {
                 crate::tools::meta::request_approval::RequestApprovalTool::new(),
             ));
 
-            // D1: memory_add tool (backed by shared MemoryManager)
-            registry.register(Box::new(crate::tools::meta::MemoryAddTool::new(
+            // D1: memory_add tool (routes to the invocation's project pool)
+            registry.register(Box::new(crate::tools::meta::MemoryAddTool::with_resolver(
                 memory_manager.clone(),
+                memory_router.clone(),
             )));
 
             // Register load_skill tool if skills exist
@@ -318,16 +352,18 @@ impl DaemonState {
 
         // ── D1: AutoDream startup check (fire-and-forget) ────────────────
         // Replaces the old TUI app-side AutoDream spawn (removed in Task 4).
-        // daemon is per-session, so this triggers once per REPL start -
-        // equivalent to the old behavior but centralized in the daemon.
+        // Runs once per registered project so each project's pool is
+        // consolidated independently.
         {
-            let autodream =
-                crate::services::AutoDreamService::new(None, Some(memory_manager.clone()));
+            let router = Arc::clone(&memory_router);
             tokio::spawn(async move {
-                match autodream.check_and_run().await {
-                    Ok(true) => tracing::info!("AutoDream: consolidation triggered"),
-                    Ok(false) => tracing::debug!("AutoDream: gate not met, skipped"),
-                    Err(e) => tracing::warn!(error = %e, "AutoDream check_and_run failed"),
+                for mgr in router.all().await {
+                    let autodream = crate::services::AutoDreamService::new(None, Some(mgr));
+                    match autodream.check_and_run().await {
+                        Ok(true) => tracing::info!("AutoDream: consolidation triggered"),
+                        Ok(false) => tracing::debug!("AutoDream: gate not met, skipped"),
+                        Err(e) => tracing::warn!(error = %e, "AutoDream check_and_run failed"),
+                    }
                 }
             });
         }
@@ -416,7 +452,7 @@ impl DaemonState {
             let review = Arc::new(crate::agent::runtime::adapters::MemoryReviewAdapter::new(
                 llm,
             ));
-            memory_manager.set_review_llm(Some(review)).await;
+            memory_router.set_review_llm(Some(review)).await;
         }
 
         // Live settings handle seeded from the startup snapshot. Runtime
@@ -448,6 +484,10 @@ impl DaemonState {
             viewer_tokens: Arc::new(RwLock::new(HashMap::new())),
             root_contexts: Arc::new(RwLock::new(HashMap::new())),
             session_workdirs: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            projects,
+            memory_router,
+            project_session_managers: Arc::new(RwLock::new(HashMap::new())),
+            project_checkpoints: Arc::new(std::sync::RwLock::new(HashMap::new())),
             daemon_viewer_secret,
             permission_bridge,
             interaction_bridge,
@@ -674,6 +714,112 @@ impl DaemonState {
                 .entry(session_id.to_string())
                 .or_insert_with(|| Arc::new(AtomicU64::new(1))),
         )
+    }
+
+    // ── Multi-project routing ────────────────────────────────────────────────
+
+    /// Session manager for a project root (get-or-create; runs `load_index`
+    /// on first creation so historical sessions are visible). The main
+    /// project returns the primary `session_manager`.
+    pub async fn session_manager_for_project(&self, root: &Path) -> MemorySessionManager {
+        if *root == self.projects.main_root() {
+            return self.session_manager.clone();
+        }
+        {
+            let map = self.project_session_managers.read().await;
+            if let Some(mgr) = map.get(root) {
+                return mgr.clone();
+            }
+        }
+        let mgr = MemorySessionManager::with_project_root(root.to_path_buf());
+        if let Err(e) = mgr.load_index().await {
+            tracing::warn!(error = %e, root = %root.display(), "project session load_index failed");
+        }
+        let mut map = self.project_session_managers.write().await;
+        // Double-check: a concurrent creator may have won the race; its
+        // instance is equally valid and already warmed.
+        map.entry(root.to_path_buf()).or_insert(mgr).clone()
+    }
+
+    /// The project root a session belongs to: its `project_path`, or the main
+    /// project when unset (legacy sessions).
+    pub fn session_project_root(
+        &self,
+        session: &crate::context::memory_session::Session,
+    ) -> PathBuf {
+        session
+            .project_path
+            .clone()
+            .unwrap_or_else(|| self.projects.main_root())
+    }
+
+    /// Find a session across all project managers. Returns the owning manager
+    /// together with the session; callers capture the manager so subsequent
+    /// saves keep landing in the same store even if the project is
+    /// unregistered mid-run.
+    pub async fn resolve_session(
+        &self,
+        session_id: &str,
+    ) -> Option<(
+        MemorySessionManager,
+        crate::context::memory_session::Session,
+    )> {
+        if let Ok(Some(s)) = self.session_manager.load(session_id).await {
+            return Some((self.session_manager.clone(), s));
+        }
+        for root in self.projects.registered_roots() {
+            let mgr = self.session_manager_for_project(&root).await;
+            if let Ok(Some(s)) = mgr.load(session_id).await {
+                return Some((mgr, s));
+            }
+        }
+        None
+    }
+
+    /// The session's effective working root: bound worktree > the session's
+    /// project root > the main working_dir. This is the single source of
+    /// truth for tool path resolution AND permission-policy rooting — the two
+    /// must never diverge (a relative path is validated against the policy
+    /// root and executed against the workdir).
+    pub async fn effective_session_root(&self, session_id: &str) -> PathBuf {
+        if let Some(wd) = self.session_workdir(session_id) {
+            return wd;
+        }
+        if let Some((_mgr, session)) = self.resolve_session(session_id).await {
+            if let Some(p) = session.project_path {
+                return p;
+            }
+        }
+        self.projects.main_root()
+    }
+
+    /// Checkpoint handles for a project root (get-or-create). The main
+    /// project returns the tool registry's handles so existing snapshots and
+    /// the `checkpoint`/`undo` tools keep working unchanged.
+    pub fn checkpoints_for_project(&self, root: &Path) -> ProjectCheckpointHandles {
+        if *root == self.projects.main_root() {
+            return (
+                Arc::clone(&self.checkpoint_manager),
+                Arc::clone(&self.checkpoint_store),
+            );
+        }
+        if let Some(pair) = self
+            .project_checkpoints
+            .read()
+            .expect("project_checkpoints lock poisoned")
+            .get(root)
+        {
+            return pair.clone();
+        }
+        let keep_n = self.app_state.settings.agent.checkpoint.keep_n;
+        let store = Arc::new(CheckpointStore::with_keep_n(root.to_path_buf(), keep_n));
+        let manager = Arc::new(CheckpointManager::new(store.clone()));
+        self.project_checkpoints
+            .write()
+            .expect("project_checkpoints lock poisoned")
+            .entry(root.to_path_buf())
+            .or_insert((manager, store))
+            .clone()
     }
 }
 
