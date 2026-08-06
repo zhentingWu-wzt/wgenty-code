@@ -386,6 +386,13 @@ pub enum AppEvent {
     },
     /// Background task/subagent result notification for display in chat.
     BackgroundTaskResult(String),
+    /// `/clear` created a new session; the main loop adopts the new id/name.
+    /// Subagent generation is reset separately via the follow-up
+    /// [`AppEvent::AgentGenerationReset`].
+    SessionSwitched {
+        id: String,
+        name: String,
+    },
     /// A new task generation was established after `/clear` or shutdown
     /// cancellation. Obsolete root-direct subtrees are cancelled by the
     /// daemon; the app adopts the new generation and clears local views.

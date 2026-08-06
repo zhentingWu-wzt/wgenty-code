@@ -464,6 +464,7 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::ModelsReady(_)
         | AppEvent::ModelSwitchRequested { .. }
         | AppEvent::ModelSwitched { .. }
+        | AppEvent::SessionSwitched { .. }
         | AppEvent::ModelSwitchFailed(_) => None,
     }
 }
@@ -583,6 +584,14 @@ mod tests {
         // phase indicator.
         assert_eq!(
             agent_phase_from_event(&AppEvent::MemoriesReady(vec!["mem1".into()])),
+            None
+        );
+        // /clear 切换会话不改变 agent phase（仍为 Idle）
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::SessionSwitched {
+                id: "s1".into(),
+                name: "New Session".into()
+            }),
             None
         );
     }

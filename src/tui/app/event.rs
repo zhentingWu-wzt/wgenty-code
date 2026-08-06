@@ -986,6 +986,33 @@ impl App {
                     tool_metadata: None,
                 });
             }
+            AppEvent::SessionSwitched { id, name } => {
+                // Adopt the newly created session. Subagent state cleanup and
+                // suppress_phase_updates are handled by the AgentGenerationReset
+                // event spawned below, mirroring the original /clear path.
+                self.session_id = id.clone();
+                self.session_name = name;
+                self.session_exit_saved
+                    .store(false, std::sync::atomic::Ordering::Release);
+                let client = self.daemon_client.clone();
+                let event_tx = self.event_tx.clone();
+                tokio::spawn(async move {
+                    match client.reset_agent_generation(&id).await {
+                        Ok(generation) => {
+                            let _ = event_tx.send(AppEvent::AgentGenerationReset { generation });
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                error = %error,
+                                "reset_agent_generation failed; retaining old generation"
+                            );
+                            let _ = event_tx.send(AppEvent::AgentGenerationReset {
+                                generation: u64::MAX,
+                            });
+                        }
+                    }
+                });
+            }
             AppEvent::AgentGenerationReset { generation } => {
                 if generation == u64::MAX {
                     // Reset failed on the daemon: surface an actionable
