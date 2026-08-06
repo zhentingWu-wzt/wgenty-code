@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import type { ComponentPropsWithoutRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -96,60 +96,58 @@ export function ChatView() {
   }
 
   return (
-    <div className="mx-auto flex max-w-[1100px] flex-col gap-5 px-6 pt-6">
-      {messages.map((m) => (
-        <div
-          key={m.id}
-          className={cn("flex flex-col gap-1 px-4 py-2", m.role === "user" && "items-end")}
-        >
-          <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
-            <span
-              className={cn(
-                "h-1.5 w-1.5 rounded-full",
-                m.role === "assistant" ? "bg-primary" : "bg-muted-foreground",
-              )}
-            />
-            {m.role}
-            {m.round && m.round > 1 ? ` · round ${m.round}` : ""}
-            {m.streaming ? " · …" : ""}
+    <div className="mx-auto flex max-w-[1100px] flex-col gap-2 px-6 pt-6">
+      {messages.map((m, i) => (
+        <Fragment key={m.id}>
+          {m.role === "user" && i > 0 && <div className="my-2 border-t border-border" />}
+          <div className={cn("flex flex-col gap-1 px-4 py-2", m.role === "user" && "items-end")}>
+            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  m.role === "assistant" ? "bg-primary" : "bg-muted-foreground",
+                )}
+              />
+              {m.role}
+              {m.round && m.round > 1 ? ` · round ${m.round}` : ""}
+              {m.streaming ? " · …" : ""}
+            </div>
+            {m.reasoning && (
+              <details className="rounded-md border border-border bg-background text-[12px] text-muted-foreground">
+                <summary className="cursor-pointer px-2 py-1 select-none">reasoning</summary>
+                <pre className="max-h-60 overflow-y-auto px-2 pb-2 whitespace-pre-wrap">
+                  {m.reasoning}
+                </pre>
+              </details>
+            )}
+            {m.content && (
+              <div
+                className={cn(
+                  "max-w-[85%] rounded-lg px-3 py-2 text-[13px]",
+                  m.role === "user" ? "bg-primary/10 whitespace-pre-wrap" : "bg-card",
+                )}
+              >
+                {m.role === "assistant" ? (
+                  <>
+                    <Markdown>{m.content}</Markdown>
+                    {m.streaming && (
+                      <span className="animate-[pulse-cursor_1s_infinite] text-primary">▍</span>
+                    )}
+                  </>
+                ) : (
+                  m.content
+                )}
+              </div>
+            )}
+            {m.toolExecs && m.toolExecs.length > 0 && (
+              <div className="mt-2 flex w-full flex-col gap-1.5">
+                {m.toolExecs.map((exec, i) => (
+                  <ToolCallCard key={i} exec={exec} />
+                ))}
+              </div>
+            )}
           </div>
-          {m.reasoning && (
-            <details className="rounded-md border border-border bg-background text-[12px] text-muted-foreground">
-              <summary className="cursor-pointer px-2 py-1 select-none">reasoning</summary>
-              <pre className="max-h-60 overflow-y-auto px-2 pb-2 whitespace-pre-wrap">
-                {m.reasoning}
-              </pre>
-            </details>
-          )}
-          {m.content && (
-            <div
-              className={cn(
-                "max-w-[85%] rounded-lg px-3 py-2 text-[13px]",
-                m.role === "user"
-                  ? "bg-primary/10 whitespace-pre-wrap"
-                  : "bg-card",
-              )}
-            >
-              {m.role === "assistant" ? (
-                <>
-                  <Markdown>{m.content}</Markdown>
-                  {m.streaming && (
-                    <span className="animate-[pulse-cursor_1s_infinite] text-primary">▍</span>
-                  )}
-                </>
-              ) : (
-                m.content
-              )}
-            </div>
-          )}
-          {m.toolExecs && m.toolExecs.length > 0 && (
-            <div className="mt-2 flex w-full flex-col gap-1.5">
-              {m.toolExecs.map((exec, i) => (
-                <ToolCallCard key={i} exec={exec} />
-              ))}
-            </div>
-          )}
-        </div>
+        </Fragment>
       ))}
       {lastError && (
         <div className="flex items-center justify-between gap-2 rounded-md border border-danger bg-danger/10 px-3 py-2 font-mono text-[13px] whitespace-pre-wrap text-danger">
