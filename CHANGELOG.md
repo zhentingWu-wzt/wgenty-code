@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed (Web)
+
+- 修复 web 端工具调用"不可见"：daemon 此前把每一轮 LLM 流结束（含
+  `finish_reason="tool_calls"` 的工具轮次）都广播为 `turn_done`，web 在工具执行前
+  就停止监听，工具执行过程和最终回答均不渲染。现在仅真正的 turn 结束才发布
+  `TurnDone`（每个 run 恰好一次），web 端对 `tool_calls` 轮次边界亦做了兼容。
+
 ### Changed (Memory Quality)
 
 - Compact 抽取改为“少而精”：收紧 system prompt，写入前按

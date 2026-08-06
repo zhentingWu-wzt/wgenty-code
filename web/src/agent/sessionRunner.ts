@@ -99,7 +99,12 @@ export async function runSessionTurn(
           continue;
         }
         handleEvent(ev, store, sessionId, ensureAssistant, pendingTools);
-        if (ev.kind === "turn_done" || ev.kind === "turn_error") {
+        // A turn_done with finish_reason "tool_calls" only ends one LLM
+        // round — tool_start/tool_result and further rounds still follow.
+        // (Fixed daemon-side; this guard keeps an older daemon usable.)
+        const roundBoundary =
+          ev.kind === "turn_done" && ev.data.finish_reason === "tool_calls";
+        if ((ev.kind === "turn_done" || ev.kind === "turn_error") && !roundBoundary) {
           // Turn finished — stop reading eagerly; the daemon also closes the
           // stream, but we don't wait for EOF to finalize UI state.
           turnFinished = true;

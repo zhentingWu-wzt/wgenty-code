@@ -100,6 +100,30 @@ describe("runSessionTurn (server-side observer)", () => {
     expect(assistant?.toolExecs?.[0].call.function.name).toBe("file_read");
   });
 
+  it("turn_done with finish_reason tool_calls is a round boundary, not turn end", async () => {
+    // Regression: the daemon used to alias every round's StreamDone to
+    // turn_done, so the first tool-deciding round stopped the reader and
+    // tool calls never rendered. The reader must keep going past it.
+    const client = fakeClient({
+      events: [
+        makeEvent(1, "turn_done", { finish_reason: "tool_calls" }),
+        makeEvent(2, "tool_start", { name: "file_read", args: { path: "/a" } }),
+        makeEvent(3, "tool_result", { name: "file_read", args: { path: "/a" }, content: "ok" }),
+        makeEvent(4, "content_delta", { text: "final answer" }),
+        makeEvent(5, "turn_done", { finish_reason: "stop" }),
+      ],
+    });
+    const id = useSessionManager.getState().createLocalSession("s1");
+    await runSessionTurn(client as unknown as DaemonClient, id, "read it");
+
+    const store = useSessionManager.getState().entries[id].store.getState();
+    const assistant = store.messages.find((m) => m.role === "assistant");
+    expect(assistant?.toolExecs).toHaveLength(1);
+    expect(assistant?.content).toBe("final answer");
+    expect(store.isRunning).toBe(false);
+    expect(useSessionManager.getState().entries[id].status).toBe("idle");
+  });
+
   it("turn_error marks the session error with the message", async () => {
     const client = fakeClient({
       events: [makeEvent(1, "turn_error", { message: "upstream rejected" })],

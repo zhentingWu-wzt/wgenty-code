@@ -18,7 +18,7 @@
 
 use crate::agent::runtime::{EventSink, RuntimeEvent};
 use serde::Serialize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// A single event in a daemon-run session, envelope for SSE fan-out.
@@ -63,6 +63,9 @@ pub struct DaemonEventSink {
     run_id: String,
     hub: SessionEventHub,
     next_seq: Arc<AtomicU64>,
+    /// Set once the terminal TurnDone is published, so the loop's duplicate
+    /// StreamDone at turn completion doesn't produce a second TurnDone.
+    turn_done_published: AtomicBool,
     /// Mid-run persistence bridge (Task 5); `None` until the run task wires
     /// the live history handle in via [`DaemonEventSink::set_save_bridge`].
     save_bridge: Option<SaveBridge>,
@@ -94,6 +97,7 @@ impl DaemonEventSink {
             run_id,
             hub,
             next_seq,
+            turn_done_published: AtomicBool::new(false),
             save_bridge: None,
         }
     }
@@ -163,6 +167,24 @@ impl EventSink for DaemonEventSink {
                 );
             }
             RuntimeEvent::StreamDone { finish_reason } => {
+                // StreamDone fires at the end of EVERY LLM round (stream.rs
+                // forwards the provider's finish_reason inline). A round that
+                // ends in tool calls is a round boundary, not turn end —
+                // ToolStart/ToolResult and further rounds still follow, and
+                // web clients stop listening on TurnDone (the fixed bug:
+                // tools appeared unsupported because the first turn_done
+                // arrived before tool_start). Anthropic `tool_use` is
+                // normalized to "tool_calls" in src/api, so this check holds
+                // across providers.
+                if finish_reason == "tool_calls" {
+                    return;
+                }
+                // The loop re-emits StreamDone at turn completion
+                // (loop_.rs), so a terminal reason is seen twice; publish
+                // TurnDone exactly once per run.
+                if self.turn_done_published.swap(true, Ordering::Relaxed) {
+                    return;
+                }
                 self.publish(
                     SessionEventKind::TurnDone,
                     serde_json::json!({ "finish_reason": finish_reason }),
@@ -1006,6 +1028,39 @@ mod tests {
             .try_recv()
             .is_ok_and(|e| e.kind == SessionEventKind::TurnError));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn tool_calls_round_end_is_not_turn_done() {
+        // Regression: StreamDone with finish_reason "tool_calls" ends an LLM
+        // ROUND, not the turn — ToolStart/ToolResult and further rounds
+        // follow. Web clients stop listening on TurnDone, so publishing it
+        // for a tool round made server-side tool calls invisible (the
+        // model's first tool decision looked like turn completion).
+        let (hub, mut rx) = tokio::sync::broadcast::channel(16);
+        let sink = DaemonEventSink::new("s1".into(), "r1".into(), hub, Arc::new(AtomicU64::new(1)));
+        sink.emit(RuntimeEvent::StreamDone {
+            finish_reason: "tool_calls".into(),
+        });
+        sink.emit(RuntimeEvent::ToolStart {
+            name: "file_write".into(),
+            args: serde_json::json!({}),
+        });
+        sink.emit(RuntimeEvent::StreamDone {
+            finish_reason: "stop".into(),
+        });
+        // The loop re-emits StreamDone at turn completion — TurnDone must be
+        // published exactly once.
+        sink.emit(RuntimeEvent::StreamDone {
+            finish_reason: "stop".into(),
+        });
+        assert!(rx
+            .try_recv()
+            .is_ok_and(|e| e.kind == SessionEventKind::ToolStart));
+        assert!(rx
+            .try_recv()
+            .is_ok_and(|e| e.kind == SessionEventKind::TurnDone));
+        assert!(rx.try_recv().is_err(), "no second TurnDone");
     }
 
     #[test]
