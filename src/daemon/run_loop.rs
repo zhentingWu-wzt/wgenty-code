@@ -59,21 +59,20 @@ pub type SessionEventHub = tokio::sync::broadcast::Sender<SessionEvent>;
 /// answer `SyncLost` (correctness never depends on the buffer; clients
 /// fall back to `GET /sessions/:id`). Capacity comes from
 /// `daemon.event_buffer_capacity` (default 1024, aligned with TRACE_HUB).
-// `dead_code`: Task 1 only introduces the buffer + tests; the publish/replay
-// call sites arrive in Tasks 2-3 and will read every field/method.
-#[allow(dead_code)]
 pub(crate) struct SessionEventBuffer {
     events: VecDeque<SessionEvent>,
     capacity: usize,
 }
 
-// See the struct-level note: allow until Tasks 2-3 wire the call sites.
-#[allow(dead_code)]
 impl SessionEventBuffer {
     pub(crate) fn new(capacity: usize) -> Self {
         Self {
-            events: VecDeque::with_capacity(capacity.min(4096)),
-            capacity,
+            // Cap only the upfront allocation (a huge configured capacity
+            // must not pre-allocate megabytes); the stored capacity stays
+            // authoritative. Floor at 1: with 0, `push` would never evict
+            // and the ring would grow unbounded.
+            events: VecDeque::with_capacity(capacity.clamp(1, 4096)),
+            capacity: capacity.max(1),
         }
     }
 
@@ -86,14 +85,20 @@ impl SessionEventBuffer {
         self.events.push_back(ev);
     }
 
+    // Read-side accessors: consumed by Task 3's `after=` replay path; until
+    // then only tests use them, so the lib (non-test) target would flag
+    // dead_code. Task 3 removes these allows when it wires the replay.
+    #[allow(dead_code)]
     pub(crate) fn oldest_seq(&self) -> Option<u64> {
         self.events.front().map(|e| e.seq)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn latest_seq(&self) -> Option<u64> {
         self.events.back().map(|e| e.seq)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn events_after(&self, after: u64) -> impl Iterator<Item = &SessionEvent> {
         self.events.iter().filter(move |e| e.seq > after)
     }
@@ -111,6 +116,10 @@ pub struct DaemonEventSink {
     run_id: String,
     hub: SessionEventHub,
     next_seq: Arc<AtomicU64>,
+    /// Per-session replay buffer (from [`DaemonState::session_buffer`]):
+    /// every published event is dual-written here so `after=` resume
+    /// (Task 3) can replay what a reconnecting client missed.
+    buffer: Arc<std::sync::RwLock<SessionEventBuffer>>,
     /// Set once the terminal TurnDone is published, so the loop's duplicate
     /// StreamDone at turn completion doesn't produce a second TurnDone.
     turn_done_published: AtomicBool,
@@ -141,12 +150,14 @@ impl DaemonEventSink {
         run_id: String,
         hub: SessionEventHub,
         next_seq: Arc<AtomicU64>,
+        buffer: Arc<std::sync::RwLock<SessionEventBuffer>>,
     ) -> Self {
         Self {
             session_id,
             run_id,
             hub,
             next_seq,
+            buffer,
             turn_done_published: AtomicBool::new(false),
             save_bridge: None,
         }
@@ -181,7 +192,15 @@ impl DaemonEventSink {
         };
         // No subscribers is normal (e.g. run without an attached SSE client);
         // broadcast::Sender::send only errors in that case, so ignore it.
-        let _ = self.hub.send(event);
+        let _ = self.hub.send(event.clone());
+        // Dual-write into the replay buffer at the same point, so buffer and
+        // broadcast never disagree on which seqs exist (Task 3 replays from
+        // here on `after=` resume). std RwLock: single push, never held
+        // across `.await`.
+        self.buffer
+            .write()
+            .expect("session buffer lock poisoned")
+            .push(event);
     }
 }
 
@@ -349,6 +368,10 @@ pub struct RootToolPort {
     hub: SessionEventHub,
     run_id: String,
     next_seq: Arc<AtomicU64>,
+    /// Per-session replay buffer (from [`DaemonState::session_buffer`]);
+    /// `publish_event` dual-writes into it, same contract as
+    /// [`DaemonEventSink::publish`].
+    buffer: Arc<std::sync::RwLock<SessionEventBuffer>>,
 }
 
 impl RootToolPort {
@@ -373,6 +396,7 @@ impl RootToolPort {
             hub: state.session_event_hub.clone(),
             run_id: run_id.to_string(),
             next_seq: state.session_seq_counter(session_id),
+            buffer: state.session_buffer(session_id),
         }
     }
 
@@ -406,6 +430,7 @@ impl RootToolPort {
             hub: tokio::sync::broadcast::channel(16).0,
             run_id: "test".to_string(),
             next_seq: Arc::new(AtomicU64::new(1)),
+            buffer: Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(16))),
         }
     }
 
@@ -430,7 +455,13 @@ impl RootToolPort {
             kind,
             data,
         };
-        let _ = self.hub.send(event);
+        let _ = self.hub.send(event.clone());
+        // Dual-write into the replay buffer, same contract as
+        // `DaemonEventSink::publish` (buffer and broadcast must agree).
+        self.buffer
+            .write()
+            .expect("session buffer lock poisoned")
+            .push(event);
     }
 
     /// Resolve a policy `Ask`: approved rule / auto-approving mode short-
@@ -952,6 +983,7 @@ async fn run_session_turn(
         run_id.to_string(),
         state.session_event_hub.clone(),
         state.session_seq_counter(session_id),
+        state.session_buffer(session_id),
     );
 
     // 1. Resolve the owning session store + persisted session (multi-project
@@ -1131,10 +1163,34 @@ mod tests {
         assert_eq!(buf.events_after(0).count(), 0);
     }
 
+    #[tokio::test]
+    async fn publish_writes_to_hub_and_buffer() {
+        let (hub, mut rx) = tokio::sync::broadcast::channel(16);
+        let buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(8)));
+        let sink = DaemonEventSink::new(
+            "s1".into(),
+            "r1".into(),
+            hub,
+            Arc::new(AtomicU64::new(1)),
+            buffer.clone(),
+        );
+        sink.publish(SessionEventKind::Save, serde_json::json!({}));
+        let got = rx.recv().await.expect("hub event");
+        assert_eq!(got.seq, 1);
+        let buf = buffer.read().expect("buffer lock poisoned");
+        assert_eq!(buf.latest_seq(), Some(1));
+    }
+
     #[test]
     fn maps_runtime_events_to_session_events() {
         let (hub, mut rx) = tokio::sync::broadcast::channel(16);
-        let sink = DaemonEventSink::new("s1".into(), "r1".into(), hub, Arc::new(AtomicU64::new(1)));
+        let sink = DaemonEventSink::new(
+            "s1".into(),
+            "r1".into(),
+            hub,
+            Arc::new(AtomicU64::new(1)),
+            Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(16))),
+        );
         sink.emit(RuntimeEvent::ContentDelta("hi".into()));
         sink.emit(RuntimeEvent::ReasoningDelta("think".into()));
         sink.emit(RuntimeEvent::ToolStart {
@@ -1162,7 +1218,13 @@ mod tests {
         // Connecting/PreparingTools/StreamDone/CompactionStarted 等不产生事件
         //（v1 不广播连接噪声）；StreamError → TurnError；StreamDone → TurnDone
         let (hub, mut rx) = tokio::sync::broadcast::channel(16);
-        let sink = DaemonEventSink::new("s1".into(), "r1".into(), hub, Arc::new(AtomicU64::new(1)));
+        let sink = DaemonEventSink::new(
+            "s1".into(),
+            "r1".into(),
+            hub,
+            Arc::new(AtomicU64::new(1)),
+            Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(16))),
+        );
         sink.emit(RuntimeEvent::Connecting {
             attempt: 1,
             max_retries: 2,
@@ -1188,7 +1250,13 @@ mod tests {
         // for a tool round made server-side tool calls invisible (the
         // model's first tool decision looked like turn completion).
         let (hub, mut rx) = tokio::sync::broadcast::channel(16);
-        let sink = DaemonEventSink::new("s1".into(), "r1".into(), hub, Arc::new(AtomicU64::new(1)));
+        let sink = DaemonEventSink::new(
+            "s1".into(),
+            "r1".into(),
+            hub,
+            Arc::new(AtomicU64::new(1)),
+            Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(16))),
+        );
         sink.emit(RuntimeEvent::StreamDone {
             finish_reason: "tool_calls".into(),
         });
@@ -1221,12 +1289,31 @@ mod tests {
         // session's counter starts at 1 independently.
         let (hub, mut rx) = tokio::sync::broadcast::channel(16);
         let counter = Arc::new(AtomicU64::new(1)); // DaemonState::session_seq_counter
-        let sink_run1 =
-            DaemonEventSink::new("s1".into(), "r1".into(), hub.clone(), Arc::clone(&counter));
-        let sink_run2 =
-            DaemonEventSink::new("s1".into(), "r2".into(), hub.clone(), Arc::clone(&counter));
-        let other_session =
-            DaemonEventSink::new("s2".into(), "r3".into(), hub, Arc::new(AtomicU64::new(1)));
+                                                   // Runs of one session share the session's replay buffer (production
+                                                   // gets it from DaemonState::session_buffer); other sessions get their
+                                                   // own, mirroring the per-session counter.
+        let s1_buffer = Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(16)));
+        let sink_run1 = DaemonEventSink::new(
+            "s1".into(),
+            "r1".into(),
+            hub.clone(),
+            Arc::clone(&counter),
+            Arc::clone(&s1_buffer),
+        );
+        let sink_run2 = DaemonEventSink::new(
+            "s1".into(),
+            "r2".into(),
+            hub.clone(),
+            Arc::clone(&counter),
+            Arc::clone(&s1_buffer),
+        );
+        let other_session = DaemonEventSink::new(
+            "s2".into(),
+            "r3".into(),
+            hub,
+            Arc::new(AtomicU64::new(1)),
+            Arc::new(std::sync::RwLock::new(SessionEventBuffer::new(16))),
+        );
 
         sink_run1.emit(RuntimeEvent::ContentDelta("a".into()));
         sink_run2.emit(RuntimeEvent::ContentDelta("b".into()));
