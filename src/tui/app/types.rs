@@ -291,6 +291,22 @@ pub enum AppEvent {
         multi_select: bool,
         responder: QuestionResponder,
     },
+    /// Server-side permission required (from SessionEvent SSE; no responder -
+    /// resolved via POST /resolve-permission).
+    ServerPermissionRequired {
+        request_id: String,
+        tool: String,
+        reason: String,
+        rule: String,
+    },
+    /// Server-side ask_user_question (from SessionEvent SSE; no responder -
+    /// resolved via POST /interactions/:id/resolve).
+    ServerQuestionAsked {
+        request_id: String,
+        question: String,
+        options: serde_json::Value,
+        multi_select: bool,
+    },
     /// A stream error occurred
     StreamError(String),
     /// Conversation compaction started: the transcript is being archived and

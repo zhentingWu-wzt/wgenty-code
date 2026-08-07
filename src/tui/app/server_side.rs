@@ -91,6 +91,68 @@ pub(crate) fn session_event_to_app_events(ev: SessionEvent) -> Vec<AppEvent> {
                 .to_string();
             vec![AppEvent::StreamError(msg)]
         }
+        SessionEventKind::PermissionRequired => {
+            let request_id = ev
+                .data
+                .get("request_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let tool = ev
+                .data
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let reason = ev
+                .data
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let rule = ev
+                .data
+                .get("rule")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            vec![AppEvent::ServerPermissionRequired {
+                request_id,
+                tool,
+                reason,
+                rule,
+            }]
+        }
+        SessionEventKind::AskUser => {
+            let request_id = ev
+                .data
+                .get("request_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let question = ev
+                .data
+                .get("question")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let options = ev
+                .data
+                .get("options")
+                .cloned()
+                .unwrap_or(serde_json::Value::Array(vec![]));
+            let multi_select = ev
+                .data
+                .get("multi_select")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            vec![AppEvent::ServerQuestionAsked {
+                request_id,
+                question,
+                options,
+                multi_select,
+            }]
+        }
         SessionEventKind::Save => Vec::new(),
     }
 }
