@@ -18,6 +18,7 @@ Thumbs.db
 *.so
 *.dylib
 .wgenty-code/traces/
+.vite/
 # Test
 /test-project/
 *.json.bak
@@ -53,6 +54,8 @@ traces/
 .zcode/
 
 # OpenSpec development workflow artifacts
+# Comet local workspace pointer (which change is currently selected) — not shared
+.comet/
 
 # Benchmark output
 benchmark_results/

@@ -5,6 +5,7 @@ mod event;
 mod event_key;
 mod input;
 mod render;
+mod server_side;
 pub mod turn;
 pub mod types;
 
@@ -157,6 +158,16 @@ pub struct App {
     /// Previous mode before entering PlanMode via toggle (Ctrl+P or /plan).
     /// Used to restore the correct mode when toggling back.
     pub previous_mode: Option<AgentMode>,
+    /// When true, Submit triggers a server-side daemon run (POST /run) and
+    /// the SSE reader renders events, instead of the client-side loop
+    /// (chat_stream + DaemonToolPort). Toggled via `/server-side`.
+    pub server_side_loop: bool,
+    /// Join handle of the daemon session-event SSE reader (server-side mode).
+    /// Recreated on each server-side run and on session switch so the
+    /// subscription always follows the current session id (abort + respawn).
+    session_event_reader: Option<tokio::task::JoinHandle<()>>,
+    /// Join handle of the daemon subagent trace SSE reader (server-side mode).
+    trace_event_reader: Option<tokio::task::JoinHandle<()>>,
     /// Pre-assembled system messages (layered instructions from PromptAssembler).
     /// Cloned into each new AgentLoop so every Turn inherits the same base instructions.
     pub assembled_instructions: AssembledInstructions,
@@ -506,6 +517,9 @@ impl App {
                 AgentMode::Normal
             },
             previous_mode: None,
+            server_side_loop: false,
+            session_event_reader: None,
+            trace_event_reader: None,
             event_tx,
             event_rx,
             should_quit: false,
@@ -571,6 +585,38 @@ impl App {
 
     pub fn event_sender(&self) -> mpsc::UnboundedSender<AppEvent> {
         self.event_tx.clone()
+    }
+
+    /// (Re)create the server-side session-event SSE reader for the current
+    /// session id, aborting any previous reader. Pass `ready` to be signalled
+    /// once the subscription is established — used to gate `POST /run` so the
+    /// run's live-only events are not missed.
+    fn respawn_session_event_reader(&mut self, ready: Option<tokio::sync::oneshot::Sender<()>>) {
+        if let Some(handle) = self.session_event_reader.take() {
+            handle.abort();
+        }
+        let client = self.daemon_client.clone();
+        let sid = self.session_id.clone();
+        let tx = self.event_tx.clone();
+        let shutdown = self.shutdown_flag.clone();
+        self.session_event_reader = Some(crate::tui::app::server_side::spawn_session_event_reader(
+            client, sid, tx, shutdown, ready,
+        ));
+    }
+
+    /// (Re)create the server-side subagent trace SSE reader for the current
+    /// session id, aborting any previous reader.
+    fn respawn_trace_event_reader(&mut self) {
+        if let Some(handle) = self.trace_event_reader.take() {
+            handle.abort();
+        }
+        let client = self.daemon_client.clone();
+        let sid = self.session_id.clone();
+        let tx = self.event_tx.clone();
+        let shutdown = self.shutdown_flag.clone();
+        self.trace_event_reader = Some(crate::tui::app::server_side::spawn_trace_event_reader(
+            client, sid, tx, shutdown,
+        ));
     }
 
     /// Max time to wait for the final session flush on exit.
@@ -727,6 +773,13 @@ impl App {
                 }
             }
         });
+
+        // Server-side SSE readers (session events + subagent trace) are NOT
+        // spawned at startup: the session id is a locally generated UUID that
+        // the daemon has not seen yet, so an eager `GET /sessions/:id/events`
+        // would 404 (surfaced as a spurious "lost connection" error). They are
+        // created on demand by `start_server_side_run` and re-pointed at the
+        // current session on `/clear` (see `respawn_*_event_reader`).
 
         // Render the first frame IMMEDIATELY so the user sees the UI before any
         // startup background work runs. Cross-session memory recall is spawned

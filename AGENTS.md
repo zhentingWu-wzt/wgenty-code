@@ -90,7 +90,7 @@ Closes #123
 # 分支与 PR 流程
 
 - **分支命名**：`feature/<描述>`、`fix/<描述>`、`refactor/<描述>`。
-- 从 `develop` 创建功能分支，完成后向 `develop` 提交 PR。
+- 从 `dev` 创建功能分支，完成后向 `dev` 提交 PR。
 - `main` 为稳定分支，仅通过 tag（`v*`）触发 Release。
 - PR 标题遵循与 commit 相同的 Conventional Commits 格式。
 

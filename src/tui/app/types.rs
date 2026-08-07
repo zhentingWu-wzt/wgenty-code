@@ -195,7 +195,7 @@ mod agent_mode_effective_tests {
 
 /// A selectable option for `ask_user_question`, carrying a short label and a
 /// longer description (explanation) shown beneath the label in the panel.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct QuestionOption {
     /// Short display label (1-5 words).
     pub label: String,
@@ -290,6 +290,40 @@ pub enum AppEvent {
         options: Vec<QuestionOption>,
         multi_select: bool,
         responder: QuestionResponder,
+    },
+    /// Server-side permission required (from SessionEvent SSE; no responder -
+    /// resolved via POST /resolve-permission).
+    ServerPermissionRequired {
+        request_id: String,
+        tool: String,
+        reason: String,
+        rule: String,
+    },
+    /// Server-side ask_user_question (from SessionEvent SSE; no responder -
+    /// resolved via POST /interactions/:id/resolve).
+    ServerQuestionAsked {
+        request_id: String,
+        question: String,
+        options: serde_json::Value,
+        multi_select: bool,
+    },
+    /// Server-side subagent progress update (from the trace SSE stream).
+    /// Applied to the [`SubagentTree`] via `upsert` so the live subagent tree
+    /// renders while a daemon-owned run drives subagents. Only applied in
+    /// server-side mode; client-side mode populates the tree via
+    /// [`AppEvent::AgentLocalView`] polling (upsert there would fight
+    /// `replace_local`).
+    SubagentTraceProgress(Box<crate::agent::progress::SubagentProgress>),
+    /// A server-side permission request was resolved (approved/denied),
+    /// possibly from another device. Dismisses the matching popup if still
+    /// showing without re-sending a decision (the daemon already has it).
+    ServerPermissionResolved {
+        request_id: String,
+    },
+    /// A server-side ask_user_question was resolved, possibly from another
+    /// device. Clears the matching popup without sending a duplicate answer.
+    ServerQuestionResolved {
+        request_id: String,
     },
     /// A stream error occurred
     StreamError(String),
@@ -386,6 +420,13 @@ pub enum AppEvent {
     },
     /// Background task/subagent result notification for display in chat.
     BackgroundTaskResult(String),
+    /// `/clear` created a new session; the main loop adopts the new id/name.
+    /// Subagent generation is reset separately via the follow-up
+    /// [`AppEvent::AgentGenerationReset`].
+    SessionSwitched {
+        id: String,
+        name: String,
+    },
     /// A new task generation was established after `/clear` or shutdown
     /// cancellation. Obsolete root-direct subtrees are cancelled by the
     /// daemon; the app adopts the new generation and clears local views.

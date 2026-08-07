@@ -3,7 +3,7 @@
 use crate::api::{ApiClient, ToolDefinition};
 use crate::daemon::models::*;
 use crate::daemon::state::DaemonState;
-use crate::permissions::PolicyDecision;
+use crate::permissions::{PolicyDecision, ToolPermissionPolicy};
 use crate::tasks::management::{TaskPriority, TaskStatus};
 use axum::{
     extract::{Path, Query, State},
@@ -452,6 +452,9 @@ fn trace_event_from_header(
         token_budget_k: None,
         cumulative_tokens: h.total_tokens,
         error,
+        kind: crate::teams::trace_sink::TraceEventKind::Progress,
+        permission: None,
+        question: None,
     }
 }
 
@@ -481,11 +484,29 @@ pub async fn execute_tool(
     let args = &body.arguments;
     let session_id = body.session_id.as_deref().unwrap_or("default");
 
+    // Multi-project: validate against the session's own effective root (bound
+    // worktree > project > main working_dir) so the policy boundary always
+    // matches the execution workdir, and snapshot into that project's
+    // checkpoint store.
+    let session_root = state.effective_session_root(session_id).await;
+    let (cp_manager, cp_store) = state.checkpoints_for_project(&session_root);
+
+    // Per-project permission mode for this session's working directory.
+    let mode_entry = state.permission_modes.get(&session_root);
+
     // Validate against policy
-    let decision = state
-        .tool_executor
-        .validate_tool_call(tool_name, args)
-        .await;
+    let decision = {
+        let policy = ToolPermissionPolicy::new(session_root.clone());
+        let rules_handle = state.tool_executor.session_rules_handle();
+        let rules = rules_handle.read().await;
+        crate::tools::executor::validate_tool_call_shared(
+            &state.tool_registry,
+            &policy,
+            &rules,
+            tool_name,
+            args,
+        )
+    };
     tracing::info!("🔐 Daemon: policy for '{}' = {:?}", tool_name, decision);
     match decision {
         Ok(PolicyDecision::Allow) => {
@@ -496,12 +517,12 @@ pub async fn execute_tool(
                 .root_context(session_id)
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            let effective_mode = *state.effective_mode.read().unwrap();
+            let effective_mode = mode_entry.effective_mode;
             // Ensure the turn snapshot exists when the client supplies a turn id
             // (TUI/REPL generate one per user message). Plan mode skips capture
             // inside maybe_capture_pre_edit via EffectiveMode::Plan.
             if let Some(turn_id) = body.turn_id.as_deref() {
-                if let Err(e) = state.checkpoint_manager.begin_turn(turn_id) {
+                if let Err(e) = cp_manager.begin_turn(turn_id) {
                     tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
                 }
             }
@@ -511,9 +532,9 @@ pub async fn execute_tool(
                     uuid::Uuid::new_v4().to_string(),
                 ),
                 origin_turn_id: body.turn_id.as_deref(),
-                workdir: None,
+                workdir: Some(session_root.as_path()),
                 effective_mode,
-                checkpoint: Some(state.checkpoint_store.as_ref()),
+                checkpoint: Some(cp_store.as_ref()),
             };
             // Execute directly with hooks
             let msg = state
@@ -539,11 +560,7 @@ pub async fn execute_tool(
             // Check if rule was already approved for this session, OR root mode
             // auto-approves this tool (AcceptEdits / Yolo). Without the mode
             // bypass, AcceptEdits still bounced every write through the TUI.
-            let mode_auto = state
-                .root_mode
-                .read()
-                .map(|m| m.auto_approves(tool_name))
-                .unwrap_or(false);
+            let mode_auto = mode_entry.root_mode.auto_approves(tool_name);
             let already = state.is_rule_approved(session_id, &req.session_rule).await;
             if already || mode_auto {
                 if mode_auto && !already {
@@ -556,7 +573,7 @@ pub async fn execute_tool(
                 // Per-tool git-stash checkpoints removed: pre-edit capture happens
                 // inside ToolRegistry::execute_with_context via CheckpointStore.
                 if let Some(turn_id) = body.turn_id.as_deref() {
-                    if let Err(e) = state.checkpoint_manager.begin_turn(turn_id) {
+                    if let Err(e) = cp_manager.begin_turn(turn_id) {
                         tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
                     }
                 }
@@ -564,16 +581,16 @@ pub async fn execute_tool(
                     .root_context(session_id)
                     .await
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                let effective_mode = *state.effective_mode.read().unwrap();
+                let effective_mode = mode_entry.effective_mode;
                 let tool_context = crate::agent::ToolContext {
                     agent: &root_context,
                     invocation_id: crate::agent::ToolInvocationId::new(
                         uuid::Uuid::new_v4().to_string(),
                     ),
                     origin_turn_id: body.turn_id.as_deref(),
-                    workdir: None,
+                    workdir: Some(session_root.as_path()),
                     effective_mode,
-                    checkpoint: Some(state.checkpoint_store.as_ref()),
+                    checkpoint: Some(cp_store.as_ref()),
                 };
                 let msg = state
                     .tool_executor
@@ -692,6 +709,27 @@ pub async fn resolve_subagent_permission(
     }))
 }
 
+/// `POST /api/v1/interactions/:id/resolve` — answer a pending ask_user_question
+/// prompt from the server-side loop. The answer string unblocks the waiting
+/// InteractionBridge waiter.
+pub async fn resolve_interaction(
+    State(state): State<Arc<DaemonState>>,
+    Path(request_id): Path<String>,
+    Json(body): Json<crate::daemon::models::ResolveInteractionRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let ok = state
+        .interaction_bridge
+        .resolve(&request_id, body.answer)
+        .await;
+    if ok {
+        Ok(Json(serde_json::json!({ "resolved": true })))
+    } else {
+        // No pending question with this id (already resolved / timed out /
+        // never existed). 404 so the client can stop retrying.
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
 /// POST /api/v1/permission-mode - update the root agent's runtime permission
 /// mode (Yolo/AcceptEdits/Normal) and optional sandbox effective mode (Plan).
 /// Subagents snapshot values at spawn time.
@@ -699,11 +737,14 @@ pub async fn set_permission_mode(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<crate::daemon::models::SetPermissionModeRequest>,
 ) -> Json<serde_json::Value> {
-    *state.root_mode.write().unwrap() = body.mode;
+    let session_id = body.session_id.as_deref().unwrap_or("default");
+    let session_root = state.effective_session_root(session_id).await;
     let effective = body
         .effective_mode
         .unwrap_or_else(|| crate::sandbox::EffectiveMode::from_root_permission_mode(body.mode));
-    *state.effective_mode.write().unwrap() = effective;
+    state
+        .permission_modes
+        .set(session_root, body.mode, effective);
     tracing::info!(
         mode = ?body.mode,
         effective_mode = ?effective,
@@ -717,12 +758,16 @@ pub async fn set_permission_mode(
 }
 
 /// GET /api/v1/permission-mode - get the current root agent permission mode.
-pub async fn get_permission_mode(State(state): State<Arc<DaemonState>>) -> Json<serde_json::Value> {
-    let mode = *state.root_mode.read().unwrap();
-    let effective_mode = *state.effective_mode.read().unwrap();
+pub async fn get_permission_mode(
+    State(state): State<Arc<DaemonState>>,
+    Query(params): Query<crate::daemon::models::PermissionModeQuery>,
+) -> Json<serde_json::Value> {
+    let session_id = params.session_id.as_deref().unwrap_or("default");
+    let session_root = state.effective_session_root(session_id).await;
+    let entry = state.permission_modes.get(&session_root);
     Json(serde_json::json!({
-        "mode": mode,
-        "effective_mode": effective_mode,
+        "mode": entry.root_mode,
+        "effective_mode": entry.effective_mode,
     }))
 }
 
@@ -833,42 +878,85 @@ pub async fn list_mcp_servers(
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
+/// Map a stored [`SessionInfo`] to its API response shape (shared by the list
+/// and search handlers).
+fn session_info_response(s: crate::context::memory_session::SessionInfo) -> SessionInfoResponse {
+    SessionInfoResponse {
+        id: s.id,
+        name: s.name,
+        project_path: s.project_path.map(|p| p.to_string_lossy().to_string()),
+        created_at: s.created_at.to_rfc3339(),
+        updated_at: s.updated_at.to_rfc3339(),
+        message_count: s.message_count,
+        status: format!("{:?}", s.status),
+        worktree: s.worktree.map(|w| WorktreeRef {
+            path: w.path,
+            branch: w.branch,
+        }),
+    }
+}
+
+/// Sessions stored under a non-main project's directory but lacking
+/// `project_path` (e.g. moved there manually) still group under that project.
+fn fill_project(
+    root: &std::path::Path,
+    sessions: &mut [crate::context::memory_session::SessionInfo],
+) {
+    for s in sessions.iter_mut() {
+        if s.project_path.is_none() {
+            s.project_path = Some(root.to_path_buf());
+        }
+    }
+}
+
 pub async fn list_sessions(
     State(state): State<Arc<DaemonState>>,
 ) -> Result<Json<Vec<SessionInfoResponse>>, StatusCode> {
-    let sessions = state
+    // Aggregate the main project and every registered project.
+    let mut sessions = state
         .session_manager
         .list()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    for root in state.projects.registered_roots() {
+        let mgr = state.session_manager_for_project(&root).await;
+        let mut project_sessions = mgr
+            .list()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        fill_project(&root, &mut project_sessions);
+        sessions.extend(project_sessions);
+    }
 
     Ok(Json(
-        sessions
-            .into_iter()
-            .map(|s| SessionInfoResponse {
-                id: s.id,
-                name: s.name,
-                project_path: s.project_path.map(|p| p.to_string_lossy().to_string()),
-                created_at: s.created_at.to_rfc3339(),
-                updated_at: s.updated_at.to_rfc3339(),
-                message_count: s.message_count,
-                status: format!("{:?}", s.status),
-            })
-            .collect(),
+        sessions.into_iter().map(session_info_response).collect(),
     ))
 }
 
 pub async fn create_session(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<CreateSessionRequest>,
-) -> Result<Json<SessionResponse>, StatusCode> {
-    let session = state
-        .session_manager
-        .create(body.name.as_deref())
+) -> Result<Json<SessionResponse>, (StatusCode, String)> {
+    // Route to the owning project's session store (default: main project).
+    let root = match &body.project_path {
+        Some(p) => state.projects.resolve(p).ok_or((
+            StatusCode::BAD_REQUEST,
+            format!("not a registered project: {p}"),
+        ))?,
+        None => state.projects.main_root(),
+    };
+    let mgr = state.session_manager_for_project(&root).await;
+    let session =
+        crate::context::memory_session::Session::new(body.name.as_deref()).with_project(root);
+    mgr.save(&session)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(SessionResponse {
+        worktree: crate::context::memory_session::worktree_of(&session).map(|w| WorktreeRef {
+            path: w.path,
+            branch: w.branch,
+        }),
         id: session.id,
         name: session.name,
         created_at: session.created_at.to_rfc3339(),
@@ -882,14 +970,16 @@ pub async fn get_session(
     State(state): State<Arc<DaemonState>>,
     Path(id): Path<String>,
 ) -> Result<Json<SessionResponse>, StatusCode> {
-    let session = state
-        .session_manager
-        .load(&id)
+    let (_mgr, session) = state
+        .resolve_session(&id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(SessionResponse {
+        worktree: crate::context::memory_session::worktree_of(&session).map(|w| WorktreeRef {
+            path: w.path,
+            branch: w.branch,
+        }),
         id: session.id,
         name: session.name,
         created_at: session.created_at.to_rfc3339(),
@@ -903,16 +993,27 @@ pub async fn update_session(
     State(state): State<Arc<DaemonState>>,
     Path(id): Path<String>,
     Json(body): Json<UpdateSessionRequest>,
-) -> Result<Json<SessionResponse>, StatusCode> {
-    // Upsert must preserve the path id. Session::new() mints a fresh UUID and
-    // previously caused every SaveSession to write a new file (duplicate names
-    // in the session panel) while the TUI continued using the original id.
-    let mut session = state
-        .session_manager
-        .load(&id)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .unwrap_or_else(|| crate::context::memory_session::Session::with_id(id.clone(), None));
+) -> Result<Json<SessionResponse>, (StatusCode, Json<serde_json::Value>)> {
+    // Run lock: mutating a session mid-run would race the run's final save.
+    if state.session_runs.is_active(&id) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "run active"})),
+        ));
+    }
+
+    // Route to the owning project's store; an unknown id upserts into the
+    // main project (legacy TUI behavior).
+    let (mgr, mut session) = match state.resolve_session(&id).await {
+        Some((mgr, session)) => (mgr, session),
+        // Upsert must preserve the path id. Session::new() mints a fresh UUID and
+        // previously caused every SaveSession to write a new file (duplicate names
+        // in the session panel) while the TUI continued using the original id.
+        None => (
+            state.session_manager.clone(),
+            crate::context::memory_session::Session::with_id(id.clone(), None),
+        ),
+    };
 
     // Defense in depth: even if a future constructor changes, never let the
     // on-disk / response id diverge from the request path.
@@ -931,13 +1032,18 @@ pub async fn update_session(
     // Fully materialised write — clear any lazy index marker.
     session.lazy_message_count = None;
 
-    state
-        .session_manager
-        .save(&session)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    mgr.save(&session).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+    })?;
 
     Ok(Json(SessionResponse {
+        worktree: crate::context::memory_session::worktree_of(&session).map(|w| WorktreeRef {
+            path: w.path,
+            branch: w.branch,
+        }),
         id: session.id,
         name: session.name,
         created_at: session.created_at.to_rfc3339(),
@@ -951,7 +1057,12 @@ pub async fn delete_session(
     State(state): State<Arc<DaemonState>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    match state.session_manager.delete(&id).await {
+    let mgr = match state.resolve_session(&id).await {
+        Some((mgr, _)) => mgr,
+        // Unknown id: keep the legacy error semantics of the main store.
+        None => state.session_manager.clone(),
+    };
+    match mgr.delete(&id).await {
         Ok(()) => Ok(Json(serde_json::json!({"success": true}))),
         Err(e) => {
             if e.to_string().contains("Invalid session ID") {
@@ -967,21 +1078,16 @@ pub async fn search_sessions(
     State(state): State<Arc<DaemonState>>,
     Query(query): Query<SearchSessionsQuery>,
 ) -> Result<Json<Vec<SessionInfoResponse>>, StatusCode> {
-    let sessions = state.session_manager.search(&query.q).await;
+    let mut sessions = state.session_manager.search(&query.q).await;
+    for root in state.projects.registered_roots() {
+        let mgr = state.session_manager_for_project(&root).await;
+        let mut project_sessions = mgr.search(&query.q).await;
+        fill_project(&root, &mut project_sessions);
+        sessions.extend(project_sessions);
+    }
 
     Ok(Json(
-        sessions
-            .into_iter()
-            .map(|s| SessionInfoResponse {
-                id: s.id,
-                name: s.name,
-                project_path: s.project_path.map(|p| p.to_string_lossy().to_string()),
-                created_at: s.created_at.to_rfc3339(),
-                updated_at: s.updated_at.to_rfc3339(),
-                message_count: s.message_count,
-                status: format!("{:?}", s.status),
-            })
-            .collect(),
+        sessions.into_iter().map(session_info_response).collect(),
     ))
 }
 
@@ -1004,6 +1110,9 @@ pub async fn undo_checkpoint(State(state): State<Arc<DaemonState>>) -> Result<St
 #[derive(serde::Deserialize)]
 pub struct UndoTurnRangeRequest {
     pub turn_ids: Vec<String>,
+    /// Project whose checkpoint store holds the turns (`None` = main project).
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// POST /api/v1/tools/undo-turn - rewind a range of turns, restoring files to
@@ -1012,8 +1121,18 @@ pub struct UndoTurnRangeRequest {
 pub async fn undo_turn_range(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<UndoTurnRangeRequest>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    match state.checkpoint_manager.undo_range(body.turn_ids).await {
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let manager = match &body.project {
+        Some(p) => {
+            let root = state.projects.resolve(p).ok_or((
+                StatusCode::BAD_REQUEST,
+                format!("not a registered project: {p}"),
+            ))?;
+            state.checkpoints_for_project(&root).0
+        }
+        None => state.checkpoint_manager.clone(),
+    };
+    match manager.undo_range(body.turn_ids).await {
         Ok(report) => Ok(Json(serde_json::json!({
             "restored": report.restored,
             "skipped": report.skipped,
@@ -1022,9 +1141,17 @@ pub async fn undo_turn_range(
         }))),
         Err(e) => {
             tracing::warn!(error = %e, "undo_turn_range failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
         }
     }
+}
+
+/// Query for `GET /api/v1/checkpoints`.
+#[derive(serde::Deserialize)]
+pub struct ListCheckpointsQuery {
+    /// Project whose checkpoints to list (`None` = main project).
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// GET /api/v1/checkpoints - list per-turn checkpoint snapshots (newest-first).
@@ -1032,8 +1159,19 @@ pub async fn undo_turn_range(
 /// the TUI `/undo` turn-picker to show how many files each turn touched.
 pub async fn list_checkpoints(
     State(state): State<Arc<DaemonState>>,
-) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
-    match state.checkpoint_manager.store().list() {
+    Query(q): Query<ListCheckpointsQuery>,
+) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, String)> {
+    let manager = match &q.project {
+        Some(p) => {
+            let root = state.projects.resolve(p).ok_or((
+                StatusCode::BAD_REQUEST,
+                format!("not a registered project: {p}"),
+            ))?;
+            state.checkpoints_for_project(&root).0
+        }
+        None => state.checkpoint_manager.clone(),
+    };
+    match manager.store().list() {
         Ok(infos) => Ok(Json(
             infos
                 .into_iter()
@@ -1048,7 +1186,7 @@ pub async fn list_checkpoints(
         )),
         Err(e) => {
             tracing::warn!(error = %e, "list_checkpoints failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
         }
     }
 }
@@ -1473,6 +1611,131 @@ pub async fn cancel_agent_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ── Memory ops API (Tier 2 web-ops-console) ──────────────────────────────────
+// Thin wrappers over the shared MemoryManager. All read-only except prune.
+
+/// Resolve the memory pool for an optional `project` query param (`None` =
+/// main project). Shared by all memory endpoints.
+async fn memory_manager_for(
+    state: &DaemonState,
+    project: Option<&str>,
+) -> Result<Arc<crate::context::MemoryManager>, (StatusCode, String)> {
+    match project {
+        Some(p) => {
+            let root = state.projects.resolve(p).ok_or((
+                StatusCode::BAD_REQUEST,
+                format!("not a registered project: {p}"),
+            ))?;
+            Ok(state.memory_router.for_project(&root).await)
+        }
+        None => Ok(state.memory_manager.clone()),
+    }
+}
+
+/// `GET /api/v1/memory/status` — dual-pool status summary.
+pub async fn memory_status(
+    State(state): State<Arc<DaemonState>>,
+    Query(q): Query<MemoryProjectQuery>,
+) -> Result<Json<crate::context::MemoryStatus>, (StatusCode, String)> {
+    let mgr = memory_manager_for(&state, q.project.as_deref()).await?;
+    let status = mgr.status().await.map_err(|e| {
+        error!(error = ?e, "memory status failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+    Ok(Json(status))
+}
+
+/// `GET /api/v1/memory` — list with optional scope/min_importance/limit filters.
+pub async fn list_memory(
+    State(state): State<Arc<DaemonState>>,
+    Query(q): Query<MemoryListQuery>,
+) -> Result<Json<MemoryListResponse>, (StatusCode, String)> {
+    let mgr = memory_manager_for(&state, q.project.as_deref()).await?;
+    let limit = q.limit.unwrap_or(500).clamp(1, 5000);
+    let entries = mgr.list_memories(q.min_importance, limit).await;
+
+    let items: Vec<MemoryItemResponse> = entries
+        .into_iter()
+        .filter(|(origin, _)| match q.scope.as_deref() {
+            Some("project") => matches!(origin, crate::context::MemoryOrigin::Project),
+            Some("global") => matches!(origin, crate::context::MemoryOrigin::Global),
+            _ => true, // "all" or unspecified
+        })
+        .map(|(origin, entry)| MemoryItemResponse {
+            origin: origin_str(origin).to_string(),
+            entry,
+        })
+        .collect();
+    let total = items.len();
+    Ok(Json(MemoryListResponse { items, total }))
+}
+
+/// `GET /api/v1/memory/:id` — single memory with origin.
+pub async fn get_memory(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+    Query(q): Query<MemoryProjectQuery>,
+) -> Result<Json<MemoryDetailResponse>, (StatusCode, String)> {
+    // get_memory doesn't return origin; re-derive it by checking both pools.
+    let mgr = memory_manager_for(&state, q.project.as_deref()).await?;
+    if let Some(entry) = mgr.get_memory(&id).await {
+        // list_memories gives us the origin mapping cheaply for the lookup.
+        let origin = mgr
+            .list_memories(None, 5000)
+            .await
+            .into_iter()
+            .find(|(_, e)| e.id == id)
+            .map(|(o, _)| origin_str(o).to_string())
+            .unwrap_or_else(|| "project".to_string());
+        Ok(Json(MemoryDetailResponse { origin, entry }))
+    } else {
+        Err((StatusCode::NOT_FOUND, format!("no such memory: {id}")))
+    }
+}
+
+/// `POST /api/v1/memory/prune` — invoke prune; dry_run is advisory (the
+/// underlying prune() always executes, so a true dry-run requires a manager
+/// change — for now we honor the flag by returning status without pruning).
+pub async fn prune_memory(
+    State(state): State<Arc<DaemonState>>,
+    Query(q): Query<MemoryProjectQuery>,
+    req: Option<Json<PruneRequest>>,
+) -> Result<Json<crate::context::PruneResult>, (StatusCode, String)> {
+    let mgr = memory_manager_for(&state, q.project.as_deref()).await?;
+    let dry_run = req.map(|b| b.dry_run).unwrap_or(false);
+    // Dry-run: return the would-be result by reading status deltas. The
+    // current MemoryManager::prune is destructive with no preview, so we
+    // approximate dry-run as a no-op returning current counts as before==after.
+    if dry_run {
+        let s = mgr.status().await.map_err(|e| {
+            error!(error = ?e, "memory status (dry-run prune) failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        })?;
+        return Ok(Json(crate::context::PruneResult {
+            before: s.total_memories,
+            after: s.total_memories,
+            removed: 0,
+            project_before: s.project_count,
+            project_after: s.project_count,
+            global_before: s.global_count,
+            global_after: s.global_count,
+        }));
+    }
+    let result = mgr.prune().await.map_err(|e| {
+        error!(error = ?e, "memory prune failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+    })?;
+    Ok(Json(result))
+}
+
+/// Project MemoryOrigin to its serialized string form.
+fn origin_str(o: crate::context::MemoryOrigin) -> &'static str {
+    match o {
+        crate::context::MemoryOrigin::Project => "project",
+        crate::context::MemoryOrigin::Global => "global",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1529,6 +1792,84 @@ mod tests {
             !home_sessions.is_file(),
             "session must not be written to global ~/.wgenty-code/sessions when project dir is writable"
         );
+    }
+
+    #[tokio::test]
+    async fn multi_project_session_routing() {
+        use crate::config::Settings;
+        use crate::daemon::models::CreateSessionRequest;
+        use crate::state::AppState;
+        use axum::extract::{Path, State};
+        use axum::Json;
+
+        let main = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = main.path().to_path_buf();
+        let mut state = DaemonState::new(AppState::new(settings)).await;
+        // Isolate the registry from the developer's real projects.json.
+        let reg_store = tempfile::tempdir().unwrap();
+        state.projects = crate::daemon::projects::ProjectRegistry::load(
+            main.path().to_path_buf(),
+            reg_store.path().join("projects.json"),
+        );
+        let state = Arc::new(state);
+
+        // Register project B and create a session in it.
+        let proj_b = tempfile::tempdir().unwrap();
+        let b_canon = proj_b.path().canonicalize().unwrap();
+        state.projects.add(proj_b.path().to_str().unwrap()).unwrap();
+        let Json(created) = create_session(
+            State(state.clone()),
+            Json(CreateSessionRequest {
+                name: Some("in-b".to_string()),
+                project_path: Some(b_canon.to_string_lossy().to_string()),
+            }),
+        )
+        .await
+        .expect("create_session into project B");
+        let sid = created.id;
+
+        // The session file lands under project B's store, not the main one.
+        assert!(crate::utils::project_sessions_dir(&b_canon)
+            .join(format!("{sid}.json"))
+            .is_file());
+        assert!(!crate::utils::project_sessions_dir(main.path())
+            .join(format!("{sid}.json"))
+            .is_file());
+
+        // list_sessions aggregates both projects and tags the entry.
+        let Json(listed) = list_sessions(State(state.clone())).await.unwrap();
+        let entry = listed.iter().find(|s| s.id == sid).expect("listed");
+        assert_eq!(
+            entry.project_path.as_deref(),
+            Some(b_canon.to_string_lossy().as_ref())
+        );
+
+        // get/update/delete route across projects.
+        let Json(got) = get_session(State(state.clone()), Path(sid.clone()))
+            .await
+            .expect("get_session routes to project B");
+        assert_eq!(got.name, "in-b");
+
+        // The effective working root follows the session's project.
+        assert_eq!(state.effective_session_root(&sid).await, b_canon);
+
+        // Unknown project path is rejected.
+        let rejected = create_session(
+            State(state.clone()),
+            Json(CreateSessionRequest {
+                name: None,
+                project_path: Some("/no/such/project".to_string()),
+            }),
+        )
+        .await;
+        assert!(rejected.is_err());
+
+        // delete routes to the owning store.
+        let _ = delete_session(State(state.clone()), Path(sid.clone()))
+            .await
+            .expect("delete routes to project B");
+        assert!(state.resolve_session(&sid).await.is_none());
     }
 
     #[tokio::test]
@@ -1991,6 +2332,9 @@ mod tests {
             token_budget_k: None,
             cumulative_tokens: 0,
             error: None,
+            kind: crate::teams::trace_sink::TraceEventKind::Progress,
+            permission: None,
+            question: None,
         };
 
         // session filter keeps matching, drops non-matching.
@@ -2127,6 +2471,136 @@ mod tests {
         assert!(
             buf.contains("\"session_id\":\"alpha-cs\""),
             "session-scoped replay missing; got: {buf}"
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_list_filters_by_scope_and_importance() {
+        use crate::config::Settings;
+        use crate::context::{MemoryEntry, MemoryOrigin, MemoryType};
+        use crate::daemon::models::MemoryListQuery;
+        use crate::state::AppState;
+        use axum::extract::{Query, State};
+        use axum::Json;
+        use std::sync::Arc;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+
+        // Seed: one high-importance project memory, one low project, one global.
+        let mut hi = MemoryEntry::new(MemoryType::Knowledge, "important project fact");
+        hi.importance = 0.9;
+        let mut lo = MemoryEntry::new(MemoryType::Session, "trivial project note");
+        lo.importance = 0.1;
+        let mut gl = MemoryEntry::new(MemoryType::Preference, "global pref");
+        gl.importance = 0.8;
+        state
+            .memory_manager
+            .add_memory(hi, MemoryOrigin::Project)
+            .await
+            .unwrap();
+        state
+            .memory_manager
+            .add_memory(lo, MemoryOrigin::Project)
+            .await
+            .unwrap();
+        state
+            .memory_manager
+            .add_memory(gl, MemoryOrigin::Global)
+            .await
+            .unwrap();
+
+        // No filter → all three.
+        let Json(all) = list_memory(State(state.clone()), Query(MemoryListQuery::default()))
+            .await
+            .expect("list all");
+        assert_eq!(all.total, 3, "default list should return all 3 memories");
+
+        // Scope=project → only the two project entries.
+        let Json(proj) = list_memory(
+            State(state.clone()),
+            Query(MemoryListQuery {
+                scope: Some("project".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("list project");
+        assert_eq!(proj.total, 2, "project scope should return 2");
+        assert!(proj.items.iter().all(|m| m.origin == "project"));
+
+        // Scope=global → one global entry.
+        let Json(glob) = list_memory(
+            State(state.clone()),
+            Query(MemoryListQuery {
+                scope: Some("global".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("list global");
+        assert_eq!(glob.total, 1, "global scope should return 1");
+        assert_eq!(glob.items[0].origin, "global");
+
+        // min_importance=0.5 → only the two >= 0.5 entries (hi + global).
+        let Json(imp) = list_memory(
+            State(state.clone()),
+            Query(MemoryListQuery {
+                min_importance: Some(0.5),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("list by importance");
+        assert_eq!(imp.total, 2, "importance>=0.5 should return 2");
+        assert!(imp.items.iter().all(|m| m.entry.importance >= 0.5));
+    }
+
+    #[tokio::test]
+    async fn memory_prune_dry_run_is_noop() {
+        use crate::config::Settings;
+        use crate::context::{MemoryEntry, MemoryOrigin, MemoryType};
+        use crate::daemon::models::PruneRequest;
+        use crate::state::AppState;
+        use axum::extract::State;
+        use axum::Json;
+        use std::sync::Arc;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+
+        let entry = MemoryEntry::new(MemoryType::Knowledge, "kept");
+        state
+            .memory_manager
+            .add_memory(entry, MemoryOrigin::Project)
+            .await
+            .unwrap();
+
+        // Dry-run must not remove anything: before == after.
+        let Json(result) = prune_memory(
+            State(state.clone()),
+            Query(MemoryProjectQuery { project: None }),
+            Some(Json(PruneRequest { dry_run: true })),
+        )
+        .await
+        .expect("dry-run prune");
+        assert_eq!(result.removed, 0, "dry-run must remove nothing");
+        assert_eq!(result.before, result.after);
+
+        // The memory is still there.
+        let Json(still) = crate::daemon::handlers::memory_status(
+            State(state.clone()),
+            Query(MemoryProjectQuery { project: None }),
+        )
+        .await
+        .expect("status");
+        assert!(
+            still.total_memories >= 1,
+            "memory must survive a dry-run prune"
         );
     }
 }
