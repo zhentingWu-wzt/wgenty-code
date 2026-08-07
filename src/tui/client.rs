@@ -406,6 +406,55 @@ impl DaemonClient {
         Ok(resp)
     }
 
+    /// POST /api/v1/sessions/:id/run - start a server-side agent turn.
+    /// The daemon owns the loop (LLM calls + tool execution + persistence);
+    /// subscribe to events via [`session_events`](Self::session_events) to
+    /// observe progress. Returns the run_id.
+    pub async fn run_session(&self, session_id: &str, message: &str) -> anyhow::Result<String> {
+        let encoded = urlencode(session_id);
+        let url = format!("{}/api/v1/sessions/{}/run", self.base_url, encoded);
+        let resp = self
+            .http_tools()
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "message": message }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("run_session failed ({}): {}", status, text);
+        }
+        let body: serde_json::Value = resp.json().await?;
+        Ok(body["run_id"].as_str().unwrap_or("").to_string())
+    }
+
+    /// GET /api/v1/sessions/:id/events - SSE stream of `SessionEvent`.
+    /// Long-lived connection; the daemon pushes events as the server-side
+    /// run progresses. Returns the raw response for the caller to read.
+    pub async fn session_events(&self, session_id: &str) -> anyhow::Result<reqwest::Response> {
+        let encoded = urlencode(session_id);
+        let url = format!("{}/api/v1/sessions/{}/events", self.base_url, encoded);
+        let resp = self.http().get(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("session_events failed ({}): {}", status, text);
+        }
+        Ok(resp)
+    }
+
+    /// POST /api/v1/sessions/:id/cancel - cancel the active server-side run.
+    pub async fn cancel_run(&self, session_id: &str) -> anyhow::Result<()> {
+        let encoded = urlencode(session_id);
+        let url = format!("{}/api/v1/sessions/{}/cancel", self.base_url, encoded);
+        let resp = self.http_tools().post(&url).send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("cancel_run failed ({})", resp.status());
+        }
+        Ok(())
+    }
+
     /// POST /api/v1/tools/execute
     pub async fn execute_tool(
         &self,

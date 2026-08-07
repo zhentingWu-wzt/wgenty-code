@@ -5,6 +5,7 @@ mod event;
 mod event_key;
 mod input;
 mod render;
+mod server_side;
 pub mod turn;
 pub mod types;
 
@@ -727,6 +728,18 @@ impl App {
                 }
             }
         });
+
+        // Spawn server-side session-event reader: subscribes to the daemon's
+        // `GET /sessions/:id/events` SSE and maps `SessionEvent`s into
+        // `AppEvent`s. In client-side mode this stays idle (no POST /run ->
+        // no events); in server-side mode it drives streaming render.
+        {
+            let client = self.daemon_client.clone();
+            let sid = self.session_id.clone();
+            let tx = self.event_tx.clone();
+            let shutdown = self.shutdown_flag.clone();
+            crate::tui::app::server_side::spawn_session_event_reader(client, sid, tx, shutdown);
+        }
 
         // Render the first frame IMMEDIATELY so the user sees the UI before any
         // startup background work runs. Cross-session memory recall is spawned
