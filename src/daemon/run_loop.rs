@@ -45,6 +45,8 @@ pub enum SessionEventKind {
     TurnDone,
     TurnError,
     Save,
+    PermissionRequired,
+    AskUser,
 }
 
 /// Broadcast channel over which one daemon run publishes [`SessionEvent`]s.
@@ -296,6 +298,11 @@ pub struct RootToolPort {
     checkpoint_manager: Arc<crate::tools::CheckpointManager>,
     checkpoint_store: Arc<crate::tools::CheckpointStore>,
     session_id: String,
+    /// Session event hub: pushes PermissionRequired/AskUser events to SSE
+    /// clients so they can prompt without polling pending-permissions.
+    hub: SessionEventHub,
+    run_id: String,
+    next_seq: Arc<AtomicU64>,
 }
 
 impl RootToolPort {
@@ -303,7 +310,7 @@ impl RootToolPort {
     /// effective working root (see [`DaemonState::effective_session_root`]):
     /// tool path resolution, the permission-policy boundary, and checkpoint
     /// storage all follow it.
-    pub fn new(state: &DaemonState, session_id: &str, root: PathBuf) -> Self {
+    pub fn new(state: &DaemonState, session_id: &str, run_id: &str, root: PathBuf) -> Self {
         let (checkpoint_manager, checkpoint_store) = state.checkpoints_for_project(&root);
         Self {
             registry: Arc::clone(&state.tool_registry),
@@ -317,6 +324,9 @@ impl RootToolPort {
             checkpoint_manager,
             checkpoint_store,
             session_id: session_id.to_string(),
+            hub: state.session_event_hub.clone(),
+            run_id: run_id.to_string(),
+            next_seq: state.session_seq_counter(session_id),
         }
     }
 
@@ -347,6 +357,9 @@ impl RootToolPort {
             agent: AgentExecutionContext::root(SessionId::new("test")),
             root: policy_root,
             session_id: "test".to_string(),
+            hub: tokio::sync::broadcast::channel(16).0,
+            run_id: "test".to_string(),
+            next_seq: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -360,6 +373,18 @@ impl RootToolPort {
             .to_string(),
             success: false,
         }
+    }
+
+    /// Publish a SessionEvent to the hub (permission/ask notifications).
+    fn publish_event(&self, kind: SessionEventKind, data: serde_json::Value) {
+        let event = SessionEvent {
+            seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
+            session_id: self.session_id.clone(),
+            run_id: self.run_id.clone(),
+            kind,
+            data,
+        };
+        let _ = self.hub.send(event);
     }
 
     /// Resolve a policy `Ask`: approved rule / auto-approving mode short-
@@ -393,6 +418,18 @@ impl RootToolPort {
         } else if let Some(cmd) = perm.session_rule.strip_prefix("command:") {
             approval.command = Some(cmd.to_string());
         }
+
+        // Push the permission request to SSE clients so they can prompt
+        // without polling GET /pending-permissions.
+        self.publish_event(
+            SessionEventKind::PermissionRequired,
+            serde_json::json!({
+                "request_id": &approval.request_id,
+                "tool": &perm.tool_name,
+                "reason": &perm.reason,
+                "rule": &perm.session_rule,
+            }),
+        );
 
         if !self.bridge.request_indefinite(approval).await {
             return Err(Self::fail(
@@ -523,6 +560,15 @@ impl InteractionPort for RootToolPort {
     async fn ask_user_question(&self, args: &serde_json::Value) -> String {
         let payload =
             crate::daemon::interaction_bridge::QuestionPayload::from_args(args, &self.session_id);
+        self.publish_event(
+            SessionEventKind::AskUser,
+            serde_json::json!({
+                "request_id": &payload.request_id,
+                "question": &payload.question,
+                "options": &payload.options,
+                "multi_select": payload.multi_select,
+            }),
+        );
         self.interaction_bridge.request(payload).await
     }
 }
@@ -890,7 +936,7 @@ async fn run_session_turn(
     // > the session's project > main working_dir). Tool path resolution, the
     // permission-policy boundary, and checkpoint storage all follow it.
     let root = state.effective_session_root(session_id).await;
-    let tools = RootToolPort::new(state, session_id, root.clone());
+    let tools = RootToolPort::new(state, session_id, run_id, root.clone());
 
     // 5. System prompt — same PromptContext chain as the headless runtime,
     // with cwd = the session's effective root.

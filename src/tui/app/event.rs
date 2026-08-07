@@ -551,6 +551,30 @@ impl App {
                 self.question_state
                     .show(question, options, multi_select, responder);
             }
+            AppEvent::ServerPermissionRequired {
+                request_id,
+                tool,
+                reason,
+                rule,
+            } => {
+                self.permission_state.show_server(
+                    format!("{tool}: {reason}"),
+                    rule,
+                    request_id,
+                    self.daemon_client.clone(),
+                );
+            }
+            AppEvent::ServerQuestionAsked {
+                request_id: _,
+                question,
+                options: _,
+                multi_select: _,
+            } => {
+                // TODO(B5-full): wire to QuestionState popup + POST
+                // /interactions/:id/resolve. For now, surface as a system
+                // message so the user knows the agent is waiting on input.
+                self.push_system_message(format!("Agent is asking (resolve pending): {question}"));
+            }
             AppEvent::ToggleSessions => {
                 if self.session_state.visible {
                     self.session_state.dismiss();

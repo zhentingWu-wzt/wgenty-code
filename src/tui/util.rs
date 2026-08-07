@@ -472,6 +472,8 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::ModelSwitchRequested { .. }
         | AppEvent::ModelSwitched { .. }
         | AppEvent::SessionSwitched { .. }
+        | AppEvent::ServerPermissionRequired { .. }
+        | AppEvent::ServerQuestionAsked { .. }
         | AppEvent::ModelSwitchFailed(_) => None,
     }
 }
