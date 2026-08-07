@@ -861,7 +861,7 @@ git commit -m "feat(daemon): add GET /events global SSE endpoint"
 
 ### Task 7: 全局事件生产者挂接（TodosChanged / ModeChanged / ModelChanged / TaskGroupResult）
 
-- [ ] Task 7 完成标记：本节全部 Step 完成并提交
+- [x] Task 7 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/daemon/state.rs`（`apply_todos_update` 助手）
