@@ -23,6 +23,9 @@ pub struct QuestionState {
     pub other_value: String,
     /// Pending oneshot sender for question response.
     pub responder: Option<QuestionResponder>,
+    /// Server-side mode: request_id for POST /interactions/:id/resolve.
+    pub server_request_id: Option<String>,
+    pub client: Option<crate::tui::client::DaemonClient>,
     /// Set to true by handle_key when the user confirms submission (Enter / number-key auto-select).
     /// The event loop reads this flag to decide whether to call take_response().
     pub just_submitted: bool,
@@ -53,6 +56,8 @@ impl QuestionState {
             cursor: 0,
             other_value: String::new(),
             responder: None,
+            server_request_id: None,
+            client: None,
             just_submitted: false,
         }
     }
@@ -72,6 +77,31 @@ impl QuestionState {
         self.cursor = 0;
         self.other_value.clear();
         self.responder = Some(responder);
+        self.server_request_id = None;
+        self.client = None;
+        self.just_submitted = false;
+    }
+
+    /// Server-side variant: no oneshot responder; the answer is sent via
+    /// POST /interactions/:id/resolve as `{"selected":[...],"text":""}`.
+    pub fn show_server(
+        &mut self,
+        question: String,
+        options: Vec<QuestionOption>,
+        multi_select: bool,
+        request_id: String,
+        client: crate::tui::client::DaemonClient,
+    ) {
+        self.visible = true;
+        self.question = question;
+        self.options = options;
+        self.multi_select = multi_select;
+        self.selected = if multi_select { vec![] } else { vec![0] };
+        self.cursor = 0;
+        self.other_value.clear();
+        self.responder = None;
+        self.server_request_id = Some(request_id);
+        self.client = Some(client);
         self.just_submitted = false;
     }
 
@@ -101,7 +131,14 @@ impl QuestionState {
                 .collect()
         };
         // Send response via oneshot channel
-        if let Some(responder) = self.responder.take() {
+        if let Some(req_id) = self.server_request_id.take() {
+            if let Some(client) = self.client.take() {
+                let answer = serde_json::json!({ "selected": &answers, "text": "" }).to_string();
+                tokio::spawn(async move {
+                    let _ = client.resolve_interaction(&req_id, &answer).await;
+                });
+            }
+        } else if let Some(responder) = self.responder.take() {
             let _ = responder.0.map(|tx| tx.send(answers.clone()));
         }
         answers
@@ -113,7 +150,9 @@ impl QuestionState {
     /// text input field is empty.
     pub fn take_response(&mut self) -> Option<Vec<String>> {
         // Guard: no responder means already taken (e.g. Esc cancelled).
-        self.responder.as_ref()?;
+        if self.responder.is_none() && self.server_request_id.is_none() {
+            return None;
+        }
         // In multi-select mode, require at least one selection to submit.
         if self.multi_select && self.selected.is_empty() {
             return None;
@@ -138,8 +177,16 @@ impl QuestionState {
                 .collect()
         };
         // Now it is safe to consume the responder and submit.
-        let responder = self.responder.take()?;
-        let _ = responder.0.map(|tx| tx.send(answers.clone()));
+        if let Some(req_id) = self.server_request_id.take() {
+            if let Some(client) = self.client.take() {
+                let answer = serde_json::json!({ "selected": &answers, "text": "" }).to_string();
+                tokio::spawn(async move {
+                    let _ = client.resolve_interaction(&req_id, &answer).await;
+                });
+            }
+        } else if let Some(responder) = self.responder.take() {
+            let _ = responder.0.map(|tx| tx.send(answers.clone()));
+        }
         self.visible = false;
         Some(answers)
     }

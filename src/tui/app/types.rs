@@ -195,7 +195,7 @@ mod agent_mode_effective_tests {
 
 /// A selectable option for `ask_user_question`, carrying a short label and a
 /// longer description (explanation) shown beneath the label in the panel.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct QuestionOption {
     /// Short display label (1-5 words).
     pub label: String,

@@ -565,15 +565,19 @@ impl App {
                 );
             }
             AppEvent::ServerQuestionAsked {
-                request_id: _,
+                request_id,
                 question,
-                options: _,
-                multi_select: _,
+                options,
+                multi_select,
             } => {
-                // TODO(B5-full): wire to QuestionState popup + POST
-                // /interactions/:id/resolve. For now, surface as a system
-                // message so the user knows the agent is waiting on input.
-                self.push_system_message(format!("Agent is asking (resolve pending): {question}"));
+                let opts: Vec<QuestionOption> = serde_json::from_value(options).unwrap_or_default();
+                self.question_state.show_server(
+                    question,
+                    opts,
+                    multi_select,
+                    request_id,
+                    self.daemon_client.clone(),
+                );
             }
             AppEvent::ToggleSessions => {
                 if self.session_state.visible {
