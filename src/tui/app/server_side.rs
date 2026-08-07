@@ -6,6 +6,7 @@
 //! loop to a server-side loop.
 
 use crate::daemon::run_loop::{SessionEvent, SessionEventKind};
+use crate::teams::trace_sink::{TraceEvent, TraceEventKind};
 use crate::tui::app::types::AppEvent;
 use crate::tui::client::DaemonClient;
 use futures::StreamExt;
@@ -209,6 +210,94 @@ pub(crate) fn spawn_session_event_reader(
                 }
                 Some(Err(e)) => {
                     tracing::warn!(error = %e, "session events SSE read error");
+                    break;
+                }
+                None => break,
+            }
+        }
+    });
+}
+
+/// Map a daemon `TraceEvent` (subagent trace stream) into zero or more
+/// `AppEvent`s. permission_pending/question_pending reuse the Phase-B
+/// server-side popup path; progress/resolved are deferred (D-full).
+fn trace_event_to_app_events(ev: TraceEvent) -> Vec<AppEvent> {
+    match ev.kind {
+        TraceEventKind::PermissionPending => ev
+            .permission
+            .map(|p| {
+                vec![AppEvent::ServerPermissionRequired {
+                    request_id: p.request_id,
+                    tool: p.tool,
+                    reason: p.policy_reason,
+                    rule: p.session_rule,
+                }]
+            })
+            .unwrap_or_default(),
+        TraceEventKind::QuestionPending => ev
+            .question
+            .map(|q| {
+                vec![AppEvent::ServerQuestionAsked {
+                    request_id: q.request_id,
+                    question: q.question,
+                    options: serde_json::to_value(&q.options).unwrap_or(serde_json::Value::Null),
+                    multi_select: q.multi_select,
+                }]
+            })
+            .unwrap_or_default(),
+        // permission_resolved / question_resolved: popup dismiss on resolve
+        // ack; progress: subagent_tree update (TODO D-full).
+        _ => Vec::new(),
+    }
+}
+
+/// Spawn a background task that subscribes to the daemon's subagent trace
+/// SSE stream and forwards mapped `AppEvent`s (permission/question) into
+/// `event_tx`. Mirrors `spawn_session_event_reader`.
+pub(crate) fn spawn_trace_event_reader(
+    client: DaemonClient,
+    session_id: String,
+    event_tx: mpsc::UnboundedSender<AppEvent>,
+    shutdown: Arc<AtomicBool>,
+) {
+    tokio::spawn(async move {
+        let resp = match client.trace_stream(&session_id).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "trace stream SSE connect failed");
+                return;
+            }
+        };
+        let mut stream = resp.bytes_stream();
+        let mut buf = String::new();
+        while !shutdown.load(Ordering::SeqCst) {
+            match stream.next().await {
+                Some(Ok(chunk)) => {
+                    buf.push_str(&String::from_utf8_lossy(&chunk));
+                    while let Some(pos) = buf.find('\n') {
+                        let line = buf[..pos].trim().to_string();
+                        buf = buf[pos + 1..].to_string();
+                        if let Some(json_str) = line.strip_prefix("data: ") {
+                            match serde_json::from_str::<TraceEvent>(json_str) {
+                                Ok(ev) => {
+                                    for app_ev in trace_event_to_app_events(ev) {
+                                        if event_tx.send(app_ev).is_err() {
+                                            return;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::trace!(
+                                        error = %e,
+                                        "skip unparseable trace event line"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(Err(e)) => {
+                    tracing::warn!(error = %e, "trace stream SSE read error");
                     break;
                 }
                 None => break,
