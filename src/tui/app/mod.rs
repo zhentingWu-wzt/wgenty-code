@@ -158,6 +158,10 @@ pub struct App {
     /// Previous mode before entering PlanMode via toggle (Ctrl+P or /plan).
     /// Used to restore the correct mode when toggling back.
     pub previous_mode: Option<AgentMode>,
+    /// When true, Submit triggers a server-side daemon run (POST /run) and
+    /// the SSE reader renders events, instead of the client-side loop
+    /// (chat_stream + DaemonToolPort). Toggled via `/server-side`.
+    pub server_side_loop: bool,
     /// Pre-assembled system messages (layered instructions from PromptAssembler).
     /// Cloned into each new AgentLoop so every Turn inherits the same base instructions.
     pub assembled_instructions: AssembledInstructions,
@@ -507,6 +511,7 @@ impl App {
                 AgentMode::Normal
             },
             previous_mode: None,
+            server_side_loop: false,
             event_tx,
             event_rx,
             should_quit: false,
