@@ -13,6 +13,7 @@
 - [ ] 2.1 全局事件类型与序号空间定义（todos/task-group/背景结果/模式/模型变更）
 - [ ] 2.2 `GET /events` 全局 SSE 端点，多订阅者 fan-out
 - [ ] 2.3 背景任务结果改广播 + 可查询保留（废除 drain 抢占），轮询端点保留兼容
+- [ ] 2.4 dogfood：TUI todos 面板切换为 `GET /events` 订阅（保留轮询回退）
 
 ## 3. 审批语义收敛
 
@@ -26,8 +27,8 @@
 
 ## 5. daemon 可发现部署
 
-- [ ] 5.1 per-working-dir 发现文件（端口/token/pid/心跳），原子写入 + 退出清理
-- [ ] 5.2 UI 启动复用逻辑：读发现文件 → 存活/token 校验 → 复用或回退拉起
+- [ ] 5.1 全局发现文件 `~/.wgenty-code/daemon.json`（端口/token/pid/心跳 30s 更新、120s 过期），原子写入 + 退出清理
+- [ ] 5.2 `utils::discover_daemon()` 复用逻辑：读文件 → token 匹配 + 心跳未过期 → 复用或回退拉起；TUI 启动接入验证
 
 ## 6. 验证
 

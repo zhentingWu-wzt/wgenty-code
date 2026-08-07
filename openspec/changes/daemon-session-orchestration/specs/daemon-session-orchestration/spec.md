@@ -20,7 +20,7 @@ daemon 会话编排的可靠性补强：会话事件流重放/续传/失步信�
 
 ### Requirement: 客户端可感知的失步信号
 
-系统 SHALL 在客户端请求的 seq 已超出缓冲窗口、或该客户端的 broadcast 订阅发生 Lagged 时，向其发送显式失步信号（SyncLost 事件或等价语义），客户端据此回退到 `GET /sessions/:id` 全量恢复。失步 MUST NOT 仅在服务端记录日志。
+系统 SHALL 在客户端请求的 seq 已超出缓冲窗口、或该客户端的 broadcast 订阅发生 Lagged 时，向其发送显式失步信号（`SessionEventKind::SyncLost` SSE 事件变体，携带 reason 与 latest_seq），客户端据此回退到 `GET /sessions/:id` 全量恢复。失步 MUST NOT 仅在服务端记录日志。
 
 #### Scenario: 缓冲淘汰失步
 
@@ -62,7 +62,7 @@ daemon 会话编排的可靠性补强：会话事件流重放/续传/失步信�
 
 ### Requirement: daemon 可发现部署
 
-系统 SHALL 在启动时写入 per-working-dir 发现文件（端口、token、pid、心跳时间戳），退出时清理；UI 进程启动时 MUST 先读发现文件并校验存活（pid/心跳/token 匹配），命中则复用该实例，校验失败 MUST NOT 误连失效实例。
+系统 SHALL 以全局单 daemon 实例服务全部项目（沿用多项目注册表）；daemon 启动时 MUST 写入全局发现文件 `~/.wgenty-code/daemon.json`（端口、token、pid、心跳时间戳），心跳定期更新，退出时清理；UI 进程启动时 MUST 先读发现文件并校验存活（心跳未过期 + token 匹配），命中则复用该实例，校验失败 MUST NOT 误连失效实例。
 
 #### Scenario: 多 UI 复用 daemon
 

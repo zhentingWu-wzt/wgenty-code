@@ -46,8 +46,8 @@
 5. **会话存储版本化**
    `Session` 增加 `version`（单调递增）；PUT 携带期望版本，不匹配返回 409 + 当前版本，调用方重读合并重试。run 内部 save_gen 机制保留，与对外版本共存（对外版本在 run 写盘时一并推进）。
 
-6. **发现文件：per-working-dir + 存活校验**
-   daemon 启动写 `<working_dir>/.wgenty-code/daemon.json`（port、token、pid、启动时间、心跳时间戳），退出清理；UI 启动流程：读发现文件 → 校验 pid/心跳存活 → 命中则复用，否则按现有逻辑拉起。全局 token 文件保留兼容。
+6. **发现文件：全局单 daemon + 存活校验**
+   沿用已落地的多项目注册表方向：一台机器一个常驻 daemon 服务全部项目。daemon 启动写 `~/.wgenty-code/daemon.json`（port、token、pid、started_at、heartbeat_at），心跳 30s 更新、120s 过期，退出清理；UI 启动流程：读发现文件 → token 匹配 + 心跳未过期 → 复用，否则按现有逻辑拉起。全局 token 文件保留兼容。
 
 ## Risks / Trade-offs
 

@@ -10,7 +10,7 @@
       "scope": "per-session 环形缓冲 + after=seq 续传 + SyncLost 失步信号、全局事件流（todos/背景结果/模式/模型）、重复审批应答 409 + default 硬编码清零、会话存储版本化、per-working-dir 发现文件",
       "nonGoals": "loop 上收/run 互斥/审批广播/多项目（已完成）、客户端轮询→推送迁移（后续 change）、事件持久化日志、远程访问",
       "acceptance": ["断线按 seq 续传、失步信号后正确全量恢复", "todos/模式变更推送全端到达、背景结果去 drain 抢占", "重复审批 409、会话写冲突 409", "多 UI 经发现文件复用同一 daemon", "TUI 双模式回归通过"],
-      "status": "pending"
+      "status": "selected"
     },
     {
       "name": "gui-desktop-foundation",
