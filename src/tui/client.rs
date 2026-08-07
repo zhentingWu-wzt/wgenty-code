@@ -410,14 +410,19 @@ impl DaemonClient {
     /// The daemon owns the loop (LLM calls + tool execution + persistence);
     /// subscribe to events via [`session_events`](Self::session_events) to
     /// observe progress. Returns the run_id.
-    pub async fn run_session(&self, session_id: &str, message: &str) -> anyhow::Result<String> {
+    pub async fn run_session(
+        &self,
+        session_id: &str,
+        message: &str,
+        plan_mode: bool,
+    ) -> anyhow::Result<String> {
         let encoded = urlencode(session_id);
         let url = format!("{}/api/v1/sessions/{}/run", self.base_url, encoded);
         let resp = self
             .http_tools()
             .post(&url)
             .header("Content-Type", "application/json")
-            .json(&serde_json::json!({ "message": message }))
+            .json(&serde_json::json!({ "message": message, "plan_mode": plan_mode }))
             .send()
             .await?;
         if !resp.status().is_success() {

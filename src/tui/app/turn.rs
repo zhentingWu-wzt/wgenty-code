@@ -68,8 +68,9 @@ impl App {
         let client = self.daemon_client.clone();
         let sid = self.session_id.clone();
         let tx = self.event_tx.clone();
+        let plan_mode = self.mode == AgentMode::PlanMode;
         tokio::spawn(async move {
-            match client.run_session(&sid, &input_text).await {
+            match client.run_session(&sid, &input_text, plan_mode).await {
                 Ok(_run_id) => {
                     // SSE reader (spawned in App::run) delivers events.
                 }
