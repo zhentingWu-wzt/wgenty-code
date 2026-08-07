@@ -1328,7 +1328,7 @@ git commit -m "fix(daemon): return 409 with standing resolution for duplicate in
 
 ### Task 11: `POST /tools/resolve-permission`（subagent）已决议 → 409
 
-- [ ] Task 11 完成标记：本节全部 Step 完成并提交
+- [x] Task 11 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/daemon/handlers.rs:692-710`（`resolve_subagent_permission`）

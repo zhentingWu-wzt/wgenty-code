@@ -17,7 +17,7 @@
 
 ## 3. 审批语义收敛
 
-- [ ] 3.1 重复应答统一 409（interaction resolve、subagent resolve-permission）
+- [x] 3.1 重复应答统一 409（interaction resolve、subagent resolve-permission）
 - [ ] 3.2 清理 handlers.rs 约 10 处 `"default"` 硬编码，server-side 路径归属真实 session（旧端点兼容映射保留）
 
 ## 4. 会话存储版本化
