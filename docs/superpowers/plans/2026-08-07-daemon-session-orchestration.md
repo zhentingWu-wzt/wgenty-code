@@ -753,7 +753,7 @@ git commit -m "feat(daemon): add global event bus with independent seq space"
 
 ### Task 6: `GET /events` 全局 SSE 端点
 
-- [ ] Task 6 完成标记：本节全部 Step 完成并提交
+- [x] Task 6 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/daemon/global_events.rs`（新增 handler）
