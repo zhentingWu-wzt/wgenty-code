@@ -48,6 +48,7 @@ pub enum SessionEventKind {
     Save,
     PermissionRequired,
     AskUser,
+    SyncLost,
 }
 
 /// Broadcast channel over which one daemon run publishes [`SessionEvent`]s.
@@ -85,20 +86,16 @@ impl SessionEventBuffer {
         self.events.push_back(ev);
     }
 
-    // Read-side accessors: consumed by Task 3's `after=` replay path; until
-    // then only tests use them, so the lib (non-test) target would flag
-    // dead_code. Task 3 removes these allows when it wires the replay.
-    #[allow(dead_code)]
+    // Read-side accessors: consumed by Task 3's `after=` replay path
+    // (`plan_catch_up`) and by tests.
     pub(crate) fn oldest_seq(&self) -> Option<u64> {
         self.events.front().map(|e| e.seq)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn latest_seq(&self) -> Option<u64> {
         self.events.back().map(|e| e.seq)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn events_after(&self, after: u64) -> impl Iterator<Item = &SessionEvent> {
         self.events.iter().filter(move |e| e.seq > after)
     }
@@ -661,7 +658,7 @@ use crate::context::memory_session::SessionMessage;
 use crate::context::MemorySessionManager;
 use crate::prompts::PromptContext;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
     Json,
@@ -852,39 +849,113 @@ pub(crate) async fn post_cancel(
     }
 }
 
-/// GET /api/v1/sessions/:id/events — SSE stream of the session's live
-/// [`SessionEvent`]s, filtered from the single global hub by session id.
+/// Query parameters for `GET /sessions/:id/events`.
+#[derive(Debug, Deserialize)]
+pub struct SessionEventsQuery {
+    pub after: Option<u64>,
+}
+
+/// Replay/attach decision for `after=` subscriptions (design §2.2).
+#[derive(Debug)]
+pub(crate) enum CatchUp {
+    /// No `after` — live-only (existing default).
+    LiveOnly,
+    /// `after >= latest` — nothing missed, attach live directly.
+    UpToDate,
+    /// Buffer covers `after + 1` — replay these, then attach live (dedup by seq).
+    Replay(Vec<SessionEvent>),
+    /// `after + 1 < oldest` (or buffer empty) — send SyncLost with latest seq.
+    SyncLost { latest_seq: u64 },
+}
+
+pub(crate) fn plan_catch_up(after: Option<u64>, buf: &SessionEventBuffer) -> CatchUp {
+    let Some(after) = after else {
+        return CatchUp::LiveOnly;
+    };
+    match (buf.oldest_seq(), buf.latest_seq()) {
+        (_, Some(latest)) if after >= latest => CatchUp::UpToDate,
+        (Some(oldest), Some(_)) if after + 1 >= oldest => {
+            CatchUp::Replay(buf.events_after(after).cloned().collect())
+        }
+        // Buffer empty (daemon restarted) or requested seq evicted.
+        _ => CatchUp::SyncLost {
+            latest_seq: buf.latest_seq().unwrap_or(0),
+        },
+    }
+}
+
+/// GET /api/v1/sessions/:id/events — SSE stream of the session's events.
 ///
-/// Live-only (v1: no cold replay) — events published before the client
-/// connected are not resent; the persisted history (`GET /sessions/:id`)
-/// is the catch-up path. A slow subscriber observes `Lagged` (drop-oldest).
-/// 404 for an unknown session. Keep-alive comment every 15s.
+/// Without `after`: live-only (default, unchanged). With `after=<seq>`:
+/// replay buffered events with `seq > after` in order, then attach live;
+/// live events with `seq <= ` the last replayed seq are dropped (dedup at
+/// the seam). If `after` fell out of the buffer window the client receives a
+/// `sync_lost` event (`{ reason, latest_seq }`) — recovery contract: do a
+/// full `GET /sessions/:id`, realign on the latest turn state, then
+/// re-subscribe (without `after`, or with the newest seq). 404 for unknown
+/// session. Keep-alive comment every 15s.
 pub(crate) async fn get_session_events(
     State(state): State<Arc<DaemonState>>,
     Path(id): Path<String>,
+    Query(query): Query<SessionEventsQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
     if state.resolve_session(&id).await.is_none() {
         return Err((StatusCode::NOT_FOUND, format!("no such session: {id}")));
     }
 
+    let buffer = state.session_buffer(&id);
+    let catch_up = {
+        let buf = buffer.read().expect("session buffer lock poisoned");
+        plan_catch_up(query.after, &buf)
+    };
+
     let (tx, rx) = mpsc::unbounded_channel::<Result<Event, Infallible>>();
-    // Subscribe before responding so no event is missed between connect and
-    // stream start.
+    // Subscribe BEFORE replaying so seam events can't be lost; dedup below.
     let mut live = state.session_event_hub.subscribe();
+
+    let mut seam_seq = match &catch_up {
+        CatchUp::Replay(evs) => {
+            for ev in evs {
+                let data = serde_json::to_string(ev).unwrap_or_default();
+                if tx.send(Ok(Event::default().data(data))).is_err() {
+                    return Ok(
+                        Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(KeepAlive::default())
+                    );
+                }
+            }
+            evs.last().map(|e| e.seq).unwrap_or(0)
+        }
+        CatchUp::SyncLost { latest_seq } => {
+            let ev = SessionEvent {
+                seq: 0,
+                session_id: id.clone(),
+                run_id: String::new(),
+                kind: SessionEventKind::SyncLost,
+                data: serde_json::json!({ "reason": "evicted", "latest_seq": latest_seq }),
+            };
+            let data = serde_json::to_string(&ev).unwrap_or_default();
+            let _ = tx.send(Ok(Event::default().data(data)));
+            // Keep the stream open; the client decides to resubscribe (§2.3).
+            *latest_seq
+        }
+        CatchUp::LiveOnly | CatchUp::UpToDate => query.after.unwrap_or(0),
+    };
 
     tokio::spawn(async move {
         loop {
             match live.recv().await {
                 Ok(ev) => {
-                    if ev.session_id != id {
-                        continue;
+                    if ev.session_id != id || ev.seq <= seam_seq {
+                        continue; // other session, or already replayed
                     }
+                    seam_seq = ev.seq;
                     let data = serde_json::to_string(&ev).unwrap_or_default();
                     if tx.send(Ok(Event::default().data(data))).is_err() {
                         return; // client disconnected
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    // Task 4 turns this into a SyncLost event; keep warn for now.
                     tracing::warn!(
                         target: "wgenty::daemon",
                         lagged = n,
@@ -1141,6 +1212,31 @@ mod tests {
             kind: SessionEventKind::Save,
             data: serde_json::json!({}),
         }
+    }
+
+    #[test]
+    fn catch_up_matrix() {
+        let mut buf = SessionEventBuffer::new(4);
+        for seq in 3..=6 {
+            buf.push(ev(seq));
+        }
+        assert!(matches!(plan_catch_up(None, &buf), CatchUp::LiveOnly));
+        assert!(matches!(plan_catch_up(Some(6), &buf), CatchUp::UpToDate));
+        match plan_catch_up(Some(4), &buf) {
+            CatchUp::Replay(evs) => {
+                assert_eq!(evs.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![5, 6])
+            }
+            other => panic!("expected Replay, got {other:?}"),
+        }
+        assert!(matches!(
+            plan_catch_up(Some(1), &buf),
+            CatchUp::SyncLost { latest_seq: 6 }
+        ));
+        let empty = SessionEventBuffer::new(4);
+        assert!(matches!(
+            plan_catch_up(Some(9), &empty),
+            CatchUp::SyncLost { latest_seq: 0 }
+        ));
     }
 
     #[test]
