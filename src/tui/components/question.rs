@@ -144,6 +144,17 @@ impl QuestionState {
         answers
     }
 
+    /// Clear the popup WITHOUT sending a response. Used when a server-side
+    /// question was resolved from another device (the daemon already has the
+    /// answer) - unlike [`Self::dismiss`] this never POSTs a duplicate answer.
+    pub fn clear_without_respond(&mut self) {
+        self.visible = false;
+        self.server_request_id = None;
+        self.client = None;
+        self.responder = None;
+        self.just_submitted = false;
+    }
+
     /// Take pending response if any (after handle_key triggered a submission).
     /// Returns None if there is no pending responder, or if multi-select has
     /// no selections (Enter pressed with nothing checked), or if the Other

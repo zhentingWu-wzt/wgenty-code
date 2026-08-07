@@ -5,6 +5,7 @@
 //! the Web client does. Foundation for migrating the TUI from a client-side
 //! loop to a server-side loop.
 
+use crate::agent::progress::{SubagentProgress, SubagentStatus};
 use crate::daemon::run_loop::{SessionEvent, SessionEventKind};
 use crate::teams::trace_sink::{TraceEvent, TraceEventKind};
 use crate::tui::app::types::AppEvent;
@@ -219,10 +220,19 @@ pub(crate) fn spawn_session_event_reader(
 }
 
 /// Map a daemon `TraceEvent` (subagent trace stream) into zero or more
-/// `AppEvent`s. permission_pending/question_pending reuse the Phase-B
-/// server-side popup path; progress/resolved are deferred (D-full).
+/// `AppEvent`s:
+/// - `progress` -> [`AppEvent::SubagentTraceProgress`] (live subagent-tree
+///   update; applied via `upsert` in server-side mode).
+/// - `permission_pending` / `question_pending` -> server-side popup.
+/// - `permission_resolved` / `question_resolved` -> dismiss the matching
+///   popup (multi-device sync: another device resolved it).
 fn trace_event_to_app_events(ev: TraceEvent) -> Vec<AppEvent> {
     match ev.kind {
+        TraceEventKind::Progress => {
+            vec![AppEvent::SubagentTraceProgress(Box::new(
+                trace_event_to_progress(&ev),
+            ))]
+        }
         TraceEventKind::PermissionPending => ev
             .permission
             .map(|p| {
@@ -231,6 +241,14 @@ fn trace_event_to_app_events(ev: TraceEvent) -> Vec<AppEvent> {
                     tool: p.tool,
                     reason: p.policy_reason,
                     rule: p.session_rule,
+                }]
+            })
+            .unwrap_or_default(),
+        TraceEventKind::PermissionResolved => ev
+            .permission
+            .map(|p| {
+                vec![AppEvent::ServerPermissionResolved {
+                    request_id: p.request_id,
                 }]
             })
             .unwrap_or_default(),
@@ -245,9 +263,58 @@ fn trace_event_to_app_events(ev: TraceEvent) -> Vec<AppEvent> {
                 }]
             })
             .unwrap_or_default(),
-        // permission_resolved / question_resolved: popup dismiss on resolve
-        // ack; progress: subagent_tree update (TODO D-full).
-        _ => Vec::new(),
+        TraceEventKind::QuestionResolved => ev
+            .question
+            .map(|q| {
+                vec![AppEvent::ServerQuestionResolved {
+                    request_id: q.request_id,
+                }]
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// Reconstruct a [`SubagentProgress`] from a trace `Progress` event for
+/// `SubagentTree::upsert`. `TraceEvent` is the redacted, serialized projection
+/// of `SubagentProgress`, so fields not carried on the wire (`action_log`,
+/// `text_snapshot`, `messages`, …) default to empty; the tree only displays
+/// the fields that survive the round-trip.
+fn trace_event_to_progress(ev: &TraceEvent) -> SubagentProgress {
+    // `status` round-trips through serde: TraceEvent stores the serialized
+    // variant name (e.g. "Running"); parse it back, falling back to Running.
+    let status =
+        serde_json::from_value::<SubagentStatus>(serde_json::Value::String(ev.status.clone()))
+            .unwrap_or(SubagentStatus::Running);
+    // current_params: TraceEvent stores redacted JSON or a summary string;
+    // SubagentProgress expects a human-readable summary string.
+    let current_params = ev.current_params.as_ref().map(|v| match v {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    });
+    let error_details = ev
+        .error
+        .as_ref()
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    SubagentProgress {
+        node_id: ev.node_id.clone(),
+        parent_id: ev.parent_id.clone(),
+        label: ev.label.clone(),
+        status,
+        round: ev.round,
+        max_rounds: None,
+        current_tool: ev.current_tool.clone(),
+        current_params,
+        action_log: Vec::new(),
+        text_snapshot: None,
+        started_at: ev.ts,
+        elapsed_ms: ev.elapsed_ms,
+        metadata: None,
+        progress_delta: ev.progress_delta,
+        token_budget_k: ev.token_budget_k,
+        cumulative_tokens: ev.cumulative_tokens,
+        error_details,
+        events: Vec::new(),
+        messages: Vec::new(),
     }
 }
 
@@ -411,5 +478,74 @@ mod tests {
             serde_json::json!({}),
         ));
         assert!(apps.is_empty());
+    }
+
+    fn trace_ev(kind: TraceEventKind) -> TraceEvent {
+        TraceEvent {
+            ts: 1700000000,
+            session_id: "s".into(),
+            node_id: "n1".into(),
+            parent_id: None,
+            label: "explore".into(),
+            status: "Running".into(),
+            round: Some(2),
+            current_tool: Some("grep".into()),
+            current_params: Some(serde_json::Value::String("src/".into())),
+            elapsed_ms: 500,
+            progress_delta: Some(0.4),
+            token_budget_k: Some(10),
+            cumulative_tokens: 1234,
+            error: None,
+            kind,
+            permission: None,
+            question: None,
+        }
+    }
+
+    #[test]
+    fn trace_progress_maps_to_subagent_trace_progress() {
+        let apps = trace_event_to_app_events(trace_ev(TraceEventKind::Progress));
+        assert_eq!(apps.len(), 1);
+        match &apps[0] {
+            AppEvent::SubagentTraceProgress(p) => {
+                assert_eq!(p.node_id, "n1");
+                assert_eq!(p.label, "explore");
+                assert_eq!(p.status, SubagentStatus::Running);
+                assert_eq!(p.round, Some(2));
+                assert_eq!(p.current_tool.as_deref(), Some("grep"));
+                assert_eq!(p.current_params.as_deref(), Some("src/"));
+                assert_eq!(p.cumulative_tokens, 1234);
+                assert!(p.action_log.is_empty());
+                assert!(p.messages.is_empty());
+            }
+            other => panic!("expected SubagentTraceProgress, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trace_progress_current_params_json_serialized_to_string() {
+        let mut ev = trace_ev(TraceEventKind::Progress);
+        ev.current_params = Some(serde_json::json!({"path": "a.rs"}));
+        let apps = trace_event_to_app_events(ev);
+        match &apps[0] {
+            AppEvent::SubagentTraceProgress(p) => {
+                // Non-string JSON is stringified for the summary field.
+                assert!(p.current_params.as_deref().unwrap().contains("a.rs"));
+            }
+            other => panic!("expected SubagentTraceProgress, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trace_progress_unknown_status_falls_back_to_running() {
+        let mut ev = trace_ev(TraceEventKind::Progress);
+        ev.status = "BogusVariant".into();
+        let apps = trace_event_to_app_events(ev);
+        match &apps[0] {
+            AppEvent::SubagentTraceProgress(p) => {
+                assert_eq!(p.status, SubagentStatus::Running);
+            }
+            other => panic!("expected SubagentTraceProgress, got {other:?}"),
+        }
     }
 }
