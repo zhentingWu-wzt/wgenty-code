@@ -26,10 +26,11 @@ import { useUiStore } from "./state/uiStore";
  * App — wires the per-session agent runners to the UI stores.
  *
  * The architecture mirrors `src/tui` as a parallel thin client: this React app
- * is just another frontend over the same daemon API. Agent loops run in the
- * browser (the daemon's `/chat/stream` is a pure passthrough proxy; tools are
- * executed client-side via `/tools/execute`), one `runSessionTurn` per session,
- * so sessions progress concurrently and independently.
+ * is just another frontend over the same daemon API. The daemon owns the agent
+ * loop (`POST /sessions/:id/run` runs LLM + tools + persistence server-side);
+ * each `runSessionTurn` POSTs a run then subscribes to the session-event SSE
+ * stream, mirroring events into the store. Sessions progress concurrently and
+ * independently, and survive a browser close/reopen.
  */
 export function App() {
   // One stable client for the app's lifetime. useState's lazy initializer is
@@ -57,8 +58,9 @@ export function App() {
   // sessionManager → uiStore.openTabs 单向同步（激活补开 tab、删除剪 tab）。
   useEffect(() => startUiSync(), []);
 
-  // Warn before unloading the page while any session is mid-turn (the loops
-  // live in the browser; leaving kills them).
+  // Warn before unloading the page while any session is mid-turn. The run
+  // itself lives on the daemon (closing the tab will not kill it), but leaving
+  // disconnects the live SSE observer - a heads-up avoids surprise.
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
       const running = Object.values(useSessionManager.getState().entries).filter(

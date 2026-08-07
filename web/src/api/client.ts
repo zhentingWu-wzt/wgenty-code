@@ -12,8 +12,6 @@
  * `response.body` reader is the correct tool.
  */
 import type {
-  ChatMessage,
-  ChatStreamRequest,
   CheckpointInfo,
   ConfigResponse,
   CreateSessionRequest,
@@ -37,7 +35,6 @@ import type {
   SwitchModelResponse,
   TaskProgressResponse,
   UndoTurnResult,
-  UpdateSessionRequest,
   WorktreeBinding,
   WorktreeInfo,
   DirListing,
@@ -72,13 +69,6 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
-export interface ChatStreamOptions {
-  /** Optional model override; if omitted the daemon uses its current setting. */
-  model?: string;
-  /** Plan mode: stream the assistant turn without tool execution hints. */
-  planMode?: boolean;
-}
-
 export class DaemonClient {
   /**
    * Construct a client. `base` defaults to `/api/v1` (the Vite proxy prefix),
@@ -109,40 +99,6 @@ export class DaemonClient {
         body: JSON.stringify({ mode }),
       }),
     );
-  }
-
-  // ── Chat (streaming) ───────────────────────────────────────────────────────
-
-  /**
-   * Open a streaming chat turn. Returns the raw `ReadableStream<Uint8Array>`
-   * from the SSE response — the caller feeds it into a `StreamProcessor`.
-   *
-   * Note: the caller MUST also read the `Response` to completion or abort it,
-   * otherwise the underlying TCP connection stays open.
-   */
-  async chatStream(
-    messages: ChatMessage[],
-    opts: ChatStreamOptions = {},
-    signal?: AbortSignal,
-  ): Promise<{ body: ReadableStream<Uint8Array> }> {
-    const body: ChatStreamRequest = {
-      messages,
-      ...(opts.model ? { model: opts.model } : {}),
-      ...(opts.planMode !== undefined ? { plan_mode: opts.planMode } : {}),
-    };
-    const res = await fetch(`${this.base}/chat/stream`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      // Passing the signal lets an in-flight stream be aborted mid-token (the
-      // fetch aborts and res.body errors out), not just between rounds.
-      signal,
-    });
-    if (!res.ok || !res.body) {
-      const text = await res.text().catch(() => "");
-      throw new DaemonError(text || `${res.status} ${res.statusText}`, res.status);
-    }
-    return { body: res.body };
   }
 
   // ── Tools ──────────────────────────────────────────────────────────────────
@@ -226,16 +182,6 @@ export class DaemonClient {
 
   async loadSession(id: string): Promise<SessionResponse> {
     return jsonOrThrow(await fetch(`${this.base}/sessions/${encodeURIComponent(id)}`));
-  }
-
-  async saveSession(id: string, req: UpdateSessionRequest): Promise<SessionResponse> {
-    return jsonOrThrow(
-      await fetch(`${this.base}/sessions/${encodeURIComponent(id)}`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(req),
-      }),
-    );
   }
 
   async deleteSession(id: string): Promise<void> {

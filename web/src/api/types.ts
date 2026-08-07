@@ -36,14 +36,6 @@ export interface ToolCallFunction {
   arguments: string;
 }
 
-/** Request body for `POST /api/v1/chat/stream`. Mirrors `ChatStreamRequest`. */
-export interface ChatStreamRequest {
-  messages: ChatMessage[];
-  model?: string;
-  max_tokens?: number;
-  plan_mode?: boolean;
-}
-
 // ── SSE stream shapes (OpenAI-compatible chat.completion.chunk) ──────────────
 
 /** Mirrors `crate::api::StreamChunk`. Each `data:` line in the chat stream. */
@@ -383,12 +375,6 @@ export interface CreateSessionRequest {
   name?: string;
   /** Registered project to create the session in; omitted = main project. */
   project_path?: string;
-}
-
-export interface UpdateSessionRequest {
-  name?: string;
-  messages?: SessionMessage[];
-  ui_messages?: unknown[];
 }
 
 // ── Agent loop result (client-side, not from daemon) ─────────────────────────
