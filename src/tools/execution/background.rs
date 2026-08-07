@@ -35,9 +35,18 @@ pub struct BackgroundResult {
     pub sandbox_level: Option<String>,
 }
 
+/// Delivery hook for completed results. When installed (daemon retained-queue
+/// path), results go to the hook instead of the internal drain queue.
+type ResultHook = Arc<dyn Fn(BackgroundResult) + Send + Sync>;
+
 /// Manages background command execution and notification delivery.
 pub struct BackgroundManager {
     results: Arc<Mutex<Vec<BackgroundResult>>>,
+    /// Optional delivery hook; when set, completed results are delivered to
+    /// the hook instead of the internal drain queue. std RwLock: set once at
+    /// startup, read for a single clone per completion, never held across
+    /// `.await`.
+    result_hook: Arc<std::sync::RwLock<Option<ResultHook>>>,
     next_id: Arc<Mutex<u64>>,
     /// Shared with shell tools when attached via [`with_sandbox`](Self::with_sandbox).
     pub(crate) sandbox: Option<Arc<SandboxManager>>,
@@ -47,8 +56,38 @@ impl BackgroundManager {
     pub fn new() -> Self {
         Self {
             results: Arc::new(Mutex::new(Vec::new())),
+            result_hook: Arc::new(std::sync::RwLock::new(None)),
             next_id: Arc::new(Mutex::new(1)),
             sandbox: None,
+        }
+    }
+
+    /// Install a delivery hook for completed results. With a hook set,
+    /// results are delivered to the hook instead of the internal drain queue
+    /// (daemon retained-queue path); without a hook the CLI drain path is
+    /// unchanged.
+    pub fn set_result_hook(&self, hook: impl Fn(BackgroundResult) + Send + Sync + 'static) {
+        *self
+            .result_hook
+            .write()
+            .expect("background result hook lock poisoned") = Some(Arc::new(hook));
+    }
+
+    /// Deliver a completed result: to the installed hook if present, else
+    /// onto the internal drain queue.
+    async fn deliver_result(
+        results: &Arc<Mutex<Vec<BackgroundResult>>>,
+        hook_slot: &Arc<std::sync::RwLock<Option<ResultHook>>>,
+        result: BackgroundResult,
+    ) {
+        let hook = hook_slot
+            .read()
+            .expect("background result hook lock poisoned")
+            .clone();
+        if let Some(hook) = hook {
+            hook(result);
+        } else {
+            results.lock().await.push(result);
         }
     }
 
@@ -103,6 +142,7 @@ impl BackgroundManager {
         let task_id_clone = task_id.clone();
         let command_clone = command.to_string();
         let results = self.results.clone();
+        let result_hook = self.result_hook.clone();
         let sandbox = self.sandbox.clone();
         let profile = policy.profile.clone();
         let fail_mode = policy.fail_mode;
@@ -213,8 +253,7 @@ impl BackgroundManager {
                 },
             };
 
-            let mut results = results.lock().await;
-            results.push(final_result);
+            Self::deliver_result(&results, &result_hook, final_result).await;
         });
 
         Ok(task_id)
@@ -227,19 +266,23 @@ impl BackgroundManager {
         *id_lock += 1;
         drop(id_lock);
 
-        let mut results = self.results.lock().await;
-        results.push(BackgroundResult {
-            task_id,
-            result_type: "subagent".to_string(),
-            command: description.to_string(),
-            stdout: stdout.to_string(),
-            stderr: String::new(),
-            exit_code: if success { Some(0) } else { Some(1) },
-            success,
-            sandbox_bypassed: false,
-            permission_mode: None,
-            sandbox_level: None,
-        });
+        Self::deliver_result(
+            &self.results,
+            &self.result_hook,
+            BackgroundResult {
+                task_id,
+                result_type: "subagent".to_string(),
+                command: description.to_string(),
+                stdout: stdout.to_string(),
+                stderr: String::new(),
+                exit_code: if success { Some(0) } else { Some(1) },
+                success,
+                sandbox_bypassed: false,
+                permission_mode: None,
+                sandbox_level: None,
+            },
+        )
+        .await;
     }
 
     /// Drain all completed results from the queue.
@@ -479,5 +522,35 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(true)
         );
+    }
+
+    /// With a result hook installed (daemon retained-queue path), completed
+    /// results are delivered to the hook instead of the internal drain queue.
+    #[tokio::test]
+    async fn result_hook_receives_results_instead_of_drain_queue() {
+        let mgr = BackgroundManager::new();
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received_in_hook = received.clone();
+        mgr.set_result_hook(move |result| {
+            received_in_hook
+                .lock()
+                .expect("received lock poisoned")
+                .push(result);
+        });
+        mgr.push_subagent_result("desc", "out", true).await;
+        {
+            let got = received.lock().expect("received lock poisoned");
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].result_type, "subagent");
+        }
+        assert!(mgr.drain_results().await.is_empty());
+    }
+
+    /// Without a hook the CLI drain path is unchanged.
+    #[tokio::test]
+    async fn results_still_queue_without_hook() {
+        let mgr = BackgroundManager::new();
+        mgr.push_subagent_result("desc", "out", true).await;
+        assert_eq!(mgr.drain_results().await.len(), 1);
     }
 }
