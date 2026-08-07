@@ -5,7 +5,7 @@
 //! [`PermissionBridge::resolve`] after the user chooses Allow once / Always / Deny.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::oneshot;
@@ -61,6 +61,28 @@ struct PendingEntry {
     tx: oneshot::Sender<bool>,
 }
 
+/// Outcome of resolving a pending approval (design §4: duplicate answers get
+/// a distinguishable signal instead of a bare "not found").
+///
+/// Mirrors [`crate::daemon::interaction_bridge::ResolveOutcome`] but lives in
+/// the teams layer on purpose — PermissionBridge must not depend on daemon
+/// types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionResolveOutcome {
+    /// Waiter found and answered.
+    Resolved,
+    /// Same request resolved before; carries the FIRST approved value so the
+    /// 409 response can show the standing resolution. A duplicate answer must
+    /// never overwrite the first decision or trigger side effects again.
+    AlreadyResolved(bool),
+    /// Never existed (or waiter cleaned up without resolve).
+    Unknown,
+}
+
+/// Cap on remembered resolutions; eviction at cap is fine — a duplicate
+/// answer long after the fact degrades to 404 (client stops retrying anyway).
+const RESOLVED_CAP: usize = 256;
+
 /// In-memory approval bridge shared by subagents and the root UI.
 ///
 /// std Mutex (not tokio): every critical section is a single HashMap op never
@@ -69,6 +91,8 @@ struct PendingEntry {
 #[derive(Debug, Default)]
 pub struct PermissionBridge {
     inner: Mutex<HashMap<String, PendingEntry>>,
+    /// (request_id, first approved) of past resolutions, FIFO for eviction.
+    resolved: Mutex<VecDeque<(String, bool)>>,
     default_timeout: Duration,
 }
 
@@ -76,6 +100,7 @@ impl PermissionBridge {
     pub fn new(default_timeout: Duration) -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
+            resolved: Mutex::new(VecDeque::new()),
             default_timeout,
         }
     }
@@ -195,21 +220,46 @@ impl PermissionBridge {
             .collect()
     }
 
-    /// Resolve a pending request.
+    /// Resolve a pending request. Distinguishes first resolve from a
+    /// duplicate (409 semantics at the HTTP layer) and from unknown ids.
     ///
     /// Removes the entry and signals its oneshot. The resolved trace event is
     /// published by the waiter in `finish` (which holds an approval copy for
     /// exactly this purpose), so resolution emits exactly one event regardless
     /// of path (explicit resolve, timeout, or drop).
-    pub async fn resolve(&self, request_id: &str, approved: bool) -> bool {
+    ///
+    /// Only a successful first delivery is remembered; the first decision can
+    /// never be overwritten by a later duplicate answer.
+    pub async fn resolve(&self, request_id: &str, approved: bool) -> PermissionResolveOutcome {
         let entry = self
             .inner
             .lock()
             .expect("permission bridge lock poisoned")
             .remove(request_id);
         match entry {
-            Some(entry) => entry.tx.send(approved).is_ok(),
-            None => false,
+            Some(entry) => {
+                let delivered = entry.tx.send(approved).is_ok();
+                if delivered {
+                    let mut resolved = self.resolved.lock().expect("resolved lock poisoned");
+                    if resolved.len() == RESOLVED_CAP {
+                        resolved.pop_front();
+                    }
+                    resolved.push_back((request_id.to_string(), approved));
+                    PermissionResolveOutcome::Resolved
+                } else {
+                    // Waiter dropped (run cancelled) — treat as unknown.
+                    PermissionResolveOutcome::Unknown
+                }
+            }
+            None => {
+                let resolved = self.resolved.lock().expect("resolved lock poisoned");
+                match resolved.iter().find(|(id, _)| id == request_id) {
+                    Some((_, first_approved)) => {
+                        PermissionResolveOutcome::AlreadyResolved(*first_approved)
+                    }
+                    None => PermissionResolveOutcome::Unknown,
+                }
+            }
         }
     }
 }
@@ -303,7 +353,10 @@ mod tests {
             bridge.pending().await.iter().any(|p| p.request_id == "r1"),
             "request should be pending"
         );
-        assert!(bridge.resolve("r1", true).await);
+        assert!(matches!(
+            bridge.resolve("r1", true).await,
+            PermissionResolveOutcome::Resolved
+        ));
         assert!(wait.await.expect("join"));
         assert!(bridge.pending().await.is_empty());
     }
@@ -332,7 +385,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1200)).await;
         assert!(!waiter.is_finished()); // 超过了 default_timeout 仍在挂起
         let pending = bridge.pending().await;
-        assert!(bridge.resolve(&pending[0].request_id, true).await);
+        assert!(matches!(
+            bridge.resolve(&pending[0].request_id, true).await,
+            PermissionResolveOutcome::Resolved
+        ));
         assert!(waiter.await.expect("join"));
     }
 
@@ -347,8 +403,48 @@ mod tests {
             }
             tokio::task::yield_now().await;
         }
-        assert!(bridge.resolve("r3", false).await);
+        assert!(matches!(
+            bridge.resolve("r3", false).await,
+            PermissionResolveOutcome::Resolved
+        ));
         assert!(!wait.await.expect("join"));
+    }
+
+    #[tokio::test]
+    async fn duplicate_subagent_permission_resolve_conflicts() {
+        // First resolve delivers and reports Resolved; a duplicate answer
+        // reports AlreadyResolved carrying the FIRST decision (it must not
+        // overwrite or re-deliver); an unknown id reports Unknown.
+        let bridge = Arc::new(PermissionBridge::new(Duration::from_secs(5)));
+        let bridge_wait = Arc::clone(&bridge);
+        let wait = tokio::spawn(async move { bridge_wait.request(sample("dup1")).await });
+        for _ in 0..50 {
+            if bridge
+                .pending()
+                .await
+                .iter()
+                .any(|p| p.request_id == "dup1")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        assert!(matches!(
+            bridge.resolve("dup1", true).await,
+            PermissionResolveOutcome::Resolved
+        ));
+        assert!(wait.await.expect("join"), "first decision was approve");
+
+        // Duplicate with a DIFFERENT answer: first resolution stands.
+        assert!(matches!(
+            bridge.resolve("dup1", false).await,
+            PermissionResolveOutcome::AlreadyResolved(true)
+        ));
+        assert!(matches!(
+            bridge.resolve("never-existed", true).await,
+            PermissionResolveOutcome::Unknown
+        ));
     }
 
     #[tokio::test]
@@ -381,7 +477,10 @@ mod tests {
             bridge.pending().await.is_empty(),
             "dropped waiter must not leak a pending approval"
         );
-        assert!(!bridge.resolve("r4", true).await);
+        assert!(matches!(
+            bridge.resolve("r4", true).await,
+            PermissionResolveOutcome::Unknown
+        ));
 
         // A resolved trace event was published for the dropped request
         // (drain past the pending event published at enqueue time).
