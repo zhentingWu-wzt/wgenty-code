@@ -18,6 +18,7 @@
 
 use crate::agent::runtime::{EventSink, RuntimeEvent};
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -52,6 +53,51 @@ pub enum SessionEventKind {
 /// Broadcast channel over which one daemon run publishes [`SessionEvent`]s.
 /// Subscribers use `subscribe()`; lagging receivers see `RecvError::Lagged`.
 pub type SessionEventHub = tokio::sync::broadcast::Sender<SessionEvent>;
+
+/// Per-session fixed-capacity replay buffer. Lives only for the daemon
+/// process lifetime — after a restart it is empty and `after=` resumes
+/// answer `SyncLost` (correctness never depends on the buffer; clients
+/// fall back to `GET /sessions/:id`). Capacity comes from
+/// `daemon.event_buffer_capacity` (default 1024, aligned with TRACE_HUB).
+// `dead_code`: Task 1 only introduces the buffer + tests; the publish/replay
+// call sites arrive in Tasks 2-3 and will read every field/method.
+#[allow(dead_code)]
+pub(crate) struct SessionEventBuffer {
+    events: VecDeque<SessionEvent>,
+    capacity: usize,
+}
+
+// See the struct-level note: allow until Tasks 2-3 wire the call sites.
+#[allow(dead_code)]
+impl SessionEventBuffer {
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            events: VecDeque::with_capacity(capacity.min(4096)),
+            capacity,
+        }
+    }
+
+    /// Push an event; evicts the oldest when full. Must be called at the same
+    /// point the event is published to the hub so buffer and broadcast agree.
+    pub(crate) fn push(&mut self, ev: SessionEvent) {
+        if self.events.len() == self.capacity {
+            self.events.pop_front();
+        }
+        self.events.push_back(ev);
+    }
+
+    pub(crate) fn oldest_seq(&self) -> Option<u64> {
+        self.events.front().map(|e| e.seq)
+    }
+
+    pub(crate) fn latest_seq(&self) -> Option<u64> {
+        self.events.back().map(|e| e.seq)
+    }
+
+    pub(crate) fn events_after(&self, after: u64) -> impl Iterator<Item = &SessionEvent> {
+        self.events.iter().filter(move |e| e.seq > after)
+    }
+}
 
 /// [`EventSink`] that translates runtime events into [`SessionEvent`]s and
 /// broadcasts them on a per-run hub. Connection noise (Connecting,
@@ -1054,6 +1100,36 @@ mod tests {
     use std::collections::HashSet;
     use std::time::Duration;
     use tokio::sync::RwLock;
+
+    fn ev(seq: u64) -> SessionEvent {
+        SessionEvent {
+            seq,
+            session_id: "s".into(),
+            run_id: "r".into(),
+            kind: SessionEventKind::Save,
+            data: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn buffer_evicts_oldest_when_full() {
+        let mut buf = SessionEventBuffer::new(3);
+        for seq in 1..=5 {
+            buf.push(ev(seq));
+        }
+        assert_eq!(buf.oldest_seq(), Some(3));
+        assert_eq!(buf.latest_seq(), Some(5));
+        let after: Vec<u64> = buf.events_after(3).map(|e| e.seq).collect();
+        assert_eq!(after, vec![4, 5]);
+    }
+
+    #[test]
+    fn buffer_empty_bounds() {
+        let buf = SessionEventBuffer::new(3);
+        assert_eq!(buf.oldest_seq(), None);
+        assert_eq!(buf.latest_seq(), None);
+        assert_eq!(buf.events_after(0).count(), 0);
+    }
 
     #[test]
     fn maps_runtime_events_to_session_events() {
