@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "goal": "路线 B（胖 daemon）：daemon 上收 agent loop 与事件分发，支持 TUI/Web/GUI 多 UI 同时接入同一会话；随后在其上落地纯 Rust GUI 桌面端，功能全面对齐 TUI，交互与布局优于 TUI（参考 orca / paseo），与 web-ops-console 完全独立",
+  "createdAt": "2026-08-07T04:27:24Z",
+  "updatedAt": "2026-08-07T04:07:49Z",
+  "changes": [
+    {
+      "name": "daemon-session-orchestration",
+      "goal": "daemon 会话编排 + 事件总线：agent loop 上收、会话事件流（序号+重放+多订阅者）、审批事件化、并发控制、常驻可发现部署",
+      "scope": "per-session TurnRunner、会话/全局事件流 SSE、turn 命令端点、会话存储版本化、审批去 default 硬编码、常驻 daemon 发现机制；旧端点兼容（TUI 不改）",
+      "nonGoals": "TUI 迁移到新模型（另立 change）、多 daemon 集群/远程访问、Web 前端实现、CRDT 多端并发编辑",
+      "acceptance": ["两个客户端订阅同一会话看到相同流式输出", "断线按 seq 续传、失步回退全量恢复", "任一客户端审批生效、并发 turn/冲突写 409", "TUI 现有模式回归通过"],
+      "status": "pending"
+    },
+    {
+      "name": "gui-desktop-foundation",
+      "goal": "GUI 应用骨架 + UI 无关会话编排客户端 + 核心对话界面（纯视图：命令发送 + 事件流投影）",
+      "scope": "窗口与导航布局、daemon 发现/连接（常驻优先、内嵌兜底）、事件流驱动的流式对话渲染、markdown、工具调用展示、权限审批交互、断线恢复",
+      "nonGoals": "会话管理、配置/模型界面、高级面板、具体 GUI 框架选型（留到 design 阶段）、daemon 服务端实现",
+      "acceptance": ["打开窗口完成一轮含工具调用与权限审批的完整对话", "与 TUI 同会话多屏同步一致", "断线续传/失步回退正确"],
+      "status": "pending"
+    },
+    {
+      "name": "gui-session-management",
+      "goal": "GUI 会话管理与历史恢复",
+      "scope": "会话列表、新建/切换/搜索会话、checkpoint 列表与 undo-turn",
+      "nonGoals": "核心对话界面（属 foundation）、配置界面",
+      "acceptance": ["可列出/搜索/切换历史会话并恢复上下文", "可对指定 turn 执行 undo 并回滚 checkpoint"],
+      "status": "pending"
+    },
+    {
+      "name": "gui-config-and-models",
+      "goal": "GUI 配置与模型管理界面",
+      "scope": "模型切换、provider/基础配置界面、MCP servers、skills、memory 管理",
+      "nonGoals": "对话界面、会话管理、密钥高级管理",
+      "acceptance": ["GUI 内切换模型并生效于新对话", "可查看并修改基础配置、管理 MCP/skills/memory"],
+      "status": "pending"
+    },
+    {
+      "name": "gui-advanced-panels",
+      "goal": "GUI 高级面板，对齐 TUI 的 subagent tree / todos / inspector 能力",
+      "scope": "subagent 进度树、todos/tasks 面板、请求上下文透视面板（对齐 tui-inspector 的 5 个 tab）",
+      "nonGoals": "核心对话、会话管理、配置界面",
+      "acceptance": ["subagent 执行过程可视化", "todos 实时同步展示", "透视面板可查看 system prompt 来源/记忆召回/messages/hook/token 统计"],
+      "status": "pending"
+    }
+  ]
+}
