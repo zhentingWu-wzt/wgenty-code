@@ -17,12 +17,12 @@
 //! that turns [`RuntimeEvent::SaveSession`] into a spawned history save.
 
 use crate::agent::runtime::{EventSink, RuntimeEvent};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// A single event in a daemon-run session, envelope for SSE fan-out.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEvent {
     /// Monotonically increasing sequence number within one session (across
     /// runs), starting at 1 — clients dedup/order by seq on reconnect.
@@ -35,7 +35,7 @@ pub struct SessionEvent {
 }
 
 /// The subset of runtime events worth broadcasting to clients (v1).
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionEventKind {
     ContentDelta,
@@ -543,7 +543,6 @@ use axum::{
     response::sse::{Event, KeepAlive, Sse},
     Json,
 };
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::time::Instant;
