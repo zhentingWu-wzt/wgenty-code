@@ -316,7 +316,7 @@ git commit -m "feat(daemon): dual-write session events to replay buffer on publi
 
 ### Task 3: `GET /sessions/:id/events?after=<seq>` 重放 + 订阅时 SyncLost
 
-- [ ] Task 3 完成标记：本节全部 Step 完成并提交
+- [x] Task 3 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/daemon/run_loop.rs:40-50`（`SessionEventKind` 增加 `SyncLost`）
