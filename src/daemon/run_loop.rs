@@ -1662,7 +1662,10 @@ mod tests {
         );
         assert!(!outside.exists(), "no side effect before approval");
 
-        assert!(bridge.resolve(&request_id, true).await);
+        assert!(matches!(
+            bridge.resolve(&request_id, true).await,
+            crate::teams::PermissionResolveOutcome::Resolved
+        ));
         let resp = executing.await.expect("execute join");
         assert!(resp.success, "approved write should run: {}", resp.content);
         assert_eq!(

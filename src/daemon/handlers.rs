@@ -698,24 +698,44 @@ pub async fn list_pending_permissions(
 }
 
 /// POST /api/v1/tools/resolve-permission — unblock a subagent Ask waiter.
+///
+/// Duplicate answers get 409 with the standing (first) decision instead of an
+/// indistinguishable `{success:false}`; unknown ids get 404.
 pub async fn resolve_subagent_permission(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<crate::daemon::models::ResolveSubagentPermissionRequest>,
-) -> Json<serde_json::Value> {
-    if body.approved && body.always {
-        if let Some(rule) = body.session_rule.clone() {
-            state.tool_executor.approve_rule(rule.clone()).await;
-            state.approve_rule("default", rule).await;
-        }
-    }
-    let ok = state
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    use crate::teams::PermissionResolveOutcome as Outcome;
+    match state
         .permission_bridge
         .resolve(&body.request_id, body.approved)
-        .await;
-    Json(serde_json::json!({
-        "success": ok,
-        "resolved": ok,
-    }))
+        .await
+    {
+        Outcome::Resolved => {
+            // Approve the standing rule only on the FIRST resolution — a
+            // duplicate answer must produce no second effect (spec §审批).
+            if body.approved && body.always {
+                if let Some(rule) = body.session_rule.clone() {
+                    state.tool_executor.approve_rule(rule.clone()).await;
+                    // deprecated(compat): legacy global rule scope, see Task 12.
+                    state.approve_rule("default", rule).await;
+                }
+            }
+            Ok(Json(
+                serde_json::json!({ "success": true, "resolved": true }),
+            ))
+        }
+        Outcome::AlreadyResolved(approved) => Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "success": false, "resolved": true, "approved": approved,
+            })),
+        )),
+        Outcome::Unknown => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "success": false, "resolved": false })),
+        )),
+    }
 }
 
 /// `POST /api/v1/interactions/:id/resolve` — answer a pending ask_user_question
