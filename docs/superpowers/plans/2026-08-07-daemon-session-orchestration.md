@@ -1092,7 +1092,7 @@ git commit -m "feat(daemon): retain and broadcast background results instead of 
 
 ### Task 9: dogfood——TUI todos 面板切换为 `GET /events` 订阅（保留轮询回退）
 
-- [ ] Task 9 完成标记：本节全部 Step 完成并提交
+- [x] Task 9 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/tui/client.rs`（新增 `subscribe_events` SSE 客户端方法，仿既有 SSE 消费方式）

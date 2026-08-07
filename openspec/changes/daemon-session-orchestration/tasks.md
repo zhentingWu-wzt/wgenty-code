@@ -13,7 +13,7 @@
 - [x] 2.1 全局事件类型与序号空间定义（todos/task-group/背景结果/模式/模型变更）
 - [x] 2.2 `GET /events` 全局 SSE 端点，多订阅者 fan-out
 - [x] 2.3 背景任务结果改广播 + 可查询保留（废除 drain 抢占），轮询端点保留兼容
-- [ ] 2.4 dogfood：TUI todos 面板切换为 `GET /events` 订阅（保留轮询回退）
+- [x] 2.4 dogfood：TUI todos 面板切换为 `GET /events` 订阅（保留轮询回退）
 
 ## 3. 审批语义收敛
 
