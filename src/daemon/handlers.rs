@@ -161,6 +161,15 @@ pub async fn switch_model(
         "model switched via /model"
     );
 
+    state.broadcast_global(
+        crate::daemon::global_events::GlobalEventKind::ModelChanged,
+        serde_json::json!({
+            "profile": body.profile,
+            "model_name": model_name,
+            "provider": provider,
+        }),
+    );
+
     Ok(Json(SwitchModelResponse {
         success: true,
         profile: body.profile,
@@ -749,6 +758,14 @@ pub async fn set_permission_mode(
         mode = ?body.mode,
         effective_mode = ?effective,
         "root permission / effective mode updated"
+    );
+    state.broadcast_global(
+        crate::daemon::global_events::GlobalEventKind::ModeChanged,
+        serde_json::json!({
+            "session_id": session_id,
+            "mode": body.mode,
+            "effective_mode": effective,
+        }),
     );
     Json(serde_json::json!({
         "success": true,
@@ -1559,11 +1576,27 @@ pub async fn claim_task_group(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     match delivery {
-        Some(d) => Ok(Json(TaskGroupDeliveryResponse {
-            group_id: d.group_id.as_str().to_string(),
-            generation: d.generation,
-            results: d.results,
-        })),
+        Some(d) => {
+            // Broadcast the claimed group's result summary on the global bus;
+            // `project` lets multi-project clients filter (design §10).
+            let project = state.effective_session_root(&body.session_id).await;
+            state.broadcast_global(
+                crate::daemon::global_events::GlobalEventKind::TaskGroupResult,
+                serde_json::json!({
+                    "task_group_id": d.group_id.as_str(),
+                    "session_id": body.session_id,
+                    "generation": d.generation,
+                    "project": project,
+                    "result_count": d.results.len(),
+                    "statuses": d.results.iter().map(|r| r.status).collect::<Vec<_>>(),
+                }),
+            );
+            Ok(Json(TaskGroupDeliveryResponse {
+                group_id: d.group_id.as_str().to_string(),
+                generation: d.generation,
+                results: d.results,
+            }))
+        }
         None => Err(StatusCode::NO_CONTENT),
     }
 }
@@ -2602,5 +2635,228 @@ mod tests {
             still.total_memories >= 1,
             "memory must survive a dry-run prune"
         );
+    }
+
+    // ── Global event producers (daemon-session-orchestration Task 7) ─────────
+
+    /// Tempdir-backed DaemonState for global-event tests. Construction-time
+    /// I/O finishes inside `DaemonState::new`, so the tempdir may drop once
+    /// the helper returns (mirrors global_events.rs::test_daemon_state).
+    async fn global_event_test_state() -> DaemonState {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut settings = crate::config::Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        DaemonState::new(crate::state::AppState::new(settings)).await
+    }
+
+    #[tokio::test]
+    async fn apply_todos_update_broadcasts_full_snapshot() {
+        let state = global_event_test_state().await;
+        let mut rx = state.global_event_hub.subscribe();
+        state
+            .apply_todos_update(vec![crate::tasks::TodoItem {
+                content: "write plan".into(),
+                status: "in_progress".into(),
+                active_form: String::new(),
+                subagent: None,
+            }])
+            .await;
+        let ev = rx.recv().await.expect("todos event");
+        assert_eq!(
+            ev.kind,
+            crate::daemon::global_events::GlobalEventKind::TodosChanged
+        );
+        assert_eq!(ev.data["items"][0]["content"], "write plan");
+        // Multi-project dimension: clients filter by `project`.
+        assert!(ev.data["project"].is_string(), "data: {}", ev.data);
+        assert_eq!(ev.data["has_open_items"], true);
+        // 快照与 GET /todos 读取同源。
+        let todos = state.todo_state.read().await;
+        assert_eq!(todos.items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn set_permission_mode_broadcasts_mode_changed() {
+        use axum::extract::State;
+        use axum::Json;
+
+        let state = Arc::new(global_event_test_state().await);
+        let mut rx = state.global_event_hub.subscribe();
+        let Json(resp) = set_permission_mode(
+            State(state.clone()),
+            Json(crate::daemon::models::SetPermissionModeRequest {
+                mode: crate::config::agent::RootPermissionMode::Yolo,
+                effective_mode: None,
+                session_id: Some("s1".to_string()),
+            }),
+        )
+        .await;
+        assert_eq!(resp["success"], true);
+
+        let ev = rx.recv().await.expect("mode event");
+        assert_eq!(
+            ev.kind,
+            crate::daemon::global_events::GlobalEventKind::ModeChanged
+        );
+        assert_eq!(ev.data["session_id"], "s1");
+        assert_eq!(ev.data["mode"], "yolo");
+        // Derived from the root mode when effective_mode is omitted.
+        assert_eq!(ev.data["effective_mode"], "yolo");
+    }
+
+    /// `switch_model` persists to `~/.wgenty-code/settings.json`, so the test
+    /// scopes a fake `$HOME` (serial, mirroring tui token-budget tests) to
+    /// never touch the developer's real config.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn switch_model_broadcasts_model_changed() {
+        use axum::extract::State;
+        use axum::Json;
+
+        let temp = tempfile::tempdir().unwrap();
+        let fake_home = tempfile::tempdir().unwrap();
+        let mut settings = crate::config::Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        settings.models.profiles.insert(
+            "p2".to_string(),
+            crate::config::models::ModelEndpoint {
+                name: "gpt-test".to_string(),
+                provider: Some("openai".to_string()),
+                ..Default::default()
+            },
+        );
+        // Pre-seed the on-disk settings (same profile) so the handler's
+        // load-from-disk + switch + save path succeeds under the fake home.
+        let cfg_dir = fake_home.path().join(".wgenty-code");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("settings.json"),
+            serde_json::to_string_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", fake_home.path());
+        let run = async {
+            let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+            let mut rx = state.global_event_hub.subscribe();
+            let resp = switch_model(
+                State(state.clone()),
+                Json(SwitchModelRequest {
+                    profile: "p2".to_string(),
+                }),
+            )
+            .await
+            .expect("switch_model should succeed");
+            assert!(resp.success);
+
+            let ev = rx.recv().await.expect("model event");
+            assert_eq!(
+                ev.kind,
+                crate::daemon::global_events::GlobalEventKind::ModelChanged
+            );
+            assert_eq!(ev.data["profile"], "p2");
+            assert_eq!(ev.data["model_name"], "gpt-test");
+            assert_eq!(ev.data["provider"], "openai");
+        }
+        .await;
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        run
+    }
+
+    #[tokio::test]
+    async fn claim_task_group_broadcasts_task_group_result() {
+        use axum::extract::State;
+        use axum::Json;
+
+        let state = Arc::new(global_event_test_state().await);
+        // Produce a ready root group through the coordinator (same path as
+        // coordinator.rs tests): reserve a child in the group, finish it.
+        let root = state.root_context("s").await.expect("root context");
+        let group = state
+            .coordinator
+            .create_root_task_group(
+                &root,
+                "turn-1",
+                tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            )
+            .await
+            .expect("root group");
+        let child = state
+            .coordinator
+            .reserve_child_in_group(
+                &root,
+                crate::agent::SpawnChildRequest::new("work"),
+                group.clone(),
+            )
+            .await
+            .expect("reserve child");
+        state
+            .coordinator
+            .finish_child(
+                &child.context,
+                crate::agent::ChildTerminal::completed("done"),
+            )
+            .await
+            .expect("finish child");
+
+        let mut rx = state.global_event_hub.subscribe();
+        let Json(resp) = claim_task_group(
+            State(state.clone()),
+            Json(ClaimTaskGroupRequest {
+                session_id: "s".to_string(),
+                generation: 0,
+            }),
+        )
+        .await
+        .expect("claim should deliver the ready group");
+        assert_eq!(resp.results.len(), 1);
+
+        let ev = rx.recv().await.expect("task-group event");
+        assert_eq!(
+            ev.kind,
+            crate::daemon::global_events::GlobalEventKind::TaskGroupResult
+        );
+        assert_eq!(ev.data["task_group_id"], group.as_str());
+        assert_eq!(ev.data["session_id"], "s");
+        assert_eq!(ev.data["generation"], 0);
+        assert_eq!(ev.data["result_count"], 1);
+        // Multi-project dimension: clients filter by `project`.
+        assert!(ev.data["project"].is_string(), "data: {}", ev.data);
+    }
+
+    /// The global events SSE endpoint lives on the protected router: no (or
+    /// wrong) bearer token must short-circuit with 401 before the handler.
+    #[tokio::test]
+    async fn global_events_stream_requires_bearer_auth() {
+        let state = Arc::new(global_event_test_state().await);
+        let (health, protected) =
+            crate::daemon::routes::create_routers(state, "events-auth-token".to_string());
+        let app = health.merge(protected);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let client = reqwest::Client::new();
+        // No bearer -> 401 (middleware short-circuits before the handler).
+        let resp = client
+            .get(format!("http://{addr}/api/v1/events"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        // Wrong bearer -> 401.
+        let resp = client
+            .get(format!("http://{addr}/api/v1/events"))
+            .bearer_auth("wrong")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }
