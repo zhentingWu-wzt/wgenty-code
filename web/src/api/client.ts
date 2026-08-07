@@ -40,6 +40,9 @@ import type {
   UpdateSessionRequest,
   WorktreeBinding,
   WorktreeInfo,
+  DirListing,
+  PermissionMode,
+  PermissionModeResponse,
 } from "./types";
 
 /** Error thrown when the daemon returns a non-2xx response. */
@@ -92,6 +95,20 @@ export class DaemonClient {
 
   async getConfig(): Promise<ConfigResponse> {
     return jsonOrThrow(await fetch(`${this.base}/config`));
+  }
+
+  async getPermissionMode(): Promise<PermissionModeResponse> {
+    return jsonOrThrow(await fetch(`${this.base}/permission-mode`));
+  }
+
+  async setPermissionMode(mode: PermissionMode): Promise<PermissionModeResponse> {
+    return jsonOrThrow(
+      await fetch(`${this.base}/permission-mode`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode }),
+      }),
+    );
   }
 
   // ── Chat (streaming) ───────────────────────────────────────────────────────
@@ -315,6 +332,12 @@ export class DaemonClient {
     );
   }
 
+  /** List sub-directories of a path for the web directory picker.
+   *  Omit `path` to list the user home directory. Read-only, daemon-side. */
+  async listDirs(path?: string): Promise<DirListing> {
+    const qs = path ? `?path=${encodeURIComponent(path)}` : "";
+    return jsonOrThrow(await fetch(`${this.base}/fs/dirs${qs}`));
+  }
   async listWorktrees(project?: string): Promise<WorktreeInfo[]> {
     const qs = project ? `?project=${encodeURIComponent(project)}` : "";
     return jsonOrThrow(await fetch(`${this.base}/worktrees${qs}`));

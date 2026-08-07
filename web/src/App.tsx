@@ -4,6 +4,7 @@ import { DaemonClient } from "./api/client";
 import { runSessionTurn, stopSessionTurn } from "./agent/sessionRunner";
 import { useSessionManager } from "./state/sessionManager";
 import { SessionStoreContext } from "./state/sessionContext";
+import { ConfirmProvider } from "./components/ui/ConfirmModal";
 import { StatusBar } from "./components/StatusBar";
 import { LeftSidebar } from "./components/layout/LeftSidebar";
 import { SessionTabBar } from "./components/layout/SessionTabBar";
@@ -91,6 +92,13 @@ export function App() {
           modelLoadedRef.current = true;
           const cfg = await client.getConfig();
           setModelName(cfg.model);
+          // Load the current root permission mode once (StatusBar reads + switches it).
+          try {
+            const pm = await client.getPermissionMode();
+            useSessionManager.getState().setPermissionMode(pm.mode);
+          } catch {
+            // Non-fatal: StatusBar falls back to "-" until a switch succeeds.
+          }
         }
       } catch {
         setConnection("disconnected");
@@ -138,38 +146,45 @@ export function App() {
   if (!activeStore) return null;
 
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground">
-      <AppTopbar />
-      <div className="flex min-h-0 flex-1">
-        <LeftSidebar client={client} />
-        <SessionStoreContext.Provider value={activeStore}>
-          <div className="flex min-w-0 flex-1 flex-col">
-            <SessionTabBar />
-            <main className="min-h-0 flex-1 overflow-y-auto">
-              <ChatView />
-            </main>
-            <Composer
-              onSend={(text) => {
-                if (activeId) void runSessionTurn(client, activeId, text);
-              }}
-              onStop={() => {
-                if (activeId) void stopSessionTurn(client, activeId);
-              }}
-              onCommand={handleCommand}
-            />
-          </div>
-          <PermissionModal client={client} />
-          <QuestionModal client={client} />
-        </SessionStoreContext.Provider>
-        <RightRail client={client} />
+    <ConfirmProvider>
+      <div className="flex h-screen flex-col bg-background text-foreground">
+        <AppTopbar />
+        <div className="flex min-h-0 flex-1">
+          <LeftSidebar client={client} />
+          <SessionStoreContext.Provider value={activeStore}>
+            <div className="flex min-w-0 flex-1 flex-col">
+              <SessionTabBar />
+              <main className="min-h-0 flex-1 overflow-y-auto">
+                <ChatView />
+              </main>
+              <Composer
+                onSend={(text) => {
+                  if (activeId) void runSessionTurn(client, activeId, text);
+                }}
+                onStop={() => {
+                  if (activeId) void stopSessionTurn(client, activeId);
+                }}
+                onCommand={handleCommand}
+              />
+            </div>
+            <PermissionModal client={client} />
+            <QuestionModal client={client} />
+          </SessionStoreContext.Provider>
+          <RightRail client={client} />
+        </div>
+        <StatusBar
+          client={client}
+          onSwitchModel={() =>
+            setOpenCommand({ name: "/model", description: "Switch model profile" })
+          }
+        />
+        {openCommand?.name === "/model" && (
+          <CommandModal title="Switch model" onClose={closeCommand}>
+            <ModelPanel client={client} />
+          </CommandModal>
+        )}
+        <Toaster theme={theme} position="bottom-right" />
       </div>
-      <StatusBar />
-      {openCommand?.name === "/model" && (
-        <CommandModal title="Switch model" onClose={closeCommand}>
-          <ModelPanel client={client} />
-        </CommandModal>
-      )}
-      <Toaster theme={theme} position="bottom-right" />
-    </div>
+    </ConfirmProvider>
   );
 }

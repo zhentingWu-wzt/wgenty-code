@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { FolderPlus, PanelLeftOpen } from "lucide-react";
+import { DirectoryPickerModal } from "../ui/DirectoryPickerModal";
 import { toast } from "sonner";
 import type { DaemonClient } from "../../api/client";
 import { ProjectTree } from "../../features/sessions/ProjectTree";
@@ -20,9 +21,12 @@ export function LeftSidebar({ client }: { client: DaemonClient }) {
   // invalidation).
   const [treeRefreshKey, setTreeRefreshKey] = useState(0);
 
-  const addProject = async () => {
-    const path = window.prompt("Project absolute path:");
-    if (!path?.trim()) return;
+  // Directory picker modal: replaces the old window.prompt — browsers cannot
+  // expose true local paths, so the daemon lists sub-directories instead.
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const addProject = async (path: string) => {
+    if (!path.trim()) return;
     try {
       const info = await client.addProject(path.trim());
       toast.success(`Project ${info.name} added`);
@@ -88,7 +92,7 @@ export function LeftSidebar({ client }: { client: DaemonClient }) {
             type="button"
             title="Add project"
             className="inline-flex items-center rounded-sm p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-            onClick={addProject}
+            onClick={() => setPickerOpen(true)}
           >
             <FolderPlus size={13} />
           </button>
@@ -103,6 +107,14 @@ export function LeftSidebar({ client }: { client: DaemonClient }) {
           className="absolute inset-y-0 right-0 w-1 cursor-col-resize hover:bg-accent max-md:hidden"
         />
       </aside>
+
+      {/* 目录选择器：打开时从 home（或上次位置）浏览，确认后注册项目。 */}
+      <DirectoryPickerModal
+        open={pickerOpen}
+        client={client}
+        onOpenChange={setPickerOpen}
+        onConfirm={(path) => void addProject(path)}
+      />
     </>
   );
 }

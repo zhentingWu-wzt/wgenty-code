@@ -12,7 +12,7 @@
 import { create } from "zustand";
 import { createSessionStore, type SessionStore } from "./sessionStore";
 import type { ConnectionStatus } from "./sessionStore";
-import type { WorktreeBinding } from "../api/types";
+import type { PermissionMode, WorktreeBinding } from "../api/types";
 
 export type SessionStatus = "running" | "awaiting_approval" | "idle" | "error";
 
@@ -47,6 +47,7 @@ interface SessionManagerState {
   activeId: string | null;
   connection: ConnectionStatus;
   modelName: string | null;
+  permissionMode: PermissionMode | null;
 
   createLocalSession: (name?: string, opts?: CreateSessionOptions) => string;
   removeSession: (id: string) => void;
@@ -60,6 +61,7 @@ interface SessionManagerState {
   setProjectPath: (id: string, projectPath: string | null) => void;
   setConnection: (s: ConnectionStatus) => void;
   setModelName: (n: string | null) => void;
+  setPermissionMode: (m: PermissionMode) => void;
 }
 
 let counter = 1;
@@ -80,6 +82,7 @@ export const useSessionManager = create<SessionManagerState>((set, get) => ({
   activeId: null,
   connection: "unknown",
   modelName: null,
+  permissionMode: null,
 
   createLocalSession: (name, opts) => {
     // opts.id (bound sessions) bypasses the web-* generator entirely.
@@ -133,6 +136,7 @@ export const useSessionManager = create<SessionManagerState>((set, get) => ({
 
   setConnection: (connection) => set({ connection }),
   setModelName: (modelName) => set({ modelName }),
+  setPermissionMode: (permissionMode) => set({ permissionMode }),
 }));
 
 /**

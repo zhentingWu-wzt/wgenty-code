@@ -80,9 +80,12 @@ export function usePermissionTrace(client: DaemonClient | null): void {
             while ((nl = buffer.indexOf("\n")) !== -1) {
               const line = buffer.slice(0, nl).trim();
               buffer = buffer.slice(nl + 1);
-              if (!line) continue;
+              if (!line || line.startsWith(":")) continue; // skip SSE comments/keepalives
+              // The daemon uses standard SSE `data: {json}` framing; strip the
+              // prefix before parsing (mirrors sessionRunner.ts).
+              const payload = line.startsWith("data: ") ? line.slice(6) : line;
               try {
-                handleEvent(JSON.parse(line) as TraceEvent);
+                handleEvent(JSON.parse(payload) as TraceEvent);
               } catch {
                 // Keep-alive or partial; ignore unparseable lines.
               }
