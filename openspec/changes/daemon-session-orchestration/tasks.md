@@ -6,7 +6,7 @@
 
 - [x] 1.1 per-session 定长环形事件缓冲（容量可配置，默认千级）
 - [x] 1.2 `GET /sessions/:id/events?after=<seq>`：缓冲重放 + 接入实时流
-- [ ] 1.3 失步信号：seq 淘汰与 Lagged 时向客户端发送 SyncLost，定义客户端全量恢复约定
+- [x] 1.3 失步信号：seq 淘汰与 Lagged 时向客户端发送 SyncLost，定义客户端全量恢复约定
 
 ## 2. 全局事件总线
 

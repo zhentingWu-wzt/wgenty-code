@@ -515,7 +515,7 @@ git commit -m "feat(daemon): replay-after-seq resume and SyncLost on evicted seq
 
 ### Task 4: 运行中 Lagged → SyncLost（仅该连接）
 
-- [ ] Task 4 完成标记：本节全部 Step 完成并提交
+- [x] Task 4 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/daemon/run_loop.rs`（Task 3 重写的 `get_session_events` 中 Lagged 分支）
