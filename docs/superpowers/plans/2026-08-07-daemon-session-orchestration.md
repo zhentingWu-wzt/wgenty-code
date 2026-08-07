@@ -76,7 +76,7 @@ base-ref: d5f046a58c8aa9a9989e9ec346d35ccad637721a
 
 ### Task 1: `SessionEventBuffer` 环形缓冲 + 容量配置
 
-- [ ] Task 1 完成标记：本节全部 Step 完成并提交
+- [x] Task 1 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/daemon/run_loop.rs`（新增 buffer 结构，约 :54 `SessionEventHub` 定义之后）
