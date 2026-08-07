@@ -530,6 +530,28 @@ impl DaemonState {
         let _ = self.global_event_hub.send(event);
     }
 
+    /// Single write-path for the shared todo list: update state, then
+    /// broadcast a full-snapshot TodosChanged (snapshots are small; YAGNI:
+    /// no incremental diff). `project` lets multi-project clients filter.
+    pub async fn apply_todos_update(&self, items: Vec<crate::tasks::TodoItem>) {
+        {
+            let mut todos = self.todo_state.write().await;
+            todos.items = items;
+        }
+        let snapshot = {
+            let todos = self.todo_state.read().await;
+            serde_json::json!({
+                "project": self.app_state.settings.storage.working_dir,
+                "items": todos.items,
+                "has_open_items": todos.has_open_items(),
+            })
+        };
+        self.broadcast_global(
+            crate::daemon::global_events::GlobalEventKind::TodosChanged,
+            snapshot,
+        );
+    }
+
     /// Returns the trusted root execution context for `session_id`, creating
     /// it via `ensure_root` on first use. Never accepts agent ID, parent ID, or
     /// depth from request JSON.
