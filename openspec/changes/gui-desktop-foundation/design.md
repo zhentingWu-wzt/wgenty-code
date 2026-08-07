@@ -4,7 +4,7 @@
 
 ## Context
 
-路线 B 已定：daemon-session-orchestration 把 agent loop、turn 编排与事件分发上收到 daemon——UI→daemon 为 HTTP 命令（发起 turn / 中断 / 审批应答），daemon→UI 为会话事件流（SSE，序号 + 重放 + 多订阅者）。GUI 是纯视图：不跑 agent loop，不持有会话真相，本地状态只是事件流的投影。
+路线 B 已定且主体已落地：合并 feature/web-ui-redesign 后，agent loop 在 daemon 内运行（`run_session_turn` + `RunRegistry`），UI→daemon 为 HTTP 命令（`POST /sessions/:id/run`、`cancel`、审批应答），daemon→UI 为会话事件流（`SessionEventHub`，SSE，per-session seq + fan-out）。`web/`（React + Vite + zustand）已是该模型的参照客户端。daemon-session-orchestration 将补齐重放/续传/失步信号等可靠性缺口。GUI 是纯视图：不跑 agent loop，不持有会话真相，本地状态只是事件流的投影。
 
 约束：
 - 遵循 AGENTS.md：新功能用 feature flag 控制编译；性能约束针对默认构建（GUI 经 feature 隔离）

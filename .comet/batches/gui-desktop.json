@@ -6,10 +6,10 @@
   "changes": [
     {
       "name": "daemon-session-orchestration",
-      "goal": "daemon 会话编排 + 事件总线：agent loop 上收、会话事件流（序号+重放+多订阅者）、审批事件化、并发控制、常驻可发现部署",
-      "scope": "per-session TurnRunner、会话/全局事件流 SSE、turn 命令端点、会话存储版本化、审批去 default 硬编码、常驻 daemon 发现机制；旧端点兼容（TUI 不改）",
-      "nonGoals": "TUI 迁移到新模型（另立 change）、多 daemon 集群/远程访问、Web 前端实现、CRDT 多端并发编辑",
-      "acceptance": ["两个客户端订阅同一会话看到相同流式输出", "断线按 seq 续传、失步回退全量恢复", "任一客户端审批生效、并发 turn/冲突写 409", "TUI 现有模式回归通过"],
+      "goal": "daemon 会话编排可靠性补强（server-side loop 主体已随 web-ui-redesign 合并落地）：事件流重放/续传/失步信号、全局事件总线替代轮询、审批语义收敛、存储版本化、可发现部署",
+      "scope": "per-session 环形缓冲 + after=seq 续传 + SyncLost 失步信号、全局事件流（todos/背景结果/模式/模型）、重复审批应答 409 + default 硬编码清零、会话存储版本化、per-working-dir 发现文件",
+      "nonGoals": "loop 上收/run 互斥/审批广播/多项目（已完成）、客户端轮询→推送迁移（后续 change）、事件持久化日志、远程访问",
+      "acceptance": ["断线按 seq 续传、失步信号后正确全量恢复", "todos/模式变更推送全端到达、背景结果去 drain 抢占", "重复审批 409、会话写冲突 409", "多 UI 经发现文件复用同一 daemon", "TUI 双模式回归通过"],
       "status": "pending"
     },
     {

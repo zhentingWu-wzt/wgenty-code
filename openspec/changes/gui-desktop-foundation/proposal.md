@@ -4,7 +4,7 @@
 
 ## Why
 
-项目现有 TUI（ratatui）与 headless 两种交互形态，daemon-session-orchestration 将把 agent loop 与事件分发上收到 daemon，使 UI 客户端成为「命令发送器 + 事件流投影」的纯视图。终端界面在信息密度、多面板布局、富文本渲染上有天然上限；GUI 桌面端作为第一个基于新编排模型的纯视图客户端落地，可同时与 TUI/Web 观看并操作同一会话。
+项目现有 TUI（ratatui）、Web（`web/`，React + Vite）与 headless 三种交互形态；合并 feature/web-ui-redesign 后 agent loop 已在 daemon 内运行（server-side loop + SessionEventHub），UI 客户端已成为「命令发送器 + 事件流投影」的纯视图。终端界面在信息密度、多面板布局、富文本渲染上有天然上限；GUI 桌面端作为第三个纯视图客户端落地，与 TUI/Web 共享同一会话真相。daemon-session-orchestration 负责补齐事件流可靠性缺口（重放/续传/失步信号），本 change 在其上构建。
 
 ## What Changes
 
