@@ -136,8 +136,6 @@ pub struct DaemonState {
     /// Per-session replay buffers (fixed-capacity ring, see
     /// `run_loop::SessionEventBuffer`). Lazily created alongside the seq
     /// counter; std RwLock for the same single-HashMap-op rationale.
-    // Read only via `session_buffer`, whose call sites arrive in Tasks 2-3.
-    #[allow(dead_code)]
     session_buffers: Arc<
         std::sync::RwLock<
             HashMap<String, Arc<std::sync::RwLock<crate::daemon::run_loop::SessionEventBuffer>>>,
@@ -720,9 +718,8 @@ impl DaemonState {
     }
 
     /// Lazily-created per-session replay buffer, mirroring `session_seq_counter`.
-    /// `pub(crate)`: the buffer type itself is crate-internal.
-    // Call sites arrive in Tasks 2-3 (publish dual-write / `after=` replay).
-    #[allow(dead_code)]
+    /// `pub(crate)`: the buffer type itself is crate-internal. Publish call
+    /// sites (`DaemonEventSink`, `RootToolPort`) dual-write into it.
     pub(crate) fn session_buffer(
         &self,
         session_id: &str,
