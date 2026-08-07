@@ -97,6 +97,17 @@ export interface ConfigResponse {
   streaming: boolean;
 }
 
+// ── Permission mode ──────────────────────────────────────────────────────────
+
+/** Mirrors `RootPermissionMode` (src/config/agent.rs:110). serde rename_all = snake_case. */
+export type PermissionMode = "normal" | "accept_edits" | "yolo";
+
+/** Response from GET/POST /api/v1/permission-mode. */
+export interface PermissionModeResponse {
+  mode: PermissionMode;
+  effective_mode: string;
+}
+
 // ── Todos / Tasks ────────────────────────────────────────────────────────────
 
 /** Mirrors `TodoItemResponse` (src/daemon/models.rs:231). */
@@ -220,7 +231,12 @@ export interface TraceEvent {
   token_budget_k?: number | null;
   cumulative_tokens: number;
   error?: unknown;
-  kind?: "progress" | "permission_pending" | "permission_resolved" | "question_pending" | "question_resolved";
+  kind?:
+    | "progress"
+    | "permission_pending"
+    | "permission_resolved"
+    | "question_pending"
+    | "question_resolved";
   permission?: StructuredApproval;
   question?: QuestionPayload;
 }
@@ -450,4 +466,24 @@ export interface SessionEvent {
 export interface RunResponse {
   run_id: string;
   session_id: string;
+}
+
+// ── Filesystem browsing (web directory picker) ──────────────────────────────
+
+/** Mirrors DirEntry (src/daemon/fs.rs). */
+export interface DirEntry {
+  name: string;
+  path: string;
+  /** Dot-directory (.git, .config …) — frontend de-emphasizes via opacity. */
+  is_hidden: boolean;
+}
+
+/** Mirrors DirListing (src/daemon/fs.rs). Response to GET /api/v1/fs/dirs. */
+export interface DirListing {
+  /** Canonicalized absolute path of the listed directory. */
+  current: string;
+  /** Parent directory, or null at a filesystem root. */
+  parent: string | null;
+  /** Sorted child directories (hidden ones interleaved). */
+  entries: DirEntry[];
 }

@@ -27,6 +27,17 @@ const ADDED_PROJECT = {
   added_at: "2026-08-02",
 };
 
+// A directory listing the picker shows when first opened. Mirrors DirListing.
+const HOME_LISTING = {
+  current: "/home",
+  parent: null,
+  entries: [
+    { name: "repo", path: "/home/repo", is_hidden: false },
+    { name: "docs", path: "/home/docs", is_hidden: false },
+    { name: ".config", path: "/home/.config", is_hidden: true },
+  ],
+};
+
 function stubFetch() {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -37,6 +48,7 @@ function stubFetch() {
     if (url.startsWith("/api/v1/worktrees")) {
       return json([{ path: "/repo/wgenty-code", head: "a", branch: "main", is_main: true }]);
     }
+    if (url.startsWith("/api/v1/fs/dirs")) return json(HOME_LISTING);
     return new Response("not found", { status: 404 });
   });
 }
@@ -45,6 +57,7 @@ describe("LeftSidebar", () => {
   beforeEach(() => {
     useSessionManager.setState({ entries: {}, order: [], activeId: null });
     useUiStore.setState({ leftCollapsed: false });
+    localStorage.clear();
     vi.stubGlobal("fetch", stubFetch());
     vi.clearAllMocks();
   });
@@ -56,20 +69,26 @@ describe("LeftSidebar", () => {
     expect(await screen.findByRole("button", { name: "Add project" })).toBeInTheDocument();
   });
 
-  it("add-project prompts for a path and registers it via the API", async () => {
+  it("add-project opens the directory picker and registers the selected folder", async () => {
     const spy = vi.mocked(fetch);
-    vi.stubGlobal("prompt", vi.fn().mockReturnValue("/repo/docs"));
     const user = userEvent.setup();
     render(<LeftSidebar client={client} />);
 
+    // Open the directory picker modal.
     await user.click(await screen.findByRole("button", { name: "Add project" }));
+    // The picker fetched the home listing.
+    await screen.findByText("docs");
+
+    // Select a folder and confirm.
+    await user.click(screen.getByText("docs"));
+    await user.click(screen.getByRole("button", { name: "Select folder" }));
 
     await waitFor(() => {
       const mk = spy.mock.calls.find(
         ([u, i]) => String(u) === "/api/v1/projects" && i?.method === "POST",
       );
       expect(mk).toBeDefined();
-      expect(JSON.parse(mk![1]!.body as string)).toEqual({ path: "/repo/docs" });
+      expect(JSON.parse(mk![1]!.body as string)).toEqual({ path: "/home/docs" });
       expect(toast.success).toHaveBeenCalledWith("Project docs added");
     });
   });
@@ -86,19 +105,20 @@ describe("LeftSidebar", () => {
           return new Response("directory does not exist", { status: 400 });
         }
         if (url.startsWith("/api/v1/worktrees")) return json([]);
+        if (url.startsWith("/api/v1/fs/dirs")) return json(HOME_LISTING);
         return new Response("not found", { status: 404 });
       }),
     );
-    vi.stubGlobal("prompt", vi.fn().mockReturnValue("/nope"));
     const user = userEvent.setup();
     render(<LeftSidebar client={client} />);
 
     await user.click(await screen.findByRole("button", { name: "Add project" }));
+    await screen.findByText("docs");
+    await user.click(screen.getByText("docs"));
+    await user.click(screen.getByRole("button", { name: "Select folder" }));
 
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith(
-        expect.stringMatching(/directory does not exist/),
-      );
+      expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/directory does not exist/));
     });
   });
 });

@@ -16,6 +16,7 @@ import type { ProjectInfo, SessionInfo, WorktreeInfo } from "../../api/types";
 import { cn } from "../../lib/utils";
 import { useSessionManager, type SessionEntry } from "../../state/sessionManager";
 import { NewSessionModal, type NewSessionPreset } from "./NewSessionModal";
+import { NewTaskModal } from "./NewTaskModal";
 
 /**
  * Project tree — the LeftSidebar's unified hierarchy:
@@ -168,6 +169,7 @@ export function ProjectTree({
   const [worktreesByProject, setWorktreesByProject] = useState<Record<string, WorktreeInfo[]>>({});
   const [error, setError] = useState<string | null>(null);
   const [newSession, setNewSession] = useState<{ preset?: NewSessionPreset } | null>(null);
+  const [newTask, setNewTask] = useState<{ project: ProjectInfo } | null>(null);
 
   const refresh = useCallback(() => {
     client
@@ -225,17 +227,9 @@ export function ProjectTree({
   };
 
   // ── Task (worktree) actions ────────────────────────────────────────────────
-  const createTask = async (project: ProjectInfo) => {
-    const branch = window.prompt("New task (worktree) branch name:");
-    if (!branch?.trim()) return;
-    const path = `.worktrees/${branch.trim().replaceAll("/", "-")}`;
-    try {
-      await client.createWorktree({ path, branch: branch.trim(), project: project.path });
-      toast.success(`Task ${branch.trim()} created`);
-      refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
+  // Opens the New task dialog; the worktree is created inside the modal.
+  const createTask = (project: ProjectInfo) => {
+    setNewTask({ project });
   };
 
   const removeTask = async (project: ProjectInfo, w: WorktreeInfo) => {
@@ -415,6 +409,14 @@ export function ProjectTree({
           client={client}
           preset={newSession.preset}
           onClose={() => setNewSession(null)}
+        />
+      )}
+      {newTask && (
+        <NewTaskModal
+          client={client}
+          project={newTask.project}
+          onClose={() => setNewTask(null)}
+          onCreated={refresh}
         />
       )}
     </div>
