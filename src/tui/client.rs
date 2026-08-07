@@ -455,6 +455,24 @@ impl DaemonClient {
         Ok(())
     }
 
+    /// POST /api/v1/interactions/:id/resolve - answer a pending ask_user_question.
+    /// `answer` is a JSON string `{"selected":[...],"text":"..."}`.
+    pub async fn resolve_interaction(&self, request_id: &str, answer: &str) -> anyhow::Result<()> {
+        let encoded = urlencode(request_id);
+        let url = format!("{}/api/v1/interactions/{}/resolve", self.base_url, encoded);
+        let resp = self
+            .http_tools()
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "answer": answer }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("resolve_interaction failed ({})", resp.status());
+        }
+        Ok(())
+    }
+
     /// POST /api/v1/tools/execute
     pub async fn execute_tool(
         &self,
