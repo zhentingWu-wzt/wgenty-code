@@ -2,62 +2,63 @@
 
 ## Context
 
-现状（调查结论，均有代码佐证）：
+合并 feature/web-ui-redesign 后的现状（均有代码佐证）：
 
-- `chat/stream` 是无会话的 LLM SSE 透传（`src/daemon/handlers.rs:175-283`），agent loop（`src/agent/runtime/loop_.rs` 的 `run_agent_loop`）通过 `LlmPort`/`ToolPort` 抽象跑在客户端进程（TUI 用 `DaemonLlmPort`/`DaemonToolPort` 回连 daemon）
-- 唯一成熟的多订阅者推送是 `TRACE_HUB`（`src/teams/trace_sink.rs:55`，broadcast 容量 1024 + 冷启动重放）
-- permission 走 `PermissionBridge` 拉模型（`src/teams/permission_bridge.rs`）+ 客户端 500ms 轮询
-- 会话存储整体覆盖写无版本（`handlers.rs:902-948`）；审批硬编码 `"default"`（`handlers.rs:637,647,683`）；`background results` drain 抢占语义
-
-约束：TUI 现有行为不能破；新模型与旧端点共存；跨平台。
+- server-side loop 已落地：`POST /sessions/:id/run` → `run_session_turn()`（`src/daemon/run_loop.rs:895` 起）复用 `run_agent_loop`；`RunRegistry::claim` 实现同会话 run 互斥 409（run_loop.rs:622）
+- `SessionEventHub = broadcast::Sender<SessionEvent>`（run_loop.rs:54），事件信封 `{seq, session_id, run_id, kind, data}`，per-session 单调 seq；`GET /sessions/:id/events` SSE fan-out，但 **live-only，无重放**（run_loop.rs:781）；Lagged 仅服务端 warn
+- permission/ask 已事件化：`PermissionRequired`/`AskUser` 广播 + 决议广播；重复应答返回 404 或 `{success:false}`；`"default"` 硬编码约 10 处（handlers.rs:485,654,664,699,740,765,1397,1431,1458,1507）
+- todos/task-group/背景结果/模式变更仍轮询；背景结果 drain 抢占（handlers.rs:849）
+- 会话存储无版本，PUT last-write-wins（仅 run 活跃时 409）；run 内部有 save_gen 但不暴露
+- token 全局单文件 `~/.wgenty-code/daemon.token`，端口不写发现文件，无存活校验
+- subagent trace SSE 已有冷启动重放 + `since` 参数（handlers.rs:308-366），可作模板
 
 ## Goals / Non-Goals
 
 **Goals:**
-- daemon 内按 session 运行 agent loop，turn 状态对多客户端可见
-- 会话事件流：序号 + 重放 + 多订阅者 fan-out，断线重连续传
-- 事件总线替代全部轮询端点（permission/todos/task-group/背景任务/模式变更）
-- 同一会话可被 TUI+GUI+Web 同时观看与操作（任一 UI 可审批、可中断）
-- 旧端点与 TUI 现有模式保持兼容
+- 会话事件流：环形缓冲重放 + `after=seq` 续传 + 客户端可感知失步信号
+- 全局事件推送替代轮询（todos/task-group/背景结果/模式/模型变更）
+- 审批语义：重复应答 409、`"default"` 硬编码清零
+- 会话存储乐观并发（版本冲突 409）
+- per-working-dir daemon 发现文件（端口/token/pid/心跳），多 UI 复用已驻留实例
 
 **Non-Goals:**
-- TUI 迁移到新模型（后续 change）
-- 多 daemon 实例集群/远程访问（仍绑定 127.0.0.1）
-- Web 前端实现本身（属后续 change）
-- CRDT 式的多端同时编辑同一会话（同一时刻一个 turn，操作互斥）
+- loop 上收、run 互斥、permission 广播、多项目注册表（合并分支已完成）
+- TUI/Web 默认行为切换（轮询→推送的客户端迁移在后续 change）
+- 事件持久化日志（重启后恢复仍走会话存储，不做 event sourcing）
+- 远程访问/多 daemon 集群（仍 127.0.0.1）
 
 ## Decisions
 
-1. **loop 上收：per-session TurnRunner**
-   daemon 为每个活跃 session 持有 TurnRunner：复用 `run_agent_loop`，但 ports 换为进程内实现（LlmPort 直接调 `ApiClient`，ToolPort 直接调 `ToolExecutor`），不再绕 HTTP。turn 输出写入会话事件通道。
-   备选（loop 留在客户端、daemon 只做状态同步）被否决——多屏同步要求 turn 只有一份真实来源。
+1. **重放：per-session 环形缓冲 + after=seq，复用 trace SSE 模式**
+   为每会话维护定长环形缓冲（千级事件）；`GET /sessions/:id/events?after=<seq>` 先重放缓冲再挂实时 broadcast。
+   备选（无限事件日志、客户端只全量刷新）被否决——日志超范围，全量刷新对长会话代价高。
 
-2. **事件通道：每会话 broadcast + 环形缓冲重放**
-   仿 `TRACE_HUB`：per-session `broadcast::Sender<SessionEvent>`（事件带 session 内单调 seq）+ 定长环形缓冲；`GET /sessions/:id/events?after=<seq>` SSE 端点，新订阅者先重放缓冲再挂实时流。全局事件（模式/模型变更）走独立全局 hub。
-   备选（WebSocket、无限持久化事件日志）被否决——WS 无必要（见探索结论），持久日志超出本 change 范围（重启恢复历史仍走会话存储）。
+2. **失步信号：显式 SyncLost 事件**
+   订阅携带的 seq 已淘汰、或运行中 broadcast Lagged 时，向该客户端发送 `SyncLost` 事件（而非仅服务端 warn），客户端收到后走 `GET /sessions/:id` 全量恢复再以最新 seq 重新订阅。语义明确、TUI/GUI/Web 三端共用一套恢复逻辑。
 
-3. **命令/事件分离的命令模型**
-   UI→daemon 一律 HTTP 命令（`POST /sessions/:id/turns` 发起 turn、`POST .../interrupt`、`POST .../permissions/:rid` 应答）；daemon→UI 一律事件流。UI 不持有会话真相，只是事件流的投影 + 命令发送器。
+3. **全局事件并入 SessionEventHub 信封**
+   扩展 `SessionEventKind`（或等价机制）承载全局事件（session_id 为空或保留字段），新增 `GET /events` 全局流；背景结果改为「事件广播 + 各端独立消费」，废除 drain 抢占。轮询端点保留兼容。
+   备选（每类事件独立 SSE 端点）被否决——N 端点等于把轮询换成 N 条流，客户端复杂度不降。
 
-4. **会话并发控制：turn 互斥 + 存储版本化**
-   同一 session 同时最多一个进行中的 turn（重复发起返回 409 或排队，design 阶段定）；会话存储写入带版本号，冲突写返回 409 由调用方重读。修掉 `"default"` 硬编码：审批归属请求发起时的真实 session。
+4. **审批语义收敛：409 + 真实 session**
+   重复应答统一 409（替换 404/success:false）；handlers 中 `"default"` 回退清零——请求必须携带真实 session_id（旧端点路径内维持兼容映射，新语义仅限 server-side 路径）。
 
-5. **兼容策略：新旧并存**
-   现有 `chat/stream`、`tools/execute` 保留原语义（无会话代理模式），TUI 继续工作；新端点挂在 `/sessions/:id/` 命名空间下。TUI 迁移另立 change，不在本 change 内做双轨切换。
+5. **会话存储版本化**
+   `Session` 增加 `version`（单调递增）；PUT 携带期望版本，不匹配返回 409 + 当前版本，调用方重读合并重试。run 内部 save_gen 机制保留，与对外版本共存（对外版本在 run 写盘时一并推进）。
 
-6. **部署：独立常驻 + 可发现**
-   支持 `wgenty-code daemon` 常驻，端口/token 落到 per-working-dir 的发现文件（替代当前单一全局 token 文件互相覆盖的问题）；UI 默认先尝试连接已驻留实例，失败再进程内拉起（保留现有内嵌模式）。
+6. **发现文件：per-working-dir + 存活校验**
+   daemon 启动写 `<working_dir>/.wgenty-code/daemon.json`（port、token、pid、启动时间、心跳时间戳），退出清理；UI 启动流程：读发现文件 → 校验 pid/心跳存活 → 命中则复用，否则按现有逻辑拉起。全局 token 文件保留兼容。
 
 ## Risks / Trade-offs
 
-- [loop 上收改动面大，影响 agent runtime 稳定性] → 复用 `run_agent_loop` 不改其核心；TurnRunner 只做 port 接线与事件转发；以现有 agent 测试套件回归
-- [事件缓冲容量与内存占用] → 定长环形缓冲（千级事件），超出后客户端重连走会话存储全量恢复
-- [新旧两套编排并存期的概念混乱] → 文档明确「新模型为准，旧端点仅兼容」；TUI 迁移 change 完成后标记旧端点 deprecated
-- [多 UI 并发命令竞态（两个 UI 同时审批/中断）] → 命令幂等 + 状态机校验（已决议的审批再次应答返回 409），事件流保证全端最终一致
-- [daemon 常驻进程的生命周期管理（孤儿进程、端口泄漏）] → 发现文件含 pid + 心跳，UI 启动时校验存活；design 阶段细化
+- [环形缓冲容量权衡：太小续传窗口短，太大占内存] → 容量做成常量 + 配置项（默认千级），配合 SyncLost 兜底，正确性不依赖缓冲大小
+- [全局事件接入 SessionEventHub 导致事件类型膨胀] → kind 枚举按域分组命名，design 阶段定义事件目录
+- [版本化改造触碰会话写路径，有回归风险] → 以现有 session 测试 + run 活跃 409 测试回归；版本缺失的历史会话按 version=0 兼容
+- [发现文件多进程并发写/残留] → 写入用临时文件 + rename 原子替换；启动时校验 token 不匹配则视为失效
+- [轮询→推送期间两套机制并存] → 推送为增量能力，轮询端点不删；客户端迁移另立 change
 
 ## Open Questions
 
-- turn 重复发起：409 拒绝 vs 排队（倾向 409，简单明确）
-- 环形缓冲容量与事件体积上限
-- 发现文件位置与格式（per-working-dir vs per-user）
+- SyncLost 用独立事件类型还是响应级错误（design 阶段按 SSE 客户端解析便利性定）
+- 全局事件是否需要独立的 seq 空间（倾向：全局流独立 seq）
+- 发现文件心跳更新频率与过期阈值

@@ -1,6 +1,6 @@
 workflow: full
 language: zh-CN
-phase: open
+phase: design
 context_compression: off
 build_mode: null
 build_pause: null
@@ -21,3 +21,10 @@ created_at: 2026-08-07
 verified_at: null
 archive_confirmation: null
 archived: false
+bound_branch: null
+direct_override: null
+handoff_context: null
+handoff_hash: null
+classic_profile: full
+classic_migration: 1
+run_id: c3f23cdd-c3ca-4274-97a8-72f0dc0141f1

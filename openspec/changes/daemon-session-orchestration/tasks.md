@@ -1,39 +1,38 @@
 # Tasks: daemon-session-orchestration
 
-## 1. 事件总线基础设施
+> 前提：server-side loop（run_session_turn/RunRegistry/SessionEventHub）已随 feature/web-ui-redesign 合并落地。本 change 只做可靠性缺口补强。
 
-- [ ] 1.1 定义 `SessionEvent` / 全局事件类型与序号机制
-- [ ] 1.2 per-session broadcast hub + 定长环形重放缓冲（仿 `TRACE_HUB`）
-- [ ] 1.3 全局事件 hub（todos/模式/模型/背景任务变更）
+## 1. 事件流重放与失步信号
 
-## 2. 会话编排层
+- [ ] 1.1 per-session 定长环形事件缓冲（容量可配置，默认千级）
+- [ ] 1.2 `GET /sessions/:id/events?after=<seq>`：缓冲重放 + 接入实时流
+- [ ] 1.3 失步信号：seq 淘汰与 Lagged 时向客户端发送 SyncLost，定义客户端全量恢复约定
 
-- [ ] 2.1 TurnRunner：daemon 内复用 `run_agent_loop`，进程内 LlmPort/ToolPort 接线
-- [ ] 2.2 turn 命令端点：`POST /sessions/:id/turns`、`POST .../interrupt`、状态查询
-- [ ] 2.3 turn 并发互斥（重复发起 409）
-- [ ] 2.4 会话存储版本化，冲突写返回 409
+## 2. 全局事件总线
 
-## 3. 事件流端点
+- [ ] 2.1 全局事件类型与序号空间定义（todos/task-group/背景结果/模式/模型变更）
+- [ ] 2.2 `GET /events` 全局 SSE 端点，多订阅者 fan-out
+- [ ] 2.3 背景任务结果改广播 + 可查询保留（废除 drain 抢占），轮询端点保留兼容
 
-- [ ] 3.1 `GET /sessions/:id/events?after=<seq>`：重放 + 实时 SSE fan-out
-- [ ] 3.2 缓冲淘汰的失步信号与客户端回退约定
-- [ ] 3.3 全局事件流端点
+## 3. 审批语义收敛
 
-## 4. 审批与全局状态修复
+- [ ] 3.1 重复应答统一 409（interaction resolve、subagent resolve-permission）
+- [ ] 3.2 清理 handlers.rs 约 10 处 `"default"` 硬编码，server-side 路径归属真实 session（旧端点兼容映射保留）
 
-- [ ] 4.1 修掉审批 `"default"` 硬编码，归属真实 session
-- [ ] 4.2 审批请求/决议事件化，任一客户端应答全局决议一次，重复应答 409
-- [ ] 4.3 背景任务结果改广播（去除 drain 抢占语义）
+## 4. 会话存储版本化
 
-## 5. 部署与兼容
+- [ ] 4.1 `Session` 增加 version 字段，历史会话按 version=0 兼容
+- [ ] 4.2 覆盖写携带期望版本，冲突返回 409 + 当前版本；run 写盘推进版本
 
-- [ ] 5.1 daemon 常驻模式 + per-working-dir 端口/token 发现文件（含 pid/心跳存活校验）
-- [ ] 5.2 UI 连接逻辑：先发现已驻留实例，失败回退进程内拉起
-- [ ] 5.3 旧端点兼容回归：TUI 现有模式行为不变
+## 5. daemon 可发现部署
+
+- [ ] 5.1 per-working-dir 发现文件（端口/token/pid/心跳），原子写入 + 退出清理
+- [ ] 5.2 UI 启动复用逻辑：读发现文件 → 存活/token 校验 → 复用或回退拉起
 
 ## 6. 验证
 
-- [ ] 6.1 验收：两个客户端订阅同一会话，一个发起 turn，双方看到相同流式输出
-- [ ] 6.2 验收：断线重连按 seq 续传；缓冲淘汰后正确回退全量恢复
-- [ ] 6.3 验收：任一客户端审批生效、重复应答 409、并发 turn 409、冲突写 409
-- [ ] 6.4 TUI 全功能回归 + agent 测试套件通过
+- [ ] 6.1 验收：断线按 after=seq 续传；缓冲淘汰/Lagged 收到失步信号并正确回退全量恢复
+- [ ] 6.2 验收：todos/模式/模型变更推送到达全部订阅者；背景结果多端可见且离线可查
+- [ ] 6.3 验收：重复审批应答 409；并发会话写冲突 409；多会话审批隔离
+- [ ] 6.4 验收：两个 UI 经发现文件复用同一 daemon；失效发现文件不误连
+- [ ] 6.5 TUI 双模式回归 + 现有 daemon/session 测试套件通过
