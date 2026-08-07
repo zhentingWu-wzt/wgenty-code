@@ -691,6 +691,11 @@ impl Drop for RunClaimGuard {
 #[derive(Debug, Deserialize)]
 pub struct RunRequest {
     pub message: String,
+    /// Forward the frontend's Plan mode so the server-side loop omits tool
+    /// definitions and runs the planner (mirrors `RuntimeConfig::plan_mode`).
+    /// Absent (e.g. the web client has no plan toggle) defaults to `false`.
+    #[serde(default)]
+    pub plan_mode: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -737,7 +742,15 @@ pub(crate) async fn post_run(
             session_id: task_session.clone(),
             run_id: task_run.clone(),
         };
-        run_session_turn(&task_state, &task_session, &task_run, body.message, cancel).await;
+        run_session_turn(
+            &task_state,
+            &task_session,
+            &task_run,
+            body.message,
+            body.plan_mode,
+            cancel,
+        )
+        .await;
     });
 
     Ok((
@@ -885,6 +898,7 @@ async fn run_session_turn(
     session_id: &str,
     run_id: &str,
     message: String,
+    plan_mode: bool,
     cancel: CancellationToken,
 ) {
     let mut sink = DaemonEventSink::new(
@@ -954,7 +968,7 @@ async fn run_session_turn(
     // 6. Per-run loop config/state; a fresh turn id per run.
     let config = RuntimeConfig {
         max_rounds: settings.agent.max_rounds.unwrap_or(100),
-        plan_mode: false,
+        plan_mode,
         subagent_timeout_secs: settings.agent.subagent.timeout_secs,
         context_window: crate::config::resolve_context_window(
             &settings.models.main,
@@ -1159,6 +1173,20 @@ mod tests {
     }
 
     // ── RootToolPort ───────────────────────────────────────────────────────
+
+    #[test]
+    fn run_request_plan_mode_defaults_false_and_reads_true() {
+        // Absent plan_mode (e.g. the web client, which has no plan toggle)
+        // defaults to false via #[serde(default)].
+        let no_field: RunRequest =
+            serde_json::from_str(r#"{"message":"hi"}"#).expect("deserialize");
+        assert_eq!(no_field.message, "hi");
+        assert!(!no_field.plan_mode);
+        // The TUI forwards plan_mode = true when in Plan mode.
+        let with_field: RunRequest =
+            serde_json::from_str(r#"{"message":"hi","plan_mode":true}"#).expect("deserialize");
+        assert!(with_field.plan_mode);
+    }
 
     fn write_req(path: &str) -> ToolRequest {
         ToolRequest {
