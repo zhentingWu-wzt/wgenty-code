@@ -979,7 +979,7 @@ git commit -m "feat(daemon): broadcast todos/mode/model/task-group changes on th
 
 ### Task 8: 背景结果保留队列 + 广播 + 快照读取（废除 drain 抢占）
 
-- [ ] Task 8 完成标记：本节全部 Step 完成并提交
+- [x] Task 8 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/daemon/state.rs`（`background_results: Arc<tokio::sync::RwLock<VecDeque<BackgroundResult>>>`，容量 256）
