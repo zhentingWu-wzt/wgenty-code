@@ -30,12 +30,21 @@ export function StatusBar({ client, onSwitchModel }: StatusBarProps) {
   const [modeOpen, setModeOpen] = useState(false);
 
   const statusText =
-    connection === "connected" ? "online" : connection === "disconnected" ? "offline" : "connecting";
+    connection === "connected"
+      ? "online"
+      : connection === "disconnected"
+        ? "offline"
+        : "connecting";
 
   const chooseMode = async (m: PermissionMode) => {
     setModeOpen(false);
+    // 按活跃会话路由：已落地 daemon 的用 daemonId，否则用本地 id（daemon
+    // 对未知 id 回退 main working root，等同改动前的 "default"）。
+    const sm = useSessionManager.getState();
+    const sid = sm.activeId ? (sm.entries[sm.activeId]?.daemonId ?? sm.activeId) : null;
+    if (!sid) return;
     try {
-      const res = await client.setPermissionMode(m);
+      const res = await client.setPermissionMode(sid, m);
       setPermissionMode(res.mode);
     } catch {
       // Non-fatal: keep the previous mode.

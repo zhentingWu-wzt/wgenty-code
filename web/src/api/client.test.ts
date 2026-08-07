@@ -60,6 +60,28 @@ describe("DaemonClient command-center endpoints", () => {
   });
 });
 
+describe("DaemonClient permission-mode endpoints", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const client = new DaemonClient();
+
+  // The daemon rejects a missing session_id with 400 — both calls must carry it.
+  it("getPermissionMode GETs with ?session_id= query", async () => {
+    const spy = mockFetch({ mode: "normal", effective_mode: "normal" });
+    const res = await client.getPermissionMode("s1");
+    expect(spy.mock.calls[0][0]).toBe("/api/v1/permission-mode?session_id=s1");
+    expect(res.mode).toBe("normal");
+  });
+
+  it("setPermissionMode POSTs mode + session_id", async () => {
+    const spy = mockFetch({ success: true, mode: "yolo", effective_mode: "yolo" });
+    await client.setPermissionMode("s1", "yolo");
+    const [url, init] = spy.mock.calls[0];
+    expect(url).toBe("/api/v1/permission-mode");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({ mode: "yolo", session_id: "s1" });
+  });
+});
+
 describe("DaemonClient worktree binding + archive", () => {
   afterEach(() => vi.unstubAllGlobals());
   const client = new DaemonClient();

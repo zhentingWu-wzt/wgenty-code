@@ -95,11 +95,17 @@ export function App() {
           const cfg = await client.getConfig();
           setModelName(cfg.model);
           // Load the current root permission mode once (StatusBar reads + switches it).
-          try {
-            const pm = await client.getPermissionMode();
-            useSessionManager.getState().setPermissionMode(pm.mode);
-          } catch {
-            // Non-fatal: StatusBar falls back to "-" until a switch succeeds.
+          // 按活跃会话路由：已落地 daemon 的用 daemonId，否则用本地 id
+          //（daemon 对未知 id 回退 main working root，等同改动前的 "default"）。
+          const sm = useSessionManager.getState();
+          const sid = sm.activeId ? (sm.entries[sm.activeId]?.daemonId ?? sm.activeId) : null;
+          if (sid) {
+            try {
+              const pm = await client.getPermissionMode(sid);
+              useSessionManager.getState().setPermissionMode(pm.mode);
+            } catch {
+              // Non-fatal: StatusBar falls back to "-" until a switch succeeds.
+            }
           }
         }
       } catch {
