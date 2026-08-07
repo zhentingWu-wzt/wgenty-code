@@ -132,6 +132,16 @@ pub struct SetPermissionModeRequest {
     /// Sandbox effective mode including Plan. When omitted, derived from `mode`.
     #[serde(default)]
     pub effective_mode: Option<crate::sandbox::EffectiveMode>,
+    /// Session whose project root the mode applies to. When omitted, falls
+    /// back to the daemon's main working directory (back-compat).
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PermissionModeQuery {
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 // ── Model Switch ─────────────────────────────────────────────────────────────

@@ -248,10 +248,15 @@ impl SubagentHealthAnalyzer {
     pub fn compute_health(
         &self,
         session_id: Option<&str>,
+        project: Option<&str>,
         period: HealthPeriod,
     ) -> Result<SubagentHealth, String> {
         let cutoff = period.cutoff_ms();
-        let transcripts: Vec<SubagentTranscriptHeader> = if let Some(sid) = session_id {
+        let transcripts: Vec<SubagentTranscriptHeader> = if let Some(pp) = project {
+            self.store
+                .list_by_project(pp)
+                .map_err(|e| format!("Failed to list transcripts: {}", e))?
+        } else if let Some(sid) = session_id {
             self.store
                 .list_by_session(sid)
                 .map_err(|e| format!("Failed to list transcripts: {}", e))?

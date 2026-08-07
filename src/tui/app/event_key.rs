@@ -679,10 +679,14 @@ impl App {
     /// EffectiveMode (Plan stays Plan).
     pub(super) fn sync_permission_mode_to_daemon(&self) {
         let client = self.daemon_client.clone();
+        let session_id = self.session_id.clone();
         let mode = self.mode.to_root_permission_mode();
         let effective_mode = self.mode.to_effective_mode();
         tokio::spawn(async move {
-            if let Err(e) = client.set_permission_mode(mode, effective_mode).await {
+            if let Err(e) = client
+                .set_permission_mode(&session_id, mode, effective_mode)
+                .await
+            {
                 tracing::warn!(error = ?e, "failed to sync permission mode to daemon");
             }
         });
