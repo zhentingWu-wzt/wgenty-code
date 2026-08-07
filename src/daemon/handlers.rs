@@ -720,22 +720,33 @@ pub async fn resolve_subagent_permission(
 
 /// `POST /api/v1/interactions/:id/resolve` — answer a pending ask_user_question
 /// prompt from the server-side loop. The answer string unblocks the waiting
-/// InteractionBridge waiter.
+/// InteractionBridge waiter. Duplicate answers get 409 with the standing
+/// (first) resolution instead of an indistinguishable 404.
 pub async fn resolve_interaction(
     State(state): State<Arc<DaemonState>>,
     Path(request_id): Path<String>,
     Json(body): Json<crate::daemon::models::ResolveInteractionRequest>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    let ok = state
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    match state
         .interaction_bridge
         .resolve(&request_id, body.answer)
-        .await;
-    if ok {
-        Ok(Json(serde_json::json!({ "resolved": true })))
-    } else {
-        // No pending question with this id (already resolved / timed out /
-        // never existed). 404 so the client can stop retrying.
-        Err(StatusCode::NOT_FOUND)
+        .await
+    {
+        crate::daemon::interaction_bridge::ResolveOutcome::Resolved => {
+            Ok(Json(serde_json::json!({ "resolved": true })))
+        }
+        crate::daemon::interaction_bridge::ResolveOutcome::AlreadyResolved(answer) => {
+            // Duplicate answer: conflict, and hand back the standing resolution.
+            Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "resolved": false, "answer": answer })),
+            ))
+        }
+        // Never existed (or waiter gone). 404 so the client stops retrying.
+        crate::daemon::interaction_bridge::ResolveOutcome::Unknown => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "unknown interaction" })),
+        )),
     }
 }
 

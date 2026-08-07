@@ -10,7 +10,7 @@
 //! answer string — merging would bloat both payloads and confuse dispatch.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 
@@ -85,12 +85,31 @@ struct PendingEntry {
     tx: oneshot::Sender<String>,
 }
 
+/// Outcome of resolving a pending question (design §4: duplicate answers get
+/// a distinguishable signal instead of a bare "not found").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolveOutcome {
+    /// Waiter found and answered.
+    Resolved,
+    /// Same request resolved before; carries the first answer so the 409
+    /// response can show the standing resolution.
+    AlreadyResolved(String),
+    /// Never existed (or waiter cleaned up without resolve).
+    Unknown,
+}
+
+/// Cap on remembered resolutions; eviction at cap is fine — a duplicate
+/// answer long after the fact degrades to 404 (client stops retrying anyway).
+const RESOLVED_CAP: usize = 256;
+
 /// In-memory question bridge shared by the server-side loop and the resolve
 /// endpoint. Default-constructible; questions wait indefinitely (no timeout) —
 /// the user may answer from any device, like root permission prompts.
 #[derive(Debug, Default)]
 pub struct InteractionBridge {
     inner: Mutex<HashMap<String, PendingEntry>>,
+    /// (request_id, first answer) of past resolutions, FIFO for eviction.
+    resolved: Mutex<VecDeque<(String, String)>>,
 }
 
 impl InteractionBridge {
@@ -149,12 +168,32 @@ impl InteractionBridge {
             .collect()
     }
 
-    /// Resolve a pending question. Returns true if a waiter was found.
-    pub async fn resolve(&self, request_id: &str, answer: String) -> bool {
+    /// Resolve a pending question. Distinguishes first resolve from a
+    /// duplicate (409 semantics at the HTTP layer) and from unknown ids.
+    pub async fn resolve(&self, request_id: &str, answer: String) -> ResolveOutcome {
         let entry = self.inner.lock().await.remove(request_id);
         match entry {
-            Some(entry) => entry.tx.send(answer).is_ok(),
-            None => false,
+            Some(entry) => {
+                let delivered = entry.tx.send(answer.clone()).is_ok();
+                if delivered {
+                    let mut resolved = self.resolved.lock().await;
+                    if resolved.len() == RESOLVED_CAP {
+                        resolved.pop_front();
+                    }
+                    resolved.push_back((request_id.to_string(), answer));
+                    ResolveOutcome::Resolved
+                } else {
+                    // Waiter dropped (run cancelled) — treat as unknown.
+                    ResolveOutcome::Unknown
+                }
+            }
+            None => {
+                let resolved = self.resolved.lock().await;
+                match resolved.iter().find(|(id, _)| id == request_id) {
+                    Some((_, first)) => ResolveOutcome::AlreadyResolved(first.clone()),
+                    None => ResolveOutcome::Unknown,
+                }
+            }
         }
     }
 }
@@ -187,20 +226,47 @@ mod tests {
         tokio::task::yield_now().await;
         // Still pending.
         assert!(bridge.pending().await.iter().any(|q| q.request_id == "r1"));
-        assert!(
+        assert!(matches!(
             bridge
                 .resolve("r1", r#"{"selected":["A"]}"#.to_string())
-                .await
-        );
+                .await,
+            ResolveOutcome::Resolved
+        ));
         let answer = handle.await.unwrap();
         assert_eq!(answer, r#"{"selected":["A"]}"#);
         assert!(bridge.pending().await.is_empty());
     }
 
     #[tokio::test]
-    async fn resolve_unknown_is_false() {
+    async fn double_resolve_reports_already_resolved_with_first_answer() {
+        let bridge = Arc::new(InteractionBridge::new());
+        let waiter = tokio::spawn({
+            let bridge = bridge.clone();
+            async move { bridge.request(sample("q1")).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            bridge.resolve("q1", r#"{"selected":["A"]}"#.into()).await,
+            ResolveOutcome::Resolved
+        ));
+        assert!(matches!(
+            bridge.resolve("q1", r#"{"selected":["B"]}"#.into()).await,
+            ResolveOutcome::AlreadyResolved(ans) if ans.contains('A')
+        ));
+        assert!(matches!(
+            bridge.resolve("nope", "{}".into()).await,
+            ResolveOutcome::Unknown
+        ));
+        let _ = waiter.await;
+    }
+
+    #[tokio::test]
+    async fn resolve_unknown_is_unknown() {
         let bridge = InteractionBridge::new();
-        assert!(!bridge.resolve("nope", "x".to_string()).await);
+        assert!(matches!(
+            bridge.resolve("nope", "x".to_string()).await,
+            ResolveOutcome::Unknown
+        ));
     }
 
     #[tokio::test]
