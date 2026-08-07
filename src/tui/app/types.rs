@@ -367,6 +367,10 @@ pub enum AppEvent {
     CtrlCPressed,
     /// Structured plan updated via update_plan tool
     PlanUpdate(serde_json::Value),
+    /// Full todos snapshot from the daemon — a `todos_changed` global event
+    /// (`GET /api/v1/events`) or a fallback `GET /api/v1/todos` poll while the
+    /// subscription is down. Replaces the plan panel state wholesale.
+    TodosSnapshot(Vec<crate::tui::client::TodoItem>),
     /// User-visible system notice (e.g. per-turn reminder transcript portion).
     SystemNotice(String),
     /// Sessions loaded from daemon

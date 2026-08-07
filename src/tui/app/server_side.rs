@@ -207,34 +207,25 @@ pub(crate) fn spawn_session_event_reader(
             }
         };
         let _ = ready.map(|tx| tx.send(()));
-        let mut stream = resp.bytes_stream();
-        let mut buf = String::new();
+        let lines = crate::tui::client::sse_data_lines(resp);
+        tokio::pin!(lines);
         while !shutdown.load(Ordering::SeqCst) {
-            match stream.next().await {
-                Some(Ok(chunk)) => {
-                    buf.push_str(&String::from_utf8_lossy(&chunk));
-                    while let Some(pos) = buf.find('\n') {
-                        let line = buf[..pos].trim().to_string();
-                        buf = buf[pos + 1..].to_string();
-                        if let Some(json_str) = line.strip_prefix("data: ") {
-                            match serde_json::from_str::<SessionEvent>(json_str) {
-                                Ok(ev) => {
-                                    for app_ev in session_event_to_app_events(ev) {
-                                        if event_tx.send(app_ev).is_err() {
-                                            return;
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::trace!(
-                                        error = %e,
-                                        "skip unparseable session event line"
-                                    );
-                                }
+            match lines.next().await {
+                Some(Ok(json_str)) => match serde_json::from_str::<SessionEvent>(&json_str) {
+                    Ok(ev) => {
+                        for app_ev in session_event_to_app_events(ev) {
+                            if event_tx.send(app_ev).is_err() {
+                                return;
                             }
                         }
                     }
-                }
+                    Err(e) => {
+                        tracing::trace!(
+                            error = %e,
+                            "skip unparseable session event line"
+                        );
+                    }
+                },
                 Some(Err(e)) => {
                     tracing::warn!(error = %e, "session events SSE read error");
                     let _ = event_tx.send(AppEvent::StreamError(
@@ -385,39 +376,189 @@ pub(crate) fn spawn_trace_event_reader(
                 }
             }
         };
-        let mut stream = resp.bytes_stream();
-        let mut buf = String::new();
+        let lines = crate::tui::client::sse_data_lines(resp);
+        tokio::pin!(lines);
         while !shutdown.load(Ordering::SeqCst) {
-            match stream.next().await {
-                Some(Ok(chunk)) => {
-                    buf.push_str(&String::from_utf8_lossy(&chunk));
-                    while let Some(pos) = buf.find('\n') {
-                        let line = buf[..pos].trim().to_string();
-                        buf = buf[pos + 1..].to_string();
-                        if let Some(json_str) = line.strip_prefix("data: ") {
-                            match serde_json::from_str::<TraceEvent>(json_str) {
-                                Ok(ev) => {
-                                    for app_ev in trace_event_to_app_events(ev) {
-                                        if event_tx.send(app_ev).is_err() {
-                                            return;
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::trace!(
-                                        error = %e,
-                                        "skip unparseable trace event line"
-                                    );
-                                }
+            match lines.next().await {
+                Some(Ok(json_str)) => match serde_json::from_str::<TraceEvent>(&json_str) {
+                    Ok(ev) => {
+                        for app_ev in trace_event_to_app_events(ev) {
+                            if event_tx.send(app_ev).is_err() {
+                                return;
                             }
                         }
                     }
-                }
+                    Err(e) => {
+                        tracing::trace!(
+                            error = %e,
+                            "skip unparseable trace event line"
+                        );
+                    }
+                },
                 Some(Err(e)) => {
                     tracing::warn!(error = %e, "trace stream SSE read error");
                     return;
                 }
                 None => return,
+            }
+        }
+    })
+}
+
+/// Poll interval for the todos fallback while the global event stream is
+/// down (same 500ms cadence the panel used before subscription).
+const TODOS_FALLBACK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+/// How often to retry `subscribe_events` while running on the polling
+/// fallback.
+const TODOS_RESUBSCRIBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Spawn a background task that drives the plan/todos panel from the daemon's
+/// global event stream (`GET /api/v1/events`). Session-independent: spawned
+/// once at app startup and lives until `shutdown` is set.
+///
+/// Modes:
+/// - **Subscribed**: `todos_changed` events carry a full snapshot; `data.items`
+///   replaces local state directly. Arrival order is not guaranteed to equal
+///   `seq` order (see daemon `global_events.rs`), so stale/duplicate snapshots
+///   (`seq <= last applied`) are dropped. The stream is live-only, so every
+///   (re)subscribe first realigns via one `GET /api/v1/todos`.
+/// - **Fallback**: on connect failure or mid-stream disconnect, poll
+///   `GET /api/v1/todos` every 500ms and retry the subscription every ~5s.
+pub(crate) fn spawn_todos_event_reader(
+    client: DaemonClient,
+    event_tx: mpsc::UnboundedSender<AppEvent>,
+    shutdown: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<()> {
+    /// Forward a full todos snapshot unless it is identical to the last one
+    /// forwarded. Replacing local state with an equal snapshot is a no-op
+    /// anyway, and the dedup keeps a quiet (or empty) daemon todos bus from
+    /// repeatedly stomping the panel while the `update_plan` tool-arg path
+    /// also writes it. Returns false only when the event channel is closed
+    /// (app shutting down).
+    fn forward_snapshot(
+        event_tx: &mpsc::UnboundedSender<AppEvent>,
+        last: &mut Option<Vec<crate::tui::client::TodoItem>>,
+        items: Vec<crate::tui::client::TodoItem>,
+    ) -> bool {
+        if last.as_ref() == Some(&items) {
+            return true;
+        }
+        if event_tx
+            .send(AppEvent::TodosSnapshot(items.clone()))
+            .is_err()
+        {
+            return false;
+        }
+        *last = Some(items);
+        true
+    }
+
+    /// Fetch one full todos snapshot via GET and forward it. Returns false
+    /// only when the event channel is closed (app shutting down).
+    async fn realign_via_get(
+        client: &DaemonClient,
+        event_tx: &mpsc::UnboundedSender<AppEvent>,
+        last: &mut Option<Vec<crate::tui::client::TodoItem>>,
+    ) -> bool {
+        match client.get_todos().await {
+            Ok(resp) => forward_snapshot(event_tx, last, resp.items),
+            Err(e) => {
+                tracing::debug!(error = %e, "todos GET failed; retrying next cycle");
+                true
+            }
+        }
+    }
+
+    tokio::spawn(async move {
+        let mut last_snapshot: Option<Vec<crate::tui::client::TodoItem>> = None;
+        loop {
+            if shutdown.load(Ordering::SeqCst) {
+                return;
+            }
+            match client.subscribe_events().await {
+                Ok(stream) => {
+                    // Live-only stream: realign once via GET before trusting
+                    // events, so nothing published before the subscribe is missed.
+                    if !realign_via_get(&client, &event_tx, &mut last_snapshot).await {
+                        return;
+                    }
+                    let mut last_seq = 0u64;
+                    tokio::pin!(stream);
+                    loop {
+                        if shutdown.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        match stream.next().await {
+                            Some(Ok(ev)) => {
+                                if ev.kind != "todos_changed" {
+                                    continue;
+                                }
+                                if ev.seq <= last_seq {
+                                    continue;
+                                }
+                                last_seq = ev.seq;
+                                match ev.data.get("items").cloned().map(
+                                    serde_json::from_value::<Vec<crate::tui::client::TodoItem>>,
+                                ) {
+                                    Some(Ok(items)) => {
+                                        if !forward_snapshot(&event_tx, &mut last_snapshot, items) {
+                                            return;
+                                        }
+                                    }
+                                    Some(Err(e)) => {
+                                        tracing::trace!(
+                                            error = %e,
+                                            "skip unparseable todos_changed payload"
+                                        );
+                                    }
+                                    None => {
+                                        tracing::trace!(
+                                            "todos_changed event without items; skipped"
+                                        );
+                                    }
+                                }
+                            }
+                            Some(Err(e)) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "global events SSE read error; falling back to polling"
+                                );
+                                break;
+                            }
+                            None => {
+                                tracing::warn!(
+                                    "global events SSE stream closed; falling back to polling"
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        "global events SSE connect failed; using polling fallback"
+                    );
+                }
+            }
+            // Polling fallback until the next resubscribe attempt. The first
+            // `interval` tick fires immediately, so a failed connect still
+            // populates the panel right away.
+            let mut poll = tokio::time::interval(TODOS_FALLBACK_POLL_INTERVAL);
+            let resubscribe = tokio::time::sleep(TODOS_RESUBSCRIBE_INTERVAL);
+            tokio::pin!(resubscribe);
+            loop {
+                tokio::select! {
+                    _ = poll.tick() => {
+                        if shutdown.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        if !realign_via_get(&client, &event_tx, &mut last_snapshot).await {
+                            return;
+                        }
+                    }
+                    _ = &mut resubscribe => break,
+                }
             }
         }
     })

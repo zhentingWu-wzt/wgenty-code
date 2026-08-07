@@ -442,6 +442,7 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::SessionListLoaded(_)
         | AppEvent::HistoryLoaded { .. }
         | AppEvent::PlanUpdate(_)
+        | AppEvent::TodosSnapshot(_)
         | AppEvent::UndoResult(_)
         | AppEvent::SaveSession
         | AppEvent::DeleteSession(_)

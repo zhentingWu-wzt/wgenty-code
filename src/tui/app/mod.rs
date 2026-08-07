@@ -774,6 +774,18 @@ impl App {
             }
         });
 
+        // Plan/todos panel: subscribe to the daemon global event stream
+        // (`GET /api/v1/events`, `todos_changed` snapshots) with a 500ms
+        // `GET /todos` polling fallback while the subscription is down.
+        // Session-independent, so it is spawned once here (unlike the
+        // server-side SSE readers below, which follow the session id).
+        {
+            let client = self.daemon_client.clone();
+            let tx = self.event_tx.clone();
+            let shutdown = self.shutdown_flag.clone();
+            crate::tui::app::server_side::spawn_todos_event_reader(client, tx, shutdown);
+        }
+
         // Server-side SSE readers (session events + subagent trace) are NOT
         // spawned at startup: the session id is a locally generated UUID that
         // the daemon has not seen yet, so an eager `GET /sessions/:id/events`

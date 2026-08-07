@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::api::ChatMessage;
 use anyhow::Context;
+use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::{Method, Response, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -942,6 +943,33 @@ impl DaemonClient {
         Ok(resp.json().await?)
     }
 
+    /// GET /api/v1/events — daemon global event stream (SSE, live-only).
+    ///
+    /// Single attempt: connect/parse errors surface as `Err` and the caller
+    /// owns reconnect/fallback. Each item is one parsed [`GlobalEventWire`];
+    /// a stream item error means the connection dropped mid-stream.
+    pub async fn subscribe_events(
+        &self,
+    ) -> anyhow::Result<impl futures::Stream<Item = anyhow::Result<GlobalEventWire>>> {
+        let url = format!("{}/api/v1/events", self.base_url);
+        let resp = self
+            .http()
+            .get(&url)
+            .send()
+            .await
+            .context("connect global event stream")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("subscribe_events failed ({}): {}", status, text);
+        }
+        Ok(sse_data_lines(resp).map(|line| {
+            line.and_then(|payload| {
+                serde_json::from_str::<GlobalEventWire>(&payload).context("parse global event")
+            })
+        }))
+    }
+
     /// GET /api/v1/tasks/progress - ready/blocked counts for agent nudges.
     pub async fn task_progress(&self) -> anyhow::Result<TaskProgressResponse> {
         let url = format!("{}/api/v1/tasks/progress", self.base_url);
@@ -955,6 +983,51 @@ impl DaemonClient {
 pub struct TaskProgressResponse {
     pub blocked: usize,
     pub ready: usize,
+}
+
+/// Wire shape of one daemon global event (`GET /api/v1/events`). TUI-local
+/// mirror of the daemon's `GlobalEvent` envelope — `kind` stays a plain
+/// string so unknown kinds forward-compatibly deserialize.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GlobalEventWire {
+    pub seq: u64,
+    pub kind: String,
+    pub data: serde_json::Value,
+}
+
+/// Split an SSE response body into `data:` payload lines.
+///
+/// This is THE single SSE line parser for the TUI: the session-event reader,
+/// the subagent trace reader, and the global-events subscription all consume
+/// it (previously the buffering/`strip_prefix("data: ")` loop was inlined in
+/// each reader). Non-`data:` lines (keep-alive comments, event:/id: fields)
+/// are skipped. A chunk read error terminates the stream after yielding one
+/// `Err`; a clean close yields `None`.
+pub(crate) fn sse_data_lines(
+    resp: Response,
+) -> impl futures::Stream<Item = anyhow::Result<String>> {
+    let stream = resp.bytes_stream();
+    futures::stream::try_unfold(
+        (stream, String::new()),
+        |(mut stream, mut buf)| async move {
+            loop {
+                if let Some(pos) = buf.find('\n') {
+                    let line = buf[..pos].trim().to_string();
+                    buf.drain(..pos + 1);
+                    if let Some(payload) = line.strip_prefix("data: ") {
+                        return Ok(Some((payload.to_string(), (stream, buf))));
+                    }
+                    // Comment/keep-alive or other SSE field — keep scanning.
+                    continue;
+                }
+                match stream.next().await {
+                    Some(Ok(chunk)) => buf.push_str(&String::from_utf8_lossy(&chunk)),
+                    Some(Err(e)) => return Err(anyhow::Error::new(e).context("SSE stream read")),
+                    None => return Ok(None),
+                }
+            }
+        },
+    )
 }
 
 /// Simple percent-encode for URL path segments (only encode truly unsafe chars).
@@ -1082,7 +1155,7 @@ pub struct SessionResponse {
 
 /// Metadata for subagent tasks in the TUI layer.
 /// Mirrors `tasks::SubagentTodoMeta` — communicates via JSON serialization.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SubagentTodoMeta {
     pub subagent_type: String,
     pub token_usage: u64,
@@ -1090,7 +1163,7 @@ pub struct SubagentTodoMeta {
     pub duration_ms: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct TodoItem {
     pub content: String,
     pub status: String,
