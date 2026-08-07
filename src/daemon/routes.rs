@@ -5,6 +5,7 @@
 
 use crate::daemon::auth;
 use crate::daemon::fs;
+use crate::daemon::global_events;
 use crate::daemon::handlers;
 use crate::daemon::projects;
 use crate::daemon::run_loop;
@@ -97,6 +98,8 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         .route("/api/v1/tasks/progress", get(handlers::task_progress))
         // Todos (s03 TodoWrite state)
         .route("/api/v1/todos", get(handlers::get_todos))
+        // Global cross-project event stream (SSE, live-only v1)
+        .route("/api/v1/events", get(global_events::get_global_events))
         // Memory ops (web-ops-console Tier 2): wrap MemoryManager
         .route("/api/v1/memory/status", get(handlers::memory_status))
         .route("/api/v1/memory", get(handlers::list_memory))
