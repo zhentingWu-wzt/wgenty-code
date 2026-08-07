@@ -491,6 +491,8 @@ pub async fn execute_tool(
 ) -> Result<Json<ExecuteToolResponse>, StatusCode> {
     let tool_name = &body.tool_name;
     let args = &body.arguments;
+    // deprecated(compat): legacy chat_stream client path; server-side callers
+    // must pass session_id. Removal is a separate change.
     let session_id = body.session_id.as_deref().unwrap_or("default");
 
     // Multi-project: validate against the session's own effective root (bound
@@ -660,6 +662,8 @@ pub async fn approve_tool(
         .tool_executor
         .approve_rule(body.session_rule.clone())
         .await;
+    // deprecated(compat): legacy chat_stream client path; server-side callers
+    // must pass session_id. Removal is a separate change.
     state.approve_rule("default", body.session_rule).await;
 
     Json(serde_json::json!({"success": true}))
@@ -670,6 +674,8 @@ pub async fn unapprove_tool(
     Json(body): Json<ApproveToolRequest>,
 ) -> Json<serde_json::Value> {
     state.tool_executor.unapprove_rule(&body.session_rule).await;
+    // deprecated(compat): legacy chat_stream client path; server-side callers
+    // must pass session_id. Removal is a separate change.
     state.unapprove_rule("default", &body.session_rule).await;
 
     Json(serde_json::json!({"success": true}))
@@ -776,8 +782,15 @@ pub async fn resolve_interaction(
 pub async fn set_permission_mode(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<crate::daemon::models::SetPermissionModeRequest>,
-) -> Json<serde_json::Value> {
-    let session_id = body.session_id.as_deref().unwrap_or("default");
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Server-side path: approvals/rules must belong to a real session
+    // (design §4) — missing session_id is a client bug, not a default.
+    let Some(session_id) = body.session_id.as_deref() else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "session_id required"})),
+        ));
+    };
     let session_root = state.effective_session_root(session_id).await;
     let effective = body
         .effective_mode
@@ -798,25 +811,32 @@ pub async fn set_permission_mode(
             "effective_mode": effective,
         }),
     );
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "success": true,
         "mode": body.mode,
         "effective_mode": effective,
-    }))
+    })))
 }
 
 /// GET /api/v1/permission-mode - get the current root agent permission mode.
 pub async fn get_permission_mode(
     State(state): State<Arc<DaemonState>>,
     Query(params): Query<crate::daemon::models::PermissionModeQuery>,
-) -> Json<serde_json::Value> {
-    let session_id = params.session_id.as_deref().unwrap_or("default");
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Server-side path: approvals/rules must belong to a real session
+    // (design §4) — missing session_id is a client bug, not a default.
+    let Some(session_id) = params.session_id.as_deref() else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "session_id required"})),
+        ));
+    };
     let session_root = state.effective_session_root(session_id).await;
     let entry = state.permission_modes.get(&session_root);
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "mode": entry.root_mode,
         "effective_mode": entry.effective_mode,
-    }))
+    })))
 }
 
 // ── Tasks ────────────────────────────────────────────────────────────────────
@@ -1441,10 +1461,12 @@ pub async fn get_agent_self(
     let viewer = resolve_viewer_from_headers(&state, &headers)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
+    // Server-side path: approvals/rules must belong to a real session
+    // (design §4) — missing session_id is a client bug, not a default.
     let session_id = params
         .get("session_id")
         .map(|s| s.as_str())
-        .unwrap_or("default");
+        .ok_or(StatusCode::BAD_REQUEST)?;
     let root = state
         .root_context(session_id)
         .await
@@ -1475,10 +1497,12 @@ pub async fn navigate_agent_view(
     let viewer = resolve_viewer_from_headers(&state, &headers)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
+    // Server-side path: approvals/rules must belong to a real session
+    // (design §4) — missing session_id is a client bug, not a default.
     let session_id = params
         .get("session_id")
         .map(|s| s.as_str())
-        .unwrap_or("default");
+        .ok_or(StatusCode::BAD_REQUEST)?;
     let target_context = resolve_navigation_context(
         &state.coordinator,
         &state.capability_service,
@@ -1502,10 +1526,12 @@ pub async fn get_child_transcript(
     let viewer = resolve_viewer_from_headers(&state, &headers)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
+    // Server-side path: approvals/rules must belong to a real session
+    // (design §4) — missing session_id is a client bug, not a default.
     let session_id = params
         .get("session_id")
         .map(|s| s.as_str())
-        .unwrap_or("default");
+        .ok_or(StatusCode::BAD_REQUEST)?;
     let root = state
         .root_context(session_id)
         .await
@@ -1551,10 +1577,12 @@ pub async fn cancel_child(
     let viewer = resolve_viewer_from_headers(&state, &headers)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
+    // Server-side path: approvals/rules must belong to a real session
+    // (design §4) — missing session_id is a client bug, not a default.
     let session_id = params
         .get("session_id")
         .map(|s| s.as_str())
-        .unwrap_or("default");
+        .ok_or(StatusCode::BAD_REQUEST)?;
     let root = state
         .root_context(session_id)
         .await
@@ -2723,7 +2751,8 @@ mod tests {
                 session_id: Some("s1".to_string()),
             }),
         )
-        .await;
+        .await
+        .expect("set_permission_mode with session_id");
         assert_eq!(resp["success"], true);
 
         let ev = rx.recv().await.expect("mode event");
@@ -2991,5 +3020,115 @@ mod tests {
         // The tool-layer drain queue stays empty: the retained queue is the
         // single source of truth daemon-side.
         assert!(state.background_manager.drain_results().await.is_empty());
+    }
+
+    // ── session_id required on server-side paths (daemon-session-orchestration Task 12) ──
+
+    /// Viewer-token headers for the agents/* handlers (they resolve the
+    /// viewer before touching session_id).
+    async fn viewer_headers(state: &DaemonState) -> axum::http::HeaderMap {
+        let token = state.create_viewer().await;
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            VIEWER_TOKEN_HEADER,
+            axum::http::HeaderValue::from_str(&token).expect("token is header-safe"),
+        );
+        headers
+    }
+
+    #[tokio::test]
+    async fn set_permission_mode_without_session_id_is_rejected() {
+        let state = Arc::new(global_event_test_state().await);
+        let result = set_permission_mode(
+            State(state),
+            Json(crate::daemon::models::SetPermissionModeRequest {
+                mode: crate::config::agent::RootPermissionMode::Normal,
+                effective_mode: None,
+                session_id: None,
+            }),
+        )
+        .await;
+        let Err((status, Json(body))) = result else {
+            panic!("missing session_id must be rejected with 400");
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, serde_json::json!({"error": "session_id required"}));
+    }
+
+    #[tokio::test]
+    async fn get_permission_mode_without_session_id_is_rejected() {
+        let state = Arc::new(global_event_test_state().await);
+        let result = get_permission_mode(
+            State(state),
+            Query(crate::daemon::models::PermissionModeQuery { session_id: None }),
+        )
+        .await;
+        let Err((status, Json(body))) = result else {
+            panic!("missing session_id must be rejected with 400");
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, serde_json::json!({"error": "session_id required"}));
+    }
+
+    #[tokio::test]
+    async fn get_agent_self_without_session_id_is_rejected() {
+        let state = Arc::new(global_event_test_state().await);
+        let headers = viewer_headers(&state).await;
+        let result = get_agent_self(State(state), Query(HashMap::new()), headers).await;
+        assert!(
+            matches!(result, Err(StatusCode::BAD_REQUEST)),
+            "missing session_id must be rejected with 400"
+        );
+    }
+
+    #[tokio::test]
+    async fn navigate_agent_view_without_session_id_is_rejected() {
+        let state = Arc::new(global_event_test_state().await);
+        let headers = viewer_headers(&state).await;
+        let result = navigate_agent_view(
+            State(state),
+            Path("cap".to_string()),
+            Query(HashMap::new()),
+            headers,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(StatusCode::BAD_REQUEST)),
+            "missing session_id must be rejected with 400"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_child_transcript_without_session_id_is_rejected() {
+        let state = Arc::new(global_event_test_state().await);
+        let headers = viewer_headers(&state).await;
+        let result = get_child_transcript(
+            State(state),
+            Path("cap".to_string()),
+            Query(HashMap::new()),
+            headers,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(StatusCode::BAD_REQUEST)),
+            "missing session_id must be rejected with 400"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_child_without_session_id_is_rejected() {
+        let state = Arc::new(global_event_test_state().await);
+        let headers = viewer_headers(&state).await;
+        let result = cancel_child(
+            State(state),
+            Path("cap".to_string()),
+            Query(HashMap::new()),
+            headers,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(StatusCode::BAD_REQUEST)),
+            "missing session_id must be rejected with 400"
+        );
     }
 }
