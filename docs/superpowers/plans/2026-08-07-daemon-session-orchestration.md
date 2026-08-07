@@ -617,7 +617,7 @@ git commit -m "feat(daemon): send sync_lost SSE event to lagged session-event su
 
 ### Task 5: 全局事件类型与序号空间（`src/daemon/global_events.rs`）
 
-- [ ] Task 5 完成标记：本节全部 Step 完成并提交
+- [x] Task 5 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Create: `src/daemon/global_events.rs`
