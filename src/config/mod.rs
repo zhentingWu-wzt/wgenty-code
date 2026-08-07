@@ -40,7 +40,25 @@ pub struct Settings {
     #[serde(default)]
     pub integrations: IntegrationsConfig,
     #[serde(default)]
+    pub daemon: DaemonConfig,
+    #[serde(default)]
     pub verbose: bool,
+}
+
+/// Daemon-process tuning. All fields optional; absent = defaults.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DaemonConfig {
+    /// Per-session SSE replay buffer capacity (Task: event replay).
+    pub event_buffer_capacity: usize,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            event_buffer_capacity: 1024,
+        }
+    }
 }
 impl Settings {
     /// Resolve the path to ~/.wgenty-code/settings.json

@@ -133,6 +133,16 @@ pub struct DaemonState {
     /// std RwLock: critical sections are single HashMap ops, never held across
     /// `.await` (same rationale as `SessionWorkdirs`).
     session_seq_counters: Arc<std::sync::RwLock<HashMap<String, Arc<AtomicU64>>>>,
+    /// Per-session replay buffers (fixed-capacity ring, see
+    /// `run_loop::SessionEventBuffer`). Lazily created alongside the seq
+    /// counter; std RwLock for the same single-HashMap-op rationale.
+    // Read only via `session_buffer`, whose call sites arrive in Tasks 2-3.
+    #[allow(dead_code)]
+    session_buffers: Arc<
+        std::sync::RwLock<
+            HashMap<String, Arc<std::sync::RwLock<crate::daemon::run_loop::SessionEventBuffer>>>,
+        >,
+    >,
 }
 
 impl DaemonState {
@@ -489,6 +499,7 @@ impl DaemonState {
             session_event_hub: tokio::sync::broadcast::channel(1024).0,
             session_runs: crate::daemon::run_loop::RunRegistry::new(),
             session_seq_counters: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            session_buffers: Arc::new(std::sync::RwLock::new(HashMap::new())),
             http_client,
             http_client_stream,
         }
@@ -706,6 +717,32 @@ impl DaemonState {
                 .entry(session_id.to_string())
                 .or_insert_with(|| Arc::new(AtomicU64::new(1))),
         )
+    }
+
+    /// Lazily-created per-session replay buffer, mirroring `session_seq_counter`.
+    /// `pub(crate)`: the buffer type itself is crate-internal.
+    // Call sites arrive in Tasks 2-3 (publish dual-write / `after=` replay).
+    #[allow(dead_code)]
+    pub(crate) fn session_buffer(
+        &self,
+        session_id: &str,
+    ) -> Arc<std::sync::RwLock<crate::daemon::run_loop::SessionEventBuffer>> {
+        let capacity = self.event_buffer_capacity();
+        let mut map = self
+            .session_buffers
+            .write()
+            .expect("session_buffers lock poisoned");
+        map.entry(session_id.to_string())
+            .or_insert_with(|| {
+                Arc::new(std::sync::RwLock::new(
+                    crate::daemon::run_loop::SessionEventBuffer::new(capacity),
+                ))
+            })
+            .clone()
+    }
+
+    pub fn event_buffer_capacity(&self) -> usize {
+        self.app_state.settings.daemon.event_buffer_capacity
     }
 
     // ── Multi-project routing ────────────────────────────────────────────────
