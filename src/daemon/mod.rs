@@ -9,6 +9,7 @@
 
 pub mod auth;
 pub(crate) mod fs;
+pub(crate) mod global_events;
 pub mod handlers;
 pub mod interaction_bridge;
 pub mod memory_router;

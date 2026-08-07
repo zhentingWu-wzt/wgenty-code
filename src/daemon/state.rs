@@ -124,6 +124,15 @@ pub struct DaemonState {
     /// Broadcast hub for daemon-run session events (`SessionEvent` envelope).
     /// One hub per daemon; events carry session_id/run_id for filtering.
     pub session_event_hub: crate::daemon::run_loop::SessionEventHub,
+    /// Broadcast hub for daemon-wide (cross-project) global events
+    /// (`GlobalEvent` envelope). Independent from `session_event_hub` so
+    /// high-frequency session deltas can't starve global events (design §3.1).
+    pub global_event_hub: crate::daemon::global_events::GlobalEventHub,
+    /// Global event sequence counter, monotonic across the daemon process
+    /// (starts at 1 on each start; not resumable after a restart). Kept
+    /// separate from `session_seq_counters` — global events live in their own
+    /// seq space.
+    pub global_seq_counter: Arc<AtomicU64>,
     /// One active server-side run per session (claim registry). Enforces the
     /// 409 on `POST /sessions/:id/run` and the update_session run lock.
     pub session_runs: crate::daemon::run_loop::RunRegistry,
@@ -495,12 +504,30 @@ impl DaemonState {
             permission_modes,
             transcript_store: sse_transcript_store,
             session_event_hub: tokio::sync::broadcast::channel(1024).0,
+            global_event_hub: crate::daemon::global_events::new_global_event_hub(),
+            global_seq_counter: Arc::new(AtomicU64::new(1)),
             session_runs: crate::daemon::run_loop::RunRegistry::new(),
             session_seq_counters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             session_buffers: Arc::new(std::sync::RwLock::new(HashMap::new())),
             http_client,
             http_client_stream,
         }
+    }
+
+    /// Publish one global event. No subscribers is normal; ignore the error.
+    pub fn broadcast_global(
+        &self,
+        kind: crate::daemon::global_events::GlobalEventKind,
+        data: serde_json::Value,
+    ) {
+        let event = crate::daemon::global_events::GlobalEvent {
+            seq: self
+                .global_seq_counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            kind,
+            data,
+        };
+        let _ = self.global_event_hub.send(event);
     }
 
     /// Returns the trusted root execution context for `session_id`, creating
