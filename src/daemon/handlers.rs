@@ -866,7 +866,9 @@ pub async fn get_todos(State(state): State<Arc<DaemonState>>) -> Json<GetTodosRe
 pub async fn get_background_results(
     State(state): State<Arc<DaemonState>>,
 ) -> Json<serde_json::Value> {
-    let results = state.background_manager.drain_results().await;
+    // Snapshot read (no drain): results are retained so every client can
+    // query them; the old first-come-first-served drain is abolished.
+    let results = state.background_results_snapshot().await;
     Json(serde_json::json!({ "results": results }))
 }
 
@@ -2858,5 +2860,105 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── Background results retention (daemon-session-orchestration Task 8) ────
+
+    fn sample_bg_result(task_id: &str) -> crate::tools::execution::background::BackgroundResult {
+        crate::tools::execution::background::BackgroundResult {
+            task_id: task_id.to_string(),
+            result_type: "command".to_string(),
+            command: "true".to_string(),
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            success: true,
+            sandbox_bypassed: false,
+            permission_mode: None,
+            sandbox_level: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn background_results_are_retained_not_drained() {
+        let state = global_event_test_state().await;
+        let mut rx = state.global_event_hub.subscribe();
+        state.record_background_result(sample_bg_result("r1")).await;
+        state.record_background_result(sample_bg_result("r2")).await;
+        // 广播在入队之后到达。
+        let ev = rx.recv().await.expect("broadcast");
+        assert_eq!(
+            ev.kind,
+            crate::daemon::global_events::GlobalEventKind::BackgroundResult
+        );
+        // 两次快照读取内容一致（不再先到先得）。
+        let first = state.background_results_snapshot().await;
+        let second = state.background_results_snapshot().await;
+        assert_eq!(first.len(), 2);
+        assert_eq!(first.len(), second.len());
+    }
+
+    #[tokio::test]
+    async fn background_results_evict_oldest_beyond_capacity() {
+        let state = global_event_test_state().await;
+        let capacity = crate::daemon::state::BACKGROUND_RESULTS_CAPACITY;
+        // capacity + 1 results: the oldest ("r0") must be evicted.
+        for i in 0..=capacity {
+            state
+                .record_background_result(sample_bg_result(&format!("r{i}")))
+                .await;
+        }
+        let snapshot = state.background_results_snapshot().await;
+        assert_eq!(snapshot.len(), capacity);
+        assert_eq!(snapshot[0].task_id, "r1");
+        assert_eq!(
+            snapshot.last().expect("non-empty snapshot").task_id,
+            format!("r{capacity}")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_background_results_returns_snapshot_without_draining() {
+        use axum::extract::State;
+        use axum::Json;
+
+        let state = Arc::new(global_event_test_state().await);
+        state.record_background_result(sample_bg_result("r1")).await;
+        state.record_background_result(sample_bg_result("r2")).await;
+        // Two consecutive reads see the same results (no first-come-first-served
+        // drain): old polling clients keep working, results are not stolen.
+        let Json(first) = get_background_results(State(state.clone())).await;
+        let Json(second) = get_background_results(State(state.clone())).await;
+        assert_eq!(first["results"].as_array().expect("results array").len(), 2);
+        assert_eq!(first, second);
+    }
+
+    /// End-to-end wiring: results completed in the tool-layer background
+    /// manager flow into the daemon's retained queue (hook replaces the
+    /// drain queue daemon-side) and are broadcast on the global event bus.
+    #[tokio::test]
+    async fn background_manager_results_flow_into_retained_queue() {
+        let state = global_event_test_state().await;
+        let mut rx = state.global_event_hub.subscribe();
+        state
+            .background_manager
+            .push_subagent_result("demo", "ok", true)
+            .await;
+        // Retain-before-broadcast: once the event arrives the result is
+        // guaranteed queryable via the snapshot.
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("event within timeout")
+            .expect("broadcast");
+        assert_eq!(
+            ev.kind,
+            crate::daemon::global_events::GlobalEventKind::BackgroundResult
+        );
+        let snapshot = state.background_results_snapshot().await;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].result_type, "subagent");
+        // The tool-layer drain queue stays empty: the retained queue is the
+        // single source of truth daemon-side.
+        assert!(state.background_manager.drain_results().await.is_empty());
     }
 }

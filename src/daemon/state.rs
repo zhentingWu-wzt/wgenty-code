@@ -9,15 +9,20 @@ use crate::state::AppState;
 use crate::tasks::{TaskManagementTool, TodoState};
 use crate::teams::mailbox::TeamManager;
 use crate::teams::permission_bridge::PermissionBridge;
-use crate::tools::execution::background::{BackgroundManager, BackgroundTool};
+use crate::tools::execution::background::{BackgroundManager, BackgroundResult, BackgroundTool};
 use crate::tools::meta::team_message::TeamMessageTool;
 use crate::tools::{CheckpointManager, CheckpointStore, ToolExecutor, ToolRegistry};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
+
+/// Retained background results; newest at back, oldest evicted past capacity.
+/// Retention accepts eviction at extreme volume (very low frequency; online
+/// clients receive results via the event bus) — design §3.3.
+pub const BACKGROUND_RESULTS_CAPACITY: usize = 256;
 
 /// Per-session permission rules.
 struct SessionRules {
@@ -64,6 +69,11 @@ pub struct DaemonState {
     pub todo_state: Arc<RwLock<TodoState>>,
     pub skill_loader: Arc<SkillLoader>,
     pub background_manager: Arc<BackgroundManager>,
+    /// Retained background results (newest at back, oldest evicted past
+    /// [`BACKGROUND_RESULTS_CAPACITY`]). Fed by the tool-layer manager hook;
+    /// the single source of truth for `GET /background/results` (snapshot
+    /// reads, no drain) — design §3.3.
+    pub background_results: Arc<RwLock<VecDeque<BackgroundResult>>>,
     pub team_manager: Option<Arc<TeamManager>>,
     pub session_manager: MemorySessionManager,
     /// Shared MemoryManager backing the `memory_add` tool and AutoDream (D1).
@@ -161,6 +171,31 @@ impl DaemonState {
         // Initialize background manager (shares OS sandbox with shell tools)
         let bg_sandbox = Arc::new(crate::sandbox::SandboxManager::new());
         let bg_manager = Arc::new(BackgroundManager::new().with_sandbox(bg_sandbox));
+
+        // Retained background results queue + global event bus handles. The
+        // tool-layer manager hook diverts completed results here (the queue
+        // becomes the daemon-side single source of truth) instead of its
+        // internal drain queue, which remains the CLI path.
+        let background_results = Arc::new(RwLock::new(VecDeque::new()));
+        let global_event_hub = crate::daemon::global_events::new_global_event_hub();
+        let global_seq_counter = Arc::new(AtomicU64::new(1));
+        {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BackgroundResult>();
+            bg_manager.set_result_hook(move |result| {
+                // The receiver lives for the daemon's lifetime; a failed send
+                // means the state is shutting down and the result is safe to drop.
+                let _ = tx.send(result);
+            });
+            let retained = background_results.clone();
+            let hub = global_event_hub.clone();
+            let seq = global_seq_counter.clone();
+            tokio::spawn(async move {
+                // Single consumer: completion order is preserved into the queue.
+                while let Some(result) = rx.recv().await {
+                    retain_and_broadcast_background_result(&retained, &hub, &seq, result).await;
+                }
+            });
+        }
 
         // Load team manager if .team/config.json exists
         let team_manager = {
@@ -482,6 +517,7 @@ impl DaemonState {
             todo_state,
             skill_loader,
             background_manager: bg_manager,
+            background_results,
             team_manager,
             session_manager,
             memory_manager,
@@ -504,8 +540,8 @@ impl DaemonState {
             permission_modes,
             transcript_store: sse_transcript_store,
             session_event_hub: tokio::sync::broadcast::channel(1024).0,
-            global_event_hub: crate::daemon::global_events::new_global_event_hub(),
-            global_seq_counter: Arc::new(AtomicU64::new(1)),
+            global_event_hub,
+            global_seq_counter,
             session_runs: crate::daemon::run_loop::RunRegistry::new(),
             session_seq_counters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             session_buffers: Arc::new(std::sync::RwLock::new(HashMap::new())),
@@ -528,6 +564,29 @@ impl DaemonState {
             data,
         };
         let _ = self.global_event_hub.send(event);
+    }
+
+    /// Retain-then-broadcast: the result MUST be queryable before any client
+    /// sees the event, so offline-then-online clients can still fetch it.
+    pub async fn record_background_result(&self, result: BackgroundResult) {
+        retain_and_broadcast_background_result(
+            &self.background_results,
+            &self.global_event_hub,
+            &self.global_seq_counter,
+            result,
+        )
+        .await;
+    }
+
+    /// Snapshot of retained results (oldest first). Never drains: every
+    /// client can query the same results (design §3.3).
+    pub async fn background_results_snapshot(&self) -> Vec<BackgroundResult> {
+        self.background_results
+            .read()
+            .await
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Single write-path for the shared todo list: update state, then
@@ -672,6 +731,33 @@ impl DaemonState {
             );
         }
     }
+}
+
+/// Retain-then-broadcast core shared by [`DaemonState::record_background_result`]
+/// and the tool-layer manager hook installed in [`DaemonState::new`] (which
+/// runs before the `DaemonState` itself exists). Retention MUST complete
+/// before the broadcast so the result is queryable before any client sees
+/// the event (design §3.2/§3.3).
+async fn retain_and_broadcast_background_result(
+    retained: &RwLock<VecDeque<BackgroundResult>>,
+    hub: &crate::daemon::global_events::GlobalEventHub,
+    seq_counter: &AtomicU64,
+    result: BackgroundResult,
+) {
+    {
+        let mut retained = retained.write().await;
+        if retained.len() == BACKGROUND_RESULTS_CAPACITY {
+            retained.pop_front();
+        }
+        retained.push_back(result.clone());
+    }
+    let event = crate::daemon::global_events::GlobalEvent {
+        seq: seq_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        kind: crate::daemon::global_events::GlobalEventKind::BackgroundResult,
+        data: serde_json::json!({ "result": result }),
+    };
+    // No subscribers is normal; ignore the error (same as broadcast_global).
+    let _ = hub.send(event);
 }
 
 /// Encodes bytes as a lowercase hex string.
