@@ -6,9 +6,9 @@
  * connection probe result, and a pending-permission slot that
  * `PermissionModal` resolves.
  *
- * The agent loop (`agent/loop.ts`) never touches React; it talks to this store
- * purely through the callbacks we build in `App.tsx`. This keeps the loop
- * testable in isolation and the React layer free of control-flow logic.
+ * The server-side observer (`agent/sessionRunner.ts`) never touches React; it
+ * drives this store directly (no App.tsx callback wiring). This keeps the
+ * runner testable in isolation and the React layer free of control-flow logic.
  *
  * Created via `createSessionStore()` so each session gets fully isolated
  * state; components subscribe through `sessionContext.tsx`.
@@ -16,7 +16,7 @@
 import { create } from "zustand";
 import type { PermissionDecision, PermissionRequiredInfo, QuestionPayload, StructuredApproval } from "../api/types";
 import type { StreamEvent } from "../api/sseParser";
-import type { ToolExecution } from "../agent/loop";
+import type { ToolExecution } from "../agent/types";
 
 /** One displayable chat message (richer than the wire `ChatMessage`). */
 export interface DisplayMessage {

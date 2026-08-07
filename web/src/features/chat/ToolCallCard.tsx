@@ -1,5 +1,5 @@
 import { Check, CircleSlash, X } from "lucide-react";
-import type { ToolExecution } from "../../agent/loop";
+import type { ToolExecution } from "../../agent/types";
 import { cn } from "../../lib/utils";
 import { DiffView } from "./DiffView";
 import { hasDiff } from "./diffUtils";

@@ -4,7 +4,7 @@
  * components (react-refresh) and the mapping stays unit-testable in isolation.
  */
 import type { ExecuteToolResponse, SessionMessage } from "../api/types";
-import type { ToolExecution } from "./loop";
+import type { ToolExecution } from "./types";
 import type { DisplayMessage } from "../state/sessionStore";
 
 // Module-level counter for loaded-history message ids (same pattern as
@@ -17,8 +17,8 @@ const MISSING_RESULT = "tool result missing from saved history";
 
 /**
  * Best-effort reconstruction of an `ExecuteToolResponse` from a stored tool
- * message's content. Autosave writes `JSON.stringify(exec.response)` (see
- * sessionRunner.toWireMessages), so JSON.parse usually recovers the original
+ * message content. The daemon persists tool results as
+ * `JSON.stringify(exec.response)`, so JSON.parse usually recovers the original
  * shape; anything else is wrapped as plain-text content. Never throws.
  */
 function parseToolResponse(raw: unknown): ExecuteToolResponse {
@@ -38,15 +38,14 @@ function parseToolResponse(raw: unknown): ExecuteToolResponse {
 
 /**
  * Convert a saved session's wire messages into display messages WITHOUT
- * dropping tool-call structure (the previous mapping collapsed every non-user
- * message to an empty assistant bubble, and the next autosave then overwrote
- * the daemon's copy with that stripped history — silent data loss).
+ * dropping tool-call structure (a naive mapping collapses every non-user
+ * message to an empty assistant bubble).
  *
  * Pairing: an assistant message's `tool_calls[i]` is matched to the following
  * tool message with the same `tool_call_id` (falling back to the next
  * unmatched call of the same assistant message). Tool messages with no
  * matching call stay as standalone `role: "tool"` display messages so they
- * still round-trip through `toWireMessages`.
+ * remain visible (and survive a reload).
  */
 export function sessionMessagesToDisplay(messages: SessionMessage[]): DisplayMessage[] {
   const out: DisplayMessage[] = [];
