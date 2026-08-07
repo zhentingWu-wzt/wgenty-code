@@ -34,9 +34,14 @@
 
 ### Requirement: 轮询端点兼容
 
-全局事件流上线后，现有轮询端点（todos、background/results、tasks/progress 等）MUST 保持可用；客户端从轮询迁移到事件订阅属于后续 change，本 change 不改变任何客户端默认行为。
+全局事件流上线后，现有轮询端点（todos、background/results、tasks/progress 等）MUST 保持可用；除本 change 指定的一处 dogfood 迁移（TUI todos 面板切换为事件订阅，并保留轮询回退）外，其余客户端轮询路径不变，客户端全量迁移属于后续 change。
 
 #### Scenario: 旧客户端不受影响
 
 - **WHEN** 未迁移的客户端继续轮询现有端点
 - **THEN** 返回结果与迁移前一致
+
+#### Scenario: dogfood 迁移等价
+
+- **WHEN** TUI todos 面板切换为事件订阅
+- **THEN** todos 变更的呈现与轮询模式等价，订阅断开时回退轮询

@@ -18,7 +18,7 @@
 - 全局事件总线：todos 变更、task-group 结果、背景任务结果（去除 drain 抢占）、权限模式/模型变更纳入事件推送，替代轮询端点
 - 审批语义收敛：重复应答统一返回 409；清理 `"default"` 会话硬编码，审批归属真实 session
 - 会话存储版本化：`Session` 增加版本字段，写操作携带期望版本，冲突返回 409（乐观并发）
-- daemon 可发现部署：per-working-dir 发现文件（端口 + token + pid/心跳存活校验），UI 启动优先复用已驻留实例
+- daemon 可发现部署：全局发现文件 `~/.wgenty-code/daemon.json`（端口 + token + pid/心跳存活校验，全局单 daemon 服务多项目），UI 启动优先复用已驻留实例
 - 向后兼容：现有端点（含 server-side run/events 与旧 chat_stream 路径）行为不变，TUI 两种模式均不受影响
 
 ## Capabilities
