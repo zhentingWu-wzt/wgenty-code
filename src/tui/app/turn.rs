@@ -69,10 +69,49 @@ impl App {
         let sid = self.session_id.clone();
         let tx = self.event_tx.clone();
         let plan_mode = self.mode == AgentMode::PlanMode;
+        let name = self.session_name.clone();
+        let history = self.conversation_history.clone();
+        let ui_messages: Vec<_> = self
+            .committed_messages
+            .iter()
+            .map(UIMessage::to_session_ui_message)
+            .collect();
+        // (Re)subscribe the session-event SSE reader for the current session
+        // id. `ready` fires once the subscription is established so the run
+        // below doesn't miss its live-only events (mirrors the web client's
+        // subscribe-then-run ordering).
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        self.respawn_session_event_reader(Some(ready_tx));
+        self.respawn_trace_event_reader();
         tokio::spawn(async move {
+            // The daemon 404s unknown session ids on both POST /run and
+            // GET /events. The TUI's session id is generated locally (not
+            // POSTed at startup to avoid flooding the session panel), so
+            // upsert it first via PUT — this creates the session record.
+            let h = { history.lock().await.clone() };
+            if let Err(e) = client.save_session(&sid, &name, &h, &ui_messages).await {
+                tracing::warn!(
+                    session_id = %sid,
+                    error = %e,
+                    "pre-run session upsert failed; server-side run may 404"
+                );
+            }
+            // Wait for the reader to connect so the run's events aren't
+            // missed. Non-fatal: if it times out, the run proceeds anyway and
+            // the persisted history is the catch-up path.
+            if tokio::time::timeout(std::time::Duration::from_secs(10), ready_rx)
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    session_id = %sid,
+                    "session event reader not connected before run; some early events may be missed"
+                );
+            }
             match client.run_session(&sid, &input_text, plan_mode).await {
                 Ok(_run_id) => {
-                    // SSE reader (spawned in App::run) delivers events.
+                    // The session-event SSE reader (respawned above) delivers
+                    // events into the UI as the daemon-owned run progresses.
                 }
                 Err(e) => {
                     let _ = tx.send(AppEvent::StreamError(format!(

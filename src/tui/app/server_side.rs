@@ -13,7 +13,7 @@ use crate::tui::client::DaemonClient;
 use futures::StreamExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// Map a daemon `SessionEvent` into zero or more TUI `AppEvent`s.
 ///
@@ -160,27 +160,50 @@ pub(crate) fn session_event_to_app_events(ev: SessionEvent) -> Vec<AppEvent> {
 }
 
 /// Spawn a background task that subscribes to the daemon's session-event SSE
-/// stream and forwards mapped `AppEvent`s into `event_tx`.
+/// stream and forwards mapped `AppEvent`s into `event_tx`. Returns the task's
+/// `JoinHandle` so callers can abort/respawn it when the session switches.
 ///
-/// Runs until the SSE stream closes, the event channel is dropped (app
-/// shutting down), or `shutdown` is set.
+/// The connect is retried silently with backoff until it succeeds (or
+/// `shutdown` is set). This matters because the TUI generates its session id
+/// locally and the daemon only learns about a session on its first PUT save —
+/// an early connect legitimately 404s, and treating that as a fatal "lost
+/// connection" spammed a spurious error on every TUI launch. Once connected,
+/// `ready` (optional) fires so callers can start a run only after the
+/// subscription is live (session events are live-only, no replay).
+///
+/// A drop *after* a successful connect is a genuine disconnect: a
+/// `StreamError` is emitted and the task exits (the next server-side run
+/// respawns it). Also exits when the event channel is dropped (app shutting
+/// down) or `shutdown` is set.
 pub(crate) fn spawn_session_event_reader(
     client: DaemonClient,
     session_id: String,
     event_tx: mpsc::UnboundedSender<AppEvent>,
     shutdown: Arc<AtomicBool>,
-) {
+    ready: Option<oneshot::Sender<()>>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let resp = match client.session_events(&session_id).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(error = %e, "session events SSE connect failed");
-                let _ = event_tx.send(AppEvent::StreamError(format!(
-                    "lost connection to daemon event stream: {e}"
-                )));
+        // Exponential backoff for connect retries: 250ms, 500ms, 1s, 2s cap.
+        let mut backoff = std::time::Duration::from_millis(250);
+        let max_backoff = std::time::Duration::from_secs(2);
+        let resp = loop {
+            if shutdown.load(Ordering::SeqCst) {
                 return;
             }
+            match client.session_events(&session_id).await {
+                Ok(r) => break r,
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        session_id,
+                        "session events SSE connect failed; retrying"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = std::cmp::min(backoff * 2, max_backoff);
+                }
+            }
         };
+        let _ = ready.map(|tx| tx.send(()));
         let mut stream = resp.bytes_stream();
         let mut buf = String::new();
         while !shutdown.load(Ordering::SeqCst) {
@@ -211,12 +234,21 @@ pub(crate) fn spawn_session_event_reader(
                 }
                 Some(Err(e)) => {
                     tracing::warn!(error = %e, "session events SSE read error");
-                    break;
+                    let _ = event_tx.send(AppEvent::StreamError(
+                        "lost connection to daemon event stream".to_string(),
+                    ));
+                    return;
                 }
-                None => break,
+                None => {
+                    tracing::warn!(session_id, "session events SSE stream closed");
+                    let _ = event_tx.send(AppEvent::StreamError(
+                        "lost connection to daemon event stream".to_string(),
+                    ));
+                    return;
+                }
             }
         }
-    });
+    })
 }
 
 /// Map a daemon `TraceEvent` (subagent trace stream) into zero or more
@@ -320,19 +352,34 @@ fn trace_event_to_progress(ev: &TraceEvent) -> SubagentProgress {
 
 /// Spawn a background task that subscribes to the daemon's subagent trace
 /// SSE stream and forwards mapped `AppEvent`s (permission/question) into
-/// `event_tx`. Mirrors `spawn_session_event_reader`.
+/// `event_tx`. Returns the task's `JoinHandle` so callers can abort/respawn it
+/// when the session switches. Mirrors `spawn_session_event_reader`'s silent
+/// connect retry (the trace endpoint never 404s for unknown sessions — it
+/// streams an empty replay — so failures here are transient network hiccups).
 pub(crate) fn spawn_trace_event_reader(
     client: DaemonClient,
     session_id: String,
     event_tx: mpsc::UnboundedSender<AppEvent>,
     shutdown: Arc<AtomicBool>,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let resp = match client.trace_stream(&session_id).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(error = %e, "trace stream SSE connect failed");
+        let mut backoff = std::time::Duration::from_millis(250);
+        let max_backoff = std::time::Duration::from_secs(2);
+        let resp = loop {
+            if shutdown.load(Ordering::SeqCst) {
                 return;
+            }
+            match client.trace_stream(&session_id).await {
+                Ok(r) => break r,
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        session_id,
+                        "trace stream SSE connect failed; retrying"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = std::cmp::min(backoff * 2, max_backoff);
+                }
             }
         };
         let mut stream = resp.bytes_stream();
@@ -365,12 +412,12 @@ pub(crate) fn spawn_trace_event_reader(
                 }
                 Some(Err(e)) => {
                     tracing::warn!(error = %e, "trace stream SSE read error");
-                    break;
+                    return;
                 }
-                None => break,
+                None => return,
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]

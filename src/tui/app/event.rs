@@ -579,33 +579,29 @@ impl App {
                     self.daemon_client.clone(),
                 );
             }
-            AppEvent::SubagentTraceProgress(progress) => {
+            AppEvent::SubagentTraceProgress(progress) if self.server_side_loop => {
                 // Only the server-side loop lacks the scoped-view poller, so
                 // apply trace progress directly here. Client-side mode
                 // populates the tree via `AgentLocalView` polling; upsert
                 // there would fight `replace_local`'s periodic clear.
-                if self.server_side_loop {
-                    self.subagent_tree.upsert(*progress);
-                }
+                self.subagent_tree.upsert(*progress);
             }
-            AppEvent::ServerPermissionResolved { request_id } => {
+            AppEvent::ServerPermissionResolved { request_id }
+                if self.permission_state.visible
+                    && self.permission_state.server_request_id.as_deref() == Some(&request_id) =>
+            {
                 // Another device (or the daemon itself) resolved the request;
                 // dismiss the matching popup without re-sending a decision.
                 // `dismiss` only clears local state - it never POSTs.
-                if self.permission_state.visible
-                    && self.permission_state.server_request_id.as_deref() == Some(&request_id)
-                {
-                    let _ = self.permission_state.dismiss();
-                }
+                let _ = self.permission_state.dismiss();
             }
-            AppEvent::ServerQuestionResolved { request_id } => {
+            AppEvent::ServerQuestionResolved { request_id }
+                if self.question_state.visible
+                    && self.question_state.server_request_id.as_deref() == Some(&request_id) =>
+            {
                 // Clear without responding: the daemon already has the answer
                 // (resolved elsewhere), so we must not POST a duplicate.
-                if self.question_state.visible
-                    && self.question_state.server_request_id.as_deref() == Some(&request_id)
-                {
-                    self.question_state.clear_without_respond();
-                }
+                self.question_state.clear_without_respond();
             }
             AppEvent::ToggleSessions => {
                 if self.session_state.visible {
@@ -1048,6 +1044,11 @@ impl App {
                 // event spawned below, mirroring the original /clear path.
                 self.session_id = id.clone();
                 self.session_name = name;
+                // Re-point the server-side SSE readers at the new session id
+                // (abort + resubscribe) so streaming follows the switched
+                // session instead of the stale one.
+                self.respawn_session_event_reader(None);
+                self.respawn_trace_event_reader();
                 self.session_exit_saved
                     .store(false, std::sync::atomic::Ordering::Release);
                 let client = self.daemon_client.clone();
