@@ -307,6 +307,24 @@ pub enum AppEvent {
         options: serde_json::Value,
         multi_select: bool,
     },
+    /// Server-side subagent progress update (from the trace SSE stream).
+    /// Applied to the [`SubagentTree`] via `upsert` so the live subagent tree
+    /// renders while a daemon-owned run drives subagents. Only applied in
+    /// server-side mode; client-side mode populates the tree via
+    /// [`AppEvent::AgentLocalView`] polling (upsert there would fight
+    /// `replace_local`).
+    SubagentTraceProgress(Box<crate::agent::progress::SubagentProgress>),
+    /// A server-side permission request was resolved (approved/denied),
+    /// possibly from another device. Dismisses the matching popup if still
+    /// showing without re-sending a decision (the daemon already has it).
+    ServerPermissionResolved {
+        request_id: String,
+    },
+    /// A server-side ask_user_question was resolved, possibly from another
+    /// device. Clears the matching popup without sending a duplicate answer.
+    ServerQuestionResolved {
+        request_id: String,
+    },
     /// A stream error occurred
     StreamError(String),
     /// Conversation compaction started: the transcript is being archived and
