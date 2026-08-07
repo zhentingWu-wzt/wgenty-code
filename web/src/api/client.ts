@@ -87,16 +87,27 @@ export class DaemonClient {
     return jsonOrThrow(await fetch(`${this.base}/config`));
   }
 
-  async getPermissionMode(): Promise<PermissionModeResponse> {
-    return jsonOrThrow(await fetch(`${this.base}/permission-mode`));
+  /**
+   * `session_id` is required daemon-side (server-side paths reject a missing
+   * one with 400). Callers pass the active session's daemon id, falling back
+   * to the local id — the daemon resolves unknown ids to the main working
+   * root, matching the pre-change `"default"` fallback.
+   */
+  async getPermissionMode(sessionId: string): Promise<PermissionModeResponse> {
+    return jsonOrThrow(
+      await fetch(`${this.base}/permission-mode?session_id=${encodeURIComponent(sessionId)}`),
+    );
   }
 
-  async setPermissionMode(mode: PermissionMode): Promise<PermissionModeResponse> {
+  async setPermissionMode(
+    sessionId: string,
+    mode: PermissionMode,
+  ): Promise<PermissionModeResponse> {
     return jsonOrThrow(
       await fetch(`${this.base}/permission-mode`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mode }),
+        body: JSON.stringify({ mode, session_id: sessionId }),
       }),
     );
   }
