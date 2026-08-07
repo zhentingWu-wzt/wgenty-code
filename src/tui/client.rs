@@ -406,6 +406,95 @@ impl DaemonClient {
         Ok(resp)
     }
 
+    /// POST /api/v1/sessions/:id/run - start a server-side agent turn.
+    /// The daemon owns the loop (LLM calls + tool execution + persistence);
+    /// subscribe to events via [`session_events`](Self::session_events) to
+    /// observe progress. Returns the run_id.
+    pub async fn run_session(
+        &self,
+        session_id: &str,
+        message: &str,
+        plan_mode: bool,
+    ) -> anyhow::Result<String> {
+        let encoded = urlencode(session_id);
+        let url = format!("{}/api/v1/sessions/{}/run", self.base_url, encoded);
+        let resp = self
+            .http_tools()
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "message": message, "plan_mode": plan_mode }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("run_session failed ({}): {}", status, text);
+        }
+        let body: serde_json::Value = resp.json().await?;
+        Ok(body["run_id"].as_str().unwrap_or("").to_string())
+    }
+
+    /// GET /api/v1/sessions/:id/events - SSE stream of `SessionEvent`.
+    /// Long-lived connection; the daemon pushes events as the server-side
+    /// run progresses. Returns the raw response for the caller to read.
+    pub async fn session_events(&self, session_id: &str) -> anyhow::Result<reqwest::Response> {
+        let encoded = urlencode(session_id);
+        let url = format!("{}/api/v1/sessions/{}/events", self.base_url, encoded);
+        let resp = self.http().get(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("session_events failed ({}): {}", status, text);
+        }
+        Ok(resp)
+    }
+
+    /// GET /api/v1/subagents/trace/stream?session_id=... - SSE stream of
+    /// TraceEvent (subagent progress + permission/question lifecycle).
+    pub async fn trace_stream(&self, session_id: &str) -> anyhow::Result<reqwest::Response> {
+        let encoded = urlencode(session_id);
+        let url = format!(
+            "{}/api/v1/subagents/trace/stream?session_id={}",
+            self.base_url, encoded
+        );
+        let resp = self.http().get(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("trace_stream failed ({}): {}", status, text);
+        }
+        Ok(resp)
+    }
+
+    /// POST /api/v1/sessions/:id/cancel - cancel the active server-side run.
+    pub async fn cancel_run(&self, session_id: &str) -> anyhow::Result<()> {
+        let encoded = urlencode(session_id);
+        let url = format!("{}/api/v1/sessions/{}/cancel", self.base_url, encoded);
+        let resp = self.http_tools().post(&url).send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("cancel_run failed ({})", resp.status());
+        }
+        Ok(())
+    }
+
+    /// POST /api/v1/interactions/:id/resolve - answer a pending ask_user_question.
+    /// `answer` is a JSON string `{"selected":[...],"text":"..."}`.
+    pub async fn resolve_interaction(&self, request_id: &str, answer: &str) -> anyhow::Result<()> {
+        let encoded = urlencode(request_id);
+        let url = format!("{}/api/v1/interactions/{}/resolve", self.base_url, encoded);
+        let resp = self
+            .http_tools()
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "answer": answer }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("resolve_interaction failed ({})", resp.status());
+        }
+        Ok(())
+    }
+
     /// POST /api/v1/tools/execute
     pub async fn execute_tool(
         &self,
@@ -509,6 +598,7 @@ impl DaemonClient {
     /// and sandbox effective mode (Plan included).
     pub async fn set_permission_mode(
         &self,
+        session_id: &str,
         mode: crate::config::agent::RootPermissionMode,
         effective_mode: crate::sandbox::EffectiveMode,
     ) -> anyhow::Result<()> {
@@ -520,6 +610,7 @@ impl DaemonClient {
             .json(&serde_json::json!({
                 "mode": mode,
                 "effective_mode": effective_mode,
+                "session_id": session_id,
             }))
             .send()
             .await?;
@@ -532,9 +623,15 @@ impl DaemonClient {
     /// GET /api/v1/permission-mode - fetch current root agent permission mode.
     pub async fn get_permission_mode(
         &self,
+        session_id: &str,
     ) -> anyhow::Result<crate::config::agent::RootPermissionMode> {
         let url = format!("{}/api/v1/permission-mode", self.base_url);
-        let resp = self.http_tools().get(&url).send().await?;
+        let resp = self
+            .http_tools()
+            .get(&url)
+            .query(&[("session_id", session_id)])
+            .send()
+            .await?;
         if !resp.status().is_success() {
             anyhow::bail!("get-permission-mode failed ({})", resp.status());
         }

@@ -31,8 +31,15 @@ pub async fn start_daemon(
     tokio::sync::oneshot::Sender<()>,
     tokio::task::JoinHandle<()>,
 )> {
-    // Bind to a random available port
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    // Prefer the default daemon port (8371) so the web client's Vite proxy
+    // (which targets 127.0.0.1:8371) connects without extra config. Fall back
+    // to an OS-assigned port if 8371 is already taken (another daemon / TUI
+    // instance); in that case point the web client at DAEMON_PORT=<port>.
+    const DEFAULT_PORT: u16 = 8371;
+    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", DEFAULT_PORT)).await {
+        Ok(l) => l,
+        Err(_) => tokio::net::TcpListener::bind("127.0.0.1:0").await?,
+    };
     let port = listener.local_addr()?.port();
     let base_url = format!("http://127.0.0.1:{}", port);
     crate::utils::startup_timing::mark("daemon: tcp bound");
@@ -464,6 +471,12 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::ModelsReady(_)
         | AppEvent::ModelSwitchRequested { .. }
         | AppEvent::ModelSwitched { .. }
+        | AppEvent::SessionSwitched { .. }
+        | AppEvent::ServerPermissionRequired { .. }
+        | AppEvent::ServerQuestionAsked { .. }
+        | AppEvent::SubagentTraceProgress(..)
+        | AppEvent::ServerPermissionResolved { .. }
+        | AppEvent::ServerQuestionResolved { .. }
         | AppEvent::ModelSwitchFailed(_) => None,
     }
 }
@@ -583,6 +596,14 @@ mod tests {
         // phase indicator.
         assert_eq!(
             agent_phase_from_event(&AppEvent::MemoriesReady(vec!["mem1".into()])),
+            None
+        );
+        // /clear 切换会话不改变 agent phase（仍为 Idle）
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::SessionSwitched {
+                id: "s1".into(),
+                name: "New Session".into()
+            }),
             None
         );
     }

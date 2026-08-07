@@ -333,6 +333,49 @@ impl SubagentTranscriptStore {
         Ok(result)
     }
 
+    /// List transcripts by project root (headers only, no events).
+    ///
+    /// Filters on the `project_path` column recorded at write time. Returns
+    /// rows newest-first, capped at 500. `project_path` is the canonical
+    /// working directory the subagent ran in.
+    pub fn list_by_project(
+        &self,
+        project_path: &str,
+    ) -> Result<Vec<SubagentTranscriptHeader>, TranscriptError> {
+        let db = self.db.lock().expect("lock poisoned: transcript db");
+        let mut stmt = db.prepare(
+            "SELECT id, session_id, parent_id, label, status, started_at, finished_at,
+                    total_tokens, actual_rounds, error_message, summary,
+                    root_cause, project_path
+             FROM subagent_transcripts
+             WHERE project_path = ?1
+             ORDER BY started_at DESC
+             LIMIT 500",
+        )?;
+        let rows = stmt.query_map(params![project_path], |row| {
+            Ok(SubagentTranscriptHeader {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                parent_id: row.get(2)?,
+                label: row.get(3)?,
+                status: row.get(4)?,
+                started_at: row.get(5)?,
+                finished_at: row.get(6)?,
+                total_tokens: row.get::<_, i64>(7)? as u64,
+                actual_rounds: row.get::<_, i32>(8)? as u32,
+                error_message: row.get(9)?,
+                summary: row.get(10)?,
+                root_cause: parse_root_cause(row.get(11)?),
+                project_path: row.get(12)?,
+            })
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
     /// Get full transcript by ID (with all events).
     pub fn get_by_id(&self, id: &str) -> Result<Option<SubagentTranscript>, TranscriptError> {
         let db = self.db.lock().expect("lock poisoned: transcript db");
@@ -540,6 +583,34 @@ mod tests {
 
         let list2 = store.list_by_session("sess-2").unwrap();
         assert_eq!(list2.len(), 1);
+    }
+
+    #[test]
+    fn test_list_by_project() {
+        let (store, _dir) = setup_store();
+
+        let mut a = sample_transcript("a", "sess-1");
+        a.project_path = Some("/projects/alpha".to_string());
+        store.save(&a, None).unwrap();
+
+        let mut b = sample_transcript("b", "sess-2");
+        b.project_path = Some("/projects/alpha".to_string());
+        store.save(&b, None).unwrap();
+
+        let mut c = sample_transcript("c", "sess-1");
+        c.project_path = Some("/projects/beta".to_string());
+        store.save(&c, None).unwrap();
+
+        // Distinct projects are isolated.
+        let alpha = store.list_by_project("/projects/alpha").unwrap();
+        assert_eq!(alpha.len(), 2);
+        let beta = store.list_by_project("/projects/beta").unwrap();
+        assert_eq!(beta.len(), 1);
+
+        // A transcript with no project_path is not matched by any filter.
+        store.save(&sample_transcript("d", "sess-1"), None).unwrap();
+        let alpha2 = store.list_by_project("/projects/alpha").unwrap();
+        assert_eq!(alpha2.len(), 2);
     }
 
     #[test]

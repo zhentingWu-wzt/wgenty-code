@@ -194,6 +194,9 @@ pub enum SubagentCommands {
         /// Max rows to print
         #[arg(long, default_value_t = 50)]
         limit: usize,
+        /// Filter by project root path (the working dir the subagent ran in)
+        #[arg(long)]
+        project: Option<String>,
     },
 
     /// Render a single subagent trace by id
@@ -216,6 +219,9 @@ pub enum SubagentCommands {
         /// Filter by session id
         #[arg(long)]
         session: Option<String>,
+        /// Filter by project root path
+        #[arg(long)]
+        project: Option<String>,
     },
 }
 

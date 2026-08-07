@@ -379,7 +379,7 @@ impl SubagentTraceReporter {
         period: HealthPeriod,
     ) -> Result<String, String> {
         let analyzer = SubagentHealthAnalyzer::new(self.store.clone());
-        let health = analyzer.compute_health(session_id, period)?;
+        let health = analyzer.compute_health(session_id, None, period)?;
 
         let mut buf = String::new();
         buf.push_str(&format!(
@@ -518,7 +518,7 @@ impl SubagentTraceReporter {
     pub fn render_html_report(&self, session_id: &str) -> Result<String, String> {
         let roots = self.build_trace_tree(session_id)?;
         let analyzer = SubagentHealthAnalyzer::new(self.store.clone());
-        let health = analyzer.compute_health(Some(session_id), HealthPeriod::AllTime)?;
+        let health = analyzer.compute_health(Some(session_id), None, HealthPeriod::AllTime)?;
 
         // Serialize data for embedding
         let tree_json = nodes_to_json(&roots);
