@@ -444,6 +444,23 @@ impl DaemonClient {
         Ok(resp)
     }
 
+    /// GET /api/v1/subagents/trace/stream?session_id=... - SSE stream of
+    /// TraceEvent (subagent progress + permission/question lifecycle).
+    pub async fn trace_stream(&self, session_id: &str) -> anyhow::Result<reqwest::Response> {
+        let encoded = urlencode(session_id);
+        let url = format!(
+            "{}/api/v1/subagents/trace/stream?session_id={}",
+            self.base_url, encoded
+        );
+        let resp = self.http().get(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("trace_stream failed ({}): {}", status, text);
+        }
+        Ok(resp)
+    }
+
     /// POST /api/v1/sessions/:id/cancel - cancel the active server-side run.
     pub async fn cancel_run(&self, session_id: &str) -> anyhow::Result<()> {
         let encoded = urlencode(session_id);

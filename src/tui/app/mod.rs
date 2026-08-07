@@ -746,6 +746,18 @@ impl App {
             crate::tui::app::server_side::spawn_session_event_reader(client, sid, tx, shutdown);
         }
 
+        // Spawn subagent trace-event reader: subscribes to the daemon's
+        // `/subagents/trace/stream` SSE and maps permission_pending /
+        // question_pending into AppEvents (subagent policy-Ask / ask_user),
+        // so server-side mode surfaces subagent prompts without polling.
+        {
+            let client = self.daemon_client.clone();
+            let sid = self.session_id.clone();
+            let tx = self.event_tx.clone();
+            let shutdown = self.shutdown_flag.clone();
+            crate::tui::app::server_side::spawn_trace_event_reader(client, sid, tx, shutdown);
+        }
+
         // Render the first frame IMMEDIATELY so the user sees the UI before any
         // startup background work runs. Cross-session memory recall is spawned
         // below and delivers its results via events - it never blocks the
