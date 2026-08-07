@@ -242,7 +242,7 @@ git commit -m "feat(daemon): add per-session event replay buffer with configurab
 
 ### Task 2: publish 双写（广播同时压入缓冲）
 
-- [ ] Task 2 完成标记：本节全部 Step 完成并提交
+- [x] Task 2 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/daemon/run_loop.rs:128-139`（`DaemonEventSink::publish`）
