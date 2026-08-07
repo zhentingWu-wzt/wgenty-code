@@ -50,6 +50,39 @@ impl App {
     /// Spawn an agent turn with `input_text` as the initial user message.
     /// When `hide_input` is true, the input is not displayed as a user message
     /// in the chat (used for internal prompts like /init).
+    /// Server-side turn: POST /run and let the SSE reader render events.
+    /// The daemon owns the loop (LLM + tools + history); TUI only observes.
+    pub(super) fn start_server_side_run(&mut self, input_text: String) {
+        // Push user message optimistically for rendering (daemon owns history).
+        self.committed_messages.push(UIMessage {
+            role: MessageRole::User,
+            content: input_text.clone(),
+            tool_name: None,
+            tool_args: None,
+            content_collapsed: false,
+            tool_collapsed: true,
+            tool_running: false,
+            diff_data: None,
+            tool_metadata: None,
+        });
+        let client = self.daemon_client.clone();
+        let sid = self.session_id.clone();
+        let tx = self.event_tx.clone();
+        tokio::spawn(async move {
+            match client.run_session(&sid, &input_text).await {
+                Ok(_run_id) => {
+                    // SSE reader (spawned in App::run) delivers events.
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::StreamError(format!(
+                        "server-side run failed: {e}"
+                    )));
+                    let _ = tx.send(AppEvent::TurnComplete);
+                }
+            }
+        });
+    }
+
     pub(super) fn spawn_agent_turn(&mut self, input_text: String, hide_input: bool) {
         if hide_input {
             // Auto-name session from a short label instead of the full prompt
@@ -73,6 +106,11 @@ impl App {
         // by turn_id (daemon `begin_turn`). file_count is filled lazily from
         // the checkpoint manifest when the /undo picker opens.
         self.record_turn_start(turn_id.to_string(), &input_text, turn_id.to_string());
+        // Server-side mode: POST /run; the SSE reader renders events.
+        if self.server_side_loop {
+            self.start_server_side_run(input_text);
+            return;
+        }
         let history = self.conversation_history.clone();
         let client = self.daemon_client.clone();
         let event_tx = self.event_tx.clone();

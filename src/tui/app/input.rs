@@ -270,6 +270,15 @@ impl App {
             }
             return;
         }
+        if slash == "/server-side" {
+            self.server_side_loop = !self.server_side_loop;
+            self.push_system_message(format!(
+                "server-side loop: {}",
+                if self.server_side_loop { "ON" } else { "OFF" }
+            ));
+            self.phase = AgentPhase::Idle;
+            return;
+        }
         if text.trim() == "/help" {
             let commands = crate::tui::completion::CompletionEngine::default_builtin_commands()
                 .into_iter()
