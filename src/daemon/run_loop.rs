@@ -884,6 +884,18 @@ pub(crate) fn plan_catch_up(after: Option<u64>, buf: &SessionEventBuffer) -> Cat
     }
 }
 
+/// Build the out-of-band `sync_lost` event for one connection (design §2.3).
+/// `seq: 0` and empty `run_id` mark it as control-plane, not run output.
+fn sync_lost_event(session_id: &str, reason: &str, latest_seq: u64) -> SessionEvent {
+    SessionEvent {
+        seq: 0,
+        session_id: session_id.to_string(),
+        run_id: String::new(),
+        kind: SessionEventKind::SyncLost,
+        data: serde_json::json!({ "reason": reason, "latest_seq": latest_seq }),
+    }
+}
+
 /// GET /api/v1/sessions/:id/events — SSE stream of the session's events.
 ///
 /// Without `after`: live-only (default, unchanged). With `after=<seq>`:
@@ -892,7 +904,10 @@ pub(crate) fn plan_catch_up(after: Option<u64>, buf: &SessionEventBuffer) -> Cat
 /// the seam). If `after` fell out of the buffer window the client receives a
 /// `sync_lost` event (`{ reason, latest_seq }`) — recovery contract: do a
 /// full `GET /sessions/:id`, realign on the latest turn state, then
-/// re-subscribe (without `after`, or with the newest seq). 404 for unknown
+/// re-subscribe (without `after`, or with the newest seq). If a live
+/// subscriber falls behind the broadcast window (`Lagged`), that connection
+/// alone receives a `sync_lost` event (`reason: "lagged"`) and the stream
+/// stays open; other subscribers are unaffected. 404 for unknown
 /// session. Keep-alive comment every 15s.
 pub(crate) async fn get_session_events(
     State(state): State<Arc<DaemonState>>,
@@ -926,13 +941,7 @@ pub(crate) async fn get_session_events(
             evs.last().map(|e| e.seq).unwrap_or(0)
         }
         CatchUp::SyncLost { latest_seq } => {
-            let ev = SessionEvent {
-                seq: 0,
-                session_id: id.clone(),
-                run_id: String::new(),
-                kind: SessionEventKind::SyncLost,
-                data: serde_json::json!({ "reason": "evicted", "latest_seq": latest_seq }),
-            };
+            let ev = sync_lost_event(&id, "evicted", *latest_seq);
             let data = serde_json::to_string(&ev).unwrap_or_default();
             let _ = tx.send(Ok(Event::default().data(data)));
             // Keep the stream open; the client decides to resubscribe (§2.3).
@@ -955,12 +964,22 @@ pub(crate) async fn get_session_events(
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    // Task 4 turns this into a SyncLost event; keep warn for now.
                     tracing::warn!(
                         target: "wgenty::daemon",
                         lagged = n,
-                        "session events SSE subscriber lagged; oldest events dropped for this subscriber"
+                        "session events SSE subscriber lagged; sending sync_lost to this subscriber"
                     );
+                    let latest = buffer
+                        .read()
+                        .expect("session buffer lock poisoned")
+                        .latest_seq()
+                        .unwrap_or(seam_seq);
+                    let ev = sync_lost_event(&id, "lagged", latest);
+                    let data = serde_json::to_string(&ev).unwrap_or_default();
+                    seam_seq = latest; // skip everything up to latest; client resyncs
+                    if tx.send(Ok(Event::default().data(data))).is_err() {
+                        return;
+                    }
                     continue;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -1257,6 +1276,113 @@ mod tests {
         assert_eq!(buf.oldest_seq(), None);
         assert_eq!(buf.latest_seq(), None);
         assert_eq!(buf.events_after(0).count(), 0);
+    }
+
+    #[tokio::test]
+    async fn lagged_subscriber_receives_sync_lost() {
+        // 小容量 hub + 不消费的 receiver，制造 Lagged。
+        let (hub, _keep) = tokio::sync::broadcast::channel(2);
+        let mut slow = hub.subscribe();
+        for seq in 1..=10u64 {
+            let _ = hub.send(ev(seq));
+        }
+        // 模拟 get_session_events 的 Lagged 分支逻辑：
+        let n = match slow.recv().await {
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => n,
+            other => panic!("expected Lagged, got {other:?}"),
+        };
+        assert!(n > 0);
+        let sync = sync_lost_event("s", "lagged", ev(10).seq);
+        assert_eq!(sync.kind, SessionEventKind::SyncLost);
+        assert_eq!(sync.data["reason"], "lagged");
+        assert_eq!(sync.data["latest_seq"], 10);
+    }
+
+    /// Read one SSE `data:` frame from a response body stream and parse the
+    /// [`SessionEvent`] it carries.
+    async fn next_sse_event<E>(
+        body: &mut (impl Stream<Item = Result<axum::body::Bytes, E>> + Unpin),
+    ) -> SessionEvent {
+        use futures::StreamExt as _;
+        let frame = tokio::time::timeout(Duration::from_secs(5), body.next())
+            .await
+            .expect("SSE frame within timeout")
+            .expect("stream still open")
+            .ok()
+            .expect("frame bytes ok");
+        let text = String::from_utf8(frame.to_vec()).expect("utf8 frame");
+        let line = text.lines().next().expect("non-empty SSE frame");
+        let json = line.trim_start_matches("data:").trim_start();
+        serde_json::from_str(json).expect("SessionEvent JSON")
+    }
+
+    /// Handler-level: a live subscriber that falls behind (broadcast `Lagged`)
+    /// receives an out-of-band `sync_lost` on ITS connection only, and the
+    /// stream stays open for subsequent live events (design §2.3).
+    #[tokio::test]
+    async fn sse_handler_sends_sync_lost_to_lagged_subscriber() {
+        use axum::response::IntoResponse;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut settings = crate::config::Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        let mut state = DaemonState::new(crate::state::AppState::new(settings)).await;
+        // Isolate the registry from the developer's real projects.json.
+        state.projects = crate::daemon::projects::ProjectRegistry::load(
+            temp.path().to_path_buf(),
+            temp.path().join("projects.json"),
+        );
+        // Tiny hub so a paused subscriber lags after a few publishes.
+        state.session_event_hub = tokio::sync::broadcast::channel(2).0;
+        let state = Arc::new(state);
+
+        let sid = "s".to_string();
+        state
+            .session_manager
+            .save(&crate::context::memory_session::Session::with_id(
+                sid.clone(),
+                None,
+            ))
+            .await
+            .expect("save session");
+
+        let sse = get_session_events(
+            State(state.clone()),
+            Path(sid.clone()),
+            Query(SessionEventsQuery { after: None }),
+        )
+        .await
+        .expect("handler must accept the subscription");
+        let mut body = sse.into_response().into_body().into_data_stream();
+
+        // Publish more events than the hub holds before the handler's spawned
+        // task gets scheduled (current-thread runtime, no await in between),
+        // so its receiver is guaranteed to lag.
+        let sink = DaemonEventSink::new(
+            sid.clone(),
+            "r".into(),
+            state.session_event_hub.clone(),
+            state.session_seq_counter(&sid),
+            state.session_buffer(&sid),
+        );
+        for _ in 0..10 {
+            sink.publish(SessionEventKind::Save, serde_json::json!({}));
+        }
+
+        // First frame must be the out-of-band sync_lost for THIS connection.
+        let lost = next_sse_event(&mut body).await;
+        assert_eq!(lost.kind, SessionEventKind::SyncLost);
+        assert_eq!(lost.seq, 0, "sync_lost is control-plane, not run output");
+        assert_eq!(lost.session_id, "s");
+        assert_eq!(lost.data["reason"], "lagged");
+        assert_eq!(lost.data["latest_seq"], 10);
+
+        // The stream stays open: the next live event (past the new seam) is
+        // still delivered on the same connection.
+        sink.publish(SessionEventKind::Save, serde_json::json!({}));
+        let live = next_sse_event(&mut body).await;
+        assert_eq!(live.kind, SessionEventKind::Save);
+        assert_eq!(live.seq, 11);
     }
 
     #[tokio::test]
