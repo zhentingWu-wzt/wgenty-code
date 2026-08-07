@@ -1180,6 +1180,17 @@ impl App {
             AppEvent::PlanUpdate(value) => {
                 self.plan_panel_state.apply_update_value(&value);
             }
+            AppEvent::TodosSnapshot(items) => {
+                use crate::tui::components::plan_panel::{PlanItem, PlanStatus};
+                let items = items
+                    .into_iter()
+                    .map(|t| PlanItem {
+                        step: t.content,
+                        status: PlanStatus::parse_status(&t.status),
+                    })
+                    .collect::<Vec<_>>();
+                self.plan_panel_state.update(items);
+            }
             AppEvent::MemoriesReady(lines) => {
                 // Cross-session memory recall completed in the background at
                 // startup. Populate the shared startup_memories so subsequent
