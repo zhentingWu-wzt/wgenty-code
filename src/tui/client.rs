@@ -509,6 +509,7 @@ impl DaemonClient {
     /// and sandbox effective mode (Plan included).
     pub async fn set_permission_mode(
         &self,
+        session_id: &str,
         mode: crate::config::agent::RootPermissionMode,
         effective_mode: crate::sandbox::EffectiveMode,
     ) -> anyhow::Result<()> {
@@ -520,6 +521,7 @@ impl DaemonClient {
             .json(&serde_json::json!({
                 "mode": mode,
                 "effective_mode": effective_mode,
+                "session_id": session_id,
             }))
             .send()
             .await?;
@@ -532,9 +534,15 @@ impl DaemonClient {
     /// GET /api/v1/permission-mode - fetch current root agent permission mode.
     pub async fn get_permission_mode(
         &self,
+        session_id: &str,
     ) -> anyhow::Result<crate::config::agent::RootPermissionMode> {
         let url = format!("{}/api/v1/permission-mode", self.base_url);
-        let resp = self.http_tools().get(&url).send().await?;
+        let resp = self
+            .http_tools()
+            .get(&url)
+            .query(&[("session_id", session_id)])
+            .send()
+            .await?;
         if !resp.status().is_success() {
             anyhow::bail!("get-permission-mode failed ({})", resp.status());
         }

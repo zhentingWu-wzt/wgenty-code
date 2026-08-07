@@ -4,6 +4,7 @@
 //! routes while keeping `GET /api/v1/health` public.
 
 use crate::daemon::auth;
+use crate::daemon::fs;
 use crate::daemon::handlers;
 use crate::daemon::projects;
 use crate::daemon::run_loop;
@@ -124,6 +125,8 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             "/api/v1/sessions",
             get(handlers::list_sessions).post(handlers::create_session),
         )
+        // Filesystem browsing (web directory picker — read-only sub-dir listing)
+        .route("/api/v1/fs/dirs", get(fs::list_dirs))
         // Projects (multi-project registry; main project = daemon working_dir)
         .route(
             "/api/v1/projects",

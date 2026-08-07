@@ -1,8 +1,8 @@
 //! DaemonState -- shared state for the HTTP API server.
 
-use crate::config::agent::RootPermissionMode;
 use crate::context::memory_session::SessionManager as MemorySessionManager;
 use crate::knowledge::loader::SkillLoader;
+use crate::permissions::PermissionModeStore;
 use crate::permissions::ToolPermissionPolicy;
 use crate::runtime::hooks::HookManager;
 use crate::state::AppState;
@@ -114,12 +114,9 @@ pub struct DaemonState {
     /// Shared ask_user_question bridge (server-side loop blocks until a client
     /// resolves the prompt via POST /interactions/:id/resolve).
     pub interaction_bridge: Arc<crate::daemon::interaction_bridge::InteractionBridge>,
-    /// Shared root agent permission mode (Yolo/AcceptEdits/Normal).
-    /// Updated by the TUI at runtime; subagents snapshot at spawn time.
-    pub root_mode: Arc<std::sync::RwLock<RootPermissionMode>>,
-    /// Sandbox effective mode (includes Plan). Updated with permission mode;
-    /// used when building ToolContext for shell tools.
-    pub effective_mode: Arc<std::sync::RwLock<crate::sandbox::EffectiveMode>>,
+    /// Per-project permission modes (root + effective). Each project (by
+    /// canonical working dir) owns an independent entry; defaults to Normal.
+    pub permission_modes: PermissionModeStore,
     /// Shared read connection to the global subagent transcript store, used by
     /// the SSE trace endpoint for cold-start replay. `None` when the store
     /// failed to open at startup (SSE then streams live-only). See design D5.
@@ -203,10 +200,7 @@ impl DaemonState {
         let interaction_bridge =
             Arc::new(crate::daemon::interaction_bridge::InteractionBridge::new());
         let shared_session_rules = Arc::new(RwLock::new(HashSet::<String>::new()));
-        let root_mode = Arc::new(std::sync::RwLock::new(RootPermissionMode::Normal));
-        let effective_mode = Arc::new(std::sync::RwLock::new(
-            crate::sandbox::EffectiveMode::Normal,
-        ));
+        let permission_modes = PermissionModeStore::new();
         // ── Shared MemoryManager (D1): backs memory_add tool + AutoDream ──
         let memory_manager = Arc::new(crate::context::MemoryManager::with_settings(
             &app_state.settings,
@@ -297,8 +291,7 @@ impl DaemonState {
             )
             .with_permission_bridge(permission_bridge.clone())
             .with_session_rules(shared_session_rules.clone())
-            .with_root_mode(root_mode.clone())
-            .with_effective_mode(effective_mode.clone());
+            .with_permission_modes(permission_modes.clone());
             registry.register(Box::new(task_tool));
 
             // Register subagent trace tool (read-only visualization for subagent transcripts)
@@ -491,8 +484,7 @@ impl DaemonState {
             daemon_viewer_secret,
             permission_bridge,
             interaction_bridge,
-            root_mode,
-            effective_mode,
+            permission_modes,
             transcript_store: sse_transcript_store,
             session_event_hub: tokio::sync::broadcast::channel(1024).0,
             session_runs: crate::daemon::run_loop::RunRegistry::new(),

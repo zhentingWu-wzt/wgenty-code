@@ -284,8 +284,7 @@ pub struct RootToolPort {
     session_rules: Arc<RwLock<HashSet<String>>>,
     bridge: Arc<PermissionBridge>,
     interaction_bridge: Arc<crate::daemon::interaction_bridge::InteractionBridge>,
-    root_mode: Arc<std::sync::RwLock<crate::config::RootPermissionMode>>,
-    effective_mode: Arc<std::sync::RwLock<crate::sandbox::EffectiveMode>>,
+    permission_modes: crate::permissions::PermissionModeStore,
     agent: AgentExecutionContext,
     /// The session's effective working root (bound worktree > project root >
     /// main working_dir). Injected into every [`ToolContext`] so relative
@@ -312,8 +311,7 @@ impl RootToolPort {
             session_rules: state.tool_executor.session_rules_handle(),
             bridge: Arc::clone(&state.permission_bridge),
             interaction_bridge: Arc::clone(&state.interaction_bridge),
-            root_mode: Arc::clone(&state.root_mode),
-            effective_mode: Arc::clone(&state.effective_mode),
+            permission_modes: state.permission_modes.clone(),
             agent: AgentExecutionContext::root(SessionId::new(session_id)),
             root,
             checkpoint_manager,
@@ -345,12 +343,7 @@ impl RootToolPort {
             interaction_bridge: Arc::new(
                 crate::daemon::interaction_bridge::InteractionBridge::new(),
             ),
-            root_mode: Arc::new(std::sync::RwLock::new(
-                crate::config::RootPermissionMode::Normal,
-            )),
-            effective_mode: Arc::new(std::sync::RwLock::new(
-                crate::sandbox::EffectiveMode::Normal,
-            )),
+            permission_modes: crate::permissions::PermissionModeStore::new(),
             agent: AgentExecutionContext::root(SessionId::new("test")),
             root: policy_root,
             session_id: "test".to_string(),
@@ -379,10 +372,10 @@ impl RootToolPort {
     ) -> Result<(), ToolResponse> {
         let rule_approved = self.session_rules.read().await.contains(&perm.session_rule);
         let mode_auto = self
+            .permission_modes
+            .get(&self.root)
             .root_mode
-            .read()
-            .map(|m| m.auto_approves(&perm.tool_name))
-            .unwrap_or(false);
+            .auto_approves(&perm.tool_name);
         if decide_ask(rule_approved, mode_auto) == AskDecision::Execute {
             return Ok(());
         }
@@ -487,7 +480,7 @@ impl ToolPort for RootToolPort {
                 tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
             }
         }
-        let effective_mode = self.effective_mode.read().map(|m| *m).unwrap_or_default();
+        let effective_mode = self.permission_modes.get(&self.root).effective_mode;
         let tool_context = ToolContext {
             agent: &self.agent,
             invocation_id: ToolInvocationId::new(inv_id),

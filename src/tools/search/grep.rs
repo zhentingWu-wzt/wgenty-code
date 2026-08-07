@@ -195,12 +195,20 @@ fn parse_patterns(value: &serde_json::Value) -> Vec<glob::Pattern> {
 
 fn matches_patterns(path: &Path, include: &[glob::Pattern], exclude: &[glob::Pattern]) -> bool {
     let display = path.to_string_lossy();
+    let file_name = path
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // Match against both the full path and the basename so that include
+    // patterns like "policy.rs" match "src/permissions/policy.rs".
+    let matches_any =
+        |pattern: &glob::Pattern| pattern.matches(&display) || pattern.matches(&file_name);
 
-    if !include.is_empty() && !include.iter().any(|pattern| pattern.matches(&display)) {
+    if !include.is_empty() && !include.iter().any(matches_any) {
         return false;
     }
 
-    if exclude.iter().any(|pattern| pattern.matches(&display)) {
+    if exclude.iter().any(matches_any) {
         return false;
     }
 

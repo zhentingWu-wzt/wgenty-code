@@ -491,6 +491,9 @@ pub async fn execute_tool(
     let session_root = state.effective_session_root(session_id).await;
     let (cp_manager, cp_store) = state.checkpoints_for_project(&session_root);
 
+    // Per-project permission mode for this session's working directory.
+    let mode_entry = state.permission_modes.get(&session_root);
+
     // Validate against policy
     let decision = {
         let policy = ToolPermissionPolicy::new(session_root.clone());
@@ -514,7 +517,7 @@ pub async fn execute_tool(
                 .root_context(session_id)
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            let effective_mode = *state.effective_mode.read().unwrap();
+            let effective_mode = mode_entry.effective_mode;
             // Ensure the turn snapshot exists when the client supplies a turn id
             // (TUI/REPL generate one per user message). Plan mode skips capture
             // inside maybe_capture_pre_edit via EffectiveMode::Plan.
@@ -557,11 +560,7 @@ pub async fn execute_tool(
             // Check if rule was already approved for this session, OR root mode
             // auto-approves this tool (AcceptEdits / Yolo). Without the mode
             // bypass, AcceptEdits still bounced every write through the TUI.
-            let mode_auto = state
-                .root_mode
-                .read()
-                .map(|m| m.auto_approves(tool_name))
-                .unwrap_or(false);
+            let mode_auto = mode_entry.root_mode.auto_approves(tool_name);
             let already = state.is_rule_approved(session_id, &req.session_rule).await;
             if already || mode_auto {
                 if mode_auto && !already {
@@ -582,7 +581,7 @@ pub async fn execute_tool(
                     .root_context(session_id)
                     .await
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                let effective_mode = *state.effective_mode.read().unwrap();
+                let effective_mode = mode_entry.effective_mode;
                 let tool_context = crate::agent::ToolContext {
                     agent: &root_context,
                     invocation_id: crate::agent::ToolInvocationId::new(
@@ -738,11 +737,14 @@ pub async fn set_permission_mode(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<crate::daemon::models::SetPermissionModeRequest>,
 ) -> Json<serde_json::Value> {
-    *state.root_mode.write().unwrap() = body.mode;
+    let session_id = body.session_id.as_deref().unwrap_or("default");
+    let session_root = state.effective_session_root(session_id).await;
     let effective = body
         .effective_mode
         .unwrap_or_else(|| crate::sandbox::EffectiveMode::from_root_permission_mode(body.mode));
-    *state.effective_mode.write().unwrap() = effective;
+    state
+        .permission_modes
+        .set(session_root, body.mode, effective);
     tracing::info!(
         mode = ?body.mode,
         effective_mode = ?effective,
@@ -756,12 +758,16 @@ pub async fn set_permission_mode(
 }
 
 /// GET /api/v1/permission-mode - get the current root agent permission mode.
-pub async fn get_permission_mode(State(state): State<Arc<DaemonState>>) -> Json<serde_json::Value> {
-    let mode = *state.root_mode.read().unwrap();
-    let effective_mode = *state.effective_mode.read().unwrap();
+pub async fn get_permission_mode(
+    State(state): State<Arc<DaemonState>>,
+    Query(params): Query<crate::daemon::models::PermissionModeQuery>,
+) -> Json<serde_json::Value> {
+    let session_id = params.session_id.as_deref().unwrap_or("default");
+    let session_root = state.effective_session_root(session_id).await;
+    let entry = state.permission_modes.get(&session_root);
     Json(serde_json::json!({
-        "mode": mode,
-        "effective_mode": effective_mode,
+        "mode": entry.root_mode,
+        "effective_mode": entry.effective_mode,
     }))
 }
 

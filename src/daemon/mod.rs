@@ -8,6 +8,7 @@
 //! Launch via: `wgenty-code daemon --port 8371`
 
 pub mod auth;
+pub(crate) mod fs;
 pub mod handlers;
 pub mod interaction_bridge;
 pub mod memory_router;
