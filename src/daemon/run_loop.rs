@@ -1291,6 +1291,16 @@ mod tests {
         let bridge = Arc::new(PermissionBridge::new(Duration::from_secs(5)));
         let port =
             RootToolPort::new_for_test(registry, rules, bridge, Some(temp.path().to_path_buf()));
+        // Since 975e46ab the policy layer answers `Ask` for every file_write
+        // (auto-approve is decided downstream by the root permission mode).
+        // This test verifies workdir binding, not the approval flow, so give
+        // the root an auto-approving mode — otherwise `resolve_ask` waits on
+        // the bridge forever under the default Normal mode.
+        port.permission_modes.set(
+            temp.path().to_path_buf(),
+            crate::config::RootPermissionMode::AcceptEdits,
+            crate::sandbox::EffectiveMode::AcceptEdits,
+        );
 
         // file_write with a relative path is inside the workspace (policy
         // Allow) and must land under the session-bound workdir.
