@@ -1175,7 +1175,7 @@ git commit -m "feat(tui): subscribe todos panel to GET /events with polling fall
 
 ### Task 10: `POST /interactions/:id/resolve` 已决议 → 409 + 当前决议
 
-- [ ] Task 10 完成标记：本节全部 Step 完成并提交
+- [x] Task 10 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/daemon/interaction_bridge.rs:91-159`（`InteractionBridge` 增加已决议记录 + 三分结果）
