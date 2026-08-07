@@ -76,6 +76,8 @@ base-ref: d5f046a58c8aa9a9989e9ec346d35ccad637721a
 
 ### Task 1: `SessionEventBuffer` 环形缓冲 + 容量配置
 
+- [ ] Task 1 完成标记：本节全部 Step 完成并提交
+
 **Files:**
 - Modify: `src/daemon/run_loop.rs`（新增 buffer 结构，约 :54 `SessionEventHub` 定义之后）
 - Modify: `src/daemon/state.rs:135`（`session_seq_counters` 旁新增 `session_buffers`）
@@ -240,6 +242,8 @@ git commit -m "feat(daemon): add per-session event replay buffer with configurab
 
 ### Task 2: publish 双写（广播同时压入缓冲）
 
+- [ ] Task 2 完成标记：本节全部 Step 完成并提交
+
 **Files:**
 - Modify: `src/daemon/run_loop.rs:128-139`（`DaemonEventSink::publish`）
 - Modify: `src/daemon/run_loop.rs:379-388`（`RootToolPort::publish_event`）及 `RootToolPort` 构造（:313-331、:336-364）
@@ -311,6 +315,8 @@ git commit -m "feat(daemon): dual-write session events to replay buffer on publi
 ---
 
 ### Task 3: `GET /sessions/:id/events?after=<seq>` 重放 + 订阅时 SyncLost
+
+- [ ] Task 3 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/daemon/run_loop.rs:40-50`（`SessionEventKind` 增加 `SyncLost`）
@@ -509,6 +515,8 @@ git commit -m "feat(daemon): replay-after-seq resume and SyncLost on evicted seq
 
 ### Task 4: 运行中 Lagged → SyncLost（仅该连接）
 
+- [ ] Task 4 完成标记：本节全部 Step 完成并提交
+
 **Files:**
 - Modify: `src/daemon/run_loop.rs`（Task 3 重写的 `get_session_events` 中 Lagged 分支）
 - Test: `src/daemon/run_loop.rs` `mod tests`
@@ -608,6 +616,8 @@ git commit -m "feat(daemon): send sync_lost SSE event to lagged session-event su
 ## 第 2 组：全局事件总线（tasks.md 2.1–2.4）
 
 ### Task 5: 全局事件类型与序号空间（`src/daemon/global_events.rs`）
+
+- [ ] Task 5 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Create: `src/daemon/global_events.rs`
@@ -743,6 +753,8 @@ git commit -m "feat(daemon): add global event bus with independent seq space"
 
 ### Task 6: `GET /events` 全局 SSE 端点
 
+- [ ] Task 6 完成标记：本节全部 Step 完成并提交
+
 **Files:**
 - Modify: `src/daemon/global_events.rs`（新增 handler）
 - Modify: `src/daemon/routes.rs`（注册路由，:99 todos 路由旁）
@@ -848,6 +860,8 @@ git commit -m "feat(daemon): add GET /events global SSE endpoint"
 ---
 
 ### Task 7: 全局事件生产者挂接（TodosChanged / ModeChanged / ModelChanged / TaskGroupResult）
+
+- [ ] Task 7 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/daemon/state.rs`（`apply_todos_update` 助手）
@@ -965,6 +979,8 @@ git commit -m "feat(daemon): broadcast todos/mode/model/task-group changes on th
 
 ### Task 8: 背景结果保留队列 + 广播 + 快照读取（废除 drain 抢占）
 
+- [ ] Task 8 完成标记：本节全部 Step 完成并提交
+
 **Files:**
 - Modify: `src/daemon/state.rs`（`background_results: Arc<tokio::sync::RwLock<VecDeque<BackgroundResult>>>`，容量 256）
 - Modify: `src/daemon/handlers.rs:849-854`（`get_background_results` 改读快照）
@@ -1076,6 +1092,8 @@ git commit -m "feat(daemon): retain and broadcast background results instead of 
 
 ### Task 9: dogfood——TUI todos 面板切换为 `GET /events` 订阅（保留轮询回退）
 
+- [ ] Task 9 完成标记：本节全部 Step 完成并提交
+
 **Files:**
 - Modify: `src/tui/client.rs`（新增 `subscribe_events` SSE 客户端方法，仿既有 SSE 消费方式）
 - Modify: `src/tui/app/`（todos 刷新回路：订阅驱动 + 失败回退 500ms 轮询 + 周期性重试订阅）
@@ -1156,6 +1174,8 @@ git commit -m "feat(tui): subscribe todos panel to GET /events with polling fall
 ## 第 3 组：审批语义收敛（tasks.md 3.1–3.2）
 
 ### Task 10: `POST /interactions/:id/resolve` 已决议 → 409 + 当前决议
+
+- [ ] Task 10 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/daemon/interaction_bridge.rs:91-159`（`InteractionBridge` 增加已决议记录 + 三分结果）
@@ -1308,6 +1328,8 @@ git commit -m "fix(daemon): return 409 with standing resolution for duplicate in
 
 ### Task 11: `POST /tools/resolve-permission`（subagent）已决议 → 409
 
+- [ ] Task 11 完成标记：本节全部 Step 完成并提交
+
 **Files:**
 - Modify: `src/daemon/handlers.rs:692-710`（`resolve_subagent_permission`）
 - Modify: `src/permissions/`（`PermissionBridge::resolve` 所在文件——`grep -rn "pub async fn resolve" src/permissions/` 定位）
@@ -1397,6 +1419,8 @@ git commit -m "fix(daemon): return 409 for duplicate subagent permission resolve
 
 ### Task 12: `"default"` 硬编码清零（server-side → 400；旧端点加 deprecated 注释）
 
+- [ ] Task 12 完成标记：本节全部 Step 完成并提交
+
 **Files:**
 - Modify: `src/daemon/handlers.rs`（:485、:654、:664、:699、:740、:765、:1397、:1431、:1458、:1507）
 - Test: `src/daemon/handlers.rs` 测试模块
@@ -1476,6 +1500,8 @@ git commit -m "refactor(daemon): require session_id on server-side paths, annota
 
 ### Task 13: `Session.version` 字段 + 历史兼容
 
+- [ ] Task 13 完成标记：本节全部 Step 完成并提交
+
 **Files:**
 - Modify: `src/context/memory_session.rs:12-34`（字段）、:49-64（`with_id` 初始化）
 - Test: `src/context/memory_session.rs` 既有测试模块
@@ -1536,6 +1562,8 @@ git commit -m "feat(daemon): add version field to Session with legacy zero compa
 ---
 
 ### Task 14: `PUT /sessions/:id` `expected_version` 409 + run 写盘推进版本
+
+- [ ] Task 14 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/daemon/models.rs`（`UpdateSessionRequest` 加 `expected_version: Option<u64>`；`SessionResponse` 加 `version: u64`）
@@ -1658,6 +1686,8 @@ git commit -m "feat(daemon): optimistic version check on session overwrite, bump
 ## 第 5 组：daemon 可发现部署（tasks.md 5.1–5.2）
 
 ### Task 15: 全局发现文件 `~/.wgenty-code/daemon.json`（原子写 + 心跳 + 退出清理）
+
+- [ ] Task 15 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Create: `src/utils/discovery.rs`
@@ -1834,6 +1864,8 @@ git commit -m "feat(daemon): write global discovery file with heartbeat and exit
 
 ### Task 16: `discover_daemon()` + TUI 启动接入
 
+- [ ] Task 16 完成标记：本节全部 Step 完成并提交
+
 **Files:**
 - Modify: `src/utils/discovery.rs`（`discover_daemon()`）
 - Modify: `src/tui/util.rs:27-`（`start_daemon` 前置发现；`start_daemon` 成功拉起后也写发现文件，复用 Task 15 的写入代码抽函数）
@@ -1946,6 +1978,8 @@ git commit -m "feat(tui): reuse running daemon via discovery file before spawnin
 ## 第 6 组：验证（tasks.md 6.1–6.5）
 
 ### Task 17: 集成验收与回归
+
+- [ ] Task 17 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `tests/integration/`（daemon 集成测试，按现有 harness 增补；无对应 harness 的场景用手动验收记录替代）
