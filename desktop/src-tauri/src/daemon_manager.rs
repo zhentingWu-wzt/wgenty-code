@@ -122,11 +122,18 @@ fn locate_daemon_binary() -> Option<PathBuf> {
         .parent() // desktop/
         .and_then(|p| p.parent())?; // repo root
 
-    let release = repo_root.join("target/release/wgenty-code");
+    // Windows binaries have a .exe suffix.
+    let exe_name = if cfg!(windows) {
+        "wgenty-code.exe"
+    } else {
+        "wgenty-code"
+    };
+
+    let release = repo_root.join("target/release").join(exe_name);
     if release.exists() {
         return Some(release);
     }
-    let debug = repo_root.join("target/debug/wgenty-code");
+    let debug = repo_root.join("target/debug").join(exe_name);
     if debug.exists() {
         return Some(debug);
     }
