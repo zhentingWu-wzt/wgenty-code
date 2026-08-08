@@ -93,7 +93,7 @@ full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqli
 基于 **Harness Component Model**（s01-s12 机制模块）：
 
 ```
-前端层 (CLI/TUI/Web + Daemon)
+前端层 (CLI/TUI/Web/Desktop + Daemon)
   -> Agent Loop (agent/)          s01+s02: 核心循环 + SSE 流
   -> Prompt Assembly (prompts/)   8 层指令注入
   -> 业务层
@@ -114,6 +114,8 @@ full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqli
 请求链路：`用户输入 -> CLI解析 -> Settings加载 -> Prompt组装(8层) -> API SSE -> 工具调用 -> Guardian审查 -> Sandbox执行 -> 流式返回`
 
 **Web 前端**（`web/`，React + Vite + TS）：与 TUI 平行的 thin client，通过 daemon 的 `/api/v1/*` 驱动 agent。daemon 的 `/chat/stream` 是纯透传代理，**工具执行与续轮循环在浏览器端**完成（镜像 `src/agent/runtime/loop_.rs`）。启动：`cargo run --features daemon -- daemon` 后 `cd web && npm install && npm run dev`，打开 `http://localhost:5173`（token 由 Vite dev server 从 `~/.wgenty-code/daemon.token` 注入）。能力：流式聊天、Markdown/diff 渲染、权限审批、停止中断、Sessions/Todos/Tasks/Model/Memory/Config 侧边面板。Memory 面板依赖 Tier 2 后端端点（`/api/v1/memory*`，包装 `MemoryManager`）。
+
+**Desktop 桌面端**（`desktop/`，Tauri 2.0）：复用 `web/` React 前端的第三个纯视图客户端。Tauri webview 装入同一 React 应用，通过 daemon 的 `/api/v1/*` + SSE 事件流驱动。daemon 自动发现/拉起（`desktop/src-tauri/src/daemon_manager.rs`）；token 由 Tauri Rust 宿主注入（fetch monkey-patch，浏览器端不接触密钥）；CORS 通过 `tauri-plugin-localhost` 保持 origin 在 daemon 白名单内。`desktop/src-tauri/` 是独立 crate（不在主 workspace），默认 `cargo build` 零影响。platform Adapter 层（`web/src/platform/`）隔离浏览器与桌面特有能力（daemon 启动、窗口事件等），App 代码零 `if (isTauri)`。启动：`cd web && npm run dev` + `cd desktop/src-tauri && cargo tauri dev`。能力：全部复用 web/（流式聊天、Markdown、工具展示、权限审批、Sessions/Search/Checkpoints/Undo、Config 编辑、MCP 管理、Memory 搜索/删除、Subagent 树、Todos 实时同步）。
 
 Prompt 8 层：base_instructions → permissions → developer → environment → agents_md → collaboration → skills_inventory → wgenty_md_sections
 

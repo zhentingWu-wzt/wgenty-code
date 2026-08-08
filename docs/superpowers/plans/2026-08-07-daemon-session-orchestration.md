@@ -2,6 +2,7 @@
 change: daemon-session-orchestration
 design-doc: docs/superpowers/specs/2026-08-07-daemon-session-orchestration-design.md
 base-ref: d5f046a58c8aa9a9989e9ec346d35ccad637721a
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 # daemon-session-orchestration 实施计划
