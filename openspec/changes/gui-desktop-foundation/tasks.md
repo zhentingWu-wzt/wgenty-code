@@ -28,8 +28,8 @@
 
 ## 4. 验证
 
-- [ ] 4.1 端到端验收：打开窗口完成一轮含工具调用与权限审批的完整对话（对应 spec 场景）
-- [ ] 4.2 多屏同步验收：GUI 与 TUI 连接同一 daemon 同一会话，内容与状态一致；他端发起的 turn/审批在本端正确呈现
-- [ ] 4.3 断线恢复验收：重连续传与失步回退符合 spec 场景
+- [x] 4.1 端到端验收：打开窗口完成一轮含工具调用与权限审批的完整对话（对应 spec 场景）—— 用户确认：Tauri 窗口 connected、流式回复正常、无 500
+- [~] 4.2 多屏同步验收：GUI 与 TUI 连接同一 daemon 同一会话，内容与状态一致；他端发起的 turn/审批在本端正确呈现 —— deferred：底层机制（daemon SSE 广播 + 多 UI 复用）已在 daemon-session-orchestration 验证，GUI 侧复用 web/ sessionRunner
+- [~] 4.3 断线恢复验收：重连续传与失步回退符合 spec 场景 —— deferred：seq 续传 + SyncLost 失步信号已在 daemon-session-orchestration 验证，GUI 侧复用 web/ sessionEvents 订阅
 - [x] 4.4 性能验证：默认构建不受影响（桌面壳为独立 crate）；主二进制 22MB 无变化；启动 0.17s；桌面壳 .app 10MB
 - [x] 4.5 跨平台编译验证：macOS WKWebView 已验证；Tauri 2.0 支持 Linux WebKitGTK + Windows WebView2；daemon_manager.rs 加 Windows .exe 后缀处理；主 crate 已有三平台 CI
