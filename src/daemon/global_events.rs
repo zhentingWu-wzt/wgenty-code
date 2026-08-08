@@ -35,6 +35,8 @@ pub enum GlobalEventKind {
     ModeChanged,
     ModelChanged,
     TaskGroupResult,
+    /// Transport-level config changed (max_tokens / timeout / streaming / api_base).
+    ConfigChanged,
 }
 
 pub type GlobalEventHub = tokio::sync::broadcast::Sender<GlobalEvent>;

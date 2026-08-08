@@ -24,6 +24,22 @@ pub struct ConfigResponse {
     pub streaming: bool,
 }
 
+/// `PUT /api/v1/config` — partial update of transport-level settings. All
+/// fields optional; only provided fields are written. Sensitive fields
+/// (api_key/appkey) are intentionally absent — they are never accepted or
+/// returned by this endpoint.
+#[derive(Debug, Deserialize)]
+pub struct UpdateConfigRequest {
+    #[serde(default)]
+    pub max_tokens: Option<usize>,
+    #[serde(default)]
+    pub timeout: Option<u64>,
+    #[serde(default)]
+    pub streaming: Option<bool>,
+    #[serde(default)]
+    pub api_base: Option<String>,
+}
+
 // ── Chat ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -461,6 +477,17 @@ pub struct MemoryListQuery {
 #[derive(Debug, Deserialize)]
 pub struct MemoryProjectQuery {
     /// Project whose memory pool to use (`None` = main project).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+/// Query for `DELETE /api/v1/memory/:id`. Requires `origin` to select the
+/// correct pool (project vs global); `project` further narrows the project
+/// pool when `origin=project`.
+#[derive(Debug, Deserialize)]
+pub struct DeleteMemoryQuery {
+    /// Which pool to delete from: "project" or "global".
+    pub origin: String,
     #[serde(default)]
     pub project: Option<String>,
 }

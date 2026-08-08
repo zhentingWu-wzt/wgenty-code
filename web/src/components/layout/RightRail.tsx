@@ -1,4 +1,13 @@
-import { Brain, History, ListTodo, Sparkles, Undo2, type LucideIcon } from "lucide-react";
+import {
+  Brain,
+  History,
+  ListTodo,
+  Plug,
+  Settings,
+  Sparkles,
+  Undo2,
+  type LucideIcon,
+} from "lucide-react";
 import type { DaemonClient } from "../../api/client";
 import { useUiStore, type RightPanelId } from "../../state/uiStore";
 import { cn } from "../../lib/utils";
@@ -7,6 +16,8 @@ import { MemoryPanel } from "../../features/panels/MemoryPanel";
 import { CheckpointsPanel } from "../../features/panels/CheckpointsPanel";
 import { SessionsPanel } from "../../features/panels/SessionsPanel";
 import { TasksPanel } from "../../features/panels/TasksPanel";
+import { ConfigPanel } from "../../features/panels/ConfigPanel";
+import { McpPanel } from "../../features/panels/McpPanel";
 
 const ITEMS: { id: RightPanelId; icon: LucideIcon; label: string }[] = [
   { id: "sessions", icon: History, label: "Sessions" },
@@ -14,6 +25,8 @@ const ITEMS: { id: RightPanelId; icon: LucideIcon; label: string }[] = [
   { id: "memory", icon: Brain, label: "Memory" },
   { id: "checkpoints", icon: Undo2, label: "Checkpoints" },
   { id: "tasks", icon: ListTodo, label: "Tasks" },
+  { id: "mcp", icon: Plug, label: "MCP Servers" },
+  { id: "config", icon: Settings, label: "Config" },
 ];
 
 const PANEL_TITLE: Record<RightPanelId, string> = {
@@ -22,6 +35,8 @@ const PANEL_TITLE: Record<RightPanelId, string> = {
   memory: "Memory",
   checkpoints: "Checkpoints",
   tasks: "Tasks",
+  mcp: "MCP Servers",
+  config: "Config",
 };
 
 /** 右栏：36px activity bar + 可切换面板。点已激活图标收起（uiStore.toggleRightPanel）。 */
@@ -42,6 +57,8 @@ export function RightRail({ client }: { client: DaemonClient }) {
             {rightPanel === "memory" && <MemoryPanel client={client} />}
             {rightPanel === "checkpoints" && <CheckpointsPanel client={client} />}
             {rightPanel === "tasks" && <TasksPanel client={client} />}
+            {rightPanel === "mcp" && <McpPanel client={client} />}
+            {rightPanel === "config" && <ConfigPanel client={client} />}
           </div>
         </div>
       )}

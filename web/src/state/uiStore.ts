@@ -5,7 +5,14 @@
 import { create } from "zustand";
 import { applyTheme, readStoredTheme, type ThemeMode } from "../lib/theme";
 
-export type RightPanelId = "sessions" | "skills" | "memory" | "checkpoints" | "tasks";
+export type RightPanelId =
+  | "sessions"
+  | "skills"
+  | "memory"
+  | "checkpoints"
+  | "tasks"
+  | "config"
+  | "mcp";
 
 interface UiState {
   theme: ThemeMode;

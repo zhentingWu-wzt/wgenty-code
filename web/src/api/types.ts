@@ -89,6 +89,23 @@ export interface ConfigResponse {
   streaming: boolean;
 }
 
+// ── MCP servers ──────────────────────────────────────────────────────────────
+
+export interface McpServerInfo {
+  name: string;
+  status: string;
+  tools_count: number;
+  resources_count: number;
+}
+
+export interface AddMcpServerRequest {
+  name: string;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  auto_start?: boolean;
+}
+
 // ── Permission mode ──────────────────────────────────────────────────────────
 
 /** Mirrors `RootPermissionMode` (src/config/agent.rs:110). serde rename_all = snake_case. */

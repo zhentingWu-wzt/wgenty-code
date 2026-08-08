@@ -81,6 +81,84 @@ pub async fn get_config(State(state): State<Arc<DaemonState>>) -> Json<ConfigRes
     })
 }
 
+/// `PUT /api/v1/config` — partial update of transport-level settings.
+///
+/// Mirrors the `switch_model` write pattern: validate in a clone → persist via
+/// `load_from_disk()` + `save()` (to keep relative working_dir) → overwrite the
+/// live handle → broadcast a global event. Only `max_tokens`, `timeout`,
+/// `streaming`, and `api_base` are editable; api_key/appkey are never accepted.
+pub async fn update_config(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<UpdateConfigRequest>,
+) -> Result<Json<ConfigResponse>, (StatusCode, String)> {
+    // 1. Validate fields in a clone of the live settings.
+    let mut settings = state
+        .settings_handle
+        .read()
+        .expect("lock poisoned: settings")
+        .clone();
+
+    if let Some(mt) = body.max_tokens {
+        if mt == 0 {
+            return Err((StatusCode::BAD_REQUEST, "max_tokens must be > 0".into()));
+        }
+        settings.models.transport.max_tokens = mt;
+    }
+    if let Some(t) = body.timeout {
+        if t == 0 {
+            return Err((StatusCode::BAD_REQUEST, "timeout must be > 0".into()));
+        }
+        settings.models.transport.timeout = t;
+    }
+    if let Some(s) = body.streaming {
+        settings.models.transport.streaming = s;
+    }
+    if let Some(ref base) = body.api_base {
+        settings.models.main.base_url = if base.trim().is_empty() {
+            None
+        } else {
+            Some(base.clone())
+        };
+    }
+
+    // 2. Persist via disk-load form (avoids writing resolved absolute working_dir).
+    let mut disk = crate::config::Settings::load_from_disk().unwrap_or_else(|_| settings.clone());
+    disk.models.transport = settings.models.transport.clone();
+    if body.api_base.is_some() {
+        disk.models.main.base_url = settings.models.main.base_url.clone();
+    }
+    if let Err(e) = disk.save() {
+        tracing::warn!(error = %e, "failed to persist settings.json after config update");
+    }
+
+    // 3. Overwrite the live handle so the next request sees the change.
+    *state
+        .settings_handle
+        .write()
+        .expect("lock poisoned: settings") = settings;
+
+    tracing::info!("config updated via PUT /config");
+
+    // 4. Broadcast so connected SSE clients refresh.
+    state.broadcast_global(
+        crate::daemon::global_events::GlobalEventKind::ConfigChanged,
+        serde_json::json!({}),
+    );
+
+    // 5. Return the new ConfigResponse (no api_key).
+    let s = state
+        .settings_handle
+        .read()
+        .expect("lock poisoned: settings");
+    Ok(Json(ConfigResponse {
+        model: s.models.main.name.clone(),
+        api_base: s.models.main.endpoint_base_url(),
+        max_tokens: s.models.transport.max_tokens,
+        timeout: s.models.transport.timeout,
+        streaming: s.models.transport.streaming,
+    }))
+}
+
 /// GET /api/v1/models - list switchable model profiles for the `/model` picker.
 /// Always includes the currently active one (marked `active: true`). If
 /// `models.profiles` is empty, returns an empty list (picker can show a hint).
@@ -944,6 +1022,82 @@ pub async fn list_mcp_servers(
         .collect();
 
     Json(ListMcpServersResponse { servers })
+}
+
+/// `POST /api/v1/mcp/servers` — add a new MCP server to settings + auto-start.
+pub async fn add_mcp_server(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<AddMcpServerRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let config = crate::config::mcp_config::McpConfig {
+        name: body.name,
+        command: body.command,
+        args: body.args,
+        env: body.env,
+        cwd: None,
+        status: crate::config::mcp_config::McpServerStatus::Unknown,
+        capabilities: vec![],
+        auto_start: body.auto_start,
+        filesystem_path: None,
+    };
+    state
+        .mcp_manager
+        .add_server(config)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::CREATED)
+}
+
+/// `DELETE /api/v1/mcp/servers/:name` — stop + remove an MCP server.
+pub async fn remove_mcp_server(
+    State(state): State<Arc<DaemonState>>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state
+        .mcp_manager
+        .remove_server(&name)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/v1/mcp/servers/:name/start` — start (enable) a stopped server.
+pub async fn start_mcp_server(
+    State(state): State<Arc<DaemonState>>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state
+        .mcp_manager
+        .start_server(&name)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::OK)
+}
+
+/// `POST /api/v1/mcp/servers/:name/stop` — stop (disable) a running server.
+pub async fn stop_mcp_server(
+    State(state): State<Arc<DaemonState>>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state
+        .mcp_manager
+        .stop_server(&name)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::OK)
+}
+
+/// `POST /api/v1/mcp/servers/:name/restart` — restart a server.
+pub async fn restart_mcp_server(
+    State(state): State<Arc<DaemonState>>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state
+        .mcp_manager
+        .restart_server(&name)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::OK)
 }
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
@@ -1810,6 +1964,37 @@ pub async fn get_memory(
             .map(|(o, _)| origin_str(o).to_string())
             .unwrap_or_else(|| "project".to_string());
         Ok(Json(MemoryDetailResponse { origin, entry }))
+    } else {
+        Err((StatusCode::NOT_FOUND, format!("no such memory: {id}")))
+    }
+}
+
+/// `DELETE /api/v1/memory/:id` — delete a single memory item by id.
+///
+/// Requires `?origin=project|global` to select the correct pool. When
+/// `origin=project`, an optional `&project=<path>` narrows the project pool.
+pub async fn delete_memory(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+    Query(q): Query<DeleteMemoryQuery>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let origin = match q.origin.as_str() {
+        "global" => crate::context::MemoryOrigin::Global,
+        "project" | "" => crate::context::MemoryOrigin::Project,
+        other => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("invalid origin '{other}': expected 'project' or 'global'"),
+            ));
+        }
+    };
+    let mgr = memory_manager_for(&state, q.project.as_deref()).await?;
+    let deleted = mgr
+        .delete_memory(origin, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
     } else {
         Err((StatusCode::NOT_FOUND, format!("no such memory: {id}")))
     }
