@@ -46,6 +46,11 @@
       }
     }
     return originalFetch(input, init).then(function (res) {
+      // Debug: log non-OK API responses to help diagnose errors.
+      if (!res.ok && isApiRequest(input)) {
+        var url = typeof input === "string" ? input : (input && input.url) || "?";
+        console.warn("[wgenty] API " + res.status + " " + url);
+      }
       // On 401, the daemon likely restarted and rotated the token. Refresh
       // from the host and retry once — avoids a window reload.
       if (res.status !== 401 || !isApiRequest(input)) return res;

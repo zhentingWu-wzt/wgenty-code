@@ -86,7 +86,19 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
         }
     }
 
+    // Bind the TCP listener BEFORE writing the token/discovery files. If the
+    // port is already in use (another daemon instance), we want to fail fast
+    // without clobbering the existing daemon's token — writing the token first
+    // and then failing on bind would leave a stale token on disk that doesn't
+    // match the running daemon, breaking all clients. This mirrors the order
+    // in `src/tui/util.rs::start_daemon`.
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    info!("daemon binding to http://{}", addr);
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
     // Generate a random API token — saved to a restricted-permission file.
+    // Written only after the port is successfully bound, so a bind failure
+    // never overwrites an existing daemon's token.
     let api_token = auth::generate_api_token();
     crate::utils::write_daemon_token(&api_token)?;
     eprintln!(
@@ -130,10 +142,7 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
                 .allow_headers([http::header::AUTHORIZATION, http::header::CONTENT_TYPE]),
         );
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
     info!("daemon listening on http://{}", addr);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
 
     // Clean up token file on daemon shutdown.
