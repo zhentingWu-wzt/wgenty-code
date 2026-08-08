@@ -1,3 +1,7 @@
+---
+archived-with: 2026-08-08-gui-desktop-foundation
+status: final
+---
 # Design Doc: GUI Desktop Foundation (Tauri 2.0)
 
 > 技术设计文档 for `gui-desktop-foundation` change。
