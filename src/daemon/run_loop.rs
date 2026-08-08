@@ -2051,6 +2051,18 @@ mod tests {
         let registry = Arc::new(ToolRegistry::with_project_root(temp.path(), 5));
         let rules = Arc::new(RwLock::new(HashSet::new()));
         let bridge = Arc::new(PermissionBridge::new(Duration::from_secs(5)));
+        // Writes always Ask (see validate_write_paths); pre-approve the path
+        // rule so this test exercises the workdir binding, not the approval
+        // flow — otherwise execute() parks on the bridge forever.
+        let rule_key = format!(
+            "path:{}",
+            temp.path()
+                .canonicalize()
+                .expect("canonical tempdir")
+                .join("a.txt")
+                .display()
+        );
+        rules.write().await.insert(rule_key);
         let port =
             RootToolPort::new_for_test(registry, rules, bridge, Some(temp.path().to_path_buf()));
         // Since 975e46ab the policy layer answers `Ask` for every file_write
