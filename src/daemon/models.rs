@@ -132,8 +132,8 @@ pub struct SetPermissionModeRequest {
     /// Sandbox effective mode including Plan. When omitted, derived from `mode`.
     #[serde(default)]
     pub effective_mode: Option<crate::sandbox::EffectiveMode>,
-    /// Session whose project root the mode applies to. When omitted, falls
-    /// back to the daemon's main working directory (back-compat).
+    /// Session whose project root the mode applies to. Required — the
+    /// server-side handler rejects requests without it (400, design §4).
     #[serde(default)]
     pub session_id: Option<String>,
 }
