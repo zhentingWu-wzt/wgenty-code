@@ -1563,7 +1563,7 @@ git commit -m "feat(daemon): add version field to Session with legacy zero compa
 
 ### Task 14: `PUT /sessions/:id` `expected_version` 409 + run 写盘推进版本
 
-- [ ] Task 14 完成标记：本节全部 Step 完成并提交
+- [x] Task 14 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/daemon/models.rs`（`UpdateSessionRequest` 加 `expected_version: Option<u64>`；`SessionResponse` 加 `version: u64`）
