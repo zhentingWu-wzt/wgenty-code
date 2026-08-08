@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { DaemonClient } from "./api/client";
+import { getPlatform } from "./platform";
 import { runSessionTurn, stopSessionTurn } from "./agent/sessionRunner";
 import { useSessionManager } from "./state/sessionManager";
 import { SessionStoreContext } from "./state/sessionContext";
@@ -53,6 +54,16 @@ export function App() {
     if (!useSessionManager.getState().activeId) {
       useSessionManager.getState().createLocalSession();
     }
+  }, []);
+
+  // Ensure the daemon is running before the first health check. In the browser
+  // this is a no-op (user starts the daemon manually). In Tauri, the host
+  // spawns/reuses the daemon. Failures are non-fatal — the health poll below
+  // will keep retrying and surface a "disconnected" status.
+  useEffect(() => {
+    getPlatform()
+      .ensureDaemon?.()
+      .catch((e) => console.warn("ensureDaemon failed (non-fatal):", e));
   }, []);
 
   // sessionManager → uiStore.openTabs 单向同步（激活补开 tab、删除剪 tab）。
