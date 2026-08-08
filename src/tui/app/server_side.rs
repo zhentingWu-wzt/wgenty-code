@@ -159,6 +159,9 @@ pub(crate) fn session_event_to_app_events(ev: SessionEvent) -> Vec<AppEvent> {
         // The TUI subscribes live-only (no `after=`), so it never receives
         // sync_lost today; Task 4 decides the TUI-side resync behavior.
         SessionEventKind::SyncLost => Vec::new(),
+        // TurnContext is consumed by web/Tauri inspector panels; the TUI has
+        // its own in-process TurnContext via AppEvent::TurnContextCaptured.
+        SessionEventKind::TurnContext => Vec::new(),
     }
 }
 

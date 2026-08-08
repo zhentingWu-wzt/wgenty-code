@@ -453,7 +453,8 @@ export type SessionEventKind =
   | "tool_result"
   | "turn_done"
   | "turn_error"
-  | "save";
+  | "save"
+  | "turn_context";
 
 /** Mirrors SessionEvent (src/daemon/run_loop.rs:26). Server-side run broadcasts
  *  these on GET /sessions/:id/events (SSE). data shape varies by kind. */

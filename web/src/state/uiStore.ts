@@ -13,7 +13,8 @@ export type RightPanelId =
   | "tasks"
   | "config"
   | "mcp"
-  | "subagents";
+  | "subagents"
+  | "inspector";
 
 interface UiState {
   theme: ThemeMode;

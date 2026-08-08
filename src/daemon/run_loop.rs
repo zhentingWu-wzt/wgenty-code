@@ -49,6 +49,10 @@ pub enum SessionEventKind {
     PermissionRequired,
     AskUser,
     SyncLost,
+    /// Turn context snapshot for inspector panels: system prompt layers,
+    /// recalled memories, new messages, hook reminder, and token usage.
+    /// Emitted once per run, after the loop exits and before the final save.
+    TurnContext,
 }
 
 /// Broadcast channel over which one daemon run publishes [`SessionEvent`]s.
@@ -1103,6 +1107,7 @@ async fn run_session_turn(
             }
         };
     seed.push(ChatMessage::user(&message));
+    let seed_len_before_run = seed.len(); // for TurnContext new_messages slice
 
     // 2. Start save: the user message is durable even if the run dies.
     save_session_history(&sessions, session_id, &seed).await;
@@ -1127,17 +1132,47 @@ async fn run_session_turn(
     let tools = RootToolPort::new(state, session_id, run_id, root.clone());
 
     // 5. System prompt — same PromptContext chain as the headless runtime,
-    // with cwd = the session's effective root.
+    // with cwd = the session's effective root. Retain `layers` for the
+    // TurnContext inspector event (previously discarded).
     let cwd = root;
-    let prompt_ctx = PromptContext::default()
+    let mut prompt_ctx = PromptContext::default()
         .with_cwd(cwd.to_string_lossy().to_string())
         .with_sandbox("workspace-write")
         .with_approval("on-request")
         .with_codegraph_state(crate::mcp::codegraph::probe_install_state_for(
             &cwd, &settings,
         ));
-    let system_messages =
-        crate::prompts::assemble_instructions(&settings, &prompt_ctx).system_messages;
+
+    // 5a. Per-turn memory recall (mirrors TUI turn.rs:229). Daemon previously
+    // skipped this — a functional gap. Now recalls cross-session memories and
+    // injects them into the prompt context + retains metadata for inspector.
+    let recalled = crate::context::inject::MemoryContextInjector::recall(
+        &message,
+        &state.memory_manager,
+        settings.storage.memory.recall_top_n,
+        settings.storage.memory.recall_min_effective_importance as f64,
+        None,
+    )
+    .await;
+    if !recalled.text.is_empty() {
+        prompt_ctx.memories = recalled
+            .text
+            .lines()
+            .filter(|l| l.starts_with("- ["))
+            .map(|l| l.to_string())
+            .collect();
+    }
+
+    // 5b. Hook reminder: deferred. The daemon's HookManager (runtime/hooks)
+    // handles tool-lifecycle hooks (PreToolUse/PostToolUse), not prompt
+    // reminder injection. The TUI uses plugins/hooks.rs InjectedFragment
+    // collection — a deeper integration needed for daemon parity. Inspector
+    // will show "no hook data" until this gap is filled in a follow-up.
+    let reminder: Option<crate::prompts::ReminderOutput> = None;
+
+    let assembled = crate::prompts::assemble_instructions(&settings, &prompt_ctx);
+    let system_messages = assembled.system_messages;
+    let prompt_layers = assembled.layers; // retained for TurnContext
 
     // 6. Per-run loop config/state; a fresh turn id per run.
     let config = RuntimeConfig {
@@ -1170,6 +1205,7 @@ async fn run_session_turn(
         Arc::clone(&save_lock),
     );
     let mut turn_state = LoopTurnState::default();
+    let token_counter = crate::api::token_counter::TokenCounter::new();
 
     // 7. Run the shared loop against the cancel token (subagent pattern):
     // cancellation drops the loop future; the final save below still runs.
@@ -1183,6 +1219,7 @@ async fn run_session_turn(
         stream_style: StreamStyle::default(),
         hooks: LoopHooks {
             interaction: Some(&tools),
+            token_counter: Some(&token_counter),
             ..LoopHooks::default()
         },
         system_messages: &system_messages,
@@ -1216,6 +1253,59 @@ async fn run_session_turn(
         &save_lock,
     )
     .await;
+
+    // 9. TurnContext: broadcast inspector data (layers, recalled memories,
+    // new messages, reminder, token usage). Emitted once per run after the
+    // loop exits and the final save completes.
+    let new_messages: Vec<_> = final_history
+        .iter()
+        .skip(seed_len_before_run)
+        .map(|m| {
+            serde_json::json!({
+                "role": m.role,
+                "content": m.content.as_deref().unwrap_or("").chars().take(500).collect::<String>(),
+            })
+        })
+        .collect();
+    let layers_json: Vec<_> = prompt_layers
+        .iter()
+        .map(|l| {
+            serde_json::json!({
+                "label": l.label,
+                "source": format!("{:?}", l.source),
+                "char_count": l.char_count,
+            })
+        })
+        .collect();
+    let memories_json: Vec<_> = recalled
+        .memories
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "importance": m.importance,
+                "memory_type": m.memory_type,
+                "content_preview": m.content_preview,
+            })
+        })
+        .collect();
+    let usage_json = serde_json::json!({
+        "prompt_tokens": token_counter.turn_input_tokens(),
+        "completion_tokens": token_counter.turn_output_tokens(),
+        "total_tokens": token_counter.used_tokens(),
+    });
+    sink.publish(
+        SessionEventKind::TurnContext,
+        serde_json::json!({
+            "layers": layers_json,
+            "recalled_memories": memories_json,
+            "new_messages": new_messages,
+            "reminder": reminder.as_ref().map(|r| serde_json::json!({
+                "to_model": r.to_model,
+                "to_transcript": r.to_transcript,
+            })),
+            "usage": usage_json,
+        }),
+    );
 }
 
 #[cfg(test)]
