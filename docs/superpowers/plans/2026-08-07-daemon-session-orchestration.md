@@ -1979,7 +1979,7 @@ git commit -m "feat(tui): reuse running daemon via discovery file before spawnin
 
 ### Task 17: 集成验收与回归
 
-- [ ] Task 17 完成标记：本节全部 Step 完成并提交
+- [x] Task 17 完成标记：本节全部 Step 完成并提交（6.4 发现文件两条手动场景与 TUI 双模式手动回归转人工验收，见 task-17-report.md）
 
 **Files:**
 - Modify: `tests/integration/`（daemon 集成测试，按现有 harness 增补；无对应 harness 的场景用手动验收记录替代）
