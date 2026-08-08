@@ -9,14 +9,14 @@
 
 pub mod auth;
 pub(crate) mod fs;
-pub(crate) mod global_events;
+pub mod global_events;
 pub mod handlers;
 pub mod interaction_bridge;
 pub mod memory_router;
 pub mod models;
 pub mod projects;
 pub mod routes;
-pub(crate) mod run_loop;
+pub mod run_loop;
 pub(crate) mod session_admin;
 pub(crate) mod skills_api;
 pub mod state;
