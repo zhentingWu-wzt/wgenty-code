@@ -26,6 +26,11 @@ pub struct Session {
     pub metadata: HashMap<String, serde_json::Value>,
     #[serde(default)]
     pub status: SessionStatus,
+    /// Optimistic-concurrency version, bumped on every persisted write
+    /// (PUT overwrite and run saves). `#[serde(default)]` keeps pre-versioning
+    /// files loadable as version 0.
+    #[serde(default)]
+    pub version: u64,
     /// When `Some(n)`, this session was loaded as a lightweight index entry:
     /// `messages` is empty but the real message count is `n`.  Calling
     /// `load(id)` replaces the entry with the fully-deserialized session.
@@ -59,6 +64,7 @@ impl Session {
             ui_messages: Vec::new(),
             metadata: HashMap::new(),
             status: SessionStatus::Active,
+            version: 0,
             lazy_message_count: None,
         }
     }
@@ -390,6 +396,9 @@ impl SessionManager {
                                 .get("status")
                                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                                 .unwrap_or_default();
+                            // Pre-versioning files have no `version`; index as 0.
+                            let version =
+                                value.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
                             let msg_count = value
                                 .get("messages")
                                 .and_then(|v| v.as_array())
@@ -406,6 +415,7 @@ impl SessionManager {
                                 ui_messages: Vec::new(),
                                 metadata: HashMap::new(),
                                 status,
+                                version,
                                 lazy_message_count: Some(msg_count),
                             };
                             let mut sessions = self.sessions.write().await;
@@ -666,6 +676,19 @@ impl Default for SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_session_without_version_deserializes_as_zero() {
+        // Pre-versioning persisted session JSON has no `version` field; it must
+        // deserialize with version 0 thanks to `#[serde(default)]`.
+        let legacy = serde_json::json!({
+            "id": "s1", "name": "s1", "project_path": null,
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+            "messages": [], "metadata": {}, "status": "Active"
+        });
+        let session: Session = serde_json::from_value(legacy).expect("legacy json parses");
+        assert_eq!(session.version, 0);
+    }
 
     #[tokio::test]
     async fn load_all_recovers_persisted_sessions() {
