@@ -71,6 +71,7 @@ archived-with: 2026-08-08-daemon-session-orchestration
 | `src/daemon/mod.rs` | 启动写发现文件、心跳任务、退出清理 | 修改 |
 | `src/tui/util.rs` / `src/tui/client.rs` | `start_daemon` 前置发现；todos 订阅化 + 轮询回退 | 修改 |
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ## 第 1 组：事件流重放与失步信号（tasks.md 1.1–1.3）
@@ -239,6 +240,7 @@ git add src/daemon/run_loop.rs src/daemon/state.rs src/config/mod.rs
 git commit -m "feat(daemon): add per-session event replay buffer with configurable capacity"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ### Task 2: publish 双写（广播同时压入缓冲）
@@ -313,6 +315,7 @@ git add src/daemon/run_loop.rs src/daemon/state.rs
 git commit -m "feat(daemon): dual-write session events to replay buffer on publish"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ### Task 3: `GET /sessions/:id/events?after=<seq>` 重放 + 订阅时 SyncLost
@@ -512,6 +515,7 @@ git add src/daemon/run_loop.rs src/daemon/models.rs src/daemon/routes.rs
 git commit -m "feat(daemon): replay-after-seq resume and SyncLost on evicted seq for session events"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ### Task 4: 运行中 Lagged → SyncLost（仅该连接）
@@ -612,6 +616,7 @@ git add src/daemon/run_loop.rs
 git commit -m "feat(daemon): send sync_lost SSE event to lagged session-event subscribers"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ## 第 2 组：全局事件总线（tasks.md 2.1–2.4）
@@ -750,6 +755,7 @@ git add src/daemon/global_events.rs src/daemon/mod.rs src/daemon/state.rs
 git commit -m "feat(daemon): add global event bus with independent seq space"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ### Task 6: `GET /events` 全局 SSE 端点
@@ -858,6 +864,7 @@ git add src/daemon/global_events.rs src/daemon/routes.rs
 git commit -m "feat(daemon): add GET /events global SSE endpoint"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ### Task 7: 全局事件生产者挂接（TodosChanged / ModeChanged / ModelChanged / TaskGroupResult）
@@ -976,6 +983,7 @@ git add src/daemon/state.rs src/daemon/handlers.rs
 git commit -m "feat(daemon): broadcast todos/mode/model/task-group changes on the global event bus"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ### Task 8: 背景结果保留队列 + 广播 + 快照读取（废除 drain 抢占）
@@ -1089,6 +1097,7 @@ git add src/daemon/state.rs src/daemon/handlers.rs
 git commit -m "feat(daemon): retain and broadcast background results instead of drain-stealing"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ### Task 9: dogfood——TUI todos 面板切换为 `GET /events` 订阅（保留轮询回退）
@@ -1170,6 +1179,7 @@ git add src/tui/client.rs src/tui/app/
 git commit -m "feat(tui): subscribe todos panel to GET /events with polling fallback (dogfood)"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ## 第 3 组：审批语义收敛（tasks.md 3.1–3.2）
@@ -1325,6 +1335,7 @@ git add src/daemon/interaction_bridge.rs src/daemon/handlers.rs
 git commit -m "fix(daemon): return 409 with standing resolution for duplicate interaction answers"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ### Task 11: `POST /tools/resolve-permission`（subagent）已决议 → 409
@@ -1416,6 +1427,7 @@ git add src/permissions/ src/daemon/handlers.rs
 git commit -m "fix(daemon): return 409 for duplicate subagent permission resolves"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ### Task 12: `"default"` 硬编码清零（server-side → 400；旧端点加 deprecated 注释）
@@ -1495,6 +1507,7 @@ git add src/daemon/handlers.rs
 git commit -m "refactor(daemon): require session_id on server-side paths, annotate legacy default fallback"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ## 第 4 组：会话存储版本化（tasks.md 4.1–4.2）
@@ -1560,6 +1573,7 @@ git add src/context/memory_session.rs
 git commit -m "feat(daemon): add version field to Session with legacy zero compatibility"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ### Task 14: `PUT /sessions/:id` `expected_version` 409 + run 写盘推进版本
@@ -1682,6 +1696,7 @@ git add src/daemon/models.rs src/daemon/handlers.rs src/daemon/run_loop.rs
 git commit -m "feat(daemon): optimistic version check on session overwrite, bump version on saves"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ## 第 5 组：daemon 可发现部署（tasks.md 5.1–5.2）
@@ -1861,6 +1876,7 @@ git add src/utils/discovery.rs src/utils/mod.rs src/daemon/mod.rs
 git commit -m "feat(daemon): write global discovery file with heartbeat and exit cleanup"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ### Task 16: `discover_daemon()` + TUI 启动接入
@@ -1974,6 +1990,7 @@ git add src/utils/discovery.rs src/tui/util.rs src/tui/app/mod.rs src/daemon/mod
 git commit -m "feat(tui): reuse running daemon via discovery file before spawning"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ## 第 6 组：验证（tasks.md 6.1–6.5）
@@ -2032,6 +2049,7 @@ git add tests/integration/ docs/API.md
 git commit -m "test(daemon): acceptance coverage for replay, global bus, 409s, and discovery"
 ```
 
+archived-with: 2026-08-08-daemon-session-orchestration
 ---
 
 ## 自查（Self-Review）
