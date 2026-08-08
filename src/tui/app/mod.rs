@@ -1145,6 +1145,8 @@ pub use super::util::start_daemon;
 pub use super::util::tool_label;
 /// Truncate a user message to a short session name (max ~50 chars, no newlines).
 pub use super::util::truncate_session_name;
+#[cfg(feature = "daemon")]
+pub use super::util::StartDaemonOutcome;
 
 /// Format a MemoryType variant as a short human-readable string.
 fn format_memory_type(mt: &crate::context::MemoryType) -> &'static str {

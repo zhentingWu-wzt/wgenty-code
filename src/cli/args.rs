@@ -198,8 +198,16 @@ impl Cli {
         crate::utils::startup_timing::mark("splash rendered (first paint)");
 
         // ── Start daemon (session load deferred to background) ───────────
-        let (base_url, shutdown_tx, daemon_handle) = match app::start_daemon(state).await {
-            Ok(result) => result,
+        // A running global daemon (discovery file checks out) is reused
+        // instead of spawning a duplicate; `embedded_daemon` is then None
+        // and shutdown below is a no-op for the reused case.
+        let (base_url, embedded_daemon) = match app::start_daemon(state).await {
+            Ok(app::StartDaemonOutcome::Reused { base_url }) => (base_url, None),
+            Ok(app::StartDaemonOutcome::Spawned {
+                base_url,
+                shutdown_tx,
+                handle,
+            }) => (base_url, Some((shutdown_tx, handle))),
             Err(e) => {
                 let _ = disable_raw_mode();
                 let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
@@ -270,9 +278,12 @@ impl Cli {
         // Restore default panic hook
         let _ = std::panic::take_hook();
 
-        // Shutdown daemon and wait for it to fully stop
-        let _ = shutdown_tx.send(());
-        let _ = daemon_handle.await;
+        // Shutdown the embedded daemon and wait for it to fully stop. A
+        // reused daemon is owned by another process and keeps running.
+        if let Some((shutdown_tx, daemon_handle)) = embedded_daemon {
+            let _ = shutdown_tx.send(());
+            let _ = daemon_handle.await;
+        }
 
         result
     }
