@@ -12,6 +12,7 @@
  * `response.body` reader is the correct tool.
  */
 import type {
+  AddMcpServerRequest,
   CheckpointInfo,
   ConfigResponse,
   CreateSessionRequest,
@@ -21,6 +22,7 @@ import type {
   HealthResponse,
   ListModelsResponse,
   ListTasksResponse,
+  McpServerInfo,
   MemoryListQuery,
   MemoryListResponse,
   MemoryItem,
@@ -85,6 +87,23 @@ export class DaemonClient {
 
   async getConfig(): Promise<ConfigResponse> {
     return jsonOrThrow(await fetch(`${this.base}/config`));
+  }
+
+  /**
+   * PUT /config — partial update of transport settings (max_tokens, timeout,
+   * streaming, api_base). Only provided fields are written. Sensitive fields
+   * (api_key) are never accepted or returned.
+   */
+  async updateConfig(
+    patch: Partial<Pick<ConfigResponse, "max_tokens" | "timeout" | "streaming" | "api_base">>,
+  ): Promise<ConfigResponse> {
+    return jsonOrThrow(
+      await fetch(`${this.base}/config`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(patch),
+      }),
+    );
   }
 
   /**
@@ -247,6 +266,21 @@ export class DaemonClient {
     return jsonOrThrow(await fetch(`${this.base}/memory/${encodeURIComponent(id)}`));
   }
 
+  /**
+   * DELETE /memory/:id — delete a single memory. Requires `origin` to select
+   * the pool ("project" or "global").
+   */
+  async deleteMemory(id: string, origin: "project" | "global"): Promise<void> {
+    const res = await fetch(
+      `${this.base}/memory/${encodeURIComponent(id)}?origin=${origin}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok) {
+      const body = await res.text();
+      throw new DaemonError(body || `${res.status} ${res.statusText}`, res.status);
+    }
+  }
+
   async pruneMemory(dryRun = false): Promise<PruneResult> {
     return jsonOrThrow(
       await fetch(`${this.base}/memory/prune`, {
@@ -332,6 +366,45 @@ export class DaemonClient {
 
   async listSkills(): Promise<SkillInfoDto[]> {
     return jsonOrThrow(await fetch(`${this.base}/skills`));
+  }
+
+  // ── MCP servers ────────────────────────────────────────────────────────────
+
+  async listMcpServers(): Promise<McpServerInfo[]> {
+    const res = await jsonOrThrow<{ servers: McpServerInfo[] }>(
+      await fetch(`${this.base}/mcp/servers`),
+    );
+    return res.servers;
+  }
+
+  async addMcpServer(req: AddMcpServerRequest): Promise<void> {
+    const res = await fetch(`${this.base}/mcp/servers`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) throw new DaemonError(await res.text(), res.status);
+  }
+
+  async removeMcpServer(name: string): Promise<void> {
+    const res = await fetch(`${this.base}/mcp/servers/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) throw new DaemonError(await res.text(), res.status);
+  }
+
+  async startMcpServer(name: string): Promise<void> {
+    const res = await fetch(`${this.base}/mcp/servers/${encodeURIComponent(name)}/start`, {
+      method: "POST",
+    });
+    if (!res.ok) throw new DaemonError(await res.text(), res.status);
+  }
+
+  async stopMcpServer(name: string): Promise<void> {
+    const res = await fetch(`${this.base}/mcp/servers/${encodeURIComponent(name)}/stop`, {
+      method: "POST",
+    });
+    if (!res.ok) throw new DaemonError(await res.text(), res.status);
   }
 
   async listCheckpoints(): Promise<CheckpointInfo[]> {
