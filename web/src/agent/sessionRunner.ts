@@ -104,12 +104,17 @@ export async function runSessionTurn(
         // (Fixed daemon-side; this guard keeps an older daemon usable.)
         const roundBoundary =
           ev.kind === "turn_done" && ev.data.finish_reason === "tool_calls";
+        if (ev.kind === "turn_context") {
+          // Inspector data for the completed turn. Don't finish — there may
+          // be no more events, but let the stream close naturally.
+        }
         if ((ev.kind === "turn_done" || ev.kind === "turn_error") && !roundBoundary) {
-          // Turn finished — stop reading eagerly; the daemon also closes the
-          // stream, but we don't wait for EOF to finalize UI state.
+          // Turn finished — but keep reading briefly for the turn_context
+          // event (emitted after final save). Set a short timeout so we
+          // don't hang if the daemon doesn't send it.
           turnFinished = true;
-          reader.cancel().catch(() => {});
-          break;
+          // Don't break immediately — give the daemon a moment to send
+          // turn_context. The stream will close on its own.
         }
       }
     }
@@ -210,6 +215,11 @@ function handleEvent(
       const message = String(ev.data.message ?? "turn failed");
       s.setError({ message, kind: "upstream" });
       useSessionManager.getState().setStatus(sessionId, "error");
+      break;
+    }
+    case "turn_context": {
+      // Inspector data for the completed turn — store for InspectorPanel.
+      s.setTurnContext(ev.data as unknown as import("../state/sessionStore").TurnContextData);
       break;
     }
     case "save":

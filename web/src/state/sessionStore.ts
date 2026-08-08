@@ -38,6 +38,34 @@ export interface DisplayMessage {
 
 export type ConnectionStatus = "unknown" | "connected" | "disconnected";
 
+/** Inspector turn-context data — broadcast by daemon after each turn. */
+export interface TurnContextLayer {
+  label: string;
+  source: string;
+  char_count: number;
+}
+export interface TurnContextMemory {
+  importance: number;
+  memory_type: string;
+  content_preview: string;
+}
+export interface TurnContextMessage {
+  role: string;
+  content: string;
+}
+export interface TurnContextUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+export interface TurnContextData {
+  layers: TurnContextLayer[];
+  recalled_memories: TurnContextMemory[];
+  new_messages: TurnContextMessage[];
+  reminder: { to_model: string; to_transcript: string | null } | null;
+  usage: TurnContextUsage;
+}
+
 /**
  * Structured turn error (design D7.3). `kind` distinguishes transport failures
  * (daemon down / network) — which a retry can fix — from upstream LLM errors
@@ -70,6 +98,9 @@ export interface SessionState {
   pendingSubagent: StructuredApproval | null;
   /** ask_user_question prompt (pushed via trace SSE). Null when none pending. */
   pendingQuestion: QuestionPayload | null;
+  /** Turn context from the most recent turn (inspector data: layers, memories,
+   * messages, reminder, token usage). Null before the first turn completes. */
+  turnContext: TurnContextData | null;
 
   // ── Actions ──────────────────────────────────────────────────────────────
   setConnection: (s: ConnectionStatus) => void;
@@ -86,6 +117,7 @@ export interface SessionState {
   finalizeAssistant: (id: string) => void;
   setError: (err: TurnError | null) => void;
   setRunning: (b: boolean) => void;
+  setTurnContext: (data: TurnContextData) => void;
   /** Surface a permission prompt; returns a promise the modal resolves. */
   requestPermission: (info: PermissionRequiredInfo) => Promise<PermissionDecision>;
   resolvePermission: (decision: PermissionDecision) => void;
@@ -120,6 +152,7 @@ export function createSessionStore() {
     pendingPermission: null,
     pendingSubagent: null,
     pendingQuestion: null,
+    turnContext: null,
 
     setConnection: (s) => set({ connection: s }),
     setModelName: (n) => set({ modelName: n }),
@@ -161,6 +194,7 @@ export function createSessionStore() {
       })),
 
     setError: (msg) => set({ lastError: msg }),
+    setTurnContext: (data) => set({ turnContext: data }),
     setRunning: (b) => set({ isRunning: b }),
 
     requestPermission: (info) =>
