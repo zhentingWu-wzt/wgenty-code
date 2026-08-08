@@ -167,7 +167,32 @@ pub async fn list_models(State(state): State<Arc<DaemonState>>) -> Json<ListMode
         .settings_handle
         .read()
         .expect("lock poisoned: settings");
-    let active = s.models.active_profile.as_deref();
+
+    // The active profile is whichever profile is currently installed in
+    // `models.main` (`switch_to_profile` copies a profile's full endpoint into
+    // `main`). Matching by model name -- rather than the persisted
+    // `active_profile` key -- keeps the picker correct when `main` was changed
+    // out-of-band (manual config edit, env override, or a fresh config where
+    // `active_profile` is still `None` but `main` already matches a profile).
+    // When several profiles share the same model name, the persisted
+    // `active_profile` key disambiguates.
+    let main_name = s.models.main.name.as_str();
+    let active_profile_key = s.models.active_profile.as_deref();
+    let matching: Vec<&String> = s
+        .models
+        .profiles
+        .iter()
+        .filter(|(_, ep)| ep.name == main_name)
+        .map(|(k, _)| k)
+        .collect();
+    let active_key: Option<&str> = match matching.len() {
+        0 => None,
+        1 => Some(matching[0].as_str()),
+        _ => active_profile_key
+            .filter(|k| matching.iter().any(|m| m.as_str() == *k))
+            .or_else(|| matching.first().map(|k| k.as_str())),
+    };
+
     let mut profiles: Vec<ModelProfileInfo> = s
         .models
         .profiles
@@ -185,7 +210,7 @@ pub async fn list_models(State(state): State<Arc<DaemonState>>) -> Json<ListMode
                 }
                 .to_string()
             }),
-            active: active == Some(key.as_str()),
+            active: active_key == Some(key.as_str()),
         })
         .collect();
     // Stable, alphabetical ordering for a predictable picker.
