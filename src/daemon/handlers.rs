@@ -1066,6 +1066,14 @@ pub async fn update_session(
     Path(id): Path<String>,
     Json(body): Json<UpdateSessionRequest>,
 ) -> Result<Json<SessionResponse>, (StatusCode, Json<serde_json::Value>)> {
+    // Serialize the load → expected_version check → save sequence: without
+    // this lock two concurrent PUTs with the same expected_version can both
+    // read the pre-write version, both pass the check, and both "succeed" at
+    // the same new version (observed in the T17 acceptance test). Held across
+    // the disk I/O below; saves are small and infrequent, so a single global
+    // lock costs nothing measurable on a loopback daemon.
+    let _update_guard = state.session_update_lock.lock().await;
+
     // Run lock: mutating a session mid-run would race the run's final save.
     if state.session_runs.is_active(&id) {
         return Err((

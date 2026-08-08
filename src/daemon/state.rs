@@ -160,6 +160,13 @@ pub struct DaemonState {
             HashMap<String, Arc<std::sync::RwLock<crate::daemon::run_loop::SessionEventBuffer>>>,
         >,
     >,
+    /// Serializes `PUT /sessions/:id` (load → `expected_version` check →
+    /// save) so concurrent writers can't interleave the check-and-set: two
+    /// racing PUTs with the same `expected_version` must yield exactly one
+    /// success and one 409, never two "successful" writes at the same
+    /// version. A single global lock is enough — session saves are small,
+    /// infrequent disk writes on a loopback daemon.
+    pub session_update_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl DaemonState {
@@ -545,6 +552,7 @@ impl DaemonState {
             session_runs: crate::daemon::run_loop::RunRegistry::new(),
             session_seq_counters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             session_buffers: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            session_update_lock: Arc::new(tokio::sync::Mutex::new(())),
             http_client,
             http_client_stream,
         }
