@@ -18,6 +18,7 @@ Thumbs.db
 *.so
 *.dylib
 .wgenty-code/traces/
+.vite/
 # Test
 /test-project/
 *.json.bak

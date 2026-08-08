@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::api::ChatMessage;
 use anyhow::Context;
+use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::{Method, Response, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -406,6 +407,95 @@ impl DaemonClient {
         Ok(resp)
     }
 
+    /// POST /api/v1/sessions/:id/run - start a server-side agent turn.
+    /// The daemon owns the loop (LLM calls + tool execution + persistence);
+    /// subscribe to events via [`session_events`](Self::session_events) to
+    /// observe progress. Returns the run_id.
+    pub async fn run_session(
+        &self,
+        session_id: &str,
+        message: &str,
+        plan_mode: bool,
+    ) -> anyhow::Result<String> {
+        let encoded = urlencode(session_id);
+        let url = format!("{}/api/v1/sessions/{}/run", self.base_url, encoded);
+        let resp = self
+            .http_tools()
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "message": message, "plan_mode": plan_mode }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("run_session failed ({}): {}", status, text);
+        }
+        let body: serde_json::Value = resp.json().await?;
+        Ok(body["run_id"].as_str().unwrap_or("").to_string())
+    }
+
+    /// GET /api/v1/sessions/:id/events - SSE stream of `SessionEvent`.
+    /// Long-lived connection; the daemon pushes events as the server-side
+    /// run progresses. Returns the raw response for the caller to read.
+    pub async fn session_events(&self, session_id: &str) -> anyhow::Result<reqwest::Response> {
+        let encoded = urlencode(session_id);
+        let url = format!("{}/api/v1/sessions/{}/events", self.base_url, encoded);
+        let resp = self.http().get(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("session_events failed ({}): {}", status, text);
+        }
+        Ok(resp)
+    }
+
+    /// GET /api/v1/subagents/trace/stream?session_id=... - SSE stream of
+    /// TraceEvent (subagent progress + permission/question lifecycle).
+    pub async fn trace_stream(&self, session_id: &str) -> anyhow::Result<reqwest::Response> {
+        let encoded = urlencode(session_id);
+        let url = format!(
+            "{}/api/v1/subagents/trace/stream?session_id={}",
+            self.base_url, encoded
+        );
+        let resp = self.http().get(&url).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("trace_stream failed ({}): {}", status, text);
+        }
+        Ok(resp)
+    }
+
+    /// POST /api/v1/sessions/:id/cancel - cancel the active server-side run.
+    pub async fn cancel_run(&self, session_id: &str) -> anyhow::Result<()> {
+        let encoded = urlencode(session_id);
+        let url = format!("{}/api/v1/sessions/{}/cancel", self.base_url, encoded);
+        let resp = self.http_tools().post(&url).send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("cancel_run failed ({})", resp.status());
+        }
+        Ok(())
+    }
+
+    /// POST /api/v1/interactions/:id/resolve - answer a pending ask_user_question.
+    /// `answer` is a JSON string `{"selected":[...],"text":"..."}`.
+    pub async fn resolve_interaction(&self, request_id: &str, answer: &str) -> anyhow::Result<()> {
+        let encoded = urlencode(request_id);
+        let url = format!("{}/api/v1/interactions/{}/resolve", self.base_url, encoded);
+        let resp = self
+            .http_tools()
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({ "answer": answer }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("resolve_interaction failed ({})", resp.status());
+        }
+        Ok(())
+    }
+
     /// POST /api/v1/tools/execute
     pub async fn execute_tool(
         &self,
@@ -509,6 +599,7 @@ impl DaemonClient {
     /// and sandbox effective mode (Plan included).
     pub async fn set_permission_mode(
         &self,
+        session_id: &str,
         mode: crate::config::agent::RootPermissionMode,
         effective_mode: crate::sandbox::EffectiveMode,
     ) -> anyhow::Result<()> {
@@ -520,6 +611,7 @@ impl DaemonClient {
             .json(&serde_json::json!({
                 "mode": mode,
                 "effective_mode": effective_mode,
+                "session_id": session_id,
             }))
             .send()
             .await?;
@@ -532,9 +624,15 @@ impl DaemonClient {
     /// GET /api/v1/permission-mode - fetch current root agent permission mode.
     pub async fn get_permission_mode(
         &self,
+        session_id: &str,
     ) -> anyhow::Result<crate::config::agent::RootPermissionMode> {
         let url = format!("{}/api/v1/permission-mode", self.base_url);
-        let resp = self.http_tools().get(&url).send().await?;
+        let resp = self
+            .http_tools()
+            .get(&url)
+            .query(&[("session_id", session_id)])
+            .send()
+            .await?;
         if !resp.status().is_success() {
             anyhow::bail!("get-permission-mode failed ({})", resp.status());
         }
@@ -845,6 +943,33 @@ impl DaemonClient {
         Ok(resp.json().await?)
     }
 
+    /// GET /api/v1/events — daemon global event stream (SSE, live-only).
+    ///
+    /// Single attempt: connect/parse errors surface as `Err` and the caller
+    /// owns reconnect/fallback. Each item is one parsed [`GlobalEventWire`];
+    /// a stream item error means the connection dropped mid-stream.
+    pub async fn subscribe_events(
+        &self,
+    ) -> anyhow::Result<impl futures::Stream<Item = anyhow::Result<GlobalEventWire>>> {
+        let url = format!("{}/api/v1/events", self.base_url);
+        let resp = self
+            .http()
+            .get(&url)
+            .send()
+            .await
+            .context("connect global event stream")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("subscribe_events failed ({}): {}", status, text);
+        }
+        Ok(sse_data_lines(resp).map(|line| {
+            line.and_then(|payload| {
+                serde_json::from_str::<GlobalEventWire>(&payload).context("parse global event")
+            })
+        }))
+    }
+
     /// GET /api/v1/tasks/progress - ready/blocked counts for agent nudges.
     pub async fn task_progress(&self) -> anyhow::Result<TaskProgressResponse> {
         let url = format!("{}/api/v1/tasks/progress", self.base_url);
@@ -858,6 +983,51 @@ impl DaemonClient {
 pub struct TaskProgressResponse {
     pub blocked: usize,
     pub ready: usize,
+}
+
+/// Wire shape of one daemon global event (`GET /api/v1/events`). TUI-local
+/// mirror of the daemon's `GlobalEvent` envelope — `kind` stays a plain
+/// string so unknown kinds forward-compatibly deserialize.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GlobalEventWire {
+    pub seq: u64,
+    pub kind: String,
+    pub data: serde_json::Value,
+}
+
+/// Split an SSE response body into `data:` payload lines.
+///
+/// This is THE single SSE line parser for the TUI: the session-event reader,
+/// the subagent trace reader, and the global-events subscription all consume
+/// it (previously the buffering/`strip_prefix("data: ")` loop was inlined in
+/// each reader). Non-`data:` lines (keep-alive comments, event:/id: fields)
+/// are skipped. A chunk read error terminates the stream after yielding one
+/// `Err`; a clean close yields `None`.
+pub(crate) fn sse_data_lines(
+    resp: Response,
+) -> impl futures::Stream<Item = anyhow::Result<String>> {
+    let stream = resp.bytes_stream();
+    futures::stream::try_unfold(
+        (stream, String::new()),
+        |(mut stream, mut buf)| async move {
+            loop {
+                if let Some(pos) = buf.find('\n') {
+                    let line = buf[..pos].trim().to_string();
+                    buf.drain(..pos + 1);
+                    if let Some(payload) = line.strip_prefix("data: ") {
+                        return Ok(Some((payload.to_string(), (stream, buf))));
+                    }
+                    // Comment/keep-alive or other SSE field — keep scanning.
+                    continue;
+                }
+                match stream.next().await {
+                    Some(Ok(chunk)) => buf.push_str(&String::from_utf8_lossy(&chunk)),
+                    Some(Err(e)) => return Err(anyhow::Error::new(e).context("SSE stream read")),
+                    None => return Ok(None),
+                }
+            }
+        },
+    )
 }
 
 /// Simple percent-encode for URL path segments (only encode truly unsafe chars).
@@ -985,7 +1155,7 @@ pub struct SessionResponse {
 
 /// Metadata for subagent tasks in the TUI layer.
 /// Mirrors `tasks::SubagentTodoMeta` — communicates via JSON serialization.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SubagentTodoMeta {
     pub subagent_type: String,
     pub token_usage: u64,
@@ -993,11 +1163,15 @@ pub struct SubagentTodoMeta {
     pub duration_ms: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct TodoItem {
     pub content: String,
     pub status: String,
-    #[serde(default)]
+    // Wire compat: `GET /todos` (TodoItemResponse) serializes `active_form`,
+    // while `todos_changed` SSE events embed `tasks::TodoItem` which renames
+    // the field to `activeForm`. Accept both; `default` keeps the field
+    // optional on either shape.
+    #[serde(default, alias = "activeForm")]
     pub active_form: String,
     #[serde(default)]
     pub subagent: Option<SubagentTodoMeta>,
@@ -1022,6 +1196,29 @@ mod tests {
     use tokio::task::JoinHandle;
 
     const VIEWER_HEADER: &str = "X-Wgenty-Viewer-Token";
+
+    /// Wire-format regression: the daemon's `tasks::TodoItem` serializes
+    /// `active_form` as `activeForm` (serde rename), which previously was
+    /// silently swallowed by `#[serde(default)]` here. Both the SSE
+    /// (`activeForm`) and the GET /todos (`active_form`) shapes must parse.
+    #[test]
+    fn todo_item_deserializes_active_form_from_both_wire_shapes() {
+        let sse_shape: TodoItem = serde_json::from_str(
+            r#"{"content":"fix bug","status":"in_progress","activeForm":"Fixing the bug"}"#,
+        )
+        .expect("activeForm (SSE todos_changed) shape parses");
+        assert_eq!(sse_shape.active_form, "Fixing the bug");
+
+        let get_shape: TodoItem = serde_json::from_str(
+            r#"{"content":"fix bug","status":"in_progress","active_form":"Fixing the bug"}"#,
+        )
+        .expect("active_form (GET /todos) shape parses");
+        assert_eq!(get_shape.active_form, "Fixing the bug");
+
+        let absent: TodoItem =
+            serde_json::from_str(r#"{"content":"fix bug","status":"pending"}"#).expect("optional");
+        assert_eq!(absent.active_form, "");
+    }
 
     #[derive(Clone)]
     struct ScopedServerState {

@@ -5,18 +5,37 @@
 //! Supports scope selection (project/global), memory type, tags, importance,
 //! and retrieval mode (auto / ondemand).
 
-use crate::context::{MemoryEntry, MemoryManager, MemoryOrigin, MemoryType, RetrievalMode};
+use crate::context::{
+    MemoryEntry, MemoryManager, MemoryOrigin, MemoryResolver, MemoryType, RetrievalMode,
+};
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use std::sync::Arc;
 
 pub struct MemoryAddTool {
+    /// Fallback manager for context-free execution (legacy/TUI path) — the
+    /// main project's pool.
     memory: Arc<MemoryManager>,
+    /// Multi-project routing (daemon). When present, `execute_with_context`
+    /// resolves the pool from the invocation's workdir.
+    resolver: Option<Arc<dyn MemoryResolver>>,
 }
 
 impl MemoryAddTool {
     pub fn new(memory: Arc<MemoryManager>) -> Self {
-        Self { memory }
+        Self {
+            memory,
+            resolver: None,
+        }
+    }
+
+    /// Daemon constructor: route by workdir via `resolver`, falling back to
+    /// `main` (the main project's manager) for context-free calls.
+    pub fn with_resolver(main: Arc<MemoryManager>, resolver: Arc<dyn MemoryResolver>) -> Self {
+        Self {
+            memory: main,
+            resolver: Some(resolver),
+        }
     }
 
     fn parse_memory_type(s: &str) -> Result<MemoryType, ToolError> {
@@ -109,6 +128,32 @@ impl Tool for MemoryAddTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        self.add_via(&self.memory, input).await
+    }
+
+    /// Multi-project routing: the invocation's workdir decides which
+    /// project's pool receives the memory (falls back to the main pool).
+    async fn execute_with_context(
+        &self,
+        context: &crate::agent::ToolContext<'_>,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        match &self.resolver {
+            Some(resolver) => {
+                let memory = resolver.resolve(context.workdir).await;
+                self.add_via(&memory, input).await
+            }
+            None => self.execute(input).await,
+        }
+    }
+}
+
+impl MemoryAddTool {
+    async fn add_via(
+        &self,
+        memory: &MemoryManager,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
         let content = input["content"].as_str().ok_or_else(|| ToolError {
             message: "content is required".to_string(),
             code: Some("missing_content".to_string()),
@@ -145,8 +190,7 @@ impl Tool for MemoryAddTool {
             .with_tags(tags);
         entry.retrieval_mode = retrieval_mode;
 
-        let result = self
-            .memory
+        let result = memory
             .add_memory(entry, scope)
             .await
             .map_err(|e| ToolError {

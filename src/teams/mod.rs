@@ -22,7 +22,7 @@ pub use guarding_tool_port::{
     format_permission_summary, GuardingToolPort, SubagentPermissionContext,
 };
 pub use mailbox::{Mailbox, TeamConfig, TeamManager, TeamMember, TeamMessage};
-pub use permission_bridge::{PermissionBridge, StructuredApproval};
+pub use permission_bridge::{PermissionBridge, PermissionResolveOutcome, StructuredApproval};
 pub use subagent::{
     AgentDefinition, AgentSession, AgentStatus, AgentStatusReport, AgentType, AgentsService,
 };

@@ -10,13 +10,11 @@ import { useEffect, useRef } from "react";
  * Used by the side panels (todos / tasks / pending-permissions) which mirror
  * the TUI's polling model (src/tui/agent/adapters.rs:152-235 polls every 500ms).
  */
-export function usePolling(
-  fn: () => Promise<void>,
-  active: boolean,
-  intervalMs: number,
-): void {
+export function usePolling(fn: () => Promise<void>, active: boolean, intervalMs: number): void {
   const fnRef = useRef(fn);
-  fnRef.current = fn;
+  useEffect(() => {
+    fnRef.current = fn;
+  }, [fn]);
 
   useEffect(() => {
     if (!active) return;

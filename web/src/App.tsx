@@ -1,181 +1,198 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Toaster, toast } from "sonner";
 import { DaemonClient } from "./api/client";
-import { runAgentLoop } from "./agent/loop";
-import { useChatStore } from "./state/chatStore";
+import { runSessionTurn, stopSessionTurn } from "./agent/sessionRunner";
+import { useSessionManager } from "./state/sessionManager";
+import { SessionStoreContext } from "./state/sessionContext";
+import { ConfirmProvider } from "./components/ui/ConfirmModal";
 import { StatusBar } from "./components/StatusBar";
-import { Sidebar } from "./components/Sidebar";
-import { ChatView } from "./components/ChatView";
-import { Composer } from "./components/Composer";
-import { PermissionModal } from "./components/PermissionModal";
+import { LeftSidebar } from "./components/layout/LeftSidebar";
+import { SessionTabBar } from "./components/layout/SessionTabBar";
+import { ChatView } from "./features/chat/ChatView";
+import { Composer } from "./features/chat/Composer";
+import { PermissionModal } from "./features/permissions/PermissionModal";
+import { QuestionModal } from "./features/permissions/QuestionModal";
+import { CommandModal } from "./features/panels/CommandModal";
+import { RightRail } from "./components/layout/RightRail";
+import { ModelPanel } from "./features/panels/ModelPanel";
+import { AppTopbar } from "./components/layout/AppTopbar";
+import type { SlashCommand } from "./components/slashCommands";
 import { usePermissionTrace } from "./hooks/usePermissionTrace";
 import { usePolling } from "./hooks/usePolling";
-import type { ChatMessage } from "./api/types";
+import { startUiSync } from "./state/uiSync";
+import { useUiStore } from "./state/uiStore";
 
 /**
- * App — wires the agent loop to the UI store.
+ * App — wires the per-session agent runners to the UI stores.
  *
  * The architecture mirrors `src/tui` as a parallel thin client: this React app
- * is just another frontend over the same daemon API. The agent loop runs in the
- * browser (the daemon's `/chat/stream` is a pure passthrough proxy; tools are
- * executed client-side via `/tools/execute`).
+ * is just another frontend over the same daemon API. The daemon owns the agent
+ * loop (`POST /sessions/:id/run` runs LLM + tools + persistence server-side);
+ * each `runSessionTurn` POSTs a run then subscribes to the session-event SSE
+ * stream, mirroring events into the store. Sessions progress concurrently and
+ * independently, and survive a browser close/reopen.
  */
 export function App() {
-  const clientRef = useRef<DaemonClient | null>(null);
-  if (!clientRef.current) clientRef.current = new DaemonClient();
+  // One stable client for the app's lifetime. useState's lazy initializer is
+  // the idiomatic way to hold a non-reactive instance (avoids reading a ref
+  // during render).
+  const [client] = useState(() => new DaemonClient());
 
-  const store = useChatStore;
-  const setConnection = useChatStore((s) => s.setConnection);
-  const setModelName = useChatStore((s) => s.setModelName);
+  const setConnection = useSessionManager((s) => s.setConnection);
+  const setModelName = useSessionManager((s) => s.setModelName);
+  const activeId = useSessionManager((s) => s.activeId);
+  const theme = useUiStore((s) => s.theme);
+
+  // Active session's store. Each session keeps its own store; only the active
+  // one is provided to the center pane.
+  const activeStore = useSessionManager((s) => (s.activeId ? s.entries[s.activeId].store : null));
+
+  // Bootstrap one local session. Must live in an effect — creating a session
+  // during render is a render-phase side effect (react-hooks purity rules).
+  useEffect(() => {
+    if (!useSessionManager.getState().activeId) {
+      useSessionManager.getState().createLocalSession();
+    }
+  }, []);
+
+  // sessionManager → uiStore.openTabs 单向同步（激活补开 tab、删除剪 tab）。
+  useEffect(() => startUiSync(), []);
+
+  // Warn before unloading the page while any session is mid-turn. The run
+  // itself lives on the daemon (closing the tab will not kill it), but leaving
+  // disconnects the live SSE observer - a heads-up avoids surprise.
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      const running = Object.values(useSessionManager.getState().entries).filter(
+        (x) => x.status === "running" || x.status === "awaiting_approval",
+      ).length;
+      if (running > 0) e.preventDefault();
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, []);
 
   // Subscribe to the trace SSE for pushed subagent permission prompts
   // (design D2.1: replaces 500ms polling of /tools/pending-permissions).
-  usePermissionTrace(clientRef.current);
+  usePermissionTrace(client);
 
   // ── Daemon health heartbeat (design D7.1) ──────────────────────────────────
   // Poll /health on a slow cadence so the status bar reflects daemon
   // death/recovery (was: one-shot probe that lied forever after a restart).
   // Model name is read once on first connect.
   const modelLoadedRef = useRef(false);
+  // Dedupes the "Daemon disconnected" toast — the poll runs every 10s and
+  // would otherwise re-toast on every failed tick while the daemon is down.
+  const disconnectToastedRef = useRef(false);
   usePolling(
     async () => {
       try {
-        await clientRef.current!.health();
+        await client.health();
         setConnection("connected");
+        disconnectToastedRef.current = false;
         if (!modelLoadedRef.current) {
           modelLoadedRef.current = true;
-          const cfg = await clientRef.current!.getConfig();
+          const cfg = await client.getConfig();
           setModelName(cfg.model);
+          // Load the current root permission mode once (StatusBar reads + switches it).
+          // 按活跃会话路由：已落地 daemon 的用 daemonId，否则用本地 id
+          //（daemon 对未知 id 回退 main working root，等同改动前的 "default"）。
+          const sm = useSessionManager.getState();
+          const sid = sm.activeId ? (sm.entries[sm.activeId]?.daemonId ?? sm.activeId) : null;
+          if (sid) {
+            try {
+              const pm = await client.getPermissionMode(sid);
+              useSessionManager.getState().setPermissionMode(pm.mode);
+            } catch {
+              // Non-fatal: StatusBar falls back to "-" until a switch succeeds.
+            }
+          }
         }
       } catch {
         setConnection("disconnected");
+        if (!disconnectToastedRef.current) {
+          disconnectToastedRef.current = true;
+          toast.error("Daemon disconnected");
+        }
+        // Daemon is gone — any in-flight turn is dead. Mark running sessions
+        // errored so they don't sit in "running" forever.
+        const m = useSessionManager.getState();
+        for (const e of Object.values(m.entries)) {
+          if (e.status === "running" || e.status === "awaiting_approval") {
+            m.setStatus(e.id, "error");
+          }
+        }
       }
     },
     true,
     10_000,
   );
 
-  // ── Send: push the user message, run a full agent turn ─────────────────────
-  const handleSend = async (text: string) => {
-    const client = clientRef.current!;
-    const s = store.getState();
-
-    s.pushUserMessage(text);
-    s.setError(null);
-    s.setRunning(true);
-
-    // The working message history for this turn. In MVP we keep a single
-    // in-memory conversation; session persistence is a second-phase feature.
-    const messages: ChatMessage[] = [...toWireMessages(s.messages), { role: "user", content: text }];
-    const sessionId = `web-${Date.now()}`;
-
-    // Track which assistant display message is currently streaming so stream
-    // events can be appended to it. Reassigned each round.
-    let currentAssistantId: string | null = null;
-
-    // AbortController for the Stop button — registered in the store so any
-    // component (Composer / StatusBar) can cancel the running turn.
-    const abort = new AbortController();
-    store.getState().registerAbort(abort);
-
-    try {
-      await runAgentLoop({
-        client,
-        messages,
-        sessionId,
-        signal: abort.signal,
-        callbacks: {
-          onStreamEvent: (round, ev) => {
-            // First event of a round → open a new assistant bubble.
-            if (currentAssistantId === null) {
-              currentAssistantId = store.getState().beginAssistantRound(round);
-            }
-            store.getState().appendAssistant(currentAssistantId, ev);
-          },
-          onToolExecution: (exec) => {
-            // Attach the tool card to whichever assistant message is streaming
-            // (or the last assistant message if the round already finalized).
-            const id =
-              currentAssistantId ??
-              lastAssistantId(store.getState().messages) ??
-              store.getState().beginAssistantRound(0);
-            store.getState().attachToolExec(id, exec);
-          },
-          onPermissionRequired: (info) => store.getState().requestPermission(info),
-        },
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // User-initiated stop surfaces as "aborted" — don't show it as an error.
-      if (msg === "aborted") {
-        // no-op
-      } else {
-        // Classify: transport failures (daemon down, network reset, stream
-        // interrupted) are retryable; upstream LLM errors (rejected prompt,
-        // stream error: ...) are not. Design D7.3.
-        const isTransport = /fetch|network|failed to fetch|stream interrupted|aborted/i.test(msg)
-          && !msg.startsWith("stream error:");
-        store.getState().setError({
-          message: msg,
-          kind: isTransport ? "transport" : "upstream",
-          retry: isTransport ? () => handleSend(text) : undefined,
-        });
-      }
-    } finally {
-      store.getState().registerAbort(null);
-      if (currentAssistantId) store.getState().finalizeAssistant(currentAssistantId);
-      store.getState().setRunning(false);
+  // Slash commands: `/model` opens a modal; `/sessions` `/memory` `/undo`
+  // toggle the corresponding right-rail panel.
+  const [openCommand, setOpenCommand] = useState<SlashCommand | null>(null);
+  const closeCommand = () => setOpenCommand(null);
+  const handleCommand = (cmd: SlashCommand) => {
+    const ui = useUiStore.getState();
+    switch (cmd.name) {
+      case "/model":
+        setOpenCommand(cmd);
+        break;
+      case "/sessions":
+        ui.toggleRightPanel("sessions");
+        break;
+      case "/memory":
+        ui.toggleRightPanel("memory");
+        break;
+      case "/undo":
+        ui.toggleRightPanel("checkpoints");
+        break;
     }
   };
 
+  // First render (before the bootstrap effect runs): no session yet.
+  if (!activeStore) return null;
+
   return (
-    <div className="app">
-      <StatusBar />
-      <div className="app-body">
-        <Sidebar client={clientRef.current} />
-        <div className="app-main">
-          <main className="main">
-            <ChatView />
-          </main>
-          <Composer onSend={handleSend} />
+    <ConfirmProvider>
+      <div className="flex h-screen flex-col bg-background text-foreground">
+        <AppTopbar />
+        <div className="flex min-h-0 flex-1">
+          <LeftSidebar client={client} />
+          <SessionStoreContext.Provider value={activeStore}>
+            <div className="flex min-w-0 flex-1 flex-col">
+              <SessionTabBar />
+              <main className="min-h-0 flex-1 overflow-y-auto">
+                <ChatView />
+              </main>
+              <Composer
+                onSend={(text) => {
+                  if (activeId) void runSessionTurn(client, activeId, text);
+                }}
+                onStop={() => {
+                  if (activeId) void stopSessionTurn(client, activeId);
+                }}
+                onCommand={handleCommand}
+              />
+            </div>
+            <PermissionModal client={client} />
+            <QuestionModal client={client} />
+          </SessionStoreContext.Provider>
+          <RightRail client={client} />
         </div>
+        <StatusBar
+          client={client}
+          onSwitchModel={() =>
+            setOpenCommand({ name: "/model", description: "Switch model profile" })
+          }
+        />
+        {openCommand?.name === "/model" && (
+          <CommandModal title="Switch model" onClose={closeCommand}>
+            <ModelPanel client={client} />
+          </CommandModal>
+        )}
+        <Toaster theme={theme} position="bottom-right" />
       </div>
-      <PermissionModal client={clientRef.current} />
-    </div>
+    </ConfirmProvider>
   );
-}
-
-/** Convert display messages back to wire `ChatMessage`s for the next turn. */
-function toWireMessages(display: ReturnType<typeof useChatStore.getState>["messages"]): ChatMessage[] {
-  const out: ChatMessage[] = [];
-  for (const m of display) {
-    if (m.role === "user") {
-      out.push({ role: "user", content: m.content });
-    } else if (m.role === "assistant") {
-      out.push({
-        role: "assistant",
-        content: m.content || undefined,
-        ...(m.toolExecs && m.toolExecs.length > 0
-          ? { tool_calls: m.toolExecs.map((e) => e.call) }
-          : {}),
-      });
-      // Append tool results so the next request is well-formed.
-      if (m.toolExecs) {
-        for (const exec of m.toolExecs) {
-          out.push({
-            role: "tool",
-            tool_call_id: exec.call.id,
-            content: JSON.stringify(exec.response),
-          });
-        }
-      }
-    }
-  }
-  return out;
-}
-
-function lastAssistantId(messages: ReturnType<typeof useChatStore.getState>["messages"]): string | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "assistant") return messages[i].id;
-  }
-  return null;
 }

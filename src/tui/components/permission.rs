@@ -1,4 +1,5 @@
 use crate::tui::app::{PermissionResponder, PermissionResponse};
+use crate::tui::client::DaemonClient;
 use crate::tui::traits::Component;
 use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
@@ -18,6 +19,10 @@ pub struct PermissionState {
     pub rule: String,
     /// Pending oneshot sender for permission response.
     pub responder: Option<PermissionResponder>,
+    /// Server-side mode: request_id for POST /resolve-permission (None in
+    /// client-side mode where the oneshot responder is used instead).
+    pub server_request_id: Option<String>,
+    pub client: Option<DaemonClient>,
 }
 
 impl PermissionState {
@@ -28,6 +33,8 @@ impl PermissionState {
             reason: String::new(),
             rule: String::new(),
             responder: None,
+            server_request_id: None,
+            client: None,
         }
     }
 
@@ -36,11 +43,32 @@ impl PermissionState {
         self.reason = reason;
         self.rule = rule;
         self.responder = Some(responder);
+        self.server_request_id = None;
+        self.client = None;
+    }
+
+    /// Server-side variant: no oneshot responder; the decision is sent via
+    /// POST /resolve-permission using the stored request_id + client.
+    pub fn show_server(
+        &mut self,
+        reason: String,
+        rule: String,
+        request_id: String,
+        client: DaemonClient,
+    ) {
+        self.visible = true;
+        self.reason = reason;
+        self.rule = rule;
+        self.responder = None;
+        self.server_request_id = Some(request_id);
+        self.client = Some(client);
     }
 
     pub fn dismiss(&mut self) -> (String, String) {
         self.visible = false;
         self.responder = None;
+        self.server_request_id = None;
+        self.client = None;
         (
             std::mem::take(&mut self.reason),
             std::mem::take(&mut self.rule),
@@ -84,7 +112,18 @@ impl Component for PermissionState {
 impl PermissionState {
     fn respond(&mut self, response: PermissionResponse) -> bool {
         self.visible = false;
-        if let Some(responder) = self.responder.take() {
+        if let Some(req_id) = self.server_request_id.take() {
+            let approved = !matches!(response, PermissionResponse::Deny);
+            let always = matches!(response, PermissionResponse::AlwaysAllow);
+            let rule = self.rule.clone();
+            if let Some(client) = self.client.take() {
+                tokio::spawn(async move {
+                    let _ = client
+                        .resolve_subagent_permission(&req_id, approved, always, Some(&rule))
+                        .await;
+                });
+            }
+        } else if let Some(responder) = self.responder.take() {
             let _ = responder.0.map(|tx| tx.send(response));
         }
         true

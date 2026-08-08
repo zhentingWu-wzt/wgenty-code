@@ -39,6 +39,25 @@ impl App {
         }
         // Slash commands
         if text.trim() == "/clear" {
+            // Empty session: nothing to save, and creating another empty
+            // session would just clutter the session list.
+            if self.committed_messages.is_empty() {
+                self.push_system_message("会话为空，无需清除");
+                return;
+            }
+
+            // Snapshot UI transcript synchronously (no await needed) before
+            // clearing the display. History is snapshotted inside the spawn
+            // below because the tokio Mutex cannot be locked from this sync ctx.
+            let old_id = self.session_id.clone();
+            let old_name = self.session_name.clone();
+            let old_ui_messages: Vec<_> = self
+                .committed_messages
+                .iter()
+                .map(UIMessage::to_session_ui_message)
+                .collect();
+
+            // Clear visible state immediately so /clear returns a clean slate.
             self.committed_messages.clear();
             self.streaming_content.clear();
             self.streaming_active = false;
@@ -48,38 +67,74 @@ impl App {
             self.cancel_current_turn();
             // Reset phase immediately and suppress stale events from the
             // just-aborted turn so the status bar shows "Ready" instead of
-            // lingering on "Thinking". Cleared when a new turn starts.
+            // lingering on "Thinking". Cleared by the follow-up
+            // AgentGenerationReset (both success and failure paths spawn one).
             self.phase = AgentPhase::Idle;
             self.suppress_phase_updates = true;
-            let history = self.conversation_history.clone();
-            tokio::spawn(async move {
-                let mut h = history.lock().await;
-                // Dialogue-only: system layers live in assembled_system_messages
-                // and are prepended each API round — never stored in history.
-                h.clear();
-            });
             // Clear queued inputs: a fresh generation cancels obsolete work.
             self.pending_inputs.clear();
-            // Atomically advance the task generation on the daemon (which
-            // cancels obsolete root-direct subtrees) and adopt the new
-            // generation when it returns. Until it completes, stale
-            // subagent views are suppressed and no queued work starts.
+
+            // Async: snapshot+clear history, save old session, create new
+            // session, then switch. The save uses the pre-clear snapshot so
+            // it captures the full transcript under the old session id.
             let client = self.daemon_client.clone();
-            let session_id = self.session_id.clone();
+            let history = self.conversation_history.clone();
             let event_tx = self.event_tx.clone();
             tokio::spawn(async move {
-                match client.reset_agent_generation(&session_id).await {
-                    Ok(generation) => {
-                        let _ = event_tx.send(AppEvent::AgentGenerationReset { generation });
+                let old_history = {
+                    let mut h = history.lock().await;
+                    crate::api::types::sanitize_tool_call_pairing(&mut h);
+                    let snapshot = h.clone();
+                    h.clear();
+                    snapshot
+                };
+
+                // 1. Save the old session (best-effort).
+                if let Err(error) = client
+                    .save_session(&old_id, &old_name, &old_history, &old_ui_messages)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %old_id,
+                        error = %error,
+                        "failed to save session before /clear switch"
+                    );
+                    let _ = event_tx.send(AppEvent::SystemNotice(
+                        "⚠️ 上一会话保存失败，已尝试切换到新会话".to_string(),
+                    ));
+                }
+
+                // 2. Create a new session and switch.
+                match client.create_session(None).await {
+                    Ok(resp) => {
+                        let _ = event_tx.send(AppEvent::SessionSwitched {
+                            id: resp.id,
+                            name: resp.name,
+                        });
                     }
                     Err(error) => {
-                        tracing::warn!(
-                            error = %error,
-                            "reset_agent_generation failed; retaining old generation"
-                        );
-                        let _ = event_tx.send(AppEvent::AgentGenerationReset {
-                            generation: u64::MAX,
-                        });
+                        tracing::warn!(error = %error, "create_session failed after /clear");
+                        let _ = event_tx.send(AppEvent::SystemNotice(format!(
+                            "⚠️ 创建新会话失败：{error}（当前会话已清空，可继续使用）"
+                        )));
+                        // Fallback: reset generation under the old id so
+                        // subagent state and suppress_phase_updates are
+                        // cleaned up (session_id stays the old one).
+                        match client.reset_agent_generation(&old_id).await {
+                            Ok(generation) => {
+                                let _ =
+                                    event_tx.send(AppEvent::AgentGenerationReset { generation });
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    error = %error,
+                                    "reset_agent_generation failed; retaining old generation"
+                                );
+                                let _ = event_tx.send(AppEvent::AgentGenerationReset {
+                                    generation: u64::MAX,
+                                });
+                            }
+                        }
                     }
                 }
             });
@@ -213,6 +268,15 @@ impl App {
             } else {
                 self.switch_model_direct(rest);
             }
+            return;
+        }
+        if slash == "/server-side" {
+            self.server_side_loop = !self.server_side_loop;
+            self.push_system_message(format!(
+                "server-side loop: {}",
+                if self.server_side_loop { "ON" } else { "OFF" }
+            ));
+            self.phase = AgentPhase::Idle;
             return;
         }
         if text.trim() == "/help" {
