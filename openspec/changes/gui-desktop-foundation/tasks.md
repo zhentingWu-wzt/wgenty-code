@@ -2,28 +2,28 @@
 
 > 前置依赖：daemon-session-orchestration 完成（提供编排命令端点与会话事件流）。
 
-## 1. 会话编排客户端（UI 无关）
+## 1. 会话编排客户端（复用 web/）
 
-- [ ] 1.1 新建 `src/client/`：命令通道（发起 turn / 中断 / 审批应答）
-- [ ] 1.2 事件通道：SSE 订阅、seq 跟踪、断线自动重连续传、失步全量恢复回退
-- [ ] 1.3 daemon 发现与连接：常驻实例优先，内嵌拉起兜底
+- [x] 1.1 复用 web/ 的 `DaemonClient`（命令通道：发起 turn / 中断 / 审批应答）—— spike 已验证 webview 内直接可用
+- [x] 1.2 复用 web/ 的 SSE 订阅（seq 跟踪、断线续传、失步回退由 daemon-session-orchestration + web/ sessionRunner 实现）—— spike 已验证流式渲染正常
+- [ ] 1.3 daemon 发现与连接：Tauri Rust 侧实现发现机制（常驻实例优先，内嵌拉起兜底），通过 platform/ Adapter 暴露给前端
 
-## 2. GUI 应用骨架
+## 2. GUI 应用骨架（Tauri 壳）
 
-- [ ] 2.1 添加 GUI feature flag 与框架依赖（egui/iced，按 design 阶段选型 spike 结论），默认构建不受影响
-- [ ] 2.2 新增 GUI 入口（子命令或独立 bin），主窗口启动与关闭时的资源清理
-- [ ] 2.3 事件→状态投影层：本地状态仅为事件流投影，连接/同步状态可见
-- [ ] 2.4 连接失败的错误展示与重试机制
-- [ ] 2.5 导航 + 多面板布局框架（侧边导航 + 主内容区，预留面板挂载点）
+- [x] 2.1 创建 Tauri 2.0 壳项目（`desktop/src-tauri/`，独立 crate），token 注入 + CORS 已由 spike 验证 —— 见 `desktop/README.md`
+- [x] 2.2 Tauri 主窗口入口（`desktop/src-tauri/src/lib.rs`），窗口启动与关闭时的资源清理
+- [ ] 2.3 platform/ Adapter 层：web/ 加薄抽象（`web/src/platform/`），desktop/ 提供 Tauri 实现，隔离浏览器与桌面特有能力
+- [ ] 2.4 连接失败的错误展示与重试机制（复用 web/ 已有逻辑，适配 Tauri platform 接口）
+- [x] 2.5 导航 + 多面板布局（复用 web/ 的 LeftSidebar + RightRail + SessionTabBar 布局，webview 内直接渲染）
 
-## 3. 核心对话界面
+## 3. 核心对话界面（复用 web/）
 
-- [ ] 3.1 事件流驱动的对话渲染：发起 turn、增量渲染、批量/降帧刷新保证流畅
-- [ ] 3.2 中断命令支持
-- [ ] 3.3 markdown 渲染（标题/列表/表格/链接）与代码块语法高亮
-- [ ] 3.4 工具调用展示：可折叠卡片，名称/参数摘要/执行状态/结果摘要
-- [ ] 3.5 权限审批界面：事件到达展示、命令应答、他端决议自动同步
-- [ ] 3.6 多行输入区：快捷键提交、turn 进行中禁止重复发起（409 语义）
+- [x] 3.1 事件流驱动的对话渲染（复用 web/ 的 ChatView + sessionRunner，spike 已验证流式渲染正常）
+- [x] 3.2 中断命令支持（复用 web/ 的 stopSessionTurn）
+- [x] 3.3 markdown 渲染（复用 web/ 的 react-markdown + remark-gfm）与代码块语法高亮（复用 shiki）—— spike 已验证
+- [x] 3.4 工具调用展示（复用 web/ 的 ToolCallCard 可折叠卡片）
+- [x] 3.5 权限审批界面（复用 web/ 的 PermissionModal + usePermissionTrace）
+- [x] 3.6 多行输入区（复用 web/ 的 Composer，快捷键提交 + 409 语义）
 
 ## 4. 验证
 

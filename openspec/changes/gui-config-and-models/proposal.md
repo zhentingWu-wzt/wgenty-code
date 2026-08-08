@@ -25,6 +25,6 @@
 
 ## Impact
 
-- **新增代码**：`src/gui/` 下的配置/模型/MCP/skills/memory 面板
+- **新增代码**：复用/扩展 `web/src/features/panels/` 下的配置/模型/MCP/skills/memory 面板（ModelPanel、MemoryPanel、SkillsPanel 等）
 - **依赖**：gui-desktop-foundation；daemon 现有 API
 - **不触碰**：core、daemon 服务端、TUI；密钥的高级管理（系统 keychain 集成等）不在范围内

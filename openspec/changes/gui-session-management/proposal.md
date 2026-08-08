@@ -25,6 +25,6 @@ TUI 已具备会话持久化与恢复能力（daemon 提供 sessions CRUD/search
 
 ## Impact
 
-- **新增代码**：`src/gui/` 下的会话管理面板与相关状态逻辑（挂在 foundation 的面板挂载点上）
+- **新增代码**：复用/扩展 `web/src/features/` 下的会话管理面板（SessionsPanel、CheckpointsPanel 等，挂在 foundation 的布局挂载点上）；Tauri webview 内直接渲染
 - **依赖**：gui-desktop-foundation（骨架、会话编排客户端、对话界面）与 daemon-session-orchestration（版本化会话存储）；daemon 服务端按需使用版本化 API，本 change 不改服务端
 - **不触碰**：core、daemon 服务端、TUI
