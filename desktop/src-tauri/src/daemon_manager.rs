@@ -111,10 +111,9 @@ fn discover_daemon() -> Option<DaemonHandle> {
 /// `desktop/src-tauri/`). In a packaged app: the binary is bundled as a Tauri
 /// resource (future work — for now dev mode suffices).
 ///
-/// Prefers **debug** over release for now: the release build has a discovery-
-/// file write issue (daemon.json not emitted), whereas debug works correctly.
-/// The daemon's CPU/memory footprint is light enough that debug performance
-/// is acceptable for the spike. Revisit once the release discovery bug is fixed.
+/// Prefers **release** (faster daemon, less CPU/memory) when available, falling
+/// back to debug. Both builds correctly emit discovery files after the
+/// bind-before-write-token fix in `src/daemon/mod.rs`.
 fn locate_daemon_binary() -> Option<PathBuf> {
     // CARGO_MANIFEST_DIR = desktop/src-tauri at compile time.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -123,13 +122,13 @@ fn locate_daemon_binary() -> Option<PathBuf> {
         .parent() // desktop/
         .and_then(|p| p.parent())?; // repo root
 
-    let debug = repo_root.join("target/debug/wgenty-code");
-    if debug.exists() {
-        return Some(debug);
-    }
     let release = repo_root.join("target/release/wgenty-code");
     if release.exists() {
         return Some(release);
+    }
+    let debug = repo_root.join("target/debug/wgenty-code");
+    if debug.exists() {
+        return Some(debug);
     }
     None
 }
