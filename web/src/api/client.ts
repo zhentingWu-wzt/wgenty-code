@@ -181,6 +181,18 @@ export class DaemonClient {
     return jsonOrThrow(await fetch(`${this.base}/sessions`));
   }
 
+  /**
+   * Search saved sessions by keyword (matches session name and message content).
+   * Daemon-side: GET /sessions/search?q=<query>. Returns sessions across all
+   * registered project roots.
+   */
+  async searchSessions(query: string): Promise<SessionInfo[]> {
+    const q = query.trim();
+    return jsonOrThrow(
+      await fetch(`${this.base}/sessions/search?q=${encodeURIComponent(q)}`),
+    );
+  }
+
   async createSession(req: CreateSessionRequest = {}): Promise<SessionResponse> {
     return jsonOrThrow(
       await fetch(`${this.base}/sessions`, {

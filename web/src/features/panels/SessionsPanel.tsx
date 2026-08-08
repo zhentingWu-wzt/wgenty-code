@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Archive, ArchiveRestore, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, Search, Trash2 } from "lucide-react";
 import type { DaemonClient } from "../../api/client";
 import type { SessionInfo } from "../../api/types";
 import { sessionMessagesToDisplay } from "../../agent/sessionLoad";
@@ -8,15 +8,19 @@ import { useUiStore } from "../../state/uiStore";
 import { RailSection } from "../sessions/RailSection";
 
 /**
- * 右栏 Sessions 面板：已保存的 daemon 会话列表，支持打开/归档/删除。
+ * 右栏 Sessions 面板：已保存的 daemon 会话列表，支持搜索/打开/归档/删除。
  * Archived sessions hide from the default view and live in the collapsed
  * "Archived (N)" section with an Unarchive action (spec: archive = visibility
  * flag, daemon `SessionStatus::Archived`).
  * 选中会话后加载并激活该会话，同时关闭右栏面板。
+ *
+ * 搜索：输入关键词时调用 daemon 的 /sessions/search（匹配会话名和消息内容），
+ * 清空时回退到全量列表。搜索结果不区分 active/archived 分组。
  */
 export function SessionsPanel({ client }: { client: DaemonClient }) {
   const [saved, setSaved] = useState<SessionInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const refresh = useCallback(() => {
     client
@@ -29,6 +33,26 @@ export function SessionsPanel({ client }: { client: DaemonClient }) {
   }, [client]);
 
   useEffect(refresh, [refresh]);
+
+  // Debounced search: when query changes, switch to search API; when empty,
+  // fall back to the full list.
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (!q) {
+      refresh();
+      return;
+    }
+    const timer = setTimeout(() => {
+      client
+        .searchSessions(q)
+        .then((s) => {
+          setSaved(s);
+          setError(null);
+        })
+        .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    }, 300); // 300ms debounce — avoids hammering the daemon on every keystroke
+    return () => clearTimeout(timer);
+  }, [searchQuery, client, refresh]);
 
   const openSession = async (info: SessionInfo) => {
     // Already open? Just focus it.
@@ -126,22 +150,48 @@ export function SessionsPanel({ client }: { client: DaemonClient }) {
     </li>
   );
 
+  const isSearching = searchQuery.trim().length > 0;
   const active = (saved ?? []).filter((s) => s.status !== "Archived");
   const archived = (saved ?? []).filter((s) => s.status === "Archived");
 
   return (
     <div className="p-2">
+      {/* Search input — switches to /sessions/search when non-empty */}
+      <div className="relative mb-2">
+        <Search
+          size={12}
+          className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground"
+        />
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search sessions..."
+          className="w-full rounded-sm border border-border bg-background py-1 pl-7 pr-2 text-[12px] outline-none focus:border-primary"
+        />
+      </div>
       {error && <div className="p-2 text-danger">{error}</div>}
       {saved && active.length === 0 && archived.length === 0 && (
-        <div className="p-2 text-[12px] text-muted-foreground">No saved sessions</div>
+        <div className="p-2 text-[12px] text-muted-foreground">
+          {isSearching ? "No matching sessions" : "No saved sessions"}
+        </div>
       )}
-      <ul className="flex flex-col gap-0.5">{active.map((info) => renderRow(info, false))}</ul>
-      {archived.length > 0 && (
-        <RailSection title={`Archived (${archived.length})`} defaultCollapsed>
-          <ul className="flex flex-col gap-0.5">
-            {archived.map((info) => renderRow(info, true))}
-          </ul>
-        </RailSection>
+      {isSearching ? (
+        // Search results: flat list, no active/archived split
+        <ul className="flex flex-col gap-0.5">
+          {(saved ?? []).map((info) => renderRow(info, info.status === "Archived"))}
+        </ul>
+      ) : (
+        <>
+          <ul className="flex flex-col gap-0.5">{active.map((info) => renderRow(info, false))}</ul>
+          {archived.length > 0 && (
+            <RailSection title={`Archived (${archived.length})`} defaultCollapsed>
+              <ul className="flex flex-col gap-0.5">
+                {archived.map((info) => renderRow(info, true))}
+              </ul>
+            </RailSection>
+          )}
+        </>
       )}
     </div>
   );
