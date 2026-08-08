@@ -2,6 +2,8 @@
 comet_change: daemon-session-orchestration
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-08-08-daemon-session-orchestration
+status: final
 ---
 
 # Design Doc: daemon-session-orchestration
