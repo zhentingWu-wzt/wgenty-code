@@ -47,6 +47,7 @@
 - [Tauri webview 的 SSE（fetch + ReadableStream）兼容性] → spike 已验证流式对话正常；webview 标准兼容性依赖系统 webview 版本，最低要求记录在 README
 - [依赖的前置 change（daemon-session-orchestration）延期] → 任务编排上严格后置；客户端模块可先针对契约 mock 开发
 - [GUI 依赖显著增大 release 构建时间与二进制体积] → feature flag 隔离，默认构建不含 GUI；GUI 构建单独验证性能约束
+- [~~daemon 多实例 token 竞态~~ → 已修复] `daemon::run` 原先在 bind 端口前写 token/discovery 文件，端口占用时 bind 失败退出但 token 已覆盖在用 daemon 的 token，导致全端 401/500。修复：bind 成功后再写（与 TUI `start_daemon` 顺序对齐）。Tauri 壳侧另加 OnceCell 防 StrictMode 双调用作为第二层保护。
 
 ## Open Questions
 

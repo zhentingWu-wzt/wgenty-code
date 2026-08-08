@@ -7,6 +7,7 @@
 - [x] 1.1 复用 web/ 的 `DaemonClient`（命令通道：发起 turn / 中断 / 审批应答）—— spike 已验证 webview 内直接可用
 - [x] 1.2 复用 web/ 的 SSE 订阅（seq 跟踪、断线续传、失步回退由 daemon-session-orchestration + web/ sessionRunner 实现）—— spike 已验证流式渲染正常
 - [x] 1.3 daemon 发现与连接：Tauri Rust 侧发现机制（常驻实例优先，spawn 兜底）—— daemon_manager.rs 实现 discovery + Command spawn + health 轮询，OnceCell 防 StrictMode 双调
+- [x] 1.4 修复 daemon::run 的 token/discovery 写入竞态：bind 端口成功后再写 token/discovery 文件（原先 bind 前写，端口占用时 bind 失败退出但 token 已覆盖在用 daemon 的 token，导致全端鉴权失败）
 
 ## 2. GUI 应用骨架（Tauri 壳）
 
