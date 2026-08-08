@@ -1,3 +1,7 @@
+---
+archived-with: 2026-08-08-inspector-perspective
+status: final
+---
 # Design Doc: Inspector Perspective
 
 > 技术设计文档 for `inspector-perspective` change。
