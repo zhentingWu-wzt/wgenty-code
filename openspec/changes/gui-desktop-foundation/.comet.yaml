@@ -15,7 +15,7 @@ design_doc: docs/superpowers/specs/2026-08-08-gui-desktop-tauri-design.md
 plan: null
 verify_result: pending
 verify_failures: 0
-verification_report: null
+verification_report: docs/superpowers/reports/2026-08-08-gui-desktop-foundation-verify.md
 branch_status: pending
 created_at: 2026-08-07
 verified_at: null
