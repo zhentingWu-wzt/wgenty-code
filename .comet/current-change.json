@@ -1,6 +1,0 @@
-{
-  "schema": "comet.selection.v2",
-  "workflow": "classic",
-  "change": "gui-desktop-foundation",
-  "branch": "zhentingWu-wzt/GUI"
-}
