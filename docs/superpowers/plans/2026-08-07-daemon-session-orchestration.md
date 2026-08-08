@@ -1687,7 +1687,7 @@ git commit -m "feat(daemon): optimistic version check on session overwrite, bump
 
 ### Task 15: 全局发现文件 `~/.wgenty-code/daemon.json`（原子写 + 心跳 + 退出清理）
 
-- [ ] Task 15 完成标记：本节全部 Step 完成并提交
+- [x] Task 15 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Create: `src/utils/discovery.rs`
