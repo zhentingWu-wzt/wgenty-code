@@ -1,6 +1,6 @@
 {
   "schema": "comet.selection.v2",
   "workflow": "classic",
-  "change": "daemon-session-orchestration",
+  "change": "gui-desktop-foundation",
   "branch": "zhentingWu-wzt/GUI"
 }
