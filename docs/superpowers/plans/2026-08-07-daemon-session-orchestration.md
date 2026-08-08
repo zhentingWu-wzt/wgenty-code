@@ -1419,7 +1419,7 @@ git commit -m "fix(daemon): return 409 for duplicate subagent permission resolve
 
 ### Task 12: `"default"` 硬编码清零（server-side → 400；旧端点加 deprecated 注释）
 
-- [ ] Task 12 完成标记：本节全部 Step 完成并提交
+- [x] Task 12 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/daemon/handlers.rs`（:485、:654、:664、:699、:740、:765、:1397、:1431、:1458、:1507）
