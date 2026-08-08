@@ -1,0 +1,45 @@
+# Tauri desktop shell for wgenty-code.
+#
+# This is a **standalone crate**, deliberately NOT part of the main
+# `wgenty_code` Cargo workspace (which is a single-crate project). Keeping it
+# separate means `cargo build` / `cargo test` / `cargo clippy` in the repo root
+# never touch Tauri — the spike is fully isolated and adds zero compile time
+# to the default build.
+#
+# Build from this directory: `cargo tauri dev` / `cargo tauri build`.
+
+[package]
+name = "wgenty-code-desktop"
+version = "0.0.1-spike"
+description = "Tauri desktop shell (spike) for the wgenty-code web frontend"
+edition = "2021"
+# Keep publish false — this is an exploratory spike, not a published crate.
+publish = false
+
+[lib]
+name = "wgenty_code_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "wgenty-code-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+# Serve the app via http://localhost in production so the webview origin stays
+# in the daemon's CORS allow-list (localhost:3000/5173). Without this, the prod
+# origin would be tauri://localhost (macOS) / https://tauri.localhost (Windows),
+# which the daemon rejects with CORS errors.
+tauri-plugin-localhost = "2"
+# Read ~/.wgenty-code/daemon.token (mirrors src/utils/mod.rs path logic).
+dirs = "5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Tauri 2 splits platform integrations into plugins. The spike needs none of
+# them beyond opener + localhost — the web frontend talks to the daemon
+# directly over loopback HTTP+SSE.
