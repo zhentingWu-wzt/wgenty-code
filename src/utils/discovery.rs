@@ -39,6 +39,75 @@ pub fn remove_discovery_file() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A running daemon located via the discovery file.
+#[derive(Debug, Clone)]
+pub struct DiscoveredDaemon {
+    pub port: u16,
+    pub token: String,
+}
+
+/// Discovery decision chain (design §6.2): file exists and parses (else None)
+/// → token matches `daemon.token` (else None) → heartbeat fresh (else None).
+/// pid liveness is advisory only (cross-platform variance); heartbeat is
+/// authoritative. Any failure = stale → caller falls back to spawning.
+pub(crate) fn evaluate(
+    file: Option<&DiscoveryFile>,
+    expected_token: Option<&str>,
+    now: DateTime<Utc>,
+) -> Option<DiscoveredDaemon> {
+    let file = file?;
+    let expected = expected_token?;
+    if file.token != expected {
+        return None; // token mismatch → another daemon instance, do not connect
+    }
+    let age = now.signed_duration_since(file.heartbeat_at);
+    if age.num_seconds() > HEARTBEAT_STALE_SECS as i64 {
+        return None; // stale heartbeat → daemon likely dead
+    }
+    Some(DiscoveredDaemon {
+        port: file.port,
+        token: file.token.clone(),
+    })
+}
+
+/// Try to locate an already-running daemon via the discovery file.
+/// Returns None (caller falls back to spawning) when the file is missing,
+/// corrupt, token-mismatched, or its heartbeat is stale.
+pub fn discover_daemon() -> Option<DiscoveredDaemon> {
+    let file = read_discovery_file();
+    let token = crate::utils::read_daemon_token();
+    evaluate(file.as_ref(), token.as_deref(), Utc::now())
+}
+
+/// Write the discovery file and spawn the heartbeat task that refreshes
+/// `heartbeat_at` every [`HEARTBEAT_INTERVAL_SECS`]. Write failures are
+/// non-fatal: discovery is additive and the token file path still works.
+/// Returns the heartbeat task handle (detached when dropped).
+pub fn spawn_discovery_writer(port: u16, token: String) -> tokio::task::JoinHandle<()> {
+    let discovery = DiscoveryFile {
+        port,
+        token,
+        pid: std::process::id(),
+        started_at: Utc::now(),
+        heartbeat_at: Utc::now(),
+    };
+    if let Err(e) = write_discovery_file(&discovery) {
+        tracing::warn!(error = %e, "failed to write daemon discovery file");
+    }
+    tokio::spawn(async move {
+        let mut ticker =
+            tokio::time::interval(std::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
+        loop {
+            ticker.tick().await;
+            let mut f = discovery.clone();
+            f.heartbeat_at = Utc::now();
+            if let Err(e) = write_discovery_file(&f) {
+                tracing::warn!(error = %e, "daemon discovery heartbeat write failed");
+            }
+        }
+    })
+}
+
 fn write_discovery_file_to(path: &Path, file: &DiscoveryFile) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -86,6 +155,28 @@ mod tests {
 
         std::fs::write(&path, b"{ not json").expect("corrupt");
         assert!(read_discovery_file_from(&path).is_none()); // 损坏 → None，不 panic
+    }
+
+    #[test]
+    fn evaluate_matrix() {
+        let now = Utc::now();
+        let fresh = DiscoveryFile {
+            port: 8371,
+            token: "t".into(),
+            pid: 1,
+            started_at: now,
+            heartbeat_at: now,
+        };
+        assert_eq!(
+            evaluate(Some(&fresh), Some("t"), now).map(|d| d.port),
+            Some(8371)
+        );
+        assert!(evaluate(Some(&fresh), Some("other"), now).is_none()); // token 不匹配
+        assert!(evaluate(Some(&fresh), None, now).is_none()); // 无本地 token
+        assert!(evaluate(None, Some("t"), now).is_none()); // 无文件
+        let mut stale = fresh.clone();
+        stale.heartbeat_at = now - chrono::Duration::seconds(HEARTBEAT_STALE_SECS as i64 + 1);
+        assert!(evaluate(Some(&stale), Some("t"), now).is_none()); // 心跳过期
     }
 
     #[cfg(unix)]
