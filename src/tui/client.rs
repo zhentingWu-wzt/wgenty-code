@@ -1167,7 +1167,11 @@ pub struct SubagentTodoMeta {
 pub struct TodoItem {
     pub content: String,
     pub status: String,
-    #[serde(default)]
+    // Wire compat: `GET /todos` (TodoItemResponse) serializes `active_form`,
+    // while `todos_changed` SSE events embed `tasks::TodoItem` which renames
+    // the field to `activeForm`. Accept both; `default` keeps the field
+    // optional on either shape.
+    #[serde(default, alias = "activeForm")]
     pub active_form: String,
     #[serde(default)]
     pub subagent: Option<SubagentTodoMeta>,
@@ -1192,6 +1196,29 @@ mod tests {
     use tokio::task::JoinHandle;
 
     const VIEWER_HEADER: &str = "X-Wgenty-Viewer-Token";
+
+    /// Wire-format regression: the daemon's `tasks::TodoItem` serializes
+    /// `active_form` as `activeForm` (serde rename), which previously was
+    /// silently swallowed by `#[serde(default)]` here. Both the SSE
+    /// (`activeForm`) and the GET /todos (`active_form`) shapes must parse.
+    #[test]
+    fn todo_item_deserializes_active_form_from_both_wire_shapes() {
+        let sse_shape: TodoItem = serde_json::from_str(
+            r#"{"content":"fix bug","status":"in_progress","activeForm":"Fixing the bug"}"#,
+        )
+        .expect("activeForm (SSE todos_changed) shape parses");
+        assert_eq!(sse_shape.active_form, "Fixing the bug");
+
+        let get_shape: TodoItem = serde_json::from_str(
+            r#"{"content":"fix bug","status":"in_progress","active_form":"Fixing the bug"}"#,
+        )
+        .expect("active_form (GET /todos) shape parses");
+        assert_eq!(get_shape.active_form, "Fixing the bug");
+
+        let absent: TodoItem =
+            serde_json::from_str(r#"{"content":"fix bug","status":"pending"}"#).expect("optional");
+        assert_eq!(absent.active_form, "");
+    }
 
     #[derive(Clone)]
     struct ScopedServerState {
