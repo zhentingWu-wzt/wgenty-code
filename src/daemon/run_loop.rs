@@ -60,7 +60,11 @@ pub type SessionEventHub = tokio::sync::broadcast::Sender<SessionEvent>;
 /// answer `SyncLost` (correctness never depends on the buffer; clients
 /// fall back to `GET /sessions/:id`). Capacity comes from
 /// `daemon.event_buffer_capacity` (default 1024, aligned with TRACE_HUB).
-pub(crate) struct SessionEventBuffer {
+///
+/// The type is `pub` so integration tests can drive `after=` replay through
+/// the real HTTP/SSE stack; mutation stays crate-internal (`push` is called
+/// only by the dual-write publishers).
+pub struct SessionEventBuffer {
     events: VecDeque<SessionEvent>,
     capacity: usize,
 }

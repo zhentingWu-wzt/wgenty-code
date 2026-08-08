@@ -861,9 +861,10 @@ impl DaemonState {
     }
 
     /// Lazily-created per-session replay buffer, mirroring `session_seq_counter`.
-    /// `pub(crate)`: the buffer type itself is crate-internal. Publish call
-    /// sites (`DaemonEventSink`, `RootToolPort`) dual-write into it.
-    pub(crate) fn session_buffer(
+    /// Publish call sites (`DaemonEventSink`, `RootToolPort`) dual-write into
+    /// it. `pub` so integration tests can build a sink over the real buffer
+    /// and exercise `after=` replay end-to-end.
+    pub fn session_buffer(
         &self,
         session_id: &str,
     ) -> Arc<std::sync::RwLock<crate::daemon::run_loop::SessionEventBuffer>> {
