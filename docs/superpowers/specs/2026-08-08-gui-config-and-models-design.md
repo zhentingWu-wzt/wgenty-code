@@ -1,3 +1,7 @@
+---
+archived-with: 2026-08-08-gui-config-and-models
+status: final
+---
 # Design Doc: GUI Config and Models
 
 > 技术设计文档 for `gui-config-and-models` change。
