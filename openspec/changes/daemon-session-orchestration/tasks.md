@@ -28,7 +28,7 @@
 ## 5. daemon 可发现部署
 
 - [x] 5.1 全局发现文件 `~/.wgenty-code/daemon.json`（端口/token/pid/心跳 30s 更新、120s 过期），原子写入 + 退出清理
-- [ ] 5.2 `utils::discover_daemon()` 复用逻辑：读文件 → token 匹配 + 心跳未过期 → 复用或回退拉起；TUI 启动接入验证
+- [x] 5.2 `utils::discover_daemon()` 复用逻辑：读文件 → token 匹配 + 心跳未过期 → 复用或回退拉起；TUI 启动接入验证
 
 ## 6. 验证
 

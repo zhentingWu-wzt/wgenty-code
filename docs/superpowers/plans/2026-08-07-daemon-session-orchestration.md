@@ -1864,7 +1864,7 @@ git commit -m "feat(daemon): write global discovery file with heartbeat and exit
 
 ### Task 16: `discover_daemon()` + TUI 启动接入
 
-- [ ] Task 16 完成标记：本节全部 Step 完成并提交
+- [x] Task 16 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/utils/discovery.rs`（`discover_daemon()`）
