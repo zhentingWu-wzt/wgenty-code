@@ -12,7 +12,8 @@ export type RightPanelId =
   | "checkpoints"
   | "tasks"
   | "config"
-  | "mcp";
+  | "mcp"
+  | "subagents";
 
 interface UiState {
   theme: ThemeMode;

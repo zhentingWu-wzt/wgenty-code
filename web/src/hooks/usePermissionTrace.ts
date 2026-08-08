@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { DaemonClient } from "../api/client";
 import type { TraceEvent } from "../api/types";
 import { useSessionManager } from "../state/sessionManager";
+import { useSubagentTraceStore } from "../state/subagentTraceStore";
 
 /**
  * Subscribe to the daemon's trace SSE stream and surface subagent permission
@@ -30,6 +31,12 @@ export function usePermissionTrace(client: DaemonClient | null): void {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
     const handleEvent = (ev: TraceEvent) => {
+      // `progress` events update the subagent trace tree (consumed by
+      // SubagentTreePanel). All other kinds are permission/question routing.
+      if (ev.kind === "progress" || !ev.kind) {
+        useSubagentTraceStore.getState().upsertFromEvent(ev);
+      }
+
       // Route by the trace event's session_id; fall back to the active session
       // when the id doesn't match a local session (subagent trace ids are
       // daemon-side and may not map 1:1 onto local sessions).
