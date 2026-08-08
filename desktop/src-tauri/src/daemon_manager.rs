@@ -114,20 +114,40 @@ fn discover_daemon() -> Option<DaemonHandle> {
 /// Prefers **release** (faster daemon, less CPU/memory) when available, falling
 /// back to debug. Both builds correctly emit discovery files after the
 /// bind-before-write-token fix in `src/daemon/mod.rs`.
-fn locate_daemon_binary() -> Option<PathBuf> {
-    // CARGO_MANIFEST_DIR = desktop/src-tauri at compile time.
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // desktop/src-tauri → repo root is two levels up.
-    let repo_root = manifest_dir
-        .parent() // desktop/
-        .and_then(|p| p.parent())?; // repo root
-
+fn locate_daemon_binary(resource_dir: Option<&std::path::Path>) -> Option<PathBuf> {
     // Windows binaries have a .exe suffix.
     let exe_name = if cfg!(windows) {
         "wgenty-code.exe"
     } else {
         "wgenty-code"
     };
+
+    // 1. Packaged app: check Tauri resource directory for bundled binary.
+    //    externalBin binaries are suffixed with the target triple, e.g.
+    //    "wgenty-code-aarch64-apple-darwin". We strip the suffix to find it.
+    if let Some(dir) = resource_dir {
+        // Try exact name first (in case the binary was renamed).
+        let direct = dir.join(exe_name);
+        if direct.exists() {
+            return Some(direct);
+        }
+        // Try target-triple-suffixed names (Tauri externalBin convention).
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with("wgenty-code") {
+                    return Some(entry.path());
+                }
+            }
+        }
+    }
+
+    // 2. Dev mode: check target/{release,debug}/ relative to repo root.
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .parent() // desktop/
+        .and_then(|p| p.parent())?; // repo root
 
     let release = repo_root.join("target/release").join(exe_name);
     if release.exists() {
@@ -146,9 +166,9 @@ fn locate_daemon_binary() -> Option<PathBuf> {
 /// because the daemon is designed for multi-UI reuse (other shells / TUI /
 /// browser may be connected). Its lifetime is governed by its own discovery
 /// heartbeat and external process management.
-fn spawn_daemon(port: u16) -> Result<(), String> {
-    let exe = locate_daemon_binary()
-        .ok_or_else(|| "wgenty-code binary not found (expected at target/{debug,release}/wgenty-code)".to_string())?;
+fn spawn_daemon(port: u16, resource_dir: Option<&std::path::Path>) -> Result<(), String> {
+    let exe = locate_daemon_binary(resource_dir)
+        .ok_or_else(|| "wgenty-code binary not found (expected at target/{debug,release}/wgenty-code or bundled resource)".to_string())?;
 
     // Detached spawn: the daemon writes its own token + discovery files,
     // which we'll pick up via read_token() / discover_daemon() afterwards.
@@ -204,7 +224,11 @@ async fn wait_for_health(port: u16) -> Result<(), String> {
 ///
 /// Strategy: discover existing → if healthy, reuse. Else spawn new → wait for
 /// health → re-read token → return handle.
-pub async fn ensure_daemon() -> Result<DaemonHandle, String> {
+///
+/// `resource_dir`: when running inside a packaged Tauri app, pass the resolved
+/// resource directory so `locate_daemon_binary` can find the bundled daemon
+/// binary. In dev mode, pass `None` (uses target/{debug,release}/).
+pub async fn ensure_daemon(resource_dir: Option<PathBuf>) -> Result<DaemonHandle, String> {
     const DEFAULT_PORT: u16 = 8371;
 
     // 1. Try to discover an already-running, healthy daemon.
@@ -213,7 +237,7 @@ pub async fn ensure_daemon() -> Result<DaemonHandle, String> {
     }
 
     // 2. No healthy daemon found — spawn one.
-    spawn_daemon(DEFAULT_PORT)?;
+    spawn_daemon(DEFAULT_PORT, resource_dir.as_deref())?;
 
     // 3. Wait for it to accept connections.
     wait_for_health(DEFAULT_PORT).await?;
