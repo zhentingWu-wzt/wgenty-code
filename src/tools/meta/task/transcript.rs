@@ -66,6 +66,7 @@ pub(crate) fn save_minimal_transcript(
     result: &Result<String, SubagentError>,
     context_char_limit: usize,
     retention_days: Option<u32>,
+    project_path: Option<String>,
 ) {
     let (status, error_message, summary, failure_diagnostics) = match result {
         Ok(text) => (
@@ -98,9 +99,6 @@ pub(crate) fn save_minimal_transcript(
             (TranscriptStatus::Failed, Some(msg), None, Some(info))
         }
     };
-    let project_path = std::env::current_dir()
-        .ok()
-        .map(|p| p.to_string_lossy().to_string());
     let transcript = build_transcript(
         id.to_string(),
         session_id,

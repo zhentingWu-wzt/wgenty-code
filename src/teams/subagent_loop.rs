@@ -686,7 +686,7 @@ impl SubagentSynthesis {
             timeout_secs,
             None,
             None,
-            workdir,
+            workdir.clone(),
             permission,
             Arc::clone(&self.settings),
             self.transcript_store.clone(),
@@ -713,6 +713,7 @@ impl SubagentSynthesis {
                 &result,
                 self.settings.agent.subagent.trace.context_char_limit,
                 retention,
+                workdir.as_ref().map(|p| p.to_string_lossy().to_string()),
             );
         }
 

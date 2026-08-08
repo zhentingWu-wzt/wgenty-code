@@ -56,9 +56,7 @@ describe("StreamProcessor", () => {
     ];
 
     const contentEvents = events.filter((e) => e.type === "contentDelta");
-    expect(contentEvents.map((e) => (e as { text: string }).text).join("")).toBe(
-      "Hello, world!",
-    );
+    expect(contentEvents.map((e) => (e as { text: string }).text).join("")).toBe("Hello, world!");
     expect(events.some((e) => e.type === "streamDone")).toBe(true);
 
     const result = p.finish();
@@ -69,10 +67,7 @@ describe("StreamProcessor", () => {
 
   it("treats [DONE] as the terminal sentinel (no event, no error)", () => {
     const p = new StreamProcessor();
-    const events = [
-      ...p.feedString(contentChunk("hi", "stop")),
-      ...p.feedString("data: [DONE]\n"),
-    ];
+    const events = [...p.feedString(contentChunk("hi", "stop")), ...p.feedString("data: [DONE]\n")];
     expect(events.some((e) => e.type === "streamError")).toBe(false);
     expect(p.finish().content).toBe("hi");
   });

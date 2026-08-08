@@ -8,10 +8,19 @@
 //! Launch via: `wgenty-code daemon --port 8371`
 
 pub mod auth;
+pub(crate) mod fs;
+pub mod global_events;
 pub mod handlers;
+pub mod interaction_bridge;
+pub mod memory_router;
 pub mod models;
+pub mod projects;
 pub mod routes;
+pub mod run_loop;
+pub(crate) mod session_admin;
+pub(crate) mod skills_api;
 pub mod state;
+pub(crate) mod worktrees;
 
 use crate::state::AppState;
 use axum::extract::DefaultBodyLimit;
@@ -35,6 +44,9 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
     if let Err(e) = daemon_state.session_manager.load_index().await {
         tracing::warn!(error = %e, "Failed to load persisted sessions into daemon");
     }
+
+    // Restore session → worktree bindings persisted in session metadata.
+    session_admin::reconcile_worktree_bindings(&daemon_state).await;
 
     // Spawn background task to evict stale subagent progress sessions (60s TTL).
     let cleanup_state = daemon_state.clone();
@@ -82,6 +94,9 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
         crate::utils::daemon_token_path().display()
     );
 
+    // Discovery file: write now, heartbeat every 30s, delete on clean exit.
+    crate::utils::discovery::spawn_discovery_writer(port, api_token.clone());
+
     // Split the router: health stays public, everything else requires auth.
     let (health_router, protected_router) = routes::create_routers(daemon_state, api_token);
 
@@ -123,6 +138,7 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
 
     // Clean up token file on daemon shutdown.
     let _ = crate::utils::remove_daemon_token();
+    let _ = crate::utils::discovery::remove_discovery_file();
 
     Ok(())
 }

@@ -21,18 +21,46 @@ pub fn truncate_session_name(text: &str) -> String {
     }
 }
 
+/// Outcome of [`start_daemon`]: either an already-running daemon was reused
+/// via the discovery file, or a new embedded daemon was spawned locally.
+/// `Reused` carries no shutdown handles — the daemon is owned by another
+/// process and must keep running after this TUI exits.
+#[cfg(feature = "daemon")]
+pub enum StartDaemonOutcome {
+    Reused {
+        base_url: String,
+    },
+    Spawned {
+        base_url: String,
+        shutdown_tx: tokio::sync::oneshot::Sender<()>,
+        handle: tokio::task::JoinHandle<()>,
+    },
+}
+
 /// Start the daemon in a background tokio task and wait for it to be ready.
 /// Returns the base URL (including port) and a shutdown sender.
 #[cfg(feature = "daemon")]
-pub async fn start_daemon(
-    app_state: crate::state::AppState,
-) -> anyhow::Result<(
-    String,
-    tokio::sync::oneshot::Sender<()>,
-    tokio::task::JoinHandle<()>,
-)> {
-    // Bind to a random available port
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+pub async fn start_daemon(app_state: crate::state::AppState) -> anyhow::Result<StartDaemonOutcome> {
+    // Reuse an already-running global daemon when the discovery file checks
+    // out; fall through to the embedded spawn path otherwise (design §6.3).
+    if let Some(found) = crate::utils::discovery::discover_daemon() {
+        tracing::info!(
+            port = found.port,
+            "reusing running daemon via discovery file"
+        );
+        return Ok(StartDaemonOutcome::Reused {
+            base_url: format!("http://127.0.0.1:{}", found.port),
+        });
+    }
+    // Prefer the default daemon port (8371) so the web client's Vite proxy
+    // (which targets 127.0.0.1:8371) connects without extra config. Fall back
+    // to an OS-assigned port if 8371 is already taken (another daemon / TUI
+    // instance); in that case point the web client at DAEMON_PORT=<port>.
+    const DEFAULT_PORT: u16 = 8371;
+    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", DEFAULT_PORT)).await {
+        Ok(l) => l,
+        Err(_) => tokio::net::TcpListener::bind("127.0.0.1:0").await?,
+    };
     let port = listener.local_addr()?.port();
     let base_url = format!("http://127.0.0.1:{}", port);
     crate::utils::startup_timing::mark("daemon: tcp bound");
@@ -62,6 +90,9 @@ pub async fn start_daemon(
         "Daemon API token saved to: {}",
         crate::utils::daemon_token_path().display()
     );
+    // Make the embedded daemon discoverable so other UI processes can reuse
+    // it (spec: 多 UI 复用 daemon). Cleaned up in the shutdown task below.
+    crate::utils::discovery::spawn_discovery_writer(port, api_token.clone());
     let (health, protected) = routes::create_routers(daemon_state, api_token);
     crate::utils::startup_timing::mark("daemon: routers created");
     let app = health.merge(protected).layer(
@@ -96,8 +127,9 @@ pub async fn start_daemon(
             })
             .await
             .ok();
-        // Clean up token file on daemon shutdown.
+        // Clean up token and discovery files on daemon shutdown.
         let _ = crate::utils::remove_daemon_token();
+        let _ = crate::utils::discovery::remove_discovery_file();
     });
     // The listener is already bound, so axum::serve will accept connections
     // as soon as its task is scheduled. We don't block on a health-check
@@ -106,7 +138,11 @@ pub async fn start_daemon(
     // plenty of time to start. A single yield_now lets the serve task run.
     tokio::task::yield_now().await;
     tracing::info!("daemon ready on port {}", port);
-    Ok((base_url, shutdown_tx, handle))
+    Ok(StartDaemonOutcome::Spawned {
+        base_url,
+        shutdown_tx,
+        handle,
+    })
 }
 
 /// Compute initial collapse state based on line-count thresholds.
@@ -435,6 +471,7 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::SessionListLoaded(_)
         | AppEvent::HistoryLoaded { .. }
         | AppEvent::PlanUpdate(_)
+        | AppEvent::TodosSnapshot(_)
         | AppEvent::UndoResult(_)
         | AppEvent::SaveSession
         | AppEvent::DeleteSession(_)
@@ -464,6 +501,12 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::ModelsReady(_)
         | AppEvent::ModelSwitchRequested { .. }
         | AppEvent::ModelSwitched { .. }
+        | AppEvent::SessionSwitched { .. }
+        | AppEvent::ServerPermissionRequired { .. }
+        | AppEvent::ServerQuestionAsked { .. }
+        | AppEvent::SubagentTraceProgress(..)
+        | AppEvent::ServerPermissionResolved { .. }
+        | AppEvent::ServerQuestionResolved { .. }
         | AppEvent::ModelSwitchFailed(_) => None,
     }
 }
@@ -583,6 +626,14 @@ mod tests {
         // phase indicator.
         assert_eq!(
             agent_phase_from_event(&AppEvent::MemoriesReady(vec!["mem1".into()])),
+            None
+        );
+        // /clear 切换会话不改变 agent phase（仍为 Idle）
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::SessionSwitched {
+                id: "s1".into(),
+                name: "New Session".into()
+            }),
             None
         );
     }

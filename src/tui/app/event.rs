@@ -551,6 +551,58 @@ impl App {
                 self.question_state
                     .show(question, options, multi_select, responder);
             }
+            AppEvent::ServerPermissionRequired {
+                request_id,
+                tool,
+                reason,
+                rule,
+            } => {
+                self.permission_state.show_server(
+                    format!("{tool}: {reason}"),
+                    rule,
+                    request_id,
+                    self.daemon_client.clone(),
+                );
+            }
+            AppEvent::ServerQuestionAsked {
+                request_id,
+                question,
+                options,
+                multi_select,
+            } => {
+                let opts: Vec<QuestionOption> = serde_json::from_value(options).unwrap_or_default();
+                self.question_state.show_server(
+                    question,
+                    opts,
+                    multi_select,
+                    request_id,
+                    self.daemon_client.clone(),
+                );
+            }
+            AppEvent::SubagentTraceProgress(progress) if self.server_side_loop => {
+                // Only the server-side loop lacks the scoped-view poller, so
+                // apply trace progress directly here. Client-side mode
+                // populates the tree via `AgentLocalView` polling; upsert
+                // there would fight `replace_local`'s periodic clear.
+                self.subagent_tree.upsert(*progress);
+            }
+            AppEvent::ServerPermissionResolved { request_id }
+                if self.permission_state.visible
+                    && self.permission_state.server_request_id.as_deref() == Some(&request_id) =>
+            {
+                // Another device (or the daemon itself) resolved the request;
+                // dismiss the matching popup without re-sending a decision.
+                // `dismiss` only clears local state - it never POSTs.
+                let _ = self.permission_state.dismiss();
+            }
+            AppEvent::ServerQuestionResolved { request_id }
+                if self.question_state.visible
+                    && self.question_state.server_request_id.as_deref() == Some(&request_id) =>
+            {
+                // Clear without responding: the daemon already has the answer
+                // (resolved elsewhere), so we must not POST a duplicate.
+                self.question_state.clear_without_respond();
+            }
             AppEvent::ToggleSessions => {
                 if self.session_state.visible {
                     self.session_state.dismiss();
@@ -986,6 +1038,38 @@ impl App {
                     tool_metadata: None,
                 });
             }
+            AppEvent::SessionSwitched { id, name } => {
+                // Adopt the newly created session. Subagent state cleanup and
+                // suppress_phase_updates are handled by the AgentGenerationReset
+                // event spawned below, mirroring the original /clear path.
+                self.session_id = id.clone();
+                self.session_name = name;
+                // Re-point the server-side SSE readers at the new session id
+                // (abort + resubscribe) so streaming follows the switched
+                // session instead of the stale one.
+                self.respawn_session_event_reader(None);
+                self.respawn_trace_event_reader();
+                self.session_exit_saved
+                    .store(false, std::sync::atomic::Ordering::Release);
+                let client = self.daemon_client.clone();
+                let event_tx = self.event_tx.clone();
+                tokio::spawn(async move {
+                    match client.reset_agent_generation(&id).await {
+                        Ok(generation) => {
+                            let _ = event_tx.send(AppEvent::AgentGenerationReset { generation });
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                error = %error,
+                                "reset_agent_generation failed; retaining old generation"
+                            );
+                            let _ = event_tx.send(AppEvent::AgentGenerationReset {
+                                generation: u64::MAX,
+                            });
+                        }
+                    }
+                });
+            }
             AppEvent::AgentGenerationReset { generation } => {
                 if generation == u64::MAX {
                     // Reset failed on the daemon: surface an actionable
@@ -1095,6 +1179,17 @@ impl App {
             }
             AppEvent::PlanUpdate(value) => {
                 self.plan_panel_state.apply_update_value(&value);
+            }
+            AppEvent::TodosSnapshot(items) => {
+                use crate::tui::components::plan_panel::{PlanItem, PlanStatus};
+                let items = items
+                    .into_iter()
+                    .map(|t| PlanItem {
+                        step: t.content,
+                        status: PlanStatus::parse_status(&t.status),
+                    })
+                    .collect::<Vec<_>>();
+                self.plan_panel_state.update(items);
             }
             AppEvent::MemoriesReady(lines) => {
                 // Cross-session memory recall completed in the background at

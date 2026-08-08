@@ -3,7 +3,7 @@
 use crate::api::{ApiClient, ToolDefinition};
 use crate::daemon::models::*;
 use crate::daemon::state::DaemonState;
-use crate::permissions::PolicyDecision;
+use crate::permissions::{PolicyDecision, ToolPermissionPolicy};
 use crate::tasks::management::{TaskPriority, TaskStatus};
 use axum::{
     extract::{Path, Query, State},
@@ -159,6 +159,15 @@ pub async fn switch_model(
         model = %model_name,
         provider = ?provider,
         "model switched via /model"
+    );
+
+    state.broadcast_global(
+        crate::daemon::global_events::GlobalEventKind::ModelChanged,
+        serde_json::json!({
+            "profile": body.profile,
+            "model_name": model_name,
+            "provider": provider,
+        }),
     );
 
     Ok(Json(SwitchModelResponse {
@@ -454,6 +463,7 @@ fn trace_event_from_header(
         error,
         kind: crate::teams::trace_sink::TraceEventKind::Progress,
         permission: None,
+        question: None,
     }
 }
 
@@ -481,13 +491,33 @@ pub async fn execute_tool(
 ) -> Result<Json<ExecuteToolResponse>, StatusCode> {
     let tool_name = &body.tool_name;
     let args = &body.arguments;
+    // deprecated(compat): legacy chat_stream client path; server-side callers
+    // must pass session_id. Removal is a separate change.
     let session_id = body.session_id.as_deref().unwrap_or("default");
 
+    // Multi-project: validate against the session's own effective root (bound
+    // worktree > project > main working_dir) so the policy boundary always
+    // matches the execution workdir, and snapshot into that project's
+    // checkpoint store.
+    let session_root = state.effective_session_root(session_id).await;
+    let (cp_manager, cp_store) = state.checkpoints_for_project(&session_root);
+
+    // Per-project permission mode for this session's working directory.
+    let mode_entry = state.permission_modes.get(&session_root);
+
     // Validate against policy
-    let decision = state
-        .tool_executor
-        .validate_tool_call(tool_name, args)
-        .await;
+    let decision = {
+        let policy = ToolPermissionPolicy::new(session_root.clone());
+        let rules_handle = state.tool_executor.session_rules_handle();
+        let rules = rules_handle.read().await;
+        crate::tools::executor::validate_tool_call_shared(
+            &state.tool_registry,
+            &policy,
+            &rules,
+            tool_name,
+            args,
+        )
+    };
     tracing::info!("🔐 Daemon: policy for '{}' = {:?}", tool_name, decision);
     match decision {
         Ok(PolicyDecision::Allow) => {
@@ -498,12 +528,12 @@ pub async fn execute_tool(
                 .root_context(session_id)
                 .await
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            let effective_mode = *state.effective_mode.read().unwrap();
+            let effective_mode = mode_entry.effective_mode;
             // Ensure the turn snapshot exists when the client supplies a turn id
             // (TUI/REPL generate one per user message). Plan mode skips capture
             // inside maybe_capture_pre_edit via EffectiveMode::Plan.
             if let Some(turn_id) = body.turn_id.as_deref() {
-                if let Err(e) = state.checkpoint_manager.begin_turn(turn_id) {
+                if let Err(e) = cp_manager.begin_turn(turn_id) {
                     tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
                 }
             }
@@ -513,9 +543,9 @@ pub async fn execute_tool(
                     uuid::Uuid::new_v4().to_string(),
                 ),
                 origin_turn_id: body.turn_id.as_deref(),
-                workdir: None,
+                workdir: Some(session_root.as_path()),
                 effective_mode,
-                checkpoint: Some(state.checkpoint_store.as_ref()),
+                checkpoint: Some(cp_store.as_ref()),
             };
             // Execute directly with hooks
             let msg = state
@@ -541,11 +571,7 @@ pub async fn execute_tool(
             // Check if rule was already approved for this session, OR root mode
             // auto-approves this tool (AcceptEdits / Yolo). Without the mode
             // bypass, AcceptEdits still bounced every write through the TUI.
-            let mode_auto = state
-                .root_mode
-                .read()
-                .map(|m| m.auto_approves(tool_name))
-                .unwrap_or(false);
+            let mode_auto = mode_entry.root_mode.auto_approves(tool_name);
             let already = state.is_rule_approved(session_id, &req.session_rule).await;
             if already || mode_auto {
                 if mode_auto && !already {
@@ -558,7 +584,7 @@ pub async fn execute_tool(
                 // Per-tool git-stash checkpoints removed: pre-edit capture happens
                 // inside ToolRegistry::execute_with_context via CheckpointStore.
                 if let Some(turn_id) = body.turn_id.as_deref() {
-                    if let Err(e) = state.checkpoint_manager.begin_turn(turn_id) {
+                    if let Err(e) = cp_manager.begin_turn(turn_id) {
                         tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
                     }
                 }
@@ -566,16 +592,16 @@ pub async fn execute_tool(
                     .root_context(session_id)
                     .await
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                let effective_mode = *state.effective_mode.read().unwrap();
+                let effective_mode = mode_entry.effective_mode;
                 let tool_context = crate::agent::ToolContext {
                     agent: &root_context,
                     invocation_id: crate::agent::ToolInvocationId::new(
                         uuid::Uuid::new_v4().to_string(),
                     ),
                     origin_turn_id: body.turn_id.as_deref(),
-                    workdir: None,
+                    workdir: Some(session_root.as_path()),
                     effective_mode,
-                    checkpoint: Some(state.checkpoint_store.as_ref()),
+                    checkpoint: Some(cp_store.as_ref()),
                 };
                 let msg = state
                     .tool_executor
@@ -636,6 +662,8 @@ pub async fn approve_tool(
         .tool_executor
         .approve_rule(body.session_rule.clone())
         .await;
+    // deprecated(compat): legacy chat_stream client path; server-side callers
+    // must pass session_id. Removal is a separate change.
     state.approve_rule("default", body.session_rule).await;
 
     Json(serde_json::json!({"success": true}))
@@ -646,6 +674,8 @@ pub async fn unapprove_tool(
     Json(body): Json<ApproveToolRequest>,
 ) -> Json<serde_json::Value> {
     state.tool_executor.unapprove_rule(&body.session_rule).await;
+    // deprecated(compat): legacy chat_stream client path; server-side callers
+    // must pass session_id. Removal is a separate change.
     state.unapprove_rule("default", &body.session_rule).await;
 
     Json(serde_json::json!({"success": true}))
@@ -674,24 +704,76 @@ pub async fn list_pending_permissions(
 }
 
 /// POST /api/v1/tools/resolve-permission — unblock a subagent Ask waiter.
+///
+/// Duplicate answers get 409 with the standing (first) decision instead of an
+/// indistinguishable `{success:false}`; unknown ids get 404.
 pub async fn resolve_subagent_permission(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<crate::daemon::models::ResolveSubagentPermissionRequest>,
-) -> Json<serde_json::Value> {
-    if body.approved && body.always {
-        if let Some(rule) = body.session_rule.clone() {
-            state.tool_executor.approve_rule(rule.clone()).await;
-            state.approve_rule("default", rule).await;
-        }
-    }
-    let ok = state
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    use crate::teams::PermissionResolveOutcome as Outcome;
+    match state
         .permission_bridge
         .resolve(&body.request_id, body.approved)
-        .await;
-    Json(serde_json::json!({
-        "success": ok,
-        "resolved": ok,
-    }))
+        .await
+    {
+        Outcome::Resolved => {
+            // Approve the standing rule only on the FIRST resolution — a
+            // duplicate answer must produce no second effect (spec §审批).
+            if body.approved && body.always {
+                if let Some(rule) = body.session_rule.clone() {
+                    state.tool_executor.approve_rule(rule.clone()).await;
+                    // deprecated(compat): legacy global rule scope, see Task 12.
+                    state.approve_rule("default", rule).await;
+                }
+            }
+            Ok(Json(
+                serde_json::json!({ "success": true, "resolved": true }),
+            ))
+        }
+        Outcome::AlreadyResolved(approved) => Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "success": false, "resolved": true, "approved": approved,
+            })),
+        )),
+        Outcome::Unknown => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "success": false, "resolved": false })),
+        )),
+    }
+}
+
+/// `POST /api/v1/interactions/:id/resolve` — answer a pending ask_user_question
+/// prompt from the server-side loop. The answer string unblocks the waiting
+/// InteractionBridge waiter. Duplicate answers get 409 with the standing
+/// (first) resolution instead of an indistinguishable 404.
+pub async fn resolve_interaction(
+    State(state): State<Arc<DaemonState>>,
+    Path(request_id): Path<String>,
+    Json(body): Json<crate::daemon::models::ResolveInteractionRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    match state
+        .interaction_bridge
+        .resolve(&request_id, body.answer)
+        .await
+    {
+        crate::daemon::interaction_bridge::ResolveOutcome::Resolved => {
+            Ok(Json(serde_json::json!({ "resolved": true })))
+        }
+        crate::daemon::interaction_bridge::ResolveOutcome::AlreadyResolved(answer) => {
+            // Duplicate answer: conflict, and hand back the standing resolution.
+            Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "resolved": false, "answer": answer })),
+            ))
+        }
+        // Never existed (or waiter gone). 404 so the client stops retrying.
+        crate::daemon::interaction_bridge::ResolveOutcome::Unknown => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "unknown interaction" })),
+        )),
+    }
 }
 
 /// POST /api/v1/permission-mode - update the root agent's runtime permission
@@ -700,32 +782,61 @@ pub async fn resolve_subagent_permission(
 pub async fn set_permission_mode(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<crate::daemon::models::SetPermissionModeRequest>,
-) -> Json<serde_json::Value> {
-    *state.root_mode.write().unwrap() = body.mode;
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Server-side path: approvals/rules must belong to a real session
+    // (design §4) — missing session_id is a client bug, not a default.
+    let Some(session_id) = body.session_id.as_deref() else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "session_id required"})),
+        ));
+    };
+    let session_root = state.effective_session_root(session_id).await;
     let effective = body
         .effective_mode
         .unwrap_or_else(|| crate::sandbox::EffectiveMode::from_root_permission_mode(body.mode));
-    *state.effective_mode.write().unwrap() = effective;
+    state
+        .permission_modes
+        .set(session_root, body.mode, effective);
     tracing::info!(
         mode = ?body.mode,
         effective_mode = ?effective,
         "root permission / effective mode updated"
     );
-    Json(serde_json::json!({
+    state.broadcast_global(
+        crate::daemon::global_events::GlobalEventKind::ModeChanged,
+        serde_json::json!({
+            "session_id": session_id,
+            "mode": body.mode,
+            "effective_mode": effective,
+        }),
+    );
+    Ok(Json(serde_json::json!({
         "success": true,
         "mode": body.mode,
         "effective_mode": effective,
-    }))
+    })))
 }
 
 /// GET /api/v1/permission-mode - get the current root agent permission mode.
-pub async fn get_permission_mode(State(state): State<Arc<DaemonState>>) -> Json<serde_json::Value> {
-    let mode = *state.root_mode.read().unwrap();
-    let effective_mode = *state.effective_mode.read().unwrap();
-    Json(serde_json::json!({
-        "mode": mode,
-        "effective_mode": effective_mode,
-    }))
+pub async fn get_permission_mode(
+    State(state): State<Arc<DaemonState>>,
+    Query(params): Query<crate::daemon::models::PermissionModeQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Server-side path: approvals/rules must belong to a real session
+    // (design §4) — missing session_id is a client bug, not a default.
+    let Some(session_id) = params.session_id.as_deref() else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "session_id required"})),
+        ));
+    };
+    let session_root = state.effective_session_root(session_id).await;
+    let entry = state.permission_modes.get(&session_root);
+    Ok(Json(serde_json::json!({
+        "mode": entry.root_mode,
+        "effective_mode": entry.effective_mode,
+    })))
 }
 
 // ── Tasks ────────────────────────────────────────────────────────────────────
@@ -806,7 +917,9 @@ pub async fn get_todos(State(state): State<Arc<DaemonState>>) -> Json<GetTodosRe
 pub async fn get_background_results(
     State(state): State<Arc<DaemonState>>,
 ) -> Json<serde_json::Value> {
-    let results = state.background_manager.drain_results().await;
+    // Snapshot read (no drain): results are retained so every client can
+    // query them; the old first-come-first-served drain is abolished.
+    let results = state.background_results_snapshot().await;
     Json(serde_json::json!({ "results": results }))
 }
 
@@ -835,46 +948,90 @@ pub async fn list_mcp_servers(
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
+/// Map a stored [`SessionInfo`] to its API response shape (shared by the list
+/// and search handlers).
+fn session_info_response(s: crate::context::memory_session::SessionInfo) -> SessionInfoResponse {
+    SessionInfoResponse {
+        id: s.id,
+        name: s.name,
+        project_path: s.project_path.map(|p| p.to_string_lossy().to_string()),
+        created_at: s.created_at.to_rfc3339(),
+        updated_at: s.updated_at.to_rfc3339(),
+        message_count: s.message_count,
+        status: format!("{:?}", s.status),
+        worktree: s.worktree.map(|w| WorktreeRef {
+            path: w.path,
+            branch: w.branch,
+        }),
+    }
+}
+
+/// Sessions stored under a non-main project's directory but lacking
+/// `project_path` (e.g. moved there manually) still group under that project.
+fn fill_project(
+    root: &std::path::Path,
+    sessions: &mut [crate::context::memory_session::SessionInfo],
+) {
+    for s in sessions.iter_mut() {
+        if s.project_path.is_none() {
+            s.project_path = Some(root.to_path_buf());
+        }
+    }
+}
+
 pub async fn list_sessions(
     State(state): State<Arc<DaemonState>>,
 ) -> Result<Json<Vec<SessionInfoResponse>>, StatusCode> {
-    let sessions = state
+    // Aggregate the main project and every registered project.
+    let mut sessions = state
         .session_manager
         .list()
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    for root in state.projects.registered_roots() {
+        let mgr = state.session_manager_for_project(&root).await;
+        let mut project_sessions = mgr
+            .list()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        fill_project(&root, &mut project_sessions);
+        sessions.extend(project_sessions);
+    }
 
     Ok(Json(
-        sessions
-            .into_iter()
-            .map(|s| SessionInfoResponse {
-                id: s.id,
-                name: s.name,
-                project_path: s.project_path.map(|p| p.to_string_lossy().to_string()),
-                created_at: s.created_at.to_rfc3339(),
-                updated_at: s.updated_at.to_rfc3339(),
-                message_count: s.message_count,
-                status: format!("{:?}", s.status),
-            })
-            .collect(),
+        sessions.into_iter().map(session_info_response).collect(),
     ))
 }
 
 pub async fn create_session(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<CreateSessionRequest>,
-) -> Result<Json<SessionResponse>, StatusCode> {
-    let session = state
-        .session_manager
-        .create(body.name.as_deref())
+) -> Result<Json<SessionResponse>, (StatusCode, String)> {
+    // Route to the owning project's session store (default: main project).
+    let root = match &body.project_path {
+        Some(p) => state.projects.resolve(p).ok_or((
+            StatusCode::BAD_REQUEST,
+            format!("not a registered project: {p}"),
+        ))?,
+        None => state.projects.main_root(),
+    };
+    let mgr = state.session_manager_for_project(&root).await;
+    let session =
+        crate::context::memory_session::Session::new(body.name.as_deref()).with_project(root);
+    mgr.save(&session)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(SessionResponse {
+        worktree: crate::context::memory_session::worktree_of(&session).map(|w| WorktreeRef {
+            path: w.path,
+            branch: w.branch,
+        }),
         id: session.id,
         name: session.name,
         created_at: session.created_at.to_rfc3339(),
         updated_at: session.updated_at.to_rfc3339(),
+        version: session.version,
         messages: session.messages,
         ui_messages: session.ui_messages,
     }))
@@ -884,18 +1041,21 @@ pub async fn get_session(
     State(state): State<Arc<DaemonState>>,
     Path(id): Path<String>,
 ) -> Result<Json<SessionResponse>, StatusCode> {
-    let session = state
-        .session_manager
-        .load(&id)
+    let (_mgr, session) = state
+        .resolve_session(&id)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(SessionResponse {
+        worktree: crate::context::memory_session::worktree_of(&session).map(|w| WorktreeRef {
+            path: w.path,
+            branch: w.branch,
+        }),
         id: session.id,
         name: session.name,
         created_at: session.created_at.to_rfc3339(),
         updated_at: session.updated_at.to_rfc3339(),
+        version: session.version,
         messages: session.messages,
         ui_messages: session.ui_messages,
     }))
@@ -905,20 +1065,54 @@ pub async fn update_session(
     State(state): State<Arc<DaemonState>>,
     Path(id): Path<String>,
     Json(body): Json<UpdateSessionRequest>,
-) -> Result<Json<SessionResponse>, StatusCode> {
-    // Upsert must preserve the path id. Session::new() mints a fresh UUID and
-    // previously caused every SaveSession to write a new file (duplicate names
-    // in the session panel) while the TUI continued using the original id.
-    let mut session = state
-        .session_manager
-        .load(&id)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .unwrap_or_else(|| crate::context::memory_session::Session::with_id(id.clone(), None));
+) -> Result<Json<SessionResponse>, (StatusCode, Json<serde_json::Value>)> {
+    // Serialize the load → expected_version check → save sequence: without
+    // this lock two concurrent PUTs with the same expected_version can both
+    // read the pre-write version, both pass the check, and both "succeed" at
+    // the same new version (observed in the T17 acceptance test). Held across
+    // the disk I/O below; saves are small and infrequent, so a single global
+    // lock costs nothing measurable on a loopback daemon.
+    let _update_guard = state.session_update_lock.lock().await;
+
+    // Run lock: mutating a session mid-run would race the run's final save.
+    if state.session_runs.is_active(&id) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "run active"})),
+        ));
+    }
+
+    // Route to the owning project's store; an unknown id upserts into the
+    // main project (legacy TUI behavior).
+    let (mgr, mut session) = match state.resolve_session(&id).await {
+        Some((mgr, session)) => (mgr, session),
+        // Upsert must preserve the path id. Session::new() mints a fresh UUID and
+        // previously caused every SaveSession to write a new file (duplicate names
+        // in the session panel) while the TUI continued using the original id.
+        None => (
+            state.session_manager.clone(),
+            crate::context::memory_session::Session::with_id(id.clone(), None),
+        ),
+    };
 
     // Defense in depth: even if a future constructor changes, never let the
     // on-disk / response id diverge from the request path.
     session.id = id;
+
+    // Optimistic concurrency guard: `Some(v)` must match the stored version
+    // (read via `load`, i.e. the real on-disk value, not the lazy index);
+    // `None` keeps legacy last-write-wins behavior.
+    if let Some(expected) = body.expected_version {
+        if expected != session.version {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "version conflict",
+                    "current_version": session.version,
+                })),
+            ));
+        }
+    }
 
     if let Some(name) = &body.name {
         session.name = name.clone();
@@ -930,20 +1124,28 @@ pub async fn update_session(
         session.ui_messages = ui_messages;
     }
     session.updated_at = chrono::Utc::now();
+    // Every persisted write advances the optimistic-concurrency version.
+    session.version += 1;
     // Fully materialised write — clear any lazy index marker.
     session.lazy_message_count = None;
 
-    state
-        .session_manager
-        .save(&session)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    mgr.save(&session).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+    })?;
 
     Ok(Json(SessionResponse {
+        worktree: crate::context::memory_session::worktree_of(&session).map(|w| WorktreeRef {
+            path: w.path,
+            branch: w.branch,
+        }),
         id: session.id,
         name: session.name,
         created_at: session.created_at.to_rfc3339(),
         updated_at: session.updated_at.to_rfc3339(),
+        version: session.version,
         messages: session.messages,
         ui_messages: session.ui_messages,
     }))
@@ -953,7 +1155,12 @@ pub async fn delete_session(
     State(state): State<Arc<DaemonState>>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    match state.session_manager.delete(&id).await {
+    let mgr = match state.resolve_session(&id).await {
+        Some((mgr, _)) => mgr,
+        // Unknown id: keep the legacy error semantics of the main store.
+        None => state.session_manager.clone(),
+    };
+    match mgr.delete(&id).await {
         Ok(()) => Ok(Json(serde_json::json!({"success": true}))),
         Err(e) => {
             if e.to_string().contains("Invalid session ID") {
@@ -969,21 +1176,16 @@ pub async fn search_sessions(
     State(state): State<Arc<DaemonState>>,
     Query(query): Query<SearchSessionsQuery>,
 ) -> Result<Json<Vec<SessionInfoResponse>>, StatusCode> {
-    let sessions = state.session_manager.search(&query.q).await;
+    let mut sessions = state.session_manager.search(&query.q).await;
+    for root in state.projects.registered_roots() {
+        let mgr = state.session_manager_for_project(&root).await;
+        let mut project_sessions = mgr.search(&query.q).await;
+        fill_project(&root, &mut project_sessions);
+        sessions.extend(project_sessions);
+    }
 
     Ok(Json(
-        sessions
-            .into_iter()
-            .map(|s| SessionInfoResponse {
-                id: s.id,
-                name: s.name,
-                project_path: s.project_path.map(|p| p.to_string_lossy().to_string()),
-                created_at: s.created_at.to_rfc3339(),
-                updated_at: s.updated_at.to_rfc3339(),
-                message_count: s.message_count,
-                status: format!("{:?}", s.status),
-            })
-            .collect(),
+        sessions.into_iter().map(session_info_response).collect(),
     ))
 }
 
@@ -1006,6 +1208,9 @@ pub async fn undo_checkpoint(State(state): State<Arc<DaemonState>>) -> Result<St
 #[derive(serde::Deserialize)]
 pub struct UndoTurnRangeRequest {
     pub turn_ids: Vec<String>,
+    /// Project whose checkpoint store holds the turns (`None` = main project).
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// POST /api/v1/tools/undo-turn - rewind a range of turns, restoring files to
@@ -1014,8 +1219,18 @@ pub struct UndoTurnRangeRequest {
 pub async fn undo_turn_range(
     State(state): State<Arc<DaemonState>>,
     Json(body): Json<UndoTurnRangeRequest>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    match state.checkpoint_manager.undo_range(body.turn_ids).await {
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let manager = match &body.project {
+        Some(p) => {
+            let root = state.projects.resolve(p).ok_or((
+                StatusCode::BAD_REQUEST,
+                format!("not a registered project: {p}"),
+            ))?;
+            state.checkpoints_for_project(&root).0
+        }
+        None => state.checkpoint_manager.clone(),
+    };
+    match manager.undo_range(body.turn_ids).await {
         Ok(report) => Ok(Json(serde_json::json!({
             "restored": report.restored,
             "skipped": report.skipped,
@@ -1024,9 +1239,17 @@ pub async fn undo_turn_range(
         }))),
         Err(e) => {
             tracing::warn!(error = %e, "undo_turn_range failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
         }
     }
+}
+
+/// Query for `GET /api/v1/checkpoints`.
+#[derive(serde::Deserialize)]
+pub struct ListCheckpointsQuery {
+    /// Project whose checkpoints to list (`None` = main project).
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// GET /api/v1/checkpoints - list per-turn checkpoint snapshots (newest-first).
@@ -1034,8 +1257,19 @@ pub async fn undo_turn_range(
 /// the TUI `/undo` turn-picker to show how many files each turn touched.
 pub async fn list_checkpoints(
     State(state): State<Arc<DaemonState>>,
-) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
-    match state.checkpoint_manager.store().list() {
+    Query(q): Query<ListCheckpointsQuery>,
+) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, String)> {
+    let manager = match &q.project {
+        Some(p) => {
+            let root = state.projects.resolve(p).ok_or((
+                StatusCode::BAD_REQUEST,
+                format!("not a registered project: {p}"),
+            ))?;
+            state.checkpoints_for_project(&root).0
+        }
+        None => state.checkpoint_manager.clone(),
+    };
+    match manager.store().list() {
         Ok(infos) => Ok(Json(
             infos
                 .into_iter()
@@ -1050,7 +1284,7 @@ pub async fn list_checkpoints(
         )),
         Err(e) => {
             tracing::warn!(error = %e, "list_checkpoints failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
         }
     }
 }
@@ -1255,10 +1489,12 @@ pub async fn get_agent_self(
     let viewer = resolve_viewer_from_headers(&state, &headers)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
+    // Server-side path: approvals/rules must belong to a real session
+    // (design §4) — missing session_id is a client bug, not a default.
     let session_id = params
         .get("session_id")
         .map(|s| s.as_str())
-        .unwrap_or("default");
+        .ok_or(StatusCode::BAD_REQUEST)?;
     let root = state
         .root_context(session_id)
         .await
@@ -1289,10 +1525,12 @@ pub async fn navigate_agent_view(
     let viewer = resolve_viewer_from_headers(&state, &headers)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
+    // Server-side path: approvals/rules must belong to a real session
+    // (design §4) — missing session_id is a client bug, not a default.
     let session_id = params
         .get("session_id")
         .map(|s| s.as_str())
-        .unwrap_or("default");
+        .ok_or(StatusCode::BAD_REQUEST)?;
     let target_context = resolve_navigation_context(
         &state.coordinator,
         &state.capability_service,
@@ -1316,10 +1554,12 @@ pub async fn get_child_transcript(
     let viewer = resolve_viewer_from_headers(&state, &headers)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
+    // Server-side path: approvals/rules must belong to a real session
+    // (design §4) — missing session_id is a client bug, not a default.
     let session_id = params
         .get("session_id")
         .map(|s| s.as_str())
-        .unwrap_or("default");
+        .ok_or(StatusCode::BAD_REQUEST)?;
     let root = state
         .root_context(session_id)
         .await
@@ -1365,10 +1605,12 @@ pub async fn cancel_child(
     let viewer = resolve_viewer_from_headers(&state, &headers)
         .await
         .ok_or(StatusCode::NOT_FOUND)?;
+    // Server-side path: approvals/rules must belong to a real session
+    // (design §4) — missing session_id is a client bug, not a default.
     let session_id = params
         .get("session_id")
         .map(|s| s.as_str())
-        .unwrap_or("default");
+        .ok_or(StatusCode::BAD_REQUEST)?;
     let root = state
         .root_context(session_id)
         .await
@@ -1423,11 +1665,27 @@ pub async fn claim_task_group(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     match delivery {
-        Some(d) => Ok(Json(TaskGroupDeliveryResponse {
-            group_id: d.group_id.as_str().to_string(),
-            generation: d.generation,
-            results: d.results,
-        })),
+        Some(d) => {
+            // Broadcast the claimed group's result summary on the global bus;
+            // `project` lets multi-project clients filter (design §10).
+            let project = state.effective_session_root(&body.session_id).await;
+            state.broadcast_global(
+                crate::daemon::global_events::GlobalEventKind::TaskGroupResult,
+                serde_json::json!({
+                    "task_group_id": d.group_id.as_str(),
+                    "session_id": body.session_id,
+                    "generation": d.generation,
+                    "project": project,
+                    "result_count": d.results.len(),
+                    "statuses": d.results.iter().map(|r| r.status).collect::<Vec<_>>(),
+                }),
+            );
+            Ok(Json(TaskGroupDeliveryResponse {
+                group_id: d.group_id.as_str().to_string(),
+                generation: d.generation,
+                results: d.results,
+            }))
+        }
         None => Err(StatusCode::NO_CONTENT),
     }
 }
@@ -1478,13 +1736,33 @@ pub async fn cancel_agent_session(
 // ── Memory ops API (Tier 2 web-ops-console) ──────────────────────────────────
 // Thin wrappers over the shared MemoryManager. All read-only except prune.
 
+/// Resolve the memory pool for an optional `project` query param (`None` =
+/// main project). Shared by all memory endpoints.
+async fn memory_manager_for(
+    state: &DaemonState,
+    project: Option<&str>,
+) -> Result<Arc<crate::context::MemoryManager>, (StatusCode, String)> {
+    match project {
+        Some(p) => {
+            let root = state.projects.resolve(p).ok_or((
+                StatusCode::BAD_REQUEST,
+                format!("not a registered project: {p}"),
+            ))?;
+            Ok(state.memory_router.for_project(&root).await)
+        }
+        None => Ok(state.memory_manager.clone()),
+    }
+}
+
 /// `GET /api/v1/memory/status` — dual-pool status summary.
 pub async fn memory_status(
     State(state): State<Arc<DaemonState>>,
-) -> Result<Json<crate::context::MemoryStatus>, StatusCode> {
-    let status = state.memory_manager.status().await.map_err(|e| {
+    Query(q): Query<MemoryProjectQuery>,
+) -> Result<Json<crate::context::MemoryStatus>, (StatusCode, String)> {
+    let mgr = memory_manager_for(&state, q.project.as_deref()).await?;
+    let status = mgr.status().await.map_err(|e| {
         error!(error = ?e, "memory status failed");
-        StatusCode::INTERNAL_SERVER_ERROR
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
     })?;
     Ok(Json(status))
 }
@@ -1493,12 +1771,10 @@ pub async fn memory_status(
 pub async fn list_memory(
     State(state): State<Arc<DaemonState>>,
     Query(q): Query<MemoryListQuery>,
-) -> Result<Json<MemoryListResponse>, StatusCode> {
+) -> Result<Json<MemoryListResponse>, (StatusCode, String)> {
+    let mgr = memory_manager_for(&state, q.project.as_deref()).await?;
     let limit = q.limit.unwrap_or(500).clamp(1, 5000);
-    let entries = state
-        .memory_manager
-        .list_memories(q.min_importance, limit)
-        .await;
+    let entries = mgr.list_memories(q.min_importance, limit).await;
 
     let items: Vec<MemoryItemResponse> = entries
         .into_iter()
@@ -1520,9 +1796,10 @@ pub async fn list_memory(
 pub async fn get_memory(
     State(state): State<Arc<DaemonState>>,
     Path(id): Path<String>,
-) -> Result<Json<MemoryDetailResponse>, StatusCode> {
+    Query(q): Query<MemoryProjectQuery>,
+) -> Result<Json<MemoryDetailResponse>, (StatusCode, String)> {
     // get_memory doesn't return origin; re-derive it by checking both pools.
-    let mgr = &state.memory_manager;
+    let mgr = memory_manager_for(&state, q.project.as_deref()).await?;
     if let Some(entry) = mgr.get_memory(&id).await {
         // list_memories gives us the origin mapping cheaply for the lookup.
         let origin = mgr
@@ -1534,7 +1811,7 @@ pub async fn get_memory(
             .unwrap_or_else(|| "project".to_string());
         Ok(Json(MemoryDetailResponse { origin, entry }))
     } else {
-        Err(StatusCode::NOT_FOUND)
+        Err((StatusCode::NOT_FOUND, format!("no such memory: {id}")))
     }
 }
 
@@ -1543,16 +1820,18 @@ pub async fn get_memory(
 /// change — for now we honor the flag by returning status without pruning).
 pub async fn prune_memory(
     State(state): State<Arc<DaemonState>>,
+    Query(q): Query<MemoryProjectQuery>,
     req: Option<Json<PruneRequest>>,
-) -> Result<Json<crate::context::PruneResult>, StatusCode> {
+) -> Result<Json<crate::context::PruneResult>, (StatusCode, String)> {
+    let mgr = memory_manager_for(&state, q.project.as_deref()).await?;
     let dry_run = req.map(|b| b.dry_run).unwrap_or(false);
     // Dry-run: return the would-be result by reading status deltas. The
     // current MemoryManager::prune is destructive with no preview, so we
     // approximate dry-run as a no-op returning current counts as before==after.
     if dry_run {
-        let s = state.memory_manager.status().await.map_err(|e| {
+        let s = mgr.status().await.map_err(|e| {
             error!(error = ?e, "memory status (dry-run prune) failed");
-            StatusCode::INTERNAL_SERVER_ERROR
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         })?;
         return Ok(Json(crate::context::PruneResult {
             before: s.total_memories,
@@ -1564,9 +1843,9 @@ pub async fn prune_memory(
             global_after: s.global_count,
         }));
     }
-    let result = state.memory_manager.prune().await.map_err(|e| {
+    let result = mgr.prune().await.map_err(|e| {
         error!(error = ?e, "memory prune failed");
-        StatusCode::INTERNAL_SERVER_ERROR
+        (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
     })?;
     Ok(Json(result))
 }
@@ -1611,6 +1890,7 @@ mod tests {
                 metadata: Default::default(),
             }]),
             ui_messages: None,
+            expected_version: None,
         };
         let Json(resp): Json<SessionResponse> =
             update_session(State(state.clone()), Path(fixed_id.clone()), Json(body))
@@ -1635,6 +1915,84 @@ mod tests {
             !home_sessions.is_file(),
             "session must not be written to global ~/.wgenty-code/sessions when project dir is writable"
         );
+    }
+
+    #[tokio::test]
+    async fn multi_project_session_routing() {
+        use crate::config::Settings;
+        use crate::daemon::models::CreateSessionRequest;
+        use crate::state::AppState;
+        use axum::extract::{Path, State};
+        use axum::Json;
+
+        let main = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = main.path().to_path_buf();
+        let mut state = DaemonState::new(AppState::new(settings)).await;
+        // Isolate the registry from the developer's real projects.json.
+        let reg_store = tempfile::tempdir().unwrap();
+        state.projects = crate::daemon::projects::ProjectRegistry::load(
+            main.path().to_path_buf(),
+            reg_store.path().join("projects.json"),
+        );
+        let state = Arc::new(state);
+
+        // Register project B and create a session in it.
+        let proj_b = tempfile::tempdir().unwrap();
+        let b_canon = proj_b.path().canonicalize().unwrap();
+        state.projects.add(proj_b.path().to_str().unwrap()).unwrap();
+        let Json(created) = create_session(
+            State(state.clone()),
+            Json(CreateSessionRequest {
+                name: Some("in-b".to_string()),
+                project_path: Some(b_canon.to_string_lossy().to_string()),
+            }),
+        )
+        .await
+        .expect("create_session into project B");
+        let sid = created.id;
+
+        // The session file lands under project B's store, not the main one.
+        assert!(crate::utils::project_sessions_dir(&b_canon)
+            .join(format!("{sid}.json"))
+            .is_file());
+        assert!(!crate::utils::project_sessions_dir(main.path())
+            .join(format!("{sid}.json"))
+            .is_file());
+
+        // list_sessions aggregates both projects and tags the entry.
+        let Json(listed) = list_sessions(State(state.clone())).await.unwrap();
+        let entry = listed.iter().find(|s| s.id == sid).expect("listed");
+        assert_eq!(
+            entry.project_path.as_deref(),
+            Some(b_canon.to_string_lossy().as_ref())
+        );
+
+        // get/update/delete route across projects.
+        let Json(got) = get_session(State(state.clone()), Path(sid.clone()))
+            .await
+            .expect("get_session routes to project B");
+        assert_eq!(got.name, "in-b");
+
+        // The effective working root follows the session's project.
+        assert_eq!(state.effective_session_root(&sid).await, b_canon);
+
+        // Unknown project path is rejected.
+        let rejected = create_session(
+            State(state.clone()),
+            Json(CreateSessionRequest {
+                name: None,
+                project_path: Some("/no/such/project".to_string()),
+            }),
+        )
+        .await;
+        assert!(rejected.is_err());
+
+        // delete routes to the owning store.
+        let _ = delete_session(State(state.clone()), Path(sid.clone()))
+            .await
+            .expect("delete routes to project B");
+        assert!(state.resolve_session(&sid).await.is_none());
     }
 
     #[tokio::test]
@@ -1668,6 +2026,7 @@ mod tests {
                     metadata: Default::default(),
                 }]),
                 ui_messages: None,
+                expected_version: None,
             };
             let Json(resp): Json<SessionResponse> =
                 update_session(State(state.clone()), Path(fixed_id.clone()), Json(body))
@@ -1696,6 +2055,55 @@ mod tests {
             .expect("session file exists");
         assert_eq!(loaded.id, fixed_id);
         assert_eq!(loaded.messages.len(), 1); // last write replaces messages
+    }
+
+    #[tokio::test]
+    async fn update_session_version_matrix() {
+        use crate::config::Settings;
+        use crate::daemon::models::UpdateSessionRequest;
+        use crate::state::AppState;
+        use axum::extract::{Path, State};
+        use axum::Json;
+
+        // Keep the tempdir alive for the whole test: sessions persist under
+        // `working_dir`'s project-local dir (mirrors the first test above).
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+        let id = "ver-matrix".to_string();
+
+        let body = |expected_version: Option<u64>| UpdateSessionRequest {
+            name: None,
+            messages: None,
+            ui_messages: None,
+            expected_version,
+        };
+
+        // First upsert (no expected_version) → version 0 -> 1.
+        let Json(r1) = update_session(State(state.clone()), Path(id.clone()), Json(body(None)))
+            .await
+            .expect("upsert ok");
+        assert_eq!(r1.version, 1);
+
+        // Some(0) no longer matches the current version 1 → 409 + current_version.
+        let err = update_session(State(state.clone()), Path(id.clone()), Json(body(Some(0))))
+            .await
+            .expect_err("stale expected_version conflicts");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert_eq!(err.1 .0["current_version"], 1);
+
+        // Some(1) matches → success, version advances to 2.
+        let Json(r3) = update_session(State(state.clone()), Path(id.clone()), Json(body(Some(1))))
+            .await
+            .expect("matching expected_version ok");
+        assert_eq!(r3.version, 2);
+
+        // None → legacy last-write-wins path, still succeeds.
+        let Json(r4) = update_session(State(state.clone()), Path(id.clone()), Json(body(None)))
+            .await
+            .expect("no expected_version stays compatible");
+        assert_eq!(r4.version, 3);
     }
 
     #[tokio::test]
@@ -2099,6 +2507,7 @@ mod tests {
             error: None,
             kind: crate::teams::trace_sink::TraceEventKind::Progress,
             permission: None,
+            question: None,
         };
 
         // session filter keeps matching, drops non-matching.
@@ -2347,6 +2756,7 @@ mod tests {
         // Dry-run must not remove anything: before == after.
         let Json(result) = prune_memory(
             State(state.clone()),
+            Query(MemoryProjectQuery { project: None }),
             Some(Json(PruneRequest { dry_run: true })),
         )
         .await
@@ -2355,12 +2765,449 @@ mod tests {
         assert_eq!(result.before, result.after);
 
         // The memory is still there.
-        let Json(still) = crate::daemon::handlers::memory_status(State(state.clone()))
-            .await
-            .expect("status");
+        let Json(still) = crate::daemon::handlers::memory_status(
+            State(state.clone()),
+            Query(MemoryProjectQuery { project: None }),
+        )
+        .await
+        .expect("status");
         assert!(
             still.total_memories >= 1,
             "memory must survive a dry-run prune"
+        );
+    }
+
+    // ── Global event producers (daemon-session-orchestration Task 7) ─────────
+
+    /// Tempdir-backed DaemonState for global-event tests. Construction-time
+    /// I/O finishes inside `DaemonState::new`, so the tempdir may drop once
+    /// the helper returns (mirrors global_events.rs::test_daemon_state).
+    async fn global_event_test_state() -> DaemonState {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut settings = crate::config::Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        DaemonState::new(crate::state::AppState::new(settings)).await
+    }
+
+    #[tokio::test]
+    async fn apply_todos_update_broadcasts_full_snapshot() {
+        let state = global_event_test_state().await;
+        let mut rx = state.global_event_hub.subscribe();
+        state
+            .apply_todos_update(vec![crate::tasks::TodoItem {
+                content: "write plan".into(),
+                status: "in_progress".into(),
+                active_form: String::new(),
+                subagent: None,
+            }])
+            .await;
+        let ev = rx.recv().await.expect("todos event");
+        assert_eq!(
+            ev.kind,
+            crate::daemon::global_events::GlobalEventKind::TodosChanged
+        );
+        assert_eq!(ev.data["items"][0]["content"], "write plan");
+        // Multi-project dimension: clients filter by `project`.
+        assert!(ev.data["project"].is_string(), "data: {}", ev.data);
+        assert_eq!(ev.data["has_open_items"], true);
+        // 快照与 GET /todos 读取同源。
+        let todos = state.todo_state.read().await;
+        assert_eq!(todos.items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn set_permission_mode_broadcasts_mode_changed() {
+        use axum::extract::State;
+        use axum::Json;
+
+        let state = Arc::new(global_event_test_state().await);
+        let mut rx = state.global_event_hub.subscribe();
+        let Json(resp) = set_permission_mode(
+            State(state.clone()),
+            Json(crate::daemon::models::SetPermissionModeRequest {
+                mode: crate::config::agent::RootPermissionMode::Yolo,
+                effective_mode: None,
+                session_id: Some("s1".to_string()),
+            }),
+        )
+        .await
+        .expect("set_permission_mode with session_id");
+        assert_eq!(resp["success"], true);
+
+        let ev = rx.recv().await.expect("mode event");
+        assert_eq!(
+            ev.kind,
+            crate::daemon::global_events::GlobalEventKind::ModeChanged
+        );
+        assert_eq!(ev.data["session_id"], "s1");
+        assert_eq!(ev.data["mode"], "yolo");
+        // Derived from the root mode when effective_mode is omitted.
+        assert_eq!(ev.data["effective_mode"], "yolo");
+    }
+
+    /// `switch_model` persists to `~/.wgenty-code/settings.json`, so the test
+    /// scopes a fake `$HOME` (serial, mirroring tui token-budget tests) to
+    /// never touch the developer's real config.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn switch_model_broadcasts_model_changed() {
+        use axum::extract::State;
+        use axum::Json;
+
+        let temp = tempfile::tempdir().unwrap();
+        let fake_home = tempfile::tempdir().unwrap();
+        let mut settings = crate::config::Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        settings.models.profiles.insert(
+            "p2".to_string(),
+            crate::config::models::ModelEndpoint {
+                name: "gpt-test".to_string(),
+                provider: Some("openai".to_string()),
+                ..Default::default()
+            },
+        );
+        // Pre-seed the on-disk settings (same profile) so the handler's
+        // load-from-disk + switch + save path succeeds under the fake home.
+        let cfg_dir = fake_home.path().join(".wgenty-code");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::write(
+            cfg_dir.join("settings.json"),
+            serde_json::to_string_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", fake_home.path());
+        let run = async {
+            let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+            let mut rx = state.global_event_hub.subscribe();
+            let resp = switch_model(
+                State(state.clone()),
+                Json(SwitchModelRequest {
+                    profile: "p2".to_string(),
+                }),
+            )
+            .await
+            .expect("switch_model should succeed");
+            assert!(resp.success);
+
+            let ev = rx.recv().await.expect("model event");
+            assert_eq!(
+                ev.kind,
+                crate::daemon::global_events::GlobalEventKind::ModelChanged
+            );
+            assert_eq!(ev.data["profile"], "p2");
+            assert_eq!(ev.data["model_name"], "gpt-test");
+            assert_eq!(ev.data["provider"], "openai");
+        }
+        .await;
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        run
+    }
+
+    #[tokio::test]
+    async fn claim_task_group_broadcasts_task_group_result() {
+        use axum::extract::State;
+        use axum::Json;
+
+        let state = Arc::new(global_event_test_state().await);
+        // Produce a ready root group through the coordinator (same path as
+        // coordinator.rs tests): reserve a child in the group, finish it.
+        let root = state.root_context("s").await.expect("root context");
+        let group = state
+            .coordinator
+            .create_root_task_group(
+                &root,
+                "turn-1",
+                tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            )
+            .await
+            .expect("root group");
+        let child = state
+            .coordinator
+            .reserve_child_in_group(
+                &root,
+                crate::agent::SpawnChildRequest::new("work"),
+                group.clone(),
+            )
+            .await
+            .expect("reserve child");
+        state
+            .coordinator
+            .finish_child(
+                &child.context,
+                crate::agent::ChildTerminal::completed("done"),
+            )
+            .await
+            .expect("finish child");
+
+        let mut rx = state.global_event_hub.subscribe();
+        let Json(resp) = claim_task_group(
+            State(state.clone()),
+            Json(ClaimTaskGroupRequest {
+                session_id: "s".to_string(),
+                generation: 0,
+            }),
+        )
+        .await
+        .expect("claim should deliver the ready group");
+        assert_eq!(resp.results.len(), 1);
+
+        let ev = rx.recv().await.expect("task-group event");
+        assert_eq!(
+            ev.kind,
+            crate::daemon::global_events::GlobalEventKind::TaskGroupResult
+        );
+        assert_eq!(ev.data["task_group_id"], group.as_str());
+        assert_eq!(ev.data["session_id"], "s");
+        assert_eq!(ev.data["generation"], 0);
+        assert_eq!(ev.data["result_count"], 1);
+        // Multi-project dimension: clients filter by `project`.
+        assert!(ev.data["project"].is_string(), "data: {}", ev.data);
+    }
+
+    /// The global events SSE endpoint lives on the protected router: no (or
+    /// wrong) bearer token must short-circuit with 401 before the handler.
+    #[tokio::test]
+    async fn global_events_stream_requires_bearer_auth() {
+        let state = Arc::new(global_event_test_state().await);
+        let (health, protected) =
+            crate::daemon::routes::create_routers(state, "events-auth-token".to_string());
+        let app = health.merge(protected);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let client = reqwest::Client::new();
+        // No bearer -> 401 (middleware short-circuits before the handler).
+        let resp = client
+            .get(format!("http://{addr}/api/v1/events"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        // Wrong bearer -> 401.
+        let resp = client
+            .get(format!("http://{addr}/api/v1/events"))
+            .bearer_auth("wrong")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── Background results retention (daemon-session-orchestration Task 8) ────
+
+    fn sample_bg_result(task_id: &str) -> crate::tools::execution::background::BackgroundResult {
+        crate::tools::execution::background::BackgroundResult {
+            task_id: task_id.to_string(),
+            result_type: "command".to_string(),
+            command: "true".to_string(),
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            success: true,
+            sandbox_bypassed: false,
+            permission_mode: None,
+            sandbox_level: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn background_results_are_retained_not_drained() {
+        let state = global_event_test_state().await;
+        let mut rx = state.global_event_hub.subscribe();
+        state.record_background_result(sample_bg_result("r1")).await;
+        state.record_background_result(sample_bg_result("r2")).await;
+        // 广播在入队之后到达。
+        let ev = rx.recv().await.expect("broadcast");
+        assert_eq!(
+            ev.kind,
+            crate::daemon::global_events::GlobalEventKind::BackgroundResult
+        );
+        // 两次快照读取内容一致（不再先到先得）。
+        let first = state.background_results_snapshot().await;
+        let second = state.background_results_snapshot().await;
+        assert_eq!(first.len(), 2);
+        assert_eq!(first.len(), second.len());
+    }
+
+    #[tokio::test]
+    async fn background_results_evict_oldest_beyond_capacity() {
+        let state = global_event_test_state().await;
+        let capacity = crate::daemon::state::BACKGROUND_RESULTS_CAPACITY;
+        // capacity + 1 results: the oldest ("r0") must be evicted.
+        for i in 0..=capacity {
+            state
+                .record_background_result(sample_bg_result(&format!("r{i}")))
+                .await;
+        }
+        let snapshot = state.background_results_snapshot().await;
+        assert_eq!(snapshot.len(), capacity);
+        assert_eq!(snapshot[0].task_id, "r1");
+        assert_eq!(
+            snapshot.last().expect("non-empty snapshot").task_id,
+            format!("r{capacity}")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_background_results_returns_snapshot_without_draining() {
+        use axum::extract::State;
+        use axum::Json;
+
+        let state = Arc::new(global_event_test_state().await);
+        state.record_background_result(sample_bg_result("r1")).await;
+        state.record_background_result(sample_bg_result("r2")).await;
+        // Two consecutive reads see the same results (no first-come-first-served
+        // drain): old polling clients keep working, results are not stolen.
+        let Json(first) = get_background_results(State(state.clone())).await;
+        let Json(second) = get_background_results(State(state.clone())).await;
+        assert_eq!(first["results"].as_array().expect("results array").len(), 2);
+        assert_eq!(first, second);
+    }
+
+    /// End-to-end wiring: results completed in the tool-layer background
+    /// manager flow into the daemon's retained queue (hook replaces the
+    /// drain queue daemon-side) and are broadcast on the global event bus.
+    #[tokio::test]
+    async fn background_manager_results_flow_into_retained_queue() {
+        let state = global_event_test_state().await;
+        let mut rx = state.global_event_hub.subscribe();
+        state
+            .background_manager
+            .push_subagent_result("demo", "ok", true)
+            .await;
+        // Retain-before-broadcast: once the event arrives the result is
+        // guaranteed queryable via the snapshot.
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("event within timeout")
+            .expect("broadcast");
+        assert_eq!(
+            ev.kind,
+            crate::daemon::global_events::GlobalEventKind::BackgroundResult
+        );
+        let snapshot = state.background_results_snapshot().await;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].result_type, "subagent");
+        // The tool-layer drain queue stays empty: the retained queue is the
+        // single source of truth daemon-side.
+        assert!(state.background_manager.drain_results().await.is_empty());
+    }
+
+    // ── session_id required on server-side paths (daemon-session-orchestration Task 12) ──
+
+    /// Viewer-token headers for the agents/* handlers (they resolve the
+    /// viewer before touching session_id).
+    async fn viewer_headers(state: &DaemonState) -> axum::http::HeaderMap {
+        let token = state.create_viewer().await;
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            VIEWER_TOKEN_HEADER,
+            axum::http::HeaderValue::from_str(&token).expect("token is header-safe"),
+        );
+        headers
+    }
+
+    #[tokio::test]
+    async fn set_permission_mode_without_session_id_is_rejected() {
+        let state = Arc::new(global_event_test_state().await);
+        let result = set_permission_mode(
+            State(state),
+            Json(crate::daemon::models::SetPermissionModeRequest {
+                mode: crate::config::agent::RootPermissionMode::Normal,
+                effective_mode: None,
+                session_id: None,
+            }),
+        )
+        .await;
+        let Err((status, Json(body))) = result else {
+            panic!("missing session_id must be rejected with 400");
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, serde_json::json!({"error": "session_id required"}));
+    }
+
+    #[tokio::test]
+    async fn get_permission_mode_without_session_id_is_rejected() {
+        let state = Arc::new(global_event_test_state().await);
+        let result = get_permission_mode(
+            State(state),
+            Query(crate::daemon::models::PermissionModeQuery { session_id: None }),
+        )
+        .await;
+        let Err((status, Json(body))) = result else {
+            panic!("missing session_id must be rejected with 400");
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, serde_json::json!({"error": "session_id required"}));
+    }
+
+    #[tokio::test]
+    async fn get_agent_self_without_session_id_is_rejected() {
+        let state = Arc::new(global_event_test_state().await);
+        let headers = viewer_headers(&state).await;
+        let result = get_agent_self(State(state), Query(HashMap::new()), headers).await;
+        assert!(
+            matches!(result, Err(StatusCode::BAD_REQUEST)),
+            "missing session_id must be rejected with 400"
+        );
+    }
+
+    #[tokio::test]
+    async fn navigate_agent_view_without_session_id_is_rejected() {
+        let state = Arc::new(global_event_test_state().await);
+        let headers = viewer_headers(&state).await;
+        let result = navigate_agent_view(
+            State(state),
+            Path("cap".to_string()),
+            Query(HashMap::new()),
+            headers,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(StatusCode::BAD_REQUEST)),
+            "missing session_id must be rejected with 400"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_child_transcript_without_session_id_is_rejected() {
+        let state = Arc::new(global_event_test_state().await);
+        let headers = viewer_headers(&state).await;
+        let result = get_child_transcript(
+            State(state),
+            Path("cap".to_string()),
+            Query(HashMap::new()),
+            headers,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(StatusCode::BAD_REQUEST)),
+            "missing session_id must be rejected with 400"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_child_without_session_id_is_rejected() {
+        let state = Arc::new(global_event_test_state().await);
+        let headers = viewer_headers(&state).await;
+        let result = cancel_child(
+            State(state),
+            Path("cap".to_string()),
+            Query(HashMap::new()),
+            headers,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(StatusCode::BAD_REQUEST)),
+            "missing session_id must be rejected with 400"
         );
     }
 }

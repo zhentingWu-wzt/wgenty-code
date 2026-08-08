@@ -36,14 +36,6 @@ export interface ToolCallFunction {
   arguments: string;
 }
 
-/** Request body for `POST /api/v1/chat/stream`. Mirrors `ChatStreamRequest`. */
-export interface ChatStreamRequest {
-  messages: ChatMessage[];
-  model?: string;
-  max_tokens?: number;
-  plan_mode?: boolean;
-}
-
 // ── SSE stream shapes (OpenAI-compatible chat.completion.chunk) ──────────────
 
 /** Mirrors `crate::api::StreamChunk`. Each `data:` line in the chat stream. */
@@ -95,6 +87,17 @@ export interface ConfigResponse {
   max_tokens: number;
   timeout: number;
   streaming: boolean;
+}
+
+// ── Permission mode ──────────────────────────────────────────────────────────
+
+/** Mirrors `RootPermissionMode` (src/config/agent.rs:110). serde rename_all = snake_case. */
+export type PermissionMode = "normal" | "accept_edits" | "yolo";
+
+/** Response from GET/POST /api/v1/permission-mode. */
+export interface PermissionModeResponse {
+  mode: PermissionMode;
+  effective_mode: string;
 }
 
 // ── Todos / Tasks ────────────────────────────────────────────────────────────
@@ -220,8 +223,32 @@ export interface TraceEvent {
   token_budget_k?: number | null;
   cumulative_tokens: number;
   error?: unknown;
-  kind?: "progress" | "permission_pending" | "permission_resolved";
+  kind?:
+    | "progress"
+    | "permission_pending"
+    | "permission_resolved"
+    | "question_pending"
+    | "question_resolved";
   permission?: StructuredApproval;
+  question?: QuestionPayload;
+}
+
+// ── ask_user_question (server-side interaction) ──────────────────────────────
+
+export interface QuestionOption {
+  label: string;
+  description: string;
+  preview?: string;
+}
+
+/** Mirrors QuestionPayload (src/daemon/interaction_bridge.rs). Pushed via the
+ *  trace SSE when the server-side loop blocks on ask_user_question. */
+export interface QuestionPayload {
+  request_id: string;
+  session_id: string;
+  question: string;
+  options: QuestionOption[];
+  multi_select: boolean;
 }
 
 // ── Tools ────────────────────────────────────────────────────────────────────
@@ -306,14 +333,26 @@ export interface SwitchModelResponse {
 
 // ── Sessions ─────────────────────────────────────────────────────────────────
 
+/** A session's worktree binding (project → worktree → session, N:1). */
+export interface WorktreeBinding {
+  path: string;
+  branch: string;
+}
+
 export interface SessionInfo {
   id: string;
   name: string;
-  project_path?: string;
+  /** Owning project's canonical path; null = main project (historical sessions). */
+  project_path?: string | null;
   created_at: string;
   updated_at: string;
   message_count: number;
   summary?: string;
+  /** "Active" | "Paused" | "Archived" | "Error" — archived sessions are
+   *  hidden from default list views (client-side filtering). */
+  status: string;
+  /** Bound worktree; absent/null = main checkout. */
+  worktree?: WorktreeBinding | null;
 }
 
 export interface SessionMessage {
@@ -334,12 +373,8 @@ export interface SessionResponse {
 
 export interface CreateSessionRequest {
   name?: string;
-}
-
-export interface UpdateSessionRequest {
-  name?: string;
-  messages?: SessionMessage[];
-  ui_messages?: unknown[];
+  /** Registered project to create the session in; omitted = main project. */
+  project_path?: string;
 }
 
 // ── Agent loop result (client-side, not from daemon) ─────────────────────────
@@ -349,4 +384,92 @@ export interface AssembledToolCall {
   id: string;
   type: string;
   function: { name: string; arguments: string };
+}
+
+// ── Command center (projects / worktrees / skills / checkpoints) ─────────────
+
+/** Mirrors the daemon's project registry entry (GET /api/v1/projects). The
+ *  main project (daemon working dir) is always first. */
+export interface ProjectInfo {
+  /** Canonical absolute path — the registry key. */
+  path: string;
+  name: string;
+  is_main: boolean;
+  /** Non-git projects reject the worktree endpoints (400), so the UI must
+   *  skip worktree calls and git-only actions for them. */
+  is_git_repo: boolean;
+  added_at: string;
+}
+
+export interface WorktreeInfo {
+  path: string;
+  head: string;
+  branch: string | null;
+  is_main: boolean;
+}
+
+export interface SkillInfoDto {
+  name: string;
+  description: string;
+  source_path: string;
+}
+
+export interface CheckpointInfo {
+  turn_id: string;
+  created_at: number;
+  file_count: number;
+}
+
+export interface UndoTurnResult {
+  restored: number;
+  skipped: number;
+  failed: number;
+  rewound_turns: string[];
+}
+
+// ── Server-side run (web as observer) ────────────────────────────────────────
+
+export type SessionEventKind =
+  | "content_delta"
+  | "reasoning_delta"
+  | "tool_start"
+  | "tool_result"
+  | "turn_done"
+  | "turn_error"
+  | "save";
+
+/** Mirrors SessionEvent (src/daemon/run_loop.rs:26). Server-side run broadcasts
+ *  these on GET /sessions/:id/events (SSE). data shape varies by kind. */
+export interface SessionEvent {
+  seq: number;
+  session_id: string;
+  run_id: string;
+  kind: SessionEventKind;
+  data: Record<string, unknown>;
+}
+
+/** Response to POST /sessions/:id/run. */
+export interface RunResponse {
+  run_id: string;
+  session_id: string;
+}
+
+// ── Filesystem browsing (web directory picker) ──────────────────────────────
+
+/** Mirrors DirEntry (src/daemon/fs.rs). */
+export interface DirEntry {
+  name: string;
+  path: string;
+  /** Dot-directory (.git, .config …) — frontend de-emphasizes via opacity. */
+  is_hidden: boolean;
+}
+
+/** Mirrors DirListing (src/daemon/fs.rs). Response to GET /api/v1/fs/dirs. */
+export interface DirListing {
+  /** Canonicalized absolute path of the listed directory. */
+  current: string;
+  /** Parent directory, or null at a filesystem root. */
+  parent: string | null;
+  /** Sorted child directories (hidden ones interleaved). */
+  entries: DirEntry[];
 }
