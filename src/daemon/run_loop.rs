@@ -1050,6 +1050,8 @@ async fn save_session_history(
     };
     session.messages = messages;
     session.updated_at = chrono::Utc::now();
+    // Run saves participate in the same version sequence as PUT overwrites.
+    session.version += 1;
     // Fully materialised write — clear any lazy index marker (mirrors update_session).
     session.lazy_message_count = None;
     if let Err(e) = sessions.save(&session).await {
