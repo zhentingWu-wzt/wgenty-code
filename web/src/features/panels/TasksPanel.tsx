@@ -1,21 +1,31 @@
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import type { DaemonClient } from "../../api/client";
 import type { GetTodosResponse, TaskInfo } from "../../api/types";
+import { usePolling } from "../../hooks/usePolling";
 
-/** 右栏 Tasks 面板：当前会话 todos（GET /todos）+ 后台任务列表（GET /tasks）。只读。 */
+/**
+ * 右栏 Tasks 面板：当前会话 todos（GET /todos）+ 后台任务列表（GET /tasks）。
+ * 只读，3s 轮询刷新（todos 变更实时反映，对比之前的挂载时拉一次）。
+ */
 export function TasksPanel({ client }: { client: DaemonClient }) {
   const [todos, setTodos] = useState<GetTodosResponse | null>(null);
   const [tasks, setTasks] = useState<TaskInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    Promise.all([client.getTodos(), client.listTasks()])
-      .then(([t, k]) => {
-        setTodos(t);
-        setTasks(k.tasks);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  const refresh = useCallback(async () => {
+    try {
+      const [t, k] = await Promise.all([client.getTodos(), client.listTasks()]);
+      setTodos(t);
+      setTasks(k.tasks);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }, [client]);
+
+  // 3s poll — frequent enough to catch todo status changes mid-turn without
+  // hammering the daemon.
+  usePolling(refresh, true, 3000);
 
   if (error) return <div className="p-3 text-danger">{error}</div>;
 
