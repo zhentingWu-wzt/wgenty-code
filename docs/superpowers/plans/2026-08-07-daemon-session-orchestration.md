@@ -1500,7 +1500,7 @@ git commit -m "refactor(daemon): require session_id on server-side paths, annota
 
 ### Task 13: `Session.version` 字段 + 历史兼容
 
-- [ ] Task 13 完成标记：本节全部 Step 完成并提交
+- [x] Task 13 完成标记：本节全部 Step 完成并提交
 
 **Files:**
 - Modify: `src/context/memory_session.rs:12-34`（字段）、:49-64（`with_id` 初始化）

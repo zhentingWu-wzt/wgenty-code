@@ -22,7 +22,7 @@
 
 ## 4. 会话存储版本化
 
-- [ ] 4.1 `Session` 增加 version 字段，历史会话按 version=0 兼容
+- [x] 4.1 `Session` 增加 version 字段，历史会话按 version=0 兼容
 - [ ] 4.2 覆盖写携带期望版本，冲突返回 409 + 当前版本；run 写盘推进版本
 
 ## 5. daemon 可发现部署
