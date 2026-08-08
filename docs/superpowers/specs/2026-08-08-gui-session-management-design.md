@@ -1,3 +1,7 @@
+---
+archived-with: 2026-08-08-gui-session-management
+status: final
+---
 # Design Doc: GUI Session Management
 
 > 技术设计文档 for `gui-session-management` change。
