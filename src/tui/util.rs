@@ -22,9 +22,9 @@ pub fn truncate_session_name(text: &str) -> String {
 }
 
 /// Outcome of [`start_daemon`]: either an already-running daemon was reused
-/// via the discovery file, or a new embedded daemon was spawned locally.
-/// `Reused` carries no shutdown handles — the daemon is owned by another
-/// process and must keep running after this TUI exits.
+/// (via the discovery file or an HTTP probe), or a new embedded daemon was
+/// spawned locally. `Reused` carries no shutdown handles — the daemon is owned
+/// by another process and must keep running after this TUI exits.
 #[cfg(feature = "daemon")]
 pub enum StartDaemonOutcome {
     Reused {
@@ -37,8 +37,98 @@ pub enum StartDaemonOutcome {
     },
 }
 
+/// Probe the server at `base_url` and report whether it is a wgenty-code
+/// daemon that `token` authenticates against AND that serves `expected_root`
+/// as its main project (working_dir). Split from [`try_reuse_running_daemon`]
+/// so tests can exercise it without touching the global token file.
+#[cfg(feature = "daemon")]
+async fn probe_running_daemon(
+    base_url: &str,
+    token: &str,
+    expected_root: &std::path::Path,
+) -> bool {
+    let client = match reqwest::Client::builder()
+        // Loopback refused connections fail fast; the timeout only guards
+        // against a listener that accepts but never answers.
+        .timeout(std::time::Duration::from_millis(800))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    // 1. Liveness + identity: `/api/v1/health` is public; require our exact
+    //    response shape so a foreign service on the port is never reused.
+    let health: serde_json::Value =
+        match client.get(format!("{base_url}/api/v1/health")).send().await {
+            Ok(resp) if resp.status().is_success() => match resp.json().await {
+                Ok(v) => v,
+                Err(_) => return false,
+            },
+            _ => return false,
+        };
+    if health.get("status").and_then(|s| s.as_str()) != Some("ok") {
+        return false;
+    }
+    // Protocol compatibility: only reuse a daemon built from the same version.
+    if health.get("version").and_then(|s| s.as_str()) != Some(env!("CARGO_PKG_VERSION")) {
+        return false;
+    }
+
+    // 2. Auth + project match: `/api/v1/projects` sits behind the bearer-token
+    //    middleware, so a 2xx proves the token file is valid for this instance;
+    //    the main entry tells us which directory the daemon actually serves.
+    let resp = match client
+        .get(format!("{base_url}/api/v1/projects"))
+        .bearer_auth(token)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    if !resp.status().is_success() {
+        return false;
+    }
+    let projects: Vec<serde_json::Value> = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let main_root = projects
+        .iter()
+        .find(|p| p.get("is_main").and_then(|b| b.as_bool()) == Some(true))
+        .and_then(|p| p.get("path"))
+        .and_then(|p| p.as_str());
+    match main_root {
+        Some(main) => std::path::Path::new(main) == expected_root,
+        None => false,
+    }
+}
+
+/// If a wgenty-code daemon is already serving `working_dir` on `port`, return
+/// its base URL so the caller can attach to it instead of starting a second
+/// instance. Reuse requires the daemon token file to authenticate against that
+/// instance; a stale token (previous daemon killed without cleanup) fails the
+/// authenticated probe and falls through to a fresh start.
+#[cfg(feature = "daemon")]
+async fn try_reuse_running_daemon(port: u16, working_dir: &std::path::Path) -> Option<String> {
+    let token = crate::utils::read_daemon_token()?;
+    // The daemon canonicalizes its main root (ProjectRegistry::load); mirror
+    // that so a symlinked working_dir still matches.
+    let expected = working_dir
+        .canonicalize()
+        .unwrap_or_else(|_| working_dir.to_path_buf());
+    let base_url = format!("http://127.0.0.1:{port}");
+    probe_running_daemon(&base_url, &token, &expected)
+        .await
+        .then_some(base_url)
+}
+
 /// Start the daemon in a background tokio task and wait for it to be ready.
 /// Returns the base URL (including port) and a shutdown sender.
+///
+/// If a compatible daemon for the same project is already running on the
+/// default port, attach to it instead of starting a second instance.
 #[cfg(feature = "daemon")]
 pub async fn start_daemon(app_state: crate::state::AppState) -> anyhow::Result<StartDaemonOutcome> {
     // Reuse an already-running global daemon when the discovery file checks
@@ -53,13 +143,31 @@ pub async fn start_daemon(app_state: crate::state::AppState) -> anyhow::Result<S
         });
     }
     // Prefer the default daemon port (8371) so the web client's Vite proxy
-    // (which targets 127.0.0.1:8371) connects without extra config. Fall back
-    // to an OS-assigned port if 8371 is already taken (another daemon / TUI
-    // instance); in that case point the web client at DAEMON_PORT=<port>.
+    // (which targets 127.0.0.1:8371) connects without extra config.
     const DEFAULT_PORT: u16 = 8371;
+    let working_dir = app_state.settings.storage.working_dir.clone();
+
+    // Reuse an already-running daemon for this project when possible — avoids
+    // a second instance and the token-file churn it would cause.
+    if let Some(base_url) = try_reuse_running_daemon(DEFAULT_PORT, &working_dir).await {
+        tracing::info!(url = %base_url, "attaching to already-running daemon");
+        return Ok(StartDaemonOutcome::Reused { base_url });
+    }
+
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", DEFAULT_PORT)).await {
         Ok(l) => l,
-        Err(_) => tokio::net::TcpListener::bind("127.0.0.1:0").await?,
+        Err(_) => {
+            // 8371 is taken but the first probe did not reuse it — either the
+            // occupant is not a compatible daemon, or one started in the race
+            // window since. Probe once more before giving up on the default
+            // port; only then fall back to an OS-assigned port (point the web
+            // client at DAEMON_PORT=<port> in that case).
+            if let Some(base_url) = try_reuse_running_daemon(DEFAULT_PORT, &working_dir).await {
+                tracing::info!(url = %base_url, "attaching to already-running daemon");
+                return Ok(StartDaemonOutcome::Reused { base_url });
+            }
+            tokio::net::TcpListener::bind("127.0.0.1:0").await?
+        }
     };
     let port = listener.local_addr()?.port();
     let base_url = format!("http://127.0.0.1:{}", port);
@@ -674,5 +782,108 @@ mod tests {
     fn test_wrap_single_element_stays_at_zero() {
         assert_eq!(wrap_next(0, 1), 0);
         assert_eq!(wrap_prev(0, 1), 0);
+    }
+}
+
+#[cfg(all(test, feature = "daemon"))]
+mod daemon_reuse_tests {
+    use super::*;
+
+    const TEST_TOKEN: &str = "test-token";
+
+    /// Spin up a minimal fake daemon mirroring the real response shapes:
+    /// public `/api/v1/health` plus an Authorization-checked
+    /// `/api/v1/projects` whose main entry reports `main_root`.
+    async fn spawn_fake_daemon(main_root: &std::path::Path) -> String {
+        use axum::{http::StatusCode, routing::get, Json, Router};
+        let root = main_root.to_string_lossy().to_string();
+        let app = Router::new()
+            .route(
+                "/api/v1/health",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "status": "ok",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/projects",
+                get(|headers: axum::http::HeaderMap| async move {
+                    let expected = format!("Bearer {TEST_TOKEN}");
+                    let authed = headers
+                        .get(axum::http::header::AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok())
+                        == Some(expected.as_str());
+                    if !authed {
+                        return Err(StatusCode::UNAUTHORIZED);
+                    }
+                    Ok(Json(serde_json::json!([{
+                        "path": root,
+                        "name": "proj",
+                        "is_main": true,
+                        "is_git_repo": true,
+                        "added_at": "2026-01-01T00:00:00Z",
+                    }])))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn probe_accepts_matching_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let base_url = spawn_fake_daemon(&root).await;
+        assert!(probe_running_daemon(&base_url, TEST_TOKEN, &root).await);
+    }
+
+    #[tokio::test]
+    async fn probe_rejects_stale_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let base_url = spawn_fake_daemon(&root).await;
+        assert!(!probe_running_daemon(&base_url, "wrong-token", &root).await);
+    }
+
+    #[tokio::test]
+    async fn probe_rejects_daemon_serving_other_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let base_url = spawn_fake_daemon(&dir.path().canonicalize().unwrap()).await;
+        assert!(
+            !probe_running_daemon(&base_url, TEST_TOKEN, &other.path().canonicalize().unwrap())
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_rejects_dead_port() {
+        // Grab a free port, then release it so the probe hits a refused
+        // connection.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let root = std::path::Path::new("/");
+        assert!(!probe_running_daemon(&format!("http://{addr}"), TEST_TOKEN, root).await);
+    }
+
+    #[tokio::test]
+    async fn probe_rejects_foreign_service() {
+        use axum::{routing::get, Router};
+        // Something is listening, but it is not a wgenty-code daemon.
+        let app = Router::new().route("/api/v1/health", get(|| async { "pong" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let root = std::path::Path::new("/");
+        assert!(!probe_running_daemon(&format!("http://{addr}"), TEST_TOKEN, root).await);
     }
 }
