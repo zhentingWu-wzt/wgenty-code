@@ -1,6 +1,6 @@
 workflow: full
 language: zh-CN
-phase: verify
+phase: archive
 context_compression: off
 build_mode: executing-plans
 build_pause: null
@@ -13,13 +13,13 @@ auto_transition: true
 base_ref: 0de3b78df5bc3444e8cc3b99cbdb4b675c589adf
 design_doc: docs/superpowers/specs/2026-08-08-gui-session-management-design.md
 plan: null
-verify_result: pending
+verify_result: pass
 verify_failures: 0
 verification_report: docs/superpowers/reports/2026-08-08-gui-session-management-verify.md
 branch_status: pending
 created_at: 2026-08-07
-verified_at: null
-archive_confirmation: null
+verified_at: 2026-08-08
+archive_confirmation: pending
 archived: false
 bound_branch: zhentingWu-wzt/GUI
 direct_override: null
