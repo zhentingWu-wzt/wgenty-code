@@ -1163,12 +1163,51 @@ async fn run_session_turn(
             .collect();
     }
 
-    // 5b. Hook reminder: deferred. The daemon's HookManager (runtime/hooks)
-    // handles tool-lifecycle hooks (PreToolUse/PostToolUse), not prompt
-    // reminder injection. The TUI uses plugins/hooks.rs InjectedFragment
-    // collection — a deeper integration needed for daemon parity. Inspector
-    // will show "no hook data" until this gap is filled in a follow-up.
-    let reminder: Option<crate::prompts::ReminderOutput> = None;
+    // 5b. Hook reminder: fire UserPromptSubmit hooks, collect injection
+    // fragments, build a <system-reminder> block (mirrors TUI agent/mod.rs
+    // 280-326). The daemon's HookManager (runtime/hooks) already handles
+    // PreToolUse/PostToolUse for tool execution; this adds the turn-level
+    // prompt-submit path that was previously daemon-only absent.
+    let hook_ctx = crate::runtime::hooks::types::HookContext {
+        event: "UserPromptSubmit".to_string(),
+        tool_name: None,
+        tool_input: Some(serde_json::Value::String(message.clone())),
+        tool_result: None,
+        session_id: Some(session_id.to_string()),
+        working_directory: cwd.to_string_lossy().to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        comet_phase: None,
+        workflow_state: None,
+        variables: Default::default(),
+    };
+    let outcomes = match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        state.hook_manager.fire(
+            &crate::runtime::hooks::HookEvent::UserPromptSubmit,
+            &hook_ctx,
+            None,
+            None,
+        ),
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(_) => {
+            tracing::warn!("UserPromptSubmit hook timed out (10s), skipping");
+            Vec::new()
+        }
+    };
+    let injections = crate::runtime::hooks::collect_injections(&outcomes);
+    let reminder =
+        crate::prompts::build_user_turn_reminder(&prompt_ctx, &injections);
+
+    // Prepend reminder to the user message in seed history (same as TUI).
+    if let Some(ref r) = reminder {
+        if let Some(user_msg) = seed.iter_mut().rev().find(|m| m.role == "user") {
+            let original = user_msg.content.take().unwrap_or_default();
+            user_msg.content = Some(format!("{}\n\n{}", r.to_model, original));
+        }
+    }
 
     let assembled = crate::prompts::assemble_instructions(&settings, &prompt_ctx);
     let system_messages = assembled.system_messages;

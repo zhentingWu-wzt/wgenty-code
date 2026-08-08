@@ -78,6 +78,10 @@ pub struct DaemonState {
     pub session_manager: MemorySessionManager,
     /// Shared MemoryManager backing the `memory_add` tool and AutoDream (D1).
     pub memory_manager: Arc<crate::context::MemoryManager>,
+    /// Hook manager for lifecycle events (PreToolUse/PostToolUse/UserPromptSubmit).
+    /// Used by run_session_turn to fire UserPromptSubmit hooks and collect
+    /// injection fragments for the prompt reminder + inspector TurnContext.
+    pub hook_manager: Arc<HookManager>,
     /// Long-lived external MCP sessions and their status.
     pub mcp_manager: Arc<crate::mcp::McpManager>,
     sessions: Arc<RwLock<std::collections::HashMap<String, SessionRules>>>,
@@ -528,6 +532,7 @@ impl DaemonState {
             team_manager,
             session_manager,
             memory_manager,
+            hook_manager,
             mcp_manager,
             sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             subagent_progress: progress_store,
