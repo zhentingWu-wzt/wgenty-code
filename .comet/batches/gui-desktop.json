@@ -2,7 +2,8 @@
   "version": 1,
   "goal": "路线 B（胖 daemon）：daemon 上收 agent loop 与事件分发，支持 TUI/Web/GUI 多 UI 同时接入同一会话；随后在其上落地 Tauri 2.0 桌面端（复用 web/ React 前端，独立 crate 隔离），功能全面对齐 TUI，交互与布局优于 TUI（参考 orca / paseo）",
   "createdAt": "2026-08-07T04:27:24Z",
-  "updatedAt": "2026-08-07T04:07:49Z",
+  "updatedAt": "2026-08-08T00:00:00Z",
+  "status": "completed",
   "changes": [
     {
       "name": "daemon-session-orchestration",

@@ -346,7 +346,10 @@ mod tests {
         mm.load().await.unwrap();
 
         let result = MemoryContextInjector::recall("", &mm, 5, 0.5, None).await;
-        assert!(result.text.is_empty(), "empty input should produce empty recall");
+        assert!(
+            result.text.is_empty(),
+            "empty input should produce empty recall"
+        );
     }
 
     #[tokio::test]
@@ -427,7 +430,8 @@ mod tests {
 
         assert!(!result.text.is_empty());
         // Count lines in the result (minus the <memory-context> wrapper lines)
-        let body_lines: Vec<&str> = result.text
+        let body_lines: Vec<&str> = result
+            .text
             .lines()
             .filter(|l| {
                 !l.contains("<memory-context>")
@@ -487,11 +491,13 @@ mod tests {
 
         assert!(
             result.text.contains("patterns live"),
-            "live memory should appear in recall: {}", result.text
+            "live memory should appear in recall: {}",
+            result.text
         );
         assert!(
             !result.text.contains("old superseded"),
-            "superseded memory must not appear in recall block: {}", result.text
+            "superseded memory must not appear in recall block: {}",
+            result.text
         );
     }
 
@@ -517,11 +523,13 @@ mod tests {
         // One Knowledge half-life → effective ≈ 0.9 * 0.5 = 0.45 → "{:.1}" = "0.5" or "0.4".
         assert!(
             result.text.contains("(importance: 0.4)") || result.text.contains("(importance: 0.5)"),
-            "recall should print effective (~0.45), not raw 0.9: {}", result.text
+            "recall should print effective (~0.45), not raw 0.9: {}",
+            result.text
         );
         assert!(
             !result.text.contains("(importance: 0.9)"),
-            "must not print raw base importance when decayed: {}", result.text
+            "must not print raw base importance when decayed: {}",
+            result.text
         );
     }
 
@@ -545,7 +553,8 @@ mod tests {
                 .await;
         assert!(
             block.text.contains("recall count probe"),
-            "memory must be injected so recall_count can bump: {}", block.text
+            "memory must be injected so recall_count can bump: {}",
+            block.text
         );
 
         let in_memory = mm
@@ -616,15 +625,18 @@ mod tests {
 
         assert!(
             block.text.contains("high ranked alpha"),
-            "top slot should remain: {}", block.text
+            "top slot should remain: {}",
+            block.text
         );
         assert!(
             block.text.contains("mid ranked beta"),
-            "second slot should remain without exploration: {}", block.text
+            "second slot should remain without exploration: {}",
+            block.text
         );
         assert!(
             !block.text.contains("cold low ranked gamma"),
-            "epsilon=0 must never inject the cold candidate: {}", block.text
+            "epsilon=0 must never inject the cold candidate: {}",
+            block.text
         );
     }
 
@@ -639,15 +651,18 @@ mod tests {
 
         assert!(
             block.text.contains("high ranked alpha"),
-            "highest-ranked slot must be kept: {}", block.text
+            "highest-ranked slot must be kept: {}",
+            block.text
         );
         assert!(
             block.text.contains("cold low ranked gamma"),
-            "forced explore should inject the cold candidate: {}", block.text
+            "forced explore should inject the cold candidate: {}",
+            block.text
         );
         assert!(
             !block.text.contains("mid ranked beta"),
-            "lowest-ranked top slot should be replaced: {}", block.text
+            "lowest-ranked top slot should be replaced: {}",
+            block.text
         );
         assert!(
             mm.was_recently_explored("explore-cold").await,
@@ -677,7 +692,8 @@ mod tests {
 
         assert!(
             block.text.contains("only alpha slot") && block.text.contains("only beta slot"),
-            "with no cold candidate, original top must be kept (no panic): {}", block.text
+            "with no cold candidate, original top must be kept (no panic): {}",
+            block.text
         );
     }
 
@@ -691,7 +707,8 @@ mod tests {
                 .await;
         assert!(
             first.text.contains("cold low ranked gamma"),
-            "first forced explore should inject cold: {}", first.text
+            "first forced explore should inject cold: {}",
+            first.text
         );
         assert!(
             mm.was_recently_explored("explore-cold").await,
@@ -705,15 +722,18 @@ mod tests {
                 .await;
         assert!(
             second.text.contains("high ranked alpha"),
-            "highest-ranked slot must still be kept: {}", second.text
+            "highest-ranked slot must still be kept: {}",
+            second.text
         );
         assert!(
             second.text.contains("mid ranked beta"),
-            "with cold blocked, original second slot should return: {}", second.text
+            "with cold blocked, original second slot should return: {}",
+            second.text
         );
         assert!(
             !second.text.contains("cold low ranked gamma"),
-            "recently explored cold must not be re-injected: {}", second.text
+            "recently explored cold must not be re-injected: {}",
+            second.text
         );
     }
 
@@ -768,19 +788,23 @@ mod tests {
 
         assert!(
             block.text.contains("high ranked alpha"),
-            "highest-ranked slot must be kept: {}", block.text
+            "highest-ranked slot must be kept: {}",
+            block.text
         );
         assert!(
             block.text.contains("live cold epsilon"),
-            "live cold should be the exploration pick: {}", block.text
+            "live cold should be the exploration pick: {}",
+            block.text
         );
         assert!(
             !block.text.contains("tombstone cold delta"),
-            "superseded tombstone must never be chosen as cold: {}", block.text
+            "superseded tombstone must never be chosen as cold: {}",
+            block.text
         );
         assert!(
             !block.text.contains("mid ranked beta"),
-            "lowest top slot should be replaced by live cold: {}", block.text
+            "lowest top slot should be replaced by live cold: {}",
+            block.text
         );
         assert!(
             mm.was_recently_explored("explore-cold-live").await,

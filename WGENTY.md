@@ -117,6 +117,8 @@ full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqli
 
 **Desktop 桌面端**（`desktop/`，Tauri 2.0）：复用 `web/` React 前端的第三个纯视图客户端。Tauri webview 装入同一 React 应用，通过 daemon 的 `/api/v1/*` + SSE 事件流驱动。daemon 自动发现/拉起（`desktop/src-tauri/src/daemon_manager.rs`）；token 由 Tauri Rust 宿主注入（fetch monkey-patch，浏览器端不接触密钥）；CORS 通过 `tauri-plugin-localhost` 保持 origin 在 daemon 白名单内。`desktop/src-tauri/` 是独立 crate（不在主 workspace），默认 `cargo build` 零影响。platform Adapter 层（`web/src/platform/`）隔离浏览器与桌面特有能力（daemon 启动、窗口事件等），App 代码零 `if (isTauri)`。启动：`cd web && npm run dev` + `cd desktop/src-tauri && cargo tauri dev`。能力：全部复用 web/（流式聊天、Markdown、工具展示、权限审批、Sessions/Search/Checkpoints/Undo、Config 编辑、MCP 管理、Memory 搜索/删除、Subagent 树、Todos 实时同步）。
 
+**Desktop 打包**（daemon 以 externalBin 方式捆绑进安装包）：daemon 以**独立进程**随 app 分发（`wgenty-code daemon`），Tauri 侧通过 `bundle.externalBin` 打包。约定：`desktop/src-tauri/binaries/` 下放置 `wgenty-code-<target-triple>` 命名（Windows 为 `wgenty-code-<target-triple>.exe`）的 daemon 二进制，`daemon_manager.rs::locate_daemon_binary` 在 resource_dir 中按前缀 `wgenty-code` 查找。本地一键打包：`bash desktop/scripts/bundle.sh`（构建 daemon release → 复制为 target-triple 命名 → `cd web && npm run build` → `cargo tauri build`），产物在 `desktop/src-tauri/target/release/bundle/`。CI 由 `release.yml` 的 `desktop` job 在 tag 触发时完成（三平台：macos/linux/windows，原生架构）。
+
 Prompt 8 层：base_instructions → permissions → developer → environment → agents_md → collaboration → skills_inventory → wgenty_md_sections
 
 ---

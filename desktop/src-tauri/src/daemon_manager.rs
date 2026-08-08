@@ -108,12 +108,49 @@ fn discover_daemon() -> Option<DaemonHandle> {
 /// Locate the `wgenty-code` daemon binary.
 ///
 /// In dev: `../../target/{debug,release}/wgenty-code` (relative to
-/// `desktop/src-tauri/`). In a packaged app: the binary is bundled as a Tauri
-/// resource (future work — for now dev mode suffices).
+/// `desktop/src-tauri/`). In a packaged app: the binary is bundled via Tauri
+/// `bundle.externalBin` and lands **next to the shell executable** (macOS:
+/// `Contents/MacOS/`, Windows/Linux: the same directory as the shell binary),
+/// with the target-triple suffix stripped. We check that directory first, then
+/// the resource dir as a fallback, then dev.
 ///
 /// Prefers **release** (faster daemon, less CPU/memory) when available, falling
 /// back to debug. Both builds correctly emit discovery files after the
 /// bind-before-write-token fix in `src/daemon/mod.rs`.
+///
+/// A daemon binary name is either the exact "wgenty-code[.exe]" or a
+/// target-triple-suffixed externalBin name "wgenty-code-<triple>[.exe]".
+/// The triple always contains '-' (e.g. "aarch64-apple-darwin"), which
+/// excludes the shell's own binary ("wgenty-code-desktop") and non-binary
+/// resources like "wgenty-code.icns".
+fn is_daemon_binary_name(name: &str) -> bool {
+    if name == "wgenty-code" || name == "wgenty-code.exe" {
+        return true;
+    }
+    name.strip_prefix("wgenty-code-").is_some_and(|suffix| {
+        let s = suffix.strip_suffix(".exe").unwrap_or(suffix);
+        s.contains('-') && !s.contains('.')
+    })
+}
+
+/// Scan `dir` for a daemon binary: exact name first, then the
+/// target-triple-suffixed externalBin convention.
+fn find_daemon_in_dir(dir: &std::path::Path, exe_name: &str) -> Option<PathBuf> {
+    let direct = dir.join(exe_name);
+    if direct.exists() {
+        return Some(direct);
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name_str = entry.file_name().to_string_lossy().to_string();
+            if is_daemon_binary_name(&name_str) {
+                return Some(entry.path());
+            }
+        }
+    }
+    None
+}
+
 fn locate_daemon_binary(resource_dir: Option<&std::path::Path>) -> Option<PathBuf> {
     // Windows binaries have a .exe suffix.
     let exe_name = if cfg!(windows) {
@@ -122,28 +159,27 @@ fn locate_daemon_binary(resource_dir: Option<&std::path::Path>) -> Option<PathBu
         "wgenty-code"
     };
 
-    // 1. Packaged app: check Tauri resource directory for bundled binary.
-    //    externalBin binaries are suffixed with the target triple, e.g.
-    //    "wgenty-code-aarch64-apple-darwin". We strip the suffix to find it.
-    if let Some(dir) = resource_dir {
-        // Try exact name first (in case the binary was renamed).
-        let direct = dir.join(exe_name);
-        if direct.exists() {
-            return Some(direct);
-        }
-        // Try target-triple-suffixed names (Tauri externalBin convention).
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-                if name_str.starts_with("wgenty-code") {
-                    return Some(entry.path());
-                }
+    // 1. Packaged app: the externalBin daemon sits next to the shell executable
+    //    (Tauri strips the target-triple suffix when bundling). Prefer this —
+    //    it is where the binary actually lands on all three platforms.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if let Some(found) = find_daemon_in_dir(dir, exe_name) {
+                return Some(found);
             }
         }
     }
 
-    // 2. Dev mode: check target/{release,debug}/ relative to repo root.
+    // 2. Packaged app (fallback): check the Tauri resource directory.
+    //    externalBin binaries are suffixed with the target triple, e.g.
+    //    "wgenty-code-aarch64-apple-darwin". We strip the suffix to find it.
+    if let Some(dir) = resource_dir {
+        if let Some(found) = find_daemon_in_dir(dir, exe_name) {
+            return Some(found);
+        }
+    }
+
+    // 3. Dev mode: check target/{release,debug}/ relative to repo root.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir
         .parent() // desktop/
@@ -255,4 +291,71 @@ pub async fn ensure_daemon(resource_dir: Option<PathBuf>) -> Result<DaemonHandle
     }
 
     Err("daemon spawned but token file never appeared".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_binary_name_matches_exact() {
+        assert!(is_daemon_binary_name("wgenty-code"));
+        assert!(is_daemon_binary_name("wgenty-code.exe"));
+    }
+
+    #[test]
+    fn daemon_binary_name_matches_triple_suffix() {
+        // ExternalBin convention: wgenty-code-<target-triple>[.exe].
+        assert!(is_daemon_binary_name("wgenty-code-aarch64-apple-darwin"));
+        assert!(is_daemon_binary_name("wgenty-code-x86_64-apple-darwin"));
+        assert!(is_daemon_binary_name(
+            "wgenty-code-x86_64-unknown-linux-gnu"
+        ));
+        assert!(is_daemon_binary_name(
+            "wgenty-code-x86_64-pc-windows-msvc.exe"
+        ));
+    }
+
+    #[test]
+    fn daemon_binary_name_rejects_shell_and_resources() {
+        // The shell's own binary must never be picked as the daemon.
+        assert!(!is_daemon_binary_name("wgenty-code-desktop"));
+        assert!(!is_daemon_binary_name("wgenty-code-desktop.exe"));
+        // Non-binary resources sharing the prefix.
+        assert!(!is_daemon_binary_name("wgenty-code.icns"));
+        assert!(!is_daemon_binary_name("wgenty-code-README.md"));
+        assert!(!is_daemon_binary_name("wgenty-code-"));
+    }
+
+    #[test]
+    fn find_in_dir_prefers_exact_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exact = tmp.path().join("wgenty-code");
+        let suffixed = tmp.path().join("wgenty-code-aarch64-apple-darwin");
+        std::fs::write(&exact, b"daemon").unwrap();
+        std::fs::write(&suffixed, b"daemon").unwrap();
+
+        let found = find_daemon_in_dir(tmp.path(), "wgenty-code").unwrap();
+        assert_eq!(found, exact);
+    }
+
+    #[test]
+    fn find_in_dir_falls_back_to_triple_suffix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let suffixed = tmp.path().join("wgenty-code-aarch64-apple-darwin");
+        // A decoy shell binary + an unrelated resource share the prefix.
+        std::fs::write(tmp.path().join("wgenty-code-desktop"), b"shell").unwrap();
+        std::fs::write(tmp.path().join("wgenty-code.icns"), b"icns").unwrap();
+        std::fs::write(&suffixed, b"daemon").unwrap();
+
+        let found = find_daemon_in_dir(tmp.path(), "wgenty-code").unwrap();
+        assert_eq!(found, suffixed);
+    }
+
+    #[test]
+    fn find_in_dir_returns_none_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("wgenty-code-desktop"), b"shell").unwrap();
+        assert!(find_daemon_in_dir(tmp.path(), "wgenty-code").is_none());
+    }
 }

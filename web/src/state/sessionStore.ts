@@ -14,7 +14,12 @@
  * state; components subscribe through `sessionContext.tsx`.
  */
 import { create } from "zustand";
-import type { PermissionDecision, PermissionRequiredInfo, QuestionPayload, StructuredApproval } from "../api/types";
+import type {
+  PermissionDecision,
+  PermissionRequiredInfo,
+  QuestionPayload,
+  StructuredApproval,
+} from "../api/types";
 import type { StreamEvent } from "../api/sseParser";
 import type { ToolExecution } from "../agent/types";
 
@@ -28,6 +33,11 @@ export interface DisplayMessage {
   reasoning?: string;
   /** Tool executions attached to this assistant message (rendered as cards). */
   toolExecs?: ToolExecution[];
+  /** Tool-role entries (timeline mode): the invoked tool + args while running. */
+  toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  /** Tool-role entries: final execution result once tool_result arrives. */
+  toolExec?: ToolExecution;
   /** For tool messages: id of the tool call this is a result of. */
   toolCallId?: string;
   /** Whether this assistant message is still streaming. */
@@ -114,6 +124,10 @@ export interface SessionState {
   appendAssistant: (id: string, ev: StreamEvent) => void;
   /** Mark the streaming assistant message done and attach tool executions. */
   attachToolExec: (assistantId: string, exec: ToolExecution) => void;
+  /** Timeline mode: insert a running tool placeholder at its stream position. */
+  pushToolStart: (name: string, args: Record<string, unknown>) => string;
+  /** Timeline mode: fill a tool placeholder with its execution result. */
+  completeTool: (id: string, exec: ToolExecution) => void;
   finalizeAssistant: (id: string) => void;
   setError: (err: TurnError | null) => void;
   setRunning: (b: boolean) => void;
@@ -188,6 +202,24 @@ export function createSessionStore() {
         ),
       })),
 
+    pushToolStart: (name, args) => {
+      const id = genId();
+      set((s) => ({
+        messages: [
+          ...s.messages,
+          { id, role: "tool", content: "", streaming: true, toolName: name, toolArgs: args },
+        ],
+      }));
+      return id;
+    },
+
+    completeTool: (id, exec) =>
+      set((s) => ({
+        messages: s.messages.map((m) =>
+          m.id === id ? { ...m, streaming: false, toolExec: exec } : m,
+        ),
+      })),
+
     finalizeAssistant: (id) =>
       set((s) => ({
         messages: s.messages.map((m) => (m.id === id ? { ...m, streaming: false } : m)),
@@ -243,7 +275,7 @@ export function createSessionStore() {
         lastError: null,
         pendingPermission: null,
         pendingSubagent: null,
-    pendingQuestion: null,
+        pendingQuestion: null,
         isRunning: false,
       }),
   }));

@@ -4330,6 +4330,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-localhost",
  "tauri-plugin-opener",
+ "tempfile",
  "tokio",
 ]
 
