@@ -14,8 +14,7 @@
 //! host process (not visible in webview JS source on first load), and only
 //! applied to loopback `/api/*` requests. The daemon binds 127.0.0.1 only.
 
-use std::fs;
-use std::sync::OnceLock;
+mod daemon_manager;
 
 /// The token-injection script source, embedded at compile time.
 ///
@@ -30,59 +29,43 @@ const TOKEN_INJECTION_TEMPLATE: &str = include_str!("../../src/token-injection.j
 /// auth) — this exposes explicit platform capabilities (ensureDaemon, etc.).
 const PLATFORM_TAURI_SCRIPT: &str = include_str!("../../src/platform-tauri.js");
 
-/// Path to the daemon token file, computed once and cached.
-///
-/// Mirrors `src/utils/mod.rs` (`config_dir().join("daemon.token")` where
-/// `config_dir = home_dir().join(".wgenty-code")`). We don't depend on the main
-/// crate (this is a standalone crate), so we recompute the path here with
-/// `dirs`.
-fn token_path() -> &'static std::path::Path {
-    static PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
-    PATH.get_or_init(|| {
-        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        home.join(".wgenty-code").join("daemon.token")
-    })
-}
-
-/// Read the daemon bearer token from disk (best-effort).
-///
-/// Returns `None` when the file is missing or unreadable — the frontend will
-/// see 401s until the daemon runs, exactly like the Vite proxy behavior.
-fn read_token_from_disk() -> Option<String> {
-    fs::read_to_string(token_path())
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
 /// Tauri command: the frontend's fetch wrapper calls this on a 401 to refresh
 /// the token (daemon may have restarted and rotated it). Kept uncached because
 /// reads are cheap and token rotation is the whole point.
 #[tauri::command]
 fn read_daemon_token() -> Option<String> {
-    read_token_from_disk()
+    daemon_manager::read_token()
 }
 
 /// Tauri command: ensure the daemon is running and reachable.
 ///
-/// This is a **spike-grade placeholder**: it only checks whether the token file
-/// exists (meaning *some* daemon has run). The real implementation (in the
-/// foundation change) will:
-/// 1. Discover a running daemon via `~/.wgenty-code/daemon.json` + heartbeat
-/// 2. If none found, spawn one in-process (mirroring `src/tui/util.rs::start_daemon`)
-/// 3. Poll `/api/v1/health` until it responds
+/// Delegates to `daemon_manager::ensure_daemon`: discovers a healthy running
+/// instance first (via `~/.wgenty-code/daemon.json` + heartbeat check); if
+/// none found, spawns `wgenty-code daemon` as a separate process and waits for
+/// it to become reachable. The daemon is **detached** — it survives the Tauri
+/// shell exit so other UIs (TUI, browser) can keep using it.
 ///
-/// For now we just verify the token file is present so the frontend can boot
-/// against a manually-started daemon (matching the spike workflow).
+/// Guards against double-invoke (React StrictMode runs effects twice in dev):
+/// the first call does the work; concurrent/subsequent calls await the same
+/// result via a shared `OnceCell`.
+static DAEMON_ENSURE: tokio::sync::OnceCell<Result<(), String>> = tokio::sync::OnceCell::const_new();
+
 #[tauri::command]
-fn ensure_daemon() -> Result<(), String> {
-    match read_token_from_disk() {
-        Some(_) => Ok(()),
-        None => Err(
-            "daemon token not found — start the daemon with `cargo run -- daemon`"
-                .to_string(),
-        ),
-    }
+async fn ensure_daemon() -> Result<(), String> {
+    DAEMON_ENSURE
+        .get_or_init(|| async {
+            daemon_manager::ensure_daemon().await.map(|_| ())
+        })
+        .await
+        .clone()
+}
+
+/// Read the token eagerly (host-side) for embedding into the init script.
+///
+/// Thin wrapper around `daemon_manager::read_token` so `build_injection_script`
+/// stays in this file (it needs the Tauri-specific string escaping).
+fn read_token_eager() -> Option<String> {
+    daemon_manager::read_token()
 }
 
 /// Build the initialization script with the eagerly-known token embedded.
@@ -92,7 +75,7 @@ fn ensure_daemon() -> Result<(), String> {
 /// placeholder becomes `null` and the script falls back to the IPC command
 /// (with a 401-retry path) once the daemon comes up.
 fn build_injection_script() -> String {
-    let token_literal = match read_token_from_disk() {
+    let token_literal = match read_token_eager() {
         Some(t) => format!("\"{}\"", t.replace('\\', "\\\\").replace('"', "\\\"")),
         None => "null".to_string(),
     };

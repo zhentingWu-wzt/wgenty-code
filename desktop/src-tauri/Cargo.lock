@@ -4322,6 +4322,7 @@ dependencies = [
 name = "wgenty-code-desktop"
 version = "0.0.1-spike"
 dependencies = [
+ "chrono",
  "dirs 5.0.1",
  "serde",
  "serde_json",
@@ -4329,6 +4330,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-localhost",
  "tauri-plugin-opener",
+ "tokio",
 ]
 
 [[package]]
