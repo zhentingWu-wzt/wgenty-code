@@ -23,6 +23,13 @@ use std::sync::OnceLock;
 /// eagerly-read token (a JS string literal or `null`) before injecting.
 const TOKEN_INJECTION_TEMPLATE: &str = include_str!("../../src/token-injection.js");
 
+/// The Tauri platform implementation, embedded at compile time.
+///
+/// Sets `window.__wgentyPlatform` before React boots, picked up by
+/// `web/src/platform/index.ts`. Separate from token injection (transparent
+/// auth) — this exposes explicit platform capabilities (ensureDaemon, etc.).
+const PLATFORM_TAURI_SCRIPT: &str = include_str!("../../src/platform-tauri.js");
+
 /// Path to the daemon token file, computed once and cached.
 ///
 /// Mirrors `src/utils/mod.rs` (`config_dir().join("daemon.token")` where
@@ -54,6 +61,28 @@ fn read_token_from_disk() -> Option<String> {
 #[tauri::command]
 fn read_daemon_token() -> Option<String> {
     read_token_from_disk()
+}
+
+/// Tauri command: ensure the daemon is running and reachable.
+///
+/// This is a **spike-grade placeholder**: it only checks whether the token file
+/// exists (meaning *some* daemon has run). The real implementation (in the
+/// foundation change) will:
+/// 1. Discover a running daemon via `~/.wgenty-code/daemon.json` + heartbeat
+/// 2. If none found, spawn one in-process (mirroring `src/tui/util.rs::start_daemon`)
+/// 3. Poll `/api/v1/health` until it responds
+///
+/// For now we just verify the token file is present so the frontend can boot
+/// against a manually-started daemon (matching the spike workflow).
+#[tauri::command]
+fn ensure_daemon() -> Result<(), String> {
+    match read_token_from_disk() {
+        Some(_) => Ok(()),
+        None => Err(
+            "daemon token not found — start the daemon with `cargo run -- daemon`"
+                .to_string(),
+        ),
+    }
 }
 
 /// Build the initialization script with the eagerly-known token embedded.
@@ -103,11 +132,15 @@ pub fn run() {
             .inner_size(1200.0, 800.0)
             .min_inner_size(800.0, 500.0)
             .initialization_script(build_injection_script())
+            // Second init script: exposes window.__wgentyPlatform (explicit
+            // platform capabilities) before React boots. Separate from token
+            // injection (transparent auth).
+            .initialization_script(PLATFORM_TAURI_SCRIPT.to_string())
             .build()?;
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_daemon_token])
+        .invoke_handler(tauri::generate_handler![read_daemon_token, ensure_daemon])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
