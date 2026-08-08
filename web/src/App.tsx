@@ -59,11 +59,19 @@ export function App() {
   // Ensure the daemon is running before the first health check. In the browser
   // this is a no-op (user starts the daemon manually). In Tauri, the host
   // spawns/reuses the daemon. Failures are non-fatal — the health poll below
-  // will keep retrying and surface a "disconnected" status.
+  // will keep retrying and surface a "disconnected" status, but we also toast
+  // the specific spawn error so the user knows why (e.g. binary not found).
   useEffect(() => {
     getPlatform()
       .ensureDaemon?.()
-      .catch((e) => console.warn("ensureDaemon failed (non-fatal):", e));
+      .catch((e) => {
+        console.warn("ensureDaemon failed (non-fatal):", e);
+        // Only toast on desktop — in the browser ensureDaemon is a no-op and
+        // can't fail. The message helps the user diagnose spawn failures.
+        if (getPlatform().name === "desktop") {
+          toast.error(`Failed to start daemon: ${String(e).slice(0, 120)}`);
+        }
+      });
   }, []);
 
   // sessionManager → uiStore.openTabs 单向同步（激活补开 tab、删除剪 tab）。

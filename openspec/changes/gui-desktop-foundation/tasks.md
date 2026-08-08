@@ -6,14 +6,14 @@
 
 - [x] 1.1 复用 web/ 的 `DaemonClient`（命令通道：发起 turn / 中断 / 审批应答）—— spike 已验证 webview 内直接可用
 - [x] 1.2 复用 web/ 的 SSE 订阅（seq 跟踪、断线续传、失步回退由 daemon-session-orchestration + web/ sessionRunner 实现）—— spike 已验证流式渲染正常
-- [ ] 1.3 daemon 发现与连接：Tauri Rust 侧实现发现机制（常驻实例优先，内嵌拉起兜底），通过 platform/ Adapter 暴露给前端
+- [x] 1.3 daemon 发现与连接：Tauri Rust 侧发现机制（常驻实例优先，spawn 兜底）—— daemon_manager.rs 实现 discovery + Command spawn + health 轮询，OnceCell 防 StrictMode 双调
 
 ## 2. GUI 应用骨架（Tauri 壳）
 
 - [x] 2.1 创建 Tauri 2.0 壳项目（`desktop/src-tauri/`，独立 crate），token 注入 + CORS 已由 spike 验证 —— 见 `desktop/README.md`
 - [x] 2.2 Tauri 主窗口入口（`desktop/src-tauri/src/lib.rs`），窗口启动与关闭时的资源清理
 - [ ] 2.3 platform/ Adapter 层：web/ 加薄抽象（`web/src/platform/`），desktop/ 提供 Tauri 实现，隔离浏览器与桌面特有能力
-- [ ] 2.4 连接失败的错误展示与重试机制（复用 web/ 已有逻辑，适配 Tauri platform 接口）
+- [x] 2.4 连接失败的错误展示与重试机制（复用 web/ health 轮询 + disconnected toast + ensureDaemon 失败时桌面端显示 spawn 错误）
 - [x] 2.5 导航 + 多面板布局（复用 web/ 的 LeftSidebar + RightRail + SessionTabBar 布局，webview 内直接渲染）
 
 ## 3. 核心对话界面（复用 web/）
