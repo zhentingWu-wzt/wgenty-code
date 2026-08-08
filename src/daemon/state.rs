@@ -65,8 +65,8 @@ pub struct DaemonState {
     pub tool_executor: ToolExecutor,
     pub checkpoint_manager: Arc<CheckpointManager>,
     pub checkpoint_store: Arc<CheckpointStore>,
-    pub task_manager: Arc<TaskManagementTool>,
-    pub todo_state: Arc<RwLock<TodoState>>,
+    pub task_router: Arc<crate::tasks::TaskRouter>,
+    pub todo_router: Arc<crate::tasks::TodoRouter>,
     pub skill_loader: Arc<SkillLoader>,
     pub background_manager: Arc<BackgroundManager>,
     /// Retained background results (newest at back, oldest evicted past
@@ -279,6 +279,18 @@ impl DaemonState {
             app_state.settings.clone(),
             projects.clone(),
             memory_manager.clone(),
+        ));
+
+        // Per-project task/todo routing (mirrors MemoryRouter). The main
+        // project reuses the instances built above; registered projects get
+        // lazy-initialized instances on first access.
+        let task_router = Arc::new(crate::tasks::TaskRouter::new(
+            task_manager.clone(),
+            app_state.settings.storage.working_dir.clone(),
+        ));
+        let todo_router = Arc::new(crate::tasks::TodoRouter::new(
+            todo_state.clone(),
+            app_state.settings.storage.working_dir.clone(),
         ));
 
         // Shared read connection to the global transcript db for the SSE trace
@@ -524,8 +536,8 @@ impl DaemonState {
             tool_registry,
             checkpoint_manager,
             checkpoint_store,
-            task_manager,
-            todo_state,
+            task_router,
+            todo_router,
             skill_loader,
             background_manager: bg_manager,
             background_results,
@@ -604,16 +616,20 @@ impl DaemonState {
 
     /// Single write-path for the shared todo list: update state, then
     /// broadcast a full-snapshot TodosChanged (snapshots are small; YAGNI:
-    /// no incremental diff). `project` lets multi-project clients filter.
-    pub async fn apply_todos_update(&self, items: Vec<crate::tasks::TodoItem>) {
+    /// no incremental diff). Routes to the session's project todo state so
+    /// multi-project sessions never cross-contaminate. `project_path` is
+    /// included in the broadcast so clients can filter.
+    pub async fn apply_todos_update(&self, session_id: &str, items: Vec<crate::tasks::TodoItem>) {
+        let root = self.effective_session_root(session_id).await;
+        let todo_state = self.todo_router.for_project(&root).await;
         {
-            let mut todos = self.todo_state.write().await;
+            let mut todos = todo_state.write().await;
             todos.items = items;
         }
         let snapshot = {
-            let todos = self.todo_state.read().await;
+            let todos = todo_state.read().await;
             serde_json::json!({
-                "project": self.app_state.settings.storage.working_dir,
+                "project": root,
                 "items": todos.items,
                 "has_open_items": todos.has_open_items(),
             })
@@ -622,6 +638,26 @@ impl DaemonState {
             crate::daemon::global_events::GlobalEventKind::TodosChanged,
             snapshot,
         );
+    }
+
+    /// Task manager for the session's project (get-or-create via router).
+    /// HTTP handlers and the run loop use this so tasks are isolated per
+    /// project, mirroring `session_manager_for_project` / `checkpoints_for_project`.
+    pub async fn task_manager_for_session(
+        &self,
+        session_id: &str,
+    ) -> Arc<crate::tasks::TaskManagementTool> {
+        let root = self.effective_session_root(session_id).await;
+        self.task_router.for_project(&root).await
+    }
+
+    /// Todo state for the session's project (get-or-create via router).
+    pub async fn todo_state_for_session(
+        &self,
+        session_id: &str,
+    ) -> Arc<RwLock<crate::tasks::TodoState>> {
+        let root = self.effective_session_root(session_id).await;
+        self.todo_router.for_project(&root).await
     }
 
     /// Returns the trusted root execution context for `session_id`, creating

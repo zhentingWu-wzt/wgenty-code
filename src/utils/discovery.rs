@@ -72,11 +72,43 @@ pub(crate) fn evaluate(
 
 /// Try to locate an already-running daemon via the discovery file.
 /// Returns None (caller falls back to spawning) when the file is missing,
-/// corrupt, token-mismatched, or its heartbeat is stale.
+/// corrupt, token-mismatched, its heartbeat is stale, or the port is not
+/// accepting connections (daemon crashed but discovery file remains).
 pub fn discover_daemon() -> Option<DiscoveredDaemon> {
     let file = read_discovery_file();
     let token = crate::utils::read_daemon_token();
-    evaluate(file.as_ref(), token.as_deref(), Utc::now())
+    let found = evaluate(file.as_ref(), token.as_deref(), Utc::now())?;
+    // TCP probe: verify the port is actually listening. A stale discovery
+    // file (daemon crashed / was killed without clean shutdown) can have a
+    // fresh-looking heartbeat if the process died between heartbeat writes.
+    // The probe is a quick 200ms connect attempt; if it fails, treat the
+    // daemon as dead so the caller falls back to spawning immediately
+    // instead of waiting for the 120s heartbeat-stale window.
+    if !probe_port(found.port) {
+        tracing::debug!(
+            port = found.port,
+            "discovery file found but TCP probe failed; treating daemon as dead"
+        );
+        return None;
+    }
+    Some(found)
+}
+
+/// Quick TCP connect probe to `127.0.0.1:port`. Returns true if the port
+/// accepts a connection within 200ms. Used by [`discover_daemon`] to verify
+/// a discovered daemon is actually listening, not just that its heartbeat
+/// file is fresh.
+fn probe_port(port: u16) -> bool {
+    use std::net::TcpStream;
+    use std::time::Duration;
+    let addr = format!("127.0.0.1:{}", port);
+    TcpStream::connect_timeout(
+        &addr
+            .parse()
+            .unwrap_or_else(|_| "127.0.0.1:0".parse().unwrap()),
+        Duration::from_millis(200),
+    )
+    .is_ok()
 }
 
 /// Write the discovery file and spawn the heartbeat task that refreshes

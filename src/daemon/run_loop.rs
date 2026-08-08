@@ -131,6 +131,16 @@ pub struct DaemonEventSink {
     /// Mid-run persistence bridge (Task 5); `None` until the run task wires
     /// the live history handle in via [`DaemonEventSink::set_save_bridge`].
     save_bridge: Option<SaveBridge>,
+    /// Per-project todo bridge; `None` until the run task wires it in via
+    /// [`DaemonEventSink::set_todo_bridge`]. When set, `PlanUpdate` events
+    /// update the session's project todo state and broadcast globally.
+    todo_bridge: Option<TodoBridge>,
+}
+
+/// Handles the todo-update side of [`RuntimeEvent::PlanUpdate`]: the owning
+/// project's todo state. `emit` is sync, so the update is always spawned.
+struct TodoBridge {
+    state: Arc<DaemonState>,
 }
 
 /// Handles the persistence side of [`RuntimeEvent::SaveSession`]: the owning
@@ -165,6 +175,7 @@ impl DaemonEventSink {
             buffer,
             turn_done_published: AtomicBool::new(false),
             save_bridge: None,
+            todo_bridge: None,
         }
     }
 
@@ -185,6 +196,13 @@ impl DaemonEventSink {
             save_gen,
             save_lock,
         });
+    }
+
+    /// Attach the per-project todo bridge: subsequent `PlanUpdate` events
+    /// spawn a todo state update + global broadcast routed to the session's
+    /// project, so multi-project sessions never cross-contaminate.
+    fn set_todo_bridge(&mut self, state: Arc<DaemonState>) {
+        self.todo_bridge = Some(TodoBridge { state });
     }
 
     fn publish(&self, kind: SessionEventKind, data: serde_json::Value) {
@@ -241,24 +259,29 @@ impl EventSink for DaemonEventSink {
                 );
             }
             RuntimeEvent::StreamDone { finish_reason } => {
-                // StreamDone fires at the end of EVERY LLM round (stream.rs
-                // forwards the provider's finish_reason inline). A round that
-                // ends in tool calls is a round boundary, not turn end —
-                // ToolStart/ToolResult and further rounds still follow, and
-                // web clients stop listening on TurnDone (the fixed bug:
-                // tools appeared unsupported because the first turn_done
-                // arrived before tool_start). Anthropic `tool_use` is
-                // normalized to "tool_calls" in src/api, so this check holds
-                // across providers.
+                // StreamDone fires at the end of EVERY LLM round (stream.rs forwards the
+                // provider's finish_reason inline). A round that ends in tool calls is a
+                // round boundary, not turn end: publish TurnDone{tool_calls} so web/desktop
+                // clients can split per-round bubbles (their SSE loop treats tool_calls as
+                // a boundary, not turn completion). This does NOT consume
+                // `turn_done_published` - the terminal round still publishes its TurnDone
+                // exactly once. Anthropic `tool_use` is normalized to "tool_calls" in
+                // src/api, so this holds across providers.
+                tracing::info!(finish_reason = %finish_reason, "StreamDone received");
                 if finish_reason == "tool_calls" {
+                    tracing::info!("round-boundary: publishing TurnDone(tool_calls)");
+                    self.publish(
+                        SessionEventKind::TurnDone,
+                        serde_json::json!({ "finish_reason": finish_reason }),
+                    );
                     return;
                 }
-                // The loop re-emits StreamDone at turn completion
-                // (loop_.rs), so a terminal reason is seen twice; publish
-                // TurnDone exactly once per run.
+                // The loop re-emits StreamDone at turn completion (loop_.rs), so a
+                // terminal reason is seen twice; publish TurnDone exactly once per run.
                 if self.turn_done_published.swap(true, Ordering::Relaxed) {
                     return;
                 }
+                tracing::info!(finish_reason = %finish_reason, "turn end: publishing TurnDone");
                 self.publish(
                     SessionEventKind::TurnDone,
                     serde_json::json!({ "finish_reason": finish_reason }),
@@ -298,6 +321,16 @@ impl EventSink for DaemonEventSink {
                     });
                 }
             }
+            RuntimeEvent::PlanUpdate(args) => {
+                if let Some(bridge) = &self.todo_bridge {
+                    let items = parse_plan_update(&args);
+                    let state = Arc::clone(&bridge.state);
+                    let session_id = self.session_id.clone();
+                    tokio::spawn(async move {
+                        state.apply_todos_update(&session_id, items).await;
+                    });
+                }
+            }
             // v1: connection noise and UI-only signals are not broadcast.
             _ => {}
         }
@@ -313,7 +346,7 @@ use crate::daemon::state::DaemonState;
 use crate::permissions::policy::{PolicyDecision, ToolPermissionPolicy};
 use crate::teams::permission_bridge::{PermissionBridge, StructuredApproval};
 use crate::tools::executor::validate_tool_call_shared;
-use crate::tools::ToolRegistry;
+use crate::tools::{Tool, ToolRegistry};
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -367,6 +400,10 @@ pub struct RootToolPort {
     /// session belongs to, not the daemon's main project).
     checkpoint_manager: Arc<crate::tools::CheckpointManager>,
     checkpoint_store: Arc<crate::tools::CheckpointStore>,
+    /// Per-project task routing: `task_management` calls are intercepted and
+    /// delegated to the session's project task manager instead of the
+    /// registry's global default, mirroring `MemoryRouter` for tasks.
+    task_router: Arc<crate::tasks::TaskRouter>,
     session_id: String,
     /// Session event hub: pushes PermissionRequired/AskUser events to SSE
     /// clients so they can prompt without polling pending-permissions.
@@ -397,6 +434,7 @@ impl RootToolPort {
             root,
             checkpoint_manager,
             checkpoint_store,
+            task_router: Arc::clone(&state.task_router),
             session_id: session_id.to_string(),
             hub: state.session_event_hub.clone(),
             run_id: run_id.to_string(),
@@ -430,7 +468,11 @@ impl RootToolPort {
             ),
             permission_modes: crate::permissions::PermissionModeStore::new(),
             agent: AgentExecutionContext::root(SessionId::new("test")),
-            root: policy_root,
+            root: policy_root.clone(),
+            task_router: Arc::new(crate::tasks::TaskRouter::new(
+                Arc::new(crate::tasks::TaskManagementTool::new()),
+                policy_root,
+            )),
             session_id: "test".to_string(),
             hub: tokio::sync::broadcast::channel(16).0,
             run_id: "test".to_string(),
@@ -584,6 +626,24 @@ impl ToolPort for RootToolPort {
         // 3. Guardian pre-check for shell tools.
         if let Some(resp) = self.guardian_block(&req) {
             return resp;
+        }
+
+        // 3b. Per-project task routing: delegate `task_management` to the
+        // session's project task manager instead of the registry's global
+        // default, so multi-project sessions never cross-contaminate.
+        if req.name == "task_management" {
+            let task_mgr = self.task_router.for_project(&self.root).await;
+            match task_mgr.execute(req.arguments.clone()).await {
+                Ok(output) => {
+                    return ToolResponse {
+                        content: output.content,
+                        success: true,
+                    }
+                }
+                Err(e) => {
+                    return Self::fail(e.code.as_deref().unwrap_or("task_error"), e.message);
+                }
+            }
         }
 
         // 4. Registry execution with the session's effective root as workdir.
@@ -998,6 +1058,29 @@ pub(crate) async fn get_session_events(
     Ok(Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(KeepAlive::default()))
 }
 
+/// Parse `update_plan` tool args (`{ "plan": [{ "step": "...", "status": "..." }] }`)
+/// into [`TodoItem`]s. Malformed items are silently skipped (the TUI applies
+/// the same lenient parsing in `plan_panel.rs`).
+fn parse_plan_update(args: &serde_json::Value) -> Vec<crate::tasks::TodoItem> {
+    args.get("plan")
+        .and_then(|p| p.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    let content = item.get("step")?.as_str()?.to_string();
+                    let status = item.get("status")?.as_str()?.to_string();
+                    Some(crate::tasks::TodoItem {
+                        content,
+                        status,
+                        active_form: String::new(),
+                        subagent: None,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Claim the next save generation for a run. Monotonic per run; claimed at
 /// event/save time so generation order matches the order snapshots logically
 /// supersede each other.
@@ -1198,8 +1281,7 @@ async fn run_session_turn(
         }
     };
     let injections = crate::runtime::hooks::collect_injections(&outcomes);
-    let reminder =
-        crate::prompts::build_user_turn_reminder(&prompt_ctx, &injections);
+    let reminder = crate::prompts::build_user_turn_reminder(&prompt_ctx, &injections);
 
     // Prepend reminder to the user message in seed history (same as TUI).
     if let Some(ref r) = reminder {
@@ -1243,6 +1325,9 @@ async fn run_session_turn(
         Arc::clone(&save_gen),
         Arc::clone(&save_lock),
     );
+    // Per-project todo bridge: `PlanUpdate` events route to the session's
+    // project todo state via `TodoRouter`, mirroring the save bridge pattern.
+    sink.set_todo_bridge(Arc::clone(state));
     let mut turn_state = LoopTurnState::default();
     let token_counter = crate::api::token_counter::TokenCounter::new();
 
@@ -1600,12 +1685,13 @@ mod tests {
     }
 
     #[test]
-    fn tool_calls_round_end_is_not_turn_done() {
-        // Regression: StreamDone with finish_reason "tool_calls" ends an LLM
-        // ROUND, not the turn — ToolStart/ToolResult and further rounds
-        // follow. Web clients stop listening on TurnDone, so publishing it
-        // for a tool round made server-side tool calls invisible (the
-        // model's first tool decision looked like turn completion).
+    fn tool_calls_round_end_publishes_boundary_then_terminal() {
+        // StreamDone with finish_reason "tool_calls" ends an LLM ROUND, not the
+        // turn - it now publishes TurnDone{tool_calls} as a round-boundary
+        // signal so web/desktop clients can split per-round bubbles (their SSE
+        // loop treats tool_calls as a boundary, not turn completion). The
+        // terminal StreamDone (non-tool_calls) is still published exactly once
+        // via `turn_done_published` (the loop re-emits it at turn completion).
         let (hub, mut rx) = tokio::sync::broadcast::channel(16);
         let sink = DaemonEventSink::new(
             "s1".into(),
@@ -1629,13 +1715,20 @@ mod tests {
         sink.emit(RuntimeEvent::StreamDone {
             finish_reason: "stop".into(),
         });
+        // Round-boundary TurnDone{tool_calls} fires before ToolStart.
+        assert!(rx.try_recv().is_ok_and(|e| {
+            e.kind == SessionEventKind::TurnDone
+                && e.data.get("finish_reason").and_then(|v| v.as_str()) == Some("tool_calls")
+        }));
         assert!(rx
             .try_recv()
             .is_ok_and(|e| e.kind == SessionEventKind::ToolStart));
-        assert!(rx
-            .try_recv()
-            .is_ok_and(|e| e.kind == SessionEventKind::TurnDone));
-        assert!(rx.try_recv().is_err(), "no second TurnDone");
+        // Terminal TurnDone{stop} exactly once.
+        assert!(rx.try_recv().is_ok_and(|e| {
+            e.kind == SessionEventKind::TurnDone
+                && e.data.get("finish_reason").and_then(|v| v.as_str()) == Some("stop")
+        }));
+        assert!(rx.try_recv().is_err(), "no second terminal TurnDone");
     }
 
     #[test]

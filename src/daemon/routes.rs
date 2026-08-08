@@ -61,7 +61,10 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
 
     let protected = Router::new()
         // Config
-        .route("/api/v1/config", get(handlers::get_config).put(handlers::update_config))
+        .route(
+            "/api/v1/config",
+            get(handlers::get_config).put(handlers::update_config),
+        )
         // Model profiles (switchable via /model in the TUI)
         .route("/api/v1/models", get(handlers::list_models))
         .route("/api/v1/model/switch", post(handlers::switch_model))
@@ -103,7 +106,10 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         // Memory ops (web-ops-console Tier 2): wrap MemoryManager
         .route("/api/v1/memory/status", get(handlers::memory_status))
         .route("/api/v1/memory", get(handlers::list_memory))
-        .route("/api/v1/memory/:id", get(handlers::get_memory).delete(handlers::delete_memory))
+        .route(
+            "/api/v1/memory/:id",
+            get(handlers::get_memory).delete(handlers::delete_memory),
+        )
         .route("/api/v1/memory/prune", post(handlers::prune_memory))
         // Background tasks
         .route(
@@ -120,11 +126,26 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             get(handlers::subagent_trace_stream),
         )
         // MCP
-        .route("/api/v1/mcp/servers", get(handlers::list_mcp_servers).post(handlers::add_mcp_server))
-        .route("/api/v1/mcp/servers/:name", delete(handlers::remove_mcp_server))
-        .route("/api/v1/mcp/servers/:name/start", post(handlers::start_mcp_server))
-        .route("/api/v1/mcp/servers/:name/stop", post(handlers::stop_mcp_server))
-        .route("/api/v1/mcp/servers/:name/restart", post(handlers::restart_mcp_server))
+        .route(
+            "/api/v1/mcp/servers",
+            get(handlers::list_mcp_servers).post(handlers::add_mcp_server),
+        )
+        .route(
+            "/api/v1/mcp/servers/:name",
+            delete(handlers::remove_mcp_server),
+        )
+        .route(
+            "/api/v1/mcp/servers/:name/start",
+            post(handlers::start_mcp_server),
+        )
+        .route(
+            "/api/v1/mcp/servers/:name/stop",
+            post(handlers::stop_mcp_server),
+        )
+        .route(
+            "/api/v1/mcp/servers/:name/restart",
+            post(handlers::restart_mcp_server),
+        )
         // Skills (web command center, read-only)
         .route("/api/v1/skills", get(skills_api::list_skills))
         // Sessions

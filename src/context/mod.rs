@@ -1938,11 +1938,13 @@ mod tests {
         .await;
         assert!(
             recall.text.contains("bug fixed"),
-            "new content should be recallable: {}", recall.text
+            "new content should be recallable: {}",
+            recall.text
         );
         assert!(
             !recall.text.contains("bug exists"),
-            "superseded old content must be excluded from recall: {}", recall.text
+            "superseded old content must be excluded from recall: {}",
+            recall.text
         );
     }
 

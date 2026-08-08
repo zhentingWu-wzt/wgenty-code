@@ -7,6 +7,7 @@
 
 pub mod graph;
 pub mod management;
+pub mod router;
 pub mod store;
 pub mod todo_write;
 pub mod types;
@@ -16,5 +17,6 @@ pub use graph::{
     would_create_cycle,
 };
 pub use management::TaskManagementTool;
+pub use router::{TaskRouter, TodoRouter};
 pub use todo_write::{SubagentTodoMeta, TodoItem, TodoState};
 pub use types::{Task, TaskPriority, TaskStatus};

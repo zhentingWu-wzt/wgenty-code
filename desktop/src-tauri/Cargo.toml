@@ -48,3 +48,6 @@ tokio = { version = "1", features = ["net", "time"] }
 # Tauri 2 splits platform integrations into plugins. The spike needs none of
 # them beyond opener + localhost — the web frontend talks to the daemon
 # directly over loopback HTTP+SSE.
+
+[dev-dependencies]
+tempfile = "3"

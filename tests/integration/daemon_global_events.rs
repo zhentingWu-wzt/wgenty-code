@@ -52,12 +52,15 @@ async fn global_events_two_subscribers_observe_identical_sequence() {
 
     // 2. todos update → TodosChanged (also asserts the activeForm wire name).
     d.state
-        .apply_todos_update(vec![wgenty_code::tasks::TodoItem {
-            content: "write tests".to_string(),
-            status: "in_progress".to_string(),
-            active_form: "Writing tests".to_string(),
-            subagent: None,
-        }])
+        .apply_todos_update(
+            &sid,
+            vec![wgenty_code::tasks::TodoItem {
+                content: "write tests".to_string(),
+                status: "in_progress".to_string(),
+                active_form: "Writing tests".to_string(),
+                subagent: None,
+            }],
+        )
         .await;
 
     // 3. background result → BackgroundResult.

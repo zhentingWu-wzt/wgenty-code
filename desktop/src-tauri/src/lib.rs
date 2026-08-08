@@ -54,22 +54,20 @@ fn read_daemon_token() -> Option<String> {
 /// Guards against double-invoke (React StrictMode runs effects twice in dev):
 /// the first call does the work; concurrent/subsequent calls await the same
 /// result via a shared `OnceCell`.
-static DAEMON_ENSURE: tokio::sync::OnceCell<Result<(), String>> = tokio::sync::OnceCell::const_new();
+static DAEMON_ENSURE: tokio::sync::OnceCell<Result<(), String>> =
+    tokio::sync::OnceCell::const_new();
 
 #[tauri::command]
-async fn ensure_daemon(
-    app: tauri::AppHandle,
-) -> Result<(), String> {
+async fn ensure_daemon(app: tauri::AppHandle) -> Result<(), String> {
     // Resolve the resource directory for packaged-binary lookup.
     // In dev mode, this returns a path inside target/ — harmless, as
     // locate_daemon_binary falls back to the target/{debug,release}/ check.
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .ok();
+    let resource_dir = app.path().resource_dir().ok();
     DAEMON_ENSURE
         .get_or_init(|| async {
-            daemon_manager::ensure_daemon(resource_dir).await.map(|_| ())
+            daemon_manager::ensure_daemon(resource_dir)
+                .await
+                .map(|_| ())
         })
         .await
         .clone()

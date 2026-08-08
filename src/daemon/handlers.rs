@@ -944,8 +944,15 @@ pub async fn get_permission_mode(
 
 // ── Tasks ────────────────────────────────────────────────────────────────────
 
-pub async fn list_tasks(State(state): State<Arc<DaemonState>>) -> Json<ListTasksResponse> {
-    let all = state.task_manager.get_all_tasks().await;
+pub async fn list_tasks(
+    State(state): State<Arc<DaemonState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Json<ListTasksResponse> {
+    let task_manager = match params.get("session_id") {
+        Some(sid) => state.task_manager_for_session(sid).await,
+        None => state.task_router.main(),
+    };
+    let all = task_manager.get_all_tasks().await;
     debug_log(&format!(
         "[list_tasks handler] returning {} tasks",
         all.len()
@@ -982,8 +989,13 @@ pub async fn list_tasks(State(state): State<Arc<DaemonState>>) -> Json<ListTasks
 /// `GET /api/v1/tasks/progress` - ready/blocked counts for agent-loop nudges.
 pub async fn task_progress(
     State(state): State<Arc<DaemonState>>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Json<crate::daemon::models::TaskProgressResponse> {
-    let store = state.task_manager.task_store();
+    let task_manager = match params.get("session_id") {
+        Some(sid) => state.task_manager_for_session(sid).await,
+        None => state.task_router.main(),
+    };
+    let store = task_manager.task_store();
     let map = store.read().await;
     let all: std::collections::HashMap<String, crate::tasks::Task> = map.clone();
     drop(map);
@@ -994,8 +1006,15 @@ pub async fn task_progress(
 
 // ── Todos (s03 TodoWrite) ────────────────────────────────────────────────────
 
-pub async fn get_todos(State(state): State<Arc<DaemonState>>) -> Json<GetTodosResponse> {
-    let todo_state = state.todo_state.read().await;
+pub async fn get_todos(
+    State(state): State<Arc<DaemonState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Json<GetTodosResponse> {
+    let todo_state = match params.get("session_id") {
+        Some(sid) => state.todo_state_for_session(sid).await,
+        None => state.todo_router.main(),
+    };
+    let todo_state = todo_state.read().await;
     let items: Vec<TodoItemResponse> = todo_state
         .items
         .iter()
@@ -3004,12 +3023,15 @@ mod tests {
         let state = global_event_test_state().await;
         let mut rx = state.global_event_hub.subscribe();
         state
-            .apply_todos_update(vec![crate::tasks::TodoItem {
-                content: "write plan".into(),
-                status: "in_progress".into(),
-                active_form: String::new(),
-                subagent: None,
-            }])
+            .apply_todos_update(
+                "test-session",
+                vec![crate::tasks::TodoItem {
+                    content: "write plan".into(),
+                    status: "in_progress".into(),
+                    active_form: String::new(),
+                    subagent: None,
+                }],
+            )
             .await;
         let ev = rx.recv().await.expect("todos event");
         assert_eq!(
@@ -3020,8 +3042,9 @@ mod tests {
         // Multi-project dimension: clients filter by `project`.
         assert!(ev.data["project"].is_string(), "data: {}", ev.data);
         assert_eq!(ev.data["has_open_items"], true);
-        // 快照与 GET /todos 读取同源。
-        let todos = state.todo_state.read().await;
+        // 快照与 GET /todos 读取同源（route through the same session path）。
+        let todo_state = state.todo_state_for_session("test-session").await;
+        let todos = todo_state.read().await;
         assert_eq!(todos.items.len(), 1);
     }
 

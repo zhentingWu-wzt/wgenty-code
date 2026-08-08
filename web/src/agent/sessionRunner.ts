@@ -14,13 +14,30 @@
 import type { DaemonClient } from "../api/client";
 import { toast } from "sonner";
 import { useSessionManager } from "../state/sessionManager";
+import { useDisplayPrefs, type DisplayMode } from "../state/displayPrefs";
 import type { SessionStore } from "../state/sessionStore";
 import type { SessionEvent, SessionEventKind } from "../api/types";
+import type { ToolExecution } from "./types";
 
 /** Pending tool invocation (started but not yet resulted). */
 interface PendingTool {
   name: string;
   args: Record<string, unknown>;
+  /** Timeline mode: the store message id of the running placeholder. */
+  msgId?: string;
+}
+
+/** Mutable per-turn render state shared with handleEvent. */
+interface RenderCtx {
+  mode: DisplayMode;
+  /** id of the current assistant bubble (null until the first text arrives). */
+  assistantId: string | null;
+  /** Current LLM round number (1-based). */
+  round: number;
+  /** Set when a turn_done(finish_reason=tool_calls) ends an LLM round; the
+   *  next text then opens a new bubble with the incremented round. */
+  boundary: boolean;
+  pendingTools: PendingTool[];
 }
 
 export async function runSessionTurn(
@@ -62,13 +79,14 @@ export async function runSessionTurn(
   const abort = new AbortController();
   store.getState().registerAbort(abort);
 
-  // The assistant bubble events stream into; created lazily on first delta.
-  let assistantId: string | null = null;
-  const pendingTools: PendingTool[] = [];
-
-  const ensureAssistant = (): string => {
-    if (!assistantId) assistantId = store.getState().beginAssistantRound(1);
-    return assistantId;
+  // Render state for this turn. `mode` is snapshotted at send time so a
+  // mid-turn toggle doesn't scramble an in-flight turn's layout.
+  const ctx: RenderCtx = {
+    mode: useDisplayPrefs.getState().mode,
+    assistantId: null,
+    round: 1,
+    boundary: false,
+    pendingTools: [],
   };
 
   try {
@@ -98,12 +116,11 @@ export async function runSessionTurn(
         } catch {
           continue;
         }
-        handleEvent(ev, store, sessionId, ensureAssistant, pendingTools);
+        handleEvent(ev, store, sessionId, ctx);
         // A turn_done with finish_reason "tool_calls" only ends one LLM
         // round — tool_start/tool_result and further rounds still follow.
         // (Fixed daemon-side; this guard keeps an older daemon usable.)
-        const roundBoundary =
-          ev.kind === "turn_done" && ev.data.finish_reason === "tool_calls";
+        const roundBoundary = ev.kind === "turn_done" && ev.data.finish_reason === "tool_calls";
         if (ev.kind === "turn_context") {
           // Inspector data for the completed turn. Don't finish — there may
           // be no more events, but let the stream close naturally.
@@ -134,7 +151,7 @@ export async function runSessionTurn(
     }
   } finally {
     store.getState().registerAbort(null);
-    if (assistantId) store.getState().finalizeAssistant(assistantId);
+    if (ctx.assistantId) store.getState().finalizeAssistant(ctx.assistantId);
     store.getState().setRunning(false);
     if (m.entries[sessionId]?.store.getState().lastError === null) {
       m.setStatus(sessionId, "idle");
@@ -143,10 +160,7 @@ export async function runSessionTurn(
 }
 
 /** Cancel an active server-side turn (Stop button). */
-export async function stopSessionTurn(
-  client: DaemonClient,
-  sessionId: string,
-): Promise<void> {
+export async function stopSessionTurn(client: DaemonClient, sessionId: string): Promise<void> {
   const m = useSessionManager.getState();
   const entry = m.entries[sessionId];
   if (!entry?.daemonId) return;
@@ -163,40 +177,63 @@ export async function stopSessionTurn(
   m.setStatus(sessionId, "idle");
 }
 
+/**
+ * Ensure a text target bubble exists, splitting LLM rounds in rounds/timeline
+ * mode: after a turn_done(tool_calls) boundary, the first text of the next
+ * round closes the previous bubble and opens a new one with round+1.
+ */
+function openBubbleForText(ctx: RenderCtx, store: SessionStore): void {
+  if (ctx.mode !== "single" && ctx.boundary) {
+    ctx.boundary = false;
+    ctx.round += 1;
+    if (ctx.assistantId) store.getState().finalizeAssistant(ctx.assistantId);
+    ctx.assistantId = store.getState().beginAssistantRound(ctx.round);
+  } else if (!ctx.assistantId) {
+    ctx.assistantId = store.getState().beginAssistantRound(ctx.round);
+  }
+}
+
 /** Map a SessionEvent to store mutations (the rendering contract). */
 function handleEvent(
   ev: SessionEvent,
   store: SessionStore,
   sessionId: string,
-  ensureAssistant: () => string,
-  pendingTools: PendingTool[],
+  ctx: RenderCtx,
 ): void {
-  const id = ensureAssistant();
   const s = store.getState();
   switch (ev.kind as SessionEventKind) {
     case "content_delta": {
       const text = String(ev.data.text ?? "");
-      s.appendAssistant(id, { type: "contentDelta", text });
+      openBubbleForText(ctx, store);
+      s.appendAssistant(ctx.assistantId!, { type: "contentDelta", text });
       useSessionManager.getState().setPreview(sessionId, text);
       break;
     }
     case "reasoning_delta": {
       const text = String(ev.data.text ?? "");
-      s.appendAssistant(id, { type: "reasoningDelta", text });
+      openBubbleForText(ctx, store);
+      s.appendAssistant(ctx.assistantId!, { type: "reasoningDelta", text });
       break;
     }
     case "tool_start": {
       const name = String(ev.data.name ?? "unknown");
       const args = (ev.data.args as Record<string, unknown>) ?? {};
-      pendingTools.push({ name, args });
+      if (ctx.mode === "timeline") {
+        // Timeline mode: the placeholder appears at its stream position so the
+        // user sees the call start (running card) before the result arrives.
+        const msgId = store.getState().pushToolStart(name, args);
+        ctx.pendingTools.push({ name, args, msgId });
+      } else {
+        ctx.pendingTools.push({ name, args });
+      }
       break;
     }
     case "tool_result": {
       const name = String(ev.data.name ?? "unknown");
       const args = (ev.data.args as Record<string, unknown>) ?? {};
       const content = String(ev.data.content ?? "");
-      const pending = pendingTools.shift();
-      s.attachToolExec(id, {
+      const pending = ctx.pendingTools.shift();
+      const exec: ToolExecution = {
         call: {
           id: `server-${ev.seq}`,
           type: "function",
@@ -206,10 +243,20 @@ function handleEvent(
           },
         },
         response: { success: !content.toLowerCase().startsWith("error"), content },
-      });
+      };
+      if (ctx.mode === "timeline") {
+        if (pending?.msgId) store.getState().completeTool(pending.msgId, exec);
+      } else {
+        if (!ctx.assistantId) ctx.assistantId = store.getState().beginAssistantRound(ctx.round);
+        store.getState().attachToolExec(ctx.assistantId, exec);
+      }
       break;
     }
     case "turn_done":
+      // finish_reason tool_calls only ends one LLM round — the following
+      // tool_start/tool_result belong to the just-ended round, and the next
+      // content_delta opens a new round bubble.
+      if (ev.data.finish_reason === "tool_calls") ctx.boundary = true;
       break; // finalization handled by the finally block
     case "turn_error": {
       const message = String(ev.data.message ?? "turn failed");

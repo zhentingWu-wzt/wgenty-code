@@ -78,9 +78,14 @@ describe("SessionsBrowserModal", () => {
       const msgs = entry!.store.getState().messages;
       // No empty assistant bubble where the tool message was.
       expect(msgs.filter((m) => m.role === "assistant" && m.content === "")).toHaveLength(0);
-      const withTools = msgs.find((m) => m.toolExecs && m.toolExecs.length > 0);
-      expect(withTools?.toolExecs?.[0].call.id).toBe("call_1");
-      expect(withTools?.toolExecs?.[0].response.content).toBe("file contents");
+      // Tool calls are preserved losslessly in any display mode: folded into an
+      // assistant bubble's `toolExecs` (single/rounds) or as a standalone
+      // `role:"tool"` entry carrying `toolExec` (timeline).
+      const exec = msgs
+        .flatMap((m) => (m.toolExecs && m.toolExecs.length ? m.toolExecs : m.toolExec ? [m.toolExec] : []))
+        .find((e) => e.call.id === "call_1");
+      expect(exec?.call.id).toBe("call_1");
+      expect(exec?.response.content).toBe("file contents");
     });
   });
 

@@ -18,10 +18,16 @@ import { RightRail } from "./components/layout/RightRail";
 import { ModelPanel } from "./features/panels/ModelPanel";
 import { AppTopbar } from "./components/layout/AppTopbar";
 import type { SlashCommand } from "./components/slashCommands";
+import { sessionMessagesToDisplay } from "./agent/sessionLoad";
 import { usePermissionTrace } from "./hooks/usePermissionTrace";
 import { usePolling } from "./hooks/usePolling";
 import { startUiSync } from "./state/uiSync";
 import { useUiStore } from "./state/uiStore";
+
+/** How many most-recent daemon sessions to restore into the left rail on
+ *  startup (newest first). Mirrors the TUI's behavior of resuming the
+ *  latest conversation history. */
+const RECENT_SESSION_LIMIT = 5;
 
 /**
  * App — wires the per-session agent runners to the UI stores.
@@ -48,12 +54,73 @@ export function App() {
   // one is provided to the center pane.
   const activeStore = useSessionManager((s) => (s.activeId ? s.entries[s.activeId].store : null));
 
-  // Bootstrap one local session. Must live in an effect — creating a session
-  // during render is a render-phase side effect (react-hooks purity rules).
+  // Bootstrap: restore the most recent daemon sessions so the left rail shows
+  // real history on startup, and activate the newest one (TUI-aligned). When
+  // the daemon is unreachable (e.g. browser before the user starts it) or there
+  // is no history yet, fall back to one fresh local session. Must live in an
+  // effect — creating a session during render is a render-phase side effect
+  // (react-hooks purity rules).
   useEffect(() => {
-    if (!useSessionManager.getState().activeId) {
-      useSessionManager.getState().createLocalSession();
-    }
+    if (useSessionManager.getState().activeId) return; // already bootstrapped
+    let cancelled = false;
+    (async () => {
+      try {
+        const sessions = await client.listSessions();
+        if (cancelled) return;
+        // Newest first; archived sessions stay hidden from the default view
+        // (same client-side filtering as the right-rail Sessions panel).
+        const recent = sessions
+          .filter((s) => s.status !== "Archived")
+          .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+          .slice(0, RECENT_SESSION_LIMIT);
+        if (recent.length > 0) {
+          // Load full history in parallel, then restore each session — the
+          // same path the right-rail Sessions panel uses to open one.
+          const loaded = await Promise.all(
+            recent.map(async (info) => {
+              const full = await client.loadSession(info.id).catch(() => null);
+              return full ? { info, full } : null;
+            }),
+          );
+          if (cancelled) return;
+          for (const r of loaded) {
+            if (!r) continue; // raced / daemon down mid-restore → skip
+            const { info, full } = r;
+            const state = useSessionManager.getState();
+            if (Object.values(state.entries).some((e) => e.daemonId === info.id)) {
+              continue; // already open (e.g. opened via the Sessions panel)
+            }
+            const localId = state.createLocalSession(info.name ?? "Session", {
+              id: info.id,
+              daemonId: info.id,
+              projectPath: info.project_path ?? null,
+              ...(info.worktree ? { worktree: info.worktree } : {}),
+            });
+            const store = useSessionManager.getState().entries[localId].store;
+            for (const dm of sessionMessagesToDisplay(full.messages ?? [])) {
+              store.getState().pushLoadedMessage(dm);
+            }
+          }
+          // Activate the newest restored session (first after the desc sort;
+          // createLocalSession appends to `order`, so order[0] is the newest).
+          const st = useSessionManager.getState();
+          if (st.order.length > 0) {
+            st.setActive(st.order[0]);
+            return;
+          }
+          // History existed but every load failed (daemon died mid-restore) —
+          // fall through to a fresh local session rather than a blank rail.
+        }
+      } catch {
+        // Daemon unreachable at startup — fall through to a fresh session.
+      }
+      if (!cancelled && !useSessionManager.getState().activeId) {
+        useSessionManager.getState().createLocalSession();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Ensure the daemon is running before the first health check. In the browser

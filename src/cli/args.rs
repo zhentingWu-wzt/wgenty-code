@@ -203,7 +203,8 @@ impl Cli {
         // and shutdown below is a no-op for the reused case.
         let (base_url, embedded_daemon) = match app::start_daemon(state).await {
             Ok(app::StartDaemonOutcome::Reused { base_url }) => (base_url, None),
-            Ok(app::StartDaemonOutcome::Spawned {
+            Ok(app::StartDaemonOutcome::Spawned { base_url }) => (base_url, None),
+            Ok(app::StartDaemonOutcome::Embedded {
                 base_url,
                 shutdown_tx,
                 handle,
