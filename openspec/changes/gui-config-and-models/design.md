@@ -2,7 +2,7 @@
 
 ## Context
 
-daemon 已提供 config、models/switch、mcp servers 等端点（`src/daemon/routes.rs`）。web-ops-console（deferred）曾规划过配置只读大盘与密钥脱敏思路，其 artifacts 可作为 API 形状参考，但本 change 与其完全独立、不复用其代码。foundation 提供面板挂载点与 daemon client。
+daemon 已提供 config、models/switch、mcp servers 等端点（`src/daemon/routes.rs`）。Tauri 桌面端复用 `web/` 前端，配置/模型/MCP/skills/memory 面板直接复用 web/ 已有的 React 组件（web/src/features/panels/ 下的 ModelPanel、MemoryPanel、SkillsPanel 等），密钥脱敏逻辑也一并复用。foundation 提供 Tauri 壳与 daemon 连接。
 
 ## Goals / Non-Goals
 

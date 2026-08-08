@@ -24,6 +24,6 @@ TUI 已具备（或正在通过 tui-inspector change 建设）subagent 进度展
 
 ## Impact
 
-- **新增代码**：`src/gui/` 下的 subagent tree、todos、inspector 面板
+- **新增代码**：复用/扩展 `web/src/features/` 下的 subagent tree、todos、inspector 面板（subagent_tree、TasksPanel 等）
 - **依赖**：gui-desktop-foundation；tui-inspector change 的上下文采集成果（若已落地）；daemon 现有 API
 - **不触碰**：core、daemon 服务端、TUI 组件本身

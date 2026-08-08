@@ -6,17 +6,17 @@ GUI 桌面应用骨架：窗口生命周期、导航与多面板布局、daemon 
 
 ### Requirement: 应用启动与窗口生命周期
 
-系统 SHALL 提供纯 Rust GUI 桌面应用入口，启动后展示主窗口，并在窗口关闭时完成资源清理（包括内嵌 daemon 的关停）。GUI 代码 MUST 通过 Cargo feature flag 隔离编译，默认构建不包含 GUI。
+系统 SHALL 提供 Tauri 2.0 桌面应用入口（独立 crate，复用 `web/` React 前端），启动后展示主窗口，并在窗口关闭时完成资源清理（包括内嵌 daemon 的关停）。桌面壳代码 MUST 与主项目隔离（独立 crate，不在主 workspace 中），默认 `cargo build` 不编译桌面壳。
 
 #### Scenario: 启动应用
 
 - **WHEN** 用户通过 GUI 入口启动应用
 - **THEN** 主窗口打开，进入默认布局，并自动建立 daemon 连接
 
-#### Scenario: 默认构建不含 GUI
+#### Scenario: 默认构建不含桌面壳
 
-- **WHEN** 使用默认 feature 集构建项目
-- **THEN** 产物不包含 GUI 依赖与 GUI 入口，启动时间与二进制大小满足 AGENTS.md 性能约束
+- **WHEN** 在仓库根执行 `cargo build`（默认构建）
+- **THEN** 产物不包含桌面壳依赖与入口（`desktop/src-tauri/` 为独立 crate，不在主 workspace members 中），启动时间与二进制大小满足 AGENTS.md 性能约束
 
 #### Scenario: 关闭窗口
 
