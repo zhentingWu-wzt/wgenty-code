@@ -94,6 +94,32 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
         crate::utils::daemon_token_path().display()
     );
 
+    // Discovery file: write now, heartbeat every 30s, delete on clean exit.
+    let discovery = crate::utils::discovery::DiscoveryFile {
+        port,
+        token: api_token.clone(),
+        pid: std::process::id(),
+        started_at: chrono::Utc::now(),
+        heartbeat_at: chrono::Utc::now(),
+    };
+    if let Err(e) = crate::utils::discovery::write_discovery_file(&discovery) {
+        // Non-fatal: discovery is additive; the token file path still works.
+        tracing::warn!(error = %e, "failed to write daemon discovery file");
+    }
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
+            crate::utils::discovery::HEARTBEAT_INTERVAL_SECS,
+        ));
+        loop {
+            ticker.tick().await;
+            let mut f = discovery.clone();
+            f.heartbeat_at = chrono::Utc::now();
+            if let Err(e) = crate::utils::discovery::write_discovery_file(&f) {
+                tracing::warn!(error = %e, "daemon discovery heartbeat write failed");
+            }
+        }
+    });
+
     // Split the router: health stays public, everything else requires auth.
     let (health_router, protected_router) = routes::create_routers(daemon_state, api_token);
 
@@ -135,6 +161,7 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
 
     // Clean up token file on daemon shutdown.
     let _ = crate::utils::remove_daemon_token();
+    let _ = crate::utils::discovery::remove_discovery_file();
 
     Ok(())
 }
