@@ -16,6 +16,8 @@
 
 mod daemon_manager;
 
+use tauri::Manager;
+
 /// The token-injection script source, embedded at compile time.
 ///
 /// Contains a `__WGENTY_TOKEN__` placeholder that we replace with the
@@ -45,16 +47,29 @@ fn read_daemon_token() -> Option<String> {
 /// it to become reachable. The daemon is **detached** — it survives the Tauri
 /// shell exit so other UIs (TUI, browser) can keep using it.
 ///
+/// In a packaged app, the daemon binary is bundled as a Tauri resource
+/// (externalBin in tauri.conf.json); the resource_dir is resolved from the
+/// AppHandle so `locate_daemon_binary` can find it.
+///
 /// Guards against double-invoke (React StrictMode runs effects twice in dev):
 /// the first call does the work; concurrent/subsequent calls await the same
 /// result via a shared `OnceCell`.
 static DAEMON_ENSURE: tokio::sync::OnceCell<Result<(), String>> = tokio::sync::OnceCell::const_new();
 
 #[tauri::command]
-async fn ensure_daemon() -> Result<(), String> {
+async fn ensure_daemon(
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    // Resolve the resource directory for packaged-binary lookup.
+    // In dev mode, this returns a path inside target/ — harmless, as
+    // locate_daemon_binary falls back to the target/{debug,release}/ check.
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .ok();
     DAEMON_ENSURE
         .get_or_init(|| async {
-            daemon_manager::ensure_daemon().await.map(|_| ())
+            daemon_manager::ensure_daemon(resource_dir).await.map(|_| ())
         })
         .await
         .clone()
