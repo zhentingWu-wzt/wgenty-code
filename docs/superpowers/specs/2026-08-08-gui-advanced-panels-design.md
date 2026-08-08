@@ -1,3 +1,7 @@
+---
+archived-with: 2026-08-08-gui-advanced-panels
+status: final
+---
 # Design Doc: GUI Advanced Panels
 
 > 技术设计文档 for `gui-advanced-panels` change。
