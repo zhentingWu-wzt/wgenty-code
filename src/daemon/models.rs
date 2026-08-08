@@ -282,6 +282,9 @@ pub struct SessionResponse {
     pub name: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Optimistic-concurrency version (see `Session.version`); bumped on
+    /// every persisted write.
+    pub version: u64,
     pub messages: Vec<SessionMessage>,
     /// Human-facing TUI transcript; empty for legacy sessions.
     #[serde(default)]
@@ -309,6 +312,12 @@ pub struct UpdateSessionRequest {
     /// When `Some`, replace the UI transcript track. `None` leaves existing data.
     #[serde(default)]
     pub ui_messages: Option<Vec<crate::context::SessionUiMessage>>,
+    /// Optimistic concurrency guard: when `Some`, the write is rejected with
+    /// 409 + current_version unless it matches the stored version. `None`
+    /// keeps legacy last-write-wins behavior (risk borne by unupgraded
+    /// clients — documented in design §5).
+    #[serde(default)]
+    pub expected_version: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -1031,6 +1031,7 @@ pub async fn create_session(
         name: session.name,
         created_at: session.created_at.to_rfc3339(),
         updated_at: session.updated_at.to_rfc3339(),
+        version: session.version,
         messages: session.messages,
         ui_messages: session.ui_messages,
     }))
@@ -1054,6 +1055,7 @@ pub async fn get_session(
         name: session.name,
         created_at: session.created_at.to_rfc3339(),
         updated_at: session.updated_at.to_rfc3339(),
+        version: session.version,
         messages: session.messages,
         ui_messages: session.ui_messages,
     }))
@@ -1089,6 +1091,21 @@ pub async fn update_session(
     // on-disk / response id diverge from the request path.
     session.id = id;
 
+    // Optimistic concurrency guard: `Some(v)` must match the stored version
+    // (read via `load`, i.e. the real on-disk value, not the lazy index);
+    // `None` keeps legacy last-write-wins behavior.
+    if let Some(expected) = body.expected_version {
+        if expected != session.version {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "version conflict",
+                    "current_version": session.version,
+                })),
+            ));
+        }
+    }
+
     if let Some(name) = &body.name {
         session.name = name.clone();
     }
@@ -1099,6 +1116,8 @@ pub async fn update_session(
         session.ui_messages = ui_messages;
     }
     session.updated_at = chrono::Utc::now();
+    // Every persisted write advances the optimistic-concurrency version.
+    session.version += 1;
     // Fully materialised write — clear any lazy index marker.
     session.lazy_message_count = None;
 
@@ -1118,6 +1137,7 @@ pub async fn update_session(
         name: session.name,
         created_at: session.created_at.to_rfc3339(),
         updated_at: session.updated_at.to_rfc3339(),
+        version: session.version,
         messages: session.messages,
         ui_messages: session.ui_messages,
     }))
@@ -1862,6 +1882,7 @@ mod tests {
                 metadata: Default::default(),
             }]),
             ui_messages: None,
+            expected_version: None,
         };
         let Json(resp): Json<SessionResponse> =
             update_session(State(state.clone()), Path(fixed_id.clone()), Json(body))
@@ -1997,6 +2018,7 @@ mod tests {
                     metadata: Default::default(),
                 }]),
                 ui_messages: None,
+                expected_version: None,
             };
             let Json(resp): Json<SessionResponse> =
                 update_session(State(state.clone()), Path(fixed_id.clone()), Json(body))
@@ -2025,6 +2047,55 @@ mod tests {
             .expect("session file exists");
         assert_eq!(loaded.id, fixed_id);
         assert_eq!(loaded.messages.len(), 1); // last write replaces messages
+    }
+
+    #[tokio::test]
+    async fn update_session_version_matrix() {
+        use crate::config::Settings;
+        use crate::daemon::models::UpdateSessionRequest;
+        use crate::state::AppState;
+        use axum::extract::{Path, State};
+        use axum::Json;
+
+        // Keep the tempdir alive for the whole test: sessions persist under
+        // `working_dir`'s project-local dir (mirrors the first test above).
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+        let id = "ver-matrix".to_string();
+
+        let body = |expected_version: Option<u64>| UpdateSessionRequest {
+            name: None,
+            messages: None,
+            ui_messages: None,
+            expected_version,
+        };
+
+        // First upsert (no expected_version) → version 0 -> 1.
+        let Json(r1) = update_session(State(state.clone()), Path(id.clone()), Json(body(None)))
+            .await
+            .expect("upsert ok");
+        assert_eq!(r1.version, 1);
+
+        // Some(0) no longer matches the current version 1 → 409 + current_version.
+        let err = update_session(State(state.clone()), Path(id.clone()), Json(body(Some(0))))
+            .await
+            .expect_err("stale expected_version conflicts");
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert_eq!(err.1 .0["current_version"], 1);
+
+        // Some(1) matches → success, version advances to 2.
+        let Json(r3) = update_session(State(state.clone()), Path(id.clone()), Json(body(Some(1))))
+            .await
+            .expect("matching expected_version ok");
+        assert_eq!(r3.version, 2);
+
+        // None → legacy last-write-wins path, still succeeds.
+        let Json(r4) = update_session(State(state.clone()), Path(id.clone()), Json(body(None)))
+            .await
+            .expect("no expected_version stays compatible");
+        assert_eq!(r4.version, 3);
     }
 
     #[tokio::test]
