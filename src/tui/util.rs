@@ -592,6 +592,7 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::ModelSwitchRequested { .. }
         | AppEvent::ModelSwitched { .. }
         | AppEvent::SessionSwitched { .. }
+        | AppEvent::SessionCleared { .. }
         | AppEvent::ServerPermissionRequired { .. }
         | AppEvent::ServerQuestionAsked { .. }
         | AppEvent::SubagentTraceProgress(..)
