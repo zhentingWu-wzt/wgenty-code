@@ -185,15 +185,16 @@ pub(crate) fn session_event_to_app_events(ev: SessionEvent) -> Vec<AppEvent> {
             }]
         }
         SessionEventKind::Save => Vec::new(),
-        // Recovery is coordinated by App: it keeps the daemon-run gate closed
-        // until cancellation/realignment decides whether to retry delivery.
-        SessionEventKind::SyncLost => vec![AppEvent::ServerSessionSyncLost {
-            latest_seq: ev
-                .data
+        // Sequence recovery is a rendering concern. The daemon keeps run and
+        // continuation ownership; the TUI only reports that older UI events
+        // were unavailable and resumes from the advertised cursor.
+        SessionEventKind::SyncLost => vec![AppEvent::SystemNotice(format!(
+            "Session event history before sequence {} is unavailable; resumed from the latest daemon state.",
+            ev.data
                 .get("latest_seq")
                 .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0),
-        }],
+                .unwrap_or(0)
+        ))],
         // TurnContext is consumed by web/Tauri inspector panels; the TUI has
         // its own in-process TurnContext via AppEvent::TurnContextCaptured.
         SessionEventKind::TurnContext => Vec::new(),
@@ -517,6 +518,22 @@ pub(crate) fn global_event_to_app_events(
     }
 }
 
+/// Convert the daemon's retained inbox snapshot into display-only recovery
+/// notifications for the active session. Model delivery remains daemon-owned.
+pub(crate) fn background_results_to_app_events(
+    results: Vec<serde_json::Value>,
+    session_id: &str,
+) -> Vec<AppEvent> {
+    results
+        .into_iter()
+        .filter_map(|value| {
+            serde_json::from_value::<crate::tools::execution::BackgroundResult>(value).ok()
+        })
+        .filter(|result| result.session_id.as_deref() == Some(session_id))
+        .map(AppEvent::BackgroundTaskRecovered)
+        .collect()
+}
+
 /// Spawn a background task that drives the plan/todos panel from the daemon's
 /// global event stream (`GET /api/v1/events`). Session-independent: spawned
 /// once at app startup and lives until `shutdown` is set.
@@ -575,6 +592,31 @@ pub(crate) fn spawn_global_event_reader(
         }
     }
 
+    async fn recover_background_results(
+        client: &DaemonClient,
+        session_id: &str,
+        event_tx: &mpsc::UnboundedSender<AppEvent>,
+    ) -> bool {
+        match client.get_background_results().await {
+            Ok(results) => {
+                for event in background_results_to_app_events(results, session_id) {
+                    if event_tx.send(event).is_err() {
+                        return false;
+                    }
+                }
+                true
+            }
+            Err(error) => {
+                tracing::debug!(
+                    error = %error,
+                    session_id,
+                    "background-result snapshot recovery failed"
+                );
+                true
+            }
+        }
+    }
+
     tokio::spawn(async move {
         let mut last_snapshot: Option<Vec<crate::tui::client::TodoItem>> = None;
         loop {
@@ -586,6 +628,9 @@ pub(crate) fn spawn_global_event_reader(
                     // Live-only stream: realign once via GET before trusting
                     // events, so nothing published before the subscribe is missed.
                     if !realign_via_get(&client, &event_tx, &mut last_snapshot).await {
+                        return;
+                    }
+                    if !recover_background_results(&client, &session_id, &event_tx).await {
                         return;
                     }
                     let mut last_seq = 0u64;
@@ -812,12 +857,14 @@ mod tests {
         );
 
         tokio::time::timeout(Duration::from_secs(2), async {
-            let mut saw_sync_lost = false;
+            let mut saw_sync_lost_notice = false;
             loop {
                 match event_rx.recv().await.expect("reader event channel open") {
-                    AppEvent::ServerSessionSyncLost { latest_seq: 77 } => saw_sync_lost = true,
+                    AppEvent::SystemNotice(notice) if notice.contains("sequence 77") => {
+                        saw_sync_lost_notice = true
+                    }
                     AppEvent::TurnComplete => {
-                        assert!(saw_sync_lost);
+                        assert!(saw_sync_lost_notice);
                         break;
                     }
                     _ => {}
@@ -854,6 +901,57 @@ mod tests {
                 }
             }),
         }
+    }
+
+    #[test]
+    fn retained_background_snapshot_maps_to_display_events_only_for_active_session() {
+        let results = vec![
+            serde_json::json!({
+                "task_id": "bg_a",
+                "session_id": "session-a",
+                "result_type": "command",
+                "command": "true",
+                "stdout": "done",
+                "stderr": "",
+                "exit_code": 0,
+                "success": true,
+                "sandbox_bypassed": false,
+                "permission_mode": null,
+                "sandbox_level": null
+            }),
+            serde_json::json!({
+                "task_id": "bg_b",
+                "session_id": "session-b",
+                "result_type": "command",
+                "command": "true",
+                "stdout": "foreign",
+                "stderr": "",
+                "exit_code": 0,
+                "success": true,
+                "sandbox_bypassed": false,
+                "permission_mode": null,
+                "sandbox_level": null
+            }),
+            serde_json::json!({
+                "task_id": "bg_legacy",
+                "result_type": "command",
+                "command": "true",
+                "stdout": "legacy",
+                "stderr": "",
+                "exit_code": 0,
+                "success": true,
+                "sandbox_bypassed": false,
+                "permission_mode": null,
+                "sandbox_level": null
+            }),
+        ];
+
+        let events = background_results_to_app_events(results, "session-a");
+
+        assert!(matches!(
+            events.as_slice(),
+            [AppEvent::BackgroundTaskRecovered(result)] if result.task_id == "bg_a"
+        ));
     }
 
     fn ev(seq: u64, kind: SessionEventKind, data: serde_json::Value) -> SessionEvent {
@@ -977,7 +1075,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_lost_requests_explicit_session_realign() {
+    fn sync_lost_is_reported_without_taking_run_ownership() {
         let apps = session_event_to_app_events(ev(
             0,
             SessionEventKind::SyncLost,
@@ -985,7 +1083,7 @@ mod tests {
         ));
         assert!(matches!(
             apps.as_slice(),
-            [AppEvent::ServerSessionSyncLost { latest_seq: 77 }]
+            [AppEvent::SystemNotice(notice)] if notice.contains("sequence 77")
         ));
     }
 

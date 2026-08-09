@@ -427,31 +427,12 @@ pub enum AppEvent {
     },
     /// Background task/subagent result notification for display in chat.
     BackgroundTaskResult(String),
-    /// A retained background command result already injected into model
-    /// history. Carries identity so display deduplication is shared with SSE.
+    /// A retained background command result recovered for display only.
     BackgroundTaskRecovered(crate::tools::execution::BackgroundResult),
-    /// A completed daemon-owned background command scoped to this session.
+    /// A completed daemon-owned background command scoped to this session and
+    /// rendered as a notification only.
     BackgroundTaskCompleted(crate::tools::execution::BackgroundResult),
-    /// A hidden daemon continuation was accepted and now owns model delivery.
-    ServerBackgroundRunAccepted {
-        session_id: String,
-        task_id: String,
-    },
-    /// A hidden daemon continuation could not be accepted and remains retryable.
-    ServerBackgroundRunDeferred {
-        session_id: String,
-        result: crate::tools::execution::BackgroundResult,
-        error: String,
-    },
-    ServerSessionSyncLost {
-        latest_seq: u64,
-    },
-    ServerSessionRealigned {
-        session_id: String,
-        retry_background: bool,
-    },
     SessionClearFailed {
-        background_result: Option<crate::tools::execution::BackgroundResult>,
         suppress_phase_updates: bool,
     },
     /// `/clear` created a new session; the main loop adopts the new id/name.

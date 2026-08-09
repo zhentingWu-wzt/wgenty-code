@@ -1,7 +1,7 @@
 //! Event handling for the TUI application.
 
 use super::types::*;
-use super::{App, PendingInput};
+use super::App;
 use crate::prompts::{self, PromptContext};
 use crate::tui::components::subagent_focus_view::FocusViewState;
 use crate::tui::util::{
@@ -423,7 +423,6 @@ impl App {
             }
             AppEvent::TurnComplete => {
                 let was_server_side = self.server_side_turn_active;
-                let background_run_was_starting = self.server_background_run_starting;
                 // Fire Stop hook asynchronously
                 {
                     let hm = self.hook_manager.clone();
@@ -451,11 +450,6 @@ impl App {
                 self.subagent_history.insert(key, snapshot);
                 self.turn_count += 1;
                 self.current_turn_handle = None;
-                if let Some(handle) = self.server_background_claim_handle.take() {
-                    handle.abort();
-                }
-                self.server_background_claim_result = None;
-                self.server_session_realigning = false;
                 self.server_side_turn_active = false;
                 self.last_abort_reason = None; // normal completion clears
                 self.turn_started_at = None;
@@ -471,18 +465,9 @@ impl App {
                 if !was_server_side {
                     self.spawn_save_session();
                 }
-                if !background_run_was_starting && !self.pending_inputs.is_empty() {
+                if !self.pending_inputs.is_empty() {
                     self.start_next_turn();
                 }
-            }
-            AppEvent::ServerTurnTerminated if self.server_session_realigning => {
-                // SyncLost recovery owns the daemon gate until cancellation
-                // is confirmed; its terminal event may arrive first.
-            }
-            AppEvent::ServerTurnTerminated if self.server_background_run_starting => {
-                // The session reader can disconnect while `/run` is still in
-                // its 409 retry window. Keep the gate closed until the
-                // acceptance/deferred event resolves that attempt.
             }
             AppEvent::ServerTurnTerminated if self.server_side_turn_active => {
                 // Unlike TurnComplete, an SSE/run failure has no successful
@@ -1059,30 +1044,8 @@ impl App {
                     tool_metadata: None,
                 });
             }
-            AppEvent::BackgroundTaskRecovered(result) => {
-                if result.session_id.as_deref() != Some(self.session_id.as_str()) {
-                    return;
-                }
-                if self
-                    .displayed_background_task_ids
-                    .lock()
-                    .await
-                    .insert(result.task_id.clone())
-                {
-                    self.committed_messages.push(UIMessage {
-                        role: MessageRole::System,
-                        content: result.format_completion_notification(),
-                        tool_name: None,
-                        tool_args: None,
-                        content_collapsed: false,
-                        tool_collapsed: false,
-                        tool_running: false,
-                        diff_data: None,
-                        tool_metadata: None,
-                    });
-                }
-            }
-            AppEvent::BackgroundTaskCompleted(result) => {
+            AppEvent::BackgroundTaskRecovered(result)
+            | AppEvent::BackgroundTaskCompleted(result) => {
                 if result.session_id.as_deref() != Some(self.session_id.as_str()) {
                     tracing::debug!(
                         result_session_id = ?result.session_id,
@@ -1091,130 +1054,9 @@ impl App {
                     );
                     return;
                 }
-                let model_delivered = self
-                    .delivered_background_task_ids
-                    .lock()
-                    .await
-                    .contains(&result.task_id);
-                let first_display = !model_delivered
-                    && self
-                        .displayed_background_task_ids
-                        .lock()
-                        .await
-                        .insert(result.task_id.clone());
-                if first_display {
-                    let notification = result.format_completion_notification();
-                    self.committed_messages.push(UIMessage {
-                        role: MessageRole::System,
-                        content: notification,
-                        tool_name: None,
-                        tool_args: None,
-                        content_collapsed: false,
-                        tool_collapsed: false,
-                        tool_running: false,
-                        diff_data: None,
-                        tool_metadata: None,
-                    });
-                }
-                if model_delivered {
-                    tracing::debug!(task_id = %result.task_id, "dropping already delivered background result");
-                    return;
-                }
-                if self.has_running_turn() {
-                    // A local AgentLoop will recover retained results before
-                    // its next model call. A daemon-owned run has no such
-                    // snapshot hook, so reserve and queue the full payload for
-                    // a hidden `/run` after the active daemon turn terminates.
-                    if self.server_side_turn_active
-                        && self
-                            .pending_server_background_task_ids
-                            .insert(result.task_id.clone())
-                    {
-                        self.pending_inputs
-                            .push_back(PendingInput::server_background_result(result));
-                    }
-                    return;
-                }
-                if self.server_side_loop {
-                    if self
-                        .pending_server_background_task_ids
-                        .insert(result.task_id.clone())
-                    {
-                        self.pending_inputs
-                            .push_back(PendingInput::server_background_result(result));
-                        self.start_next_turn();
-                    }
-                    return;
-                }
-                if !self
-                    .delivered_background_task_ids
-                    .lock()
-                    .await
-                    .insert(result.task_id.clone())
-                {
-                    tracing::debug!(task_id = %result.task_id, "dropping already delivered background result");
-                    return;
-                }
-                self.pending_inputs
-                    .push_back(PendingInput::background_result(result));
-                self.start_next_turn();
-            }
-            AppEvent::ServerBackgroundRunAccepted {
-                session_id,
-                task_id,
-            } => {
-                if session_id != self.session_id {
-                    return;
-                }
-                if self.server_session_realigning {
-                    return;
-                }
-                self.server_background_run_starting = false;
-                self.server_background_claim_handle = None;
-                self.server_session_realigning = false;
-                self.pending_server_background_task_ids.remove(&task_id);
-                self.delivered_background_task_ids
-                    .lock()
-                    .await
-                    .insert(task_id);
-                if !self.has_running_turn() && !self.pending_inputs.is_empty() {
-                    self.start_next_turn();
-                }
-            }
-            AppEvent::ServerBackgroundRunDeferred {
-                session_id,
-                result,
-                error,
-            } => {
-                if session_id != self.session_id {
-                    return;
-                }
-                if self.server_session_realigning {
-                    return;
-                }
-                self.server_background_run_starting = false;
-                self.server_background_claim_handle = None;
-                self.server_background_claim_result = None;
-                self.server_session_realigning = false;
-                self.server_side_turn_active = false;
-                if self
-                    .pending_server_background_task_ids
-                    .contains(&result.task_id)
-                    && !self.pending_inputs.iter().any(|pending| {
-                        pending
-                            .server_background_result
-                            .as_ref()
-                            .is_some_and(|queued| queued.task_id == result.task_id)
-                    })
-                {
-                    self.pending_inputs
-                        .push_front(PendingInput::server_background_result(result));
-                }
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::System,
-                    content: format!(
-                        "Background result delivery was deferred and remains queued: {error}"
-                    ),
+                    content: result.format_completion_notification(),
                     tool_name: None,
                     tool_args: None,
                     content_collapsed: false,
@@ -1223,78 +1065,6 @@ impl App {
                     diff_data: None,
                     tool_metadata: None,
                 });
-            }
-            AppEvent::ServerSessionSyncLost { latest_seq } => {
-                self.session_event_last_seq
-                    .store(latest_seq, std::sync::atomic::Ordering::Release);
-                if !self.server_side_turn_active {
-                    return;
-                }
-                if self.server_session_realigning {
-                    return;
-                }
-                self.server_session_realigning = true;
-                let was_starting = self.server_background_run_starting;
-                if let Some(handle) = self.server_background_claim_handle.take() {
-                    handle.abort();
-                }
-                let client = self.daemon_client.clone();
-                let session_id = self.session_id.clone();
-                let tx = self.event_tx.clone();
-                self.server_background_claim_handle = Some(tokio::spawn(async move {
-                    let mut delay = std::time::Duration::from_millis(100);
-                    loop {
-                        match client.try_cancel_run(&session_id).await {
-                            Ok(outcome) => {
-                                let _ = tx.send(AppEvent::ServerSessionRealigned {
-                                    session_id,
-                                    retry_background: was_starting
-                                        || outcome
-                                            == crate::tui::client::CancelRunOutcome::Cancelled,
-                                });
-                                return;
-                            }
-                            Err(error) => {
-                                tracing::warn!(
-                                    session_id,
-                                    error = %error,
-                                    "session event recovery is waiting for daemon cancellation"
-                                );
-                                tokio::time::sleep(delay).await;
-                                delay = (delay * 2).min(std::time::Duration::from_secs(2));
-                            }
-                        }
-                    }
-                }));
-            }
-            AppEvent::ServerSessionRealigned {
-                session_id,
-                retry_background,
-            } => {
-                if session_id != self.session_id {
-                    return;
-                }
-                self.server_background_claim_handle = None;
-                self.server_background_run_starting = false;
-                self.server_session_realigning = false;
-                if let Some(result) = self.server_background_claim_result.take() {
-                    self.pending_server_background_task_ids
-                        .remove(&result.task_id);
-                    if retry_background {
-                        self.delivered_background_task_ids
-                            .lock()
-                            .await
-                            .remove(&result.task_id);
-                        self.pending_server_background_task_ids
-                            .insert(result.task_id.clone());
-                        self.pending_inputs
-                            .push_front(PendingInput::server_background_result(result));
-                    }
-                }
-                self.server_side_turn_active = false;
-                if !self.pending_inputs.is_empty() {
-                    self.start_next_turn();
-                }
             }
             AppEvent::SystemNotice(notice) => {
                 self.committed_messages.push(UIMessage {
@@ -1316,16 +1086,9 @@ impl App {
                 self.adopt_session_after_reset(id, name);
             }
             AppEvent::SessionClearFailed {
-                background_result,
                 suppress_phase_updates,
             } => {
                 self.suppress_phase_updates = suppress_phase_updates;
-                if let Some(result) = background_result {
-                    self.pending_server_background_task_ids
-                        .insert(result.task_id.clone());
-                    self.pending_inputs
-                        .push_front(PendingInput::server_background_result(result));
-                }
             }
             AppEvent::AgentGenerationReset { generation } => {
                 if generation == u64::MAX {

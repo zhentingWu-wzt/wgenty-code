@@ -19,10 +19,6 @@ impl App {
             return;
         }
         if let Some(pending) = self.pending_inputs.pop_front() {
-            if let Some(result) = pending.server_background_result {
-                self.start_server_side_background_run(result, pending.agent_input);
-                return;
-            }
             if pending.is_continuation() {
                 // Synthetic continuation: inject the delivered child results
                 // as a `user` message with no visible user row.
@@ -31,10 +27,6 @@ impl App {
                     .clone()
                     .expect("continuation pending input carries a delivery");
                 self.spawn_continuation_turn(delivery);
-                return;
-            }
-            if pending.hidden {
-                self.spawn_hidden_agent_turn(pending.agent_input);
                 return;
             }
             // Push user message to UI immediately
@@ -56,75 +48,6 @@ impl App {
             }
             self.spawn_agent_turn(pending.agent_input, false);
         }
-    }
-
-    /// Start a synthetic turn without rendering it or using its input as the
-    /// session title. Background results use this path.
-    fn spawn_hidden_agent_turn(&mut self, input_text: String) {
-        self.spawn_agent_turn_inner(input_text, true, false);
-    }
-
-    /// Start a session-owned hidden continuation without saving the TUI's
-    /// potentially stale history over the daemon's just-finished turn. A 409
-    /// means the daemon is still finalizing the preceding run, so retry until
-    /// the run registry releases the session.
-    fn start_server_side_background_run(
-        &mut self,
-        result: crate::tools::execution::BackgroundResult,
-        input_text: String,
-    ) {
-        let client = self.daemon_client.clone();
-        let sid = self.session_id.clone();
-        let tx = self.event_tx.clone();
-        let plan_mode = self.mode == AgentMode::PlanMode;
-        let task_id = result.task_id.clone();
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-        self.respawn_session_event_reader(Some(ready_tx));
-        self.respawn_trace_event_reader();
-        self.server_side_turn_active = true;
-        self.server_background_run_starting = true;
-        self.server_background_claim_result = Some(result.clone());
-        self.server_background_claim_handle = Some(tokio::spawn(async move {
-            if tokio::time::timeout(std::time::Duration::from_secs(10), ready_rx)
-                .await
-                .is_err()
-            {
-                tracing::warn!(
-                    session_id = %sid,
-                    "session event reader not connected before background continuation"
-                );
-            }
-
-            let mut delay = std::time::Duration::from_millis(25);
-            let mut last_error = String::new();
-            for attempt in 0..8 {
-                match client.try_run_session(&sid, &input_text, plan_mode).await {
-                    Ok(_) => {
-                        let _ = tx.send(AppEvent::ServerBackgroundRunAccepted {
-                            session_id: sid,
-                            task_id,
-                        });
-                        return;
-                    }
-                    Err(error)
-                        if error.status == Some(reqwest::StatusCode::CONFLICT) && attempt < 7 =>
-                    {
-                        last_error = error.to_string();
-                        tokio::time::sleep(delay).await;
-                        delay = (delay * 2).min(std::time::Duration::from_millis(500));
-                    }
-                    Err(error) => {
-                        last_error = error.to_string();
-                        break;
-                    }
-                }
-            }
-            let _ = tx.send(AppEvent::ServerBackgroundRunDeferred {
-                session_id: sid,
-                result,
-                error: last_error,
-            });
-        }));
     }
 
     /// Spawn an agent turn with `input_text` as the initial user message.
@@ -247,7 +170,6 @@ impl App {
         let client = self.daemon_client.clone();
         let event_tx = self.event_tx.clone();
         let session_id = self.session_id.clone();
-        let delivered_background_task_ids = self.delivered_background_task_ids.clone();
         let sys_msgs = self.assembled_instructions.system_messages.clone();
         let plan_mode = self.mode == AgentMode::PlanMode;
         // Read agent config from settings
@@ -350,7 +272,6 @@ impl App {
                 client,
                 event_tx.clone(),
                 session_id,
-                delivered_background_task_ids,
                 Some(turn_id_for_loop.to_string()),
                 history,
                 sys_msgs,
@@ -426,7 +347,6 @@ impl App {
         let client = self.daemon_client.clone();
         let event_tx = self.event_tx.clone();
         let session_id = self.session_id.clone();
-        let delivered_background_task_ids = self.delivered_background_task_ids.clone();
         let sys_msgs = self.assembled_instructions.system_messages.clone();
         let plan_mode = self.mode == AgentMode::PlanMode;
         let (
@@ -473,7 +393,6 @@ impl App {
                 client,
                 event_tx.clone(),
                 session_id,
-                delivered_background_task_ids,
                 Some(turn_id_for_loop.to_string()),
                 history,
                 sys_msgs,
@@ -522,7 +441,6 @@ impl App {
         let client = self.daemon_client.clone();
         let event_tx = self.event_tx.clone();
         let session_id = self.session_id.clone();
-        let delivered_background_task_ids = self.delivered_background_task_ids.clone();
         let sys_msgs = self.assembled_instructions.system_messages.clone();
         let (max_rounds, subagent_timeout_secs, context_window, max_tokens) = {
             let s = self.settings_lock.read().expect("lock poisoned: settings");
@@ -554,7 +472,6 @@ impl App {
                 client,
                 event_tx.clone(),
                 session_id,
-                delivered_background_task_ids,
                 None,
                 history,
                 sys_msgs,
@@ -579,13 +496,6 @@ impl App {
     /// Cancel the current turn and flush all queued input.
     pub(super) fn cancel_current_turn(&mut self) {
         self.pending_inputs.clear();
-        self.pending_server_background_task_ids.clear();
-        self.server_background_run_starting = false;
-        self.server_session_realigning = false;
-        if let Some(handle) = self.server_background_claim_handle.take() {
-            handle.abort();
-        }
-        self.server_background_claim_result = None;
         if let Some(handle) = self.current_turn_handle.take() {
             handle.abort();
             // Set phase to Idle immediately and suppress stale phase updates
@@ -1038,30 +948,21 @@ mod tests {
             .into_response()
     }
 
-    #[test]
-    fn background_result_pending_input_is_hidden_and_serialized() {
-        let pending = PendingInput::background_result(background_result());
-
-        assert!(pending.hidden);
-        assert!(pending.display_text.is_empty());
-        assert_eq!(
-            pending.agent_input,
-            r#"{"task_id":"bg_a","session_id":"test-interrupt","result_type":"command","command":"true","stdout":"done","stderr":"","exit_code":0,"success":true,"sandbox_bypassed":false,"permission_mode":null,"sandbox_level":null}"#
-        );
-    }
-
     #[tokio::test]
-    async fn completed_background_result_starts_one_hidden_turn_when_idle() {
+    async fn completed_background_result_renders_without_starting_hidden_turn_when_idle() {
         let mut app = build_app();
 
         app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
             .await;
 
         assert!(
-            app.current_turn_handle.is_some(),
-            "idle app starts one turn"
+            app.current_turn_handle.is_none(),
+            "an SSE notification must not start a local model turn"
         );
-        assert!(app.pending_inputs.is_empty(), "result is not left queued");
+        assert!(
+            app.pending_inputs.is_empty(),
+            "an SSE notification must not queue a hidden turn"
+        );
         assert_eq!(
             app.session_name, "New Session",
             "hidden result does not name the session"
@@ -1075,11 +976,6 @@ mod tests {
             .committed_messages
             .iter()
             .any(|message| { message.role == MessageRole::User && message.content.is_empty() }));
-
-        app.current_turn_handle
-            .take()
-            .expect("idle result starts a turn")
-            .abort();
     }
 
     #[tokio::test]
@@ -1105,14 +1001,6 @@ mod tests {
                 && message.content
                     == "[Background task bg_a completed: SUCCESS]\ncommand: true\nexit code: 0\nstdout:\ndone\nstderr:\n"
         }));
-        assert!(
-            !app.delivered_background_task_ids
-                .lock()
-                .await
-                .contains("bg_a"),
-            "a busy live result remains recoverable by the next model turn"
-        );
-
         app.current_turn_handle
             .take()
             .expect("running turn remains active")
@@ -1148,7 +1036,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_then_snapshot_recovery_displays_background_result_once() {
+    async fn live_and_snapshot_recovery_each_render_as_observer_notifications() {
         let mut app = build_app();
         app.current_turn_handle = Some(tokio::spawn(async {
             tokio::time::sleep(Duration::from_secs(60)).await;
@@ -1164,7 +1052,7 @@ mod tests {
             .iter()
             .filter(|message| message.content.contains("Background task bg_a completed"))
             .count();
-        assert_eq!(completion_messages, 1);
+        assert_eq!(completion_messages, 2);
 
         app.current_turn_handle
             .take()
@@ -1173,12 +1061,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_then_live_delivery_displays_background_result_once() {
+    async fn snapshot_and_live_delivery_each_render_without_starting_turns() {
         let mut app = build_app();
-        app.delivered_background_task_ids
-            .lock()
-            .await
-            .insert("bg_a".to_string());
 
         app.handle_event(AppEvent::BackgroundTaskRecovered(background_result()))
             .await;
@@ -1190,23 +1074,20 @@ mod tests {
             .iter()
             .filter(|message| message.content.contains("Background task bg_a completed"))
             .count();
-        assert_eq!(completion_messages, 1);
+        assert_eq!(completion_messages, 2);
         assert!(app.current_turn_handle.is_none());
         assert!(app.pending_inputs.is_empty());
     }
 
     #[tokio::test]
-    async fn server_side_background_result_marks_the_continuation_as_running() {
+    async fn server_side_background_result_does_not_mark_a_turn_running() {
         let mut app = build_app();
         app.server_side_loop = true;
 
         app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
             .await;
 
-        assert!(
-            app.server_side_turn_active,
-            "server-side continuation records an active daemon turn"
-        );
+        assert!(!app.server_side_turn_active);
         assert!(app.current_turn_handle.is_none());
 
         if let Some(handle) = app.session_event_reader.take() {
@@ -1218,7 +1099,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn busy_server_side_result_reaches_next_daemon_run_once() {
+    async fn background_sse_renders_without_posting_hidden_run_or_owning_gate() {
         let (message_tx, mut message_rx) = tokio::sync::mpsc::unbounded_channel();
         let post_attempts = Arc::new(AtomicUsize::new(0));
         let put_attempts = Arc::new(AtomicUsize::new(0));
@@ -1254,80 +1135,37 @@ mod tests {
             settings,
         );
         app.server_side_loop = true;
-        app.server_side_turn_active = true;
+        let wire = crate::tui::client::GlobalEventWire {
+            seq: 1,
+            kind: "background_result".to_string(),
+            data: serde_json::json!({"result": background_result()}),
+        };
+        let events =
+            crate::tui::app::server_side::global_event_to_app_events(wire, "test-interrupt");
+        assert_eq!(events.len(), 1, "matching SSE result maps to one UI event");
+        for event in events {
+            app.handle_event(event).await;
+        }
 
-        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
-            .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
 
         assert_eq!(
-            app.pending_inputs.len(),
-            1,
-            "busy daemon result waits behind the active run"
-        );
-        assert!(
-            !app.delivered_background_task_ids
-                .lock()
-                .await
-                .contains("bg_a"),
-            "delivery ledger is committed only after daemon acceptance"
-        );
-
-        app.handle_event(AppEvent::TurnComplete).await;
-
-        let posted_message = tokio::time::timeout(Duration::from_secs(2), message_rx.recv())
-            .await
-            .expect("next daemon run should be posted")
-            .expect("run capture channel remains open");
-        assert_eq!(
-            posted_message,
-            r#"{"task_id":"bg_a","session_id":"test-interrupt","result_type":"command","command":"true","stdout":"done","stderr":"","exit_code":0,"success":true,"sandbox_bypassed":false,"permission_mode":null,"sandbox_level":null}"#
-        );
-        assert_eq!(post_attempts.load(Ordering::SeqCst), 2);
-        assert_eq!(
-            put_attempts.load(Ordering::SeqCst),
+            post_attempts.load(Ordering::SeqCst),
             0,
-            "existing daemon history must not be overwritten before continuation"
+            "rendering a background SSE event must never POST /run or retry it"
         );
-        assert_eq!(
-            persisted_messages.lock().await.as_slice(),
-            [
-                "prior daemon assistant message",
-                r#"{"task_id":"bg_a","session_id":"test-interrupt","result_type":"command","command":"true","stdout":"done","stderr":"","exit_code":0,"success":true,"sandbox_bypassed":false,"permission_mode":null,"sandbox_level":null}"#
-            ]
-        );
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while !app
-                .delivered_background_task_ids
-                .lock()
-                .await
-                .contains("bg_a")
-            {
-                let event = app
-                    .event_rx
-                    .recv()
-                    .await
-                    .expect("app event channel remains open");
-                app.handle_event(event).await;
-            }
-        })
-        .await
-        .expect("accepted run should commit delivery");
-        assert!(
-            app.delivered_background_task_ids
-                .lock()
-                .await
-                .contains("bg_a"),
-            "accepted daemon run commits model delivery"
-        );
-        assert!(app.pending_inputs.is_empty());
-        assert!(app.server_side_turn_active);
-
-        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
-            .await;
+        assert_eq!(put_attempts.load(Ordering::SeqCst), 0);
+        assert!(message_rx.try_recv().is_err());
         assert!(
             app.pending_inputs.is_empty(),
-            "duplicate SSE does not enqueue a second model turn"
+            "the observer must not retain a hidden continuation"
         );
+        assert!(!app.server_side_turn_active, "SSE display owns no run gate");
+        assert!(app.current_turn_handle.is_none());
+        assert!(app.committed_messages.iter().any(|message| {
+            message.role == MessageRole::System
+                && message.content.contains("Background task bg_a completed")
+        }));
 
         if let Some(handle) = app.session_event_reader.take() {
             handle.abort();
@@ -1380,38 +1218,6 @@ mod tests {
             .take()
             .expect("queued turn starts after terminal event")
             .abort();
-    }
-
-    #[tokio::test]
-    async fn disconnect_does_not_release_gate_while_background_run_is_being_claimed() {
-        let mut app = build_app();
-        app.server_side_turn_active = true;
-        app.server_background_run_starting = true;
-        app.pending_inputs
-            .push_back(PendingInput::new("queued user input".to_string()));
-
-        app.handle_event(AppEvent::ServerTurnTerminated).await;
-
-        assert!(app.server_side_turn_active);
-        assert!(app.server_background_run_starting);
-        assert_eq!(app.pending_inputs.len(), 1);
-        assert!(app.current_turn_handle.is_none());
-    }
-
-    #[tokio::test]
-    async fn sync_lost_recovery_keeps_gate_until_daemon_realigns() {
-        let mut app = build_app();
-        app.server_side_turn_active = true;
-        app.server_session_realigning = true;
-        app.pending_inputs
-            .push_back(PendingInput::new("queued user input".to_string()));
-
-        app.handle_event(AppEvent::ServerTurnTerminated).await;
-
-        assert!(app.server_side_turn_active);
-        assert!(app.server_session_realigning);
-        assert_eq!(app.pending_inputs.len(), 1);
-        assert!(app.current_turn_handle.is_none());
     }
 
     #[tokio::test]
