@@ -424,6 +424,8 @@ pub enum AppEvent {
     },
     /// Background task/subagent result notification for display in chat.
     BackgroundTaskResult(String),
+    /// A completed daemon-owned background command scoped to this session.
+    BackgroundTaskCompleted(crate::tools::execution::BackgroundResult),
     /// `/clear` created a new session; the main loop adopts the new id/name.
     /// Subagent generation is reset separately via the follow-up
     /// [`AppEvent::AgentGenerationReset`].

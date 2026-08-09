@@ -1,7 +1,7 @@
 //! Event handling for the TUI application.
 
 use super::types::*;
-use super::App;
+use super::{App, PendingInput};
 use crate::prompts::{self, PromptContext};
 use crate::tui::components::subagent_focus_view::FocusViewState;
 use crate::tui::util::{
@@ -449,6 +449,7 @@ impl App {
                 self.subagent_history.insert(key, snapshot);
                 self.turn_count += 1;
                 self.current_turn_handle = None;
+                self.server_side_turn_active = false;
                 self.last_abort_reason = None; // normal completion clears
                 self.turn_started_at = None;
                 // Finalize the most recent TurnRecord's message_end_idx for
@@ -487,6 +488,7 @@ impl App {
                     });
                 }
                 self.last_abort_reason = Some(reason.clone());
+                self.server_side_turn_active = false;
                 // Aborted turn (e.g. /clear via cancel_current_turn, or a turn
                 // failure): clear the subagent tree so stale subagents don't
                 // linger in the status bar. cancel_current_turn does not emit
@@ -1025,6 +1027,37 @@ impl App {
                     tool_metadata: None,
                 });
             }
+            AppEvent::BackgroundTaskCompleted(result) => {
+                if result.session_id.as_deref() != Some(self.session_id.as_str()) {
+                    tracing::debug!(
+                        result_session_id = ?result.session_id,
+                        active_session_id = %self.session_id,
+                        "dropping background result for inactive session"
+                    );
+                    return;
+                }
+                let notification = format!(
+                    "[Background task {} completed: {}]",
+                    result.task_id,
+                    if result.success { "SUCCESS" } else { "FAILED" }
+                );
+                self.committed_messages.push(UIMessage {
+                    role: MessageRole::System,
+                    content: notification,
+                    tool_name: None,
+                    tool_args: None,
+                    content_collapsed: false,
+                    tool_collapsed: false,
+                    tool_running: false,
+                    diff_data: None,
+                    tool_metadata: None,
+                });
+                if !self.has_running_turn() {
+                    self.pending_inputs
+                        .push_back(PendingInput::background_result(result));
+                    self.start_next_turn();
+                }
+            }
             AppEvent::SystemNotice(notice) => {
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::System,
@@ -1044,11 +1077,13 @@ impl App {
                 // event spawned below, mirroring the original /clear path.
                 self.session_id = id.clone();
                 self.session_name = name;
+                self.server_side_turn_active = false;
                 // Re-point the server-side SSE readers at the new session id
                 // (abort + resubscribe) so streaming follows the switched
                 // session instead of the stale one.
                 self.respawn_session_event_reader(None);
                 self.respawn_trace_event_reader();
+                self.respawn_global_event_reader();
                 self.session_exit_saved
                     .store(false, std::sync::atomic::Ordering::Release);
                 let client = self.daemon_client.clone();
