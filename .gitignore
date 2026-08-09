@@ -19,6 +19,10 @@ Thumbs.db
 *.exe
 *.dll
 wgenty-code-linux-*
+
+# Eval artifacts
+eval/deepswe/__pycache__/
+jobs/
 *.so
 *.dylib
 .wgenty-code/traces/
