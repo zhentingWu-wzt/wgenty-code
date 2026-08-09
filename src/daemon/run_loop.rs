@@ -844,8 +844,14 @@ impl RunRegistry {
 /// Serialized inputs to the daemon-owned continuation scheduler.
 #[derive(Debug)]
 pub(crate) enum BackgroundSchedulerEvent {
-    ResultReady { session_id: String },
-    RunFinished { session_id: String, run_id: String },
+    ResultReady {
+        session_id: String,
+    },
+    RunFinished {
+        session_id: String,
+        run_id: String,
+        final_save_succeeded: bool,
+    },
 }
 
 struct BackgroundContinuation {
@@ -856,16 +862,18 @@ struct BackgroundContinuation {
 }
 
 /// Completes the session's run claim on drop. With a live scheduler it queues
-/// `RunFinished`, allowing an atomic handoff to pending background results;
-/// without one it releases directly through [`RunRegistry::finish`]. Every
-/// exit path — normal return, error, cancel, and panic/unwind — therefore
-/// avoids leaking the claim, and the run-id ownership check prevents a stale
-/// guard from releasing or replacing a newer run.
+/// `RunFinished` together with the final-persistence outcome; only a successful
+/// save permits an atomic handoff to pending background results. Without a
+/// scheduler it releases directly through [`RunRegistry::finish`]. Every exit
+/// path — normal return, error, cancel, and panic/unwind — therefore avoids
+/// leaking the claim, and the run-id ownership check prevents a stale guard
+/// from releasing or replacing a newer run.
 struct RunClaimGuard {
     registry: RunRegistry,
     session_id: String,
     run_id: String,
     completion_tx: Option<mpsc::UnboundedSender<BackgroundSchedulerEvent>>,
+    final_save_succeeded: bool,
 }
 
 impl Drop for RunClaimGuard {
@@ -874,6 +882,7 @@ impl Drop for RunClaimGuard {
             tx.send(BackgroundSchedulerEvent::RunFinished {
                 session_id: self.session_id.clone(),
                 run_id: self.run_id.clone(),
+                final_save_succeeded: self.final_save_succeeded,
             })
             .is_ok()
         }) {
@@ -883,12 +892,11 @@ impl Drop for RunClaimGuard {
     }
 }
 
-async fn run_under_claim<F>(claim: RunClaimGuard, turn: F)
+async fn run_under_claim<F>(mut claim: RunClaimGuard, turn: F)
 where
-    F: std::future::Future<Output = ()>,
+    F: std::future::Future<Output = bool>,
 {
-    let _claim = claim;
-    turn.await;
+    claim.final_save_succeeded = turn.await;
 }
 
 fn structured_background_continuation(
@@ -909,19 +917,39 @@ async fn prepare_background_continuation(
     state: &Arc<DaemonState>,
     event: BackgroundSchedulerEvent,
 ) -> Option<BackgroundContinuation> {
-    let (session_id, finished_run_id) = match event {
+    let (session_id, finished_run) = match event {
         BackgroundSchedulerEvent::ResultReady { session_id } => (session_id, None),
-        BackgroundSchedulerEvent::RunFinished { session_id, run_id } => (session_id, Some(run_id)),
+        BackgroundSchedulerEvent::RunFinished {
+            session_id,
+            run_id,
+            final_save_succeeded,
+        } => (session_id, Some((run_id, final_save_succeeded))),
     };
 
     // A run that exited before acknowledging its start-save never consumed
     // the claim. Put that batch back ahead of newer pending results before
     // deciding whether to hand off the registry claim.
-    if let Some(run_id) = finished_run_id.as_deref() {
+    if let Some((run_id, _)) = finished_run.as_ref() {
         state
-            .requeue_background_result_claim(&session_id, run_id)
+            .requeue_background_result_claim(&session_id, run_id.as_str())
             .await;
     }
+
+    // A failed final save is not a successful completion seam. Release only
+    // the matching failed owner, leave all pending/requeued results intact,
+    // and block result-ready events until an explicit retry establishes newly
+    // durable history. A successful completion clears that retry barrier.
+    if let Some((run_id, false)) = finished_run.as_ref() {
+        state.block_background_continuation(&session_id).await;
+        state.session_runs.finish(&session_id, run_id);
+        return None;
+    }
+    if finished_run.is_some() {
+        state.allow_background_continuation(&session_id).await;
+    } else if state.background_continuation_is_blocked(&session_id).await {
+        return None;
+    }
+    let finished_run_id = finished_run.map(|(run_id, _)| run_id);
 
     // A forged/stale session id is retained for legacy recovery but cannot
     // acquire a run claim or consume model history.
@@ -986,6 +1014,7 @@ fn spawn_claimed_session_turn(
             session_id: session_id.clone(),
             run_id: run_id.clone(),
             completion_tx: state.background_scheduler_sender(),
+            final_save_succeeded: false,
         };
         run_under_claim(
             claim,
@@ -1276,14 +1305,14 @@ async fn guarded_save(
     gen: u64,
     save_gen: &AtomicU64,
     save_lock: &tokio::sync::Mutex<()>,
-) {
+) -> bool {
     let _write = save_lock.lock().await;
     if save_gen.load(Ordering::SeqCst) != gen {
         // A newer snapshot was claimed meanwhile; its save carries newer
         // state — writing ours would be a stale overwrite.
-        return;
+        return false;
     }
-    save_session_history(sessions, session_id, snapshot).await;
+    save_session_history(sessions, session_id, snapshot).await
 }
 
 /// Persist `history` as the session's full message list. Runs at turn start
@@ -1339,7 +1368,7 @@ async fn run_session_turn(
     message: String,
     plan_mode: bool,
     cancel: CancellationToken,
-) {
+) -> bool {
     let mut sink = DaemonEventSink::new(
         session_id.to_string(),
         run_id.to_string(),
@@ -1356,7 +1385,7 @@ async fn run_session_turn(
         sink.emit(RuntimeEvent::StreamError(format!(
             "session vanished before run start: {session_id}"
         )));
-        return;
+        return false;
     };
     let mut seed: Vec<ChatMessage> =
         match serde_json::to_value(&session.messages).and_then(serde_json::from_value) {
@@ -1365,7 +1394,7 @@ async fn run_session_turn(
                 sink.emit(RuntimeEvent::StreamError(format!(
                     "history conversion failed: {e}"
                 )));
-                return;
+                return false;
             }
         };
     seed.push(ChatMessage::user(&message));
@@ -1381,7 +1410,7 @@ async fn run_session_turn(
         sink.emit(RuntimeEvent::StreamError(
             "run start history save failed".to_string(),
         ));
-        return;
+        return false;
     }
     state.ack_background_result_claim(session_id, run_id).await;
 
@@ -1558,7 +1587,7 @@ async fn run_session_turn(
     // self-skips instead of overwriting this final state with a stale snapshot.
     let final_history = history_handle.lock().await.clone();
     let gen = claim_save_generation(&save_gen);
-    guarded_save(
+    let final_save_succeeded = guarded_save(
         &sessions,
         session_id,
         &final_history,
@@ -1567,6 +1596,11 @@ async fn run_session_turn(
         &save_lock,
     )
     .await;
+    if !final_save_succeeded {
+        sink.emit(RuntimeEvent::StreamError(
+            "run final history save failed; retry the turn".to_string(),
+        ));
+    }
 
     // 9. TurnContext: broadcast inspector data (layers, recalled memories,
     // new messages, reminder, token usage). Emitted once per run after the
@@ -1620,6 +1654,7 @@ async fn run_session_turn(
             "usage": usage_json,
         }),
     );
+    final_save_succeeded
 }
 
 #[cfg(test)]
@@ -2259,7 +2294,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unacknowledged_claim_requeues_after_startup_crash() {
+    async fn unacknowledged_claim_requeues_without_handoff_after_startup_crash() {
         let state = continuation_test_state().await;
         state
             .record_background_result(background_result("bg_1", "session-a"))
@@ -2278,22 +2313,20 @@ mod tests {
             BackgroundSchedulerEvent::RunFinished {
                 session_id: "session-a".to_string(),
                 run_id: first.run_id.clone(),
+                final_save_succeeded: false,
             },
         )
-        .await
-        .expect("unacknowledged completion requeues and retries");
+        .await;
 
-        assert_ne!(retry.run_id, first.run_id);
-        let payload: serde_json::Value =
-            serde_json::from_str(&retry.message).expect("retry continuation JSON");
-        assert_eq!(payload["results"][0]["task_id"], "bg_1");
+        assert!(retry.is_none(), "failed run must not hand off as success");
+        assert!(!state.session_runs.is_active("session-a"));
         assert_eq!(
             state
                 .background_results_snapshot_for_session("session-a")
                 .await
                 .len(),
             1,
-            "retry claim remains recoverable until its own ack"
+            "failed run's unacknowledged claim remains recoverable"
         );
     }
 
@@ -2332,6 +2365,7 @@ mod tests {
             BackgroundSchedulerEvent::RunFinished {
                 session_id: "session-a".to_string(),
                 run_id: "foreground".to_string(),
+                final_save_succeeded: true,
             },
         )
         .await
@@ -2341,6 +2375,77 @@ mod tests {
             state.session_runs.active_run_id("session-a").as_deref(),
             Some(continuation.run_id.as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn failed_final_save_releases_without_handoff_and_preserves_pending_results() {
+        let state = continuation_test_state().await;
+        state
+            .session_runs
+            .claim("session-a", test_run("foreground"))
+            .expect("foreground claim");
+        state
+            .record_background_result(background_result("bg_1", "session-a"))
+            .await;
+
+        let continuation = prepare_background_continuation(
+            &state,
+            BackgroundSchedulerEvent::RunFinished {
+                session_id: "session-a".to_string(),
+                run_id: "foreground".to_string(),
+                final_save_succeeded: false,
+            },
+        )
+        .await;
+
+        assert!(
+            continuation.is_none(),
+            "failed final persistence must not hand off to a continuation"
+        );
+        assert!(!state.session_runs.is_active("session-a"));
+        assert_eq!(
+            state
+                .background_results_snapshot_for_session("session-a")
+                .await
+                .iter()
+                .map(|result| result.task_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["bg_1"]
+        );
+
+        state
+            .record_background_result(background_result("bg_2", "session-a"))
+            .await;
+        let while_blocked = prepare_background_continuation(
+            &state,
+            BackgroundSchedulerEvent::ResultReady {
+                session_id: "session-a".to_string(),
+            },
+        )
+        .await;
+        assert!(
+            while_blocked.is_none(),
+            "new result-ready events must not bypass a failed-save retry barrier"
+        );
+
+        state
+            .session_runs
+            .claim("session-a", test_run("foreground-retry"))
+            .expect("explicit user retry can claim the released session");
+        let continuation = prepare_background_continuation(
+            &state,
+            BackgroundSchedulerEvent::RunFinished {
+                session_id: "session-a".to_string(),
+                run_id: "foreground-retry".to_string(),
+                final_save_succeeded: true,
+            },
+        )
+        .await
+        .expect("successful retry clears the barrier and hands off pending results");
+        let payload: serde_json::Value =
+            serde_json::from_str(&continuation.message).expect("continuation JSON");
+        assert_eq!(payload["results"][0]["task_id"], "bg_1");
+        assert_eq!(payload["results"][1]["task_id"], "bg_2");
     }
 
     #[tokio::test]
@@ -2363,6 +2468,7 @@ mod tests {
             BackgroundSchedulerEvent::RunFinished {
                 session_id: "session-a".to_string(),
                 run_id: "foreground".to_string(),
+                final_save_succeeded: true,
             },
         )
         .await
@@ -2376,32 +2482,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scheduler_sees_run_finished_only_after_turn_future_completes() {
+    async fn failed_guarded_save_is_propagated_to_run_finished() {
         let registry = RunRegistry::new();
         registry
             .claim("session-a", test_run("foreground"))
             .expect("foreground claim");
         let (completion_tx, mut completion_rx) = mpsc::unbounded_channel();
-        let final_save_complete = Arc::new(AtomicBool::new(false));
-        let save_flag = Arc::clone(&final_save_complete);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sessions = MemorySessionManager::with_project_root(temp.path().to_path_buf());
+        let save_gen = AtomicU64::new(1);
+        let save_lock = tokio::sync::Mutex::new(());
         let guard = RunClaimGuard {
             registry,
             session_id: "session-a".to_string(),
             run_id: "foreground".to_string(),
             completion_tx: Some(completion_tx),
+            final_save_succeeded: false,
         };
 
-        run_under_claim(guard, async move {
-            save_flag.store(true, Ordering::SeqCst);
-        })
+        run_under_claim(
+            guard,
+            guarded_save(
+                &sessions,
+                "missing-session",
+                &[ChatMessage::user("durable")],
+                1,
+                &save_gen,
+                &save_lock,
+            ),
+        )
         .await;
 
         let event = completion_rx.recv().await.expect("run-finished event");
-        assert!(final_save_complete.load(Ordering::SeqCst));
         assert!(matches!(
             event,
-            BackgroundSchedulerEvent::RunFinished { run_id, .. } if run_id == "foreground"
+            BackgroundSchedulerEvent::RunFinished {
+                run_id,
+                final_save_succeeded: false,
+                ..
+            } if run_id == "foreground"
         ));
+    }
+
+    #[tokio::test]
+    async fn guarded_save_reports_missing_session_as_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sessions = MemorySessionManager::with_project_root(temp.path().to_path_buf());
+        let save_gen = AtomicU64::new(1);
+        let save_lock = tokio::sync::Mutex::new(());
+
+        let saved = guarded_save(
+            &sessions,
+            "missing-session",
+            &[ChatMessage::user("durable")],
+            1,
+            &save_gen,
+            &save_lock,
+        )
+        .await;
+
+        assert!(!saved);
     }
 
     #[tokio::test]
@@ -2418,6 +2558,7 @@ mod tests {
                 session_id: "s1".to_string(),
                 run_id: "r1".to_string(),
                 completion_tx: None,
+                final_save_succeeded: false,
             };
             panic!("simulated turn panic");
         });
