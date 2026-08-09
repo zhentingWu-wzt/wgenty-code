@@ -8,10 +8,10 @@ use crate::daemon_harness::{create_session, spawn_daemon, SseReader};
 use wgenty_code::daemon::global_events::GlobalEventKind;
 use wgenty_code::tools::execution::background::BackgroundResult;
 
-fn bg_result(task_id: &str) -> BackgroundResult {
+fn bg_result(task_id: &str, session_id: &str) -> BackgroundResult {
     BackgroundResult {
         task_id: task_id.to_string(),
-        session_id: None,
+        session_id: Some(session_id.to_string()),
         result_type: "command".to_string(),
         command: "echo hi".to_string(),
         stdout: "hi".to_string(),
@@ -65,7 +65,9 @@ async fn global_events_two_subscribers_observe_identical_sequence() {
         .await;
 
     // 3. background result → BackgroundResult.
-    d.state.record_background_result(bg_result("bg-1")).await;
+    d.state
+        .record_background_result(bg_result("bg-1", &sid))
+        .await;
 
     // 4. model change → ModelChanged (via the shared broadcast entry point).
     d.state.broadcast_global(
@@ -109,7 +111,7 @@ async fn background_result_retained_and_broadcast_without_preemption() {
 
     // Produced while "C" is offline (no subscriber, no reader yet).
     d.state
-        .record_background_result(bg_result("bg-offline"))
+        .record_background_result(bg_result("bg-offline", "session-a"))
         .await;
 
     // C comes online: the retained result is queryable.
@@ -135,7 +137,9 @@ async fn background_result_retained_and_broadcast_without_preemption() {
     let url = format!("{}/events", d.base);
     let mut a = SseReader::connect(&d.client, &url).await;
     let mut b = SseReader::connect(&d.client, &url).await;
-    d.state.record_background_result(bg_result("bg-live")).await;
+    d.state
+        .record_background_result(bg_result("bg-live", "session-a"))
+        .await;
     for reader in [&mut a, &mut b] {
         let ev = reader.next_json().await;
         assert_eq!(ev["kind"], "background_result");
