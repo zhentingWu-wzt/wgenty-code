@@ -185,9 +185,15 @@ pub(crate) fn session_event_to_app_events(ev: SessionEvent) -> Vec<AppEvent> {
             }]
         }
         SessionEventKind::Save => Vec::new(),
-        // The TUI subscribes live-only (no `after=`), so it never receives
-        // sync_lost today; Task 4 decides the TUI-side resync behavior.
-        SessionEventKind::SyncLost => Vec::new(),
+        // Recovery is coordinated by App: it keeps the daemon-run gate closed
+        // until cancellation/realignment decides whether to retry delivery.
+        SessionEventKind::SyncLost => vec![AppEvent::ServerSessionSyncLost {
+            latest_seq: ev
+                .data
+                .get("latest_seq")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+        }],
         // TurnContext is consumed by web/Tauri inspector panels; the TUI has
         // its own in-process TurnContext via AppEvent::TurnContextCaptured.
         SessionEventKind::TurnContext => Vec::new(),
@@ -216,18 +222,19 @@ pub(crate) fn spawn_session_event_reader(
     event_tx: mpsc::UnboundedSender<AppEvent>,
     shutdown: Arc<AtomicBool>,
     mut ready: Option<oneshot::Sender<()>>,
+    last_seq: Arc<std::sync::atomic::AtomicU64>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let initial_backoff = std::time::Duration::from_millis(250);
         let max_backoff = std::time::Duration::from_secs(2);
         let mut backoff = initial_backoff;
-        let mut connected_once = false;
-        let mut last_seq = 0u64;
+        let mut cursor = last_seq.load(Ordering::Acquire);
+        let mut connected_once = cursor > 0;
         loop {
             if shutdown.load(Ordering::SeqCst) {
                 return;
             }
-            let after = connected_once.then_some(last_seq);
+            let after = connected_once.then_some(cursor);
             let resp = match client.session_events_after(&session_id, after).await {
                 Ok(response) => response,
                 Err(e) => {
@@ -253,11 +260,20 @@ pub(crate) fn spawn_session_event_reader(
                 match lines.next().await {
                     Some(Ok(json_str)) => match serde_json::from_str::<SessionEvent>(&json_str) {
                         Ok(ev) => {
+                            if ev.kind == SessionEventKind::SyncLost {
+                                cursor = ev
+                                    .data
+                                    .get("latest_seq")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .unwrap_or(0);
+                                last_seq.store(cursor, Ordering::Release);
+                            }
                             if ev.seq != 0 {
-                                if ev.seq <= last_seq {
+                                if ev.seq <= cursor {
                                     continue;
                                 }
-                                last_seq = ev.seq;
+                                cursor = ev.seq;
+                                last_seq.store(cursor, Ordering::Release);
                             }
                             for app_ev in session_event_to_app_events(ev) {
                                 if event_tx.send(app_ev).is_err() {
@@ -273,7 +289,7 @@ pub(crate) fn spawn_session_event_reader(
                         }
                     },
                     Some(Err(e)) => {
-                        tracing::warn!(error = %e, last_seq, "session events SSE read error; reconnecting");
+                        tracing::warn!(error = %e, last_seq = cursor, "session events SSE read error; reconnecting");
                         let _ = event_tx.send(AppEvent::StreamError(
                             "lost connection to daemon event stream; reconnecting".to_string(),
                         ));
@@ -282,7 +298,7 @@ pub(crate) fn spawn_session_event_reader(
                     None => {
                         tracing::warn!(
                             session_id,
-                            last_seq,
+                            last_seq = cursor,
                             "session events SSE stream closed; reconnecting"
                         );
                         let _ = event_tx.send(AppEvent::StreamError(
@@ -671,23 +687,47 @@ mod tests {
         Query(query): Query<HashMap<String, String>>,
     ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
         let connection = connections.fetch_add(1, Ordering::SeqCst);
-        let event = if connection == 0 {
-            assert!(!query.contains_key("after"));
-            ev(
-                1,
-                SessionEventKind::ContentDelta,
-                serde_json::json!({"text": "before disconnect"}),
-            )
+        let events = if connection == 0 {
+            assert_eq!(query.get("after").map(String::as_str), Some("41"));
+            Vec::new()
         } else {
-            assert_eq!(query.get("after").map(String::as_str), Some("1"));
-            ev(
-                2,
+            assert_eq!(query.get("after").map(String::as_str), Some("41"));
+            vec![ev(
+                42,
                 SessionEventKind::TurnDone,
                 serde_json::json!({"finish_reason": "stop"}),
-            )
+            )]
         };
-        let json = serde_json::to_string(&event).expect("serialize session event");
-        Sse::new(futures::stream::iter([Ok(Event::default().data(json))]))
+        Sse::new(futures::stream::iter(events.into_iter().map(|event| {
+            let json = serde_json::to_string(&event).expect("serialize session event");
+            Ok(Event::default().data(json))
+        })))
+    }
+
+    async fn sync_lost_then_resume_from_latest(
+        State(connections): State<Arc<AtomicUsize>>,
+        Query(query): Query<HashMap<String, String>>,
+    ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+        let connection = connections.fetch_add(1, Ordering::SeqCst);
+        let events = if connection == 0 {
+            assert_eq!(query.get("after").map(String::as_str), Some("4"));
+            vec![ev(
+                0,
+                SessionEventKind::SyncLost,
+                serde_json::json!({"latest_seq": 77}),
+            )]
+        } else {
+            assert_eq!(query.get("after").map(String::as_str), Some("77"));
+            vec![ev(
+                78,
+                SessionEventKind::TurnDone,
+                serde_json::json!({"finish_reason": "stop"}),
+            )]
+        };
+        Sse::new(futures::stream::iter(events.into_iter().map(|event| {
+            let json = serde_json::to_string(&event).expect("serialize session event");
+            Ok(Event::default().data(json))
+        })))
     }
 
     #[tokio::test]
@@ -710,22 +750,20 @@ mod tests {
         });
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
         let shutdown = Arc::new(AtomicBool::new(false));
+        let cursor = Arc::new(std::sync::atomic::AtomicU64::new(41));
         let reader = spawn_session_event_reader(
             DaemonClient::new(format!("http://{address}")),
             "session-a".to_string(),
             event_tx,
             shutdown.clone(),
             None,
+            cursor.clone(),
         );
-        let mut saw_content = false;
         let mut saw_terminal = false;
 
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 match event_rx.recv().await.expect("reader event channel open") {
-                    AppEvent::ContentDelta(text) => {
-                        saw_content |= text == "before disconnect";
-                    }
                     AppEvent::ServerTurnTerminated => saw_terminal = true,
                     AppEvent::TurnComplete => break,
                     _ => {}
@@ -734,9 +772,62 @@ mod tests {
         })
         .await
         .expect("replayed TurnDone must reach the app");
-        assert!(saw_content);
         assert!(!saw_terminal, "disconnect recovery must keep the run gate");
         assert_eq!(connections.load(Ordering::SeqCst), 2);
+        assert_eq!(cursor.load(Ordering::Acquire), 42);
+
+        shutdown.store(true, Ordering::SeqCst);
+        reader.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn session_reader_realigns_cursor_after_sync_lost() {
+        let connections = Arc::new(AtomicUsize::new(0));
+        let router = Router::new()
+            .route(
+                "/api/v1/sessions/:id/events",
+                get(sync_lost_then_resume_from_latest),
+            )
+            .with_state(connections.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind sync-lost server");
+        let address = listener.local_addr().expect("sync-lost server address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve sync-lost server");
+        });
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let cursor = Arc::new(std::sync::atomic::AtomicU64::new(4));
+        let reader = spawn_session_event_reader(
+            DaemonClient::new(format!("http://{address}")),
+            "session-a".to_string(),
+            event_tx,
+            shutdown.clone(),
+            None,
+            cursor.clone(),
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let mut saw_sync_lost = false;
+            loop {
+                match event_rx.recv().await.expect("reader event channel open") {
+                    AppEvent::ServerSessionSyncLost { latest_seq: 77 } => saw_sync_lost = true,
+                    AppEvent::TurnComplete => {
+                        assert!(saw_sync_lost);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("reader must reconnect from the sync-lost latest sequence");
+        assert_eq!(connections.load(Ordering::SeqCst), 2);
+        assert_eq!(cursor.load(Ordering::Acquire), 78);
 
         shutdown.store(true, Ordering::SeqCst);
         reader.abort();
@@ -883,6 +974,19 @@ mod tests {
         let apps =
             session_event_to_app_events(ev(7, SessionEventKind::Save, serde_json::Value::Null));
         assert!(apps.is_empty());
+    }
+
+    #[test]
+    fn sync_lost_requests_explicit_session_realign() {
+        let apps = session_event_to_app_events(ev(
+            0,
+            SessionEventKind::SyncLost,
+            serde_json::json!({"latest_seq": 77}),
+        ));
+        assert!(matches!(
+            apps.as_slice(),
+            [AppEvent::ServerSessionSyncLost { latest_seq: 77 }]
+        ));
     }
 
     #[test]

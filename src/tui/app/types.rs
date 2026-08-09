@@ -443,6 +443,17 @@ pub enum AppEvent {
         result: crate::tools::execution::BackgroundResult,
         error: String,
     },
+    ServerSessionSyncLost {
+        latest_seq: u64,
+    },
+    ServerSessionRealigned {
+        session_id: String,
+        retry_background: bool,
+    },
+    SessionClearFailed {
+        background_result: Option<crate::tools::execution::BackgroundResult>,
+        suppress_phase_updates: bool,
+    },
     /// `/clear` created a new session; the main loop adopts the new id/name.
     /// Subagent generation is reset separately via the follow-up
     /// [`AppEvent::AgentGenerationReset`].

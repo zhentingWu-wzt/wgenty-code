@@ -83,7 +83,8 @@ impl App {
         self.respawn_trace_event_reader();
         self.server_side_turn_active = true;
         self.server_background_run_starting = true;
-        tokio::spawn(async move {
+        self.server_background_claim_result = Some(result.clone());
+        self.server_background_claim_handle = Some(tokio::spawn(async move {
             if tokio::time::timeout(std::time::Duration::from_secs(10), ready_rx)
                 .await
                 .is_err()
@@ -123,7 +124,7 @@ impl App {
                 result,
                 error: last_error,
             });
-        });
+        }));
     }
 
     /// Spawn an agent turn with `input_text` as the initial user message.
@@ -580,6 +581,11 @@ impl App {
         self.pending_inputs.clear();
         self.pending_server_background_task_ids.clear();
         self.server_background_run_starting = false;
+        self.server_session_realigning = false;
+        if let Some(handle) = self.server_background_claim_handle.take() {
+            handle.abort();
+        }
+        self.server_background_claim_result = None;
         if let Some(handle) = self.current_turn_handle.take() {
             handle.abort();
             // Set phase to Idle immediately and suppress stale phase updates
@@ -1388,6 +1394,22 @@ mod tests {
 
         assert!(app.server_side_turn_active);
         assert!(app.server_background_run_starting);
+        assert_eq!(app.pending_inputs.len(), 1);
+        assert!(app.current_turn_handle.is_none());
+    }
+
+    #[tokio::test]
+    async fn sync_lost_recovery_keeps_gate_until_daemon_realigns() {
+        let mut app = build_app();
+        app.server_side_turn_active = true;
+        app.server_session_realigning = true;
+        app.pending_inputs
+            .push_back(PendingInput::new("queued user input".to_string()));
+
+        app.handle_event(AppEvent::ServerTurnTerminated).await;
+
+        assert!(app.server_side_turn_active);
+        assert!(app.server_session_realigning);
         assert_eq!(app.pending_inputs.len(), 1);
         assert!(app.current_turn_handle.is_none());
     }

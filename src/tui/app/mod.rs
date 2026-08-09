@@ -158,6 +158,11 @@ pub struct App {
     /// been accepted. Disconnect lifecycle events must not release the run
     /// gate during this window.
     server_background_run_starting: bool,
+    /// A SyncLost recovery owns daemon cancellation until the session is
+    /// realigned. Duplicate control events must not start competing recovery.
+    server_session_realigning: bool,
+    server_background_claim_handle: Option<tokio::task::JoinHandle<()>>,
+    server_background_claim_result: Option<crate::tools::execution::BackgroundResult>,
     pub session_name: String,
     pub last_tool_name: Option<String>,
     pub last_abort_reason: Option<TurnAbortReason>,
@@ -227,6 +232,7 @@ pub struct App {
     /// Recreated on each server-side run and on session switch so the
     /// subscription always follows the current session id (abort + respawn).
     session_event_reader: Option<tokio::task::JoinHandle<()>>,
+    session_event_last_seq: Arc<std::sync::atomic::AtomicU64>,
     /// Join handle of the daemon subagent trace SSE reader (server-side mode).
     trace_event_reader: Option<tokio::task::JoinHandle<()>>,
     /// Join handle of the global-events reader, recreated when the active
@@ -555,6 +561,9 @@ impl App {
             displayed_background_task_ids: Arc::new(TokioMutex::new(HashSet::new())),
             pending_server_background_task_ids: HashSet::new(),
             server_background_run_starting: false,
+            server_session_realigning: false,
+            server_background_claim_handle: None,
+            server_background_claim_result: None,
             session_name: "New Session".to_string(),
             last_tool_name: None,
             last_abort_reason: None,
@@ -588,6 +597,7 @@ impl App {
             server_side_loop: false,
             server_side_turn_active: false,
             session_event_reader: None,
+            session_event_last_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             trace_event_reader: None,
             global_event_reader: None,
             event_tx,
@@ -670,7 +680,12 @@ impl App {
         let tx = self.event_tx.clone();
         let shutdown = self.shutdown_flag.clone();
         self.session_event_reader = Some(crate::tui::app::server_side::spawn_session_event_reader(
-            client, sid, tx, shutdown, ready,
+            client,
+            sid,
+            tx,
+            shutdown,
+            ready,
+            self.session_event_last_seq.clone(),
         ));
     }
 
@@ -723,7 +738,13 @@ impl App {
             Arc::new(TokioMutex::new(std::collections::HashSet::new()));
         self.pending_server_background_task_ids.clear();
         self.server_background_run_starting = false;
+        self.server_session_realigning = false;
+        if let Some(handle) = self.server_background_claim_handle.take() {
+            handle.abort();
+        }
+        self.server_background_claim_result = None;
         self.server_side_turn_active = false;
+        self.session_event_last_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
         self.respawn_session_event_reader(None);
         self.respawn_trace_event_reader();
         self.respawn_global_event_reader();

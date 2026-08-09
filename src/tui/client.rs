@@ -17,6 +17,12 @@ pub(crate) struct RunSessionError {
     pub(crate) message: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CancelRunOutcome {
+    Cancelled,
+    NotRunning,
+}
+
 /// Result of `POST /api/v1/tools/undo-turn` (code rollback of a turn range).
 ///
 /// Mirrors `CheckpointStore::RewindRangeReport`. The TUI uses `restored` for
@@ -510,13 +516,26 @@ impl DaemonClient {
 
     /// POST /api/v1/sessions/:id/cancel - cancel the active server-side run.
     pub async fn cancel_run(&self, session_id: &str) -> anyhow::Result<()> {
+        self.try_cancel_run(session_id).await.map(|_| ())
+    }
+
+    pub(crate) async fn try_cancel_run(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<CancelRunOutcome> {
         let encoded = urlencode(session_id);
         let url = format!("{}/api/v1/sessions/{}/cancel", self.base_url, encoded);
         let resp = self.http_tools().post(&url).send().await?;
-        if !resp.status().is_success() && resp.status() != StatusCode::NOT_FOUND {
+        if resp.status().is_success() {
+            return Ok(CancelRunOutcome::Cancelled);
+        }
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Ok(CancelRunOutcome::NotRunning);
+        }
+        if !resp.status().is_success() {
             anyhow::bail!("cancel_run failed ({})", resp.status());
         }
-        Ok(())
+        unreachable!("success and not-found statuses returned above")
     }
 
     /// POST /api/v1/interactions/:id/resolve - answer a pending ask_user_question.
