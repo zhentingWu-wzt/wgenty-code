@@ -405,6 +405,9 @@ pub async fn run_oneshot(
         stream_max_retries: 2,
     };
 
+    let mut stuck_detector = crate::utils::stuck_detector::StuckDetector::new();
+    let token_counter = crate::api::token_counter::TokenCounter::new();
+
     let mut state = LoopTurnState::default();
     let _final = run_agent_loop(RunLoopArgs {
         llm: &llm,
@@ -418,8 +421,8 @@ pub async fn run_oneshot(
             compactor: Some(&compactor),
             interaction: None,
             planner: None,
-            stuck_detector: None,
-            token_counter: None,
+            stuck_detector: Some(&mut stuck_detector),
+            token_counter: Some(&token_counter),
             synthesis: None,
             observer: None,
             task_progress: None,
