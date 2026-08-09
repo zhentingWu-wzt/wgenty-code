@@ -538,6 +538,32 @@ impl DaemonClient {
         unreachable!("success and not-found statuses returned above")
     }
 
+    /// Signal cancellation and wait until the daemon releases the session run
+    /// claim. The cancel endpoint returns 204 when it only signalled the token;
+    /// 404 is the authoritative idle state after the run's final save.
+    pub(crate) async fn cancel_run_and_wait_for_release(
+        &self,
+        session_id: &str,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<()> {
+        tokio::time::timeout(timeout, async {
+            loop {
+                match self
+                    .try_cancel_run(session_id)
+                    .await
+                    .with_context(|| format!("cancel daemon session {session_id}"))?
+                {
+                    CancelRunOutcome::NotRunning => return Ok(()),
+                    CancelRunOutcome::Cancelled => {
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    }
+                }
+            }
+        })
+        .await
+        .context("timed out waiting for daemon session run to release")?
+    }
+
     /// POST /api/v1/interactions/:id/resolve - answer a pending ask_user_question.
     /// `answer` is a JSON string `{"selected":[...],"text":"..."}`.
     pub async fn resolve_interaction(&self, request_id: &str, answer: &str) -> anyhow::Result<()> {
@@ -893,11 +919,30 @@ impl DaemonClient {
     pub async fn load_session(&self, id: &str) -> anyhow::Result<SessionResponse> {
         let encoded = urlencode(id);
         let url = format!("{}/api/v1/sessions/{}", self.base_url, encoded);
-        let resp = self.http_tools().get(&url).send().await?;
+        let resp = self
+            .http_tools()
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("check whether daemon session {id} exists"))?;
         if !resp.status().is_success() {
             anyhow::bail!("Failed to load session ({})", resp.status());
         }
         Ok(resp.json().await?)
+    }
+
+    /// Return whether the daemon already persists this session id.
+    pub(crate) async fn session_exists(&self, id: &str) -> anyhow::Result<bool> {
+        let encoded = urlencode(id);
+        let url = format!("{}/api/v1/sessions/{}", self.base_url, encoded);
+        let resp = self.http_tools().get(&url).send().await?;
+        if resp.status().is_success() {
+            return Ok(true);
+        }
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        anyhow::bail!("session existence check failed ({})", resp.status())
     }
 
     /// PUT /api/v1/sessions/:id
