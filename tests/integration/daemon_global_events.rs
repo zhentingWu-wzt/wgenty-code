@@ -11,6 +11,7 @@ use wgenty_code::tools::execution::background::BackgroundResult;
 fn bg_result(task_id: &str) -> BackgroundResult {
     BackgroundResult {
         task_id: task_id.to_string(),
+        session_id: None,
         result_type: "command".to_string(),
         command: "echo hi".to_string(),
         stdout: "hi".to_string(),
