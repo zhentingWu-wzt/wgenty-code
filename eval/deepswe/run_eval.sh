@@ -60,7 +60,7 @@ if [ ! -d "$TASKS_DIR" ]; then
 fi
 
 # --- Generate job.yaml with actual paths ---
-TMP_JOB=$(mktemp /tmp/wgenty-deepswe-job.XXXXXX.yaml)
+TMP_JOB="/tmp/wgenty-deepswe-job-$$.yaml"
 sed \
     -e "s|__WGENTY_BINARY__|$BINARY|g" \
     -e "s|__DEEPSWE_TASKS__|$TASKS_DIR|g" \
@@ -71,9 +71,9 @@ export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}"
 
 if [ "$N_TASKS" = "0" ]; then
     # Run all tasks (no -l limit)
-    pier run -c "$TMP_JOB" $API_ENV "$@"
+    pier run -c "$TMP_JOB" $API_ENV -p "$TASKS_DIR" "$@"
 else
-    pier run -c "$TMP_JOB" $API_ENV -l "$N_TASKS" "$@"
+    pier run -c "$TMP_JOB" $API_ENV -p "$TASKS_DIR" -l "$N_TASKS" "$@"
 fi
 
 # Cleanup
