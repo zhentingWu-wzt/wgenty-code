@@ -23,9 +23,9 @@
 //! NOTE: the backend name `seccomp+ns` is historical - seccomp-bpf syscall
 //! filtering is NOT yet wired to libseccomp (tracked as a follow-up, see
 //! docs/SANDBOX.md). `is_hardware_enforced` reflects kernel-level enforcement
-//! (namespace+cgroup+bwrap), not syscall filtering.
+//! (namespace+bwrap, optionally cgroup), not syscall filtering.
 //!
-//! Falls back gracefully: if `unshare`/cgroups are unavailable, the
+//! Falls back gracefully: if `unshare` is unavailable, the
 //! NoneBackend takes over.
 
 use std::path::{Path, PathBuf};
@@ -41,6 +41,10 @@ pub struct LinuxBackend {
     /// bwrap path (full FS confinement); when false, falls back to the
     /// unshare path (namespace + tmpfs secret-deny, no writable_paths fence).
     has_bwrap: bool,
+    /// Whether cgroups v2 are writable and resource limits can be applied.
+    /// When false, spawn skips cgroup setup (namespace/bwrap isolation still
+    /// active); capabilities omit resource-limit entries.
+    has_cgroups: bool,
 }
 
 impl Default for LinuxBackend {
@@ -53,6 +57,7 @@ impl LinuxBackend {
     pub fn new() -> Self {
         Self {
             cgroup_base: PathBuf::from("/sys/fs/cgroup"),
+            has_cgroups: Self::cgroup_base_writable(),
             has_bwrap: Self::bwrap_available(),
         }
     }
@@ -107,6 +112,100 @@ impl LinuxBackend {
             .stderr(Stdio::null())
             .status();
         matches!(result, Ok(s) if s.success())
+    }
+
+    /// Run all availability checks and return diagnostic results.
+    ///
+    /// Called by [`super::create_backend`] to provide actionable feedback when
+    /// the Linux backend is not available. Each item reports whether the check
+    /// passed, why, and a suggested fix.
+    pub fn diagnostic_checks() -> Vec<crate::sandbox::DiagnosticIssue> {
+        let cgroup_exists = Path::new("/sys/fs/cgroup/cgroup.controllers").exists();
+        let cgroup_writable = if cgroup_exists {
+            Self::cgroup_base_writable()
+        } else {
+            false
+        };
+        let unshare_ok = Self::unshare_available();
+        let bwrap_ok = Self::bwrap_available();
+
+        vec![
+            crate::sandbox::DiagnosticIssue {
+                check: "cgroup v2 mounted".into(),
+                passed: cgroup_exists,
+                detail: if cgroup_exists {
+                    "cgroup v2 (unified hierarchy) is mounted at /sys/fs/cgroup".into()
+                } else {
+                    "/sys/fs/cgroup/cgroup.controllers not found — cgroup v2 not mounted".into()
+                },
+                fix_suggestion: if !cgroup_exists {
+                    Some(
+                        "Ensure cgroup v2 is mounted: sudo mount -t cgroup2 none /sys/fs/cgroup"
+                            .into(),
+                    )
+                } else {
+                    None
+                },
+            },
+            crate::sandbox::DiagnosticIssue {
+                check: "cgroup writable".into(),
+                passed: cgroup_writable,
+                detail: if !cgroup_exists {
+                    "Skipped (cgroup v2 not mounted)".into()
+                } else if cgroup_writable {
+                    "User can create cgroup sub-directories".into()
+                } else {
+                    "User cannot write to /sys/fs/cgroup — resource limits unavailable".into()
+                },
+                fix_suggestion: if cgroup_exists && !cgroup_writable {
+                    Some(
+                        "Delegate cgroup access: sudo mkdir -p /sys/fs/cgroup/user.slice \
+                         && sudo chown -R $USER:$USER /sys/fs/cgroup/user.slice"
+                            .into(),
+                    )
+                } else {
+                    None
+                },
+            },
+            crate::sandbox::DiagnosticIssue {
+                check: "unshare (user namespace)".into(),
+                passed: unshare_ok,
+                detail: if unshare_ok {
+                    "unshare can create user+mount+net+pid namespaces".into()
+                } else {
+                    "unshare failed — user namespaces may be disabled".into()
+                },
+                fix_suggestion: if !unshare_ok {
+                    Some(
+                        "Enable user namespaces: sudo sysctl kernel.unprivileged_userns_clone=1 \
+                         (check /proc/sys/kernel/unprivileged_userns_clone)"
+                            .into(),
+                    )
+                } else {
+                    None
+                },
+            },
+            crate::sandbox::DiagnosticIssue {
+                check: "bwrap (bubblewrap)".into(),
+                passed: bwrap_ok,
+                detail: if bwrap_ok {
+                    "bwrap is installed — full filesystem confinement available".into()
+                } else {
+                    "bwrap not found — filesystem write-path isolation unavailable, \
+                     namespace-only fallback will be used"
+                        .into()
+                },
+                fix_suggestion: if !bwrap_ok {
+                    Some(
+                        "Install bubblewrap: sudo apt install bubblewrap \
+                         (or: brew install bubblewrap / pacman -S bubblewrap)"
+                            .into(),
+                    )
+                } else {
+                    None
+                },
+            },
+        ]
     }
 
     /// Probe whether `bwrap` (bubblewrap) is installed and callable.
@@ -360,9 +459,10 @@ impl SandboxBackend for LinuxBackend {
     }
 
     fn is_available() -> bool {
+        // cgroup writability is optional — namespace isolation (unshare) and
+        // FS confinement (bwrap) still work without resource limits.
         cfg!(target_os = "linux")
             && Path::new("/sys/fs/cgroup/cgroup.controllers").exists()
-            && Self::cgroup_base_writable()
             && Self::unshare_available()
     }
 
@@ -371,28 +471,19 @@ impl SandboxBackend for LinuxBackend {
     }
 
     fn capabilities(&self) -> Vec<&str> {
-        // bwrap path adds writable_paths confinement ("filesystem-write");
-        // the unshare fallback cannot enforce writable_paths.
+        let mut caps = vec!["filesystem", "network", "secret-deny"];
+
+        // bwrap path adds writable_paths confinement.
         if self.has_bwrap {
-            vec![
-                "filesystem",
-                "filesystem-write",
-                "network",
-                "secret-deny",
-                "memory-limit",
-                "cpu-limit",
-                "process-limit",
-            ]
-        } else {
-            vec![
-                "filesystem",
-                "network",
-                "secret-deny",
-                "memory-limit",
-                "cpu-limit",
-                "process-limit",
-            ]
+            caps.push("filesystem-write");
         }
+
+        // Resource limits only when cgroups are writable.
+        if self.has_cgroups {
+            caps.extend_from_slice(&["memory-limit", "cpu-limit", "process-limit"]);
+        }
+
+        caps
     }
 
     fn spawn(
@@ -401,8 +492,12 @@ impl SandboxBackend for LinuxBackend {
         command: &str,
         workdir: Option<&Path>,
     ) -> Result<SandboxedChild, SandboxError> {
-        // Create cgroup for resource limits (shared by both paths).
-        let cg_dir = self.create_cgroup(profile)?;
+        // Create cgroup for resource limits when available (shared by both paths).
+        let cg_dir: Option<String> = if self.has_cgroups {
+            Some(self.create_cgroup(profile)?)
+        } else {
+            None
+        };
 
         // Select spawn path: bwrap (full FS confinement) or unshare (fallback).
         let (backend_name, args): (&str, Vec<String>) = if self.has_bwrap {
@@ -431,18 +526,29 @@ impl SandboxBackend for LinuxBackend {
             io_error: format!("{}", e),
         })?;
 
-        // Add child PID to cgroup
-        if let Some(pid) = child.id() {
-            self.add_to_cgroup(&cg_dir, pid)?;
+        // Add child PID to cgroup when available.
+        if let (Some(ref cg_dir), Some(pid)) = (&cg_dir, child.id()) {
+            self.add_to_cgroup(cg_dir, pid)?;
         }
+
+        // Build cleanup handles. When cgroups aren't available, bwrap/unshare
+        // namespaces are ephemeral (die with the child process) — no cleanup.
+        let cleanup = cg_dir.map(|cg_dir| SandboxCleanup {
+            cleanup_type: CleanupType::RemoveCgroup,
+            resource_handle: Some(cg_dir),
+        });
+
+        // Append degradation marker to the backend name when cgroups are absent.
+        let full_name = if self.has_cgroups {
+            backend_name.to_string()
+        } else {
+            format!("{backend_name} (no resource limits)")
+        };
 
         Ok(SandboxedChild {
             child,
-            backend_name: backend_name.into(),
-            cleanup: Some(SandboxCleanup {
-                cleanup_type: CleanupType::RemoveCgroup,
-                resource_handle: Some(cg_dir),
-            }),
+            backend_name: full_name,
+            cleanup,
         })
     }
 }

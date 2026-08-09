@@ -158,6 +158,44 @@ export function App() {
     return () => window.removeEventListener("beforeunload", handler);
   }, []);
 
+  // Thin-client heartbeat: open an SSE connection to the daemon so it can track
+  // this client and shut down gracefully when all clients disconnect. The
+  // EventSource is automatically closed when the tab/window closes (browser GC).
+  // The daemon has a 10s grace period after the last client leaves before
+  // shutting down, so page refreshes and brief disconnects are tolerated.
+  useEffect(() => {
+    // Build the URL relative to the daemon (same host/port as other API calls).
+    const base = `${window.location.protocol}//${window.location.host}`;
+    const es = new EventSource(`${base}/api/v1/client/heartbeat`);
+
+    es.onmessage = (event) => {
+      if (event.data && typeof event.data === "string") {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload.clients !== undefined) {
+            // Daemon reports current client count; useful for debugging.
+            void payload;
+          }
+        } catch {
+          // Non-JSON payload (e.g. ping comment) — ignore.
+        }
+      }
+    };
+
+    es.addEventListener("shutting_down", () => {
+      // Daemon is going away; close to avoid reconnect loops.
+      es.close();
+    });
+
+    es.onerror = () => {
+      // Connection error — EventSource will auto-retry. If the daemon has
+      // shut down permanently, the next connect attempt will receive a
+      // "shutting_down" event or connect to a fresh daemon instance.
+    };
+
+    return () => es.close();
+  }, []);
+
   // Subscribe to the trace SSE for pushed subagent permission prompts
   // (design D2.1: replaces 500ms polling of /tools/pending-permissions).
   usePermissionTrace(client);

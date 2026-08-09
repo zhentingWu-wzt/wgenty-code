@@ -2087,6 +2087,69 @@ fn origin_str(o: crate::context::MemoryOrigin) -> &'static str {
     }
 }
 
+// ── Thin-Client Heartbeat ───────────────────────────────────────────────────
+
+/// SSE keepalive endpoint for thin clients. Register on connect, unregister
+/// on disconnect, triggering graceful daemon shutdown when all clients leave.
+pub async fn client_heartbeat(
+    State(state): State<Arc<DaemonState>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let registered = state.active_clients.register_client();
+    if !registered {
+        // Daemon is already shutting down; return an empty stream that
+        // immediately closes so the client knows to reconnect later.
+        let (tx, rx) = mpsc::unbounded_channel::<Result<Event, Infallible>>();
+        let shutdown_event = Event::default()
+            .event("shutting_down")
+            .data("daemon is shutting down");
+        let _ = tx.send(Ok(shutdown_event));
+        drop(tx);
+        return Sse::new(UnboundedReceiverStream::new(rx));
+    }
+
+    tracing::info!(
+        clients = state.active_clients.client_count(),
+        "thin client connected"
+    );
+
+    let (tx, rx) = mpsc::unbounded_channel::<Result<Event, Infallible>>();
+    let active_clients = state.active_clients.clone();
+
+    // Background task: send periodic pings. When the client disconnects
+    // (rx dropped), this task exits and the Drop guard unregisters the client.
+    tokio::spawn(async move {
+        let status = Event::default()
+            .event("status")
+            .data(serde_json::json!({"clients": active_clients.client_count()}).to_string());
+        let _ = tx.send(Ok(status));
+
+        // Periodic keepalive pings. When the client disconnects (rx dropped),
+        // `tx.send` fails immediately, so we detect disconnection quickly.
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        // Skip the first tick (interval fires immediately).
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if tx.is_closed() {
+                break;
+            }
+            let ping = Event::default().comment("ping");
+            if tx.send(Ok(ping)).is_err() {
+                break;
+            }
+        }
+
+        // Client disconnected — unregister.
+        active_clients.unregister_client();
+        tracing::info!(
+            clients = active_clients.client_count(),
+            "thin client disconnected"
+        );
+    });
+
+    Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(KeepAlive::default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
