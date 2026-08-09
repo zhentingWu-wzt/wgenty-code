@@ -116,6 +116,13 @@ pub struct App {
     /// observe this under the save lock and skip so they cannot overwrite the
     /// final snapshot with a UI clone taken earlier in the session.
     session_exit_saved: Arc<std::sync::atomic::AtomicBool>,
+    /// Sticky for the current session once the daemon can extend its history
+    /// independently (server-side runs or background continuations). Generic
+    /// TUI saves become read-only observers after this flips to true.
+    ///
+    /// The flag is shared with already-spawned save tasks so they can recheck
+    /// ownership after acquiring `session_save_lock`.
+    daemon_owns_session_history: Arc<std::sync::atomic::AtomicBool>,
     /// Pending user inputs queued while a Turn is running.
     pub pending_inputs: VecDeque<PendingInput>,
     /// Handle for the currently executing Turn (None when idle).
@@ -503,6 +510,7 @@ impl App {
             conversation_history,
             session_save_lock: Arc::new(TokioMutex::new(())),
             session_exit_saved: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            daemon_owns_session_history: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             assembled_instructions: assembled,
             pending_inputs: VecDeque::new(),
             current_turn_handle: None,
@@ -653,6 +661,23 @@ impl App {
             });
             return false;
         }
+        if id != self.session_id {
+            // A daemon continuation may be active even when every local busy
+            // gate is idle. Fence stale saves immediately and request daemon
+            // cancellation before rebinding observers to the new session.
+            self.mark_daemon_owned_session_history();
+            let client = self.daemon_client.clone();
+            let old_id = self.session_id.clone();
+            tokio::spawn(async move {
+                if let Err(error) = client.cancel_run(&old_id).await {
+                    tracing::warn!(
+                        session_id = %old_id,
+                        error = %error,
+                        "failed to cancel old daemon session during session switch"
+                    );
+                }
+            });
+        }
         self.adopt_session_after_reset(id, name);
         true
     }
@@ -670,6 +695,9 @@ impl App {
         self.respawn_global_event_reader();
         self.session_exit_saved
             .store(false, std::sync::atomic::Ordering::Release);
+        // Replace rather than clear the old Arc: save tasks spawned for the
+        // previous session must keep observing its sticky ownership fence.
+        self.daemon_owns_session_history = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let client = self.daemon_client.clone();
         let event_tx = self.event_tx.clone();
@@ -711,12 +739,30 @@ impl App {
     /// momentarily busy daemon without making Ctrl+C feel stuck.
     const EXIT_SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
+    /// Fence generic TUI persistence once history can change in the daemon.
+    pub(super) fn mark_daemon_owned_session_history(&self) {
+        self.daemon_owns_session_history
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn daemon_owns_session_history(&self) -> bool {
+        self.daemon_owns_session_history
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Snapshot current history + UI track and persist under `session_save_lock`.
     ///
     /// Exit path only. After a successful write, sets `session_exit_saved` so
     /// any earlier fire-and-forget save still waiting on the lock drops its
     /// stale UI clone instead of overwriting the final snapshot.
     pub(super) async fn save_session_snapshot(&self) {
+        if self.daemon_owns_session_history() {
+            tracing::debug!(
+                session_id = %self.session_id,
+                "skipping session save; daemon owns session history"
+            );
+            return;
+        }
         // Skip persisting sessions with no chat content - avoids leaving
         // unused "New Session" entries in the panel when the REPL quits
         // before any message is sent (see the startup comment in
@@ -739,8 +785,16 @@ impl App {
             .collect();
         let lock = self.session_save_lock.clone();
         let exit_saved = self.session_exit_saved.clone();
+        let daemon_owns_history = self.daemon_owns_session_history.clone();
 
         let _guard = lock.lock().await;
+        if daemon_owns_history.load(std::sync::atomic::Ordering::Acquire) {
+            tracing::debug!(
+                session_id = %id,
+                "skipping session save after lock; daemon owns session history"
+            );
+            return;
+        }
         // Sanitize under the save lock so interrupt/exit never persist unpaired
         // tool_calls (idempotent when history is already well-formed).
         let h = {
@@ -772,6 +826,13 @@ impl App {
     /// If exit flush *timed out* without setting the flag, an in-flight spawn
     /// still writes (best-effort) rather than dropping the only remaining save.
     pub(super) fn spawn_save_session(&self) {
+        if self.daemon_owns_session_history() {
+            tracing::debug!(
+                session_id = %self.session_id,
+                "skipping spawned session save; daemon owns session history"
+            );
+            return;
+        }
         // Skip persisting sessions with no chat content - see
         // save_session_snapshot for rationale.
         if self.committed_messages.is_empty() {
@@ -792,8 +853,16 @@ impl App {
             .collect();
         let lock = self.session_save_lock.clone();
         let exit_saved = self.session_exit_saved.clone();
+        let daemon_owns_history = self.daemon_owns_session_history.clone();
         tokio::spawn(async move {
             let _guard = lock.lock().await;
+            if daemon_owns_history.load(std::sync::atomic::Ordering::Acquire) {
+                tracing::debug!(
+                    session_id = %id,
+                    "skipping spawned session save after lock; daemon owns session history"
+                );
+                return;
+            }
             if exit_saved.load(std::sync::atomic::Ordering::Acquire) {
                 tracing::debug!(
                     session_id = %id,

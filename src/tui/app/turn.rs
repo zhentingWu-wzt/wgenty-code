@@ -56,6 +56,7 @@ impl App {
     /// Server-side turn: POST /run and let the SSE reader render events.
     /// The daemon owns the loop (LLM + tools + history); TUI only observes.
     pub(super) fn start_server_side_run(&mut self, input_text: String, hide_input: bool) {
+        self.mark_daemon_owned_session_history();
         if !hide_input {
             // Push user message optimistically for rendering (daemon owns history).
             self.committed_messages.push(UIMessage {
@@ -1096,6 +1097,96 @@ mod tests {
         if let Some(handle) = app.trace_event_reader.take() {
             handle.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn exit_snapshot_after_background_notice_does_not_put_stale_history() {
+        let (message_tx, _message_rx) = tokio::sync::mpsc::unbounded_channel();
+        let capture = RunCapture {
+            messages: message_tx,
+            post_attempts: Arc::new(AtomicUsize::new(0)),
+            put_attempts: Arc::new(AtomicUsize::new(0)),
+            persisted_messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
+        let router = Router::new()
+            .route("/api/v1/sessions/:id", put(accept_session_save))
+            .with_state(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind exit-save capture server");
+        let address = listener
+            .local_addr()
+            .expect("read exit-save capture address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve exit-save capture server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "test-interrupt".to_string(),
+            settings,
+        );
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+        app.save_session_snapshot().await;
+
+        assert_eq!(
+            capture.put_attempts.load(Ordering::SeqCst),
+            0,
+            "an observer must not overwrite daemon-owned continuation history on exit"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn queued_local_save_is_dropped_after_daemon_takes_history_ownership() {
+        let (message_tx, _message_rx) = tokio::sync::mpsc::unbounded_channel();
+        let capture = RunCapture {
+            messages: message_tx,
+            post_attempts: Arc::new(AtomicUsize::new(0)),
+            put_attempts: Arc::new(AtomicUsize::new(0)),
+            persisted_messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
+        let router = Router::new()
+            .route("/api/v1/sessions/:id", put(accept_session_save))
+            .with_state(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind queued-save capture server");
+        let address = listener
+            .local_addr()
+            .expect("read queued-save capture address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve queued-save capture server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "test-interrupt".to_string(),
+            settings,
+        );
+        app.push_system_message("local snapshot queued before background completion");
+
+        let save_lock = app.session_save_lock.clone();
+        let save_guard = save_lock.lock().await;
+        app.spawn_save_session();
+        tokio::task::yield_now().await;
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+        drop(save_guard);
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(
+            capture.put_attempts.load(Ordering::SeqCst),
+            0,
+            "a queued local save must recheck daemon ownership after acquiring the lock"
+        );
+        server.abort();
     }
 
     #[tokio::test]
