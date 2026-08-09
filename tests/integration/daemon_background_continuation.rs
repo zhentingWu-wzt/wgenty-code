@@ -144,6 +144,18 @@ async fn busy_run_final_save_precedes_background_continuation() {
     .expect("continuation JSON");
     assert_eq!(continuation["type"], "background_task_results");
     assert_eq!(continuation["results"][0]["task_id"], "bg_1");
+    assert!(daemon
+        .state
+        .background_results_snapshot_for_session(&session_id)
+        .await
+        .is_empty());
+    assert!(
+        !daemon
+            .state
+            .record_background_result(result_for(&session_id))
+            .await,
+        "start-save ack installs a tombstone before model execution"
+    );
 
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while daemon.state.session_runs.is_active(&session_id) {
