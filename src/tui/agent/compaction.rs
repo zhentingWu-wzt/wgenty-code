@@ -5,6 +5,7 @@
 
 use super::AgentLoop;
 use crate::api::ChatMessage;
+use crate::tools::execution::BackgroundResult;
 
 impl AgentLoop {
     pub(super) async fn inject_background_results(&mut self) {
@@ -13,8 +14,8 @@ impl AgentLoop {
                 // Subagent results arrive through task-group continuation turns.
                 // Only command background results are injected here.
                 let mut delivered = self.delivered_background_task_ids.lock().await;
-                let notification: String = results
-                    .iter()
+                let recovered = results
+                    .into_iter()
                     .filter_map(|r| {
                         // Retained results are global; only this loop's session
                         // may recover them. Missing ids are legacy/unowned data.
@@ -25,32 +26,33 @@ impl AgentLoop {
                         if result_type == "subagent" {
                             return None;
                         }
-                        let task_id = r["task_id"].as_str()?;
-                        if !delivered.insert(task_id.to_string()) {
+                        let result: BackgroundResult = serde_json::from_value(r).ok()?;
+                        let model_payload = serde_json::to_string(&result).ok()?;
+                        if !delivered.insert(result.task_id.clone()) {
                             return None;
                         }
-                        let success = r["success"].as_bool().unwrap_or(false);
-                        Some(format!(
-                            "[Background task {} completed: {}]",
-                            task_id,
-                            if success { "SUCCESS" } else { "FAILED" }
-                        ))
+                        Some((result, model_payload))
                     })
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
+                    .collect::<Vec<_>>();
                 drop(delivered);
-                if notification.is_empty() {
+                if recovered.is_empty() {
                     return;
                 }
                 {
                     let mut history = self.conversation_history.lock().await;
-                    history.push(ChatMessage::user(notification.clone()));
+                    history.extend(
+                        recovered
+                            .iter()
+                            .map(|(_, model_payload)| ChatMessage::user(model_payload)),
+                    );
                 }
-                let _ = self
-                    .event_tx
-                    .send(crate::tui::app::types::AppEvent::BackgroundTaskResult(
-                        notification,
-                    ));
+                for (result, _) in recovered {
+                    let _ =
+                        self.event_tx
+                            .send(crate::tui::app::types::AppEvent::BackgroundTaskResult(
+                                result.format_completion_notification(),
+                            ));
+                }
             }
             _ => {}
         }
@@ -75,10 +77,10 @@ mod tests {
     async fn retained_background_results() -> Json<serde_json::Value> {
         Json(serde_json::json!({
             "results": [
-                {"task_id": "bg_a", "session_id": "session-a", "result_type": "command", "success": true},
-                {"task_id": "bg_seen", "session_id": "session-a", "result_type": "command", "success": true},
-                {"task_id": "bg_b", "session_id": "session-b", "result_type": "command", "success": true},
-                {"task_id": "bg_legacy", "result_type": "command", "success": true}
+                {"task_id": "bg_a", "session_id": "session-a", "result_type": "command", "command": "printf recovered", "stdout": "recovered output", "stderr": "warning detail", "exit_code": 7, "success": false, "sandbox_bypassed": false, "permission_mode": "normal", "sandbox_level": "standard"},
+                {"task_id": "bg_seen", "session_id": "session-a", "result_type": "command", "command": "true", "stdout": "", "stderr": "", "exit_code": 0, "success": true},
+                {"task_id": "bg_b", "session_id": "session-b", "result_type": "command", "command": "true", "stdout": "", "stderr": "", "exit_code": 0, "success": true},
+                {"task_id": "bg_legacy", "result_type": "command", "command": "true", "stdout": "", "stderr": "", "exit_code": 0, "success": true}
             ]
         }))
     }
@@ -133,6 +135,7 @@ mod tests {
         );
 
         agent.inject_background_results().await;
+        agent.inject_background_results().await;
 
         let notifications = match event_rx.recv().await {
             Some(AppEvent::BackgroundTaskResult(notification)) => vec![notification],
@@ -140,14 +143,20 @@ mod tests {
         };
         assert_eq!(
             notifications,
-            vec!["[Background task bg_a completed: SUCCESS]"]
+            vec!["[Background task bg_a completed: FAILED]\ncommand: printf recovered\nexit code: 7\nstdout:\nrecovered output\nstderr:\nwarning detail"]
+        );
+        assert!(
+            event_rx.try_recv().is_err(),
+            "recovery displays each result once"
         );
         assert!(seen.lock().await.contains("bg_a"));
         let injected = history.lock().await;
         assert_eq!(injected.len(), 1);
         assert_eq!(
             injected[0].content.as_deref(),
-            Some("[Background task bg_a completed: SUCCESS]")
+            Some(
+                r#"{"task_id":"bg_a","session_id":"session-a","result_type":"command","command":"printf recovered","stdout":"recovered output","stderr":"warning detail","exit_code":7,"success":false,"sandbox_bypassed":false,"permission_mode":"normal","sandbox_level":"standard"}"#
+            )
         );
 
         server.abort();

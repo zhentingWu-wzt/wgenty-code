@@ -15,6 +15,9 @@ use crate::tui::util::truncate_session_name;
 impl App {
     /// Start the next pending turn (if any).
     pub(super) fn start_next_turn(&mut self) {
+        if self.has_running_turn() {
+            return;
+        }
         if let Some(pending) = self.pending_inputs.pop_front() {
             if pending.is_continuation() {
                 // Synthetic continuation: inject the delivered child results
@@ -127,10 +130,10 @@ impl App {
                     // events into the UI as the daemon-owned run progresses.
                 }
                 Err(e) => {
-                    let _ = tx.send(AppEvent::StreamError(format!(
-                        "server-side run failed: {e}"
-                    )));
-                    let _ = tx.send(AppEvent::TurnComplete);
+                    super::server_side::send_stream_termination(
+                        &tx,
+                        format!("server-side run failed: {e}"),
+                    );
                 }
             }
         });
@@ -975,6 +978,13 @@ mod tests {
                 && message.content
                     == "[Background task bg_a completed: SUCCESS]\ncommand: true\nexit code: 0\nstdout:\ndone\nstderr:\n"
         }));
+        assert!(
+            !app.delivered_background_task_ids
+                .lock()
+                .await
+                .contains("bg_a"),
+            "a busy live result remains recoverable by the next model turn"
+        );
 
         app.current_turn_handle
             .take()
@@ -1030,6 +1040,50 @@ mod tests {
         if let Some(handle) = app.trace_event_reader.take() {
             handle.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn queued_input_does_not_start_while_server_side_turn_is_active() {
+        let mut app = build_app();
+        app.server_side_turn_active = true;
+
+        app.submit_input("queued user input".to_string());
+
+        assert_eq!(app.pending_inputs.len(), 1);
+        assert!(app.current_turn_handle.is_none());
+        assert!(app.server_side_turn_active);
+    }
+
+    #[tokio::test]
+    async fn start_next_turn_obeys_server_side_running_gate() {
+        let mut app = build_app();
+        app.server_side_turn_active = true;
+        app.pending_inputs
+            .push_back(PendingInput::new("queued".to_string()));
+
+        app.start_next_turn();
+
+        assert_eq!(app.pending_inputs.len(), 1);
+        assert!(app.current_turn_handle.is_none());
+    }
+
+    #[tokio::test]
+    async fn server_terminal_event_releases_gate_and_starts_queued_input() {
+        let mut app = build_app();
+        app.server_side_turn_active = true;
+        app.pending_inputs
+            .push_back(PendingInput::new("queued".to_string()));
+
+        app.handle_event(AppEvent::ServerTurnTerminated).await;
+
+        assert!(!app.server_side_turn_active);
+        assert!(app.current_turn_handle.is_some());
+        assert!(app.pending_inputs.is_empty());
+
+        app.current_turn_handle
+            .take()
+            .expect("queued turn starts after terminal event")
+            .abort();
     }
 
     #[tokio::test]
