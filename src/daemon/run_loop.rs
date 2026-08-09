@@ -789,9 +789,29 @@ impl RunRegistry {
         }
     }
 
-    /// Signal cancellation. The claim itself is released by the run task's
-    /// `finish` after its final save, so the final save always wins over a
-    /// new run. Returns false when no run is active.
+    /// Atomically replace the finishing owner's claim with a continuation.
+    /// A stale completion can never replace a newer run.
+    fn handoff(
+        &self,
+        session_id: &str,
+        finished_run_id: &str,
+        next: SessionRun,
+    ) -> Result<(), SessionRun> {
+        let mut runs = self.inner.write().expect("session_runs lock poisoned");
+        if runs
+            .get(session_id)
+            .is_some_and(|run| run.run_id == finished_run_id)
+        {
+            runs.insert(session_id.to_string(), next);
+            Ok(())
+        } else {
+            Err(next)
+        }
+    }
+
+    /// Signal cancellation. The claim itself is released or handed off by the
+    /// scheduler after the run task's final save, so that save always wins
+    /// over a new run. Returns false when no run is active.
     pub fn cancel(&self, session_id: &str) -> bool {
         let runs = self.inner.read().expect("session_runs lock poisoned");
         match runs.get(session_id) {
@@ -810,24 +830,181 @@ impl RunRegistry {
             .expect("session_runs lock poisoned")
             .contains_key(session_id)
     }
+
+    #[cfg(test)]
+    fn active_run_id(&self, session_id: &str) -> Option<String> {
+        self.inner
+            .read()
+            .expect("session_runs lock poisoned")
+            .get(session_id)
+            .map(|run| run.run_id.clone())
+    }
 }
 
-/// Releases the session's run claim on drop. Instantiated at the top of the
-/// spawned run task so EVERY exit path — normal return, error, cancel, and
-/// panic/unwind — releases the claim; without it a panicking turn would leak
-/// the claim (409 on every future run/update until daemon restart). Drop
-/// delegates to [`RunRegistry::finish`], so the run_id ownership check still
-/// applies (a stale guard can never release a newer run's claim).
+/// Serialized inputs to the daemon-owned continuation scheduler.
+#[derive(Debug)]
+pub(crate) enum BackgroundSchedulerEvent {
+    ResultReady { session_id: String },
+    RunFinished { session_id: String, run_id: String },
+}
+
+struct BackgroundContinuation {
+    session_id: String,
+    run_id: String,
+    cancel: CancellationToken,
+    message: String,
+}
+
+/// Completes the session's run claim on drop. With a live scheduler it queues
+/// `RunFinished`, allowing an atomic handoff to pending background results;
+/// without one it releases directly through [`RunRegistry::finish`]. Every
+/// exit path — normal return, error, cancel, and panic/unwind — therefore
+/// avoids leaking the claim, and the run-id ownership check prevents a stale
+/// guard from releasing or replacing a newer run.
 struct RunClaimGuard {
     registry: RunRegistry,
     session_id: String,
     run_id: String,
+    completion_tx: Option<mpsc::UnboundedSender<BackgroundSchedulerEvent>>,
 }
 
 impl Drop for RunClaimGuard {
     fn drop(&mut self) {
+        if self.completion_tx.as_ref().is_some_and(|tx| {
+            tx.send(BackgroundSchedulerEvent::RunFinished {
+                session_id: self.session_id.clone(),
+                run_id: self.run_id.clone(),
+            })
+            .is_ok()
+        }) {
+            return;
+        }
         self.registry.finish(&self.session_id, &self.run_id);
     }
+}
+
+async fn run_under_claim<F>(claim: RunClaimGuard, turn: F)
+where
+    F: std::future::Future<Output = ()>,
+{
+    let _claim = claim;
+    turn.await;
+}
+
+fn structured_background_continuation(
+    results: &[crate::tools::execution::background::BackgroundResult],
+) -> String {
+    serde_json::json!({
+        "type": "background_task_results",
+        "results": results,
+    })
+    .to_string()
+}
+
+/// Claim and drain one scheduler event. `RunFinished` is emitted only after
+/// `run_session_turn` returns, so a handoff can occur only after final save.
+async fn prepare_background_continuation(
+    state: &Arc<DaemonState>,
+    event: BackgroundSchedulerEvent,
+) -> Option<BackgroundContinuation> {
+    let (session_id, finished_run_id) = match event {
+        BackgroundSchedulerEvent::ResultReady { session_id } => (session_id, None),
+        BackgroundSchedulerEvent::RunFinished { session_id, run_id } => (session_id, Some(run_id)),
+    };
+
+    // A forged/stale session id is retained for legacy recovery but cannot
+    // acquire a run claim or consume model history.
+    if state.resolve_session(&session_id).await.is_none() {
+        if let Some(run_id) = finished_run_id {
+            state.session_runs.finish(&session_id, &run_id);
+        }
+        return None;
+    }
+
+    if !state.has_pending_background_results(&session_id).await {
+        if let Some(run_id) = finished_run_id {
+            state.session_runs.finish(&session_id, &run_id);
+        }
+        return None;
+    }
+
+    let run_id = Uuid::new_v4().to_string();
+    let cancel = CancellationToken::new();
+    let next_run = SessionRun {
+        run_id: run_id.clone(),
+        cancel: cancel.clone(),
+        started_at: Instant::now(),
+    };
+    let claimed = match finished_run_id {
+        Some(finished_run_id) => state
+            .session_runs
+            .handoff(&session_id, &finished_run_id, next_run)
+            .is_ok(),
+        None => state.session_runs.claim(&session_id, next_run).is_ok(),
+    };
+    if !claimed {
+        return None;
+    }
+
+    let results = state
+        .drain_background_results_for_session(&session_id)
+        .await;
+    if results.is_empty() {
+        state.session_runs.finish(&session_id, &run_id);
+        return None;
+    }
+    Some(BackgroundContinuation {
+        session_id,
+        run_id,
+        cancel,
+        message: structured_background_continuation(&results),
+    })
+}
+
+fn spawn_claimed_session_turn(
+    state: Arc<DaemonState>,
+    session_id: String,
+    run_id: String,
+    message: String,
+    plan_mode: bool,
+    cancel: CancellationToken,
+) {
+    tokio::spawn(async move {
+        let claim = RunClaimGuard {
+            registry: state.session_runs.clone(),
+            session_id: session_id.clone(),
+            run_id: run_id.clone(),
+            completion_tx: state.background_scheduler_sender(),
+        };
+        run_under_claim(
+            claim,
+            run_session_turn(&state, &session_id, &run_id, message, plan_mode, cancel),
+        )
+        .await;
+    });
+}
+
+pub(crate) fn spawn_background_continuation_scheduler(
+    state: std::sync::Weak<DaemonState>,
+    mut events: mpsc::UnboundedReceiver<BackgroundSchedulerEvent>,
+) {
+    tokio::spawn(async move {
+        while let Some(event) = events.recv().await {
+            let Some(state) = state.upgrade() else {
+                break;
+            };
+            if let Some(continuation) = prepare_background_continuation(&state, event).await {
+                spawn_claimed_session_turn(
+                    state,
+                    continuation.session_id,
+                    continuation.run_id,
+                    continuation.message,
+                    false,
+                    continuation.cancel,
+                );
+            }
+        }
+    });
 }
 
 #[derive(Debug, Deserialize)]
@@ -874,26 +1051,14 @@ pub(crate) async fn post_run(
     };
     state.session_runs.claim(&id, run)?;
 
-    let task_state = Arc::clone(&state);
-    let task_session = id.clone();
-    let task_run = run_id.clone();
-    tokio::spawn(async move {
-        // Drop guard releases the claim on every exit path, including panic.
-        let _claim = RunClaimGuard {
-            registry: task_state.session_runs.clone(),
-            session_id: task_session.clone(),
-            run_id: task_run.clone(),
-        };
-        run_session_turn(
-            &task_state,
-            &task_session,
-            &task_run,
-            body.message,
-            body.plan_mode,
-            cancel,
-        )
-        .await;
-    });
+    spawn_claimed_session_turn(
+        Arc::clone(&state),
+        id.clone(),
+        run_id.clone(),
+        body.message,
+        body.plan_mode,
+        cancel,
+    );
 
     Ok((
         StatusCode::ACCEPTED,
@@ -1920,6 +2085,41 @@ mod tests {
         }
     }
 
+    fn background_result(
+        task_id: &str,
+        session_id: &str,
+    ) -> crate::tools::execution::background::BackgroundResult {
+        crate::tools::execution::background::BackgroundResult {
+            task_id: task_id.to_string(),
+            session_id: Some(session_id.to_string()),
+            result_type: "command".to_string(),
+            command: format!("run {task_id}"),
+            stdout: format!("output {task_id}"),
+            stderr: String::new(),
+            exit_code: Some(0),
+            success: true,
+            sandbox_bypassed: false,
+            permission_mode: None,
+            sandbox_level: None,
+        }
+    }
+
+    async fn continuation_test_state() -> Arc<DaemonState> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut settings = crate::config::Settings::default();
+        settings.storage.working_dir = temp.keep();
+        let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
+        state
+            .session_manager
+            .save(&crate::context::memory_session::Session::with_id(
+                "session-a".to_string(),
+                None,
+            ))
+            .await
+            .expect("save test session");
+        state
+    }
+
     #[test]
     fn claim_rejects_second_run() {
         let registry = RunRegistry::new();
@@ -1957,6 +2157,144 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn idle_result_claims_continuation_and_drains_structured_batch() {
+        let state = continuation_test_state().await;
+        state
+            .record_background_result(background_result("bg_1", "session-a"))
+            .await;
+        state
+            .record_background_result(background_result("bg_2", "session-a"))
+            .await;
+
+        let continuation = prepare_background_continuation(
+            &state,
+            BackgroundSchedulerEvent::ResultReady {
+                session_id: "session-a".to_string(),
+            },
+        )
+        .await
+        .expect("idle session should claim a continuation");
+
+        assert!(state.session_runs.is_active("session-a"));
+        assert!(state
+            .background_results_snapshot_for_session("session-a")
+            .await
+            .is_empty());
+        let payload: serde_json::Value =
+            serde_json::from_str(&continuation.message).expect("structured continuation JSON");
+        assert_eq!(payload["type"], "background_task_results");
+        assert_eq!(payload["results"][0]["task_id"], "bg_1");
+        assert_eq!(payload["results"][1]["task_id"], "bg_2");
+    }
+
+    #[tokio::test]
+    async fn busy_result_waits_until_run_finished_before_handoff() {
+        let state = continuation_test_state().await;
+        state
+            .session_runs
+            .claim("session-a", test_run("foreground"))
+            .expect("foreground claim");
+        state
+            .record_background_result(background_result("bg_1", "session-a"))
+            .await;
+
+        let while_busy = prepare_background_continuation(
+            &state,
+            BackgroundSchedulerEvent::ResultReady {
+                session_id: "session-a".to_string(),
+            },
+        )
+        .await;
+        assert!(
+            while_busy.is_none(),
+            "busy session must leave inbox pending"
+        );
+        assert_eq!(
+            state
+                .background_results_snapshot_for_session("session-a")
+                .await
+                .len(),
+            1
+        );
+
+        let continuation = prepare_background_continuation(
+            &state,
+            BackgroundSchedulerEvent::RunFinished {
+                session_id: "session-a".to_string(),
+                run_id: "foreground".to_string(),
+            },
+        )
+        .await
+        .expect("finishing owner should hand off to pending continuation");
+        assert_ne!(continuation.run_id, "foreground");
+        assert_eq!(
+            state.session_runs.active_run_id("session-a").as_deref(),
+            Some(continuation.run_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_run_hands_off_with_a_fresh_cancellation_token() {
+        let state = continuation_test_state().await;
+        let foreground = test_run("foreground");
+        let foreground_cancel = foreground.cancel.clone();
+        state
+            .session_runs
+            .claim("session-a", foreground)
+            .expect("foreground claim");
+        state
+            .record_background_result(background_result("bg_1", "session-a"))
+            .await;
+
+        assert!(state.session_runs.cancel("session-a"));
+        assert!(foreground_cancel.is_cancelled());
+        let continuation = prepare_background_continuation(
+            &state,
+            BackgroundSchedulerEvent::RunFinished {
+                session_id: "session-a".to_string(),
+                run_id: "foreground".to_string(),
+            },
+        )
+        .await
+        .expect("cancelled run should schedule retained results after completion");
+
+        assert!(!continuation.cancel.is_cancelled());
+        assert_eq!(
+            state.session_runs.active_run_id("session-a").as_deref(),
+            Some(continuation.run_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduler_sees_run_finished_only_after_turn_future_completes() {
+        let registry = RunRegistry::new();
+        registry
+            .claim("session-a", test_run("foreground"))
+            .expect("foreground claim");
+        let (completion_tx, mut completion_rx) = mpsc::unbounded_channel();
+        let final_save_complete = Arc::new(AtomicBool::new(false));
+        let save_flag = Arc::clone(&final_save_complete);
+        let guard = RunClaimGuard {
+            registry,
+            session_id: "session-a".to_string(),
+            run_id: "foreground".to_string(),
+            completion_tx: Some(completion_tx),
+        };
+
+        run_under_claim(guard, async move {
+            save_flag.store(true, Ordering::SeqCst);
+        })
+        .await;
+
+        let event = completion_rx.recv().await.expect("run-finished event");
+        assert!(final_save_complete.load(Ordering::SeqCst));
+        assert!(matches!(
+            event,
+            BackgroundSchedulerEvent::RunFinished { run_id, .. } if run_id == "foreground"
+        ));
+    }
+
+    #[tokio::test]
     async fn panic_releases_claim_via_drop_guard() {
         let registry = RunRegistry::new();
         registry.claim("s1", test_run("r1")).unwrap();
@@ -1969,6 +2307,7 @@ mod tests {
                 registry: guard_registry,
                 session_id: "s1".to_string(),
                 run_id: "r1".to_string(),
+                completion_tx: None,
             };
             panic!("simulated turn panic");
         });
