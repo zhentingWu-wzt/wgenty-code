@@ -55,6 +55,7 @@ pub(crate) fn agent_routes() -> Router<Arc<DaemonState>> {
 
 /// Return `(health_router, protected_router)` so callers can layer differently.
 pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Router) {
+    state.start_background_continuation_scheduler();
     let health = Router::new()
         .route("/api/v1/health", get(handlers::health))
         // Thin-client heartbeat (SSE keepalive); daemon tracks connected
