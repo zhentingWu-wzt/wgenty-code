@@ -1037,9 +1037,16 @@ impl App {
                     return;
                 }
                 let notification = format!(
-                    "[Background task {} completed: {}]",
+                    "[Background task {} completed: {}]\ncommand: {}\nexit code: {}\nstdout:\n{}\nstderr:\n{}",
                     result.task_id,
-                    if result.success { "SUCCESS" } else { "FAILED" }
+                    if result.success { "SUCCESS" } else { "FAILED" },
+                    result.command,
+                    result
+                        .exit_code
+                        .map(|code| code.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    result.stdout,
+                    result.stderr,
                 );
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::System,
