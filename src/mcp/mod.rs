@@ -406,7 +406,7 @@ impl McpManager {
     }
 }
 
-fn build_tool_proxies(
+pub(crate) fn build_tool_proxies(
     server_name: &str,
     tools: Vec<McpRemoteTool>,
     caller: Arc<dyn McpToolCaller>,
