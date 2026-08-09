@@ -52,7 +52,6 @@ impl App {
             let old_id = self.session_id.clone();
             let old_name = self.session_name.clone();
             let cancel_server_run = self.server_side_turn_active;
-            let interrupted_background_result = self.server_background_claim_result.clone();
             let previous_suppress_phase_updates = self.suppress_phase_updates;
             let old_ui_messages: Vec<_> = self
                 .committed_messages
@@ -67,10 +66,6 @@ impl App {
             self.scroll_offset = 0;
             self.user_scrolled = false;
             self.sandbox_bypassed_session = false;
-            self.delivered_background_task_ids =
-                std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
-            self.displayed_background_task_ids =
-                std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
             self.cancel_current_turn();
             // Keep a daemon-owned run gated until the async phase confirms
             // cancellation and emits the explicit reset/adoption event.
@@ -117,7 +112,6 @@ impl App {
                             ui_messages: old_ui_messages,
                         });
                         let _ = event_tx.send(AppEvent::SessionClearFailed {
-                            background_result: interrupted_background_result,
                             suppress_phase_updates: previous_suppress_phase_updates,
                         });
                         let _ = event_tx.send(AppEvent::SystemNotice(format!(
@@ -577,29 +571,9 @@ mod tests {
         }))
     }
 
-    fn claimed_background_result() -> crate::tools::execution::BackgroundResult {
-        crate::tools::execution::BackgroundResult {
-            task_id: "clear-claim".to_string(),
-            session_id: Some("active-session".to_string()),
-            result_type: "command".to_string(),
-            command: "true".to_string(),
-            stdout: "done".to_string(),
-            stderr: String::new(),
-            exit_code: Some(0),
-            success: true,
-            sandbox_bypassed: false,
-            permission_mode: None,
-            sandbox_level: None,
-        }
-    }
-
-    async fn assert_clear_cancels_and_adopts(background_continuation: bool) {
+    async fn assert_clear_cancels_and_adopts() {
         let capture = ClearCapture {
-            create_delay: if background_continuation {
-                Duration::from_millis(150)
-            } else {
-                Duration::default()
-            },
+            create_delay: Duration::default(),
             ..ClearCapture::default()
         };
         let router = Router::new()
@@ -635,16 +609,6 @@ mod tests {
         });
         app.server_side_loop = true;
         app.server_side_turn_active = true;
-        app.server_background_run_starting = background_continuation;
-        let claimant_completed = Arc::new(AtomicUsize::new(0));
-        if background_continuation {
-            app.server_background_claim_result = Some(claimed_background_result());
-            let completed = claimant_completed.clone();
-            app.server_background_claim_handle = Some(tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                completed.fetch_add(1, Ordering::SeqCst);
-            }));
-        }
 
         app.submit_input("/clear".to_string());
 
@@ -669,19 +633,13 @@ mod tests {
         );
         assert!(!app.server_side_turn_active);
         assert!(app.pending_inputs.is_empty());
-        assert_eq!(claimant_completed.load(Ordering::SeqCst), 0);
 
         server.abort();
     }
 
     #[tokio::test]
     async fn clear_cancels_active_server_run_and_adopts_created_session() {
-        assert_clear_cancels_and_adopts(false).await;
-    }
-
-    #[tokio::test]
-    async fn clear_cancels_background_continuation_and_adopts_created_session() {
-        assert_clear_cancels_and_adopts(true).await;
+        assert_clear_cancels_and_adopts().await;
     }
 
     #[tokio::test]
@@ -723,11 +681,6 @@ mod tests {
         });
         app.server_side_loop = true;
         app.server_side_turn_active = true;
-        app.server_background_run_starting = true;
-        app.server_background_claim_result = Some(claimed_background_result());
-        app.server_background_claim_handle = Some(tokio::spawn(async {
-            std::future::pending::<()>().await;
-        }));
 
         app.submit_input("/clear".to_string());
 
@@ -751,16 +704,7 @@ mod tests {
         assert_eq!(capture.cancellations.load(Ordering::SeqCst), 1);
         assert_eq!(capture.creations.load(Ordering::SeqCst), 0);
         assert!(app.server_side_turn_active);
-        assert_eq!(
-            app.pending_inputs
-                .front()
-                .and_then(|pending| pending.server_background_result.as_ref())
-                .map(|result| result.task_id.as_str()),
-            Some("clear-claim")
-        );
-        assert!(app
-            .pending_server_background_task_ids
-            .contains("clear-claim"));
+        assert!(app.pending_inputs.is_empty());
 
         server.abort();
     }

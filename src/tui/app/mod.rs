@@ -34,7 +34,7 @@ use crate::tui::components::turn_picker::TurnPickerState;
 use crate::tui::components::undo_scope_picker::UndoScopePickerState;
 use crossterm::event::EnableBracketedPaste;
 use ratatui::Terminal;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -50,11 +50,7 @@ use tokio::sync::RwLock;
 pub struct PendingInput {
     pub display_text: String,
     pub agent_input: String,
-    /// Do not render or use this synthetic input to name the session.
-    pub hidden: bool,
     pub continuation: Option<crate::tui::client::TaskGroupDeliveryResponse>,
-    /// Session-owned result awaiting acceptance by a daemon continuation.
-    pub server_background_result: Option<crate::tools::execution::BackgroundResult>,
 }
 
 impl PendingInput {
@@ -62,9 +58,7 @@ impl PendingInput {
         Self {
             display_text: text.clone(),
             agent_input: text,
-            hidden: false,
             continuation: None,
-            server_background_result: None,
         }
     }
 
@@ -72,9 +66,7 @@ impl PendingInput {
         Self {
             display_text,
             agent_input,
-            hidden: false,
             continuation: None,
-            server_background_result: None,
         }
     }
 
@@ -85,41 +77,7 @@ impl PendingInput {
         Self {
             display_text: String::new(),
             agent_input: String::new(),
-            hidden: true,
             continuation: Some(delivery),
-            server_background_result: None,
-        }
-    }
-
-    /// A daemon-delivered background task result that starts a model turn
-    /// without adding a synthetic user row to the transcript.
-    pub fn background_result(result: crate::tools::execution::BackgroundResult) -> Self {
-        let agent_input = match serde_json::to_string(&result) {
-            Ok(message) => message,
-            Err(error) => format!("[Failed to serialize background task result: {error}]"),
-        };
-        Self {
-            display_text: String::new(),
-            agent_input,
-            hidden: true,
-            continuation: None,
-            server_background_result: None,
-        }
-    }
-
-    /// A daemon continuation whose delivery is committed only after `/run`
-    /// accepts it. Keeping the result preserves retry and session ownership.
-    pub fn server_background_result(result: crate::tools::execution::BackgroundResult) -> Self {
-        let agent_input = match serde_json::to_string(&result) {
-            Ok(message) => message,
-            Err(error) => format!("[Failed to serialize background task result: {error}]"),
-        };
-        Self {
-            display_text: String::new(),
-            agent_input,
-            hidden: true,
-            continuation: None,
-            server_background_result: Some(result),
         }
     }
 
@@ -143,26 +101,6 @@ pub struct App {
     /// `cancel_current_turn`; cleared when a new turn starts.
     suppress_phase_updates: bool,
     pub session_id: String,
-    /// Completed background task IDs delivered within the active session.
-    /// Shared with each AgentLoop to deduplicate retained recovery and SSE.
-    pub(crate) delivered_background_task_ids: Arc<TokioMutex<HashSet<String>>>,
-    /// Completed background task IDs already rendered in the active session.
-    /// Kept separate from model delivery so a result that arrives during a
-    /// running turn remains eligible for retained snapshot recovery.
-    displayed_background_task_ids: Arc<TokioMutex<HashSet<String>>>,
-    /// Results reserved for an unaccepted daemon continuation. Unlike the
-    /// delivery ledger, this is synchronous so duplicate SSE events cannot
-    /// enqueue the same result while a retry is in flight.
-    pending_server_background_task_ids: HashSet<String>,
-    /// True while a hidden continuation is retrying `/run` and has not yet
-    /// been accepted. Disconnect lifecycle events must not release the run
-    /// gate during this window.
-    server_background_run_starting: bool,
-    /// A SyncLost recovery owns daemon cancellation until the session is
-    /// realigned. Duplicate control events must not start competing recovery.
-    server_session_realigning: bool,
-    server_background_claim_handle: Option<tokio::task::JoinHandle<()>>,
-    server_background_claim_result: Option<crate::tools::execution::BackgroundResult>,
     pub session_name: String,
     pub last_tool_name: Option<String>,
     pub last_abort_reason: Option<TurnAbortReason>,
@@ -557,13 +495,6 @@ impl App {
             phase: AgentPhase::Idle,
             suppress_phase_updates: false,
             session_id,
-            delivered_background_task_ids: Arc::new(TokioMutex::new(HashSet::new())),
-            displayed_background_task_ids: Arc::new(TokioMutex::new(HashSet::new())),
-            pending_server_background_task_ids: HashSet::new(),
-            server_background_run_starting: false,
-            server_session_realigning: false,
-            server_background_claim_handle: None,
-            server_background_claim_result: None,
             session_name: "New Session".to_string(),
             last_tool_name: None,
             last_abort_reason: None,
@@ -732,17 +663,6 @@ impl App {
     fn adopt_session_after_reset(&mut self, id: String, name: String) {
         self.session_id = id.clone();
         self.session_name = name;
-        self.delivered_background_task_ids =
-            Arc::new(TokioMutex::new(std::collections::HashSet::new()));
-        self.displayed_background_task_ids =
-            Arc::new(TokioMutex::new(std::collections::HashSet::new()));
-        self.pending_server_background_task_ids.clear();
-        self.server_background_run_starting = false;
-        self.server_session_realigning = false;
-        if let Some(handle) = self.server_background_claim_handle.take() {
-            handle.abort();
-        }
-        self.server_background_claim_result = None;
         self.server_side_turn_active = false;
         self.session_event_last_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
         self.respawn_session_event_reader(None);
