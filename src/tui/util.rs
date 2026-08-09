@@ -721,6 +721,7 @@ mod tests {
         // /clear 切换会话不改变 agent phase（仍为 Idle）
         assert_eq!(
             agent_phase_from_event(&AppEvent::SessionSwitched {
+                from_id: "old".into(),
                 id: "s1".into(),
                 name: "New Session".into()
             }),
