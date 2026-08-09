@@ -1038,6 +1038,29 @@ impl App {
                     tool_metadata: None,
                 });
             }
+            AppEvent::BackgroundTaskRecovered(result) => {
+                if result.session_id.as_deref() != Some(self.session_id.as_str()) {
+                    return;
+                }
+                if self
+                    .displayed_background_task_ids
+                    .lock()
+                    .await
+                    .insert(result.task_id.clone())
+                {
+                    self.committed_messages.push(UIMessage {
+                        role: MessageRole::System,
+                        content: result.format_completion_notification(),
+                        tool_name: None,
+                        tool_args: None,
+                        content_collapsed: false,
+                        tool_collapsed: false,
+                        tool_running: false,
+                        diff_data: None,
+                        tool_metadata: None,
+                    });
+                }
+            }
             AppEvent::BackgroundTaskCompleted(result) => {
                 if result.session_id.as_deref() != Some(self.session_id.as_str()) {
                     tracing::debug!(
@@ -1047,11 +1070,17 @@ impl App {
                     );
                     return;
                 }
-                let first_display = self
-                    .displayed_background_task_ids
+                let model_delivered = self
+                    .delivered_background_task_ids
                     .lock()
                     .await
-                    .insert(result.task_id.clone());
+                    .contains(&result.task_id);
+                let first_display = !model_delivered
+                    && self
+                        .displayed_background_task_ids
+                        .lock()
+                        .await
+                        .insert(result.task_id.clone());
                 if first_display {
                     let notification = result.format_completion_notification();
                     self.committed_messages.push(UIMessage {
@@ -1067,6 +1096,20 @@ impl App {
                     });
                 }
                 if self.has_running_turn() {
+                    // A local AgentLoop will recover retained results before
+                    // its next model call. A daemon-owned run has no such
+                    // snapshot hook, so reserve and queue the full payload for
+                    // a hidden `/run` after the active daemon turn terminates.
+                    if self.server_side_turn_active
+                        && self
+                            .delivered_background_task_ids
+                            .lock()
+                            .await
+                            .insert(result.task_id.clone())
+                    {
+                        self.pending_inputs
+                            .push_back(PendingInput::background_result(result));
+                    }
                     return;
                 }
                 if !self

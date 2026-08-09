@@ -886,6 +886,12 @@ mod tests {
     use crate::tools::execution::BackgroundResult;
     use crate::tui::app::PendingInput;
     use crate::tui::client::{CheckpointInfo, DaemonClient};
+    use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::response::sse::{Event, Sse};
+    use axum::routing::{get, post, put};
+    use axum::{Json, Router};
+    use std::convert::Infallible;
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
@@ -909,6 +915,36 @@ mod tests {
             permission_mode: None,
             sandbox_level: None,
         }
+    }
+
+    #[derive(Clone)]
+    struct RunCapture {
+        messages: tokio::sync::mpsc::UnboundedSender<String>,
+    }
+
+    async fn accept_session_save() -> StatusCode {
+        StatusCode::NO_CONTENT
+    }
+
+    async fn pending_sse() -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+        Sse::new(futures::stream::pending())
+    }
+
+    async fn capture_run(
+        State(capture): State<RunCapture>,
+        Json(body): Json<serde_json::Value>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        capture
+            .messages
+            .send(body["message"].as_str().unwrap_or_default().to_string())
+            .expect("run capture receiver remains open");
+        (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "run_id": "run-background-result",
+                "session_id": "test-interrupt"
+            })),
+        )
     }
 
     #[test]
@@ -1021,6 +1057,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_then_snapshot_recovery_displays_background_result_once() {
+        let mut app = build_app();
+        app.current_turn_handle = Some(tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }));
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+        app.handle_event(AppEvent::BackgroundTaskRecovered(background_result()))
+            .await;
+
+        let completion_messages = app
+            .committed_messages
+            .iter()
+            .filter(|message| message.content.contains("Background task bg_a completed"))
+            .count();
+        assert_eq!(completion_messages, 1);
+
+        app.current_turn_handle
+            .take()
+            .expect("running turn remains active")
+            .abort();
+    }
+
+    #[tokio::test]
+    async fn snapshot_then_live_delivery_displays_background_result_once() {
+        let mut app = build_app();
+        app.delivered_background_task_ids
+            .lock()
+            .await
+            .insert("bg_a".to_string());
+
+        app.handle_event(AppEvent::BackgroundTaskRecovered(background_result()))
+            .await;
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+
+        let completion_messages = app
+            .committed_messages
+            .iter()
+            .filter(|message| message.content.contains("Background task bg_a completed"))
+            .count();
+        assert_eq!(completion_messages, 1);
+        assert!(app.current_turn_handle.is_none());
+        assert!(app.pending_inputs.is_empty());
+    }
+
+    #[tokio::test]
     async fn server_side_background_result_marks_the_continuation_as_running() {
         let mut app = build_app();
         app.server_side_loop = true;
@@ -1040,6 +1124,82 @@ mod tests {
         if let Some(handle) = app.trace_event_reader.take() {
             handle.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn busy_server_side_result_reaches_next_daemon_run_once() {
+        let (message_tx, mut message_rx) = tokio::sync::mpsc::unbounded_channel();
+        let router = Router::new()
+            .route("/api/v1/sessions/:id", put(accept_session_save))
+            .route("/api/v1/sessions/:id/events", get(pending_sse))
+            .route("/api/v1/sessions/:id/run", post(capture_run))
+            .route("/api/v1/subagents/trace/stream", get(pending_sse))
+            .with_state(RunCapture {
+                messages: message_tx,
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind daemon-run capture server");
+        let address = listener
+            .local_addr()
+            .expect("read daemon-run capture address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve daemon-run capture server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "test-interrupt".to_string(),
+            settings,
+        );
+        app.server_side_loop = true;
+        app.server_side_turn_active = true;
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+
+        assert_eq!(
+            app.pending_inputs.len(),
+            1,
+            "busy daemon result waits behind the active run"
+        );
+        assert!(
+            app.delivered_background_task_ids
+                .lock()
+                .await
+                .contains("bg_a"),
+            "queued result is reserved for exactly one model turn"
+        );
+
+        app.handle_event(AppEvent::TurnComplete).await;
+
+        let posted_message = tokio::time::timeout(Duration::from_secs(2), message_rx.recv())
+            .await
+            .expect("next daemon run should be posted")
+            .expect("run capture channel remains open");
+        assert_eq!(
+            posted_message,
+            r#"{"task_id":"bg_a","session_id":"test-interrupt","result_type":"command","command":"true","stdout":"done","stderr":"","exit_code":0,"success":true,"sandbox_bypassed":false,"permission_mode":null,"sandbox_level":null}"#
+        );
+        assert!(app.pending_inputs.is_empty());
+        assert!(app.server_side_turn_active);
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+        assert!(
+            app.pending_inputs.is_empty(),
+            "duplicate SSE does not enqueue a second model turn"
+        );
+
+        if let Some(handle) = app.session_event_reader.take() {
+            handle.abort();
+        }
+        if let Some(handle) = app.trace_event_reader.take() {
+            handle.abort();
+        }
+        server.abort();
     }
 
     #[tokio::test]

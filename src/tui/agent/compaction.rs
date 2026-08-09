@@ -47,11 +47,9 @@ impl AgentLoop {
                     );
                 }
                 for (result, _) in recovered {
-                    let _ =
-                        self.event_tx
-                            .send(crate::tui::app::types::AppEvent::BackgroundTaskResult(
-                                result.format_completion_notification(),
-                            ));
+                    let _ = self.event_tx.send(
+                        crate::tui::app::types::AppEvent::BackgroundTaskRecovered(result),
+                    );
                 }
             }
             _ => {}
@@ -138,7 +136,9 @@ mod tests {
         agent.inject_background_results().await;
 
         let notifications = match event_rx.recv().await {
-            Some(AppEvent::BackgroundTaskResult(notification)) => vec![notification],
+            Some(AppEvent::BackgroundTaskRecovered(result)) => {
+                vec![result.format_completion_notification()]
+            }
             event => panic!("expected background notification, got {event:?}"),
         };
         assert_eq!(

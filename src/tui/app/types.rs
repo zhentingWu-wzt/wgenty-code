@@ -427,6 +427,9 @@ pub enum AppEvent {
     },
     /// Background task/subagent result notification for display in chat.
     BackgroundTaskResult(String),
+    /// A retained background command result already injected into model
+    /// history. Carries identity so display deduplication is shared with SSE.
+    BackgroundTaskRecovered(crate::tools::execution::BackgroundResult),
     /// A completed daemon-owned background command scoped to this session.
     BackgroundTaskCompleted(crate::tools::execution::BackgroundResult),
     /// `/clear` created a new session; the main loop adopts the new id/name.
