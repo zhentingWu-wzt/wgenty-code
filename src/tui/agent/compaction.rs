@@ -12,14 +12,23 @@ impl AgentLoop {
             Ok(results) if !results.is_empty() => {
                 // Subagent results arrive through task-group continuation turns.
                 // Only command background results are injected here.
+                let mut delivered = self.delivered_background_task_ids.lock().await;
                 let notification: String = results
                     .iter()
                     .filter_map(|r| {
+                        // Retained results are global; only this loop's session
+                        // may recover them. Missing ids are legacy/unowned data.
+                        if r["session_id"].as_str() != Some(self.session_id.as_str()) {
+                            return None;
+                        }
                         let result_type = r["result_type"].as_str().unwrap_or("command");
                         if result_type == "subagent" {
                             return None;
                         }
-                        let task_id = r["task_id"].as_str().unwrap_or("unknown");
+                        let task_id = r["task_id"].as_str()?;
+                        if !delivered.insert(task_id.to_string()) {
+                            return None;
+                        }
                         let success = r["success"].as_bool().unwrap_or(false);
                         Some(format!(
                             "[Background task {} completed: {}]",
@@ -29,6 +38,7 @@ impl AgentLoop {
                     })
                     .collect::<Vec<_>>()
                     .join("\n\n");
+                drop(delivered);
                 if notification.is_empty() {
                     return;
                 }
@@ -49,9 +59,99 @@ impl AgentLoop {
 
 #[cfg(test)]
 mod tests {
+    use super::AgentLoop;
     // Prompt/parse checks that used to live next to do_auto_compact remain useful
     // as documentation of the summary JSON contract used by TuiCompactor.
     use crate::api::ChatMessage;
+    use crate::context::MemoryManager;
+    use crate::runtime::hooks::HookManager;
+    use crate::tui::app::AppEvent;
+    use crate::tui::client::DaemonClient;
+    use axum::routing::get;
+    use axum::{Json, Router};
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    async fn retained_background_results() -> Json<serde_json::Value> {
+        Json(serde_json::json!({
+            "results": [
+                {"task_id": "bg_a", "session_id": "session-a", "result_type": "command", "success": true},
+                {"task_id": "bg_seen", "session_id": "session-a", "result_type": "command", "success": true},
+                {"task_id": "bg_b", "session_id": "session-b", "result_type": "command", "success": true},
+                {"task_id": "bg_legacy", "result_type": "command", "success": true}
+            ]
+        }))
+    }
+
+    #[tokio::test]
+    async fn recovery_injects_only_unseen_results_for_the_active_session() {
+        let app = Router::new().route(
+            "/api/v1/background/results",
+            get(retained_background_results),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind retained-results test server");
+        let address = listener
+            .local_addr()
+            .expect("read retained-results test server address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve retained-results test server");
+        });
+
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let history = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let seen = Arc::new(tokio::sync::Mutex::new(HashSet::from([
+            "bg_seen".to_string()
+        ])));
+        let tmp = tempfile::TempDir::new_in(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target"),
+        )
+        .expect("create memory tempdir");
+        let mut agent = AgentLoop::new(
+            DaemonClient::new(format!("http://{address}")),
+            event_tx,
+            "session-a".to_string(),
+            seen.clone(),
+            None,
+            history.clone(),
+            vec![],
+            false,
+            None,
+            100,
+            crate::api::token_counter::TokenCounter::new(),
+            Arc::new(HookManager::default()),
+            Arc::new(crate::prompts::PromptContext::new()),
+            1800,
+            200_000,
+            65_536,
+            Arc::new(MemoryManager::new(tmp.path().to_path_buf())),
+            0,
+            false,
+        );
+
+        agent.inject_background_results().await;
+
+        let notifications = match event_rx.recv().await {
+            Some(AppEvent::BackgroundTaskResult(notification)) => vec![notification],
+            event => panic!("expected background notification, got {event:?}"),
+        };
+        assert_eq!(
+            notifications,
+            vec!["[Background task bg_a completed: SUCCESS]"]
+        );
+        assert!(seen.lock().await.contains("bg_a"));
+        let injected = history.lock().await;
+        assert_eq!(injected.len(), 1);
+        assert_eq!(
+            injected[0].content.as_deref(),
+            Some("[Background task bg_a completed: SUCCESS]")
+        );
+
+        server.abort();
+    }
 
     #[test]
     fn test_compaction_prompt_includes_json_format() {

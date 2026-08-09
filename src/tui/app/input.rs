@@ -64,6 +64,8 @@ impl App {
             self.scroll_offset = 0;
             self.user_scrolled = false;
             self.sandbox_bypassed_session = false;
+            self.delivered_background_task_ids =
+                std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
             self.cancel_current_turn();
             // Reset phase immediately and suppress stale events from the
             // just-aborted turn so the status bar shows "Ready" instead of
