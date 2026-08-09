@@ -1220,6 +1220,9 @@ impl App {
             AppEvent::SessionSwitched { id, name } => {
                 let _ = self.adopt_active_session(id, name);
             }
+            AppEvent::SessionCleared { id, name } => {
+                self.adopt_session_after_reset(id, name);
+            }
             AppEvent::AgentGenerationReset { generation } => {
                 if generation == u64::MAX {
                     // Reset failed on the daemon: surface an actionable

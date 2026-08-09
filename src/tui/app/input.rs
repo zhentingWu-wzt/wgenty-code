@@ -51,6 +51,7 @@ impl App {
             // below because the tokio Mutex cannot be locked from this sync ctx.
             let old_id = self.session_id.clone();
             let old_name = self.session_name.clone();
+            let cancel_server_run = self.server_side_turn_active;
             let old_ui_messages: Vec<_> = self
                 .committed_messages
                 .iter()
@@ -69,6 +70,8 @@ impl App {
             self.displayed_background_task_ids =
                 std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
             self.cancel_current_turn();
+            // Keep a daemon-owned run gated until the async phase confirms
+            // cancellation and emits the explicit reset/adoption event.
             // Reset phase immediately and suppress stale events from the
             // just-aborted turn so the status bar shows "Ready" instead of
             // lingering on "Thinking". Cleared by the follow-up
@@ -93,8 +96,30 @@ impl App {
                     snapshot
                 };
 
-                // 1. Save the old session (best-effort).
-                if let Err(error) = client
+                // 1. Terminate daemon ownership before switching. A
+                // server-side run persists its own final history after
+                // cancellation, so a stale TUI PUT must not race that save.
+                if cancel_server_run {
+                    if let Err(error) = client.cancel_run(&old_id).await {
+                        tracing::warn!(
+                            session_id = %old_id,
+                            error = %error,
+                            "failed to cancel active server run during /clear"
+                        );
+                        {
+                            let mut current = history.lock().await;
+                            *current = old_history.clone();
+                        }
+                        let _ = event_tx.send(AppEvent::HistoryLoaded {
+                            messages: old_history,
+                            ui_messages: old_ui_messages,
+                        });
+                        let _ = event_tx.send(AppEvent::SystemNotice(format!(
+                            "⚠️ 无法取消当前会话，未创建新会话：{error}"
+                        )));
+                        return;
+                    }
+                } else if let Err(error) = client
                     .save_session(&old_id, &old_name, &old_history, &old_ui_messages)
                     .await
                 {
@@ -111,7 +136,7 @@ impl App {
                 // 2. Create a new session and switch.
                 match client.create_session(None).await {
                     Ok(resp) => {
-                        let _ = event_tx.send(AppEvent::SessionSwitched {
+                        let _ = event_tx.send(AppEvent::SessionCleared {
                             id: resp.id,
                             name: resp.name,
                         });
@@ -497,6 +522,192 @@ fn format_bang_output(output: &std::process::Output) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::watcher::SettingsHandle;
+    use crate::config::Settings;
+    use crate::tui::client::DaemonClient;
+    use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::routing::{post, put};
+    use axum::{Json, Router};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, RwLock};
+    use std::time::Duration;
+
+    #[derive(Clone, Default)]
+    struct ClearCapture {
+        cancellations: Arc<AtomicUsize>,
+        saves: Arc<AtomicUsize>,
+        creations: Arc<AtomicUsize>,
+        reject_cancel: bool,
+    }
+
+    async fn capture_cancel(State(capture): State<ClearCapture>) -> StatusCode {
+        capture.cancellations.fetch_add(1, Ordering::SeqCst);
+        if capture.reject_cancel {
+            StatusCode::INTERNAL_SERVER_ERROR
+        } else {
+            StatusCode::NO_CONTENT
+        }
+    }
+
+    async fn accept_save(State(capture): State<ClearCapture>) -> StatusCode {
+        capture.saves.fetch_add(1, Ordering::SeqCst);
+        StatusCode::NO_CONTENT
+    }
+
+    async fn create_cleared_session(
+        State(capture): State<ClearCapture>,
+    ) -> Json<serde_json::Value> {
+        capture.creations.fetch_add(1, Ordering::SeqCst);
+        Json(serde_json::json!({
+            "id": "cleared-session",
+            "name": "New Session",
+            "created_at": "",
+            "updated_at": "",
+            "messages": [],
+            "ui_messages": []
+        }))
+    }
+
+    async fn assert_clear_cancels_and_adopts(background_continuation: bool) {
+        let capture = ClearCapture::default();
+        let router = Router::new()
+            .route("/api/v1/sessions", post(create_cleared_session))
+            .route("/api/v1/sessions/:id", put(accept_save))
+            .route("/api/v1/sessions/:id/cancel", post(capture_cancel))
+            .with_state(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind clear protocol server");
+        let address = listener.local_addr().expect("clear server address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve clear protocol server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "active-session".to_string(),
+            settings,
+        );
+        app.committed_messages.push(UIMessage {
+            role: MessageRole::User,
+            content: "running".to_string(),
+            tool_name: None,
+            content_collapsed: false,
+            tool_collapsed: false,
+            tool_running: false,
+            tool_args: None,
+            diff_data: None,
+            tool_metadata: None,
+        });
+        app.server_side_loop = true;
+        app.server_side_turn_active = true;
+        app.server_background_run_starting = background_continuation;
+
+        app.submit_input("/clear".to_string());
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while app.session_id != "cleared-session" {
+                let event = app
+                    .event_rx
+                    .recv()
+                    .await
+                    .expect("app event channel remains open");
+                app.handle_event(event).await;
+            }
+        })
+        .await
+        .expect("clear must adopt the session it creates");
+        assert_eq!(capture.cancellations.load(Ordering::SeqCst), 1);
+        assert_eq!(capture.creations.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            capture.saves.load(Ordering::SeqCst),
+            0,
+            "daemon-owned history must not be overwritten during clear"
+        );
+        assert!(!app.server_side_turn_active);
+        assert!(app.pending_inputs.is_empty());
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn clear_cancels_active_server_run_and_adopts_created_session() {
+        assert_clear_cancels_and_adopts(false).await;
+    }
+
+    #[tokio::test]
+    async fn clear_cancels_background_continuation_and_adopts_created_session() {
+        assert_clear_cancels_and_adopts(true).await;
+    }
+
+    #[tokio::test]
+    async fn clear_does_not_orphan_new_session_when_server_cancel_fails() {
+        let capture = ClearCapture {
+            reject_cancel: true,
+            ..ClearCapture::default()
+        };
+        let router = Router::new()
+            .route("/api/v1/sessions", post(create_cleared_session))
+            .route("/api/v1/sessions/:id", put(accept_save))
+            .route("/api/v1/sessions/:id/cancel", post(capture_cancel))
+            .with_state(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind failed-clear protocol server");
+        let address = listener.local_addr().expect("failed-clear server address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve failed-clear protocol server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "active-session".to_string(),
+            settings,
+        );
+        app.committed_messages.push(UIMessage {
+            role: MessageRole::User,
+            content: "running".to_string(),
+            tool_name: None,
+            content_collapsed: false,
+            tool_collapsed: false,
+            tool_running: false,
+            tool_args: None,
+            diff_data: None,
+            tool_metadata: None,
+        });
+        app.server_side_loop = true;
+        app.server_side_turn_active = true;
+
+        app.submit_input("/clear".to_string());
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !app
+                .committed_messages
+                .iter()
+                .any(|message| message.content.contains("无法取消当前会话"))
+            {
+                let event = app
+                    .event_rx
+                    .recv()
+                    .await
+                    .expect("app event channel remains open");
+                app.handle_event(event).await;
+            }
+        })
+        .await
+        .expect("cancel failure must restore the old session");
+        assert_eq!(app.session_id, "active-session");
+        assert_eq!(capture.cancellations.load(Ordering::SeqCst), 1);
+        assert_eq!(capture.creations.load(Ordering::SeqCst), 0);
+        assert!(app.server_side_turn_active);
+
+        server.abort();
+    }
 
     // ── is_bang_input ──────────────────────────────────────────
 
