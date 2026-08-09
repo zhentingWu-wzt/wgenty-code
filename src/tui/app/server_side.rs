@@ -15,8 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
-/// A daemon turn error or an established SSE disconnect is terminal from the
-/// TUI's perspective: surface the error, then release the running-turn gate.
+/// A daemon turn error or rejected run request is terminal: surface the
+/// error, then release the running-turn gate. Transport disconnects recover
+/// in `spawn_session_event_reader` and do not use this path.
 fn stream_termination_events(message: String) -> Vec<AppEvent> {
     vec![
         AppEvent::StreamError(message),
@@ -203,71 +204,99 @@ pub(crate) fn session_event_to_app_events(ev: SessionEvent) -> Vec<AppEvent> {
 /// an early connect legitimately 404s, and treating that as a fatal "lost
 /// connection" spammed a spurious error on every TUI launch. Once connected,
 /// `ready` (optional) fires so callers can start a run only after the
-/// subscription is live (session events are live-only, no replay).
+/// subscription is live.
 ///
-/// A drop *after* a successful connect is a genuine disconnect: a
-/// `StreamError` is emitted and the task exits (the next server-side run
-/// respawns it). Also exits when the event channel is dropped (app shutting
-/// down) or `shutdown` is set.
+/// After an established connection drops, the reader reconnects with
+/// `after=<last_seq>` so the daemon buffer replays anything emitted across
+/// the gap. It does not release the active-run gate while recovery is in
+/// progress. Exits when the event channel is dropped or `shutdown` is set.
 pub(crate) fn spawn_session_event_reader(
     client: DaemonClient,
     session_id: String,
     event_tx: mpsc::UnboundedSender<AppEvent>,
     shutdown: Arc<AtomicBool>,
-    ready: Option<oneshot::Sender<()>>,
+    mut ready: Option<oneshot::Sender<()>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        // Exponential backoff for connect retries: 250ms, 500ms, 1s, 2s cap.
-        let mut backoff = std::time::Duration::from_millis(250);
+        let initial_backoff = std::time::Duration::from_millis(250);
         let max_backoff = std::time::Duration::from_secs(2);
-        let resp = loop {
+        let mut backoff = initial_backoff;
+        let mut connected_once = false;
+        let mut last_seq = 0u64;
+        loop {
             if shutdown.load(Ordering::SeqCst) {
                 return;
             }
-            match client.session_events(&session_id).await {
-                Ok(r) => break r,
+            let after = connected_once.then_some(last_seq);
+            let resp = match client.session_events_after(&session_id, after).await {
+                Ok(response) => response,
                 Err(e) => {
                     tracing::debug!(
                         error = %e,
                         session_id,
+                        after,
                         "session events SSE connect failed; retrying"
                     );
                     tokio::time::sleep(backoff).await;
                     backoff = std::cmp::min(backoff * 2, max_backoff);
+                    continue;
                 }
+            };
+            connected_once = true;
+            backoff = initial_backoff;
+            if let Some(tx) = ready.take() {
+                let _ = tx.send(());
             }
-        };
-        let _ = ready.map(|tx| tx.send(()));
-        let lines = crate::tui::client::sse_data_lines(resp);
-        tokio::pin!(lines);
-        while !shutdown.load(Ordering::SeqCst) {
-            match lines.next().await {
-                Some(Ok(json_str)) => match serde_json::from_str::<SessionEvent>(&json_str) {
-                    Ok(ev) => {
-                        for app_ev in session_event_to_app_events(ev) {
-                            if event_tx.send(app_ev).is_err() {
-                                return;
+            let lines = crate::tui::client::sse_data_lines(resp);
+            tokio::pin!(lines);
+            while !shutdown.load(Ordering::SeqCst) {
+                match lines.next().await {
+                    Some(Ok(json_str)) => match serde_json::from_str::<SessionEvent>(&json_str) {
+                        Ok(ev) => {
+                            if ev.seq != 0 {
+                                if ev.seq <= last_seq {
+                                    continue;
+                                }
+                                last_seq = ev.seq;
+                            }
+                            for app_ev in session_event_to_app_events(ev) {
+                                if event_tx.send(app_ev).is_err() {
+                                    return;
+                                }
                             }
                         }
+                        Err(e) => {
+                            tracing::trace!(
+                                error = %e,
+                                "skip unparseable session event line"
+                            );
+                        }
+                    },
+                    Some(Err(e)) => {
+                        tracing::warn!(error = %e, last_seq, "session events SSE read error; reconnecting");
+                        let _ = event_tx.send(AppEvent::StreamError(
+                            "lost connection to daemon event stream; reconnecting".to_string(),
+                        ));
+                        break;
                     }
-                    Err(e) => {
-                        tracing::trace!(
-                            error = %e,
-                            "skip unparseable session event line"
+                    None => {
+                        tracing::warn!(
+                            session_id,
+                            last_seq,
+                            "session events SSE stream closed; reconnecting"
                         );
+                        let _ = event_tx.send(AppEvent::StreamError(
+                            "lost connection to daemon event stream; reconnecting".to_string(),
+                        ));
+                        break;
                     }
-                },
-                Some(Err(e)) => {
-                    tracing::warn!(error = %e, "session events SSE read error");
-                    send_stream_termination(&event_tx, "lost connection to daemon event stream");
-                    return;
-                }
-                None => {
-                    tracing::warn!(session_id, "session events SSE stream closed");
-                    send_stream_termination(&event_tx, "lost connection to daemon event stream");
-                    return;
                 }
             }
+            if shutdown.load(Ordering::SeqCst) {
+                return;
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = std::cmp::min(backoff * 2, max_backoff);
         }
     })
 }
@@ -628,6 +657,91 @@ pub(crate) fn spawn_global_event_reader(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::{Query, State};
+    use axum::response::sse::{Event, Sse};
+    use axum::routing::get;
+    use axum::Router;
+    use std::collections::HashMap;
+    use std::convert::Infallible;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+
+    async fn disconnect_then_replay_turn_done(
+        State(connections): State<Arc<AtomicUsize>>,
+        Query(query): Query<HashMap<String, String>>,
+    ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+        let connection = connections.fetch_add(1, Ordering::SeqCst);
+        let event = if connection == 0 {
+            assert!(!query.contains_key("after"));
+            ev(
+                1,
+                SessionEventKind::ContentDelta,
+                serde_json::json!({"text": "before disconnect"}),
+            )
+        } else {
+            assert_eq!(query.get("after").map(String::as_str), Some("1"));
+            ev(
+                2,
+                SessionEventKind::TurnDone,
+                serde_json::json!({"finish_reason": "stop"}),
+            )
+        };
+        let json = serde_json::to_string(&event).expect("serialize session event");
+        Sse::new(futures::stream::iter([Ok(Event::default().data(json))]))
+    }
+
+    #[tokio::test]
+    async fn session_reader_reconnects_with_replay_after_established_disconnect() {
+        let connections = Arc::new(AtomicUsize::new(0));
+        let router = Router::new()
+            .route(
+                "/api/v1/sessions/:id/events",
+                get(disconnect_then_replay_turn_done),
+            )
+            .with_state(connections.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind replay server");
+        let address = listener.local_addr().expect("replay server address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve replay server");
+        });
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let reader = spawn_session_event_reader(
+            DaemonClient::new(format!("http://{address}")),
+            "session-a".to_string(),
+            event_tx,
+            shutdown.clone(),
+            None,
+        );
+        let mut saw_content = false;
+        let mut saw_terminal = false;
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match event_rx.recv().await.expect("reader event channel open") {
+                    AppEvent::ContentDelta(text) => {
+                        saw_content |= text == "before disconnect";
+                    }
+                    AppEvent::ServerTurnTerminated => saw_terminal = true,
+                    AppEvent::TurnComplete => break,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("replayed TurnDone must reach the app");
+        assert!(saw_content);
+        assert!(!saw_terminal, "disconnect recovery must keep the run gate");
+        assert_eq!(connections.load(Ordering::SeqCst), 2);
+
+        shutdown.store(true, Ordering::SeqCst);
+        reader.abort();
+        server.abort();
+    }
 
     fn background_result_event(session_id: Option<&str>) -> crate::tui::client::GlobalEventWire {
         crate::tui::client::GlobalEventWire {
@@ -756,11 +870,11 @@ mod tests {
     }
 
     #[test]
-    fn disconnect_maps_to_error_and_terminal_lifecycle() {
-        let apps = stream_termination_events("lost connection".to_string());
+    fn run_failure_maps_to_error_and_terminal_lifecycle() {
+        let apps = stream_termination_events("run failed".to_string());
 
         assert_eq!(apps.len(), 2);
-        assert!(matches!(&apps[0], AppEvent::StreamError(message) if message == "lost connection"));
+        assert!(matches!(&apps[0], AppEvent::StreamError(message) if message == "run failed"));
         assert!(matches!(&apps[1], AppEvent::ServerTurnTerminated));
     }
 

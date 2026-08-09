@@ -468,9 +468,21 @@ impl DaemonClient {
     /// Long-lived connection; the daemon pushes events as the server-side
     /// run progresses. Returns the raw response for the caller to read.
     pub async fn session_events(&self, session_id: &str) -> anyhow::Result<reqwest::Response> {
+        self.session_events_after(session_id, None).await
+    }
+
+    pub(crate) async fn session_events_after(
+        &self,
+        session_id: &str,
+        after: Option<u64>,
+    ) -> anyhow::Result<reqwest::Response> {
         let encoded = urlencode(session_id);
         let url = format!("{}/api/v1/sessions/{}/events", self.base_url, encoded);
-        let resp = self.http().get(&url).send().await?;
+        let mut request = self.http().get(&url);
+        if let Some(after) = after {
+            request = request.query(&[("after", after)]);
+        }
+        let resp = request.send().await?;
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
@@ -501,7 +513,7 @@ impl DaemonClient {
         let encoded = urlencode(session_id);
         let url = format!("{}/api/v1/sessions/{}/cancel", self.base_url, encoded);
         let resp = self.http_tools().post(&url).send().await?;
-        if !resp.status().is_success() {
+        if !resp.status().is_success() && resp.status() != StatusCode::NOT_FOUND {
             anyhow::bail!("cancel_run failed ({})", resp.status());
         }
         Ok(())
