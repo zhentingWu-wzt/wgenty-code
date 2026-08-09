@@ -26,6 +26,10 @@ impl App {
                 self.spawn_continuation_turn(delivery);
                 return;
             }
+            if pending.hidden {
+                self.spawn_hidden_agent_turn(pending.agent_input);
+                return;
+            }
             // Push user message to UI immediately
             self.committed_messages.push(UIMessage {
                 role: MessageRole::User,
@@ -47,24 +51,32 @@ impl App {
         }
     }
 
+    /// Start a synthetic turn without rendering it or using its input as the
+    /// session title. Background results use this path.
+    fn spawn_hidden_agent_turn(&mut self, input_text: String) {
+        self.spawn_agent_turn_inner(input_text, true, false);
+    }
+
     /// Spawn an agent turn with `input_text` as the initial user message.
     /// When `hide_input` is true, the input is not displayed as a user message
     /// in the chat (used for internal prompts like /init).
     /// Server-side turn: POST /run and let the SSE reader render events.
     /// The daemon owns the loop (LLM + tools + history); TUI only observes.
-    pub(super) fn start_server_side_run(&mut self, input_text: String) {
-        // Push user message optimistically for rendering (daemon owns history).
-        self.committed_messages.push(UIMessage {
-            role: MessageRole::User,
-            content: input_text.clone(),
-            tool_name: None,
-            tool_args: None,
-            content_collapsed: false,
-            tool_collapsed: true,
-            tool_running: false,
-            diff_data: None,
-            tool_metadata: None,
-        });
+    pub(super) fn start_server_side_run(&mut self, input_text: String, hide_input: bool) {
+        if !hide_input {
+            // Push user message optimistically for rendering (daemon owns history).
+            self.committed_messages.push(UIMessage {
+                role: MessageRole::User,
+                content: input_text.clone(),
+                tool_name: None,
+                tool_args: None,
+                content_collapsed: false,
+                tool_collapsed: true,
+                tool_running: false,
+                diff_data: None,
+                tool_metadata: None,
+            });
+        }
         let client = self.daemon_client.clone();
         let sid = self.session_id.clone();
         let tx = self.event_tx.clone();
@@ -83,6 +95,7 @@ impl App {
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         self.respawn_session_event_reader(Some(ready_tx));
         self.respawn_trace_event_reader();
+        self.server_side_turn_active = true;
         tokio::spawn(async move {
             // The daemon 404s unknown session ids on both POST /run and
             // GET /events. The TUI's session id is generated locally (not
@@ -124,12 +137,21 @@ impl App {
     }
 
     pub(super) fn spawn_agent_turn(&mut self, input_text: String, hide_input: bool) {
-        if hide_input {
+        self.spawn_agent_turn_inner(input_text, hide_input, true);
+    }
+
+    fn spawn_agent_turn_inner(
+        &mut self,
+        input_text: String,
+        hide_input: bool,
+        name_hidden_session: bool,
+    ) {
+        if hide_input && name_hidden_session {
             // Auto-name session from a short label instead of the full prompt
             if self.session_name == "New Session" {
                 self.session_name = "Init Project".to_string();
             }
-        } else if self.session_name == "New Session" {
+        } else if !hide_input && self.session_name == "New Session" {
             let name = truncate_session_name(&input_text);
             self.session_name = name;
         }
@@ -148,7 +170,7 @@ impl App {
         self.record_turn_start(turn_id.to_string(), &input_text, turn_id.to_string());
         // Server-side mode: POST /run; the SSE reader renders events.
         if self.server_side_loop {
-            self.start_server_side_run(input_text);
+            self.start_server_side_run(input_text, hide_input);
             return;
         }
         let history = self.conversation_history.clone();
@@ -307,6 +329,11 @@ impl App {
             }
             let _ = event_tx.send(AppEvent::TurnComplete);
         }));
+    }
+
+    /// Whether either TUI-owned or daemon-owned work is currently running.
+    pub(super) fn has_running_turn(&self) -> bool {
+        self.current_turn_handle.is_some() || self.server_side_turn_active
     }
 
     /// Spawn a synthetic continuation turn that consumes a claimed task-group
@@ -847,6 +874,8 @@ mod tests {
     use super::*;
     use crate::config::watcher::SettingsHandle;
     use crate::config::Settings;
+    use crate::tools::execution::BackgroundResult;
+    use crate::tui::app::PendingInput;
     use crate::tui::client::{CheckpointInfo, DaemonClient};
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
@@ -855,6 +884,156 @@ mod tests {
         let client = DaemonClient::new("http://localhost:0".to_string());
         let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
         App::new(client, "test-interrupt".to_string(), settings)
+    }
+
+    fn background_result() -> BackgroundResult {
+        BackgroundResult {
+            task_id: "bg_a".to_string(),
+            session_id: Some("test-interrupt".to_string()),
+            result_type: "command".to_string(),
+            command: "true".to_string(),
+            stdout: "done".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            success: true,
+            sandbox_bypassed: false,
+            permission_mode: None,
+            sandbox_level: None,
+        }
+    }
+
+    #[test]
+    fn background_result_pending_input_is_hidden_and_serialized() {
+        let pending = PendingInput::background_result(background_result());
+
+        assert!(pending.hidden);
+        assert!(pending.display_text.is_empty());
+        assert_eq!(
+            pending.agent_input,
+            r#"{"task_id":"bg_a","session_id":"test-interrupt","result_type":"command","command":"true","stdout":"done","stderr":"","exit_code":0,"success":true,"sandbox_bypassed":false,"permission_mode":null,"sandbox_level":null}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_background_result_starts_one_hidden_turn_when_idle() {
+        let mut app = build_app();
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+
+        assert!(
+            app.current_turn_handle.is_some(),
+            "idle app starts one turn"
+        );
+        assert!(app.pending_inputs.is_empty(), "result is not left queued");
+        assert_eq!(
+            app.session_name, "New Session",
+            "hidden result does not name the session"
+        );
+        assert!(app.committed_messages.iter().any(|message| {
+            message.role == MessageRole::System
+                && message.content == "[Background task bg_a completed: SUCCESS]"
+        }));
+        assert!(!app
+            .committed_messages
+            .iter()
+            .any(|message| { message.role == MessageRole::User && message.content.is_empty() }));
+
+        app.current_turn_handle
+            .take()
+            .expect("idle result starts a turn")
+            .abort();
+    }
+
+    #[tokio::test]
+    async fn completed_background_result_is_displayed_without_queuing_while_running() {
+        let mut app = build_app();
+        app.current_turn_handle = Some(tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }));
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+
+        assert!(
+            app.current_turn_handle.is_some(),
+            "existing turn keeps running"
+        );
+        assert!(
+            app.pending_inputs.is_empty(),
+            "running turn does not queue a continuation"
+        );
+        assert!(app.committed_messages.iter().any(|message| {
+            message.role == MessageRole::System
+                && message.content == "[Background task bg_a completed: SUCCESS]"
+        }));
+
+        app.current_turn_handle
+            .take()
+            .expect("running turn remains active")
+            .abort();
+    }
+
+    #[tokio::test]
+    async fn server_side_background_result_marks_the_continuation_as_running() {
+        let mut app = build_app();
+        app.server_side_loop = true;
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+
+        assert!(
+            app.server_side_turn_active,
+            "server-side continuation records an active daemon turn"
+        );
+        assert!(app.current_turn_handle.is_none());
+
+        if let Some(handle) = app.session_event_reader.take() {
+            handle.abort();
+        }
+        if let Some(handle) = app.trace_event_reader.take() {
+            handle.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_background_result_is_dropped_after_session_switch() {
+        let mut app = build_app();
+        app.session_id = "session-b".to_string();
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+
+        assert!(app.committed_messages.is_empty());
+        assert!(app.pending_inputs.is_empty());
+        assert!(app.current_turn_handle.is_none());
+    }
+
+    #[tokio::test]
+    async fn session_switch_restarts_the_session_scoped_global_reader() {
+        let mut app = build_app();
+        assert!(app.global_event_reader.is_none());
+
+        app.handle_event(AppEvent::SessionSwitched {
+            id: "session-b".to_string(),
+            name: "Session B".to_string(),
+        })
+        .await;
+
+        assert!(
+            app.global_event_reader.is_some(),
+            "session switch installs a reader filtered to the new session"
+        );
+
+        if let Some(handle) = app.global_event_reader.take() {
+            handle.abort();
+        }
+        if let Some(handle) = app.session_event_reader.take() {
+            handle.abort();
+        }
+        if let Some(handle) = app.trace_event_reader.take() {
+            handle.abort();
+        }
     }
 
     #[tokio::test]
