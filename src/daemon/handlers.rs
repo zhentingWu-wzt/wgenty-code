@@ -3299,9 +3299,13 @@ mod tests {
 
     // ── Background results retention (daemon-session-orchestration Task 8) ────
 
-    fn sample_bg_result(task_id: &str) -> crate::tools::execution::background::BackgroundResult {
+    fn sample_bg_result(
+        task_id: &str,
+        session_id: Option<&str>,
+    ) -> crate::tools::execution::background::BackgroundResult {
         crate::tools::execution::background::BackgroundResult {
             task_id: task_id.to_string(),
+            session_id: session_id.map(str::to_string),
             result_type: "command".to_string(),
             command: "true".to_string(),
             stdout: String::new(),
@@ -3318,14 +3322,19 @@ mod tests {
     async fn background_results_are_retained_not_drained() {
         let state = global_event_test_state().await;
         let mut rx = state.global_event_hub.subscribe();
-        state.record_background_result(sample_bg_result("r1")).await;
-        state.record_background_result(sample_bg_result("r2")).await;
+        state
+            .record_background_result(sample_bg_result("r1", Some("session-a")))
+            .await;
+        state
+            .record_background_result(sample_bg_result("r2", None))
+            .await;
         // 广播在入队之后到达。
         let ev = rx.recv().await.expect("broadcast");
         assert_eq!(
             ev.kind,
             crate::daemon::global_events::GlobalEventKind::BackgroundResult
         );
+        assert_eq!(ev.data["result"]["session_id"], "session-a");
         // 两次快照读取内容一致（不再先到先得）。
         let first = state.background_results_snapshot().await;
         let second = state.background_results_snapshot().await;
@@ -3340,7 +3349,7 @@ mod tests {
         // capacity + 1 results: the oldest ("r0") must be evicted.
         for i in 0..=capacity {
             state
-                .record_background_result(sample_bg_result(&format!("r{i}")))
+                .record_background_result(sample_bg_result(&format!("r{i}"), None))
                 .await;
         }
         let snapshot = state.background_results_snapshot().await;
@@ -3358,8 +3367,12 @@ mod tests {
         use axum::Json;
 
         let state = Arc::new(global_event_test_state().await);
-        state.record_background_result(sample_bg_result("r1")).await;
-        state.record_background_result(sample_bg_result("r2")).await;
+        state
+            .record_background_result(sample_bg_result("r1", None))
+            .await;
+        state
+            .record_background_result(sample_bg_result("r2", None))
+            .await;
         // Two consecutive reads see the same results (no first-come-first-served
         // drain): old polling clients keep working, results are not stolen.
         let Json(first) = get_background_results(State(state.clone())).await;
