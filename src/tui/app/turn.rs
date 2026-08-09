@@ -932,7 +932,8 @@ mod tests {
         );
         assert!(app.committed_messages.iter().any(|message| {
             message.role == MessageRole::System
-                && message.content == "[Background task bg_a completed: SUCCESS]"
+                && message.content
+                    == "[Background task bg_a completed: SUCCESS]\ncommand: true\nexit code: 0\nstdout:\ndone\nstderr:\n"
         }));
         assert!(!app
             .committed_messages
@@ -965,8 +966,37 @@ mod tests {
         );
         assert!(app.committed_messages.iter().any(|message| {
             message.role == MessageRole::System
-                && message.content == "[Background task bg_a completed: SUCCESS]"
+                && message.content
+                    == "[Background task bg_a completed: SUCCESS]\ncommand: true\nexit code: 0\nstdout:\ndone\nstderr:\n"
         }));
+
+        app.current_turn_handle
+            .take()
+            .expect("running turn remains active")
+            .abort();
+    }
+
+    #[tokio::test]
+    async fn completed_background_result_shows_captured_output_while_running() {
+        let mut app = build_app();
+        app.current_turn_handle = Some(tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }));
+        let mut result = background_result();
+        result.success = false;
+        result.stdout = "partial output".to_string();
+        result.stderr = "command failed".to_string();
+        result.exit_code = Some(1);
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(result))
+            .await;
+
+        assert!(app.committed_messages.iter().any(|message| {
+            message.role == MessageRole::System
+                && message.content
+                    == "[Background task bg_a completed: FAILED]\ncommand: true\nexit code: 1\nstdout:\npartial output\nstderr:\ncommand failed"
+        }));
+        assert!(app.pending_inputs.is_empty(), "running turn stays unqueued");
 
         app.current_turn_handle
             .take()
