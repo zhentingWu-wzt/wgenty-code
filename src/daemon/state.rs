@@ -173,6 +173,25 @@ impl BackgroundResultInbox {
             })
             .collect()
     }
+
+    fn has_pending_for_session(&self, session_id: &str) -> bool {
+        self.by_session
+            .get(session_id)
+            .is_some_and(|session| !session.by_task_id.is_empty())
+    }
+
+    fn drain_for_session(&mut self, session_id: &str) -> Vec<BackgroundResult> {
+        let Some(mut session) = self.by_session.remove(session_id) else {
+            return Vec::new();
+        };
+        self.arrival_order
+            .retain(|(retained_session_id, _)| retained_session_id != session_id);
+        session
+            .task_order
+            .into_iter()
+            .filter_map(|task_id| session.by_task_id.remove(&task_id))
+            .collect()
+    }
 }
 
 /// Per-session permission rules.
@@ -223,6 +242,17 @@ pub struct DaemonState {
     /// Session-scoped, task-ID-deduplicated background result inbox. Fed by
     /// the tool-layer manager hook and retained before any SSE notification.
     background_result_inbox: Arc<RwLock<BackgroundResultInbox>>,
+    /// Scheduler mailbox. Result-ready and run-finished notifications share
+    /// one consumer so their relative ordering cannot strand a busy session's
+    /// pending inbox entries.
+    background_scheduler_tx:
+        tokio::sync::mpsc::UnboundedSender<crate::daemon::run_loop::BackgroundSchedulerEvent>,
+    background_scheduler_rx: std::sync::Mutex<
+        Option<
+            tokio::sync::mpsc::UnboundedReceiver<crate::daemon::run_loop::BackgroundSchedulerEvent>,
+        >,
+    >,
+    background_scheduler_started: std::sync::atomic::AtomicBool,
     pub team_manager: Option<Arc<TeamManager>>,
     pub session_manager: MemorySessionManager,
     /// Shared MemoryManager backing the `memory_add` tool and AutoDream (D1).
@@ -342,6 +372,8 @@ impl DaemonState {
         let background_result_inbox = Arc::new(RwLock::new(BackgroundResultInbox::default()));
         let global_event_hub = crate::daemon::global_events::new_global_event_hub();
         let global_seq_counter = Arc::new(AtomicU64::new(1));
+        let (background_scheduler_tx, background_scheduler_rx) =
+            tokio::sync::mpsc::unbounded_channel();
         {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BackgroundResult>();
             bg_manager.set_result_hook(move |result| {
@@ -352,10 +384,20 @@ impl DaemonState {
             let inbox = background_result_inbox.clone();
             let hub = global_event_hub.clone();
             let seq = global_seq_counter.clone();
+            let scheduler = background_scheduler_tx.clone();
             tokio::spawn(async move {
                 // Single consumer: completion order is preserved in the inbox.
                 while let Some(result) = rx.recv().await {
-                    retain_and_broadcast_background_result(&inbox, &hub, &seq, result).await;
+                    let session_id = result.session_id.clone();
+                    if retain_and_broadcast_background_result(&inbox, &hub, &seq, result).await {
+                        if let Some(session_id) = session_id {
+                            let _ = scheduler.send(
+                                crate::daemon::run_loop::BackgroundSchedulerEvent::ResultReady {
+                                    session_id,
+                                },
+                            );
+                        }
+                    }
                 }
             });
         }
@@ -693,6 +735,9 @@ impl DaemonState {
             skill_loader,
             background_manager: bg_manager,
             background_result_inbox,
+            background_scheduler_tx,
+            background_scheduler_rx: std::sync::Mutex::new(Some(background_scheduler_rx)),
+            background_scheduler_started: std::sync::atomic::AtomicBool::new(false),
             team_manager,
             session_manager,
             memory_manager,
@@ -747,23 +792,32 @@ impl DaemonState {
     /// Retain-then-broadcast: the result MUST be queryable before any client
     /// sees the event, so offline-then-online clients can still fetch it.
     pub async fn record_background_result(&self, result: BackgroundResult) -> bool {
-        retain_and_broadcast_background_result(
+        let session_id = result.session_id.clone();
+        let retained = retain_and_broadcast_background_result(
             &self.background_result_inbox,
             &self.global_event_hub,
             &self.global_seq_counter,
             result,
         )
-        .await
+        .await;
+        if retained {
+            if let Some(session_id) = session_id {
+                let _ = self.background_scheduler_tx.send(
+                    crate::daemon::run_loop::BackgroundSchedulerEvent::ResultReady { session_id },
+                );
+            }
+        }
+        retained
     }
 
-    /// Snapshot of all owned retained results (oldest first). Never drains;
-    /// kept for the legacy recovery endpoint while session-aware consumers
-    /// use [`Self::background_results_snapshot_for_session`].
+    /// Snapshot of all currently pending owned results (oldest first). Reading
+    /// does not drain; the daemon scheduler drains only after acquiring the
+    /// session's continuation claim.
     pub async fn background_results_snapshot(&self) -> Vec<BackgroundResult> {
         self.background_result_inbox.read().await.snapshot_all()
     }
 
-    /// Snapshot retained results for exactly one session (oldest first).
+    /// Snapshot pending results for exactly one session (oldest first).
     pub async fn background_results_snapshot_for_session(
         &self,
         session_id: &str,
@@ -772,6 +826,52 @@ impl DaemonState {
             .read()
             .await
             .snapshot_for_session(session_id)
+    }
+
+    pub(crate) async fn drain_background_results_for_session(
+        &self,
+        session_id: &str,
+    ) -> Vec<BackgroundResult> {
+        self.background_result_inbox
+            .write()
+            .await
+            .drain_for_session(session_id)
+    }
+
+    pub(crate) async fn has_pending_background_results(&self, session_id: &str) -> bool {
+        self.background_result_inbox
+            .read()
+            .await
+            .has_pending_for_session(session_id)
+    }
+
+    /// Start the daemon-owned continuation scheduler once `DaemonState` is in
+    /// an `Arc`. Router construction is the common production/test lifecycle
+    /// seam where that ownership is available.
+    pub fn start_background_continuation_scheduler(self: &Arc<Self>) {
+        let receiver = self
+            .background_scheduler_rx
+            .lock()
+            .expect("background scheduler receiver lock poisoned")
+            .take();
+        let Some(receiver) = receiver else {
+            return;
+        };
+        self.background_scheduler_started
+            .store(true, std::sync::atomic::Ordering::Release);
+        crate::daemon::run_loop::spawn_background_continuation_scheduler(
+            Arc::downgrade(self),
+            receiver,
+        );
+    }
+
+    pub(crate) fn background_scheduler_sender(
+        &self,
+    ) -> Option<tokio::sync::mpsc::UnboundedSender<crate::daemon::run_loop::BackgroundSchedulerEvent>>
+    {
+        self.background_scheduler_started
+            .load(std::sync::atomic::Ordering::Acquire)
+            .then(|| self.background_scheduler_tx.clone())
     }
 
     /// Single write-path for the shared todo list: update state, then
