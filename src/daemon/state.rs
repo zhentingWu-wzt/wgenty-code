@@ -108,9 +108,10 @@ pub const BACKGROUND_RESULTS_CAPACITY: usize = 256;
 /// [`BACKGROUND_RESULTS_CAPACITY`]; requeue may temporarily combine them.
 pub const BACKGROUND_RESULTS_MAX_LIVE_PER_SESSION: usize = BACKGROUND_RESULTS_CAPACITY * 2;
 
-/// Number of recently acknowledged `(session_id, task_id)` pairs retained to
-/// suppress late duplicate completions. This is a global FIFO replay window:
-/// once evicted, an exceptionally old duplicate may be accepted again.
+/// Number of recently acknowledged task IDs retained independently for each
+/// session. Once a session's oldest tombstone is evicted, an exceptionally old
+/// duplicate for that session may be accepted again; traffic from other
+/// sessions cannot shorten its replay window.
 pub const BACKGROUND_RESULT_TOMBSTONE_CAPACITY: usize = 1024;
 
 struct BackgroundResultClaim {
@@ -123,12 +124,19 @@ struct SessionBackgroundResults {
     by_task_id: HashMap<String, BackgroundResult>,
     /// All live results, pending and claimed, in completion order.
     task_order: VecDeque<String>,
-    /// Results eligible for the next continuation claim. A claimed batch is
-    /// removed from this queue but remains in `by_task_id` / `task_order`.
+    /// Ordinary results eligible for the next continuation claim. A claimed
+    /// batch is removed from this queue but remains in
+    /// `by_task_id` / `task_order`.
     pending_order: VecDeque<String>,
+    /// An unacknowledged batch restored after a failed run. Claims always take
+    /// this queue before ordinary pending entries, and capacity eviction never
+    /// removes it.
+    recovery_order: VecDeque<String>,
     /// At most one continuation can own a batch because `RunRegistry` permits
     /// only one active run per session.
     claim: Option<BackgroundResultClaim>,
+    consumed: HashSet<String>,
+    consumed_order: VecDeque<String>,
 }
 
 /// Daemon-owned background-result lifecycle, keyed by session and task ID.
@@ -141,8 +149,10 @@ struct SessionBackgroundResults {
 struct BackgroundResultInbox {
     by_session: HashMap<String, SessionBackgroundResults>,
     arrival_order: VecDeque<(String, String)>,
-    consumed: HashSet<(String, String)>,
-    consumed_order: VecDeque<(String, String)>,
+    /// Sessions whose last run failed final persistence. Automatic
+    /// continuations remain blocked until a later explicit run reports a
+    /// successful final save.
+    continuation_blocked: HashSet<String>,
 }
 
 impl BackgroundResultInbox {
@@ -157,12 +167,8 @@ impl BackgroundResultInbox {
             return false;
         };
         let task_id = result.task_id.clone();
-        let composite_id = (session_id.clone(), task_id.clone());
-        if self.consumed.contains(&composite_id) {
-            return false;
-        }
         let session = self.by_session.entry(session_id.clone()).or_default();
-        if session.by_task_id.contains_key(&task_id) {
+        if session.consumed.contains(&task_id) || session.by_task_id.contains_key(&task_id) {
             return false;
         }
 
@@ -210,20 +216,43 @@ impl BackgroundResultInbox {
     }
 
     fn has_pending_for_session(&self, session_id: &str) -> bool {
-        self.by_session
-            .get(session_id)
-            .is_some_and(|session| !session.pending_order.is_empty())
+        self.by_session.get(session_id).is_some_and(|session| {
+            !session.recovery_order.is_empty() || !session.pending_order.is_empty()
+        })
+    }
+
+    fn continuation_is_blocked(&self, session_id: &str) -> bool {
+        self.continuation_blocked.contains(session_id)
+    }
+
+    fn block_continuation(&mut self, session_id: &str) {
+        self.continuation_blocked.insert(session_id.to_string());
+    }
+
+    fn allow_continuation(&mut self, session_id: &str) {
+        self.continuation_blocked.remove(session_id);
     }
 
     fn claim_for_session(&mut self, session_id: &str, run_id: &str) -> Vec<BackgroundResult> {
         let Some(session) = self.by_session.get_mut(session_id) else {
             return Vec::new();
         };
-        if session.claim.is_some() || session.pending_order.is_empty() {
+        if session.claim.is_some()
+            || (session.recovery_order.is_empty() && session.pending_order.is_empty())
+        {
             return Vec::new();
         }
-        let claim_len = session.pending_order.len().min(BACKGROUND_RESULTS_CAPACITY);
-        let task_ids: Vec<String> = session.pending_order.drain(..claim_len).collect();
+        let recovery_len = session
+            .recovery_order
+            .len()
+            .min(BACKGROUND_RESULTS_CAPACITY);
+        let mut task_ids: Vec<String> = session.recovery_order.drain(..recovery_len).collect();
+        let remaining = BACKGROUND_RESULTS_CAPACITY - task_ids.len();
+        task_ids.extend(
+            session
+                .pending_order
+                .drain(..session.pending_order.len().min(remaining)),
+        );
         let results = task_ids
             .iter()
             .filter_map(|task_id| session.by_task_id.get(task_id).cloned())
@@ -236,7 +265,7 @@ impl BackgroundResultInbox {
     }
 
     fn ack_claim(&mut self, session_id: &str, run_id: &str) -> bool {
-        let (task_ids, remove_session) = {
+        let task_ids = {
             let Some(session) = self.by_session.get_mut(session_id) else {
                 return false;
             };
@@ -253,20 +282,23 @@ impl BackgroundResultInbox {
                     .task_order
                     .retain(|retained_task_id| retained_task_id != task_id);
             }
-            let remove_session = session.by_task_id.is_empty();
-            (claim.task_ids, remove_session)
+            for task_id in &claim.task_ids {
+                if session.consumed.insert(task_id.clone()) {
+                    session.consumed_order.push_back(task_id.clone());
+                }
+            }
+            while session.consumed_order.len() > BACKGROUND_RESULT_TOMBSTONE_CAPACITY {
+                if let Some(expired) = session.consumed_order.pop_front() {
+                    session.consumed.remove(&expired);
+                }
+            }
+            claim.task_ids
         };
 
         self.arrival_order
             .retain(|(retained_session_id, retained_task_id)| {
                 retained_session_id != session_id || !task_ids.contains(retained_task_id)
             });
-        for task_id in task_ids {
-            self.remember_consumed((session_id.to_string(), task_id));
-        }
-        if remove_session {
-            self.by_session.remove(session_id);
-        }
         true
     }
 
@@ -281,22 +313,10 @@ impl BackgroundResultInbox {
             session.claim = Some(claim);
             return false;
         }
-        let mut pending = VecDeque::from(claim.task_ids);
-        pending.append(&mut session.pending_order);
-        session.pending_order = pending;
+        let mut recovery = VecDeque::from(claim.task_ids);
+        recovery.append(&mut session.recovery_order);
+        session.recovery_order = recovery;
         true
-    }
-
-    fn remember_consumed(&mut self, composite_id: (String, String)) {
-        if !self.consumed.insert(composite_id.clone()) {
-            return;
-        }
-        self.consumed_order.push_back(composite_id);
-        while self.consumed_order.len() > BACKGROUND_RESULT_TOMBSTONE_CAPACITY {
-            if let Some(expired) = self.consumed_order.pop_front() {
-                self.consumed.remove(&expired);
-            }
-        }
     }
 }
 
@@ -969,6 +989,27 @@ impl DaemonState {
             .has_pending_for_session(session_id)
     }
 
+    pub(crate) async fn background_continuation_is_blocked(&self, session_id: &str) -> bool {
+        self.background_result_inbox
+            .read()
+            .await
+            .continuation_is_blocked(session_id)
+    }
+
+    pub(crate) async fn block_background_continuation(&self, session_id: &str) {
+        self.background_result_inbox
+            .write()
+            .await
+            .block_continuation(session_id);
+    }
+
+    pub(crate) async fn allow_background_continuation(&self, session_id: &str) {
+        self.background_result_inbox
+            .write()
+            .await
+            .allow_continuation(session_id);
+    }
+
     /// Start the daemon-owned continuation scheduler once `DaemonState` is in
     /// an `Arc`. Router construction is the common production/test lifecycle
     /// seam where that ownership is available.
@@ -1202,10 +1243,10 @@ fn hex_string(bytes: &[u8]) -> String {
 mod background_inbox_lifecycle_tests {
     use super::*;
 
-    fn result(task_id: &str) -> BackgroundResult {
+    fn result_for_session(task_id: &str, session_id: &str) -> BackgroundResult {
         BackgroundResult {
             task_id: task_id.to_string(),
-            session_id: Some("session-a".to_string()),
+            session_id: Some(session_id.to_string()),
             result_type: "command".to_string(),
             command: "true".to_string(),
             stdout: String::new(),
@@ -1218,8 +1259,62 @@ mod background_inbox_lifecycle_tests {
         }
     }
 
+    fn result(task_id: &str) -> BackgroundResult {
+        result_for_session(task_id, "session-a")
+    }
+
     #[test]
-    fn consumed_tombstones_evict_oldest_at_the_global_capacity() {
+    fn another_sessions_traffic_cannot_evict_consumed_tombstones() {
+        let mut inbox = BackgroundResultInbox::default();
+        assert!(inbox.enqueue(result("anchor")));
+        assert_eq!(inbox.claim_for_session("session-a", "run-a").len(), 1);
+        assert!(inbox.ack_claim("session-a", "run-a"));
+
+        for index in 0..=BACKGROUND_RESULT_TOMBSTONE_CAPACITY {
+            let task_id = format!("foreign_{index}");
+            assert!(inbox.enqueue(result_for_session(&task_id, "session-b")));
+            assert_eq!(
+                inbox
+                    .claim_for_session("session-b", &format!("run-b-{index}"))
+                    .len(),
+                1
+            );
+            assert!(inbox.ack_claim("session-b", &format!("run-b-{index}")));
+        }
+
+        assert!(
+            !inbox.enqueue(result("anchor")),
+            "another session must not evict session-a's exact-once memory"
+        );
+    }
+
+    #[test]
+    fn enqueue_after_requeue_preserves_the_recovery_batch() {
+        let mut inbox = BackgroundResultInbox::default();
+        for index in 0..BACKGROUND_RESULTS_CAPACITY {
+            assert!(inbox.enqueue(result(&format!("recovery_{index}"))));
+        }
+        assert_eq!(
+            inbox.claim_for_session("session-a", "failed-run").len(),
+            BACKGROUND_RESULTS_CAPACITY
+        );
+        for index in 0..BACKGROUND_RESULTS_CAPACITY {
+            assert!(inbox.enqueue(result(&format!("newer_{index}"))));
+        }
+        assert!(inbox.requeue_claim("session-a", "failed-run"));
+
+        assert!(inbox.enqueue(result("newest")));
+        let retained = inbox.snapshot_for_session("session-a");
+        assert!(
+            retained.iter().any(|result| result.task_id == "recovery_0"),
+            "new traffic must never evict the oldest requeued recovery result"
+        );
+        assert!(retained.iter().any(|result| result.task_id == "newest"));
+        assert!(retained.len() <= BACKGROUND_RESULTS_MAX_LIVE_PER_SESSION);
+    }
+
+    #[test]
+    fn consumed_tombstones_evict_oldest_at_the_per_session_capacity() {
         let mut inbox = BackgroundResultInbox::default();
         for index in 0..=BACKGROUND_RESULT_TOMBSTONE_CAPACITY {
             let task_id = format!("bg_{index}");
