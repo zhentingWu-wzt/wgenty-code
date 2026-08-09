@@ -16,7 +16,6 @@ use crate::runtime::hooks::HookManager;
 use crate::tui::app::AppEvent;
 use crate::tui::client::DaemonClient;
 use crate::utils::stuck_detector::StuckDetector;
-use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -96,9 +95,6 @@ pub struct AgentLoop {
     /// generation when PlanMode is active and planner_model is configured.
     pub(super) planner_client: Option<crate::api::ApiClient>,
     pub(super) session_id: String,
-    /// Session-scoped ledger shared by all turns so a retained result and its
-    /// real-time event cannot each start a continuation turn.
-    pub(super) delivered_background_task_ids: Arc<tokio::sync::Mutex<HashSet<String>>>,
     /// Trusted identifier of the root turn this loop is executing. Propagated
     /// to the daemon as `turn_id` on `execute_tool` so root-direct `task`
     /// children group under one turn. `None` for compaction-only turns.
@@ -134,7 +130,6 @@ impl AgentLoop {
         client: DaemonClient,
         event_tx: mpsc::UnboundedSender<AppEvent>,
         session_id: String,
-        delivered_background_task_ids: Arc<tokio::sync::Mutex<HashSet<String>>>,
         turn_id: Option<String>,
         conversation_history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
         system_messages: Vec<ChatMessage>,
@@ -166,7 +161,6 @@ impl AgentLoop {
             stuck_detector: StuckDetector::new(),
             token_counter,
             session_id,
-            delivered_background_task_ids,
             turn_id,
             plan_mode,
             planner_client,
@@ -254,9 +248,6 @@ impl AgentLoop {
     ) -> Result<(), AgentError> {
         self.token_counter.reset_turn();
         self.compaction_failed = false;
-        // Command-background results are still injected here (subagent results
-        // are NOT -- they arrive through the delivery).
-        self.inject_background_results().await;
         // Inject the delivered child-result batch as a `user` message so the
         // model sees the completed subagent work inline. Mid-conversation
         // `system` messages are not reliably surfaced by OpenAI-compatible
@@ -283,8 +274,6 @@ impl AgentLoop {
 
     /// Inner implementation of the agent loop.
     async fn process_input_inner(&mut self, input: String) -> Result<(), AgentError> {
-        self.inject_background_results().await;
-
         // 1a. Fire UserPromptSubmit hook synchronously with a 10s timeout.
         //     On timeout the turn continues with empty outcomes (graceful degradation).
         let outcomes = {
@@ -397,7 +386,6 @@ impl AgentLoop {
 mod tests {
     use super::*;
     use crate::context::MemoryManager;
-    use std::collections::HashSet;
     use std::sync::Arc;
 
     /// Verify that AgentLoop can be constructed with a memory_manager field.
@@ -419,7 +407,6 @@ mod tests {
             client,
             tx,
             "test-session".into(),
-            Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             None,
             Arc::new(tokio::sync::Mutex::new(vec![])),
             vec![],
