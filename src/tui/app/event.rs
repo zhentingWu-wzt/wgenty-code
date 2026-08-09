@@ -1036,6 +1036,15 @@ impl App {
                     );
                     return;
                 }
+                if !self
+                    .delivered_background_task_ids
+                    .lock()
+                    .await
+                    .insert(result.task_id.clone())
+                {
+                    tracing::debug!(task_id = %result.task_id, "dropping duplicate background result");
+                    return;
+                }
                 let notification = format!(
                     "[Background task {} completed: {}]\ncommand: {}\nexit code: {}\nstdout:\n{}\nstderr:\n{}",
                     result.task_id,
@@ -1084,6 +1093,8 @@ impl App {
                 // event spawned below, mirroring the original /clear path.
                 self.session_id = id.clone();
                 self.session_name = name;
+                self.delivered_background_task_ids =
+                    std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
                 self.server_side_turn_active = false;
                 // Re-point the server-side SSE readers at the new session id
                 // (abort + resubscribe) so streaming follows the switched

@@ -16,6 +16,7 @@ use crate::runtime::hooks::HookManager;
 use crate::tui::app::AppEvent;
 use crate::tui::client::DaemonClient;
 use crate::utils::stuck_detector::StuckDetector;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -95,6 +96,9 @@ pub struct AgentLoop {
     /// generation when PlanMode is active and planner_model is configured.
     pub(super) planner_client: Option<crate::api::ApiClient>,
     pub(super) session_id: String,
+    /// Session-scoped ledger shared by all turns so a retained result and its
+    /// real-time event cannot each start a continuation turn.
+    pub(super) delivered_background_task_ids: Arc<tokio::sync::Mutex<HashSet<String>>>,
     /// Trusted identifier of the root turn this loop is executing. Propagated
     /// to the daemon as `turn_id` on `execute_tool` so root-direct `task`
     /// children group under one turn. `None` for compaction-only turns.
@@ -130,6 +134,7 @@ impl AgentLoop {
         client: DaemonClient,
         event_tx: mpsc::UnboundedSender<AppEvent>,
         session_id: String,
+        delivered_background_task_ids: Arc<tokio::sync::Mutex<HashSet<String>>>,
         turn_id: Option<String>,
         conversation_history: Arc<tokio::sync::Mutex<Vec<ChatMessage>>>,
         system_messages: Vec<ChatMessage>,
@@ -161,6 +166,7 @@ impl AgentLoop {
             stuck_detector: StuckDetector::new(),
             token_counter,
             session_id,
+            delivered_background_task_ids,
             turn_id,
             plan_mode,
             planner_client,
@@ -391,6 +397,7 @@ impl AgentLoop {
 mod tests {
     use super::*;
     use crate::context::MemoryManager;
+    use std::collections::HashSet;
     use std::sync::Arc;
 
     /// Verify that AgentLoop can be constructed with a memory_manager field.
@@ -412,6 +419,7 @@ mod tests {
             client,
             tx,
             "test-session".into(),
+            Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             None,
             Arc::new(tokio::sync::Mutex::new(vec![])),
             vec![],
