@@ -3319,6 +3319,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn background_results_are_retained_per_session() {
+        let state = global_event_test_state().await;
+        state
+            .record_background_result(sample_bg_result("a-1", Some("session-a")))
+            .await;
+        state
+            .record_background_result(sample_bg_result("a-2", Some("session-a")))
+            .await;
+
+        let snapshot = state
+            .background_results_snapshot_for_session("session-a")
+            .await;
+        let task_ids: Vec<&str> = snapshot
+            .iter()
+            .map(|result| result.task_id.as_str())
+            .collect();
+        assert_eq!(task_ids, vec!["a-1", "a-2"]);
+    }
+
+    #[tokio::test]
+    async fn background_results_deduplicate_task_ids_before_publication() {
+        let state = global_event_test_state().await;
+        let mut rx = state.global_event_hub.subscribe();
+        let first = sample_bg_result("same-task", Some("session-a"));
+        let mut duplicate = first.clone();
+        duplicate.command = "must not replace first result".to_string();
+
+        state.record_background_result(first).await;
+        rx.recv().await.expect("first result broadcast");
+        state.record_background_result(duplicate).await;
+
+        let snapshot = state
+            .background_results_snapshot_for_session("session-a")
+            .await;
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].command, "true");
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn background_results_are_isolated_from_foreign_and_unowned_sessions() {
+        let state = global_event_test_state().await;
+        let mut rx = state.global_event_hub.subscribe();
+        state
+            .record_background_result(sample_bg_result("shared-task", Some("session-a")))
+            .await;
+        rx.recv().await.expect("owned result broadcast");
+        let mut foreign = sample_bg_result("shared-task", Some("session-b"));
+        foreign.command = "foreign command".to_string();
+        state.record_background_result(foreign).await;
+        rx.recv().await.expect("foreign owned result broadcast");
+        state
+            .record_background_result(sample_bg_result("legacy", None))
+            .await;
+
+        let session_a = state
+            .background_results_snapshot_for_session("session-a")
+            .await;
+        assert_eq!(session_a.len(), 1);
+        assert_eq!(session_a[0].task_id, "shared-task");
+        assert_eq!(session_a[0].command, "true");
+        let session_b = state
+            .background_results_snapshot_for_session("session-b")
+            .await;
+        assert_eq!(session_b.len(), 1);
+        assert_eq!(session_b[0].task_id, "shared-task");
+        assert_eq!(session_b[0].command, "foreign command");
+        assert!(state
+            .background_results_snapshot()
+            .await
+            .iter()
+            .all(|result| result.task_id != "legacy"));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        assert!(state
+            .background_results_snapshot_for_session("missing-session")
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn background_results_are_retained_not_drained() {
         let state = global_event_test_state().await;
         let mut rx = state.global_event_hub.subscribe();
@@ -3326,7 +3412,7 @@ mod tests {
             .record_background_result(sample_bg_result("r1", Some("session-a")))
             .await;
         state
-            .record_background_result(sample_bg_result("r2", None))
+            .record_background_result(sample_bg_result("r2", Some("session-a")))
             .await;
         // 广播在入队之后到达。
         let ev = rx.recv().await.expect("broadcast");
@@ -3349,10 +3435,12 @@ mod tests {
         // capacity + 1 results: the oldest ("r0") must be evicted.
         for i in 0..=capacity {
             state
-                .record_background_result(sample_bg_result(&format!("r{i}"), None))
+                .record_background_result(sample_bg_result(&format!("r{i}"), Some("session-a")))
                 .await;
         }
-        let snapshot = state.background_results_snapshot().await;
+        let snapshot = state
+            .background_results_snapshot_for_session("session-a")
+            .await;
         assert_eq!(snapshot.len(), capacity);
         assert_eq!(snapshot[0].task_id, "r1");
         assert_eq!(
@@ -3368,10 +3456,10 @@ mod tests {
 
         let state = Arc::new(global_event_test_state().await);
         state
-            .record_background_result(sample_bg_result("r1", None))
+            .record_background_result(sample_bg_result("r1", Some("session-a")))
             .await;
         state
-            .record_background_result(sample_bg_result("r2", None))
+            .record_background_result(sample_bg_result("r2", Some("session-a")))
             .await;
         // Two consecutive reads see the same results (no first-come-first-served
         // drain): old polling clients keep working, results are not stolen.
@@ -3390,8 +3478,15 @@ mod tests {
         let mut rx = state.global_event_hub.subscribe();
         state
             .background_manager
-            .push_subagent_result("demo", "ok", true)
-            .await;
+            .spawn_for_session(
+                "true",
+                300,
+                crate::sandbox::EffectiveMode::Yolo,
+                None,
+                Some("session-a".to_string()),
+            )
+            .await
+            .expect("background command starts");
         // Retain-before-broadcast: once the event arrives the result is
         // guaranteed queryable via the snapshot.
         let ev = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
@@ -3402,9 +3497,11 @@ mod tests {
             ev.kind,
             crate::daemon::global_events::GlobalEventKind::BackgroundResult
         );
-        let snapshot = state.background_results_snapshot().await;
+        let snapshot = state
+            .background_results_snapshot_for_session("session-a")
+            .await;
         assert_eq!(snapshot.len(), 1);
-        assert_eq!(snapshot[0].result_type, "subagent");
+        assert_eq!(snapshot[0].result_type, "command");
         // The tool-layer drain queue stays empty: the retained queue is the
         // single source of truth daemon-side.
         assert!(state.background_manager.drain_results().await.is_empty());
