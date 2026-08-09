@@ -34,7 +34,7 @@ use crate::tui::components::turn_picker::TurnPickerState;
 use crate::tui::components::undo_scope_picker::UndoScopePickerState;
 use crossterm::event::EnableBracketedPaste;
 use ratatui::Terminal;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -121,6 +121,9 @@ pub struct App {
     /// `cancel_current_turn`; cleared when a new turn starts.
     suppress_phase_updates: bool,
     pub session_id: String,
+    /// Completed background task IDs delivered within the active session.
+    /// Shared with each AgentLoop to deduplicate retained recovery and SSE.
+    pub(crate) delivered_background_task_ids: Arc<TokioMutex<HashSet<String>>>,
     pub session_name: String,
     pub last_tool_name: Option<String>,
     pub last_abort_reason: Option<TurnAbortReason>,
@@ -514,6 +517,7 @@ impl App {
             phase: AgentPhase::Idle,
             suppress_phase_updates: false,
             session_id,
+            delivered_background_task_ids: Arc::new(TokioMutex::new(HashSet::new())),
             session_name: "New Session".to_string(),
             last_tool_name: None,
             last_abort_reason: None,

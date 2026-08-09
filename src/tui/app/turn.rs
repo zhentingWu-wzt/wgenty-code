@@ -177,6 +177,7 @@ impl App {
         let client = self.daemon_client.clone();
         let event_tx = self.event_tx.clone();
         let session_id = self.session_id.clone();
+        let delivered_background_task_ids = self.delivered_background_task_ids.clone();
         let sys_msgs = self.assembled_instructions.system_messages.clone();
         let plan_mode = self.mode == AgentMode::PlanMode;
         // Read agent config from settings
@@ -279,6 +280,7 @@ impl App {
                 client,
                 event_tx.clone(),
                 session_id,
+                delivered_background_task_ids,
                 Some(turn_id_for_loop.to_string()),
                 history,
                 sys_msgs,
@@ -354,6 +356,7 @@ impl App {
         let client = self.daemon_client.clone();
         let event_tx = self.event_tx.clone();
         let session_id = self.session_id.clone();
+        let delivered_background_task_ids = self.delivered_background_task_ids.clone();
         let sys_msgs = self.assembled_instructions.system_messages.clone();
         let plan_mode = self.mode == AgentMode::PlanMode;
         let (
@@ -400,6 +403,7 @@ impl App {
                 client,
                 event_tx.clone(),
                 session_id,
+                delivered_background_task_ids,
                 Some(turn_id_for_loop.to_string()),
                 history,
                 sys_msgs,
@@ -448,6 +452,7 @@ impl App {
         let client = self.daemon_client.clone();
         let event_tx = self.event_tx.clone();
         let session_id = self.session_id.clone();
+        let delivered_background_task_ids = self.delivered_background_task_ids.clone();
         let sys_msgs = self.assembled_instructions.system_messages.clone();
         let (max_rounds, subagent_timeout_secs, context_window, max_tokens) = {
             let s = self.settings_lock.read().expect("lock poisoned: settings");
@@ -479,6 +484,7 @@ impl App {
                 client,
                 event_tx.clone(),
                 session_id,
+                delivered_background_task_ids,
                 None,
                 history,
                 sys_msgs,
