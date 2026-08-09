@@ -12,14 +12,16 @@ use crate::tools::execution::sandbox_exec::{
 };
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// A completed background task result
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BackgroundResult {
     pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub result_type: String,
     pub command: String,
     pub stdout: String,
@@ -107,6 +109,7 @@ impl BackgroundManager {
         timeout_secs: u64,
         mode: EffectiveMode,
         workdir: Option<&std::path::Path>,
+        session_id: Option<String>,
     ) -> Result<String, ToolError> {
         let mut id_lock = self.next_id.lock().await;
         let task_id = format!("bg_{}", *id_lock);
@@ -140,6 +143,7 @@ impl BackgroundManager {
         }
 
         let task_id_clone = task_id.clone();
+        let session_id_clone = session_id.clone();
         let command_clone = command.to_string();
         let results = self.results.clone();
         let result_hook = self.result_hook.clone();
@@ -169,12 +173,14 @@ impl BackgroundManager {
                                     false,
                                     &mode_str,
                                     &level_str,
+                                    session_id_clone.clone(),
                                 );
                             }
                             Err(e) => {
                                 if !should_degrade_to_direct(fail_mode) {
                                     return BackgroundResult {
                                         task_id: task_id_clone.clone(),
+                                        session_id: session_id_clone.clone(),
                                         result_type: "command".to_string(),
                                         command: cmd_inner.clone(),
                                         stdout: String::new(),
@@ -209,6 +215,7 @@ impl BackgroundManager {
                 match cmd.output().await {
                     Ok(out) => BackgroundResult {
                         task_id: task_id_clone.clone(),
+                        session_id: session_id_clone.clone(),
                         result_type: "command".to_string(),
                         command: cmd_inner.clone(),
                         stdout: String::from_utf8_lossy(&out.stdout).to_string(),
@@ -221,6 +228,7 @@ impl BackgroundManager {
                     },
                     Err(e) => BackgroundResult {
                         task_id: task_id_clone.clone(),
+                        session_id: session_id_clone.clone(),
                         result_type: "command".to_string(),
                         command: cmd_inner,
                         stdout: String::new(),
@@ -241,6 +249,7 @@ impl BackgroundManager {
                 Ok(r) => r,
                 Err(_) => BackgroundResult {
                     task_id: task_id_clone,
+                    session_id: session_id_clone,
                     result_type: "command".to_string(),
                     command: command_clone,
                     stdout: String::new(),
@@ -271,6 +280,7 @@ impl BackgroundManager {
             &self.result_hook,
             BackgroundResult {
                 task_id,
+                session_id: None,
                 result_type: "subagent".to_string(),
                 command: description.to_string(),
                 stdout: stdout.to_string(),
@@ -334,6 +344,7 @@ fn background_from_sandbox(
     bypassed: bool,
     mode: &str,
     level: &str,
+    session_id: Option<String>,
 ) -> BackgroundResult {
     let success = out.exit_code == 0 && !out.killed_by_sandbox;
     let stderr = if out.killed_by_sandbox {
@@ -343,6 +354,7 @@ fn background_from_sandbox(
     };
     BackgroundResult {
         task_id: task_id.to_string(),
+        session_id,
         result_type: "command".to_string(),
         command: command.to_string(),
         stdout: out.stdout,
@@ -408,7 +420,7 @@ impl Tool for BackgroundTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        self.run(input, EffectiveMode::default(), None).await
+        self.run(input, EffectiveMode::default(), None, None).await
     }
 
     async fn execute_with_context(
@@ -416,8 +428,13 @@ impl Tool for BackgroundTool {
         context: &ToolContext<'_>,
         input: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
-        self.run(input, context.effective_mode, context.workdir)
-            .await
+        self.run(
+            input,
+            context.effective_mode,
+            context.workdir,
+            Some(context.agent.session_id.as_str()),
+        )
+        .await
     }
 }
 
@@ -427,6 +444,7 @@ impl BackgroundTool {
         input: serde_json::Value,
         mode: EffectiveMode,
         workdir: Option<&std::path::Path>,
+        session_id: Option<&str>,
     ) -> Result<ToolOutput, ToolError> {
         let command = input["command"].as_str().unwrap_or("");
         if command.is_empty() {
@@ -452,7 +470,16 @@ impl BackgroundTool {
             .unwrap_or(false);
 
         // Pre-check HardFail when no sandbox manager and enabled (spawn also checks).
-        let task_id = self.manager.spawn(command, timeout, mode, workdir).await?;
+        let task_id = self
+            .manager
+            .spawn(
+                command,
+                timeout,
+                mode,
+                workdir,
+                session_id.map(str::to_string),
+            )
+            .await?;
 
         // At accept time we do not yet know if runtime will degrade; mark intent.
         let bypassed = !policy.enabled
@@ -488,6 +515,19 @@ mod tests {
     use crate::agent::{AgentExecutionContext, SessionId, ToolInvocationId};
     use serde_json::json;
 
+    async fn wait_for_result(manager: &BackgroundManager) -> BackgroundResult {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(result) = manager.drain_results().await.into_iter().next() {
+                    return result;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("background command should complete")
+    }
+
     #[tokio::test]
     async fn normal_without_sandbox_hard_fails() {
         let mgr = Arc::new(BackgroundManager::new());
@@ -522,6 +562,45 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(true)
         );
+    }
+
+    /// A contextual background command must retain its originating session
+    /// through asynchronous completion delivery.
+    #[tokio::test]
+    async fn contextual_execution_scopes_result_to_originating_session() {
+        let manager = Arc::new(BackgroundManager::new());
+        let tool = BackgroundTool::new(manager.clone());
+        let root = AgentExecutionContext::root(SessionId::new("session-a"));
+        let context = ToolContext {
+            agent: &root,
+            invocation_id: ToolInvocationId::new("inv"),
+            origin_turn_id: None,
+            workdir: None,
+            effective_mode: EffectiveMode::Yolo,
+            checkpoint: None,
+        };
+
+        tool.execute_with_context(&context, json!({"command": "echo hi"}))
+            .await
+            .expect("background command should start");
+
+        let result = wait_for_result(&manager).await;
+        assert_eq!(result.session_id.as_deref(), Some("session-a"));
+    }
+
+    /// Context-free calls deliberately leave completed results unscoped.
+    #[tokio::test]
+    async fn context_free_execution_leaves_result_unscoped() {
+        let manager =
+            Arc::new(BackgroundManager::new().with_sandbox(Arc::new(SandboxManager::new())));
+        let tool = BackgroundTool::new(manager.clone());
+
+        tool.execute(json!({"command": "echo hi"}))
+            .await
+            .expect("background command should start");
+
+        let result = wait_for_result(&manager).await;
+        assert_eq!(result.session_id, None);
     }
 
     /// With a result hook installed (daemon retained-queue path), completed
