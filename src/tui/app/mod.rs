@@ -124,6 +124,10 @@ pub struct App {
     /// Completed background task IDs delivered within the active session.
     /// Shared with each AgentLoop to deduplicate retained recovery and SSE.
     pub(crate) delivered_background_task_ids: Arc<TokioMutex<HashSet<String>>>,
+    /// Completed background task IDs already rendered in the active session.
+    /// Kept separate from model delivery so a result that arrives during a
+    /// running turn remains eligible for retained snapshot recovery.
+    displayed_background_task_ids: Arc<TokioMutex<HashSet<String>>>,
     pub session_name: String,
     pub last_tool_name: Option<String>,
     pub last_abort_reason: Option<TurnAbortReason>,
@@ -518,6 +522,7 @@ impl App {
             suppress_phase_updates: false,
             session_id,
             delivered_background_task_ids: Arc::new(TokioMutex::new(HashSet::new())),
+            displayed_background_task_ids: Arc::new(TokioMutex::new(HashSet::new())),
             session_name: "New Session".to_string(),
             last_tool_name: None,
             last_abort_reason: None,
@@ -650,6 +655,43 @@ impl App {
         self.trace_event_reader = Some(crate::tui::app::server_side::spawn_trace_event_reader(
             client, sid, tx, shutdown,
         ));
+    }
+
+    /// Adopt a different session and rebind every session-scoped delivery
+    /// mechanism to it. Both `/clear` and the session picker use this path so
+    /// deduplication state and SSE filters cannot retain the previous session.
+    fn adopt_active_session(&mut self, id: String, name: String) {
+        self.session_id = id.clone();
+        self.session_name = name;
+        self.delivered_background_task_ids =
+            Arc::new(TokioMutex::new(std::collections::HashSet::new()));
+        self.displayed_background_task_ids =
+            Arc::new(TokioMutex::new(std::collections::HashSet::new()));
+        self.server_side_turn_active = false;
+        self.respawn_session_event_reader(None);
+        self.respawn_trace_event_reader();
+        self.respawn_global_event_reader();
+        self.session_exit_saved
+            .store(false, std::sync::atomic::Ordering::Release);
+
+        let client = self.daemon_client.clone();
+        let event_tx = self.event_tx.clone();
+        tokio::spawn(async move {
+            match client.reset_agent_generation(&id).await {
+                Ok(generation) => {
+                    let _ = event_tx.send(AppEvent::AgentGenerationReset { generation });
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "reset_agent_generation failed; retaining old generation"
+                    );
+                    let _ = event_tx.send(AppEvent::AgentGenerationReset {
+                        generation: u64::MAX,
+                    });
+                }
+            }
+        });
     }
 
     /// (Re)create the global-event reader for the active session. Todos stay

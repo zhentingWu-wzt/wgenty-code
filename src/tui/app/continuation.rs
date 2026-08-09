@@ -16,7 +16,7 @@ impl App {
     /// ready. Atomicity is daemon-owned: a claimed group is delivered at most
     /// once.
     pub(super) async fn poll_ready_task_groups(&mut self) {
-        if self.current_turn_handle.is_some() {
+        if self.has_running_turn() {
             return;
         }
         let delivery = match self

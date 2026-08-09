@@ -66,6 +66,8 @@ impl App {
             self.sandbox_bypassed_session = false;
             self.delivered_background_task_ids =
                 std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
+            self.displayed_background_task_ids =
+                std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
             self.cancel_current_turn();
             // Reset phase immediately and suppress stale events from the
             // just-aborted turn so the status bar shows "Ready" instead of
@@ -205,7 +207,7 @@ impl App {
                 self.pending_inputs.push_back(PendingInput::new(
                     "Continue the current task from where you left off.".to_string(),
                 ));
-                if self.current_turn_handle.is_none() {
+                if !self.has_running_turn() {
                     self.start_next_turn();
                 }
             } else {
@@ -229,14 +231,14 @@ impl App {
             self.push_system_message(
                 "🔄 Running /init — 正在分析代码库以生成 WGENTY.md 和 AGENTS.md...",
             );
-            if self.current_turn_handle.is_none() {
+            if !self.has_running_turn() {
                 let init_prompt = crate::prompts::get_init_prompt().to_string();
                 self.spawn_agent_turn(init_prompt, true);
             }
             return;
         }
         if text.trim() == "/compact" {
-            if self.current_turn_handle.is_some() {
+            if self.has_running_turn() {
                 self.push_system_message(
                     "⏳ Please wait for the current task to finish before compacting.",
                 );
@@ -351,7 +353,7 @@ impl App {
                         );
                         self.pending_inputs
                             .push_back(PendingInput::internal(text.clone(), agent_input));
-                        if self.current_turn_handle.is_none() {
+                        if !self.has_running_turn() {
                             self.start_next_turn();
                         }
                         return;
@@ -391,7 +393,7 @@ impl App {
             return;
         }
         self.pending_inputs.push_back(PendingInput::new(text));
-        if self.current_turn_handle.is_none() {
+        if !self.has_running_turn() {
             self.start_next_turn();
         }
     }

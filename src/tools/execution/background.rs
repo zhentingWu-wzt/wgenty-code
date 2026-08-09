@@ -37,6 +37,24 @@ pub struct BackgroundResult {
     pub sandbox_level: Option<String>,
 }
 
+impl BackgroundResult {
+    /// Human-facing completion details shown by both live SSE delivery and
+    /// retained snapshot recovery.
+    pub(crate) fn format_completion_notification(&self) -> String {
+        format!(
+            "[Background task {} completed: {}]\ncommand: {}\nexit code: {}\nstdout:\n{}\nstderr:\n{}",
+            self.task_id,
+            if self.success { "SUCCESS" } else { "FAILED" },
+            self.command,
+            self.exit_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            self.stdout,
+            self.stderr,
+        )
+    }
+}
+
 /// Delivery hook for completed results. When installed (daemon retained-queue
 /// path), results go to the hook instead of the internal drain queue.
 type ResultHook = Arc<dyn Fn(BackgroundResult) + Send + Sync>;
@@ -104,6 +122,22 @@ impl BackgroundManager {
     /// Returns the task_id immediately. Infrastructure HardFail is returned
     /// before the task is queued so callers never believe a denied spawn started.
     pub async fn spawn(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+        mode: EffectiveMode,
+        workdir: Option<&std::path::Path>,
+    ) -> Result<String, ToolError> {
+        self.spawn_for_session(command, timeout_secs, mode, workdir, None)
+            .await
+    }
+
+    /// Spawn a command associated with a daemon session.
+    ///
+    /// Session-aware tool execution uses this entry point so retained results
+    /// can be delivered only to the owning session. Library callers that do
+    /// not have a session continue to use [`Self::spawn`].
+    pub async fn spawn_for_session(
         &self,
         command: &str,
         timeout_secs: u64,
@@ -472,7 +506,7 @@ impl BackgroundTool {
         // Pre-check HardFail when no sandbox manager and enabled (spawn also checks).
         let task_id = self
             .manager
-            .spawn(
+            .spawn_for_session(
                 command,
                 timeout,
                 mode,
@@ -562,6 +596,18 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(true)
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_four_argument_spawn_remains_source_compatible() {
+        let manager = BackgroundManager::new();
+
+        let task_id = manager
+            .spawn("true", 300, EffectiveMode::Yolo, None)
+            .await
+            .expect("legacy spawn call should compile and start");
+
+        assert_eq!(task_id, "bg_1");
     }
 
     /// A contextual background command must retain its originating session

@@ -343,6 +343,9 @@ pub enum AppEvent {
     },
     /// A turn (user-input → final response) completed; start next queued input if any
     TurnComplete,
+    /// A daemon-owned turn ended without a normal TurnDone event (run error,
+    /// submission failure, or established SSE disconnect).
+    ServerTurnTerminated,
     /// A turn began processing
     TurnStarted {
         turn_id: TurnId,
