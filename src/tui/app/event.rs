@@ -1085,8 +1085,46 @@ impl App {
                     tool_metadata: None,
                 });
             }
-            AppEvent::SessionSwitched { id, name } => {
-                let _ = self.adopt_active_session(id, name);
+            AppEvent::SessionSwitched { from_id, id, name } => {
+                if self.session_id != from_id {
+                    tracing::debug!(
+                        expected_session_id = %from_id,
+                        active_session_id = %self.session_id,
+                        "dropping stale completed session switch"
+                    );
+                    return;
+                }
+                if self.adopt_active_session(id.clone(), name) {
+                    let client = self.daemon_client.clone();
+                    let history = self.conversation_history.clone();
+                    let tx = self.event_tx.clone();
+                    tokio::spawn(async move {
+                        match client.load_session(&id).await {
+                            Ok(resp) => {
+                                let messages = resp.messages;
+                                let ui_messages = resp.ui_messages;
+                                {
+                                    let mut h = history.lock().await;
+                                    *h = messages.clone();
+                                }
+                                let _ = tx.send(AppEvent::HistoryLoaded {
+                                    messages,
+                                    ui_messages,
+                                });
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    session_id = %id,
+                                    error = %error,
+                                    "failed to load session after transactional switch"
+                                );
+                                let _ = tx.send(AppEvent::SystemNotice(format!(
+                                    "⚠ session switched but history could not be loaded: {error}"
+                                )));
+                            }
+                        }
+                    });
+                }
             }
             AppEvent::SessionCleared { id, name } => {
                 self.adopt_session_after_reset(id, name);

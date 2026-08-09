@@ -123,6 +123,10 @@ pub struct App {
     /// The flag is shared with already-spawned save tasks so they can recheck
     /// ownership after acquiring `session_save_lock`.
     daemon_owns_session_history: Arc<std::sync::atomic::AtomicBool>,
+    /// True only for the locally minted startup id until it is first persisted.
+    /// Existing/daemon-created sessions must never be recreated from a stale
+    /// TUI history snapshot when a server-side run starts.
+    session_needs_initial_upsert: Arc<std::sync::atomic::AtomicBool>,
     /// Pending user inputs queued while a Turn is running.
     pub pending_inputs: VecDeque<PendingInput>,
     /// Handle for the currently executing Turn (None when idle).
@@ -511,6 +515,7 @@ impl App {
             session_save_lock: Arc::new(TokioMutex::new(())),
             session_exit_saved: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             daemon_owns_session_history: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            session_needs_initial_upsert: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             assembled_instructions: assembled,
             pending_inputs: VecDeque::new(),
             current_turn_handle: None,
@@ -661,23 +666,6 @@ impl App {
             });
             return false;
         }
-        if id != self.session_id {
-            // A daemon continuation may be active even when every local busy
-            // gate is idle. Fence stale saves immediately and request daemon
-            // cancellation before rebinding observers to the new session.
-            self.mark_daemon_owned_session_history();
-            let client = self.daemon_client.clone();
-            let old_id = self.session_id.clone();
-            tokio::spawn(async move {
-                if let Err(error) = client.cancel_run(&old_id).await {
-                    tracing::warn!(
-                        session_id = %old_id,
-                        error = %error,
-                        "failed to cancel old daemon session during session switch"
-                    );
-                }
-            });
-        }
         self.adopt_session_after_reset(id, name);
         true
     }
@@ -698,6 +686,7 @@ impl App {
         // Replace rather than clear the old Arc: save tasks spawned for the
         // previous session must keep observing its sticky ownership fence.
         self.daemon_owns_session_history = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.session_needs_initial_upsert = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let client = self.daemon_client.clone();
         let event_tx = self.event_tx.clone();
@@ -786,6 +775,7 @@ impl App {
         let lock = self.session_save_lock.clone();
         let exit_saved = self.session_exit_saved.clone();
         let daemon_owns_history = self.daemon_owns_session_history.clone();
+        let needs_initial_upsert = self.session_needs_initial_upsert.clone();
 
         let _guard = lock.lock().await;
         if daemon_owns_history.load(std::sync::atomic::Ordering::Acquire) {
@@ -804,6 +794,7 @@ impl App {
         };
         match client.save_session(&id, &name, &h, &ui_messages).await {
             Ok(()) => {
+                needs_initial_upsert.store(false, std::sync::atomic::Ordering::Release);
                 exit_saved.store(true, std::sync::atomic::Ordering::Release);
             }
             Err(e) => {
@@ -854,6 +845,7 @@ impl App {
         let lock = self.session_save_lock.clone();
         let exit_saved = self.session_exit_saved.clone();
         let daemon_owns_history = self.daemon_owns_session_history.clone();
+        let needs_initial_upsert = self.session_needs_initial_upsert.clone();
         tokio::spawn(async move {
             let _guard = lock.lock().await;
             if daemon_owns_history.load(std::sync::atomic::Ordering::Acquire) {
@@ -882,6 +874,8 @@ impl App {
                     error = %e,
                     "Failed to save session to daemon"
                 );
+            } else {
+                needs_initial_upsert.store(false, std::sync::atomic::Ordering::Release);
             }
         });
     }

@@ -435,10 +435,12 @@ pub enum AppEvent {
     SessionClearFailed {
         suppress_phase_updates: bool,
     },
-    /// `/clear` created a new session; the main loop adopts the new id/name.
-    /// Subagent generation is reset separately via the follow-up
-    /// [`AppEvent::AgentGenerationReset`].
+    /// The session picker observed final release of the old daemon run and may
+    /// transactionally adopt the selected id/name.
     SessionSwitched {
+        /// Session that was active when cancellation began. The handler drops
+        /// the event if another reset won the race before final release.
+        from_id: String,
         id: String,
         name: String,
     },
