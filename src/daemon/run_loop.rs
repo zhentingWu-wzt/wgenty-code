@@ -901,8 +901,10 @@ fn structured_background_continuation(
     .to_string()
 }
 
-/// Claim and drain one scheduler event. `RunFinished` is emitted only after
-/// `run_session_turn` returns, so a handoff can occur only after final save.
+/// Prepare one scheduler event. Results move to a recoverable claim here and
+/// are acknowledged only after `run_session_turn` persists its start message.
+/// `RunFinished` is emitted after the turn returns, so normal handoff still
+/// occurs only after final save; an unacknowledged claim is requeued first.
 async fn prepare_background_continuation(
     state: &Arc<DaemonState>,
     event: BackgroundSchedulerEvent,
@@ -911,6 +913,15 @@ async fn prepare_background_continuation(
         BackgroundSchedulerEvent::ResultReady { session_id } => (session_id, None),
         BackgroundSchedulerEvent::RunFinished { session_id, run_id } => (session_id, Some(run_id)),
     };
+
+    // A run that exited before acknowledging its start-save never consumed
+    // the claim. Put that batch back ahead of newer pending results before
+    // deciding whether to hand off the registry claim.
+    if let Some(run_id) = finished_run_id.as_deref() {
+        state
+            .requeue_background_result_claim(&session_id, run_id)
+            .await;
+    }
 
     // A forged/stale session id is retained for legacy recovery but cannot
     // acquire a run claim or consume model history.
@@ -947,7 +958,7 @@ async fn prepare_background_continuation(
     }
 
     let results = state
-        .drain_background_results_for_session(&session_id)
+        .claim_background_results_for_session(&session_id, &run_id)
         .await;
     if results.is_empty() {
         state.session_runs.finish(&session_id, &run_id);
@@ -1281,12 +1292,13 @@ async fn guarded_save(
 /// run dies, the mid-run saves checkpoint compaction/tool-round progress, and
 /// the final save records the completed conversation. Tool-call pairing is
 /// sanitized so a cancelled/failed run never leaves a dangling assistant
-/// `tool_calls` without its `tool` results. Errors are logged, never fatal.
+/// `tool_calls` without its `tool` results. Returns whether persistence
+/// completed; errors are logged for callers to handle at their lifecycle seam.
 async fn save_session_history(
     sessions: &MemorySessionManager,
     session_id: &str,
     history: &[ChatMessage],
-) {
+) -> bool {
     let mut history = history.to_vec();
     crate::api::types::sanitize_tool_call_pairing(&mut history);
     // ChatMessage -> SessionMessage via serde round-trip (the same conversion
@@ -1297,12 +1309,12 @@ async fn save_session_history(
         Ok(m) => m,
         Err(e) => {
             tracing::warn!(error = %e, session_id, "run: history conversion failed, save skipped");
-            return;
+            return false;
         }
     };
     let Some(mut session) = sessions.get(session_id).await else {
         tracing::warn!(session_id, "run: session vanished before save");
-        return;
+        return false;
     };
     session.messages = messages;
     session.updated_at = chrono::Utc::now();
@@ -1312,7 +1324,9 @@ async fn save_session_history(
     session.lazy_message_count = None;
     if let Err(e) = sessions.save(&session).await {
         tracing::warn!(error = %e, session_id, "run: session save failed");
+        return false;
     }
+    true
 }
 
 /// Body of one spawned run: seed history from the persisted session, run the
@@ -1357,8 +1371,19 @@ async fn run_session_turn(
     seed.push(ChatMessage::user(&message));
     let seed_len_before_run = seed.len(); // for TurnContext new_messages slice
 
-    // 2. Start save: the user message is durable even if the run dies.
-    save_session_history(&sessions, session_id, &seed).await;
+    // 2. Start save: the user message is durable even if the run dies. A
+    // background batch remains claimed (and snapshot-visible) until this
+    // succeeds; failure requeues it for a later continuation attempt.
+    if !save_session_history(&sessions, session_id, &seed).await {
+        state
+            .requeue_background_result_claim(session_id, run_id)
+            .await;
+        sink.emit(RuntimeEvent::StreamError(
+            "run start history save failed".to_string(),
+        ));
+        return;
+    }
+    state.ack_background_result_claim(session_id, run_id).await;
 
     // 3. Live settings + LLM port (same wiring as the chat_stream handler).
     let settings = state
@@ -2169,7 +2194,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn idle_result_claims_continuation_and_drains_structured_batch() {
+    async fn idle_result_claims_batch_without_removing_it_before_ack() {
         let state = continuation_test_state().await;
         state
             .record_background_result(background_result("bg_1", "session-a"))
@@ -2188,15 +2213,100 @@ mod tests {
         .expect("idle session should claim a continuation");
 
         assert!(state.session_runs.is_active("session-a"));
-        assert!(state
-            .background_results_snapshot_for_session("session-a")
-            .await
-            .is_empty());
+        assert_eq!(
+            state
+                .background_results_snapshot_for_session("session-a")
+                .await
+                .len(),
+            2,
+            "claimed results remain recoverable until the start save is acknowledged"
+        );
         let payload: serde_json::Value =
             serde_json::from_str(&continuation.message).expect("structured continuation JSON");
         assert_eq!(payload["type"], "background_task_results");
         assert_eq!(payload["results"][0]["task_id"], "bg_1");
         assert_eq!(payload["results"][1]["task_id"], "bg_2");
+
+        assert!(
+            state
+                .ack_background_result_claim("session-a", &continuation.run_id)
+                .await
+        );
+        assert!(state
+            .background_results_snapshot_for_session("session-a")
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn acknowledged_task_id_rejects_late_duplicate_without_sse() {
+        let state = continuation_test_state().await;
+        let mut events = state.global_event_hub.subscribe();
+        let result = background_result("bg_1", "session-a");
+        assert!(state.record_background_result(result.clone()).await);
+        events.recv().await.expect("first result SSE");
+        let continuation = prepare_background_continuation(
+            &state,
+            BackgroundSchedulerEvent::ResultReady {
+                session_id: "session-a".to_string(),
+            },
+        )
+        .await
+        .expect("claim continuation");
+        assert!(
+            state
+                .ack_background_result_claim("session-a", &continuation.run_id)
+                .await
+        );
+
+        assert!(!state.record_background_result(result).await);
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        assert!(state
+            .background_results_snapshot_for_session("session-a")
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn unacknowledged_claim_requeues_after_startup_crash() {
+        let state = continuation_test_state().await;
+        state
+            .record_background_result(background_result("bg_1", "session-a"))
+            .await;
+        let first = prepare_background_continuation(
+            &state,
+            BackgroundSchedulerEvent::ResultReady {
+                session_id: "session-a".to_string(),
+            },
+        )
+        .await
+        .expect("first continuation claim");
+
+        let retry = prepare_background_continuation(
+            &state,
+            BackgroundSchedulerEvent::RunFinished {
+                session_id: "session-a".to_string(),
+                run_id: first.run_id.clone(),
+            },
+        )
+        .await
+        .expect("unacknowledged completion requeues and retries");
+
+        assert_ne!(retry.run_id, first.run_id);
+        let payload: serde_json::Value =
+            serde_json::from_str(&retry.message).expect("retry continuation JSON");
+        assert_eq!(payload["results"][0]["task_id"], "bg_1");
+        assert_eq!(
+            state
+                .background_results_snapshot_for_session("session-a")
+                .await
+                .len(),
+            1,
+            "retry claim remains recoverable until its own ack"
+        );
     }
 
     #[tokio::test]
