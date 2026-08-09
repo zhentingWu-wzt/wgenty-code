@@ -202,6 +202,22 @@ class WgentyCodeAgent(BaseInstalledAgent):
                     "beta_headers": [],
                 },
             },
+            "prompt": {
+                "developer_instructions": (
+                    "You are solving a software engineering task in an autonomous "
+                    "evaluation sandbox. Work efficiently:\n"
+                    "1. Explore the codebase briefly (at most 20-30 rounds), then "
+                    "start implementing changes immediately.\n"
+                    "2. Do NOT clone external repositories or fetch external specs. "
+                    "Work with the code and tests already in the repo.\n"
+                    "3. Do NOT ask questions - make reasonable assumptions and proceed.\n"
+                    "4. After each significant change, run the project's test suite "
+                    "to check for regressions.\n"
+                    "5. Update test snapshots if the expected behavior changes.\n"
+                    "6. Follow the project's existing coding style and conventions.\n"
+                    "7. Commit all changes with git before finishing."
+                ),
+            },
         }
         settings_json = json.dumps(settings, indent=2)
 
@@ -253,6 +269,34 @@ class WgentyCodeAgent(BaseInstalledAgent):
             environment,
             command="codegraph init 2>&1 || echo 'codegraph init skipped'",
             env=env,
+        )
+
+        # --- Step 3.6: write AGENTS.md if not already present ---
+        # Provides project-level guidance (Layer 9 in prompt assembly) so the
+        # agent knows the test framework, coding conventions, etc.  Only
+        # writes if the repo doesn't already have one.
+        agents_md = (
+            "# AGENTS.md\n\n"
+            "## Testing\n"
+            "- Run tests with: `npx vitest run` (or the project's existing test command)\n"
+            "- Update test snapshots with: `npx vitest run -u` when behavior changes are intentional\n"
+            "- Always run the full test suite after making changes\n\n"
+            "## Code Style\n"
+            "- Follow the existing coding style in the repository\n"
+            "- Use the same formatting and indentation as surrounding code\n"
+            "- Do not add unnecessary dependencies\n\n"
+            "## Workflow\n"
+            "- Read the task instruction carefully before starting\n"
+            "- Make incremental changes and test after each one\n"
+            "- Do not modify test files that define expected behavior (test specs)\n"
+            "- Commit all changes when done\n"
+        )
+        agents_md_cmd = (
+            "test -f AGENTS.md || "
+            f"cat > AGENTS.md << 'WGENTY_AGENTS_EOF'\n{agents_md}\nWGENTY_AGENTS_EOF"
+        )
+        await self.exec_as_agent(
+            environment, command=agents_md_cmd, env=env
         )
 
         # --- Step 4: run wgenty-code ---
