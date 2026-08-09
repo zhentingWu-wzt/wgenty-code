@@ -450,6 +450,12 @@ pub enum AppEvent {
         id: String,
         name: String,
     },
+    /// `/clear` has explicitly cancelled/reset the previous turn and may
+    /// adopt the newly created session without the interactive picker guard.
+    SessionCleared {
+        id: String,
+        name: String,
+    },
     /// A new task generation was established after `/clear` or shutdown
     /// cancellation. Obsolete root-direct subtrees are cancelled by the
     /// daemon; the app adopts the new generation and clears local views.

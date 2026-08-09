@@ -707,6 +707,14 @@ impl App {
             });
             return false;
         }
+        self.adopt_session_after_reset(id, name);
+        true
+    }
+
+    /// Complete an explicit reset protocol such as `/clear`. The caller has
+    /// already cancelled the old run and flushed its session-owned queue, so
+    /// the interactive busy guard does not apply.
+    fn adopt_session_after_reset(&mut self, id: String, name: String) {
         self.session_id = id.clone();
         self.session_name = name;
         self.delivered_background_task_ids =
@@ -740,7 +748,6 @@ impl App {
                 }
             }
         });
-        true
     }
 
     /// (Re)create the global-event reader for the active session. Todos stay
