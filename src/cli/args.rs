@@ -1,6 +1,7 @@
 //! CLI Arguments
 
 use super::CliArgs;
+use anyhow::Context;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -22,8 +23,20 @@ impl Cli {
             Some(super::Commands::Repl { prompt }) => {
                 self.run_repl(state, prompt.clone()).await?;
             }
-            Some(super::Commands::Query { prompt }) => {
-                self.run_query(state, prompt.clone()).await?;
+            Some(super::Commands::Query {
+                prompt,
+                prompt_file,
+                yolo,
+                max_rounds,
+            }) => {
+                self.run_query(
+                    state,
+                    prompt.clone(),
+                    prompt_file.clone(),
+                    *yolo,
+                    *max_rounds,
+                )
+                .await?;
             }
             Some(super::Commands::Config { action }) => {
                 self.run_config(action)?;
@@ -304,10 +317,26 @@ impl Cli {
         Ok(())
     }
 
-    async fn run_query(&self, state: crate::state::AppState, prompt: String) -> anyhow::Result<()> {
+    async fn run_query(
+        &self,
+        state: crate::state::AppState,
+        prompt: Option<String>,
+        prompt_file: Option<String>,
+        yolo: bool,
+        max_rounds: Option<usize>,
+    ) -> anyhow::Result<()> {
         // Full agent loop (tools + micro-compaction + shared stream engine).
         // Replaces the previous one-shot non-streaming HTTP call.
-        crate::cli::headless_runtime::run_oneshot(state.settings, prompt).await
+        let prompt = match (prompt, prompt_file) {
+            (Some(p), None) => p,
+            (None, Some(path)) => std::fs::read_to_string(&path)
+                .with_context(|| format!("reading prompt file: {path}"))?,
+            (Some(_), Some(_)) => {
+                anyhow::bail!("--prompt and --prompt-file are mutually exclusive")
+            }
+            (None, None) => anyhow::bail!("provide --prompt <text> or --prompt-file <path>"),
+        };
+        crate::cli::headless_runtime::run_oneshot(state.settings, prompt, yolo, max_rounds).await
     }
 
     fn run_config(&self, action: &super::ConfigCommands) -> anyhow::Result<()> {

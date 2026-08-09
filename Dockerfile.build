@@ -1,0 +1,5 @@
+FROM --platform=linux/amd64 rust:1.95-bookworm
+WORKDIR /app
+COPY . .
+RUN cargo build --release --features bundled-sqlite
+RUN cp target/release/wgenty-code /wgenty-code-linux-amd64

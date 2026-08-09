@@ -1,0 +1,40 @@
+# DeepSWE evaluation job config for wgenty-code.
+#
+# Usage:
+#   ./run_eval.sh <deep-swe-dir> [n_tasks]
+#
+# The binary path is injected by run_eval.sh via sed replacement of
+# __WGENTY_BINARY__ with the absolute path to the built binary.
+
+job_name: wgenty-code-deepswe
+jobs_dir: jobs
+
+n_attempts: 1
+n_concurrent_trials: 1
+
+agent_timeout_multiplier: 20.0
+agent_setup_timeout_multiplier: 2.0
+
+agents:
+  - import_path: "wgenty_code_agent:WgentyCodeAgent"
+    model_name: "deepseek-v4-flash"
+    env: {}
+    kwargs:
+      max_rounds: 500
+
+environment:
+  type: docker
+  delete: false
+  mounts:
+    - type: bind
+      source: "__WGENTY_BINARY__"
+      target: "/usr/local/bin/wgenty-code"
+      read_only: true
+
+datasets:
+  - path: __DEEPSWE_TASKS__
+    n_tasks: 10
+    sample_seed: 0
+
+artifacts:
+  - "/logs/artifacts/agent-output.txt"

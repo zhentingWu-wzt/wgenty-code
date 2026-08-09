@@ -14,6 +14,7 @@ use crate::api::{ApiClient, ChatMessage, ToolDefinition};
 use crate::config::{resolve_context_window, Settings};
 use crate::context::MemoryManager;
 use crate::prompts::{self, PromptContext};
+use crate::sandbox::EffectiveMode;
 use crate::tools::ToolRegistry;
 use async_trait::async_trait;
 use std::io::{self, Write};
@@ -55,12 +56,22 @@ impl EventSink for CliEventSink {
             } => {
                 eprintln!("[compact] done (summary ~{} chars)", summary_chars);
             }
-            RuntimeEvent::ToolStart { name, .. } if self.verbose => {
-                eprintln!("[tool] start {}", name);
+            RuntimeEvent::ToolStart { name, args } if self.verbose => {
+                let args_preview: String = if args.is_null() {
+                    String::new()
+                } else {
+                    args.to_string().chars().take(300).collect()
+                };
+                eprintln!("\n[tool] >>> {} {}", name, args_preview);
             }
             RuntimeEvent::ToolResult { name, content, .. } if self.verbose => {
-                let preview: String = content.chars().take(200).collect();
-                eprintln!("[tool] {} → {}", name, preview);
+                let preview: String = content.chars().take(500).collect();
+                eprintln!(
+                    "\n[tool] <<< {} ({} chars) {}",
+                    name,
+                    content.len(),
+                    preview
+                );
             }
             RuntimeEvent::Connecting {
                 attempt,
@@ -89,6 +100,7 @@ impl EventSink for CliEventSink {
 pub struct RegistryToolPort {
     registry: Arc<ToolRegistry>,
     agent: AgentExecutionContext,
+    effective_mode: EffectiveMode,
 }
 
 impl RegistryToolPort {
@@ -96,14 +108,27 @@ impl RegistryToolPort {
         Self {
             registry,
             agent: AgentExecutionContext::root(SessionId::new(session_id)),
+            effective_mode: EffectiveMode::default(),
         }
+    }
+
+    /// Override the sandbox effective mode applied to tool execution. In
+    /// [`EffectiveMode::Yolo`] the guardian critical-risk block is bypassed
+    /// so the agent can run arbitrary commands in disposable sandboxes.
+    pub fn with_effective_mode(mut self, mode: EffectiveMode) -> Self {
+        self.effective_mode = mode;
+        self
     }
 }
 
 #[async_trait]
 impl ToolPort for RegistryToolPort {
     async fn execute(&self, req: ToolRequest) -> ToolResponse {
-        if req.name == "execute_command" || req.name == "exec_command" {
+        // YOLO bypasses the guardian critical-risk block so the agent can run
+        // arbitrary commands (builds, tests, installs) in disposable sandboxes.
+        if self.effective_mode != EffectiveMode::Yolo
+            && (req.name == "execute_command" || req.name == "exec_command")
+        {
             if let Some(cmd) = req.arguments.get("command").and_then(|v| v.as_str()) {
                 let risk = crate::runtime::guardian::classify_risk(cmd);
                 if risk >= crate::runtime::guardian::RiskLevel::Critical {
@@ -133,7 +158,7 @@ impl ToolPort for RegistryToolPort {
             invocation_id: ToolInvocationId::new(inv_id),
             origin_turn_id: req.turn_id.as_deref(),
             workdir: None,
-            effective_mode: crate::sandbox::EffectiveMode::default(),
+            effective_mode: self.effective_mode,
             checkpoint: Some(self.registry.checkpoint_store.as_ref()),
         };
         match self
@@ -181,7 +206,20 @@ impl ToolPort for RegistryToolPort {
 }
 
 /// Run a single headless agent turn (tools + micro/auto compaction, streaming to stdout).
-pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<()> {
+///
+/// `yolo` switches the run to autonomous mode: the sandbox effective mode is
+/// [`EffectiveMode::Yolo`] (full filesystem/network access, guardian critical
+/// block bypassed) and the prompt labels advertise `disabled`/`never`, so the
+/// agent freely edits files and runs commands without approval gating. Intended
+/// for disposable sandboxed eval runs (e.g. DeepSWE).
+///
+/// `max_rounds_override` takes precedence over `settings.agent.max_rounds`.
+pub async fn run_oneshot(
+    settings: Settings,
+    prompt: String,
+    yolo: bool,
+    max_rounds_override: Option<usize>,
+) -> anyhow::Result<()> {
     let client = ApiClient::new(settings.clone());
     if client.get_api_key().is_none() {
         anyhow::bail!(
@@ -209,12 +247,18 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
     let memory_manager = Arc::new(MemoryManager::new(crate::utils::current_project_root()));
     let memories_loaded = memory_manager.load().await.is_ok();
 
-    // Headless defaults to Normal (Codex workspace-write + on-request), not YOLO.
-    // Labels match AgentMode::Normal.prompt_sandbox_mode / prompt_approval_policy.
-    let mut prompt_ctx = PromptContext::default()
-        .with_sandbox("workspace-write")
-        .with_approval("on-request")
-        .with_codegraph_state(crate::mcp::codegraph::probe_install_state(&settings));
+    // Headless defaults to Normal (workspace-write + on-request); `--yolo`
+    // advertises disabled/never so the model freely edits and runs commands.
+    let mut prompt_ctx = if yolo {
+        PromptContext::default()
+            .with_sandbox("disabled")
+            .with_approval("never")
+    } else {
+        PromptContext::default()
+            .with_sandbox("workspace-write")
+            .with_approval("on-request")
+    }
+    .with_codegraph_state(crate::mcp::codegraph::probe_install_state(&settings));
     if memories_loaded {
         let global_lines =
             crate::context::inject::MemoryContextInjector::format_global(memory_manager.as_ref())
@@ -284,6 +328,11 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
         tracing::warn!(error = %e, turn = %turn_id, "checkpoint begin_turn failed");
     }
     let tools = RegistryToolPort::new(registry, &session_id);
+    let tools = if yolo {
+        tools.with_effective_mode(EffectiveMode::Yolo)
+    } else {
+        tools
+    };
     let events = CliEventSink::new(std::env::var("WGENTY_VERBOSE").is_ok());
 
     let verbose = std::env::var("WGENTY_VERBOSE").is_ok();
@@ -295,7 +344,9 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
         });
 
     let config = RuntimeConfig {
-        max_rounds: settings.agent.max_rounds.unwrap_or(100),
+        max_rounds: max_rounds_override
+            .or(settings.agent.max_rounds)
+            .unwrap_or(100),
         plan_mode: false,
         subagent_timeout_secs: settings.agent.subagent.timeout_secs,
         context_window: resolve_context_window(
