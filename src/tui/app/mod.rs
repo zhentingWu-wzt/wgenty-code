@@ -53,6 +53,8 @@ pub struct PendingInput {
     /// Do not render or use this synthetic input to name the session.
     pub hidden: bool,
     pub continuation: Option<crate::tui::client::TaskGroupDeliveryResponse>,
+    /// Session-owned result awaiting acceptance by a daemon continuation.
+    pub server_background_result: Option<crate::tools::execution::BackgroundResult>,
 }
 
 impl PendingInput {
@@ -62,6 +64,7 @@ impl PendingInput {
             agent_input: text,
             hidden: false,
             continuation: None,
+            server_background_result: None,
         }
     }
 
@@ -71,6 +74,7 @@ impl PendingInput {
             agent_input,
             hidden: false,
             continuation: None,
+            server_background_result: None,
         }
     }
 
@@ -83,6 +87,7 @@ impl PendingInput {
             agent_input: String::new(),
             hidden: true,
             continuation: Some(delivery),
+            server_background_result: None,
         }
     }
 
@@ -98,6 +103,23 @@ impl PendingInput {
             agent_input,
             hidden: true,
             continuation: None,
+            server_background_result: None,
+        }
+    }
+
+    /// A daemon continuation whose delivery is committed only after `/run`
+    /// accepts it. Keeping the result preserves retry and session ownership.
+    pub fn server_background_result(result: crate::tools::execution::BackgroundResult) -> Self {
+        let agent_input = match serde_json::to_string(&result) {
+            Ok(message) => message,
+            Err(error) => format!("[Failed to serialize background task result: {error}]"),
+        };
+        Self {
+            display_text: String::new(),
+            agent_input,
+            hidden: true,
+            continuation: None,
+            server_background_result: Some(result),
         }
     }
 
@@ -128,6 +150,14 @@ pub struct App {
     /// Kept separate from model delivery so a result that arrives during a
     /// running turn remains eligible for retained snapshot recovery.
     displayed_background_task_ids: Arc<TokioMutex<HashSet<String>>>,
+    /// Results reserved for an unaccepted daemon continuation. Unlike the
+    /// delivery ledger, this is synchronous so duplicate SSE events cannot
+    /// enqueue the same result while a retry is in flight.
+    pending_server_background_task_ids: HashSet<String>,
+    /// True while a hidden continuation is retrying `/run` and has not yet
+    /// been accepted. Disconnect lifecycle events must not release the run
+    /// gate during this window.
+    server_background_run_starting: bool,
     pub session_name: String,
     pub last_tool_name: Option<String>,
     pub last_abort_reason: Option<TurnAbortReason>,
@@ -523,6 +553,8 @@ impl App {
             session_id,
             delivered_background_task_ids: Arc::new(TokioMutex::new(HashSet::new())),
             displayed_background_task_ids: Arc::new(TokioMutex::new(HashSet::new())),
+            pending_server_background_task_ids: HashSet::new(),
+            server_background_run_starting: false,
             session_name: "New Session".to_string(),
             last_tool_name: None,
             last_abort_reason: None,
@@ -660,13 +692,29 @@ impl App {
     /// Adopt a different session and rebind every session-scoped delivery
     /// mechanism to it. Both `/clear` and the session picker use this path so
     /// deduplication state and SSE filters cannot retain the previous session.
-    fn adopt_active_session(&mut self, id: String, name: String) {
+    fn adopt_active_session(&mut self, id: String, name: String) -> bool {
+        if self.has_running_turn() || !self.pending_inputs.is_empty() {
+            self.committed_messages.push(UIMessage {
+                role: MessageRole::System,
+                content: "Finish or cancel the active turn before switching sessions.".to_string(),
+                tool_name: None,
+                tool_args: None,
+                content_collapsed: false,
+                tool_collapsed: false,
+                tool_running: false,
+                diff_data: None,
+                tool_metadata: None,
+            });
+            return false;
+        }
         self.session_id = id.clone();
         self.session_name = name;
         self.delivered_background_task_ids =
             Arc::new(TokioMutex::new(std::collections::HashSet::new()));
         self.displayed_background_task_ids =
             Arc::new(TokioMutex::new(std::collections::HashSet::new()));
+        self.pending_server_background_task_ids.clear();
+        self.server_background_run_starting = false;
         self.server_side_turn_active = false;
         self.respawn_session_event_reader(None);
         self.respawn_trace_event_reader();
@@ -692,6 +740,7 @@ impl App {
                 }
             }
         });
+        true
     }
 
     /// (Re)create the global-event reader for the active session. Todos stay

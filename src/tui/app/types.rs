@@ -432,6 +432,17 @@ pub enum AppEvent {
     BackgroundTaskRecovered(crate::tools::execution::BackgroundResult),
     /// A completed daemon-owned background command scoped to this session.
     BackgroundTaskCompleted(crate::tools::execution::BackgroundResult),
+    /// A hidden daemon continuation was accepted and now owns model delivery.
+    ServerBackgroundRunAccepted {
+        session_id: String,
+        task_id: String,
+    },
+    /// A hidden daemon continuation could not be accepted and remains retryable.
+    ServerBackgroundRunDeferred {
+        session_id: String,
+        result: crate::tools::execution::BackgroundResult,
+        error: String,
+    },
     /// `/clear` created a new session; the main loop adopts the new id/name.
     /// Subagent generation is reset separately via the follow-up
     /// [`AppEvent::AgentGenerationReset`].
