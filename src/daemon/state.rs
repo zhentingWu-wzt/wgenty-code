@@ -97,10 +97,83 @@ impl Default for ActiveClientTracker {
     }
 }
 
-/// Retained background results; newest at back, oldest evicted past capacity.
-/// Retention accepts eviction at extreme volume (very low frequency; online
-/// clients receive results via the event bus) — design §3.3.
+/// Maximum retained background results per session.
+///
+/// Retention accepts eviction at extreme volume. Task IDs remain deduplicated
+/// within their originating session.
 pub const BACKGROUND_RESULTS_CAPACITY: usize = 256;
+
+#[derive(Default)]
+struct SessionBackgroundResults {
+    by_task_id: HashMap<String, BackgroundResult>,
+    task_order: VecDeque<String>,
+}
+
+/// Daemon-owned pending background results, keyed first by session and then by
+/// task ID. The order ledger preserves completion order for snapshot recovery
+/// and later continuation draining.
+#[derive(Default)]
+struct BackgroundResultInbox {
+    by_session: HashMap<String, SessionBackgroundResults>,
+    arrival_order: VecDeque<(String, String)>,
+}
+
+impl BackgroundResultInbox {
+    /// Returns `true` only when a new, owned task result was retained.
+    fn enqueue(&mut self, result: BackgroundResult) -> bool {
+        let Some(session_id) = result
+            .session_id
+            .as_deref()
+            .filter(|session_id| !session_id.is_empty())
+            .map(str::to_owned)
+        else {
+            return false;
+        };
+        let task_id = result.task_id.clone();
+        let session = self.by_session.entry(session_id.clone()).or_default();
+        if session.by_task_id.contains_key(&task_id) {
+            return false;
+        }
+
+        if session.by_task_id.len() == BACKGROUND_RESULTS_CAPACITY {
+            if let Some(evicted_task_id) = session.task_order.pop_front() {
+                session.by_task_id.remove(&evicted_task_id);
+                self.arrival_order
+                    .retain(|(retained_session_id, retained_task_id)| {
+                        retained_session_id != &session_id || retained_task_id != &evicted_task_id
+                    });
+            }
+        }
+
+        session.task_order.push_back(task_id.clone());
+        session.by_task_id.insert(task_id.clone(), result);
+        self.arrival_order.push_back((session_id, task_id));
+        true
+    }
+
+    fn snapshot_for_session(&self, session_id: &str) -> Vec<BackgroundResult> {
+        let Some(session) = self.by_session.get(session_id) else {
+            return Vec::new();
+        };
+        session
+            .task_order
+            .iter()
+            .filter_map(|task_id| session.by_task_id.get(task_id).cloned())
+            .collect()
+    }
+
+    fn snapshot_all(&self) -> Vec<BackgroundResult> {
+        self.arrival_order
+            .iter()
+            .filter_map(|(session_id, task_id)| {
+                self.by_session
+                    .get(session_id)
+                    .and_then(|session| session.by_task_id.get(task_id))
+                    .cloned()
+            })
+            .collect()
+    }
+}
 
 /// Per-session permission rules.
 struct SessionRules {
@@ -147,11 +220,9 @@ pub struct DaemonState {
     pub todo_router: Arc<crate::tasks::TodoRouter>,
     pub skill_loader: Arc<SkillLoader>,
     pub background_manager: Arc<BackgroundManager>,
-    /// Retained background results (newest at back, oldest evicted past
-    /// [`BACKGROUND_RESULTS_CAPACITY`]). Fed by the tool-layer manager hook;
-    /// the single source of truth for `GET /background/results` (snapshot
-    /// reads, no drain) — design §3.3.
-    pub background_results: Arc<RwLock<VecDeque<BackgroundResult>>>,
+    /// Session-scoped, task-ID-deduplicated background result inbox. Fed by
+    /// the tool-layer manager hook and retained before any SSE notification.
+    background_result_inbox: Arc<RwLock<BackgroundResultInbox>>,
     pub team_manager: Option<Arc<TeamManager>>,
     pub session_manager: MemorySessionManager,
     /// Shared MemoryManager backing the `memory_add` tool and AutoDream (D1).
@@ -264,11 +335,11 @@ impl DaemonState {
         let bg_sandbox = Arc::new(crate::sandbox::SandboxManager::new());
         let bg_manager = Arc::new(BackgroundManager::new().with_sandbox(bg_sandbox));
 
-        // Retained background results queue + global event bus handles. The
-        // tool-layer manager hook diverts completed results here (the queue
-        // becomes the daemon-side single source of truth) instead of its
-        // internal drain queue, which remains the CLI path.
-        let background_results = Arc::new(RwLock::new(VecDeque::new()));
+        // Session inbox + global event bus handles. The tool-layer manager
+        // hook diverts completed results here instead of its internal drain
+        // queue, which remains the CLI path. Only owned, newly inserted
+        // results are published.
+        let background_result_inbox = Arc::new(RwLock::new(BackgroundResultInbox::default()));
         let global_event_hub = crate::daemon::global_events::new_global_event_hub();
         let global_seq_counter = Arc::new(AtomicU64::new(1));
         {
@@ -278,13 +349,13 @@ impl DaemonState {
                 // means the state is shutting down and the result is safe to drop.
                 let _ = tx.send(result);
             });
-            let retained = background_results.clone();
+            let inbox = background_result_inbox.clone();
             let hub = global_event_hub.clone();
             let seq = global_seq_counter.clone();
             tokio::spawn(async move {
-                // Single consumer: completion order is preserved into the queue.
+                // Single consumer: completion order is preserved in the inbox.
                 while let Some(result) = rx.recv().await {
-                    retain_and_broadcast_background_result(&retained, &hub, &seq, result).await;
+                    retain_and_broadcast_background_result(&inbox, &hub, &seq, result).await;
                 }
             });
         }
@@ -621,7 +692,7 @@ impl DaemonState {
             todo_router,
             skill_loader,
             background_manager: bg_manager,
-            background_results,
+            background_result_inbox,
             team_manager,
             session_manager,
             memory_manager,
@@ -675,25 +746,32 @@ impl DaemonState {
 
     /// Retain-then-broadcast: the result MUST be queryable before any client
     /// sees the event, so offline-then-online clients can still fetch it.
-    pub async fn record_background_result(&self, result: BackgroundResult) {
+    pub async fn record_background_result(&self, result: BackgroundResult) -> bool {
         retain_and_broadcast_background_result(
-            &self.background_results,
+            &self.background_result_inbox,
             &self.global_event_hub,
             &self.global_seq_counter,
             result,
         )
-        .await;
+        .await
     }
 
-    /// Snapshot of retained results (oldest first). Never drains: every
-    /// client can query the same results (design §3.3).
+    /// Snapshot of all owned retained results (oldest first). Never drains;
+    /// kept for the legacy recovery endpoint while session-aware consumers
+    /// use [`Self::background_results_snapshot_for_session`].
     pub async fn background_results_snapshot(&self) -> Vec<BackgroundResult> {
-        self.background_results
+        self.background_result_inbox.read().await.snapshot_all()
+    }
+
+    /// Snapshot retained results for exactly one session (oldest first).
+    pub async fn background_results_snapshot_for_session(
+        &self,
+        session_id: &str,
+    ) -> Vec<BackgroundResult> {
+        self.background_result_inbox
             .read()
             .await
-            .iter()
-            .cloned()
-            .collect()
+            .snapshot_for_session(session_id)
     }
 
     /// Single write-path for the shared todo list: update state, then
@@ -864,23 +942,18 @@ impl DaemonState {
     }
 }
 
-/// Retain-then-broadcast core shared by [`DaemonState::record_background_result`]
+/// Enqueue-then-broadcast core shared by [`DaemonState::record_background_result`]
 /// and the tool-layer manager hook installed in [`DaemonState::new`] (which
-/// runs before the `DaemonState` itself exists). Retention MUST complete
-/// before the broadcast so the result is queryable before any client sees
-/// the event (design §3.2/§3.3).
+/// runs before the `DaemonState` itself exists). Enqueue MUST complete before
+/// broadcast; unowned and duplicate results produce no notification.
 async fn retain_and_broadcast_background_result(
-    retained: &RwLock<VecDeque<BackgroundResult>>,
+    inbox: &RwLock<BackgroundResultInbox>,
     hub: &crate::daemon::global_events::GlobalEventHub,
     seq_counter: &AtomicU64,
     result: BackgroundResult,
-) {
-    {
-        let mut retained = retained.write().await;
-        if retained.len() == BACKGROUND_RESULTS_CAPACITY {
-            retained.pop_front();
-        }
-        retained.push_back(result.clone());
+) -> bool {
+    if !inbox.write().await.enqueue(result.clone()) {
+        return false;
     }
     let event = crate::daemon::global_events::GlobalEvent {
         seq: seq_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -889,6 +962,7 @@ async fn retain_and_broadcast_background_result(
     };
     // No subscribers is normal; ignore the error (same as broadcast_global).
     let _ = hub.send(event);
+    true
 }
 
 /// Encodes bytes as a lowercase hex string.
