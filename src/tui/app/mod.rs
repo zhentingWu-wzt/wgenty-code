@@ -50,6 +50,8 @@ use tokio::sync::RwLock;
 pub struct PendingInput {
     pub display_text: String,
     pub agent_input: String,
+    /// Do not render or use this synthetic input to name the session.
+    pub hidden: bool,
     pub continuation: Option<crate::tui::client::TaskGroupDeliveryResponse>,
 }
 
@@ -58,6 +60,7 @@ impl PendingInput {
         Self {
             display_text: text.clone(),
             agent_input: text,
+            hidden: false,
             continuation: None,
         }
     }
@@ -66,6 +69,7 @@ impl PendingInput {
         Self {
             display_text,
             agent_input,
+            hidden: false,
             continuation: None,
         }
     }
@@ -77,7 +81,23 @@ impl PendingInput {
         Self {
             display_text: String::new(),
             agent_input: String::new(),
+            hidden: true,
             continuation: Some(delivery),
+        }
+    }
+
+    /// A daemon-delivered background task result that starts a model turn
+    /// without adding a synthetic user row to the transcript.
+    pub fn background_result(result: crate::tools::execution::BackgroundResult) -> Self {
+        let agent_input = match serde_json::to_string(&result) {
+            Ok(message) => message,
+            Err(error) => format!("[Failed to serialize background task result: {error}]"),
+        };
+        Self {
+            display_text: String::new(),
+            agent_input,
+            hidden: true,
+            continuation: None,
         }
     }
 
@@ -162,12 +182,19 @@ pub struct App {
     /// the SSE reader renders events, instead of the client-side loop
     /// (chat_stream + DaemonToolPort). Toggled via `/server-side`.
     pub server_side_loop: bool,
+    /// True while a daemon-owned server-side run is active. The client-side
+    /// handle remains empty for those runs because aborting the submit request
+    /// cannot cancel work the daemon has already accepted.
+    server_side_turn_active: bool,
     /// Join handle of the daemon session-event SSE reader (server-side mode).
     /// Recreated on each server-side run and on session switch so the
     /// subscription always follows the current session id (abort + respawn).
     session_event_reader: Option<tokio::task::JoinHandle<()>>,
     /// Join handle of the daemon subagent trace SSE reader (server-side mode).
     trace_event_reader: Option<tokio::task::JoinHandle<()>>,
+    /// Join handle of the global-events reader, recreated when the active
+    /// session changes so background-result filtering remains session-scoped.
+    global_event_reader: Option<tokio::task::JoinHandle<()>>,
     /// Pre-assembled system messages (layered instructions from PromptAssembler).
     /// Cloned into each new AgentLoop so every Turn inherits the same base instructions.
     pub assembled_instructions: AssembledInstructions,
@@ -518,8 +545,10 @@ impl App {
             },
             previous_mode: None,
             server_side_loop: false,
+            server_side_turn_active: false,
             session_event_reader: None,
             trace_event_reader: None,
+            global_event_reader: None,
             event_tx,
             event_rx,
             should_quit: false,
@@ -616,6 +645,21 @@ impl App {
         let shutdown = self.shutdown_flag.clone();
         self.trace_event_reader = Some(crate::tui::app::server_side::spawn_trace_event_reader(
             client, sid, tx, shutdown,
+        ));
+    }
+
+    /// (Re)create the global-event reader for the active session. Todos stay
+    /// global, while background results are filtered to this session.
+    fn respawn_global_event_reader(&mut self) {
+        if let Some(handle) = self.global_event_reader.take() {
+            handle.abort();
+        }
+        let client = self.daemon_client.clone();
+        let session_id = self.session_id.clone();
+        let event_tx = self.event_tx.clone();
+        let shutdown = self.shutdown_flag.clone();
+        self.global_event_reader = Some(crate::tui::app::server_side::spawn_global_event_reader(
+            client, session_id, event_tx, shutdown,
         ));
     }
 
@@ -779,12 +823,7 @@ impl App {
         // `GET /todos` polling fallback while the subscription is down.
         // Session-independent, so it is spawned once here (unlike the
         // server-side SSE readers below, which follow the session id).
-        {
-            let client = self.daemon_client.clone();
-            let tx = self.event_tx.clone();
-            let shutdown = self.shutdown_flag.clone();
-            crate::tui::app::server_side::spawn_todos_event_reader(client, tx, shutdown);
-        }
+        self.respawn_global_event_reader();
 
         // Server-side SSE readers (session events + subagent trace) are NOT
         // spawned at startup: the session id is a locally generated UUID that
