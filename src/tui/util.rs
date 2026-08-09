@@ -573,10 +573,6 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::BackgroundTaskResult(_)
         | AppEvent::BackgroundTaskRecovered(_)
         | AppEvent::BackgroundTaskCompleted(_)
-        | AppEvent::ServerBackgroundRunAccepted { .. }
-        | AppEvent::ServerBackgroundRunDeferred { .. }
-        | AppEvent::ServerSessionSyncLost { .. }
-        | AppEvent::ServerSessionRealigned { .. }
         | AppEvent::SessionClearFailed { .. }
         | AppEvent::AgentGenerationReset { .. }
         | AppEvent::NavigateAgent { .. }

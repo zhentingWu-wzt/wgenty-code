@@ -781,12 +781,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loading_selected_session_resets_delivery_state_and_restarts_readers() {
+    async fn loading_selected_session_restarts_session_scoped_readers() {
         let mut app = build_app();
-        app.delivered_background_task_ids
-            .lock()
-            .await
-            .insert("old-result".to_string());
         app.session_state.show(vec![SessionInfo {
             id: "loaded-session".to_string(),
             name: "Loaded Session".to_string(),
@@ -799,7 +795,6 @@ mod tests {
         app.handle_key_event(KeyCode::Enter.into());
 
         assert_eq!(app.session_id, "loaded-session");
-        assert!(app.delivered_background_task_ids.lock().await.is_empty());
         assert!(app.global_event_reader.is_some());
 
         if let Some(handle) = app.global_event_reader.take() {
@@ -814,7 +809,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_picker_refuses_switch_with_session_owned_background_result_pending() {
+    async fn session_picker_refuses_switch_while_server_run_is_active_after_background_notice() {
         let mut app = build_app();
         app.server_side_loop = true;
         app.server_side_turn_active = true;
@@ -845,19 +840,12 @@ mod tests {
 
         assert_eq!(app.session_id, "test-esc");
         assert!(app.session_state.visible);
-        assert_eq!(app.pending_inputs.len(), 1);
-        assert_eq!(
-            app.pending_inputs[0]
-                .server_background_result
-                .as_ref()
-                .map(|result| result.task_id.as_str()),
-            Some("session-a-result")
-        );
-        assert!(!app
-            .delivered_background_task_ids
-            .lock()
-            .await
-            .contains("session-a-result"));
+        assert!(app.pending_inputs.is_empty());
+        assert!(app.committed_messages.iter().any(|message| {
+            message
+                .content
+                .contains("Background task session-a-result completed")
+        }));
     }
 
     #[tokio::test]
