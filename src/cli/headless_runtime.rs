@@ -305,6 +305,51 @@ pub async fn run_oneshot(
     registry.register(Box::new(crate::tools::meta::MemoryAddTool::new(
         memory_manager.clone(),
     )));
+
+    // ── CodeGraph MCP: connect if installed and initialized ──────────
+    // In headless mode, MCP servers are not started automatically. We
+    // manually spawn the CodeGraph MCP server and register its tools so
+    // the agent gets code navigation (symbol lookup, call graphs) instead
+    // of falling back to slower grep-based search.
+    let _codegraph_session: Option<std::sync::Arc<crate::mcp::client::McpClientSession>> = {
+        use crate::mcp::codegraph::{probe_install_state, CodegraphInstallState};
+        let state = probe_install_state(&settings);
+        if matches!(state, CodegraphInstallState::Ready) {
+            let config = crate::config::McpConfig::codegraph();
+            match crate::mcp::client::McpClientSession::spawn(&config).await {
+                Ok(session) => match session.list_tools().await {
+                    Ok(tools) => {
+                        let caller: std::sync::Arc<dyn crate::mcp::proxy::McpToolCaller> =
+                            session.clone();
+                        let mut reserved = std::collections::HashSet::new();
+                        let proxies = crate::mcp::build_tool_proxies(
+                            "codegraph",
+                            tools,
+                            caller,
+                            &mut reserved,
+                        );
+                        let count = proxies.len();
+                        for proxy in proxies {
+                            registry.register_external("codegraph", proxy);
+                        }
+                        eprintln!("[codegraph] Connected, {count} tools registered");
+                        Some(session)
+                    }
+                    Err(e) => {
+                        eprintln!("[codegraph] tools/list failed: {e}");
+                        None
+                    }
+                },
+                Err(e) => {
+                    eprintln!("[codegraph] spawn failed: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+
     // ── D4: AutoDream startup check (fire-and-forget) ──────────────────
     // headless is a single-shot CLI process; a background tick is meaningless
     // (process exits immediately), but the startup check covers "each headless

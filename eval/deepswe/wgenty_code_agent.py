@@ -133,6 +133,11 @@ class WgentyCodeAgent(BaseInstalledAgent):
             agent_name=self.name(),
             steps=[
                 InstallStep(user="root", run=root_run),
+                InstallStep(
+                    user="root",
+                    run="npm install -g @colbymchenry/codegraph 2>&1 || "
+                    'echo "codegraph install skipped"',
+                ),
             ],
         )
 
@@ -238,6 +243,16 @@ class WgentyCodeAgent(BaseInstalledAgent):
         )
         await self.exec_as_agent(
             environment, command=exclude_cmd, env=env
+        )
+
+        # --- Step 3.5: initialize CodeGraph for code navigation ---
+        # If codegraph is installed (from install_spec), build the index so
+        # wgenty-code's headless runtime can connect to the CodeGraph MCP
+        # server for symbol lookup, call graphs, etc.
+        await self.exec_as_agent(
+            environment,
+            command="codegraph init 2>&1 || echo 'codegraph init skipped'",
+            env=env,
         )
 
         # --- Step 4: run wgenty-code ---
