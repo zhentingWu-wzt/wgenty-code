@@ -52,6 +52,8 @@ impl App {
             let old_id = self.session_id.clone();
             let old_name = self.session_name.clone();
             let cancel_server_run = self.server_side_turn_active;
+            let interrupted_background_result = self.server_background_claim_result.clone();
+            let previous_suppress_phase_updates = self.suppress_phase_updates;
             let old_ui_messages: Vec<_> = self
                 .committed_messages
                 .iter()
@@ -113,6 +115,10 @@ impl App {
                         let _ = event_tx.send(AppEvent::HistoryLoaded {
                             messages: old_history,
                             ui_messages: old_ui_messages,
+                        });
+                        let _ = event_tx.send(AppEvent::SessionClearFailed {
+                            background_result: interrupted_background_result,
+                            suppress_phase_updates: previous_suppress_phase_updates,
                         });
                         let _ = event_tx.send(AppEvent::SystemNotice(format!(
                             "⚠️ 无法取消当前会话，未创建新会话：{error}"
@@ -539,6 +545,7 @@ mod tests {
         saves: Arc<AtomicUsize>,
         creations: Arc<AtomicUsize>,
         reject_cancel: bool,
+        create_delay: Duration,
     }
 
     async fn capture_cancel(State(capture): State<ClearCapture>) -> StatusCode {
@@ -558,6 +565,7 @@ mod tests {
     async fn create_cleared_session(
         State(capture): State<ClearCapture>,
     ) -> Json<serde_json::Value> {
+        tokio::time::sleep(capture.create_delay).await;
         capture.creations.fetch_add(1, Ordering::SeqCst);
         Json(serde_json::json!({
             "id": "cleared-session",
@@ -569,8 +577,31 @@ mod tests {
         }))
     }
 
+    fn claimed_background_result() -> crate::tools::execution::BackgroundResult {
+        crate::tools::execution::BackgroundResult {
+            task_id: "clear-claim".to_string(),
+            session_id: Some("active-session".to_string()),
+            result_type: "command".to_string(),
+            command: "true".to_string(),
+            stdout: "done".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            success: true,
+            sandbox_bypassed: false,
+            permission_mode: None,
+            sandbox_level: None,
+        }
+    }
+
     async fn assert_clear_cancels_and_adopts(background_continuation: bool) {
-        let capture = ClearCapture::default();
+        let capture = ClearCapture {
+            create_delay: if background_continuation {
+                Duration::from_millis(150)
+            } else {
+                Duration::default()
+            },
+            ..ClearCapture::default()
+        };
         let router = Router::new()
             .route("/api/v1/sessions", post(create_cleared_session))
             .route("/api/v1/sessions/:id", put(accept_save))
@@ -605,6 +636,15 @@ mod tests {
         app.server_side_loop = true;
         app.server_side_turn_active = true;
         app.server_background_run_starting = background_continuation;
+        let claimant_completed = Arc::new(AtomicUsize::new(0));
+        if background_continuation {
+            app.server_background_claim_result = Some(claimed_background_result());
+            let completed = claimant_completed.clone();
+            app.server_background_claim_handle = Some(tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                completed.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
 
         app.submit_input("/clear".to_string());
 
@@ -629,6 +669,7 @@ mod tests {
         );
         assert!(!app.server_side_turn_active);
         assert!(app.pending_inputs.is_empty());
+        assert_eq!(claimant_completed.load(Ordering::SeqCst), 0);
 
         server.abort();
     }
@@ -682,6 +723,11 @@ mod tests {
         });
         app.server_side_loop = true;
         app.server_side_turn_active = true;
+        app.server_background_run_starting = true;
+        app.server_background_claim_result = Some(claimed_background_result());
+        app.server_background_claim_handle = Some(tokio::spawn(async {
+            std::future::pending::<()>().await;
+        }));
 
         app.submit_input("/clear".to_string());
 
@@ -705,6 +751,16 @@ mod tests {
         assert_eq!(capture.cancellations.load(Ordering::SeqCst), 1);
         assert_eq!(capture.creations.load(Ordering::SeqCst), 0);
         assert!(app.server_side_turn_active);
+        assert_eq!(
+            app.pending_inputs
+                .front()
+                .and_then(|pending| pending.server_background_result.as_ref())
+                .map(|result| result.task_id.as_str()),
+            Some("clear-claim")
+        );
+        assert!(app
+            .pending_server_background_task_ids
+            .contains("clear-claim"));
 
         server.abort();
     }

@@ -451,6 +451,11 @@ impl App {
                 self.subagent_history.insert(key, snapshot);
                 self.turn_count += 1;
                 self.current_turn_handle = None;
+                if let Some(handle) = self.server_background_claim_handle.take() {
+                    handle.abort();
+                }
+                self.server_background_claim_result = None;
+                self.server_session_realigning = false;
                 self.server_side_turn_active = false;
                 self.last_abort_reason = None; // normal completion clears
                 self.turn_started_at = None;
@@ -469,6 +474,10 @@ impl App {
                 if !background_run_was_starting && !self.pending_inputs.is_empty() {
                     self.start_next_turn();
                 }
+            }
+            AppEvent::ServerTurnTerminated if self.server_session_realigning => {
+                // SyncLost recovery owns the daemon gate until cancellation
+                // is confirmed; its terminal event may arrive first.
             }
             AppEvent::ServerTurnTerminated if self.server_background_run_starting => {
                 // The session reader can disconnect while `/run` is still in
@@ -1157,7 +1166,12 @@ impl App {
                 if session_id != self.session_id {
                     return;
                 }
+                if self.server_session_realigning {
+                    return;
+                }
                 self.server_background_run_starting = false;
+                self.server_background_claim_handle = None;
+                self.server_session_realigning = false;
                 self.pending_server_background_task_ids.remove(&task_id);
                 self.delivered_background_task_ids
                     .lock()
@@ -1175,7 +1189,13 @@ impl App {
                 if session_id != self.session_id {
                     return;
                 }
+                if self.server_session_realigning {
+                    return;
+                }
                 self.server_background_run_starting = false;
+                self.server_background_claim_handle = None;
+                self.server_background_claim_result = None;
+                self.server_session_realigning = false;
                 self.server_side_turn_active = false;
                 if self
                     .pending_server_background_task_ids
@@ -1204,6 +1224,78 @@ impl App {
                     tool_metadata: None,
                 });
             }
+            AppEvent::ServerSessionSyncLost { latest_seq } => {
+                self.session_event_last_seq
+                    .store(latest_seq, std::sync::atomic::Ordering::Release);
+                if !self.server_side_turn_active {
+                    return;
+                }
+                if self.server_session_realigning {
+                    return;
+                }
+                self.server_session_realigning = true;
+                let was_starting = self.server_background_run_starting;
+                if let Some(handle) = self.server_background_claim_handle.take() {
+                    handle.abort();
+                }
+                let client = self.daemon_client.clone();
+                let session_id = self.session_id.clone();
+                let tx = self.event_tx.clone();
+                self.server_background_claim_handle = Some(tokio::spawn(async move {
+                    let mut delay = std::time::Duration::from_millis(100);
+                    loop {
+                        match client.try_cancel_run(&session_id).await {
+                            Ok(outcome) => {
+                                let _ = tx.send(AppEvent::ServerSessionRealigned {
+                                    session_id,
+                                    retry_background: was_starting
+                                        || outcome
+                                            == crate::tui::client::CancelRunOutcome::Cancelled,
+                                });
+                                return;
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    session_id,
+                                    error = %error,
+                                    "session event recovery is waiting for daemon cancellation"
+                                );
+                                tokio::time::sleep(delay).await;
+                                delay = (delay * 2).min(std::time::Duration::from_secs(2));
+                            }
+                        }
+                    }
+                }));
+            }
+            AppEvent::ServerSessionRealigned {
+                session_id,
+                retry_background,
+            } => {
+                if session_id != self.session_id {
+                    return;
+                }
+                self.server_background_claim_handle = None;
+                self.server_background_run_starting = false;
+                self.server_session_realigning = false;
+                if let Some(result) = self.server_background_claim_result.take() {
+                    self.pending_server_background_task_ids
+                        .remove(&result.task_id);
+                    if retry_background {
+                        self.delivered_background_task_ids
+                            .lock()
+                            .await
+                            .remove(&result.task_id);
+                        self.pending_server_background_task_ids
+                            .insert(result.task_id.clone());
+                        self.pending_inputs
+                            .push_front(PendingInput::server_background_result(result));
+                    }
+                }
+                self.server_side_turn_active = false;
+                if !self.pending_inputs.is_empty() {
+                    self.start_next_turn();
+                }
+            }
             AppEvent::SystemNotice(notice) => {
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::System,
@@ -1222,6 +1314,18 @@ impl App {
             }
             AppEvent::SessionCleared { id, name } => {
                 self.adopt_session_after_reset(id, name);
+            }
+            AppEvent::SessionClearFailed {
+                background_result,
+                suppress_phase_updates,
+            } => {
+                self.suppress_phase_updates = suppress_phase_updates;
+                if let Some(result) = background_result {
+                    self.pending_server_background_task_ids
+                        .insert(result.task_id.clone());
+                    self.pending_inputs
+                        .push_front(PendingInput::server_background_result(result));
+                }
             }
             AppEvent::AgentGenerationReset { generation } => {
                 if generation == u64::MAX {
