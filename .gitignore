@@ -18,6 +18,7 @@ Thumbs.db
 # Build artifacts
 *.exe
 *.dll
+wgenty-code-linux-*
 *.so
 *.dylib
 .wgenty-code/traces/
