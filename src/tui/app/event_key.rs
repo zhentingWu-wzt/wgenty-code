@@ -360,11 +360,11 @@ impl App {
                 KeyCode::Enter => {
                     if let Some(session) = self.session_state.selected_session() {
                         let id = session.id.clone();
-                        // Adopt the loaded session's ID so subsequent saves
-                        // go back to the original file, not a forked copy.
-                        self.session_id = id.clone();
-                        self.session_name = session.name.clone();
+                        let name = session.name.clone();
                         self.session_state.dismiss();
+                        // Adopt before loading history so every event reader and
+                        // delivery ledger already targets the selected session.
+                        self.adopt_active_session(id.clone(), name);
                         let client = self.daemon_client.clone();
                         let history = self.conversation_history.clone();
                         let tx = self.event_tx.clone();
@@ -732,6 +732,7 @@ mod tests {
     use crate::config::watcher::SettingsHandle;
     use crate::config::Settings;
     use crate::tui::client::DaemonClient;
+    use crate::tui::client::SessionInfo;
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
@@ -774,6 +775,39 @@ mod tests {
             !app.should_quit,
             "ESC should not quit when idle (fallback removed)"
         );
+    }
+
+    #[tokio::test]
+    async fn loading_selected_session_resets_delivery_state_and_restarts_readers() {
+        let mut app = build_app();
+        app.delivered_background_task_ids
+            .lock()
+            .await
+            .insert("old-result".to_string());
+        app.session_state.show(vec![SessionInfo {
+            id: "loaded-session".to_string(),
+            name: "Loaded Session".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            message_count: 1,
+            summary: None,
+        }]);
+
+        app.handle_key_event(KeyCode::Enter.into());
+
+        assert_eq!(app.session_id, "loaded-session");
+        assert!(app.delivered_background_task_ids.lock().await.is_empty());
+        assert!(app.global_event_reader.is_some());
+
+        if let Some(handle) = app.global_event_reader.take() {
+            handle.abort();
+        }
+        if let Some(handle) = app.session_event_reader.take() {
+            handle.abort();
+        }
+        if let Some(handle) = app.trace_event_reader.take() {
+            handle.abort();
+        }
     }
 
     #[tokio::test]

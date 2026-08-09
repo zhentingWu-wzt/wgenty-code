@@ -15,6 +15,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
+/// A daemon turn error or an established SSE disconnect is terminal from the
+/// TUI's perspective: surface the error, then release the running-turn gate.
+fn stream_termination_events(message: String) -> Vec<AppEvent> {
+    vec![
+        AppEvent::StreamError(message),
+        AppEvent::ServerTurnTerminated,
+    ]
+}
+
+pub(super) fn send_stream_termination(
+    event_tx: &mpsc::UnboundedSender<AppEvent>,
+    message: impl Into<String>,
+) {
+    for event in stream_termination_events(message.into()) {
+        if event_tx.send(event).is_err() {
+            return;
+        }
+    }
+}
+
 /// Map a daemon `SessionEvent` into zero or more TUI `AppEvent`s.
 ///
 /// The TUI's `AppEvent` enum already mirrors the daemon's `SessionEventKind`
@@ -99,7 +119,7 @@ pub(crate) fn session_event_to_app_events(ev: SessionEvent) -> Vec<AppEvent> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown error")
                 .to_string();
-            vec![AppEvent::StreamError(msg)]
+            stream_termination_events(msg)
         }
         SessionEventKind::PermissionRequired => {
             let request_id = ev
@@ -239,16 +259,12 @@ pub(crate) fn spawn_session_event_reader(
                 },
                 Some(Err(e)) => {
                     tracing::warn!(error = %e, "session events SSE read error");
-                    let _ = event_tx.send(AppEvent::StreamError(
-                        "lost connection to daemon event stream".to_string(),
-                    ));
+                    send_stream_termination(&event_tx, "lost connection to daemon event stream");
                     return;
                 }
                 None => {
                     tracing::warn!(session_id, "session events SSE stream closed");
-                    let _ = event_tx.send(AppEvent::StreamError(
-                        "lost connection to daemon event stream".to_string(),
-                    ));
+                    send_stream_termination(&event_tx, "lost connection to daemon event stream");
                     return;
                 }
             }
@@ -734,8 +750,18 @@ mod tests {
             SessionEventKind::TurnError,
             serde_json::json!({"message": "boom"}),
         ));
-        assert_eq!(apps.len(), 1);
+        assert_eq!(apps.len(), 2);
         assert!(matches!(&apps[0], AppEvent::StreamError(m) if m == "boom"));
+        assert!(matches!(&apps[1], AppEvent::ServerTurnTerminated));
+    }
+
+    #[test]
+    fn disconnect_maps_to_error_and_terminal_lifecycle() {
+        let apps = stream_termination_events("lost connection".to_string());
+
+        assert_eq!(apps.len(), 2);
+        assert!(matches!(&apps[0], AppEvent::StreamError(message) if message == "lost connection"));
+        assert!(matches!(&apps[1], AppEvent::ServerTurnTerminated));
     }
 
     #[test]
