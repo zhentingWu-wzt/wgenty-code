@@ -9,7 +9,7 @@ use crate::agent::progress::{SubagentProgress, SubagentStatus};
 use crate::daemon::run_loop::{SessionEvent, SessionEventKind};
 use crate::teams::trace_sink::{TraceEvent, TraceEventKind};
 use crate::tui::app::types::AppEvent;
-use crate::tui::client::DaemonClient;
+use crate::tui::client::{DaemonClient, GlobalEventWire};
 use futures::StreamExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -423,6 +423,39 @@ const TODOS_FALLBACK_POLL_INTERVAL: std::time::Duration = std::time::Duration::f
 /// fallback.
 const TODOS_RESUBSCRIBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Map one global daemon event into its TUI events. Background results are
+/// session-scoped; todos snapshots remain global so the plan panel retains its
+/// existing live-update behavior.
+pub(crate) fn global_event_to_app_events(
+    event: GlobalEventWire,
+    session_id: &str,
+) -> Vec<AppEvent> {
+    match event.kind.as_str() {
+        "background_result" => event
+            .data
+            .get("result")
+            .cloned()
+            .and_then(|value| {
+                serde_json::from_value::<crate::tools::execution::BackgroundResult>(value).ok()
+            })
+            .filter(|result| result.session_id.as_deref() == Some(session_id))
+            .map(AppEvent::BackgroundTaskCompleted)
+            .into_iter()
+            .collect(),
+        "todos_changed" => event
+            .data
+            .get("items")
+            .cloned()
+            .and_then(|value| {
+                serde_json::from_value::<Vec<crate::tui::client::TodoItem>>(value).ok()
+            })
+            .map(AppEvent::TodosSnapshot)
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Spawn a background task that drives the plan/todos panel from the daemon's
 /// global event stream (`GET /api/v1/events`). Session-independent: spawned
 /// once at app startup and lives until `shutdown` is set.
@@ -435,8 +468,9 @@ const TODOS_RESUBSCRIBE_INTERVAL: std::time::Duration = std::time::Duration::fro
 ///   (re)subscribe first realigns via one `GET /api/v1/todos`.
 /// - **Fallback**: on connect failure or mid-stream disconnect, poll
 ///   `GET /api/v1/todos` every 500ms and retry the subscription every ~5s.
-pub(crate) fn spawn_todos_event_reader(
+pub(crate) fn spawn_global_event_reader(
     client: DaemonClient,
+    session_id: String,
     event_tx: mpsc::UnboundedSender<AppEvent>,
     shutdown: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
@@ -501,31 +535,31 @@ pub(crate) fn spawn_todos_event_reader(
                         }
                         match stream.next().await {
                             Some(Ok(ev)) => {
-                                if ev.kind != "todos_changed" {
-                                    continue;
+                                // Preserve the todos stream's sequence guard;
+                                // result events are independent and must never
+                                // advance it.
+                                if ev.kind == "todos_changed" {
+                                    if ev.seq <= last_seq {
+                                        continue;
+                                    }
+                                    last_seq = ev.seq;
                                 }
-                                if ev.seq <= last_seq {
-                                    continue;
-                                }
-                                last_seq = ev.seq;
-                                match ev.data.get("items").cloned().map(
-                                    serde_json::from_value::<Vec<crate::tui::client::TodoItem>>,
-                                ) {
-                                    Some(Ok(items)) => {
-                                        if !forward_snapshot(&event_tx, &mut last_snapshot, items) {
-                                            return;
+                                for app_event in global_event_to_app_events(ev, &session_id) {
+                                    match app_event {
+                                        AppEvent::TodosSnapshot(items) => {
+                                            if !forward_snapshot(
+                                                &event_tx,
+                                                &mut last_snapshot,
+                                                items,
+                                            ) {
+                                                return;
+                                            }
                                         }
-                                    }
-                                    Some(Err(e)) => {
-                                        tracing::trace!(
-                                            error = %e,
-                                            "skip unparseable todos_changed payload"
-                                        );
-                                    }
-                                    None => {
-                                        tracing::trace!(
-                                            "todos_changed event without items; skipped"
-                                        );
+                                        app_event => {
+                                            if event_tx.send(app_event).is_err() {
+                                                return;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -578,6 +612,28 @@ pub(crate) fn spawn_todos_event_reader(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn background_result_event(session_id: Option<&str>) -> crate::tui::client::GlobalEventWire {
+        crate::tui::client::GlobalEventWire {
+            seq: 1,
+            kind: "background_result".to_string(),
+            data: serde_json::json!({
+                "result": {
+                    "task_id": "bg_a",
+                    "session_id": session_id,
+                    "result_type": "command",
+                    "command": "true",
+                    "stdout": "done",
+                    "stderr": "",
+                    "exit_code": 0,
+                    "success": true,
+                    "sandbox_bypassed": false,
+                    "permission_mode": null,
+                    "sandbox_level": null
+                }
+            }),
+        }
+    }
 
     fn ev(seq: u64, kind: SessionEventKind, data: serde_json::Value) -> SessionEvent {
         SessionEvent {
@@ -697,6 +753,27 @@ mod tests {
             serde_json::json!({}),
         ));
         assert!(apps.is_empty());
+    }
+
+    #[test]
+    fn matching_background_result_maps_to_completed_event() {
+        let apps =
+            global_event_to_app_events(background_result_event(Some("session-a")), "session-a");
+
+        assert!(matches!(
+            apps.as_slice(),
+            [AppEvent::BackgroundTaskCompleted(result)] if result.task_id == "bg_a"
+        ));
+    }
+
+    #[test]
+    fn foreign_or_legacy_background_result_is_dropped() {
+        assert!(global_event_to_app_events(
+            background_result_event(Some("session-b")),
+            "session-a"
+        )
+        .is_empty());
+        assert!(global_event_to_app_events(background_result_event(None), "session-a").is_empty());
     }
 
     fn trace_ev(kind: TraceEventKind) -> TraceEvent {
