@@ -96,6 +96,42 @@ impl EventSink for CliEventSink {
     }
 }
 
+/// Headless [`TaskProgressPort`] backed by a shared in-memory task map.
+///
+/// Mirrors the TUI's task-board nudge: when the agent creates tasks via
+/// `task_management` but ignores ready ones for several rounds, the loop
+/// injects a gentle reminder.
+struct HeadlessTaskProgress {
+    tasks: Arc<tokio::sync::RwLock<std::collections::HashMap<String, crate::tasks::types::Task>>>,
+}
+
+#[async_trait::async_trait]
+impl crate::agent::runtime::TaskProgressPort for HeadlessTaskProgress {
+    async fn blocked_and_ready(&self) -> (usize, usize) {
+        use crate::tasks::types::TaskStatus;
+        let tasks = self.tasks.read().await;
+        let mut blocked = 0;
+        let mut ready = 0;
+        for task in tasks.values() {
+            if matches!(task.status, TaskStatus::Completed | TaskStatus::Deleted) {
+                continue;
+            }
+            let has_unmet = task.blocked_by.iter().any(|dep_id| {
+                tasks
+                    .get(dep_id)
+                    .map(|dep| !matches!(dep.status, TaskStatus::Completed))
+                    .unwrap_or(true)
+            });
+            if has_unmet {
+                blocked += 1;
+            } else {
+                ready += 1;
+            }
+        }
+        (blocked, ready)
+    }
+}
+
 /// In-process tool port over [`ToolRegistry`].
 pub struct RegistryToolPort {
     registry: Arc<ToolRegistry>,
@@ -321,6 +357,19 @@ pub async fn run_oneshot(
         }
     }
 
+    // ── Shared task store for TaskManagementTool + TaskProgressPort ──
+    // In TUI mode the daemon shares a task store between the
+    // task_management tool and the task_progress loop hook. We replicate
+    // this by creating a shared Arc<RwLock<HashMap>> so the loop can nudge
+    // the agent when ready tasks go unattended.
+    let shared_tasks: Arc<
+        tokio::sync::RwLock<std::collections::HashMap<String, crate::tasks::types::Task>>,
+    > = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    registry.remove_tool("task_management");
+    registry.register(Box::new(
+        crate::tasks::management::TaskManagementTool::from_arc(shared_tasks.clone()),
+    ));
+
     // ── CodeGraph MCP: connect if installed and initialized ──────────
     // In headless mode, MCP servers are not started automatically. We
     // manually spawn the CodeGraph MCP server and register its tools so
@@ -422,6 +471,9 @@ pub async fn run_oneshot(
 
     let mut stuck_detector = crate::utils::stuck_detector::StuckDetector::new();
     let token_counter = crate::api::token_counter::TokenCounter::new();
+    let task_progress = HeadlessTaskProgress {
+        tasks: shared_tasks,
+    };
 
     let mut state = LoopTurnState::default();
     let _final = run_agent_loop(RunLoopArgs {
@@ -440,7 +492,7 @@ pub async fn run_oneshot(
             token_counter: Some(&token_counter),
             synthesis: None,
             observer: None,
-            task_progress: None,
+            task_progress: Some(&task_progress),
             inbox: None,
             session: None,
         },
