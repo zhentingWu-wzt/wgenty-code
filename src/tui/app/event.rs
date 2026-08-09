@@ -307,7 +307,7 @@ impl App {
                 // Throttle the task-group claim poll to 500ms so idle polling
                 // does not generate excessive HTTP traffic. Only poll when no
                 // turn is running.
-                let should_poll = self.current_turn_handle.is_none()
+                let should_poll = !self.has_running_turn()
                     && self
                         .last_claim_attempt
                         .map(|t| t.elapsed() >= std::time::Duration::from_millis(500))
@@ -463,6 +463,17 @@ impl App {
                     self.start_next_turn();
                 }
             }
+            AppEvent::ServerTurnTerminated if self.server_side_turn_active => {
+                // Unlike TurnComplete, an SSE/run failure has no successful
+                // turn to finalize or persist. It only releases the daemon-run
+                // gate and lets an already queued input proceed.
+                self.server_side_turn_active = false;
+                self.turn_started_at = None;
+                if !self.pending_inputs.is_empty() {
+                    self.start_next_turn();
+                }
+            }
+            AppEvent::ServerTurnTerminated => {}
             AppEvent::TurnAborted { ref reason } => {
                 // Fire Stop hook asynchronously
                 {
@@ -1036,43 +1047,40 @@ impl App {
                     );
                     return;
                 }
+                let first_display = self
+                    .displayed_background_task_ids
+                    .lock()
+                    .await
+                    .insert(result.task_id.clone());
+                if first_display {
+                    let notification = result.format_completion_notification();
+                    self.committed_messages.push(UIMessage {
+                        role: MessageRole::System,
+                        content: notification,
+                        tool_name: None,
+                        tool_args: None,
+                        content_collapsed: false,
+                        tool_collapsed: false,
+                        tool_running: false,
+                        diff_data: None,
+                        tool_metadata: None,
+                    });
+                }
+                if self.has_running_turn() {
+                    return;
+                }
                 if !self
                     .delivered_background_task_ids
                     .lock()
                     .await
                     .insert(result.task_id.clone())
                 {
-                    tracing::debug!(task_id = %result.task_id, "dropping duplicate background result");
+                    tracing::debug!(task_id = %result.task_id, "dropping already delivered background result");
                     return;
                 }
-                let notification = format!(
-                    "[Background task {} completed: {}]\ncommand: {}\nexit code: {}\nstdout:\n{}\nstderr:\n{}",
-                    result.task_id,
-                    if result.success { "SUCCESS" } else { "FAILED" },
-                    result.command,
-                    result
-                        .exit_code
-                        .map(|code| code.to_string())
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    result.stdout,
-                    result.stderr,
-                );
-                self.committed_messages.push(UIMessage {
-                    role: MessageRole::System,
-                    content: notification,
-                    tool_name: None,
-                    tool_args: None,
-                    content_collapsed: false,
-                    tool_collapsed: false,
-                    tool_running: false,
-                    diff_data: None,
-                    tool_metadata: None,
-                });
-                if !self.has_running_turn() {
-                    self.pending_inputs
-                        .push_back(PendingInput::background_result(result));
-                    self.start_next_turn();
-                }
+                self.pending_inputs
+                    .push_back(PendingInput::background_result(result));
+                self.start_next_turn();
             }
             AppEvent::SystemNotice(notice) => {
                 self.committed_messages.push(UIMessage {
@@ -1088,40 +1096,7 @@ impl App {
                 });
             }
             AppEvent::SessionSwitched { id, name } => {
-                // Adopt the newly created session. Subagent state cleanup and
-                // suppress_phase_updates are handled by the AgentGenerationReset
-                // event spawned below, mirroring the original /clear path.
-                self.session_id = id.clone();
-                self.session_name = name;
-                self.delivered_background_task_ids =
-                    std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
-                self.server_side_turn_active = false;
-                // Re-point the server-side SSE readers at the new session id
-                // (abort + resubscribe) so streaming follows the switched
-                // session instead of the stale one.
-                self.respawn_session_event_reader(None);
-                self.respawn_trace_event_reader();
-                self.respawn_global_event_reader();
-                self.session_exit_saved
-                    .store(false, std::sync::atomic::Ordering::Release);
-                let client = self.daemon_client.clone();
-                let event_tx = self.event_tx.clone();
-                tokio::spawn(async move {
-                    match client.reset_agent_generation(&id).await {
-                        Ok(generation) => {
-                            let _ = event_tx.send(AppEvent::AgentGenerationReset { generation });
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                error = %error,
-                                "reset_agent_generation failed; retaining old generation"
-                            );
-                            let _ = event_tx.send(AppEvent::AgentGenerationReset {
-                                generation: u64::MAX,
-                            });
-                        }
-                    }
-                });
+                self.adopt_active_session(id, name);
             }
             AppEvent::AgentGenerationReset { generation } => {
                 if generation == u64::MAX {
