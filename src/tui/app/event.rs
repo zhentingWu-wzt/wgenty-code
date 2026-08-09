@@ -422,6 +422,8 @@ impl App {
                 self.turn_started_at = Some(std::time::Instant::now());
             }
             AppEvent::TurnComplete => {
+                let was_server_side = self.server_side_turn_active;
+                let background_run_was_starting = self.server_background_run_starting;
                 // Fire Stop hook asynchronously
                 {
                     let hm = self.hook_manager.clone();
@@ -458,10 +460,20 @@ impl App {
                 // completion.
                 let hist_len = self.conversation_history.lock().await.len();
                 self.finalize_turn_end(hist_len);
-                self.spawn_save_session();
-                if !self.pending_inputs.is_empty() {
+                // The daemon persists server-side turns after emitting
+                // TurnComplete. Saving the TUI snapshot here can race that
+                // final write and overwrite newer daemon-owned history.
+                if !was_server_side {
+                    self.spawn_save_session();
+                }
+                if !background_run_was_starting && !self.pending_inputs.is_empty() {
                     self.start_next_turn();
                 }
+            }
+            AppEvent::ServerTurnTerminated if self.server_background_run_starting => {
+                // The session reader can disconnect while `/run` is still in
+                // its 409 retry window. Keep the gate closed until the
+                // acceptance/deferred event resolves that attempt.
             }
             AppEvent::ServerTurnTerminated if self.server_side_turn_active => {
                 // Unlike TurnComplete, an SSE/run failure has no successful
@@ -1095,6 +1107,10 @@ impl App {
                         tool_metadata: None,
                     });
                 }
+                if model_delivered {
+                    tracing::debug!(task_id = %result.task_id, "dropping already delivered background result");
+                    return;
+                }
                 if self.has_running_turn() {
                     // A local AgentLoop will recover retained results before
                     // its next model call. A daemon-owned run has no such
@@ -1102,13 +1118,22 @@ impl App {
                     // a hidden `/run` after the active daemon turn terminates.
                     if self.server_side_turn_active
                         && self
-                            .delivered_background_task_ids
-                            .lock()
-                            .await
+                            .pending_server_background_task_ids
                             .insert(result.task_id.clone())
                     {
                         self.pending_inputs
-                            .push_back(PendingInput::background_result(result));
+                            .push_back(PendingInput::server_background_result(result));
+                    }
+                    return;
+                }
+                if self.server_side_loop {
+                    if self
+                        .pending_server_background_task_ids
+                        .insert(result.task_id.clone())
+                    {
+                        self.pending_inputs
+                            .push_back(PendingInput::server_background_result(result));
+                        self.start_next_turn();
                     }
                     return;
                 }
@@ -1125,6 +1150,60 @@ impl App {
                     .push_back(PendingInput::background_result(result));
                 self.start_next_turn();
             }
+            AppEvent::ServerBackgroundRunAccepted {
+                session_id,
+                task_id,
+            } => {
+                if session_id != self.session_id {
+                    return;
+                }
+                self.server_background_run_starting = false;
+                self.pending_server_background_task_ids.remove(&task_id);
+                self.delivered_background_task_ids
+                    .lock()
+                    .await
+                    .insert(task_id);
+                if !self.has_running_turn() && !self.pending_inputs.is_empty() {
+                    self.start_next_turn();
+                }
+            }
+            AppEvent::ServerBackgroundRunDeferred {
+                session_id,
+                result,
+                error,
+            } => {
+                if session_id != self.session_id {
+                    return;
+                }
+                self.server_background_run_starting = false;
+                self.server_side_turn_active = false;
+                if self
+                    .pending_server_background_task_ids
+                    .contains(&result.task_id)
+                    && !self.pending_inputs.iter().any(|pending| {
+                        pending
+                            .server_background_result
+                            .as_ref()
+                            .is_some_and(|queued| queued.task_id == result.task_id)
+                    })
+                {
+                    self.pending_inputs
+                        .push_front(PendingInput::server_background_result(result));
+                }
+                self.committed_messages.push(UIMessage {
+                    role: MessageRole::System,
+                    content: format!(
+                        "Background result delivery was deferred and remains queued: {error}"
+                    ),
+                    tool_name: None,
+                    tool_args: None,
+                    content_collapsed: false,
+                    tool_collapsed: false,
+                    tool_running: false,
+                    diff_data: None,
+                    tool_metadata: None,
+                });
+            }
             AppEvent::SystemNotice(notice) => {
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::System,
@@ -1139,7 +1218,7 @@ impl App {
                 });
             }
             AppEvent::SessionSwitched { id, name } => {
-                self.adopt_active_session(id, name);
+                let _ = self.adopt_active_session(id, name);
             }
             AppEvent::AgentGenerationReset { generation } => {
                 if generation == u64::MAX {

@@ -19,6 +19,10 @@ impl App {
             return;
         }
         if let Some(pending) = self.pending_inputs.pop_front() {
+            if let Some(result) = pending.server_background_result {
+                self.start_server_side_background_run(result, pending.agent_input);
+                return;
+            }
             if pending.is_continuation() {
                 // Synthetic continuation: inject the delivered child results
                 // as a `user` message with no visible user row.
@@ -58,6 +62,68 @@ impl App {
     /// session title. Background results use this path.
     fn spawn_hidden_agent_turn(&mut self, input_text: String) {
         self.spawn_agent_turn_inner(input_text, true, false);
+    }
+
+    /// Start a session-owned hidden continuation without saving the TUI's
+    /// potentially stale history over the daemon's just-finished turn. A 409
+    /// means the daemon is still finalizing the preceding run, so retry until
+    /// the run registry releases the session.
+    fn start_server_side_background_run(
+        &mut self,
+        result: crate::tools::execution::BackgroundResult,
+        input_text: String,
+    ) {
+        let client = self.daemon_client.clone();
+        let sid = self.session_id.clone();
+        let tx = self.event_tx.clone();
+        let plan_mode = self.mode == AgentMode::PlanMode;
+        let task_id = result.task_id.clone();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        self.respawn_session_event_reader(Some(ready_tx));
+        self.respawn_trace_event_reader();
+        self.server_side_turn_active = true;
+        self.server_background_run_starting = true;
+        tokio::spawn(async move {
+            if tokio::time::timeout(std::time::Duration::from_secs(10), ready_rx)
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    session_id = %sid,
+                    "session event reader not connected before background continuation"
+                );
+            }
+
+            let mut delay = std::time::Duration::from_millis(25);
+            let mut last_error = String::new();
+            for attempt in 0..8 {
+                match client.try_run_session(&sid, &input_text, plan_mode).await {
+                    Ok(_) => {
+                        let _ = tx.send(AppEvent::ServerBackgroundRunAccepted {
+                            session_id: sid,
+                            task_id,
+                        });
+                        return;
+                    }
+                    Err(error)
+                        if error.status == Some(reqwest::StatusCode::CONFLICT) && attempt < 7 =>
+                    {
+                        last_error = error.to_string();
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(std::time::Duration::from_millis(500));
+                    }
+                    Err(error) => {
+                        last_error = error.to_string();
+                        break;
+                    }
+                }
+            }
+            let _ = tx.send(AppEvent::ServerBackgroundRunDeferred {
+                session_id: sid,
+                result,
+                error: last_error,
+            });
+        });
     }
 
     /// Spawn an agent turn with `input_text` as the initial user message.
@@ -512,6 +578,8 @@ impl App {
     /// Cancel the current turn and flush all queued input.
     pub(super) fn cancel_current_turn(&mut self) {
         self.pending_inputs.clear();
+        self.pending_server_background_task_ids.clear();
+        self.server_background_run_starting = false;
         if let Some(handle) = self.current_turn_handle.take() {
             handle.abort();
             // Set phase to Idle immediately and suppress stale phase updates
@@ -889,9 +957,11 @@ mod tests {
     use axum::extract::State;
     use axum::http::StatusCode;
     use axum::response::sse::{Event, Sse};
+    use axum::response::IntoResponse;
     use axum::routing::{get, post, put};
     use axum::{Json, Router};
     use std::convert::Infallible;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
@@ -920,9 +990,14 @@ mod tests {
     #[derive(Clone)]
     struct RunCapture {
         messages: tokio::sync::mpsc::UnboundedSender<String>,
+        post_attempts: Arc<AtomicUsize>,
+        put_attempts: Arc<AtomicUsize>,
+        persisted_messages: Arc<tokio::sync::Mutex<Vec<String>>>,
     }
 
-    async fn accept_session_save() -> StatusCode {
+    async fn accept_session_save(State(capture): State<RunCapture>) -> StatusCode {
+        capture.put_attempts.fetch_add(1, Ordering::SeqCst);
+        *capture.persisted_messages.lock().await = vec!["stale TUI history".to_string()];
         StatusCode::NO_CONTENT
     }
 
@@ -933,10 +1008,19 @@ mod tests {
     async fn capture_run(
         State(capture): State<RunCapture>,
         Json(body): Json<serde_json::Value>,
-    ) -> (StatusCode, Json<serde_json::Value>) {
+    ) -> axum::response::Response {
+        if capture.post_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            return (StatusCode::CONFLICT, "run active").into_response();
+        }
+        let message = body["message"].as_str().unwrap_or_default().to_string();
+        capture
+            .persisted_messages
+            .lock()
+            .await
+            .push(message.clone());
         capture
             .messages
-            .send(body["message"].as_str().unwrap_or_default().to_string())
+            .send(message)
             .expect("run capture receiver remains open");
         (
             StatusCode::ACCEPTED,
@@ -945,6 +1029,7 @@ mod tests {
                 "session_id": "test-interrupt"
             })),
         )
+            .into_response()
     }
 
     #[test]
@@ -1129,6 +1214,11 @@ mod tests {
     #[tokio::test]
     async fn busy_server_side_result_reaches_next_daemon_run_once() {
         let (message_tx, mut message_rx) = tokio::sync::mpsc::unbounded_channel();
+        let post_attempts = Arc::new(AtomicUsize::new(0));
+        let put_attempts = Arc::new(AtomicUsize::new(0));
+        let persisted_messages = Arc::new(tokio::sync::Mutex::new(vec![
+            "prior daemon assistant message".to_string(),
+        ]));
         let router = Router::new()
             .route("/api/v1/sessions/:id", put(accept_session_save))
             .route("/api/v1/sessions/:id/events", get(pending_sse))
@@ -1136,6 +1226,9 @@ mod tests {
             .route("/api/v1/subagents/trace/stream", get(pending_sse))
             .with_state(RunCapture {
                 messages: message_tx,
+                post_attempts: post_attempts.clone(),
+                put_attempts: put_attempts.clone(),
+                persisted_messages: persisted_messages.clone(),
             });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1166,11 +1259,11 @@ mod tests {
             "busy daemon result waits behind the active run"
         );
         assert!(
-            app.delivered_background_task_ids
+            !app.delivered_background_task_ids
                 .lock()
                 .await
                 .contains("bg_a"),
-            "queued result is reserved for exactly one model turn"
+            "delivery ledger is committed only after daemon acceptance"
         );
 
         app.handle_event(AppEvent::TurnComplete).await;
@@ -1182,6 +1275,43 @@ mod tests {
         assert_eq!(
             posted_message,
             r#"{"task_id":"bg_a","session_id":"test-interrupt","result_type":"command","command":"true","stdout":"done","stderr":"","exit_code":0,"success":true,"sandbox_bypassed":false,"permission_mode":null,"sandbox_level":null}"#
+        );
+        assert_eq!(post_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            put_attempts.load(Ordering::SeqCst),
+            0,
+            "existing daemon history must not be overwritten before continuation"
+        );
+        assert_eq!(
+            persisted_messages.lock().await.as_slice(),
+            [
+                "prior daemon assistant message",
+                r#"{"task_id":"bg_a","session_id":"test-interrupt","result_type":"command","command":"true","stdout":"done","stderr":"","exit_code":0,"success":true,"sandbox_bypassed":false,"permission_mode":null,"sandbox_level":null}"#
+            ]
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !app
+                .delivered_background_task_ids
+                .lock()
+                .await
+                .contains("bg_a")
+            {
+                let event = app
+                    .event_rx
+                    .recv()
+                    .await
+                    .expect("app event channel remains open");
+                app.handle_event(event).await;
+            }
+        })
+        .await
+        .expect("accepted run should commit delivery");
+        assert!(
+            app.delivered_background_task_ids
+                .lock()
+                .await
+                .contains("bg_a"),
+            "accepted daemon run commits model delivery"
         );
         assert!(app.pending_inputs.is_empty());
         assert!(app.server_side_turn_active);
@@ -1244,6 +1374,22 @@ mod tests {
             .take()
             .expect("queued turn starts after terminal event")
             .abort();
+    }
+
+    #[tokio::test]
+    async fn disconnect_does_not_release_gate_while_background_run_is_being_claimed() {
+        let mut app = build_app();
+        app.server_side_turn_active = true;
+        app.server_background_run_starting = true;
+        app.pending_inputs
+            .push_back(PendingInput::new("queued user input".to_string()));
+
+        app.handle_event(AppEvent::ServerTurnTerminated).await;
+
+        assert!(app.server_side_turn_active);
+        assert!(app.server_background_run_starting);
+        assert_eq!(app.pending_inputs.len(), 1);
+        assert!(app.current_turn_handle.is_none());
     }
 
     #[tokio::test]
