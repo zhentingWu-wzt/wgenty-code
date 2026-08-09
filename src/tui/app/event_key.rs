@@ -361,10 +361,12 @@ impl App {
                     if let Some(session) = self.session_state.selected_session() {
                         let id = session.id.clone();
                         let name = session.name.clone();
-                        self.session_state.dismiss();
                         // Adopt before loading history so every event reader and
                         // delivery ledger already targets the selected session.
-                        self.adopt_active_session(id.clone(), name);
+                        if !self.adopt_active_session(id.clone(), name) {
+                            return;
+                        }
+                        self.session_state.dismiss();
                         let client = self.daemon_client.clone();
                         let history = self.conversation_history.clone();
                         let tx = self.event_tx.clone();
@@ -731,6 +733,7 @@ mod tests {
     use super::*;
     use crate::config::watcher::SettingsHandle;
     use crate::config::Settings;
+    use crate::tools::execution::BackgroundResult;
     use crate::tui::client::DaemonClient;
     use crate::tui::client::SessionInfo;
     use std::sync::{Arc, RwLock};
@@ -808,6 +811,53 @@ mod tests {
         if let Some(handle) = app.trace_event_reader.take() {
             handle.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn session_picker_refuses_switch_with_session_owned_background_result_pending() {
+        let mut app = build_app();
+        app.server_side_loop = true;
+        app.server_side_turn_active = true;
+        app.handle_event(AppEvent::BackgroundTaskCompleted(BackgroundResult {
+            task_id: "session-a-result".to_string(),
+            session_id: Some("test-esc".to_string()),
+            result_type: "command".to_string(),
+            command: "true".to_string(),
+            stdout: "done".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            success: true,
+            sandbox_bypassed: false,
+            permission_mode: None,
+            sandbox_level: None,
+        }))
+        .await;
+        app.session_state.show(vec![SessionInfo {
+            id: "session-b".to_string(),
+            name: "Session B".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            message_count: 0,
+            summary: None,
+        }]);
+
+        app.handle_key_event(KeyCode::Enter.into());
+
+        assert_eq!(app.session_id, "test-esc");
+        assert!(app.session_state.visible);
+        assert_eq!(app.pending_inputs.len(), 1);
+        assert_eq!(
+            app.pending_inputs[0]
+                .server_background_result
+                .as_ref()
+                .map(|result| result.task_id.as_str()),
+            Some("session-a-result")
+        );
+        assert!(!app
+            .delivered_background_task_ids
+            .lock()
+            .await
+            .contains("session-a-result"));
     }
 
     #[tokio::test]

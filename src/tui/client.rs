@@ -10,6 +10,13 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::{Method, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, thiserror::Error)]
+#[error("run_session failed ({status:?}): {message}")]
+pub(crate) struct RunSessionError {
+    pub(crate) status: Option<StatusCode>,
+    pub(crate) message: String,
+}
+
 /// Result of `POST /api/v1/tools/undo-turn` (code rollback of a turn range).
 ///
 /// Mirrors `CheckpointStore::RewindRangeReport`. The TUI uses `restored` for
@@ -417,6 +424,17 @@ impl DaemonClient {
         message: &str,
         plan_mode: bool,
     ) -> anyhow::Result<String> {
+        self.try_run_session(session_id, message, plan_mode)
+            .await
+            .map_err(anyhow::Error::from)
+    }
+
+    pub(crate) async fn try_run_session(
+        &self,
+        session_id: &str,
+        message: &str,
+        plan_mode: bool,
+    ) -> Result<String, RunSessionError> {
         let encoded = urlencode(session_id);
         let url = format!("{}/api/v1/sessions/{}/run", self.base_url, encoded);
         let resp = self
@@ -425,13 +443,24 @@ impl DaemonClient {
             .header("Content-Type", "application/json")
             .json(&serde_json::json!({ "message": message, "plan_mode": plan_mode }))
             .send()
-            .await?;
+            .await
+            .map_err(|error| RunSessionError {
+                status: None,
+                message: error.to_string(),
+            })?;
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("run_session failed ({}): {}", status, text);
+            return Err(RunSessionError {
+                status: Some(status),
+                message: text,
+            });
         }
-        let body: serde_json::Value = resp.json().await?;
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await.map_err(|error| RunSessionError {
+            status: Some(status),
+            message: error.to_string(),
+        })?;
         Ok(body["run_id"].as_str().unwrap_or("").to_string())
     }
 
