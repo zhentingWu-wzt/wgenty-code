@@ -50,8 +50,6 @@ impl App {
             // clearing the display. History is snapshotted inside the spawn
             // below because the tokio Mutex cannot be locked from this sync ctx.
             let old_id = self.session_id.clone();
-            let old_name = self.session_name.clone();
-            let cancel_server_run = self.server_side_turn_active;
             let previous_suppress_phase_updates = self.suppress_phase_updates;
             let old_ui_messages: Vec<_> = self
                 .committed_messages
@@ -66,6 +64,9 @@ impl App {
             self.scroll_offset = 0;
             self.user_scrolled = false;
             self.sandbox_bypassed_session = false;
+            // Automatic daemon continuation is intentionally invisible to
+            // local run gates. Fence every old-session save before canceling.
+            self.mark_daemon_owned_session_history();
             self.cancel_current_turn();
             // Keep a daemon-owned run gated until the async phase confirms
             // cancellation and emits the explicit reset/adoption event.
@@ -78,9 +79,9 @@ impl App {
             // Clear queued inputs: a fresh generation cancels obsolete work.
             self.pending_inputs.clear();
 
-            // Async: snapshot+clear history, save old session, create new
-            // session, then switch. The save uses the pre-clear snapshot so
-            // it captures the full transcript under the old session id.
+            // Async: snapshot+clear history, cancel daemon ownership, create a
+            // new session, then switch. Never PUT the old local snapshot: the
+            // daemon owns any final history produced by cancellation.
             let client = self.daemon_client.clone();
             let history = self.conversation_history.clone();
             let event_tx = self.event_tx.clone();
@@ -96,41 +97,27 @@ impl App {
                 // 1. Terminate daemon ownership before switching. A
                 // server-side run persists its own final history after
                 // cancellation, so a stale TUI PUT must not race that save.
-                if cancel_server_run {
-                    if let Err(error) = client.cancel_run(&old_id).await {
-                        tracing::warn!(
-                            session_id = %old_id,
-                            error = %error,
-                            "failed to cancel active server run during /clear"
-                        );
-                        {
-                            let mut current = history.lock().await;
-                            *current = old_history.clone();
-                        }
-                        let _ = event_tx.send(AppEvent::HistoryLoaded {
-                            messages: old_history,
-                            ui_messages: old_ui_messages,
-                        });
-                        let _ = event_tx.send(AppEvent::SessionClearFailed {
-                            suppress_phase_updates: previous_suppress_phase_updates,
-                        });
-                        let _ = event_tx.send(AppEvent::SystemNotice(format!(
-                            "⚠️ 无法取消当前会话，未创建新会话：{error}"
-                        )));
-                        return;
-                    }
-                } else if let Err(error) = client
-                    .save_session(&old_id, &old_name, &old_history, &old_ui_messages)
-                    .await
-                {
+                if let Err(error) = client.cancel_run(&old_id).await {
                     tracing::warn!(
                         session_id = %old_id,
                         error = %error,
-                        "failed to save session before /clear switch"
+                        "failed to cancel daemon session during /clear"
                     );
-                    let _ = event_tx.send(AppEvent::SystemNotice(
-                        "⚠️ 上一会话保存失败，已尝试切换到新会话".to_string(),
-                    ));
+                    {
+                        let mut current = history.lock().await;
+                        *current = old_history.clone();
+                    }
+                    let _ = event_tx.send(AppEvent::HistoryLoaded {
+                        messages: old_history,
+                        ui_messages: old_ui_messages,
+                    });
+                    let _ = event_tx.send(AppEvent::SessionClearFailed {
+                        suppress_phase_updates: previous_suppress_phase_updates,
+                    });
+                    let _ = event_tx.send(AppEvent::SystemNotice(format!(
+                        "⚠️ 无法取消当前会话，未创建新会话：{error}"
+                    )));
+                    return;
                 }
 
                 // 2. Create a new session and switch.
@@ -571,7 +558,7 @@ mod tests {
         }))
     }
 
-    async fn assert_clear_cancels_and_adopts() {
+    async fn assert_clear_cancels_and_adopts(local_run_gate: bool) {
         let capture = ClearCapture {
             create_delay: Duration::default(),
             ..ClearCapture::default()
@@ -608,7 +595,7 @@ mod tests {
             tool_metadata: None,
         });
         app.server_side_loop = true;
-        app.server_side_turn_active = true;
+        app.server_side_turn_active = local_run_gate;
 
         app.submit_input("/clear".to_string());
 
@@ -639,7 +626,12 @@ mod tests {
 
     #[tokio::test]
     async fn clear_cancels_active_server_run_and_adopts_created_session() {
-        assert_clear_cancels_and_adopts().await;
+        assert_clear_cancels_and_adopts(true).await;
+    }
+
+    #[tokio::test]
+    async fn clear_cancels_daemon_continuation_without_a_local_run_gate() {
+        assert_clear_cancels_and_adopts(false).await;
     }
 
     #[tokio::test]

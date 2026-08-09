@@ -198,6 +198,11 @@ impl App {
                 args,
                 content,
             } => {
+                if name == "background" {
+                    // The command may finish after the local turn and trigger
+                    // daemon-owned continuation with no local busy gate.
+                    self.mark_daemon_owned_session_history();
+                }
                 let diff_data = extract_diff_data(&name, &args, &content);
                 let tool_metadata = extract_tool_metadata(&content);
                 let just_bypassed = tool_metadata
@@ -1054,6 +1059,7 @@ impl App {
                     );
                     return;
                 }
+                self.mark_daemon_owned_session_history();
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::System,
                     content: result.format_completion_notification(),

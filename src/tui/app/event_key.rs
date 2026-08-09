@@ -736,6 +736,11 @@ mod tests {
     use crate::tools::execution::BackgroundResult;
     use crate::tui::client::DaemonClient;
     use crate::tui::client::SessionInfo;
+    use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::routing::post;
+    use axum::Router;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
@@ -806,6 +811,56 @@ mod tests {
         if let Some(handle) = app.trace_event_reader.take() {
             handle.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn switching_sessions_requests_cancellation_for_invisible_daemon_work() {
+        async fn capture_cancel(State(count): State<Arc<AtomicUsize>>) -> StatusCode {
+            count.fetch_add(1, Ordering::SeqCst);
+            StatusCode::NO_CONTENT
+        }
+
+        let cancellations = Arc::new(AtomicUsize::new(0));
+        let router = Router::new()
+            .route("/api/v1/sessions/:id/cancel", post(capture_cancel))
+            .with_state(cancellations.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind session-switch cancellation server");
+        let address = listener
+            .local_addr()
+            .expect("read session-switch server address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve session-switch cancellation server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "old-session".to_string(),
+            settings,
+        );
+        app.session_state.show(vec![SessionInfo {
+            id: "loaded-session".to_string(),
+            name: "Loaded Session".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            message_count: 1,
+            summary: None,
+        }]);
+
+        app.handle_key_event(KeyCode::Enter.into());
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while cancellations.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("session switch must cancel the old daemon session");
+        assert_eq!(cancellations.load(Ordering::SeqCst), 1);
+        server.abort();
     }
 
     #[tokio::test]
