@@ -110,7 +110,7 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
     crate::utils::discovery::spawn_discovery_writer(port, api_token.clone());
 
     // Split the router: health stays public, everything else requires auth.
-    let (health_router, protected_router) = routes::create_routers(daemon_state, api_token);
+    let (health_router, protected_router) = routes::create_routers(daemon_state.clone(), api_token);
 
     let app = health_router
         .merge(protected_router)
@@ -143,7 +143,57 @@ pub async fn run(app_state: AppState, port: u16) -> anyhow::Result<()> {
         );
 
     info!("daemon listening on http://{}", addr);
-    axum::serve(listener, app).await?;
+
+    // Thin-client idle-shutdown monitor: when the last thin client
+    // disconnects, start a grace-period timer. If no client reconnects
+    // within that window, signal the Axum server to shut down gracefully.
+    let active_clients = daemon_state.active_clients.clone();
+    let shutdown_signal = async move {
+        let ctrl_c = tokio::signal::ctrl_c();
+        tokio::pin!(ctrl_c);
+
+        loop {
+            tokio::select! {
+                // wait_for_zero resolves when: (a) the first client connects, or
+                // (b) count reaches zero after having had clients.
+                () = active_clients.wait_for_zero() => {
+                    // Only proceed with shutdown when count is actually zero.
+                    if active_clients.client_count() != 0 {
+                        continue;
+                    }
+
+                    let timeout = std::time::Duration::from_secs(
+                        crate::daemon::state::THIN_CLIENT_IDLE_TIMEOUT_SECS,
+                    );
+                    tracing::info!(
+                        "all thin clients disconnected; waiting {}s before shutdown",
+                        timeout.as_secs(),
+                    );
+
+                    // Sleep through the grace period. If a client reconnects
+                    // during this time, the count will be >0 when we wake up.
+                    tokio::time::sleep(timeout).await;
+
+                    if active_clients.client_count() == 0 {
+                        tracing::info!("idle timeout elapsed; initiating graceful shutdown");
+                        active_clients.initiate_shutdown();
+                        break;
+                    }
+
+                    tracing::info!("client reconnected during grace period; cancelling shutdown");
+                }
+                _ = &mut ctrl_c => {
+                    tracing::info!("received SIGINT; initiating graceful shutdown");
+                    active_clients.initiate_shutdown();
+                    break;
+                }
+            }
+        }
+    };
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal)
+        .await?;
 
     // Clean up token file on daemon shutdown.
     let _ = crate::utils::remove_daemon_token();

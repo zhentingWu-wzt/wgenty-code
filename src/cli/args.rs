@@ -1025,6 +1025,26 @@ impl Cli {
                 );
                 println!("  Capabilities: {:?}", status.capabilities);
                 println!("  Settings enabled: {}", sb.enabled);
+
+                // Show diagnostics when the backend is not hardware-enforced
+                // and there are failed checks — this is the user-facing guidance.
+                let failed: Vec<_> = status.diagnostics.iter().filter(|d| !d.passed).collect();
+                if !failed.is_empty() && !status.is_hardware_enforced {
+                    println!(
+                        "\n  Availability diagnostics ({}/{} checks passed):",
+                        status.diagnostics.len() - failed.len(),
+                        status.diagnostics.len()
+                    );
+                    for d in &status.diagnostics {
+                        let icon = if d.passed { '✓' } else { '✗' };
+                        println!("    {icon} {}", d.check);
+                        println!("        {}", d.detail);
+                        if let Some(ref fix) = d.fix_suggestion {
+                            println!("        → Fix: {}", fix);
+                        }
+                    }
+                }
+
                 println!("  Mode → level / fail_mode (resolved):");
                 for mode in [
                     EffectiveMode::Plan,

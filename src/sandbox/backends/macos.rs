@@ -25,6 +25,61 @@ impl MacOSBackend {
         Self
     }
 
+    /// Run availability checks and return diagnostic results.
+    pub fn diagnostic_checks() -> Vec<crate::sandbox::DiagnosticIssue> {
+        let sandbox_exec_exists =
+            cfg!(target_os = "macos") && Path::new("/usr/bin/sandbox-exec").exists();
+        let probe_ok = if sandbox_exec_exists {
+            Self::is_available()
+        } else {
+            false
+        };
+
+        vec![
+            crate::sandbox::DiagnosticIssue {
+                check: "sandbox-exec binary".into(),
+                passed: sandbox_exec_exists,
+                detail: if sandbox_exec_exists {
+                    "/usr/bin/sandbox-exec found".into()
+                } else {
+                    "/usr/bin/sandbox-exec not found — macOS Seatbelt unavailable".into()
+                },
+                fix_suggestion: if !sandbox_exec_exists {
+                    Some(
+                        "sandbox-exec is a built-in macOS tool. \
+                         Check SIP status: csrutil status"
+                            .into(),
+                    )
+                } else {
+                    None
+                },
+            },
+            crate::sandbox::DiagnosticIssue {
+                check: "sandbox-exec probe".into(),
+                passed: probe_ok,
+                detail: if !sandbox_exec_exists {
+                    "Skipped (sandbox-exec not found)".into()
+                } else if probe_ok {
+                    "sandbox-exec can confine a process".into()
+                } else {
+                    "sandbox-exec probe failed — child was killed or denied. \
+                     Common cause: macOS 15.7+ Seatbelt compiler bug, \
+                     or SIP restricting sandbox profiles."
+                        .into()
+                },
+                fix_suggestion: if sandbox_exec_exists && !probe_ok {
+                    Some(
+                        "Check SIP status: csrutil status. \
+                         If SIP is disabled, re-enable it and retry."
+                            .into(),
+                    )
+                } else {
+                    None
+                },
+            },
+        ]
+    }
+
     /// Generate a Seatbelt profile using an **allow-default + precise deny**
     /// (blacklist) model.
     ///

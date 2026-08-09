@@ -57,6 +57,9 @@ pub(crate) fn agent_routes() -> Router<Arc<DaemonState>> {
 pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Router) {
     let health = Router::new()
         .route("/api/v1/health", get(handlers::health))
+        // Thin-client heartbeat (SSE keepalive); daemon tracks connected
+        // clients and initiates graceful shutdown when the last one leaves.
+        .route("/api/v1/client/heartbeat", get(handlers::client_heartbeat))
         .with_state(state.clone());
 
     let protected = Router::new()
