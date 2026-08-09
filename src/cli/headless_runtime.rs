@@ -306,6 +306,21 @@ pub async fn run_oneshot(
         memory_manager.clone(),
     )));
 
+    // ── Remove interaction-dependent tools in autonomous (YOLO) mode ──
+    // These tools require an InteractionPort or subagent infrastructure
+    // that headless mode doesn't provide. Leaving them registered wastes
+    // rounds if the model tries to call them.
+    if yolo {
+        for tool_name in &[
+            "ask_user_question",
+            "request_approval",
+            "delegate",
+            "team_message",
+        ] {
+            registry.remove_tool(tool_name);
+        }
+    }
+
     // ── CodeGraph MCP: connect if installed and initialized ──────────
     // In headless mode, MCP servers are not started automatically. We
     // manually spawn the CodeGraph MCP server and register its tools so

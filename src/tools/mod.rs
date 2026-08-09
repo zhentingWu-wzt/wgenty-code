@@ -280,6 +280,15 @@ impl ToolRegistry {
             .insert(name, Arc::from(tool));
     }
 
+    /// Remove a tool by name. Used in headless/autonomous mode to strip
+    /// tools that require interaction (ask_user_question, delegate, etc.).
+    pub fn remove_tool(&self, name: &str) {
+        self.tools
+            .write()
+            .expect("lock poisoned: tools")
+            .remove(name);
+    }
+
     /// Register a remote tool, preserving its standard name when available and
     /// prefixing it with the server name only when it collides with an existing
     /// built-in or remote tool.
