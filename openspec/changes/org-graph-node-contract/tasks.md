@@ -1,8 +1,8 @@
 ## 1. NodeContract 类型基础
 
-- [ ] 1.1 新建 `src/org_graph/mod.rs` 模块，定义 `NodeType` 枚举（Explore / Plan / GeneralPurpose / Verification / WgentyCodeGuide）、`Capability`、`PermissionBoundary`、`ResourceBudget`、`IoSchema` 类型；定义 `NodeContract` struct 含五维字段，全部派生 `Serialize/Deserialize/Debug/Clone`
-- [ ] 1.2 在 `src/main.rs`（或 lib root）注册 `org_graph` 模块
-- [ ] 1.3 添加 `NodeContract` 序列化往返测试（五维字段齐全，序列化->反序列化断言相等）
+- [x] 1.1 新建 `src/org_graph/mod.rs` 模块，定义 `NodeType` 枚举（Explore / Plan / GeneralPurpose / Verification / WgentyCodeGuide）、`Capability`、`PermissionBoundary`、`ResourceBudget`、`IoSchema` 类型；定义 `NodeContract` struct 含五维字段，全部派生 `Serialize/Deserialize/Debug/Clone`
+- [x] 1.2 在 `src/main.rs`（或 lib root）注册 `org_graph` 模块
+- [x] 1.3 添加 `NodeContract` 序列化往返测试（五维字段齐全，序列化->反序列化断言相等）
 
 ## 2. NodeRegistry 与内置契约
 
