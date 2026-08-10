@@ -76,6 +76,7 @@ impl CommandSessionManager {
                 backend_name: "none".to_string(),
                 is_hardware_enforced: false,
                 capabilities: vec![],
+                diagnostics: vec![],
             })
     }
 

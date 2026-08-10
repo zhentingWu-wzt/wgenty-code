@@ -79,10 +79,18 @@ pub(crate) fn session_event_to_app_events(ev: SessionEvent) -> Vec<AppEvent> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("stop")
                 .to_string();
-            vec![
-                AppEvent::StreamDone { finish_reason },
-                AppEvent::TurnComplete,
-            ]
+            // A tool_calls finish_reason ends an LLM round, not the turn:
+            // commit the round's streamed text (StreamDone) so it lands as its
+            // own assistant bubble, but don't signal TurnComplete - tools and
+            // further rounds still follow. Only a terminal reason completes.
+            if finish_reason == "tool_calls" {
+                vec![AppEvent::StreamDone { finish_reason }]
+            } else {
+                vec![
+                    AppEvent::StreamDone { finish_reason },
+                    AppEvent::TurnComplete,
+                ]
+            }
         }
         SessionEventKind::TurnError => {
             let msg = ev
@@ -159,6 +167,9 @@ pub(crate) fn session_event_to_app_events(ev: SessionEvent) -> Vec<AppEvent> {
         // The TUI subscribes live-only (no `after=`), so it never receives
         // sync_lost today; Task 4 decides the TUI-side resync behavior.
         SessionEventKind::SyncLost => Vec::new(),
+        // TurnContext is consumed by web/Tauri inspector panels; the TUI has
+        // its own in-process TurnContext via AppEvent::TurnContextCaptured.
+        SessionEventKind::TurnContext => Vec::new(),
     }
 }
 
@@ -641,6 +652,23 @@ mod tests {
             AppEvent::StreamDone { finish_reason } if finish_reason == "stop"
         ));
         assert!(matches!(&apps[1], AppEvent::TurnComplete));
+    }
+
+    #[test]
+    fn turn_done_tool_calls_is_round_boundary_not_complete() {
+        // A tool_calls finish ends an LLM round, not the turn: commit the
+        // streamed text via StreamDone but don't signal TurnComplete (tools and
+        // further rounds still follow). Regression for web/desktop round-split.
+        let apps = session_event_to_app_events(ev(
+            9,
+            SessionEventKind::TurnDone,
+            serde_json::json!({"finish_reason": "tool_calls"}),
+        ));
+        assert_eq!(apps.len(), 1);
+        assert!(matches!(
+            &apps[0],
+            AppEvent::StreamDone { finish_reason } if finish_reason == "tool_calls"
+        ));
     }
 
     #[test]

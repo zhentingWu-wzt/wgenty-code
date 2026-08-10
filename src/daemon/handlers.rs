@@ -81,6 +81,84 @@ pub async fn get_config(State(state): State<Arc<DaemonState>>) -> Json<ConfigRes
     })
 }
 
+/// `PUT /api/v1/config` — partial update of transport-level settings.
+///
+/// Mirrors the `switch_model` write pattern: validate in a clone → persist via
+/// `load_from_disk()` + `save()` (to keep relative working_dir) → overwrite the
+/// live handle → broadcast a global event. Only `max_tokens`, `timeout`,
+/// `streaming`, and `api_base` are editable; api_key/appkey are never accepted.
+pub async fn update_config(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<UpdateConfigRequest>,
+) -> Result<Json<ConfigResponse>, (StatusCode, String)> {
+    // 1. Validate fields in a clone of the live settings.
+    let mut settings = state
+        .settings_handle
+        .read()
+        .expect("lock poisoned: settings")
+        .clone();
+
+    if let Some(mt) = body.max_tokens {
+        if mt == 0 {
+            return Err((StatusCode::BAD_REQUEST, "max_tokens must be > 0".into()));
+        }
+        settings.models.transport.max_tokens = mt;
+    }
+    if let Some(t) = body.timeout {
+        if t == 0 {
+            return Err((StatusCode::BAD_REQUEST, "timeout must be > 0".into()));
+        }
+        settings.models.transport.timeout = t;
+    }
+    if let Some(s) = body.streaming {
+        settings.models.transport.streaming = s;
+    }
+    if let Some(ref base) = body.api_base {
+        settings.models.main.base_url = if base.trim().is_empty() {
+            None
+        } else {
+            Some(base.clone())
+        };
+    }
+
+    // 2. Persist via disk-load form (avoids writing resolved absolute working_dir).
+    let mut disk = crate::config::Settings::load_from_disk().unwrap_or_else(|_| settings.clone());
+    disk.models.transport = settings.models.transport.clone();
+    if body.api_base.is_some() {
+        disk.models.main.base_url = settings.models.main.base_url.clone();
+    }
+    if let Err(e) = disk.save() {
+        tracing::warn!(error = %e, "failed to persist settings.json after config update");
+    }
+
+    // 3. Overwrite the live handle so the next request sees the change.
+    *state
+        .settings_handle
+        .write()
+        .expect("lock poisoned: settings") = settings;
+
+    tracing::info!("config updated via PUT /config");
+
+    // 4. Broadcast so connected SSE clients refresh.
+    state.broadcast_global(
+        crate::daemon::global_events::GlobalEventKind::ConfigChanged,
+        serde_json::json!({}),
+    );
+
+    // 5. Return the new ConfigResponse (no api_key).
+    let s = state
+        .settings_handle
+        .read()
+        .expect("lock poisoned: settings");
+    Ok(Json(ConfigResponse {
+        model: s.models.main.name.clone(),
+        api_base: s.models.main.endpoint_base_url(),
+        max_tokens: s.models.transport.max_tokens,
+        timeout: s.models.transport.timeout,
+        streaming: s.models.transport.streaming,
+    }))
+}
+
 /// GET /api/v1/models - list switchable model profiles for the `/model` picker.
 /// Always includes the currently active one (marked `active: true`). If
 /// `models.profiles` is empty, returns an empty list (picker can show a hint).
@@ -89,7 +167,32 @@ pub async fn list_models(State(state): State<Arc<DaemonState>>) -> Json<ListMode
         .settings_handle
         .read()
         .expect("lock poisoned: settings");
-    let active = s.models.active_profile.as_deref();
+
+    // The active profile is whichever profile is currently installed in
+    // `models.main` (`switch_to_profile` copies a profile's full endpoint into
+    // `main`). Matching by model name -- rather than the persisted
+    // `active_profile` key -- keeps the picker correct when `main` was changed
+    // out-of-band (manual config edit, env override, or a fresh config where
+    // `active_profile` is still `None` but `main` already matches a profile).
+    // When several profiles share the same model name, the persisted
+    // `active_profile` key disambiguates.
+    let main_name = s.models.main.name.as_str();
+    let active_profile_key = s.models.active_profile.as_deref();
+    let matching: Vec<&String> = s
+        .models
+        .profiles
+        .iter()
+        .filter(|(_, ep)| ep.name == main_name)
+        .map(|(k, _)| k)
+        .collect();
+    let active_key: Option<&str> = match matching.len() {
+        0 => None,
+        1 => Some(matching[0].as_str()),
+        _ => active_profile_key
+            .filter(|k| matching.iter().any(|m| m.as_str() == *k))
+            .or_else(|| matching.first().map(|k| k.as_str())),
+    };
+
     let mut profiles: Vec<ModelProfileInfo> = s
         .models
         .profiles
@@ -107,7 +210,7 @@ pub async fn list_models(State(state): State<Arc<DaemonState>>) -> Json<ListMode
                 }
                 .to_string()
             }),
-            active: active == Some(key.as_str()),
+            active: active_key == Some(key.as_str()),
         })
         .collect();
     // Stable, alphabetical ordering for a predictable picker.
@@ -841,8 +944,15 @@ pub async fn get_permission_mode(
 
 // ── Tasks ────────────────────────────────────────────────────────────────────
 
-pub async fn list_tasks(State(state): State<Arc<DaemonState>>) -> Json<ListTasksResponse> {
-    let all = state.task_manager.get_all_tasks().await;
+pub async fn list_tasks(
+    State(state): State<Arc<DaemonState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Json<ListTasksResponse> {
+    let task_manager = match params.get("session_id") {
+        Some(sid) => state.task_manager_for_session(sid).await,
+        None => state.task_router.main(),
+    };
+    let all = task_manager.get_all_tasks().await;
     debug_log(&format!(
         "[list_tasks handler] returning {} tasks",
         all.len()
@@ -879,8 +989,13 @@ pub async fn list_tasks(State(state): State<Arc<DaemonState>>) -> Json<ListTasks
 /// `GET /api/v1/tasks/progress` - ready/blocked counts for agent-loop nudges.
 pub async fn task_progress(
     State(state): State<Arc<DaemonState>>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Json<crate::daemon::models::TaskProgressResponse> {
-    let store = state.task_manager.task_store();
+    let task_manager = match params.get("session_id") {
+        Some(sid) => state.task_manager_for_session(sid).await,
+        None => state.task_router.main(),
+    };
+    let store = task_manager.task_store();
     let map = store.read().await;
     let all: std::collections::HashMap<String, crate::tasks::Task> = map.clone();
     drop(map);
@@ -891,8 +1006,15 @@ pub async fn task_progress(
 
 // ── Todos (s03 TodoWrite) ────────────────────────────────────────────────────
 
-pub async fn get_todos(State(state): State<Arc<DaemonState>>) -> Json<GetTodosResponse> {
-    let todo_state = state.todo_state.read().await;
+pub async fn get_todos(
+    State(state): State<Arc<DaemonState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Json<GetTodosResponse> {
+    let todo_state = match params.get("session_id") {
+        Some(sid) => state.todo_state_for_session(sid).await,
+        None => state.todo_router.main(),
+    };
+    let todo_state = todo_state.read().await;
     let items: Vec<TodoItemResponse> = todo_state
         .items
         .iter()
@@ -944,6 +1066,82 @@ pub async fn list_mcp_servers(
         .collect();
 
     Json(ListMcpServersResponse { servers })
+}
+
+/// `POST /api/v1/mcp/servers` — add a new MCP server to settings + auto-start.
+pub async fn add_mcp_server(
+    State(state): State<Arc<DaemonState>>,
+    Json(body): Json<AddMcpServerRequest>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let config = crate::config::mcp_config::McpConfig {
+        name: body.name,
+        command: body.command,
+        args: body.args,
+        env: body.env,
+        cwd: None,
+        status: crate::config::mcp_config::McpServerStatus::Unknown,
+        capabilities: vec![],
+        auto_start: body.auto_start,
+        filesystem_path: None,
+    };
+    state
+        .mcp_manager
+        .add_server(config)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::CREATED)
+}
+
+/// `DELETE /api/v1/mcp/servers/:name` — stop + remove an MCP server.
+pub async fn remove_mcp_server(
+    State(state): State<Arc<DaemonState>>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state
+        .mcp_manager
+        .remove_server(&name)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/v1/mcp/servers/:name/start` — start (enable) a stopped server.
+pub async fn start_mcp_server(
+    State(state): State<Arc<DaemonState>>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state
+        .mcp_manager
+        .start_server(&name)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::OK)
+}
+
+/// `POST /api/v1/mcp/servers/:name/stop` — stop (disable) a running server.
+pub async fn stop_mcp_server(
+    State(state): State<Arc<DaemonState>>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state
+        .mcp_manager
+        .stop_server(&name)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::OK)
+}
+
+/// `POST /api/v1/mcp/servers/:name/restart` — restart a server.
+pub async fn restart_mcp_server(
+    State(state): State<Arc<DaemonState>>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    state
+        .mcp_manager
+        .restart_server(&name)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(StatusCode::OK)
 }
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
@@ -1815,6 +2013,37 @@ pub async fn get_memory(
     }
 }
 
+/// `DELETE /api/v1/memory/:id` — delete a single memory item by id.
+///
+/// Requires `?origin=project|global` to select the correct pool. When
+/// `origin=project`, an optional `&project=<path>` narrows the project pool.
+pub async fn delete_memory(
+    State(state): State<Arc<DaemonState>>,
+    Path(id): Path<String>,
+    Query(q): Query<DeleteMemoryQuery>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let origin = match q.origin.as_str() {
+        "global" => crate::context::MemoryOrigin::Global,
+        "project" | "" => crate::context::MemoryOrigin::Project,
+        other => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("invalid origin '{other}': expected 'project' or 'global'"),
+            ));
+        }
+    };
+    let mgr = memory_manager_for(&state, q.project.as_deref()).await?;
+    let deleted = mgr
+        .delete_memory(origin, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, format!("no such memory: {id}")))
+    }
+}
+
 /// `POST /api/v1/memory/prune` — invoke prune; dry_run is advisory (the
 /// underlying prune() always executes, so a true dry-run requires a manager
 /// change — for now we honor the flag by returning status without pruning).
@@ -1856,6 +2085,69 @@ fn origin_str(o: crate::context::MemoryOrigin) -> &'static str {
         crate::context::MemoryOrigin::Project => "project",
         crate::context::MemoryOrigin::Global => "global",
     }
+}
+
+// ── Thin-Client Heartbeat ───────────────────────────────────────────────────
+
+/// SSE keepalive endpoint for thin clients. Register on connect, unregister
+/// on disconnect, triggering graceful daemon shutdown when all clients leave.
+pub async fn client_heartbeat(
+    State(state): State<Arc<DaemonState>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let registered = state.active_clients.register_client();
+    if !registered {
+        // Daemon is already shutting down; return an empty stream that
+        // immediately closes so the client knows to reconnect later.
+        let (tx, rx) = mpsc::unbounded_channel::<Result<Event, Infallible>>();
+        let shutdown_event = Event::default()
+            .event("shutting_down")
+            .data("daemon is shutting down");
+        let _ = tx.send(Ok(shutdown_event));
+        drop(tx);
+        return Sse::new(UnboundedReceiverStream::new(rx));
+    }
+
+    tracing::info!(
+        clients = state.active_clients.client_count(),
+        "thin client connected"
+    );
+
+    let (tx, rx) = mpsc::unbounded_channel::<Result<Event, Infallible>>();
+    let active_clients = state.active_clients.clone();
+
+    // Background task: send periodic pings. When the client disconnects
+    // (rx dropped), this task exits and the Drop guard unregisters the client.
+    tokio::spawn(async move {
+        let status = Event::default()
+            .event("status")
+            .data(serde_json::json!({"clients": active_clients.client_count()}).to_string());
+        let _ = tx.send(Ok(status));
+
+        // Periodic keepalive pings. When the client disconnects (rx dropped),
+        // `tx.send` fails immediately, so we detect disconnection quickly.
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        // Skip the first tick (interval fires immediately).
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if tx.is_closed() {
+                break;
+            }
+            let ping = Event::default().comment("ping");
+            if tx.send(Ok(ping)).is_err() {
+                break;
+            }
+        }
+
+        // Client disconnected — unregister.
+        active_clients.unregister_client();
+        tracing::info!(
+            clients = active_clients.client_count(),
+            "thin client disconnected"
+        );
+    });
+
+    Sse::new(UnboundedReceiverStream::new(rx)).keep_alive(KeepAlive::default())
 }
 
 #[cfg(test)]
@@ -2794,12 +3086,15 @@ mod tests {
         let state = global_event_test_state().await;
         let mut rx = state.global_event_hub.subscribe();
         state
-            .apply_todos_update(vec![crate::tasks::TodoItem {
-                content: "write plan".into(),
-                status: "in_progress".into(),
-                active_form: String::new(),
-                subagent: None,
-            }])
+            .apply_todos_update(
+                "test-session",
+                vec![crate::tasks::TodoItem {
+                    content: "write plan".into(),
+                    status: "in_progress".into(),
+                    active_form: String::new(),
+                    subagent: None,
+                }],
+            )
             .await;
         let ev = rx.recv().await.expect("todos event");
         assert_eq!(
@@ -2810,8 +3105,9 @@ mod tests {
         // Multi-project dimension: clients filter by `project`.
         assert!(ev.data["project"].is_string(), "data: {}", ev.data);
         assert_eq!(ev.data["has_open_items"], true);
-        // 快照与 GET /todos 读取同源。
-        let todos = state.todo_state.read().await;
+        // 快照与 GET /todos 读取同源（route through the same session path）。
+        let todo_state = state.todo_state_for_session("test-session").await;
+        let todos = todo_state.read().await;
         assert_eq!(todos.items.len(), 1);
     }
 

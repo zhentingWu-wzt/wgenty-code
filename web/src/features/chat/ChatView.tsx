@@ -3,9 +3,10 @@ import type { ComponentPropsWithoutRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useSessionStore } from "../../state/sessionContext";
+import type { DisplayMessage } from "../../state/sessionStore";
 import { cn } from "../../lib/utils";
 import { Button } from "../../components/ui/button";
-import { ToolCallCard } from "./ToolCallCard";
+import { RunningToolCard, ToolCallCard } from "./ToolCallCard";
 import { CodeBlock } from "./CodeBlock";
 
 /**
@@ -73,6 +74,24 @@ function Markdown({ children }: { children: string }) {
   );
 }
 
+/**
+ * Timeline-mode tool entry: a running placeholder while the tool executes,
+ * a result card once tool_result arrives, and a plain-text fallback for
+ * standalone tool messages from saved history that carry no parsed result.
+ */
+function ToolEntry({ m }: { m: DisplayMessage }) {
+  if (m.streaming) return <RunningToolCard name={m.toolName ?? "tool"} args={m.toolArgs} />;
+  if (m.toolExec) return <ToolCallCard exec={m.toolExec} />;
+  if (m.content) {
+    return (
+      <div className="w-full rounded-md border border-border bg-card px-3 py-2 font-mono text-[12px] whitespace-pre-wrap text-muted-foreground">
+        {m.content}
+      </div>
+    );
+  }
+  return null;
+}
+
 /** Scrolling message list. Auto-scrolls to bottom while streaming. */
 export function ChatView() {
   const messages = useSessionStore((s) => s.messages);
@@ -101,50 +120,56 @@ export function ChatView() {
         <Fragment key={m.id}>
           {m.role === "user" && i > 0 && <div className="my-2 border-t border-border" />}
           <div className={cn("flex flex-col gap-1 px-4 py-2", m.role === "user" && "items-end")}>
-            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
-              <span
-                className={cn(
-                  "h-1.5 w-1.5 rounded-full",
-                  m.role === "assistant" ? "bg-primary" : "bg-muted-foreground",
-                )}
-              />
-              {m.role}
-              {m.round && m.round > 1 ? ` · round ${m.round}` : ""}
-              {m.streaming ? " · …" : ""}
-            </div>
-            {m.reasoning && (
-              <details className="rounded-md border border-border bg-background text-[12px] text-muted-foreground">
-                <summary className="cursor-pointer px-2 py-1 select-none">reasoning</summary>
-                <pre className="max-h-60 overflow-y-auto px-2 pb-2 whitespace-pre-wrap">
-                  {m.reasoning}
-                </pre>
-              </details>
-            )}
-            {m.content && (
-              <div
-                className={cn(
-                  "max-w-[85%] rounded-lg px-3 py-2 text-[13px]",
-                  m.role === "user" ? "bg-primary/10 whitespace-pre-wrap" : "bg-card",
-                )}
-              >
-                {m.role === "assistant" ? (
-                  <>
-                    <Markdown>{m.content}</Markdown>
-                    {m.streaming && (
-                      <span className="animate-[pulse-cursor_1s_infinite] text-primary">▍</span>
+            {m.role === "tool" ? (
+              <ToolEntry m={m} />
+            ) : (
+              <>
+                <div className="flex items-center gap-1.5 text-[12px] font-semibold text-foreground">
+                  <span
+                    className={cn(
+                      "h-1.5 w-1.5 rounded-full",
+                      m.role === "assistant" ? "bg-primary" : "bg-muted-foreground",
                     )}
-                  </>
-                ) : (
-                  m.content
+                  />
+                  {m.role}
+                  {m.round && m.round > 1 ? ` · round ${m.round}` : ""}
+                  {m.streaming ? " · …" : ""}
+                </div>
+                {m.reasoning && (
+                  <details className="rounded-md border border-border bg-background text-[12px] text-muted-foreground">
+                    <summary className="cursor-pointer px-2 py-1 select-none">reasoning</summary>
+                    <pre className="max-h-60 overflow-y-auto px-2 pb-2 whitespace-pre-wrap">
+                      {m.reasoning}
+                    </pre>
+                  </details>
                 )}
-              </div>
-            )}
-            {m.toolExecs && m.toolExecs.length > 0 && (
-              <div className="mt-2 flex w-full flex-col gap-1.5">
-                {m.toolExecs.map((exec, i) => (
-                  <ToolCallCard key={i} exec={exec} />
-                ))}
-              </div>
+                {m.content && (
+                  <div
+                    className={cn(
+                      "max-w-[85%] rounded-lg px-3 py-2 text-[13px]",
+                      m.role === "user" ? "bg-primary/10 whitespace-pre-wrap" : "bg-card",
+                    )}
+                  >
+                    {m.role === "assistant" ? (
+                      <>
+                        <Markdown>{m.content}</Markdown>
+                        {m.streaming && (
+                          <span className="animate-[pulse-cursor_1s_infinite] text-primary">▍</span>
+                        )}
+                      </>
+                    ) : (
+                      m.content
+                    )}
+                  </div>
+                )}
+                {m.toolExecs && m.toolExecs.length > 0 && (
+                  <div className="mt-2 flex w-full flex-col gap-1.5">
+                    {m.toolExecs.map((exec, i) => (
+                      <ToolCallCard key={i} exec={exec} />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </Fragment>

@@ -1,6 +1,9 @@
 # Rust
 /target/
 *.pdb
+# Tauri desktop spike build artifacts
+/desktop/src-tauri/target/
+/desktop/src-tauri/gen/
 
 # IDE
 .vscode/
@@ -15,6 +18,11 @@ Thumbs.db
 # Build artifacts
 *.exe
 *.dll
+wgenty-code-linux-*
+
+# Eval artifacts
+eval/deepswe/__pycache__/
+jobs/
 *.so
 *.dylib
 .wgenty-code/traces/
@@ -66,3 +74,9 @@ benchmark_results/
 # install.ps1 and install-unix.sh are part of the repo
 .wgenty-code/traces/s-nested.jsonl
 web/.wgenty-code/
+
+# Tauri dev test artifacts (sessions created during local testing)
+/desktop/src-tauri/.wgenty-code/
+
+# pnpm store (web/ dev dependency cache)
+.pnpm-store/

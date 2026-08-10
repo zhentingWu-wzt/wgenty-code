@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useSessionManager } from "../state/sessionManager";
+import { useDisplayPrefs } from "../state/displayPrefs";
 import { runSessionTurn, stopSessionTurn } from "./sessionRunner";
 import type { DaemonClient } from "../api/client";
 import type { SessionEvent } from "../api/types";
@@ -8,9 +9,7 @@ import type { SessionEvent } from "../api/types";
  *  event is sent as a `data: {...}\n` line, matching the daemon's SSE format. */
 function fakeEventStream(events: SessionEvent[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
-  const chunks = events.map(
-    (ev) => encoder.encode(`data: ${JSON.stringify(ev)}\n\n`),
-  );
+  const chunks = events.map((ev) => encoder.encode(`data: ${JSON.stringify(ev)}\n\n`));
   return new ReadableStream({
     start(controller) {
       for (const c of chunks) controller.enqueue(c);
@@ -29,11 +28,11 @@ function fakeClient(opts: {
   return {
     createSession: vi.fn().mockResolvedValue({ id: sessionId, name: "s1" }) as never,
     runSession: opts.runRejects
-      ? vi.fn().mockRejectedValue(opts.runRejects) as never
-      : vi.fn().mockResolvedValue({
+      ? (vi.fn().mockRejectedValue(opts.runRejects) as never)
+      : (vi.fn().mockResolvedValue({
           run_id: opts.runId ?? "r1",
           session_id: sessionId,
-        }) as never,
+        }) as never),
     sessionEvents: vi.fn().mockResolvedValue({
       body: fakeEventStream(opts.events ?? []),
     }) as never,
@@ -62,6 +61,7 @@ function makeEvent(
 describe("runSessionTurn (server-side observer)", () => {
   beforeEach(() => {
     reset();
+    useDisplayPrefs.setState({ mode: "single" });
     vi.clearAllMocks();
   });
 
@@ -122,6 +122,85 @@ describe("runSessionTurn (server-side observer)", () => {
     expect(assistant?.content).toBe("final answer");
     expect(store.isRunning).toBe(false);
     expect(useSessionManager.getState().entries[id].status).toBe("idle");
+  });
+
+  it("rounds mode: each LLM round gets its own bubble (text + that round's cards)", async () => {
+    useDisplayPrefs.setState({ mode: "rounds" });
+    const client = fakeClient({
+      events: [
+        makeEvent(1, "content_delta", { text: "checking…" }),
+        makeEvent(2, "turn_done", { finish_reason: "tool_calls" }),
+        makeEvent(3, "tool_start", { name: "file_read", args: { path: "/a" } }),
+        makeEvent(4, "tool_result", { name: "file_read", args: { path: "/a" }, content: "ok" }),
+        makeEvent(5, "content_delta", { text: "final answer" }),
+        makeEvent(6, "turn_done", { finish_reason: "stop" }),
+      ],
+    });
+    const id = useSessionManager.getState().createLocalSession("s1");
+    await runSessionTurn(client as unknown as DaemonClient, id, "read it");
+
+    const store = useSessionManager.getState().entries[id].store.getState();
+    const assistants = store.messages.filter((m) => m.role === "assistant");
+    expect(assistants).toHaveLength(2);
+    expect(assistants[0].content).toBe("checking…");
+    expect(assistants[0].round).toBe(1);
+    expect(assistants[0].toolExecs).toHaveLength(1);
+    expect(assistants[1].content).toBe("final answer");
+    expect(assistants[1].round).toBe(2);
+    expect(assistants[1].toolExecs).toBeUndefined();
+  });
+
+  it("rounds mode: a text-less tool round keeps its cards on the previous bubble", async () => {
+    useDisplayPrefs.setState({ mode: "rounds" });
+    const client = fakeClient({
+      events: [
+        makeEvent(1, "content_delta", { text: "first" }),
+        makeEvent(2, "turn_done", { finish_reason: "tool_calls" }),
+        makeEvent(3, "tool_start", { name: "grep", args: { pattern: "x" } }),
+        makeEvent(4, "tool_result", { name: "grep", args: { pattern: "x" }, content: "hit" }),
+        makeEvent(5, "turn_done", { finish_reason: "tool_calls" }),
+        makeEvent(6, "tool_start", { name: "file_read", args: { path: "/b" } }),
+        makeEvent(7, "tool_result", { name: "file_read", args: { path: "/b" }, content: "body" }),
+        makeEvent(8, "content_delta", { text: "done" }),
+        makeEvent(9, "turn_done", { finish_reason: "stop" }),
+      ],
+    });
+    const id = useSessionManager.getState().createLocalSession("s1");
+    await runSessionTurn(client as unknown as DaemonClient, id, "go");
+
+    const store = useSessionManager.getState().entries[id].store.getState();
+    const assistants = store.messages.filter((m) => m.role === "assistant");
+    expect(assistants).toHaveLength(2);
+    expect(assistants[0].content).toBe("first");
+    expect(assistants[0].toolExecs).toHaveLength(2);
+    expect(assistants[1].content).toBe("done");
+    expect(assistants[1].round).toBe(2);
+  });
+
+  it("timeline mode: tool entries interleave as separate messages in stream order", async () => {
+    useDisplayPrefs.setState({ mode: "timeline" });
+    const client = fakeClient({
+      events: [
+        makeEvent(1, "content_delta", { text: "checking…" }),
+        makeEvent(2, "turn_done", { finish_reason: "tool_calls" }),
+        makeEvent(3, "tool_start", { name: "file_read", args: { path: "/a" } }),
+        makeEvent(4, "tool_result", { name: "file_read", args: { path: "/a" }, content: "ok" }),
+        makeEvent(5, "content_delta", { text: "final answer" }),
+        makeEvent(6, "turn_done", { finish_reason: "stop" }),
+      ],
+    });
+    const id = useSessionManager.getState().createLocalSession("s1");
+    await runSessionTurn(client as unknown as DaemonClient, id, "read it");
+
+    const store = useSessionManager.getState().entries[id].store.getState();
+    expect(store.messages.map((m) => m.role)).toEqual(["user", "assistant", "tool", "assistant"]);
+    const tool = store.messages.find((m) => m.role === "tool")!;
+    expect(tool.streaming).toBe(false);
+    expect(tool.toolExec?.call.function.name).toBe("file_read");
+    expect(tool.toolExec?.response.content).toBe("ok");
+    // Assistant bubbles carry no toolExecs in timeline mode — tools are entries.
+    const assistants = store.messages.filter((m) => m.role === "assistant");
+    expect(assistants.every((m) => !m.toolExecs)).toBe(true);
   });
 
   it("turn_error marks the session error with the message", async () => {

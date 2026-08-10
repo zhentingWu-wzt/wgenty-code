@@ -14,7 +14,12 @@
  * state; components subscribe through `sessionContext.tsx`.
  */
 import { create } from "zustand";
-import type { PermissionDecision, PermissionRequiredInfo, QuestionPayload, StructuredApproval } from "../api/types";
+import type {
+  PermissionDecision,
+  PermissionRequiredInfo,
+  QuestionPayload,
+  StructuredApproval,
+} from "../api/types";
 import type { StreamEvent } from "../api/sseParser";
 import type { ToolExecution } from "../agent/types";
 
@@ -28,6 +33,11 @@ export interface DisplayMessage {
   reasoning?: string;
   /** Tool executions attached to this assistant message (rendered as cards). */
   toolExecs?: ToolExecution[];
+  /** Tool-role entries (timeline mode): the invoked tool + args while running. */
+  toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  /** Tool-role entries: final execution result once tool_result arrives. */
+  toolExec?: ToolExecution;
   /** For tool messages: id of the tool call this is a result of. */
   toolCallId?: string;
   /** Whether this assistant message is still streaming. */
@@ -37,6 +47,34 @@ export interface DisplayMessage {
 }
 
 export type ConnectionStatus = "unknown" | "connected" | "disconnected";
+
+/** Inspector turn-context data — broadcast by daemon after each turn. */
+export interface TurnContextLayer {
+  label: string;
+  source: string;
+  char_count: number;
+}
+export interface TurnContextMemory {
+  importance: number;
+  memory_type: string;
+  content_preview: string;
+}
+export interface TurnContextMessage {
+  role: string;
+  content: string;
+}
+export interface TurnContextUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+export interface TurnContextData {
+  layers: TurnContextLayer[];
+  recalled_memories: TurnContextMemory[];
+  new_messages: TurnContextMessage[];
+  reminder: { to_model: string; to_transcript: string | null } | null;
+  usage: TurnContextUsage;
+}
 
 /**
  * Structured turn error (design D7.3). `kind` distinguishes transport failures
@@ -70,6 +108,9 @@ export interface SessionState {
   pendingSubagent: StructuredApproval | null;
   /** ask_user_question prompt (pushed via trace SSE). Null when none pending. */
   pendingQuestion: QuestionPayload | null;
+  /** Turn context from the most recent turn (inspector data: layers, memories,
+   * messages, reminder, token usage). Null before the first turn completes. */
+  turnContext: TurnContextData | null;
 
   // ── Actions ──────────────────────────────────────────────────────────────
   setConnection: (s: ConnectionStatus) => void;
@@ -83,9 +124,14 @@ export interface SessionState {
   appendAssistant: (id: string, ev: StreamEvent) => void;
   /** Mark the streaming assistant message done and attach tool executions. */
   attachToolExec: (assistantId: string, exec: ToolExecution) => void;
+  /** Timeline mode: insert a running tool placeholder at its stream position. */
+  pushToolStart: (name: string, args: Record<string, unknown>) => string;
+  /** Timeline mode: fill a tool placeholder with its execution result. */
+  completeTool: (id: string, exec: ToolExecution) => void;
   finalizeAssistant: (id: string) => void;
   setError: (err: TurnError | null) => void;
   setRunning: (b: boolean) => void;
+  setTurnContext: (data: TurnContextData) => void;
   /** Surface a permission prompt; returns a promise the modal resolves. */
   requestPermission: (info: PermissionRequiredInfo) => Promise<PermissionDecision>;
   resolvePermission: (decision: PermissionDecision) => void;
@@ -120,6 +166,7 @@ export function createSessionStore() {
     pendingPermission: null,
     pendingSubagent: null,
     pendingQuestion: null,
+    turnContext: null,
 
     setConnection: (s) => set({ connection: s }),
     setModelName: (n) => set({ modelName: n }),
@@ -155,12 +202,31 @@ export function createSessionStore() {
         ),
       })),
 
+    pushToolStart: (name, args) => {
+      const id = genId();
+      set((s) => ({
+        messages: [
+          ...s.messages,
+          { id, role: "tool", content: "", streaming: true, toolName: name, toolArgs: args },
+        ],
+      }));
+      return id;
+    },
+
+    completeTool: (id, exec) =>
+      set((s) => ({
+        messages: s.messages.map((m) =>
+          m.id === id ? { ...m, streaming: false, toolExec: exec } : m,
+        ),
+      })),
+
     finalizeAssistant: (id) =>
       set((s) => ({
         messages: s.messages.map((m) => (m.id === id ? { ...m, streaming: false } : m)),
       })),
 
     setError: (msg) => set({ lastError: msg }),
+    setTurnContext: (data) => set({ turnContext: data }),
     setRunning: (b) => set({ isRunning: b }),
 
     requestPermission: (info) =>
@@ -209,7 +275,7 @@ export function createSessionStore() {
         lastError: null,
         pendingPermission: null,
         pendingSubagent: null,
-    pendingQuestion: null,
+        pendingQuestion: null,
         isRunning: false,
       }),
   }));
