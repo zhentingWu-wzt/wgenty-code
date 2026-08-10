@@ -1145,7 +1145,7 @@ fn map_coordinator_error(e: CoordinatorError) -> ToolError {
             reason,
         } => ToolError {
             message: format!(
-                "Contract violation for {:?} node ({:?}): {}",
+                "contract violation for {:?} node ({:?}): {}",
                 node_type, dimension, reason
             ),
             code: Some("contract_violation".to_string()),
