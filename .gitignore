@@ -51,6 +51,16 @@ traces/
 .claude/
 .codex/
 .zcode/
+# Comet local session pointer (root only; openspec change .comet/ is committed)
+/.comet/
+# Comet transient session state under openspec changes (handoff/ + .comet.yaml kept)
+openspec/**/.comet/run-state.json
+openspec/**/.comet/checkpoint.json
+openspec/**/.comet/context.md
+openspec/**/.comet/artifacts.json
+openspec/**/.comet/state-events.jsonl
+openspec/**/.comet/trajectory.jsonl
+openspec/**/.comet/skill-snapshots/
 
 # OpenSpec development workflow artifacts
 
