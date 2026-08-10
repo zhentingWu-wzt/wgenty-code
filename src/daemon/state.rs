@@ -136,10 +136,16 @@ impl DaemonState {
         // and lifecycle for this daemon. Derived from trusted subagent
         // settings; identity is never taken from model JSON. Constructed
         // outside the registry's Arc::new_cyclic so DaemonState can hold it.
-        let coordinator = Arc::new(crate::agent::AgentCoordinator::new(
-            app_state.settings.agent.subagent.max_concurrent,
-            app_state.settings.agent.subagent.max_depth,
+        let registry = Arc::new(crate::org_graph::NodeRegistry::builtin(
+            &app_state.settings.agent.subagent,
         ));
+        let coordinator = Arc::new(
+            crate::agent::AgentCoordinator::new(
+                app_state.settings.agent.subagent.max_concurrent,
+                app_state.settings.agent.subagent.max_depth,
+            )
+            .with_node_registry(registry),
+        );
         // Viewer-bound capability service + viewer-token secret. The secret is
         // random per daemon start; viewer tokens do not survive restart.
         let daemon_viewer_secret = {

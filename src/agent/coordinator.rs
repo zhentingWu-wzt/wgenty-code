@@ -32,14 +32,29 @@ const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct SpawnChildRequest {
     /// Human-readable label for the child task.
     pub label: String,
+    /// The child's node type, used by the coordinator to look up the
+    /// [`NodeContract`](crate::org_graph::NodeContract) for enforcement.
+    /// Defaults to [`NodeType::GeneralPurpose`](crate::org_graph::NodeType);
+    /// `new()` callers that omit `with_node_type` behave exactly as before.
+    pub node_type: crate::org_graph::NodeType,
 }
 
 impl SpawnChildRequest {
     /// Creates a new spawn request with the given label.
+    ///
+    /// `node_type` defaults to `GeneralPurpose`, matching pre-change behavior.
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
+            node_type: crate::org_graph::NodeType::default(),
         }
+    }
+
+    /// Sets the child's node type.
+    #[must_use]
+    pub fn with_node_type(mut self, node_type: crate::org_graph::NodeType) -> Self {
+        self.node_type = node_type;
+        self
     }
 }
 
@@ -312,6 +327,10 @@ pub struct AgentCoordinator {
     /// level rather than `GroupRecord` so it survives group claim/removal during
     /// `collect_children_for_synthesis`.
     fallback_used: Arc<RwLock<HashSet<String>>>,
+    /// Org-Graph node contracts. Built from settings at construction time and
+    /// immutable thereafter. Used by `reserve_child` to enforce the caller's
+    /// `can_spawn` and the requested child's node-type validity.
+    registry: Arc<crate::org_graph::NodeRegistry>,
 }
 
 impl AgentCoordinator {
@@ -331,6 +350,9 @@ impl AgentCoordinator {
             owner_groups: Arc::new(RwLock::new(HashMap::new())),
             group_operations: Arc::new(Mutex::new(())),
             fallback_used: Arc::new(RwLock::new(HashSet::new())),
+            registry: Arc::new(crate::org_graph::NodeRegistry::builtin(
+                &crate::config::agent::SubagentLimits::default(),
+            )),
         }
     }
 
@@ -357,6 +379,18 @@ impl AgentCoordinator {
     #[must_use]
     pub fn with_shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.shutdown_timeout = timeout;
+        self
+    }
+
+    /// Injects a [`NodeRegistry`](crate::org_graph::NodeRegistry) built from
+    /// real settings. Production code (daemon/state.rs) uses this so contract
+    /// fields like `can_mutate_fs` reflect the user's `explore_readonly`.
+    #[must_use]
+    pub fn with_node_registry(
+        mut self,
+        registry: Arc<crate::org_graph::NodeRegistry>,
+    ) -> Self {
+        self.registry = registry;
         self
     }
 
@@ -1794,6 +1828,41 @@ mod tests {
 
     fn test_coordinator(max_concurrent: usize, max_depth: usize) -> AgentCoordinator {
         AgentCoordinator::new(max_concurrent, max_depth)
+    }
+
+    #[test]
+    fn spawn_child_request_defaults_to_general_purpose() {
+        let req = SpawnChildRequest::new("demo");
+        assert_eq!(req.label, "demo");
+        assert_eq!(
+            req.node_type,
+            crate::org_graph::NodeType::GeneralPurpose
+        );
+    }
+
+    #[test]
+    fn spawn_child_request_with_node_type_overrides_default() {
+        let req = SpawnChildRequest::new("demo")
+            .with_node_type(crate::org_graph::NodeType::Explore);
+        assert_eq!(req.node_type, crate::org_graph::NodeType::Explore);
+    }
+
+    #[test]
+    fn coordinator_default_registry_has_five_contracts() {
+        let coord = test_coordinator(5, 3);
+        for nt in [
+            crate::org_graph::NodeType::Explore,
+            crate::org_graph::NodeType::Plan,
+            crate::org_graph::NodeType::GeneralPurpose,
+            crate::org_graph::NodeType::Verification,
+            crate::org_graph::NodeType::WgentyCodeGuide,
+        ] {
+            assert!(
+                coord.registry.get(&nt).is_some(),
+                "coordinator default registry missing {:?}",
+                nt
+            );
+        }
     }
 
     #[tokio::test]
