@@ -6,19 +6,14 @@
 use serde::{Deserialize, Serialize};
 
 /// 节点类型枚举。模型输出的 `subagent_type` 字符串经派发层映射为此可信枚举。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum NodeType {
     Explore,
     Plan,
+    #[default]
     GeneralPurpose,
     Verification,
     WgentyCodeGuide,
-}
-
-impl Default for NodeType {
-    fn default() -> Self {
-        NodeType::GeneralPurpose
-    }
 }
 
 /// 能力：节点声明可用的工具集（白名单）。空 Vec = 通配符（全部允许），

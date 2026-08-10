@@ -43,6 +43,6 @@
 
 ## 8. 验证与收尾
 
-- [ ] 8.1 `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings` 零 warning
-- [ ] 8.2 `cargo test -p wgenty-code` 全量通过（含 org_graph 模块测试、coordinator 校验测试、task.rs 无回归测试、现有 subagent 测试无回归）
-- [ ] 8.3 手动：真实 `task`/`delegate` 派发 explore 与 general-purpose 节点，确认 system_prompt/工具集/budget 来自契约且行为与变更前一致
+- [x] 8.1 `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings` 零 warning
+- [x] 8.2 `cargo test -p wgenty-code` 全量通过（含 org_graph 模块测试、coordinator 校验测试、task.rs 无回归测试、现有 subagent 测试无回归）
+- [x] 8.3 手动：真实 `task`/`delegate` 派发 explore 与 general-purpose 节点，确认 system_prompt/工具集/budget 来自契约且行为与变更前一致
