@@ -31,4 +31,22 @@ describe("createSessionStore", () => {
     expect(msg.content).toBe("hi");
     expect(msg.streaming).toBe(false);
   });
+
+  it("timeline tool entries: pushToolStart inserts a running placeholder, completeTool fills it", () => {
+    const s = createSessionStore();
+    const id = s.getState().pushToolStart("file_read", { path: "/a" });
+    const running = s.getState().messages.find((m) => m.id === id)!;
+    expect(running.role).toBe("tool");
+    expect(running.streaming).toBe(true);
+    expect(running.toolName).toBe("file_read");
+    expect(running.toolArgs).toEqual({ path: "/a" });
+
+    s.getState().completeTool(id, {
+      call: { id: "c1", type: "function", function: { name: "file_read", arguments: "{}" } },
+      response: { success: true, content: "ok" },
+    });
+    const done = s.getState().messages.find((m) => m.id === id)!;
+    expect(done.streaming).toBe(false);
+    expect(done.toolExec?.response.content).toBe("ok");
+  });
 });

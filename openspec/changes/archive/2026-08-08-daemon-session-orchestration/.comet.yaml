@@ -7,7 +7,7 @@ build_pause: null
 subagent_dispatch: confirmed
 tdd_mode: tdd
 review_mode: standard
-isolation: branch
+isolation: current
 verify_mode: full
 auto_transition: true
 base_ref: 0de3b78df5bc3444e8cc3b99cbdb4b675c589adf
@@ -19,12 +19,12 @@ verification_report: docs/superpowers/reports/2026-08-08-daemon-session-orchestr
 branch_status: handled
 created_at: 2026-08-07
 verified_at: 2026-08-08
-archive_confirmation: null
+archive_confirmation: confirmed
 archived: true
 bound_branch: zhentingWu-wzt/GUI
 direct_override: null
-handoff_context: openspec/changes/daemon-session-orchestration/.comet/handoff/design-context.json
+handoff_context: null
 handoff_hash: 293ad33e664b0ed0b027465b860fe5d8a350f314e70185236f98cae28381951a
 classic_profile: full
 classic_migration: 1
-run_id: e028ae15-fa07-4e00-a5ed-20af4139d234
+run_id: 01383c88-1566-4c33-9c9f-9a0454e64ba9

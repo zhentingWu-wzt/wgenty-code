@@ -1,4 +1,4 @@
-import { Check, CircleSlash, X } from "lucide-react";
+import { Check, CircleSlash, Loader2, X } from "lucide-react";
 import type { ToolExecution } from "../../agent/types";
 import { cn } from "../../lib/utils";
 import { DiffView } from "./DiffView";
@@ -83,6 +83,29 @@ export function ToolCallCard({ exec }: { exec: ToolExecution }) {
         )}
       </div>
     </details>
+  );
+}
+
+/**
+ * Timeline-mode placeholder shown while a tool is executing: same compact
+ * one-line shape as ToolCallCard, but with a spinner instead of a result.
+ * Replaced in place by <ToolCallCard> when the tool_result arrives.
+ */
+export function RunningToolCard({ name, args }: { name: string; args?: Record<string, unknown> }) {
+  const summary = argSummary(JSON.stringify(args ?? {}));
+  return (
+    <div className="flex items-center gap-2 overflow-hidden rounded-md border border-border border-l-[3px] border-l-primary px-2.5 py-1.5 text-[12px] text-muted-foreground">
+      <Loader2 size={12} className="shrink-0 animate-spin text-primary" />
+      <span className="shrink-0 font-mono font-medium text-foreground">{name}</span>
+      {summary && (
+        <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
+          {summary}
+        </span>
+      )}
+      <span className="ml-auto shrink-0 text-[10px] tracking-wide uppercase text-muted-foreground">
+        running…
+      </span>
+    </div>
   );
 }
 

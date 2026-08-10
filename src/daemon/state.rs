@@ -14,10 +14,88 @@ use crate::tools::meta::team_message::TeamMessageTool;
 use crate::tools::{CheckpointManager, CheckpointStore, ToolExecutor, ToolRegistry};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
+
+/// Grace period (seconds) after the last thin client disconnects before the
+/// daemon initiates a graceful shutdown.
+pub const THIN_CLIENT_IDLE_TIMEOUT_SECS: u64 = 10;
+
+/// Tracks active thin-client connections and signals the daemon to exit
+/// when all clients have disconnected and the idle timeout has elapsed.
+pub struct ActiveClientTracker {
+    count: AtomicUsize,
+    /// Set to true once at least one client has ever connected.
+    /// Prevents auto-shutdown when no thin client has ever connected
+    /// (e.g. daemon started from TUI without web/desktop clients).
+    ever_had_client: AtomicUsize,
+    zero_notify: tokio::sync::Notify,
+    shutting_down: AtomicUsize,
+}
+
+impl ActiveClientTracker {
+    pub fn new() -> Self {
+        Self {
+            count: AtomicUsize::new(0),
+            ever_had_client: AtomicUsize::new(0),
+            zero_notify: tokio::sync::Notify::new(),
+            shutting_down: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn register_client(&self) -> bool {
+        if self.shutting_down.load(Ordering::Acquire) != 0 {
+            return false;
+        }
+        let was_zero = self.ever_had_client.swap(1, Ordering::Release) == 0;
+        self.count.fetch_add(1, Ordering::Release);
+        // Wake the shutdown monitor so it can re-check when the first
+        // client ever connects (moves from "never shutdown" to idle-shutdown).
+        if was_zero {
+            self.zero_notify.notify_one();
+        }
+        true
+    }
+
+    pub fn unregister_client(&self) {
+        let prev = self.count.fetch_sub(1, Ordering::Release);
+        if prev == 1 {
+            self.zero_notify.notify_one();
+        }
+    }
+
+    pub fn client_count(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+
+    /// Resolves when count reaches zero AND at least one thin client has
+    /// ever connected. Blocks indefinitely if no client has ever connected
+    /// (daemon started without thin clients — should not auto-shutdown).
+    /// Wakes on every state change (first client, count transitions) and
+    /// returns only when the shutdown condition is met.
+    pub async fn wait_for_zero(&self) {
+        loop {
+            // Check condition before waiting to avoid missing a wake.
+            if self.ever_had_client.load(Ordering::Acquire) == 1 && self.client_count() == 0 {
+                return;
+            }
+            self.zero_notify.notified().await;
+        }
+    }
+
+    pub fn initiate_shutdown(&self) {
+        self.shutting_down.store(1, Ordering::Release);
+        self.zero_notify.notify_one();
+    }
+}
+
+impl Default for ActiveClientTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Retained background results; newest at back, oldest evicted past capacity.
 /// Retention accepts eviction at extreme volume (very low frequency; online
@@ -65,8 +143,8 @@ pub struct DaemonState {
     pub tool_executor: ToolExecutor,
     pub checkpoint_manager: Arc<CheckpointManager>,
     pub checkpoint_store: Arc<CheckpointStore>,
-    pub task_manager: Arc<TaskManagementTool>,
-    pub todo_state: Arc<RwLock<TodoState>>,
+    pub task_router: Arc<crate::tasks::TaskRouter>,
+    pub todo_router: Arc<crate::tasks::TodoRouter>,
     pub skill_loader: Arc<SkillLoader>,
     pub background_manager: Arc<BackgroundManager>,
     /// Retained background results (newest at back, oldest evicted past
@@ -78,6 +156,10 @@ pub struct DaemonState {
     pub session_manager: MemorySessionManager,
     /// Shared MemoryManager backing the `memory_add` tool and AutoDream (D1).
     pub memory_manager: Arc<crate::context::MemoryManager>,
+    /// Hook manager for lifecycle events (PreToolUse/PostToolUse/UserPromptSubmit).
+    /// Used by run_session_turn to fire UserPromptSubmit hooks and collect
+    /// injection fragments for the prompt reminder + inspector TurnContext.
+    pub hook_manager: Arc<HookManager>,
     /// Long-lived external MCP sessions and their status.
     pub mcp_manager: Arc<crate::mcp::McpManager>,
     sessions: Arc<RwLock<std::collections::HashMap<String, SessionRules>>>,
@@ -167,6 +249,9 @@ pub struct DaemonState {
     /// version. A single global lock is enough — session saves are small,
     /// infrequent disk writes on a loopback daemon.
     pub session_update_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Tracks connected thin clients and triggers graceful shutdown
+    /// when the last client disconnects.
+    pub active_clients: Arc<ActiveClientTracker>,
 }
 
 impl DaemonState {
@@ -275,6 +360,18 @@ impl DaemonState {
             app_state.settings.clone(),
             projects.clone(),
             memory_manager.clone(),
+        ));
+
+        // Per-project task/todo routing (mirrors MemoryRouter). The main
+        // project reuses the instances built above; registered projects get
+        // lazy-initialized instances on first access.
+        let task_router = Arc::new(crate::tasks::TaskRouter::new(
+            task_manager.clone(),
+            app_state.settings.storage.working_dir.clone(),
+        ));
+        let todo_router = Arc::new(crate::tasks::TodoRouter::new(
+            todo_state.clone(),
+            app_state.settings.storage.working_dir.clone(),
         ));
 
         // Shared read connection to the global transcript db for the SSE trace
@@ -520,14 +617,15 @@ impl DaemonState {
             tool_registry,
             checkpoint_manager,
             checkpoint_store,
-            task_manager,
-            todo_state,
+            task_router,
+            todo_router,
             skill_loader,
             background_manager: bg_manager,
             background_results,
             team_manager,
             session_manager,
             memory_manager,
+            hook_manager,
             mcp_manager,
             sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
             subagent_progress: progress_store,
@@ -553,6 +651,7 @@ impl DaemonState {
             session_seq_counters: Arc::new(std::sync::RwLock::new(HashMap::new())),
             session_buffers: Arc::new(std::sync::RwLock::new(HashMap::new())),
             session_update_lock: Arc::new(tokio::sync::Mutex::new(())),
+            active_clients: Arc::new(ActiveClientTracker::new()),
             http_client,
             http_client_stream,
         }
@@ -599,16 +698,20 @@ impl DaemonState {
 
     /// Single write-path for the shared todo list: update state, then
     /// broadcast a full-snapshot TodosChanged (snapshots are small; YAGNI:
-    /// no incremental diff). `project` lets multi-project clients filter.
-    pub async fn apply_todos_update(&self, items: Vec<crate::tasks::TodoItem>) {
+    /// no incremental diff). Routes to the session's project todo state so
+    /// multi-project sessions never cross-contaminate. `project_path` is
+    /// included in the broadcast so clients can filter.
+    pub async fn apply_todos_update(&self, session_id: &str, items: Vec<crate::tasks::TodoItem>) {
+        let root = self.effective_session_root(session_id).await;
+        let todo_state = self.todo_router.for_project(&root).await;
         {
-            let mut todos = self.todo_state.write().await;
+            let mut todos = todo_state.write().await;
             todos.items = items;
         }
         let snapshot = {
-            let todos = self.todo_state.read().await;
+            let todos = todo_state.read().await;
             serde_json::json!({
-                "project": self.app_state.settings.storage.working_dir,
+                "project": root,
                 "items": todos.items,
                 "has_open_items": todos.has_open_items(),
             })
@@ -617,6 +720,26 @@ impl DaemonState {
             crate::daemon::global_events::GlobalEventKind::TodosChanged,
             snapshot,
         );
+    }
+
+    /// Task manager for the session's project (get-or-create via router).
+    /// HTTP handlers and the run loop use this so tasks are isolated per
+    /// project, mirroring `session_manager_for_project` / `checkpoints_for_project`.
+    pub async fn task_manager_for_session(
+        &self,
+        session_id: &str,
+    ) -> Arc<crate::tasks::TaskManagementTool> {
+        let root = self.effective_session_root(session_id).await;
+        self.task_router.for_project(&root).await
+    }
+
+    /// Todo state for the session's project (get-or-create via router).
+    pub async fn todo_state_for_session(
+        &self,
+        session_id: &str,
+    ) -> Arc<RwLock<crate::tasks::TodoState>> {
+        let root = self.effective_session_root(session_id).await;
+        self.todo_router.for_project(&root).await
     }
 
     /// Returns the trusted root execution context for `session_id`, creating

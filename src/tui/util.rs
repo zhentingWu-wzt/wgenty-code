@@ -22,9 +22,9 @@ pub fn truncate_session_name(text: &str) -> String {
 }
 
 /// Outcome of [`start_daemon`]: either an already-running daemon was reused
-/// (via the discovery file or an HTTP probe), or a new embedded daemon was
-/// spawned locally. `Reused` carries no shutdown handles — the daemon is owned
-/// by another process and must keep running after this TUI exits.
+/// via the discovery file, or a new embedded daemon was spawned locally.
+/// `Reused` carries no shutdown handles — the daemon is owned by another
+/// process and must keep running after this TUI exits.
 #[cfg(feature = "daemon")]
 pub enum StartDaemonOutcome {
     Reused {
@@ -32,107 +32,34 @@ pub enum StartDaemonOutcome {
     },
     Spawned {
         base_url: String,
+    },
+    Embedded {
+        base_url: String,
         shutdown_tx: tokio::sync::oneshot::Sender<()>,
         handle: tokio::task::JoinHandle<()>,
     },
 }
 
-/// Probe the server at `base_url` and report whether it is a wgenty-code
-/// daemon that `token` authenticates against AND that serves `expected_root`
-/// as its main project (working_dir). Split from [`try_reuse_running_daemon`]
-/// so tests can exercise it without touching the global token file.
+/// How long to wait for a spawned daemon to become healthy before giving up.
 #[cfg(feature = "daemon")]
-async fn probe_running_daemon(
-    base_url: &str,
-    token: &str,
-    expected_root: &std::path::Path,
-) -> bool {
-    let client = match reqwest::Client::builder()
-        // Loopback refused connections fail fast; the timeout only guards
-        // against a listener that accepts but never answers.
-        .timeout(std::time::Duration::from_millis(800))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
+const HEALTH_POLL_TIMEOUT_SECS: u64 = 15;
 
-    // 1. Liveness + identity: `/api/v1/health` is public; require our exact
-    //    response shape so a foreign service on the port is never reused.
-    let health: serde_json::Value =
-        match client.get(format!("{base_url}/api/v1/health")).send().await {
-            Ok(resp) if resp.status().is_success() => match resp.json().await {
-                Ok(v) => v,
-                Err(_) => return false,
-            },
-            _ => return false,
-        };
-    if health.get("status").and_then(|s| s.as_str()) != Some("ok") {
-        return false;
-    }
-    // Protocol compatibility: only reuse a daemon built from the same version.
-    if health.get("version").and_then(|s| s.as_str()) != Some(env!("CARGO_PKG_VERSION")) {
-        return false;
-    }
-
-    // 2. Auth + project match: `/api/v1/projects` sits behind the bearer-token
-    //    middleware, so a 2xx proves the token file is valid for this instance;
-    //    the main entry tells us which directory the daemon actually serves.
-    let resp = match client
-        .get(format!("{base_url}/api/v1/projects"))
-        .bearer_auth(token)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
-    if !resp.status().is_success() {
-        return false;
-    }
-    let projects: Vec<serde_json::Value> = match resp.json().await {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    let main_root = projects
-        .iter()
-        .find(|p| p.get("is_main").and_then(|b| b.as_bool()) == Some(true))
-        .and_then(|p| p.get("path"))
-        .and_then(|p| p.as_str());
-    match main_root {
-        Some(main) => std::path::Path::new(main) == expected_root,
-        None => false,
-    }
-}
-
-/// If a wgenty-code daemon is already serving `working_dir` on `port`, return
-/// its base URL so the caller can attach to it instead of starting a second
-/// instance. Reuse requires the daemon token file to authenticate against that
-/// instance; a stale token (previous daemon killed without cleanup) fails the
-/// authenticated probe and falls through to a fresh start.
-#[cfg(feature = "daemon")]
-async fn try_reuse_running_daemon(port: u16, working_dir: &std::path::Path) -> Option<String> {
-    let token = crate::utils::read_daemon_token()?;
-    // The daemon canonicalizes its main root (ProjectRegistry::load); mirror
-    // that so a symlinked working_dir still matches.
-    let expected = working_dir
-        .canonicalize()
-        .unwrap_or_else(|_| working_dir.to_path_buf());
-    let base_url = format!("http://127.0.0.1:{port}");
-    probe_running_daemon(&base_url, &token, &expected)
-        .await
-        .then_some(base_url)
-}
-
-/// Start the daemon in a background tokio task and wait for it to be ready.
-/// Returns the base URL (including port) and a shutdown sender.
+/// Start the daemon, preferring an external process so it survives TUI exit.
 ///
-/// If a compatible daemon for the same project is already running on the
-/// default port, attach to it instead of starting a second instance.
+/// Decision chain:
+/// 1. **Discovery reuse**: an already-running daemon is found via
+///    `daemon.json` -> connect to it (owned by another process).
+/// 2. **External spawn**: spawn `current_exe() daemon --port 8371` as a
+///    detached child process. The child writes its own token + discovery
+///    file and keeps running after the TUI exits, so Web/Desktop can reuse it.
+/// 3. **Retry discovery**: if the spawn failed (e.g. port taken), another UI
+///    may have started a daemon meanwhile -> retry discovery.
+/// 4. **Embedded fallback**: if everything above fails, start the daemon
+///    in-process (legacy behavior; killed on TUI exit).
 #[cfg(feature = "daemon")]
 pub async fn start_daemon(app_state: crate::state::AppState) -> anyhow::Result<StartDaemonOutcome> {
-    // Reuse an already-running global daemon when the discovery file checks
-    // out; fall through to the embedded spawn path otherwise (design §6.3).
+    // 1. Reuse an already-running global daemon when the discovery file
+    // checks out; fall through to spawning otherwise (design §6.3).
     if let Some(found) = crate::utils::discovery::discover_daemon() {
         tracing::info!(
             port = found.port,
@@ -142,32 +69,98 @@ pub async fn start_daemon(app_state: crate::state::AppState) -> anyhow::Result<S
             base_url: format!("http://127.0.0.1:{}", found.port),
         });
     }
-    // Prefer the default daemon port (8371) so the web client's Vite proxy
-    // (which targets 127.0.0.1:8371) connects without extra config.
-    const DEFAULT_PORT: u16 = 8371;
-    let working_dir = app_state.settings.storage.working_dir.clone();
 
-    // Reuse an already-running daemon for this project when possible — avoids
-    // a second instance and the token-file churn it would cause.
-    if let Some(base_url) = try_reuse_running_daemon(DEFAULT_PORT, &working_dir).await {
-        tracing::info!(url = %base_url, "attaching to already-running daemon");
-        return Ok(StartDaemonOutcome::Reused { base_url });
+    // 2. Spawn an external daemon process. The child inherits the current
+    // working directory (so the daemon's `working_dir` matches the TUI's
+    // project root), writes its own token + discovery file, and survives
+    // TUI exit. stdio is redirected to null so the child doesn't hold the
+    // terminal.
+    const DEFAULT_PORT: u16 = 8371;
+    if let Some(base_url) = spawn_external_daemon(DEFAULT_PORT).await {
+        tracing::info!(
+            "daemon spawned as external process on port {}",
+            DEFAULT_PORT
+        );
+        return Ok(StartDaemonOutcome::Spawned { base_url });
     }
 
+    // 3. Retry discovery: a concurrent UI may have started a daemon while we
+    // were polling health. If so, reuse it instead of spawning a duplicate.
+    if let Some(found) = crate::utils::discovery::discover_daemon() {
+        tracing::info!(
+            port = found.port,
+            "reusing daemon started by a concurrent UI (post-spawn-retry)"
+        );
+        return Ok(StartDaemonOutcome::Reused {
+            base_url: format!("http://127.0.0.1:{}", found.port),
+        });
+    }
+
+    // 4. Fallback: embedded daemon (in-process). This is killed on TUI exit,
+    // so other UIs connected to it will lose connection. Log a warning.
+    tracing::warn!(
+        "external daemon spawn failed; falling back to embedded daemon \
+         (will be killed on TUI exit, other UIs may lose connection)"
+    );
+    spawn_embedded_daemon(app_state).await
+}
+
+/// Spawn `current_exe() daemon --port <port>` as a detached child process
+/// and poll until the port accepts TCP connections. Returns the base URL on
+/// success, or `None` if the process couldn't spawn or the port never came
+/// up (timeout / bind failure / daemon crash).
+#[cfg(feature = "daemon")]
+async fn spawn_external_daemon(port: u16) -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let child = std::process::Command::new(&exe)
+        .arg("daemon")
+        .arg("--port")
+        .arg(port.to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    tracing::debug!(
+        pid = child.id(),
+        exe = %exe.display(),
+        port,
+        "spawned external daemon process"
+    );
+    // Drop the child handle so we don't hold a waitable reference; the
+    // process is now fully independent and survives TUI exit.
+    drop(child);
+
+    // Poll the port until it accepts connections (daemon bound + listening).
+    let mut interval_ms = 200u64;
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(HEALTH_POLL_TIMEOUT_SECS);
+    loop {
+        if std::time::Instant::now() > deadline {
+            tracing::warn!(port, "external daemon health poll timed out");
+            return None;
+        }
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
+            return Some(format!("http://127.0.0.1:{}", port));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
+        interval_ms = (interval_ms * 2).min(2000);
+    }
+}
+
+/// Fallback: start the daemon in a background tokio task (in-process).
+/// The returned `shutdown_tx` kills the daemon when the TUI exits.
+#[cfg(feature = "daemon")]
+async fn spawn_embedded_daemon(
+    app_state: crate::state::AppState,
+) -> anyhow::Result<StartDaemonOutcome> {
+    const DEFAULT_PORT: u16 = 8371;
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", DEFAULT_PORT)).await {
         Ok(l) => l,
-        Err(_) => {
-            // 8371 is taken but the first probe did not reuse it — either the
-            // occupant is not a compatible daemon, or one started in the race
-            // window since. Probe once more before giving up on the default
-            // port; only then fall back to an OS-assigned port (point the web
-            // client at DAEMON_PORT=<port> in that case).
-            if let Some(base_url) = try_reuse_running_daemon(DEFAULT_PORT, &working_dir).await {
-                tracing::info!(url = %base_url, "attaching to already-running daemon");
-                return Ok(StartDaemonOutcome::Reused { base_url });
-            }
-            tokio::net::TcpListener::bind("127.0.0.1:0").await?
-        }
+        Err(_) => tokio::net::TcpListener::bind("127.0.0.1:0").await?,
     };
     let port = listener.local_addr()?.port();
     let base_url = format!("http://127.0.0.1:{}", port);
@@ -178,10 +171,6 @@ pub async fn start_daemon(app_state: crate::state::AppState) -> anyhow::Result<S
     let daemon_state = Arc::new(DaemonState::new(app_state).await);
     crate::utils::startup_timing::mark("daemon: DaemonState created");
 
-    // Recover persisted sessions as lightweight index entries (metadata only,
-    // no full message deserialization) so the session list populates quickly
-    // without blocking daemon startup. Full sessions are hydrated on demand
-    // via `load(id)` / `get(id)`.
     {
         let sm_state = Arc::clone(&daemon_state);
         tokio::spawn(async move {
@@ -194,12 +183,6 @@ pub async fn start_daemon(app_state: crate::state::AppState) -> anyhow::Result<S
 
     let api_token = auth::generate_api_token();
     crate::utils::write_daemon_token(&api_token)?;
-    tracing::debug!(
-        "Daemon API token saved to: {}",
-        crate::utils::daemon_token_path().display()
-    );
-    // Make the embedded daemon discoverable so other UI processes can reuse
-    // it (spec: 多 UI 复用 daemon). Cleaned up in the shutdown task below.
     crate::utils::discovery::spawn_discovery_writer(port, api_token.clone());
     let (health, protected) = routes::create_routers(daemon_state, api_token);
     crate::utils::startup_timing::mark("daemon: routers created");
@@ -235,18 +218,12 @@ pub async fn start_daemon(app_state: crate::state::AppState) -> anyhow::Result<S
             })
             .await
             .ok();
-        // Clean up token and discovery files on daemon shutdown.
         let _ = crate::utils::remove_daemon_token();
         let _ = crate::utils::discovery::remove_discovery_file();
     });
-    // The listener is already bound, so axum::serve will accept connections
-    // as soon as its task is scheduled. We don't block on a health-check
-    // poll: no daemon request is made before the user submits a prompt
-    // (App::new and the first frame are purely local), so the server has
-    // plenty of time to start. A single yield_now lets the serve task run.
     tokio::task::yield_now().await;
-    tracing::info!("daemon ready on port {}", port);
-    Ok(StartDaemonOutcome::Spawned {
+    tracing::info!("embedded daemon ready on port {}", port);
+    Ok(StartDaemonOutcome::Embedded {
         base_url,
         shutdown_tx,
         handle,
@@ -782,108 +759,5 @@ mod tests {
     fn test_wrap_single_element_stays_at_zero() {
         assert_eq!(wrap_next(0, 1), 0);
         assert_eq!(wrap_prev(0, 1), 0);
-    }
-}
-
-#[cfg(all(test, feature = "daemon"))]
-mod daemon_reuse_tests {
-    use super::*;
-
-    const TEST_TOKEN: &str = "test-token";
-
-    /// Spin up a minimal fake daemon mirroring the real response shapes:
-    /// public `/api/v1/health` plus an Authorization-checked
-    /// `/api/v1/projects` whose main entry reports `main_root`.
-    async fn spawn_fake_daemon(main_root: &std::path::Path) -> String {
-        use axum::{http::StatusCode, routing::get, Json, Router};
-        let root = main_root.to_string_lossy().to_string();
-        let app = Router::new()
-            .route(
-                "/api/v1/health",
-                get(|| async {
-                    Json(serde_json::json!({
-                        "status": "ok",
-                        "version": env!("CARGO_PKG_VERSION"),
-                    }))
-                }),
-            )
-            .route(
-                "/api/v1/projects",
-                get(|headers: axum::http::HeaderMap| async move {
-                    let expected = format!("Bearer {TEST_TOKEN}");
-                    let authed = headers
-                        .get(axum::http::header::AUTHORIZATION)
-                        .and_then(|v| v.to_str().ok())
-                        == Some(expected.as_str());
-                    if !authed {
-                        return Err(StatusCode::UNAUTHORIZED);
-                    }
-                    Ok(Json(serde_json::json!([{
-                        "path": root,
-                        "name": "proj",
-                        "is_main": true,
-                        "is_git_repo": true,
-                        "added_at": "2026-01-01T00:00:00Z",
-                    }])))
-                }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.ok();
-        });
-        format!("http://{addr}")
-    }
-
-    #[tokio::test]
-    async fn probe_accepts_matching_daemon() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let base_url = spawn_fake_daemon(&root).await;
-        assert!(probe_running_daemon(&base_url, TEST_TOKEN, &root).await);
-    }
-
-    #[tokio::test]
-    async fn probe_rejects_stale_token() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
-        let base_url = spawn_fake_daemon(&root).await;
-        assert!(!probe_running_daemon(&base_url, "wrong-token", &root).await);
-    }
-
-    #[tokio::test]
-    async fn probe_rejects_daemon_serving_other_project() {
-        let dir = tempfile::tempdir().unwrap();
-        let other = tempfile::tempdir().unwrap();
-        let base_url = spawn_fake_daemon(&dir.path().canonicalize().unwrap()).await;
-        assert!(
-            !probe_running_daemon(&base_url, TEST_TOKEN, &other.path().canonicalize().unwrap())
-                .await
-        );
-    }
-
-    #[tokio::test]
-    async fn probe_rejects_dead_port() {
-        // Grab a free port, then release it so the probe hits a refused
-        // connection.
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
-        let root = std::path::Path::new("/");
-        assert!(!probe_running_daemon(&format!("http://{addr}"), TEST_TOKEN, root).await);
-    }
-
-    #[tokio::test]
-    async fn probe_rejects_foreign_service() {
-        use axum::{routing::get, Router};
-        // Something is listening, but it is not a wgenty-code daemon.
-        let app = Router::new().route("/api/v1/health", get(|| async { "pong" }));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.ok();
-        });
-        let root = std::path::Path::new("/");
-        assert!(!probe_running_daemon(&format!("http://{addr}"), TEST_TOKEN, root).await);
     }
 }

@@ -12,10 +12,11 @@ import { resolve } from "node:path";
 // browser, the dev server injects it into proxied /api requests via
 // `server.proxy.configure`. The browser therefore never sees the secret.
 //
-// Override the port with `DAEMON_PORT` if you start the daemon with a custom
-// `--port`. Default mirrors `wgenty-code daemon` (see src/daemon/mod.rs:8).
-const DAEMON_PORT = Number(process.env.DAEMON_PORT ?? 8371);
-const DAEMON_TARGET = `http://127.0.0.1:${DAEMON_PORT}`;
+// The daemon's actual port is read from ~/.wgenty-code/daemon.json on every
+// proxied request (via the `router` callback), so a daemon on a non-default
+// port (e.g. TUI fell back to a random port, or Desktop spawned on 8371) is
+// automatically picked up. Falls back to `DAEMON_PORT` env / 8371.
+const DEFAULT_DAEMON_PORT = Number(process.env.DAEMON_PORT ?? 8371);
 
 function readDaemonToken(): string | null {
   // Best-effort read. The token is regenerated each daemon start, so a missing
@@ -28,16 +29,38 @@ function readDaemonToken(): string | null {
   }
 }
 
+function readDaemonPort(): number {
+  // Best-effort read from ~/.wgenty-code/daemon.json. The daemon writes this
+  // file on startup and refreshes the heartbeat every 30s. If the file is
+  // missing or corrupt, fall back to the default port.
+  const discoveryPath = resolve(homedir(), ".wgenty-code", "daemon.json");
+  try {
+    const body = readFileSync(discoveryPath, "utf8");
+    const parsed = JSON.parse(body);
+    if (typeof parsed.port === "number" && parsed.port > 0) {
+      return parsed.port;
+    }
+  } catch {
+    // Missing or corrupt -> fall back to default.
+  }
+  return DEFAULT_DAEMON_PORT;
+}
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173, // 5173 is already in the daemon's CORS allow-list (src/daemon/mod.rs).
     proxy: {
       "/api": {
-        target: DAEMON_TARGET,
+        // Default target; the `router` callback below overrides this per
+        // request with the actual port from daemon.json.
+        target: `http://127.0.0.1:${DEFAULT_DAEMON_PORT}`,
         changeOrigin: true,
+        // Dynamically resolve the daemon port on every request so a daemon
+        // restart on a different port is picked up without restarting Vite.
+        router: () => `http://127.0.0.1:${readDaemonPort()}`,
         // Inject the bearer token on every proxied request. Read lazily so a
-        // daemon restart (new token) is picked up without restarting vite —
+        // daemon restart (new token) is picked up without restarting vite -
         // the browser just needs to retry.
         configure: (proxy) => {
           proxy.on("proxyReq", (proxyReq) => {

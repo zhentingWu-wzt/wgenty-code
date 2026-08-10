@@ -226,7 +226,7 @@ impl App {
             }
             // Per-turn recall: use MemoryContextInjector for keyword extraction
             // and TF-IDF search over cross-session memories.
-            let recalled_text = MemoryContextInjector::recall(
+            let recall_result = MemoryContextInjector::recall(
                 &input_agent,
                 &memory_manager,
                 recall_top_n,
@@ -234,6 +234,7 @@ impl App {
                 None,
             )
             .await;
+            let recalled_text = &recall_result.text;
 
             // Set memories on PromptContext (extract lines from the
             // <memory-context> block for the prompt builder).
