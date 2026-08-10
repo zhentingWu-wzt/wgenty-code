@@ -210,8 +210,10 @@ mod tests {
     use super::*;
 
     fn registry(readonly: bool) -> NodeRegistry {
-        let mut s = SubagentLimits::default();
-        s.explore_readonly = readonly;
+        let s = SubagentLimits {
+            explore_readonly: readonly,
+            ..Default::default()
+        };
         NodeRegistry::builtin(&s)
     }
 
