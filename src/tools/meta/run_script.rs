@@ -114,8 +114,13 @@ impl Tool for RunScriptTool {
                 rt.block_on(async {
                     // Reserve a coordinator-owned child derived from the trusted
                     // caller context (never synthesized from tool arguments).
+                    // Script-spawned workers are GeneralPurpose (design OQ1).
                     let reservation = match coordinator
-                        .reserve_child(&caller, crate::agent::SpawnChildRequest::new(&prompt))
+                        .reserve_child(
+                            &caller,
+                            crate::agent::SpawnChildRequest::new(&prompt)
+                                .with_node_type(crate::org_graph::NodeType::GeneralPurpose),
+                        )
                         .await
                     {
                         Ok(r) => r,
