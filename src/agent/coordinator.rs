@@ -405,10 +405,7 @@ impl AgentCoordinator {
     /// real settings. Production code (daemon/state.rs) uses this so contract
     /// fields like `can_mutate_fs` reflect the user's `explore_readonly`.
     #[must_use]
-    pub fn with_node_registry(
-        mut self,
-        registry: Arc<crate::org_graph::NodeRegistry>,
-    ) -> Self {
+    pub fn with_node_registry(mut self, registry: Arc<crate::org_graph::NodeRegistry>) -> Self {
         self.registry = registry;
         self
     }
@@ -416,6 +413,16 @@ impl AgentCoordinator {
     /// Returns the configured shutdown timeout.
     pub fn shutdown_timeout(&self) -> Duration {
         self.shutdown_timeout
+    }
+
+    /// Looks up the [`NodeContract`] for a node type. The dispatch layer
+    /// (`task.rs`) reads the same contract the coordinator enforces, so the
+    /// two enforcement layers never disagree.
+    pub fn node_contract(
+        &self,
+        node_type: &crate::org_graph::NodeType,
+    ) -> Option<&crate::org_graph::NodeContract> {
+        self.registry.get(node_type)
     }
 
     /// Returns the number of available concurrency permits.
@@ -493,13 +500,14 @@ impl AgentCoordinator {
                 .cloned()
                 .unwrap_or(crate::org_graph::NodeType::GeneralPurpose)
         };
-        self.registry.get(&nt).cloned().ok_or_else(|| {
-            CoordinatorError::ContractViolation {
+        self.registry
+            .get(&nt)
+            .cloned()
+            .ok_or_else(|| CoordinatorError::ContractViolation {
                 node_type: nt.clone(),
                 dimension: crate::org_graph::ContractDimension::NodeType,
                 reason: "no contract registered for caller node type".to_string(),
-            }
-        })
+            })
     }
 
     /// Records the freshly-spawned child's node type so that when it later acts
@@ -1939,16 +1947,13 @@ mod tests {
     fn spawn_child_request_defaults_to_general_purpose() {
         let req = SpawnChildRequest::new("demo");
         assert_eq!(req.label, "demo");
-        assert_eq!(
-            req.node_type,
-            crate::org_graph::NodeType::GeneralPurpose
-        );
+        assert_eq!(req.node_type, crate::org_graph::NodeType::GeneralPurpose);
     }
 
     #[test]
     fn spawn_child_request_with_node_type_overrides_default() {
-        let req = SpawnChildRequest::new("demo")
-            .with_node_type(crate::org_graph::NodeType::Explore);
+        let req =
+            SpawnChildRequest::new("demo").with_node_type(crate::org_graph::NodeType::Explore);
         assert_eq!(req.node_type, crate::org_graph::NodeType::Explore);
     }
 
@@ -1972,18 +1977,12 @@ mod tests {
 
     #[test]
     fn resolve_effective_max_depth_none_falls_back_to_global() {
-        assert_eq!(
-            AgentCoordinator::resolve_effective_max_depth(None, 7),
-            7
-        );
+        assert_eq!(AgentCoordinator::resolve_effective_max_depth(None, 7), 7);
     }
 
     #[test]
     fn resolve_effective_max_depth_some_overrides_global() {
-        assert_eq!(
-            AgentCoordinator::resolve_effective_max_depth(Some(2), 7),
-            2
-        );
+        assert_eq!(AgentCoordinator::resolve_effective_max_depth(Some(2), 7), 2);
     }
 
     #[tokio::test]
@@ -2007,10 +2006,7 @@ mod tests {
             .expect_err("leaf explore must not spawn");
         match err {
             CoordinatorError::ContractViolation { dimension, .. } => {
-                assert_eq!(
-                    dimension,
-                    crate::org_graph::ContractDimension::Permission
-                );
+                assert_eq!(dimension, crate::org_graph::ContractDimension::Permission);
             }
             other => panic!("expected ContractViolation, got {:?}", other),
         }
@@ -2053,7 +2049,10 @@ mod tests {
             .reserve_child(&child.context, SpawnChildRequest::new("too deep"))
             .await
             .expect_err("should hit depth limit");
-        assert!(matches!(err, CoordinatorError::DepthLimitReached { limit: 1 }));
+        assert!(matches!(
+            err,
+            CoordinatorError::DepthLimitReached { limit: 1 }
+        ));
     }
 
     #[tokio::test]

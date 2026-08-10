@@ -473,6 +473,19 @@ impl Tool for TaskTool {
         input: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
         let _subagent_type = input["subagent_type"].as_str().unwrap_or("general-purpose");
+        // Map the model-supplied type string to a trusted NodeType and resolve
+        // its NodeContract. The contract is the single source of truth for the
+        // system prompt, allowed tools, and budget; the coordinator enforces the
+        // same contract (two-layer split). The model JSON never reaches
+        // SpawnChildRequest directly — it flows through parse_node_type.
+        let node_type = parse_node_type(_subagent_type);
+        let contract = self
+            .coordinator
+            .node_contract(&node_type)
+            .ok_or_else(|| ToolError {
+                message: format!("no NodeContract registered for {:?} node type", node_type),
+                code: Some("unknown_node_type".to_string()),
+            })?;
         let description = input["description"].as_str().unwrap_or("Subagent task");
         let prompt = input["prompt"].as_str().unwrap_or("");
         // `background` is a legacy mode switch that is now ignored: every
@@ -584,75 +597,14 @@ impl Tool for TaskTool {
         // and interception-point 1 then self-executes the delegated prompt in
         // the non-root parent (depth-limit takeover). Soft-stripping `task` at
         // the limit would make that fallback path unreachable.
-        let depth = context.agent.depth;
-        let explore_readonly = self.settings.agent.subagent.explore_readonly;
         let allowed_tools: Vec<String> = filter_allowed_tools(
             tool_registry.list().iter().map(|t| t.name().to_string()),
-            _subagent_type,
-            depth,
-            self.settings.agent.subagent.max_depth,
-            explore_readonly,
+            contract,
         );
 
-        // Build system prompt based on subagent type.
-        let base_system_prompt: &str = match _subagent_type {
-            "explore" => {
-                "You are a code exploration subagent. Your role is to search \
-                 and analyze codebases thoroughly.\n\n\
-                 IMPORTANT — Choose your strategy based on the task type:\n\
-                 - For PATTERN SEARCH tasks (e.g. 'find all .unwrap() calls', \
-                   'count .clone() usages'): use grep directly with precise \
-                   regex patterns. Do NOT read full files — grep gives you \
-                   matching lines directly. Call grep with the exact pattern \
-                   and max_results to control output size. Report counts, file \
-                   locations, and representative examples.\n\
-                 - For STRUCTURAL ANALYSIS tasks (e.g. 'how does module X \
-                   work'): use glob to find relevant files, then file_read \
-                   to understand key files, then grep for cross-references.\n\
-                 - For COUNTING/STATISTICS tasks: prefer grep with \
-                   files_with_matches=true first to scope the work, then \
-                   detailed grep for actual matches.\n\n\
-                 Key responsibilities:\n\
-                 1. Search for relevant files and code patterns\n\
-                 2. Read and understand code structure\n\
-                 3. Analyze dependencies and relationships\n\
-                 4. Report findings clearly and concisely\n\n\
-                 Use search, grep, glob, and file_read tools to explore the \
-                 codebase. Be thorough but efficient — focus on answering the \
-                 specific question. Return a complete, self-contained result."
-            }
-            "plan" => {
-                "You are a subagent spawned by a coordinator. The coordinator is waiting for your result. Do not attempt to coordinate other agents yourself — focus solely on your assigned task. Return a complete, self-contained result so the coordinator can proceed without follow-up questions.\n\nYou are a planning subagent. Your role is to break down complex \
-                 tasks into actionable steps.\n\nKey responsibilities:\n\
-                 1. Analyze task requirements\n\
-                 2. Identify key files and components\n\
-                 3. Break down the work into logical steps\n\
-                 4. Consider dependencies, risks, and trade-offs\n\n\
-                 Use file_read and search tools to understand the codebase before \
-                 planning. Be thorough and structured in your analysis."
-            }
-            _ => {
-                "You are a general-purpose subagent spawned by a coordinator. The \
-                 coordinator is waiting for your result. Return a complete, \
-                 self-contained result so the coordinator can proceed without \
-                 follow-up questions.\n\n\
-                 You may use the `task` tool to delegate discrete sub-work when it \
-                 helps. If a nested spawn is rejected (depth limit or other \
-                 structural failure), the runtime automatically runs that \
-                 delegated prompt with leaf tools and returns the result as the \
-                 task tool output — treat a successful task result as completed \
-                 work, and if task fails, finish the work yourself with direct \
-                 tools.\n\n\
-                 Key responsibilities:\n\
-                 1. Understand the task requirements\n\
-                 2. Use appropriate tools (or task for discrete sub-work) to \
-                    accomplish the task\n\
-                 3. Provide clear and complete results\n\
-                 4. Handle edge cases gracefully\n\n\
-                 If you need to read files, search, or execute commands, use the \
-                 appropriate tools. Return a complete summary of what was accomplished."
-            }
-        };
+        // System prompt comes from the NodeContract (migrated from the old
+        // hardcoded match arms; the contract holds the identical strings).
+        let base_system_prompt: &str = contract.system_prompt.as_str();
         let system_prompt = if let Some(ref prefix) = comet_prefix {
             format!("{}{}", prefix, base_system_prompt)
         } else {
@@ -701,7 +653,7 @@ impl Tool for TaskTool {
             .coordinator
             .reserve_child_in_group(
                 context.agent,
-                SpawnChildRequest::new(description),
+                SpawnChildRequest::new(description).with_node_type(node_type.clone()),
                 group_id.clone(),
             )
             .await
@@ -1109,33 +1061,59 @@ impl Tool for TaskTool {
 /// Mutating filesystem tools removed from explore/plan when `explore_readonly`.
 const MUTATING_FS_TOOLS: &[&str] = &["file_write", "file_edit", "apply_patch"];
 
-/// Filter the registry tool list for a subagent type.
+/// Map the model-supplied `subagent_type` string to a trusted [`NodeType`].
 ///
-/// - `explore` / `plan` never get spawn tools (`task` / `delegate`).
-/// - When `explore_readonly`, those types also lose mutating FS tools.
-/// - `general-purpose` keeps spawn tools at every depth. Depth limiting is
-///   enforced by `AgentCoordinator::reserve_child` (`DepthLimitReached`), which
-///   triggers structural self-execution fallback in the non-root parent so the
-///   work intended for a blocked grandchild is completed inline.
-/// - `exec_command` remains visible (still gated by policy + guardian).
+/// Mirrors the mapping in `cli/args.rs`. Unknown strings fall back to
+/// `GeneralPurpose`, matching the pre-change `unwrap_or("general-purpose")`
+/// behavior. The model JSON is never injected directly into `SpawnChildRequest`;
+/// it always passes through this trusted dispatch-layer mapping.
+fn parse_node_type(s: &str) -> crate::org_graph::NodeType {
+    use crate::org_graph::NodeType;
+    match s {
+        "explore" => NodeType::Explore,
+        "plan" => NodeType::Plan,
+        "general-purpose" | "general" => NodeType::GeneralPurpose,
+        "verify" | "verification" => NodeType::Verification,
+        "guide" | "wgenty-code-guide" => NodeType::WgentyCodeGuide,
+        _ => NodeType::GeneralPurpose,
+    }
+}
+
+/// Filter the registry tool list for a node contract.
+///
+/// Three dimensions, all read from the same [`NodeContract`] the coordinator
+/// enforces (the two-layer split from the spec):
+/// - **capability** (`capabilities.allowed_tools`): when non-empty, a whitelist;
+///   empty means wildcard (all pass). Builtin contracts use empty to mirror the
+///   pre-change "all tools minus spawn/mutating-fs" semantics.
+/// - **permission.can_spawn**: when false, `task`/`delegate` are stripped (leaf
+///   nodes never coordinate).
+/// - **permission.can_mutate_fs**: when false, [`MUTATING_FS_TOOLS`] are
+///   stripped (driven by `explore_readonly` at contract-build time).
+///
+/// `exec_command` remains visible (`can_exec` is declared, not enforced here;
+/// still gated by policy + guardian). Depth limiting is enforced by
+/// `AgentCoordinator::reserve_child`.
 pub(crate) fn filter_allowed_tools(
     names: impl IntoIterator<Item = String>,
-    subagent_type: &str,
-    _depth: usize,
-    _max_depth: usize,
-    explore_readonly: bool,
+    contract: &crate::org_graph::NodeContract,
 ) -> Vec<String> {
-    let is_leaf = matches!(subagent_type, "explore" | "plan");
     names
         .into_iter()
         .filter(|name| {
-            let is_spawn = name == "task" || name == "delegate";
-            if is_spawn {
-                // Leaf types never coordinate. GP always sees spawn tools; the
-                // coordinator + structural fallback own the depth gate.
-                return !is_leaf;
+            // Dimension 1: capability whitelist (empty = wildcard).
+            if !contract.capabilities.allowed_tools.is_empty()
+                && !contract.capabilities.allowed_tools.contains(name)
+            {
+                return false;
             }
-            if explore_readonly && is_leaf && MUTATING_FS_TOOLS.contains(&name.as_str()) {
+            // Dimension 2: can_spawn — leaf nodes never get spawn tools.
+            let is_spawn = name == "task" || name == "delegate";
+            if is_spawn && !contract.permissions.can_spawn {
+                return false;
+            }
+            // Dimension 3: can_mutate_fs — strip mutating FS tools.
+            if MUTATING_FS_TOOLS.contains(&name.as_str()) && !contract.permissions.can_mutate_fs {
                 return false;
             }
             true
