@@ -2,6 +2,7 @@
 change: org-graph-node-contract
 design-doc: docs/superpowers/specs/2026-08-10-org-graph-node-contract-design.md
 base-ref: 0de3b78df5bc3444e8cc3b99cbdb4b675c589adf
+archived-with: 2026-08-10-org-graph-node-contract
 ---
 
 # Org-Graph 节点契约（NodeContract）实施计划

@@ -2,6 +2,8 @@
 comet_change: org-graph-node-contract
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-08-10-org-graph-node-contract
+status: final
 ---
 
 # Design: Org-Graph 节点契约（NodeContract）
