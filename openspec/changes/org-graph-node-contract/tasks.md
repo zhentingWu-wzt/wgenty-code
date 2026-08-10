@@ -12,9 +12,9 @@
 
 ## 3. SpawnChildRequest 扩展
 
-- [ ] 3.1 给 `SpawnChildRequest`（`agent/coordinator.rs`）加 `node_type: NodeType` 字段，带默认值 `GeneralPurpose`；`SpawnChildRequest::new` 签名向后兼容
-- [ ] 3.2 给 `AgentCoordinator` 加 `NodeRegistry` 引用（构造时注入或内部默认持有）
-- [ ] 3.3 测试：显式传 node_type 与默认值两种构造路径
+- [x] 3.1 给 `SpawnChildRequest`（`agent/coordinator.rs`）加 `node_type: NodeType` 字段，带默认值 `GeneralPurpose`；`SpawnChildRequest::new` 签名向后兼容
+- [x] 3.2 给 `AgentCoordinator` 加 `NodeRegistry` 引用（构造时注入或内部默认持有）
+- [x] 3.3 测试：显式传 node_type 与默认值两种构造路径
 
 ## 4. coordinator 三维强制校验
 
