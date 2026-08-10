@@ -1161,6 +1161,17 @@ fn map_coordinator_error(e: CoordinatorError) -> ToolError {
             message: "agent is not visible from the current execution scope".to_string(),
             code: Some("not_visible".to_string()),
         },
+        CoordinatorError::ContractViolation {
+            node_type,
+            dimension,
+            reason,
+        } => ToolError {
+            message: format!(
+                "Contract violation for {:?} node ({:?}): {}",
+                node_type, dimension, reason
+            ),
+            code: Some("contract_violation".to_string()),
+        },
         other => ToolError {
             message: other.to_string(),
             code: Some("coordinator_error".to_string()),

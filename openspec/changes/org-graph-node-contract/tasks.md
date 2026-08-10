@@ -18,10 +18,10 @@
 
 ## 4. coordinator 三维强制校验
 
-- [ ] 4.1 新增 `CoordinatorError::ContractViolation` 变体（携带维度+原因），与 `DepthLimitReached` 等 structural 错误区分
-- [ ] 4.2 在 `reserve_child` 加三维校验：能力（requested tools ⊆ capabilities）、权限边界（can_spawn/can_mutate_fs/can_exec）、资源预算（leaf 禁 spawn + per-node-type depth/concurrent/token 覆盖）；违反返回 `ContractViolation`
-- [ ] 4.3 衔接 `SubagentLimits` 作为 budget 全局默认：contract.budget 字段为 None 时回退全局值，Some 时覆盖
-- [ ] 4.4 测试：能力越纲拒绝、权限边界拒绝、budget 拒绝（leaf 禁 spawn）、合法派发放行、budget None 回退全局、budget Some 覆盖全局
+- [x] 4.1 新增 `CoordinatorError::ContractViolation` 变体（携带维度+原因），与 `DepthLimitReached` 等 structural 错误区分
+- [x] 4.2 在 `reserve_child` 加三维校验：能力（requested tools ⊆ capabilities）、权限边界（can_spawn/can_mutate_fs/can_exec）、资源预算（leaf 禁 spawn + per-node-type depth/concurrent/token 覆盖）；违反返回 `ContractViolation`
+- [x] 4.3 衔接 `SubagentLimits` 作为 budget 全局默认：contract.budget 字段为 None 时回退全局值，Some 时覆盖
+- [x] 4.4 测试：能力越纲拒绝、权限边界拒绝、budget 拒绝（leaf 禁 spawn）、合法派发放行、budget None 回退全局、budget Some 覆盖全局
 
 ## 5. task.rs 读契约
 
