@@ -32,9 +32,9 @@
 
 ## 6. 其余调用点补 node_type
 
-- [ ] 6.1 排查并更新 `reserve_child` / `reserve_child_in_group` 所有调用点（fallback.rs / rlm/pipeline.rs / daemon/handlers.rs / run_script.rs），补 node_type 或依赖默认值
-- [ ] 6.2 确认 delegate（RLM）路径的 node_type 归属（Open Question 1：倾向统一 general-purpose），落实并在 design 阶段记录决策
-- [ ] 6.3 确认契约违反回退策略（Open Question 2：倾向硬拒绝不触发 fallback），确认 fallback.rs 只认 structural 失败不认 ContractViolation
+- [x] 6.1 排查并更新 `reserve_child` / `reserve_child_in_group` 所有调用点（fallback.rs / rlm/pipeline.rs / daemon/handlers.rs / run_script.rs），补 node_type 或依赖默认值
+- [x] 6.2 确认 delegate（RLM）路径的 node_type 归属（Open Question 1：倾向统一 general-purpose），落实并在 design 阶段记录决策
+- [x] 6.3 确认契约违反回退策略（Open Question 2：倾向硬拒绝不触发 fallback），确认 fallback.rs 只认 structural 失败不认 ContractViolation
 
 ## 7. AgentDefinition 并存验证
 
