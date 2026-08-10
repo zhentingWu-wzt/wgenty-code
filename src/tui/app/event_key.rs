@@ -1048,6 +1048,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn latest_session_switch_request_wins_when_older_completion_arrives_first() {
+        #[derive(Clone)]
+        struct OrderedCancelState {
+            attempts: Arc<AtomicUsize>,
+            release_second: Arc<tokio::sync::Notify>,
+        }
+
+        async fn ordered_cancel(State(state): State<OrderedCancelState>) -> StatusCode {
+            let attempt = state.attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt > 0 {
+                state.release_second.notified().await;
+            }
+            StatusCode::NOT_FOUND
+        }
+
+        let state = OrderedCancelState {
+            attempts: Arc::new(AtomicUsize::new(0)),
+            release_second: Arc::new(tokio::sync::Notify::new()),
+        };
+        let router = Router::new()
+            .route("/api/v1/sessions/:id/cancel", post(ordered_cancel))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ordered session-switch server");
+        let address = listener
+            .local_addr()
+            .expect("read ordered session-switch address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve ordered session-switch server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "session-a".to_string(),
+            settings,
+        );
+
+        app.session_state.show(vec![SessionInfo {
+            id: "session-b".to_string(),
+            name: "Session B".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            message_count: 1,
+            summary: None,
+        }]);
+        app.handle_key_event(KeyCode::Enter.into());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.attempts.load(Ordering::SeqCst) < 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first switch cancellation completes");
+
+        app.session_state.show(vec![SessionInfo {
+            id: "session-c".to_string(),
+            name: "Session C".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            message_count: 1,
+            summary: None,
+        }]);
+        app.handle_key_event(KeyCode::Enter.into());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.attempts.load(Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("second switch cancellation is pending");
+
+        loop {
+            let event = app
+                .event_rx
+                .recv()
+                .await
+                .expect("older switch completion is queued");
+            let is_stale_switch =
+                matches!(&event, AppEvent::SessionSwitched { id, .. } if id == "session-b");
+            app.handle_event(event).await;
+            if is_stale_switch {
+                break;
+            }
+        }
+        assert_eq!(
+            app.session_id, "session-a",
+            "completion for A→B must not win after A→C becomes the latest request"
+        );
+
+        state.release_second.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while app.session_id != "session-c" {
+                let event = app
+                    .event_rx
+                    .recv()
+                    .await
+                    .expect("latest switch event channel remains open");
+                app.handle_event(event).await;
+            }
+        })
+        .await
+        .expect("latest A→C request adopts C");
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn session_picker_refuses_switch_while_server_run_is_active_after_background_notice() {
         let mut app = build_app();
         app.server_side_loop = true;
