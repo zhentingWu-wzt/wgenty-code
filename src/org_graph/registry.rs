@@ -232,6 +232,37 @@ mod tests {
     }
 
     #[test]
+    fn builtin_system_prompts_retain_distinct_opening_phrases() {
+        // Byte-identity guard: the system prompts were migrated verbatim from
+        // the old task.rs match block. Each builtin the task-tool dispatch path
+        // can emit (explore/plan/GP) must retain its distinguishing opening
+        // phrase so the migration never silently drifts. verify/guide are
+        // CLI-path-only (empty prompt by design; see comments in `builtin`).
+        let r = registry(true);
+        assert!(
+            r.get(&NodeType::Explore)
+                .unwrap()
+                .system_prompt
+                .contains("code exploration subagent"),
+            "explore prompt lost its opening phrase"
+        );
+        assert!(
+            r.get(&NodeType::Plan)
+                .unwrap()
+                .system_prompt
+                .contains("planning subagent"),
+            "plan prompt lost its opening phrase"
+        );
+        assert!(
+            r.get(&NodeType::GeneralPurpose)
+                .unwrap()
+                .system_prompt
+                .contains("general-purpose subagent spawned by a coordinator"),
+            "general-purpose prompt lost its opening phrase"
+        );
+    }
+
+    #[test]
     fn explore_is_leaf_and_readonly_when_explore_readonly() {
         let r = registry(true);
         let c = r.get(&NodeType::Explore).unwrap();

@@ -576,9 +576,11 @@ impl AgentCoordinator {
         }
 
         // Enforce depth limit using trusted caller depth. A contract-level
-        // `budget.max_depth` (Some) overrides the global limit; None falls
-        // back to the global SubagentLimits value (builtins are all None, so
-        // behavior is unchanged for the five builtin node types).
+        // `budget.max_depth` (Some) overrides the global limit; None falls back
+        // to the global SubagentLimits value (builtins are all None, so behavior
+        // is unchanged for the five builtin node types). This is an override,
+        // not a clamp — custom contracts are trusted authors and may raise the
+        // ceiling above the global default.
         let effective_max_depth =
             Self::resolve_effective_max_depth(caller_contract.budget.max_depth, self.max_depth);
         if caller.depth >= effective_max_depth {
@@ -862,6 +864,15 @@ impl AgentCoordinator {
     ) -> Result<(), CoordinatorError> {
         let _operation = self.group_operations.lock().await;
         let child_key = (child.session_id.clone(), child.agent_id.clone());
+        // Terminal transition: drop the child's node-type record. A finished
+        // agent never acts as a caller again, and an unregistered caller
+        // resolves to GeneralPurpose, so removal is safe. This runs for every
+        // child (group or not) — placing it before the group early-return
+        // avoids an insert-only leak on group-less spawns. `record_mapped_child`
+        // is the universal terminal chokepoint (reached by both `finish_child`
+        // and the finish-failure fallback). Lock order is `group_operations`
+        // (held since entry) → `node_types`, matching `reserve_child`.
+        self.node_types.write().await.remove(&child_key);
         let group_id = self.child_groups.read().await.get(&child_key).cloned();
         let Some(group_id) = group_id else {
             return Ok(());
@@ -2130,6 +2141,43 @@ mod tests {
             .reserve_child(&root, SpawnChildRequest::new("second"))
             .await
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn node_types_entry_removed_after_child_finishes() {
+        // Regression guard (review finding): `node_types` is insert-only on the
+        // spawn path. The terminal transition (`finish_child` →
+        // `record_mapped_child_result`) must remove the child's entry, or the
+        // side-table grows unboundedly across a long-running daemon session.
+        use crate::org_graph::NodeType;
+        let coordinator = test_coordinator(4, 1);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let child = coordinator
+            .reserve_child(
+                &root,
+                SpawnChildRequest::new("explore-child").with_node_type(NodeType::Explore),
+            )
+            .await
+            .unwrap();
+        let key = (
+            child.context.session_id.clone(),
+            child.context.agent_id.clone(),
+        );
+        // After reserve, the child's node type is recorded.
+        assert_eq!(
+            coordinator.node_types.read().await.get(&key),
+            Some(&NodeType::Explore),
+            "child node type must be recorded on reserve"
+        );
+        coordinator
+            .finish_child(&child.context, ChildTerminal::completed("done"))
+            .await
+            .unwrap();
+        // After terminal transition, the entry is gone.
+        assert!(
+            coordinator.node_types.read().await.get(&key).is_none(),
+            "node_types entry must be removed after finish_child (insert-only leak guard)"
+        );
     }
 
     #[tokio::test]

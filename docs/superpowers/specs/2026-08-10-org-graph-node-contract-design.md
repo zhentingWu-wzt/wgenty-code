@@ -245,6 +245,20 @@ fn validate_contract(&self, contract: &NodeContract, caller: &AgentExecutionCont
 }
 ```
 
+> **⚠️ 实现偏差（build 阶段修正）**：上面伪代码读取 `request.node_type`（**子**节点类型）并检查其
+> `can_spawn`，这在语义上是错的——它会让「spawn 一个 explore/plan 子节点」永远失败（因为 leaf 的
+> `can_spawn=false`）。`can_spawn` 的正确语义是「**调用者**能否成为 parent」，不是「子节点能否被 spawn」。
+>
+> 实现中（`coordinator.rs` `caller_contract` + `reserve_child`）改为：
+> 1. 先用 `caller_contract(caller)` 查**调用者**的 node_type（未注册的 root → GeneralPurpose，`can_spawn=true`）；
+> 2. 检查 **caller_contract** 的 `can_spawn`；
+> 3. 再单独校验 `request.node_type` 是已知契约（`ContractDimension::NodeType`，防御性 depth-in-depth）。
+>
+> 调用者→node_type 的映射存在 coordinator 的 `node_types` 旁表（`reserve_child` 时 `record_child_node_type`
+> 写入，`finish_child` 时清理）。测试 `leaf_caller_cannot_spawn`（leaf 调用者拒绝）与
+> `all_builtin_child_types_accepted_from_root`（root 可 spawn 任意 builtin 子类型）共同锁定两端语义。
+
+
 **三维校验分两层（关键设计）**：
 
 | 维度 | 校验位置 | 原因 |
