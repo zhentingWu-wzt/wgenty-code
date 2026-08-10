@@ -25,6 +25,7 @@ pub mod context;
 pub mod exec_session;
 pub mod knowledge;
 pub mod mcp;
+pub mod org_graph;
 pub mod permissions;
 pub mod plugins;
 pub mod prompts;
