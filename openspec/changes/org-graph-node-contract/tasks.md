@@ -6,9 +6,9 @@
 
 ## 2. NodeRegistry 与内置契约
 
-- [ ] 2.1 在 `src/org_graph/registry.rs` 实现 `NodeRegistry`（持有 5 个内置 `NodeContract`，`get(&NodeType) -> Option<&NodeContract>`）
-- [ ] 2.2 填充 5 个内置节点契约，capabilities/permissions/budget 照搬现有硬编码语义（explore/plan=leaf can_spawn=false；general-purpose 可 spawn；explore_readonly 作 can_mutate_fs 默认源；IO schema 声明态留占位）
-- [ ] 2.3 添加测试：5 个内置契约均可在 registry 查到；查询不存在类型返回 None；契约内容与现有硬编码语义对齐
+- [x] 2.1 在 `src/org_graph/registry.rs` 实现 `NodeRegistry`（持有 5 个内置 `NodeContract`，`get(&NodeType) -> Option<&NodeContract>`）
+- [x] 2.2 填充 5 个内置节点契约，capabilities/permissions/budget 照搬现有硬编码语义（explore/plan=leaf can_spawn=false；general-purpose 可 spawn；explore_readonly 作 can_mutate_fs 默认源；IO schema 声明态留占位）
+- [x] 2.3 添加测试：5 个内置契约均可在 registry 查到；查询不存在类型返回 None；契约内容与现有硬编码语义对齐
 
 ## 3. SpawnChildRequest 扩展
 
