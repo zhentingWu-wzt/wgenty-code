@@ -74,7 +74,7 @@ base-ref: 0de3b78df5bc3444e8cc3b99cbdb4b675c589adf
   - `org_graph::NodeContract`（struct，含上述五维 + 元数据字段）
   - `org_graph::ContractDimension`（enum，NodeType/Capability/Permission/Budget）
 
-- [ ] **Step 1.1: 创建 `src/org_graph/contract.rs`，定义全部类型**
+- [x] **Step 1.1: 创建 `src/org_graph/contract.rs`，定义全部类型**
 
 ```rust
 //! Org-Graph 节点契约：纯数据 + 纯函数校验模块的类型层。
@@ -165,7 +165,7 @@ pub enum ContractDimension {
 }
 ```
 
-- [ ] **Step 1.2: 创建 `src/org_graph/mod.rs`**
+- [x] **Step 1.2: 创建 `src/org_graph/mod.rs`**
 
 ```rust
 //! Org-Graph 节点契约模块：纯数据 + 纯函数校验，无 async / I/O / 状态。
@@ -182,7 +182,7 @@ pub use registry::NodeRegistry;
 
 > 注：`registry` 模块在 Task 2 创建。本步先写 `mod registry;` 和 re-export，Task 1 编译会因缺 `registry.rs` 失败——这是预期的（Task 2 补齐后通过）。若希望 Task 1 独立编译通过，可暂时注释掉 `pub mod registry;` 和 `pub use registry::NodeRegistry;`，Task 2 再取消注释。**推荐**：先注释，Task 2 取消，保证每个 task 独立可编译。
 
-- [ ] **Step 1.3: 在 `src/lib.rs:27`（`pub mod mcp;` 之后）插入模块声明**
+- [x] **Step 1.3: 在 `src/lib.rs:27`（`pub mod mcp;` 之后）插入模块声明**
 
 ```rust
 pub mod mcp;
@@ -190,7 +190,7 @@ pub mod org_graph;
 pub mod permissions;
 ```
 
-- [ ] **Step 1.4: 写失败测试 — NodeContract serde 往返 + IoShape 往返**
+- [x] **Step 1.4: 写失败测试 — NodeContract serde 往返 + IoShape 往返**
 
 在 `src/org_graph/contract.rs` 末尾追加：
 
@@ -246,12 +246,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 1.5: 运行测试验证通过**
+- [x] **Step 1.5: 运行测试验证通过**
 
 Run: `cargo test -p wgenty_code org_graph::contract::tests -- --nocapture`
 Expected: PASS（3 个测试）。若 Step 1.2 暂时注释了 `mod registry`，此处应编译通过。
 
-- [ ] **Step 1.6: Commit**
+- [x] **Step 1.6: Commit**
 
 ```bash
 git add src/org_graph/mod.rs src/org_graph/contract.rs src/lib.rs
@@ -288,7 +288,7 @@ git commit -m "feat(org_graph): add NodeContract type layer with serde roundtrip
 
 > system_prompt：Explore/Plan/GP 从 task.rs:598-655 硬编码 match arm 照搬（见 Step 2.1 完整字符串）；Verification/WgentyCodeGuide 设为空字符串（CLI 路径走 AgentDefinition）。model 设为 `"default"`（声明态，task.rs 不读此字段——模型选择逻辑不变）。
 
-- [ ] **Step 2.1: 创建 `src/org_graph/registry.rs`**
+- [x] **Step 2.1: 创建 `src/org_graph/registry.rs`**
 
 ```rust
 //! 内置节点契约注册表。构建后不可变（纯数据）。
@@ -483,11 +483,11 @@ impl NodeRegistry {
 }
 ```
 
-- [ ] **Step 2.2: 确保 `src/org_graph/mod.rs` 的 `pub mod registry;` + re-export 取消注释**
+- [x] **Step 2.2: 确保 `src/org_graph/mod.rs` 的 `pub mod registry;` + re-export 取消注释**
 
 确认 Task 1 Step 1.2 中若注释了 `pub mod registry;` 和 `pub use registry::NodeRegistry;`，此处取消注释。
 
-- [ ] **Step 2.3: 写测试 — registry 查询 + 契约内容对齐**
+- [x] **Step 2.3: 写测试 — registry 查询 + 契约内容对齐**
 
 在 `src/org_graph/registry.rs` 末尾追加：
 
@@ -589,12 +589,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2.4: 运行测试验证通过**
+- [x] **Step 2.4: 运行测试验证通过**
 
 Run: `cargo test -p wgenty_code org_graph::registry::tests -- --nocapture`
 Expected: PASS（8 个测试）。
 
-- [ ] **Step 2.5: Commit**
+- [x] **Step 2.5: Commit**
 
 ```bash
 git add src/org_graph/registry.rs src/org_graph/mod.rs
@@ -621,7 +621,7 @@ git commit -m "feat(org_graph): add NodeRegistry with 5 builtin contracts mirror
   - `AgentCoordinator` 新增字段 `registry: Arc<NodeRegistry>`
   - `AgentCoordinator::with_node_registry(self, Arc<NodeRegistry>) -> Self`
 
-- [ ] **Step 3.1: 扩展 `SpawnChildRequest`（coordinator.rs:30-44）**
+- [x] **Step 3.1: 扩展 `SpawnChildRequest`（coordinator.rs:30-44）**
 
 把现有：
 ```rust
@@ -666,7 +666,7 @@ impl SpawnChildRequest {
 
 > 所有现有调用点 `SpawnChildRequest::new(...)` 不传 node_type 时行为不变（默认 GP），编译通过。Task 6 再逐个补 `.with_node_type(...)`。
 
-- [ ] **Step 3.2: 给 `AgentCoordinator` 加 `registry` 字段（coordinator.rs:292-315）**
+- [x] **Step 3.2: 给 `AgentCoordinator` 加 `registry` 字段（coordinator.rs:292-315）**
 
 在 struct 定义中 `fallback_used` 之后加一行：
 ```rust
@@ -674,7 +674,7 @@ impl SpawnChildRequest {
     registry: Arc<crate::org_graph::NodeRegistry>,
 ```
 
-- [ ] **Step 3.3: 在 `new()` 中构造默认 registry（coordinator.rs:317-335）**
+- [x] **Step 3.3: 在 `new()` 中构造默认 registry（coordinator.rs:317-335）**
 
 在 `new()` 的 struct 初始化末尾加：
 ```rust
@@ -694,7 +694,7 @@ impl SpawnChildRequest {
     }
 ```
 
-- [ ] **Step 3.4: 在 `src/daemon/state.rs:139-142` 注入真实 settings 构建的 registry**
+- [x] **Step 3.4: 在 `src/daemon/state.rs:139-142` 注入真实 settings 构建的 registry**
 
 把现有：
 ```rust
@@ -717,7 +717,7 @@ impl SpawnChildRequest {
         );
 ```
 
-- [ ] **Step 3.5: 写测试 — SpawnChildRequest 两种构造路径**
+- [x] **Step 3.5: 写测试 — SpawnChildRequest 两种构造路径**
 
 在 coordinator.rs 的 test module（`#[cfg(test)]`）中追加：
 ```rust
@@ -750,12 +750,12 @@ impl SpawnChildRequest {
     }
 ```
 
-- [ ] **Step 3.6: 编译 + 运行测试**
+- [x] **Step 3.6: 编译 + 运行测试**
 
 Run: `cargo test -p wgenty_code spawn_child_request coordinator_holds_registry -- --nocapture`
 Expected: PASS（3 个测试）。全量编译应通过（所有现有 `SpawnChildRequest::new(...)` 调用默认 GP）。
 
-- [ ] **Step 3.7: Commit**
+- [x] **Step 3.7: Commit**
 
 ```bash
 git add src/agent/coordinator.rs src/daemon/state.rs
@@ -783,7 +783,7 @@ git commit -m "feat(coordinator): add node_type to SpawnChildRequest and NodeReg
   - coordinator `node_types: Arc<RwLock<HashMap<(SessionId, AgentId), NodeType>>>` 侧表
   - `AgentCoordinator` 内部 `validate_caller_contract(&caller) -> Result<&NodeContract, CoordinatorError>`
 
-- [ ] **Step 4.1: 给 `CoordinatorError` 加 `ContractViolation` 变体（coordinator.rs:234-267）**
+- [x] **Step 4.1: 给 `CoordinatorError` 加 `ContractViolation` 变体（coordinator.rs:234-267）**
 
 在 `RootHasNoTerminalState` 变体之后追加：
 ```rust
@@ -802,7 +802,7 @@ git commit -m "feat(coordinator): add node_type to SpawnChildRequest and NodeReg
 
 > 需在文件顶部的 `use` 语句中确认 `crate::org_graph::{NodeType, ContractDimension}` 可达（全路径引用也可，避免改 use 块）。
 
-- [ ] **Step 4.2: 给 `AgentCoordinator` 加 `node_types` 侧表字段（coordinator.rs:292-315）**
+- [x] **Step 4.2: 给 `AgentCoordinator` 加 `node_types` 侧表字段（coordinator.rs:292-315）**
 
 在 `registry` 字段之后加：
 ```rust
@@ -811,7 +811,7 @@ git commit -m "feat(coordinator): add node_type to SpawnChildRequest and NodeReg
     node_types: Arc<RwLock<HashMap<(SessionId, AgentId), crate::org_graph::NodeType>>>,
 ```
 
-- [ ] **Step 4.3: 在 `new()` 中初始化 `node_types`（coordinator.rs:317-335）**
+- [x] **Step 4.3: 在 `new()` 中初始化 `node_types`（coordinator.rs:317-335）**
 
 在 struct 初始化末尾加：
 ```rust
@@ -821,7 +821,7 @@ git commit -m "feat(coordinator): add node_type to SpawnChildRequest and NodeReg
             node_types: Arc::new(RwLock::new(HashMap::new())),
 ```
 
-- [ ] **Step 4.4: 写失败测试 — ContractViolation 不触发 fallback**
+- [x] **Step 4.4: 写失败测试 — ContractViolation 不触发 fallback**
 
 在 `src/agent/fallback.rs` 的 test module 中追加：
 ```rust
@@ -843,7 +843,7 @@ git commit -m "feat(coordinator): add node_type to SpawnChildRequest and NodeReg
 Run: `cargo test -p wgenty_code contract_violation_does_not_trigger_fallback -- --nocapture`
 Expected: PASS（`_ => None` 已自动覆盖；此测试锁死行为防回归）。
 
-- [ ] **Step 4.5: 在 `reserve_child` 中加契约校验（coordinator.rs:417-502）**
+- [x] **Step 4.5: 在 `reserve_child` 中加契约校验（coordinator.rs:417-502）**
 
 在现有 parent 状态检查（:429-439）**之前**插入契约校验（契约违反优先于 structural 拒绝）。并在 semaphore permit 成功后、返回 reservation 前，把子节点的 node_type 登记进 `node_types`。
 
@@ -926,7 +926,7 @@ Expected: PASS（`_ => None` 已自动覆盖；此测试锁死行为防回归）
 
 > **注意原 depth 检查重复**：原 :441-446 的 `if caller.depth >= self.max_depth` 要替换为上面的 effective_max_depth 版本（删掉原 :441-446，移到契约校验后）。原 parent 状态检查（:429-439）和 semaphore（:448-454）保持原位。
 
-- [ ] **Step 4.6: 给 `map_coordinator_error` 加 ContractViolation 分支（task.rs:1151-1169）**
+- [x] **Step 4.6: 给 `map_coordinator_error` 加 ContractViolation 分支（task.rs:1151-1169）**
 
 在现有 `CoordinatorError::NotVisible => ...` 分支之后、`other => ...` 之前插入：
 ```rust
@@ -943,7 +943,7 @@ Expected: PASS（`_ => None` 已自动覆盖；此测试锁死行为防回归）
         },
 ```
 
-- [ ] **Step 4.7: 写测试 — coordinator 校验各维度**
+- [x] **Step 4.7: 写测试 — coordinator 校验各维度**
 
 在 coordinator.rs 的 test module 追加。这些测试用纯 coordinator + root caller（root 默认 GP，can_spawn=true），手动往 `node_types` 登记一个 Explore caller 来测 leaf 拒绝。
 
@@ -1034,12 +1034,12 @@ Expected: PASS（`_ => None` 已自动覆盖；此测试锁死行为防回归）
 
 > **注意**：`budget Some 覆盖全局」的完整端到端测试需要注入自定义 registry（构造一个 budget.max_depth=Some(0) 的契约）。若 `NodeRegistry` 没有公开插入接口，可跳过 Some 覆盖的集成测试，改为在 `caller_contract` / depth 解析逻辑上写纯函数单测（把 `resolve_effective_max_depth(contract_budget, global)` 提取为自由函数单独测）。**推荐**：提取 `fn resolve_effective_max_depth(budget_max_depth: Option<usize>, global_max_depth: usize) -> usize { budget_max_depth.unwrap_or(global_max_depth) }` 并单独单测 None/Some 两路径。
 
-- [ ] **Step 4.8: 运行测试**
+- [x] **Step 4.8: 运行测试**
 
 Run: `cargo test -p wgenty_code coordinator leaf_caller general_purpose_caller depth_limit contract_violation -- --nocapture`
 Expected: PASS。
 
-- [ ] **Step 4.9: Commit**
+- [x] **Step 4.9: Commit**
 
 ```bash
 git add src/agent/coordinator.rs src/agent/fallback.rs src/tools/meta/task.rs
@@ -1062,7 +1062,7 @@ git commit -m "feat(coordinator): enforce can_spawn + budget contract in reserve
   - `task::parse_node_type(&str) -> NodeType`（私有/crate 内函数）
   - `task::filter_allowed_tools(names, &NodeContract) -> Vec<String>`（签名从 5 参数改为 2 参数）
 
-- [ ] **Step 5.1: 写失败测试 — parse_node_type 映射**
+- [x] **Step 5.1: 写失败测试 — parse_node_type 映射**
 
 在 task.rs 的 test module（或 `src/tools/meta/task/tests.rs`）追加：
 ```rust
@@ -1085,7 +1085,7 @@ git commit -m "feat(coordinator): enforce can_spawn + budget contract in reserve
     }
 ```
 
-- [ ] **Step 5.2: 实现 `parse_node_type`（task.rs，放在 `filter_allowed_tools` 附近）**
+- [x] **Step 5.2: 实现 `parse_node_type`（task.rs，放在 `filter_allowed_tools` 附近）**
 
 ```rust
 /// 模型 JSON 的 `subagent_type` 字符串 → 可信 `NodeType` 枚举。
@@ -1107,7 +1107,7 @@ fn parse_node_type(s: &str) -> crate::org_graph::NodeType {
 Run: `cargo test -p wgenty_code parse_node_type -- --nocapture`
 Expected: PASS。
 
-- [ ] **Step 5.3: 改 `filter_allowed_tools` 签名 + 实现读契约（task.rs:1121-1144）**
+- [x] **Step 5.3: 改 `filter_allowed_tools` 签名 + 实现读契约（task.rs:1121-1144）**
 
 把现有：
 ```rust
@@ -1164,7 +1164,7 @@ pub(crate) fn filter_allowed_tools(
 
 > `MUTATING_FS_TOOLS` 常量（:1109-1110）不变。
 
-- [ ] **Step 5.4: 写失败测试 — filter_allowed_tools 读契约**
+- [x] **Step 5.4: 写失败测试 — filter_allowed_tools 读契约**
 
 在 task.rs test module 追加：
 ```rust
@@ -1231,7 +1231,7 @@ pub(crate) fn filter_allowed_tools(
 Run: `cargo test -p wgenty_code filter_strips filter_whitelist -- --nocapture`
 Expected: PASS。
 
-- [ ] **Step 5.5: 改 `execute_with_context` 读契约（task.rs:475, 587-660, 704）**
+- [x] **Step 5.5: 改 `execute_with_context` 读契约（task.rs:475, 587-660, 704）**
 
 **5.5a — 解析 node_type（:475 附近）**
 
@@ -1301,12 +1301,12 @@ Expected: PASS。
             )
 ```
 
-- [ ] **Step 5.6: 编译 + 修复 breakage**
+- [x] **Step 5.6: 编译 + 修复 breakage**
 
 Run: `cargo build -p wgenty_code`
 Expected: 编译通过。`_subagent_type` 若产生 unused warning，检查是否仍有引用（日志/进度记录）；若无引用改为 `_` 或删除。若 clippy 报 unused variable，加 `#[allow(unused_variables)]` 或删除变量。
 
-- [ ] **Step 5.7: 写无回归测试 — explore/plan/GP 工具集与变更前一致**
+- [x] **Step 5.7: 写无回归测试 — explore/plan/GP 工具集与变更前一致**
 
 这是 D7 硬约束的核心断言。策略：**先在改之前快照当前 filter_allowed_tools 的输出**（如已有 baseline 跳过），改之后用相同输入跑新 filter_allowed_tools 比对。
 
@@ -1368,12 +1368,12 @@ Expected: 编译通过。`_subagent_type` 若产生 unused warning，检查是�
     }
 ```
 
-- [ ] **Step 5.8: 运行全量测试验证无回归**
+- [x] **Step 5.8: 运行全量测试验证无回归**
 
 Run: `cargo test -p wgenty_code --no-fail-fast`
 Expected: 全部 PASS。重点关注 task.rs 既有 subagent 测试无回归。
 
-- [ ] **Step 5.9: Commit**
+- [x] **Step 5.9: Commit**
 
 ```bash
 git add src/tools/meta/task.rs
@@ -1397,7 +1397,7 @@ git commit -m "refactor(task): read NodeContract instead of hardcoded match; fil
 - Consumes: `SpawnChildRequest::with_node_type`（Task 3）
 - Produces: 无新接口
 
-- [ ] **Step 6.1: `src/tools/meta/run_script.rs:118` 补 with_node_type**
+- [x] **Step 6.1: `src/tools/meta/run_script.rs:118` 补 with_node_type**
 
 把现有：
 ```rust
@@ -1416,7 +1416,7 @@ git commit -m "refactor(task): read NodeContract instead of hardcoded match; fil
                     .await
 ```
 
-- [ ] **Step 6.2: `src/tools/meta/rlm/pipeline.rs:276` 补 with_node_type**
+- [x] **Step 6.2: `src/tools/meta/rlm/pipeline.rs:276` 补 with_node_type**
 
 把现有：
 ```rust
@@ -1437,7 +1437,7 @@ git commit -m "refactor(task): read NodeContract instead of hardcoded match; fil
 
 > **OQ1 决策落实**：RLM 子任务统一走 `GeneralPurpose`（= 默认值）。`use_small_model` 留 RLM 自己管，不进 NodeContract。理由：RLM 子任务是通用执行单元，不套 explore/plan 的 leaf 约束；显式写 GP 表达意图清晰。
 
-- [ ] **Step 6.3: `src/tools/meta/rlm/pipeline.rs:650`（replan 路径）补 with_node_type**
+- [x] **Step 6.3: `src/tools/meta/rlm/pipeline.rs:650`（replan 路径）补 with_node_type**
 
 把现有：
 ```rust
@@ -1447,7 +1447,7 @@ git commit -m "refactor(task): read NodeContract instead of hardcoded match; fil
 ```
 改为（与 Step 6.2 相同的 `.with_node_type(GeneralPurpose)`）。两处 replan/主路径一致。
 
-- [ ] **Step 6.4: 确认 ContractViolation 回退策略（OQ2）**
+- [x] **Step 6.4: 确认 ContractViolation 回退策略（OQ2）**
 
 `fallback_eligible_from_coordinator_error`（fallback.rs:26-33）的 `_ => None` 已自动覆盖 `ContractViolation`（Task 4 Step 4.4 已加测试锁死）。确认：
 
@@ -1457,12 +1457,12 @@ git commit -m "refactor(task): read NodeContract instead of hardcoded match; fil
 
 无需改 fallback.rs 生产代码（`_ => None` 天然安全），测试已在 Task 4 Step 4.4 覆盖。
 
-- [ ] **Step 6.5: 编译 + 全量测试**
+- [x] **Step 6.5: 编译 + 全量测试**
 
 Run: `cargo build -p wgenty_code && cargo test -p wgenty_code --no-fail-fast`
 Expected: 编译通过，全部测试 PASS。
 
-- [ ] **Step 6.6: Commit**
+- [x] **Step 6.6: Commit**
 
 ```bash
 git add src/tools/meta/run_script.rs src/tools/meta/rlm/pipeline.rs
@@ -1482,29 +1482,29 @@ git commit -m "feat(rlm,run_script): annotate spawn requests with GeneralPurpose
 - Consumes: 无
 - Produces: 无（验证不破坏现有路径）
 
-- [ ] **Step 7.1: 确认新派发路径不引用 AgentDefinition/AgentsService**
+- [x] **Step 7.1: 确认新派发路径不引用 AgentDefinition/AgentsService**
 
 Run: `grep -rn 'AgentDefinition\|AgentsService' src/tools/meta/task.rs src/agent/coordinator.rs src/org_graph/`
 Expected: **无输出**（新路径只读 NodeContract，不读 AgentDefinition）。若有输出，说明误引入了依赖，需移除。
 
-- [ ] **Step 7.2: 确认 CLI run_agent 路径仍走 AgentsService**
+- [x] **Step 7.2: 确认 CLI run_agent 路径仍走 AgentsService**
 
 Run: `grep -n 'AgentsService\|execute_agent\|AgentDefinition' src/cli/args.rs`
 Expected: 命中 `run_agent`（:720+）中的 `AgentsService` 调用——CLI 路径未改，继续走旧路径。
 
-- [ ] **Step 7.3: 确认 AgentDefinition/AgentsService 源码未被删除/改动**
+- [x] **Step 7.3: 确认 AgentDefinition/AgentsService 源码未被删除/改动**
 
 Run: `git diff main -- src/teams/subagent.rs | head -20`
 Expected: 空输出（未改动）。
 
-- [ ] **Step 7.4: 运行 CLI + stress 相关测试**
+- [x] **Step 7.4: 运行 CLI + stress 相关测试**
 
 Run: `cargo test -p wgenty_code teams::subagent -- --nocapture`
 Expected: 现有 AgentDefinition/AgentsService 测试全 PASS（未被破坏）。
 
 > 若 stress_tests 有独立测试 target，一并运行：`cargo test -p wgenty_code --test stress_tests`（若存在）。
 
-- [ ] **Step 7.5: Commit（若本 task 仅验证无改动则跳过 commit）**
+- [x] **Step 7.5: Commit（若本 task 仅验证无改动则跳过 commit）**
 
 若 grep/测试全部通过且无源码改动，本 task 无需 commit。记录验证结果到 tasks.md 打勾即可。
 
@@ -1517,12 +1517,12 @@ Expected: 现有 AgentDefinition/AgentsService 测试全 PASS（未被破坏）�
 **Files:**
 - 无新文件（全量验证 task）
 
-- [ ] **Step 8.1: cargo fmt --check**
+- [x] **Step 8.1: cargo fmt --check**
 
 Run: `cargo fmt --check`
 Expected: 无输出（格式合规）。若有 diff，运行 `cargo fmt` 修复后重新检查。
 
-- [ ] **Step 8.2: cargo clippy 零 warning**
+- [x] **Step 8.2: cargo clippy 零 warning**
 
 Run: `cargo clippy --all-targets -- -D warnings`
 Expected: 零 warning，零 error。常见修复：
@@ -1532,7 +1532,7 @@ Expected: 零 warning，零 error。常见修复：
 
 若 clippy 报错，加载 `superpowers:systematic-debugging` skill 定位根因，不得用 `#[allow]` 压制 warning（除非有充分理由并注释说明）。
 
-- [ ] **Step 8.3: cargo test 全量通过**
+- [x] **Step 8.3: cargo test 全量通过**
 
 Run: `cargo test -p wgenty_code --no-fail-fast`
 Expected: 全部 PASS。重点检查：
@@ -1543,7 +1543,7 @@ Expected: 全部 PASS。重点检查：
 - 现有 subagent / fallback / coordinator / rlm 测试无回归
 - `teams::subagent` 测试无回归（Task 7）
 
-- [ ] **Step 8.4: 手动验证真实派发（tasks.md 8.3）**
+- [x] **Step 8.4: 手动验证真实派发（tasks.md 8.3）**
 
 启动 daemon 或 CLI，执行一次 explore 节点派发和一次 general-purpose 节点派发，确认：
 1. system_prompt 来自契约（explore 用 explore_prompt，GP 用 gp_prompt）。
@@ -1553,7 +1553,7 @@ Expected: 全部 PASS。重点检查：
 
 > 若 daemon 启动复杂，可用现有集成测试替代（确认 coordinator 用 daemon/state.rs 注入的真实 registry）。
 
-- [ ] **Step 8.5: 更新 tasks.md 打勾 + 最终 commit**
+- [x] **Step 8.5: 更新 tasks.md 打勾 + 最终 commit**
 
 把 `openspec/changes/org-graph-node-contract/tasks.md` 中 8.1/8.2/8.3 打勾。若有未提交的 fmt/clippy 修复：
 ```bash
