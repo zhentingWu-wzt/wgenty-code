@@ -38,8 +38,8 @@
 
 ## 7. AgentDefinition 并存验证
 
-- [ ] 7.1 确认 `AgentDefinition`/`AgentsService` 未被新派发路径引用（新路径只读 NodeContract）
-- [ ] 7.2 测试：CLI `run_agent` 仍走 AgentsService 旧路径，行为不变；stress_tests 仍工作
+- [x] 7.1 确认 `AgentDefinition`/`AgentsService` 未被新派发路径引用（新路径只读 NodeContract）
+- [x] 7.2 测试：CLI `run_agent` 仍走 AgentsService 旧路径，行为不变；stress_tests 仍工作
 
 ## 8. 验证与收尾
 
