@@ -1,8 +1,28 @@
 use super::heuristic::is_complex_task;
 use super::*;
+use crate::config::agent::SubagentLimits;
+use crate::org_graph::{NodeContract, NodeRegistry, NodeType};
+
+/// Build the builtin registry contract for `node_type` under the given
+/// `explore_readonly` setting, mirroring the production contract-build path.
+/// The coordinator and task.rs read the same registry, so no-regression tests
+/// must exercise it rather than hand-built contracts.
+fn builtin_contract(node_type: NodeType, explore_readonly: bool) -> NodeContract {
+    let limits = SubagentLimits {
+        explore_readonly,
+        ..Default::default()
+    };
+    let registry = NodeRegistry::builtin(&limits);
+    registry
+        .get(&node_type)
+        .cloned()
+        .unwrap_or_else(|| panic!("no builtin contract for {:?}", node_type))
+}
 
 #[test]
 fn explore_readonly_filters_mutating_fs_tools() {
+    // explore node, readonly=true: strips mutating FS + spawn tools.
+    let contract = builtin_contract(NodeType::Explore, true);
     let all = vec![
         "file_read".into(),
         "file_write".into(),
@@ -13,7 +33,7 @@ fn explore_readonly_filters_mutating_fs_tools() {
         "task".into(),
         "delegate".into(),
     ];
-    let filtered = filter_allowed_tools(all, "explore", 0, 1, true);
+    let filtered = filter_allowed_tools(all, &contract);
     assert!(filtered.contains(&"file_read".to_string()));
     assert!(filtered.contains(&"grep".to_string()));
     assert!(filtered.contains(&"exec_command".to_string()));
@@ -26,24 +46,29 @@ fn explore_readonly_filters_mutating_fs_tools() {
 
 #[test]
 fn explore_readonly_false_keeps_mutating_tools() {
+    // explore node, readonly=false: mutating FS allowed (can_mutate_fs=true);
+    // spawn tools still stripped (explore is a leaf).
+    let contract = builtin_contract(NodeType::Explore, false);
     let all = vec!["file_write".into(), "task".into()];
-    let filtered = filter_allowed_tools(all, "explore", 0, 1, false);
+    let filtered = filter_allowed_tools(all, &contract);
     assert!(filtered.contains(&"file_write".to_string()));
     assert!(!filtered.contains(&"task".to_string()));
 }
 
 #[test]
-fn general_purpose_keeps_spawn_tools_at_max_depth() {
-    // Soft-stripping `task` at depth==max_depth would make interception-point 1
-    // (DepthLimitReached -> parent self-execute) unreachable. GP must keep
-    // spawn tools; the coordinator hard gate + structural fallback own depth.
+fn general_purpose_keeps_spawn_tools() {
+    // GP may spawn. Depth is no longer a filter concern: the coordinator's hard
+    // gate + interception-point 1 fallback (DepthLimitReached → parent
+    // self-execute) own depth-limit behavior, so soft-stripping `task` at the
+    // limit would make that fallback path unreachable.
+    let contract = builtin_contract(NodeType::GeneralPurpose, true);
     let all = vec![
         "file_read".into(),
         "task".into(),
         "delegate".into(),
         "grep".into(),
     ];
-    let filtered = filter_allowed_tools(all, "general-purpose", 1, 1, true);
+    let filtered = filter_allowed_tools(all, &contract);
     assert!(filtered.contains(&"task".to_string()));
     assert!(filtered.contains(&"delegate".to_string()));
     assert!(filtered.contains(&"file_read".to_string()));
@@ -51,22 +76,119 @@ fn general_purpose_keeps_spawn_tools_at_max_depth() {
 }
 
 #[test]
-fn explore_and_plan_never_keep_spawn_tools_regardless_of_depth() {
+fn explore_and_plan_never_keep_spawn_tools() {
+    // Leaf nodes (explore/plan) never keep spawn tools regardless of readonly.
     let all = vec!["task".into(), "delegate".into(), "file_read".into()];
-    for st in ["explore", "plan"] {
-        for (depth, max_depth) in [(0, 1), (1, 1), (0, 3), (2, 3)] {
-            let filtered = filter_allowed_tools(all.clone(), st, depth, max_depth, true);
+    for nt in [NodeType::Explore, NodeType::Plan] {
+        for explore_readonly in [true, false] {
+            let contract = builtin_contract(nt.clone(), explore_readonly);
+            let filtered = filter_allowed_tools(all.clone(), &contract);
             assert!(
                 !filtered.contains(&"task".to_string()),
-                "{st} must not keep task at depth={depth} max_depth={max_depth}"
+                "{:?} must not keep task (readonly={})",
+                nt,
+                explore_readonly
             );
             assert!(
                 !filtered.contains(&"delegate".to_string()),
-                "{st} must not keep delegate at depth={depth} max_depth={max_depth}"
+                "{:?} must not keep delegate (readonly={})",
+                nt,
+                explore_readonly
             );
             assert!(filtered.contains(&"file_read".to_string()));
         }
     }
+}
+
+// ── parse_node_type: trusted dispatch-layer string→NodeType mapping ────
+
+#[test]
+fn parse_node_type_maps_all_known_strings() {
+    assert_eq!(parse_node_type("explore"), NodeType::Explore);
+    assert_eq!(parse_node_type("plan"), NodeType::Plan);
+    assert_eq!(parse_node_type("general-purpose"), NodeType::GeneralPurpose);
+    assert_eq!(parse_node_type("general"), NodeType::GeneralPurpose);
+    assert_eq!(parse_node_type("verify"), NodeType::Verification);
+    assert_eq!(parse_node_type("verification"), NodeType::Verification);
+    assert_eq!(parse_node_type("guide"), NodeType::WgentyCodeGuide);
+    assert_eq!(
+        parse_node_type("wgenty-code-guide"),
+        NodeType::WgentyCodeGuide
+    );
+}
+
+#[test]
+fn parse_node_type_unknown_falls_back_to_general_purpose() {
+    // Unknown strings must not panic or inject arbitrary node types; they fall
+    // back to GeneralPurpose, matching the pre-change `unwrap_or` default.
+    assert_eq!(parse_node_type(""), NodeType::GeneralPurpose);
+    assert_eq!(parse_node_type("researcher"), NodeType::GeneralPurpose);
+    assert_eq!(parse_node_type("EXPLORE"), NodeType::GeneralPurpose); // case-sensitive
+}
+
+// ── filter_allowed_tools: three-dimension enforcement (unit isolation) ──
+
+#[test]
+fn filter_capability_whitelist_when_non_empty() {
+    // When allowed_tools is non-empty, ONLY whitelisted tools pass (the
+    // permission dimensions still apply on top). Builtin contracts leave this
+    // empty (wildcard); a custom contract can lock a node to a narrow toolset.
+    let contract = NodeContract {
+        node_type: NodeType::GeneralPurpose,
+        name: "test-narrow".to_string(),
+        description: String::new(),
+        when_to_use: String::new(),
+        system_prompt: String::new(),
+        model: String::new(),
+        capabilities: crate::org_graph::Capability {
+            allowed_tools: vec!["file_read".into(), "grep".into()],
+        },
+        permissions: crate::org_graph::PermissionBoundary {
+            can_spawn: true,
+            can_mutate_fs: true,
+            can_exec: true,
+        },
+        budget: Default::default(),
+        input_type: Default::default(),
+        output_type: Default::default(),
+    };
+    let all = vec![
+        "file_read".into(),
+        "grep".into(),
+        "file_write".into(),
+        "task".into(),
+        "exec_command".into(),
+    ];
+    let filtered = filter_allowed_tools(all, &contract);
+    assert_eq!(filtered, vec!["file_read".to_string(), "grep".to_string()]);
+}
+
+#[test]
+fn filter_can_spawn_false_strips_task_and_delegate() {
+    let mut contract = builtin_contract(NodeType::GeneralPurpose, true);
+    contract.permissions.can_spawn = false;
+    let all = vec!["task".into(), "delegate".into(), "file_read".into()];
+    let filtered = filter_allowed_tools(all, &contract);
+    assert!(!filtered.contains(&"task".to_string()));
+    assert!(!filtered.contains(&"delegate".to_string()));
+    assert!(filtered.contains(&"file_read".to_string()));
+}
+
+#[test]
+fn filter_can_mutate_fs_false_strips_mutating_fs_tools() {
+    let mut contract = builtin_contract(NodeType::GeneralPurpose, true);
+    contract.permissions.can_mutate_fs = false;
+    let all = vec![
+        "file_write".into(),
+        "file_edit".into(),
+        "apply_patch".into(),
+        "file_read".into(),
+    ];
+    let filtered = filter_allowed_tools(all, &contract);
+    assert!(!filtered.contains(&"file_write".to_string()));
+    assert!(!filtered.contains(&"file_edit".to_string()));
+    assert!(!filtered.contains(&"apply_patch".to_string()));
+    assert!(filtered.contains(&"file_read".to_string()));
 }
 
 #[test]

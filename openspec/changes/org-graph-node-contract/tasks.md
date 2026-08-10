@@ -25,10 +25,10 @@
 
 ## 5. task.rs 读契约
 
-- [ ] 5.1 改 `execute_with_context`：从硬编码 `match _subagent_type` 分支改为 `NodeRegistry::get(&node_type)` 读 `NodeContract`；system_prompt / allowed_tools / budget 全来自契约
-- [ ] 5.2 改 `filter_allowed_tools` 签名从 `(names, subagent_type, depth, max_depth, explore_readonly)` 改为读 `&NodeContract`；内部读 `permissions` + `capabilities`；`explore_readonly` 作 `can_mutate_fs` 全局默认源
-- [ ] 5.3 模型 JSON 的 `subagent_type` 字符串经派发层映射为可信 `NodeType` 枚举（不直接注入 SpawnChildRequest）
-- [ ] 5.4 测试：explore/plan/general-purpose 三种节点派发的 system_prompt + allowed_tools + budget 与变更前硬编码路径完全一致（无回归）
+- [x] 5.1 改 `execute_with_context`：从硬编码 `match _subagent_type` 分支改为 `NodeRegistry::get(&node_type)` 读 `NodeContract`；system_prompt / allowed_tools / budget 全来自契约
+- [x] 5.2 改 `filter_allowed_tools` 签名从 `(names, subagent_type, depth, max_depth, explore_readonly)` 改为读 `&NodeContract`；内部读 `permissions` + `capabilities`；`explore_readonly` 作 `can_mutate_fs` 全局默认源
+- [x] 5.3 模型 JSON 的 `subagent_type` 字符串经派发层映射为可信 `NodeType` 枚举（不直接注入 SpawnChildRequest）
+- [x] 5.4 测试：explore/plan/general-purpose 三种节点派发的 system_prompt + allowed_tools + budget 与变更前硬编码路径完全一致（无回归）
 
 ## 6. 其余调用点补 node_type
 

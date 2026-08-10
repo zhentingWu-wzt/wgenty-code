@@ -39,7 +39,9 @@ impl NodeRegistry {
             when_to_use: "Searching and analyzing codebases".to_string(),
             system_prompt: Self::explore_prompt().to_string(),
             model: "default".to_string(),
-            capabilities: Capability { allowed_tools: vec![] },
+            capabilities: Capability {
+                allowed_tools: vec![],
+            },
             permissions: PermissionBoundary {
                 can_spawn: false,
                 can_mutate_fs: !s.explore_readonly,
@@ -59,7 +61,9 @@ impl NodeRegistry {
             when_to_use: "Breaking down complex tasks".to_string(),
             system_prompt: Self::plan_prompt().to_string(),
             model: "default".to_string(),
-            capabilities: Capability { allowed_tools: vec![] },
+            capabilities: Capability {
+                allowed_tools: vec![],
+            },
             permissions: PermissionBoundary {
                 can_spawn: false,
                 can_mutate_fs: !s.explore_readonly,
@@ -79,7 +83,9 @@ impl NodeRegistry {
             when_to_use: "Any sub-work that may need further delegation".to_string(),
             system_prompt: Self::gp_prompt().to_string(),
             model: "default".to_string(),
-            capabilities: Capability { allowed_tools: vec![] },
+            capabilities: Capability {
+                allowed_tools: vec![],
+            },
             permissions: PermissionBoundary {
                 can_spawn: true,
                 can_mutate_fs: true,
@@ -100,7 +106,9 @@ impl NodeRegistry {
             // task.rs 硬编码 match 没有 verify arm（CLI 路径走 AgentDefinition）。
             system_prompt: String::new(),
             model: "default".to_string(),
-            capabilities: Capability { allowed_tools: vec![] },
+            capabilities: Capability {
+                allowed_tools: vec![],
+            },
             permissions: PermissionBoundary {
                 can_spawn: false,
                 can_mutate_fs: true,
@@ -121,7 +129,9 @@ impl NodeRegistry {
             // task.rs 硬编码 match 没有 guide arm（CLI 路径走 AgentDefinition）。
             system_prompt: String::new(),
             model: "default".to_string(),
-            capabilities: Capability { allowed_tools: vec![] },
+            capabilities: Capability {
+                allowed_tools: vec![],
+            },
             permissions: PermissionBoundary {
                 can_spawn: false,
                 can_mutate_fs: false,
@@ -283,7 +293,12 @@ mod tests {
             NodeType::WgentyCodeGuide,
         ] {
             let c = r.get(&nt).unwrap();
-            assert_eq!(c.budget, ResourceBudget::default(), "{:?} budget not all-None", nt);
+            assert_eq!(
+                c.budget,
+                ResourceBudget::default(),
+                "{:?} budget not all-None",
+                nt
+            );
         }
     }
 
@@ -292,25 +307,27 @@ mod tests {
         let r = registry(true);
         assert!(!r.get(&NodeType::Explore).unwrap().system_prompt.is_empty());
         assert!(!r.get(&NodeType::Plan).unwrap().system_prompt.is_empty());
-        assert!(
-            !r.get(&NodeType::GeneralPurpose)
-                .unwrap()
-                .system_prompt
-                .is_empty()
-        );
+        assert!(!r
+            .get(&NodeType::GeneralPurpose)
+            .unwrap()
+            .system_prompt
+            .is_empty());
     }
 
     #[test]
     fn verify_guide_system_prompts_empty() {
         // task.rs 硬编码 match 没有 verify/guide arm；这两个契约仅作声明。
         let r = registry(true);
-        assert!(r.get(&NodeType::Verification).unwrap().system_prompt.is_empty());
-        assert!(
-            r.get(&NodeType::WgentyCodeGuide)
-                .unwrap()
-                .system_prompt
-                .is_empty()
-        );
+        assert!(r
+            .get(&NodeType::Verification)
+            .unwrap()
+            .system_prompt
+            .is_empty());
+        assert!(r
+            .get(&NodeType::WgentyCodeGuide)
+            .unwrap()
+            .system_prompt
+            .is_empty());
     }
 
     #[test]
