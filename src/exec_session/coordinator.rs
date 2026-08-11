@@ -419,7 +419,10 @@ impl SessionCoordinator {
             .find(|t| t.turn_id == turn_id)
             .map(|t| t.checkpoint_turn_id.clone())
             .ok_or_else(|| anyhow::anyhow!("turn {turn_id} not in chain"))?;
-        match self.checkpoint_store.restore_work_state(&checkpoint_turn_id)? {
+        match self
+            .checkpoint_store
+            .restore_work_state(&checkpoint_turn_id)?
+        {
             Some(state) => {
                 self.work_state = state;
             }
@@ -1075,7 +1078,9 @@ mod tests {
         // requirement 保留，verify_result / step_log（及所有产物字段）清空。
         let dir = tempdir().unwrap();
         let mut coord = make_coordinator(dir.path());
-        coord.work_state_mut().set_requirement(Some("实现 WorkState".into()));
+        coord
+            .work_state_mut()
+            .set_requirement(Some("实现 WorkState".into()));
         coord
             .work_state_mut()
             .set_verify_result(
@@ -1098,7 +1103,10 @@ mod tests {
                 .is_none(),
             "verify_result must reset on begin_turn"
         );
-        assert!(ws.step_log().is_empty(), "step_log must reset on begin_turn");
+        assert!(
+            ws.step_log().is_empty(),
+            "step_log must reset on begin_turn"
+        );
     }
 
     #[test]
@@ -1183,7 +1191,10 @@ mod tests {
         assert!(!outcome.success);
         assert!(matches!(
             &outcome.fail_reason,
-            Some(crate::org_graph::VerifyFailureKind::CommandFailed { exit_code: Some(2), .. })
+            Some(crate::org_graph::VerifyFailureKind::CommandFailed {
+                exit_code: Some(2),
+                ..
+            })
         ));
     }
 }

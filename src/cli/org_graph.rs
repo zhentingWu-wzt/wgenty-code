@@ -2,8 +2,8 @@
 
 use clap::ValueEnum;
 
-use crate::org_graph::NodeRegistry;
 use crate::org_graph::render::Format;
+use crate::org_graph::NodeRegistry;
 
 /// CLI 侧格式参数（clap ValueEnum）。映射到 org_graph::render::Format，
 /// 使 org_graph 模块本身保持零 clap 依赖。

@@ -22,7 +22,8 @@ use super::hooks::{NoHooks, SessionHooks, VerifyFailure};
 use super::node::{Node, NodeContract, NodeId, NodeStatus};
 use super::session::SessionStatus;
 use super::verify_gate::{VerifyGate, VerifyResult};
-use crate::org_graph::NodeType;
+use super::work_graph::{next_step, WorkGraphStep};
+use crate::org_graph::{Budget, CompileResult, GeneratedDiff, NodeType, TestResult};
 
 /// Result of a `verify_node` call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +38,12 @@ pub struct NodeVerifyResult {
 pub struct NodeRollbackResult {
     pub rolled_back_to: NodeId,
     pub removed_nodes: Vec<NodeId>,
+}
+
+/// Result produced by a complete fixed work-graph pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkGraphRunResult {
+    pub next_step: WorkGraphStep,
 }
 
 /// Coordinates the node-level state machine. Holds a shared coordinator
@@ -54,12 +61,12 @@ pub struct NodeRuntime {
 /// 决策只需 exit_code 语义）；BoundaryViolation 保留 unexpected_files。
 fn project_failure(f: &VerifyFailure) -> crate::org_graph::VerifyFailureKind {
     match f {
-        VerifyFailure::CommandFailed { exit_code, stderr, .. } => {
-            crate::org_graph::VerifyFailureKind::CommandFailed {
-                exit_code: *exit_code,
-                stderr: stderr.clone(),
-            }
-        }
+        VerifyFailure::CommandFailed {
+            exit_code, stderr, ..
+        } => crate::org_graph::VerifyFailureKind::CommandFailed {
+            exit_code: *exit_code,
+            stderr: stderr.clone(),
+        },
         VerifyFailure::BoundaryViolation { unexpected_files } => {
             crate::org_graph::VerifyFailureKind::BoundaryViolation {
                 unexpected_files: unexpected_files.clone(),
@@ -74,6 +81,30 @@ fn project_outcome(result: &VerifyResult) -> crate::org_graph::VerifyOutcome {
         result.success,
         result.fail_reason.as_ref().map(project_failure),
     )
+}
+
+/// Join non-empty stderr streams so the anchor state retains actionable
+/// diagnostics without depending on the execution-layer command type.
+fn collect_stderr(runs: &[crate::exec_session::CommandRun]) -> String {
+    runs.iter()
+        .filter_map(|run| (!run.stderr.is_empty()).then_some(run.stderr.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Charge one coordinator-owned work-graph iteration after a failed anchor.
+fn consume_iteration_budget(coord: &mut SessionCoordinator) -> Result<()> {
+    let mut budget = coord
+        .work_state()
+        .budget(NodeType::GeneralPurpose)
+        .context("read work graph budget")?
+        .cloned()
+        .context("work graph budget must be initialized")?;
+    budget.iter_used = budget.iter_used.saturating_add(1);
+    coord
+        .work_state_mut()
+        .set_budget(NodeType::GeneralPurpose, budget)
+        .context("consume work graph iteration budget")
 }
 
 impl NodeRuntime {
@@ -98,6 +129,154 @@ impl NodeRuntime {
         auto_retry_max: u32,
     ) -> Self {
         Self::new(coordinator, verify_gate, auto_retry_max, Arc::new(NoHooks))
+    }
+
+    /// Run the fixed compile → test → verify graph using real command output.
+    /// Each anchor is persisted before its structured result determines the
+    /// next edge. Callers supply commands; the runtime, not an agent report,
+    /// is the source of truth for their outcome.
+    pub async fn run_work_graph(
+        &self,
+        compile_commands: Vec<String>,
+        test_commands: Vec<String>,
+        verify_commands: Vec<String>,
+        expected_files: Vec<String>,
+    ) -> Result<WorkGraphRunResult> {
+        self.ensure_work_graph_budget()?;
+        let compile_runs = self
+            .verify_gate
+            .run_anchor_commands(&compile_commands)
+            .await
+            .context("run compile anchor commands")?;
+        let compile_result = CompileResult {
+            ok: compile_runs.iter().all(|run| run.exit_code == Some(0)),
+            stderr: collect_stderr(&compile_runs),
+        };
+        let step = self.record_compile_result(compile_result)?;
+        if step != WorkGraphStep::TestAnchor {
+            return Ok(WorkGraphRunResult { next_step: step });
+        }
+
+        let test_runs = self
+            .verify_gate
+            .run_anchor_commands(&test_commands)
+            .await
+            .context("run test anchor commands")?;
+        let test_result = TestResult {
+            pass: test_runs.iter().all(|run| run.exit_code == Some(0)),
+            failed_cases: test_runs
+                .iter()
+                .filter(|run| run.exit_code != Some(0))
+                .map(|run| run.cmd.clone())
+                .collect(),
+        };
+        let step = self.record_test_result(test_result)?;
+        if step != WorkGraphStep::VerifyGate {
+            return Ok(WorkGraphRunResult { next_step: step });
+        }
+
+        let expected_paths = expected_files.iter().map(PathBuf::from).collect();
+        let result = self
+            .verify_gate
+            .verify_and_complete(verify_commands, expected_paths)
+            .await
+            .context("run final verification gate")?;
+        let outcome = project_outcome(&result);
+        let mut coord = self
+            .coordinator
+            .write()
+            .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+        let changed_files: Vec<String> = result
+            .actual_changed_files
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        coord
+            .work_state_mut()
+            .set_generated_diff(
+                NodeType::GeneralPurpose,
+                GeneratedDiff {
+                    summary: format!("{} files observed by verification", changed_files.len()),
+                    files: changed_files,
+                },
+            )
+            .context("record workspace diff from verification")?;
+        coord
+            .work_state_mut()
+            .set_verify_result(NodeType::Verification, outcome)
+            .context("record verification anchor result")?;
+        coord
+            .capture_current_work_state()
+            .context("persist verification anchor result")?;
+        let next_step = next_step(coord.work_state()).context("route verification result")?;
+        Ok(WorkGraphRunResult { next_step })
+    }
+
+    fn record_compile_result(&self, result: CompileResult) -> Result<WorkGraphStep> {
+        let failed = !result.ok;
+        let mut coord = self
+            .coordinator
+            .write()
+            .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+        coord
+            .work_state_mut()
+            .set_compile_result(NodeType::Verification, result)
+            .context("record compile anchor result")?;
+        if failed {
+            consume_iteration_budget(&mut coord)?;
+        }
+        coord
+            .capture_current_work_state()
+            .context("persist compile anchor result")?;
+        next_step(coord.work_state()).context("route compile anchor result")
+    }
+
+    fn record_test_result(&self, result: TestResult) -> Result<WorkGraphStep> {
+        let failed = !result.pass;
+        let mut coord = self
+            .coordinator
+            .write()
+            .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+        coord
+            .work_state_mut()
+            .set_test_result(NodeType::Verification, result)
+            .context("record test anchor result")?;
+        if failed {
+            consume_iteration_budget(&mut coord)?;
+        }
+        coord
+            .capture_current_work_state()
+            .context("persist test anchor result")?;
+        next_step(coord.work_state()).context("route test anchor result")
+    }
+
+    fn ensure_work_graph_budget(&self) -> Result<()> {
+        let mut coord = self
+            .coordinator
+            .write()
+            .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+        if coord
+            .work_state()
+            .budget(NodeType::GeneralPurpose)
+            .context("read work graph budget")?
+            .is_none()
+        {
+            coord
+                .work_state_mut()
+                .set_budget(
+                    NodeType::GeneralPurpose,
+                    Budget {
+                        max_iter: self.auto_retry_max,
+                        iter_used: 0,
+                        token_used: 0,
+                    },
+                )
+                .context("initialize work graph budget")?;
+            coord
+                .capture_current_work_state()
+                .context("persist initialized work graph budget")?;
+        }
+        Ok(())
     }
 
     /// Begin a new verifiable work unit (node).
@@ -259,10 +438,7 @@ impl NodeRuntime {
                 .context("read verify_result from WorkState")?
                 .with_context(|| "verify_result missing after set_verify_result")?;
             // 兼容期：String 字段源头改为从强类型枚举转 debug string。
-            let failure_reason = outcome_ref
-                .fail_reason
-                .as_ref()
-                .map(|f| format!("{f:?}"));
+            let failure_reason = outcome_ref.fail_reason.as_ref().map(|f| format!("{f:?}"));
 
             if retry_count >= self.auto_retry_max {
                 coord
@@ -341,21 +517,25 @@ mod tests {
     use super::*;
     use crate::exec_session::session::SessionSource;
     use crate::exec_session::verify_gate::{CommandExecutor, CommandRun};
+    use crate::exec_session::WorkGraphStep;
     use crate::org_graph::NodeType;
     use crate::tools::checkpoint_store::CheckpointStore;
     use async_trait::async_trait;
     use tempfile::TempDir;
 
     use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Mock command executor with a configurable exit code.
     struct MockExecutor {
         exit_code: i32,
+        calls: Arc<AtomicUsize>,
     }
 
     #[async_trait]
     impl CommandExecutor for MockExecutor {
         async fn execute(&self, command: &str, _project_root: &Path) -> Result<CommandRun> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(CommandRun {
                 cmd: command.to_string(),
                 exit_code: Some(self.exit_code),
@@ -374,6 +554,7 @@ mod tests {
     struct TestSetup {
         runtime: NodeRuntime,
         coord: Arc<RwLock<SessionCoordinator>>,
+        calls: Arc<AtomicUsize>,
         _dir: TempDir,
     }
 
@@ -389,7 +570,11 @@ mod tests {
             )
             .unwrap();
             let coord = Arc::new(RwLock::new(coord));
-            let executor = Arc::new(MockExecutor { exit_code });
+            let calls = Arc::new(AtomicUsize::new(0));
+            let executor = Arc::new(MockExecutor {
+                exit_code,
+                calls: Arc::clone(&calls),
+            });
             let gate = Arc::new(VerifyGate::new_with_default_hooks(
                 Arc::clone(&coord),
                 executor,
@@ -398,6 +583,7 @@ mod tests {
             Self {
                 runtime,
                 coord,
+                calls,
                 _dir: dir,
             }
         }
@@ -484,6 +670,82 @@ mod tests {
         let coord = setup.coord.read().unwrap();
         assert_eq!(coord.current_node().unwrap().status, NodeStatus::Failed);
         assert_eq!(coord.session().status, SessionStatus::InProgress);
+    }
+
+    #[tokio::test]
+    async fn compile_failure_is_persisted_and_does_not_run_test_anchor() {
+        let setup = TestSetup::new(1);
+        setup.begin_turn();
+
+        let result = setup
+            .runtime
+            .run_work_graph(
+                vec!["cargo check".into()],
+                vec!["cargo test".into()],
+                vec!["cargo test --doc".into()],
+                vec![],
+            )
+            .await
+            .expect("run work graph");
+
+        assert_eq!(result.next_step, WorkGraphStep::Implement);
+        assert_eq!(setup.calls.load(Ordering::Relaxed), 1);
+        let coord = setup.coord.read().expect("coordinator read lock");
+        assert!(coord
+            .work_state()
+            .compile_result(NodeType::Verification)
+            .expect("verification may read compile result")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn passing_anchors_complete_the_fixed_work_graph() {
+        let setup = TestSetup::new(0);
+        setup.begin_turn();
+
+        let result = setup
+            .runtime
+            .run_work_graph(
+                vec!["cargo check".into()],
+                vec!["cargo test".into()],
+                vec!["cargo test --doc".into()],
+                vec![],
+            )
+            .await
+            .expect("run work graph");
+
+        assert_eq!(result.next_step, WorkGraphStep::Complete);
+        assert_eq!(setup.calls.load(Ordering::Relaxed), 3);
+        let coord = setup.coord.read().expect("coordinator read lock");
+        assert!(
+            coord
+                .work_state()
+                .compile_result(NodeType::Verification)
+                .expect("verification may read compile result")
+                .expect("compile result present")
+                .ok
+        );
+        assert!(
+            coord
+                .work_state()
+                .test_result(NodeType::Verification)
+                .expect("verification may read test result")
+                .expect("test result present")
+                .pass
+        );
+        assert!(
+            coord
+                .work_state()
+                .verify_result(NodeType::Verification)
+                .expect("verification may read verify result")
+                .expect("verify result present")
+                .success
+        );
+        assert!(coord
+            .work_state()
+            .generated_diff(NodeType::GeneralPurpose)
+            .expect("work node may read generated diff")
+            .is_some());
     }
 
     #[tokio::test]
@@ -707,10 +969,8 @@ mod tests {
             "work_state.json must be persisted after verify_node: {}",
             ws_path.display()
         );
-        let on_disk: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&ws_path).unwrap(),
-        )
-        .unwrap();
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&ws_path).unwrap()).unwrap();
         assert_eq!(
             on_disk["verify_result"]["success"], false,
             "persisted verify_result.success must be false: {on_disk}"

@@ -129,7 +129,7 @@ impl NodeRegistry {
             },
             permissions: PermissionBoundary {
                 can_spawn: false,
-                can_mutate_fs: true,
+                can_mutate_fs: false,
                 can_exec: true,
             },
             budget: ResourceBudget::default(),
@@ -318,11 +318,21 @@ mod tests {
     }
 
     #[test]
-    fn verification_cannot_spawn_but_can_mutate() {
+    fn verification_is_non_mutating_leaf() {
         let r = registry(true);
         let c = r.get(&NodeType::Verification).unwrap();
         assert!(!c.permissions.can_spawn);
-        assert!(c.permissions.can_mutate_fs);
+        assert!(!c.permissions.can_mutate_fs);
+    }
+
+    #[test]
+    fn verification_is_a_non_mutating_leaf() {
+        let registry = registry(true);
+        let contract = registry
+            .get(&NodeType::Verification)
+            .expect("verification contract exists");
+        assert!(!contract.permissions.can_spawn);
+        assert!(!contract.permissions.can_mutate_fs);
     }
 
     #[test]
@@ -424,7 +434,8 @@ mod tests {
         assert_eq!(collected.len(), 5, "iter returns all five builtins");
         for c in r.iter() {
             assert_eq!(
-                c, r.get(&c.node_type).unwrap(),
+                c,
+                r.get(&c.node_type).unwrap(),
                 "iter entry must match get() for {:?}",
                 c.node_type
             );

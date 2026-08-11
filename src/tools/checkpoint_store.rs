@@ -323,10 +323,7 @@ impl CheckpointStore {
     }
 
     /// 从 turn 目录读回 WorkState；文件不存在（legacy turn）返回 Ok(None)。
-    pub fn restore_work_state(
-        &self,
-        turn_id: &str,
-    ) -> Result<Option<crate::org_graph::WorkState>> {
+    pub fn restore_work_state(&self, turn_id: &str) -> Result<Option<crate::org_graph::WorkState>> {
         let path = self.turn_dir(turn_id).join("work_state.json");
         if !path.exists() {
             return Ok(None);
@@ -813,7 +810,10 @@ mod tests {
             .restore_work_state(turn_id)
             .expect("restore")
             .expect("work_state.json should exist after capture");
-        assert_eq!(restored, state, "WorkState must round-trip via serde unchanged");
+        assert_eq!(
+            restored, state,
+            "WorkState must round-trip via serde unchanged"
+        );
     }
 
     #[test]
