@@ -78,6 +78,8 @@ pub enum ContractDimension {
     Capability,
     Permission,
     Budget,
+    /// 字段级状态访问越权（WorkState 字段读写 API 强制）。
+    State,
 }
 
 #[cfg(test)]
@@ -141,6 +143,7 @@ mod tests {
             ContractDimension::Capability,
             ContractDimension::Permission,
             ContractDimension::Budget,
+            ContractDimension::State,
         ] {
             let json = serde_json::to_string(&dim).expect("serialize");
             let back: ContractDimension = serde_json::from_str(&json).expect("deserialize");
