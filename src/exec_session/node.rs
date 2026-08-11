@@ -26,7 +26,7 @@ pub struct NodeContract {
     #[serde(default)]
     pub test_commands: Vec<String>,
     /// Profile used to derive deterministic verification command anchors.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "VerificationProfile::is_none")]
     pub verification_profile: VerificationProfile,
     /// Out-of-bounds detection boundary. Empty = no boundary check.
     pub expected_files: Vec<String>,
@@ -116,6 +116,21 @@ mod tests {
         assert!(contract.compile_commands.is_empty());
         assert!(contract.test_commands.is_empty());
         assert_eq!(contract.verification_profile, VerificationProfile::None);
+    }
+
+    #[test]
+    fn node_contract_none_profile_is_omitted_from_legacy_json_output() {
+        let contract = NodeContract {
+            goal: "legacy".to_string(),
+            verify_commands: vec!["cargo test".to_string()],
+            compile_commands: vec![],
+            test_commands: vec![],
+            verification_profile: VerificationProfile::None,
+            expected_files: vec![],
+        };
+
+        let json = serde_json::to_string(&contract).expect("serialize");
+        assert!(!json.contains("verification_profile"));
     }
 
     #[test]
