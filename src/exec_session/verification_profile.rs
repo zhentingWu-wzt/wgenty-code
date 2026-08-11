@@ -17,6 +17,11 @@ pub enum VerificationProfile {
 }
 
 impl VerificationProfile {
+    /// Return whether this is the absence of a project-specific profile.
+    pub fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+
     /// Detect the profile from files located at the project root.
     pub fn detect(project_root: &Path) -> Self {
         if project_root.join("Cargo.toml").is_file() {
@@ -41,11 +46,15 @@ impl VerificationProfile {
             Self::None => Vec::new(),
             Self::Rust => vec!["cargo test --all".to_string()],
         };
+        let required_verify_commands = match self {
+            Self::None => Vec::new(),
+            Self::Rust => vec!["cargo clippy --all-targets -- -D warnings".to_string()],
+        };
 
         ResolvedVerificationCommands {
             compile_commands: deduplicate_commands(required_compile_commands, compile_commands),
             test_commands: deduplicate_commands(required_test_commands, test_commands),
-            verify_commands: deduplicate_commands(Vec::new(), verify_commands),
+            verify_commands: deduplicate_commands(required_verify_commands, verify_commands),
         }
     }
 }
@@ -95,6 +104,16 @@ mod tests {
                 "cargo clippy --all-targets -- -D warnings",
                 "cargo test --doc",
             ]
+        );
+    }
+
+    #[test]
+    fn rust_profile_injects_clippy_when_no_final_commands_are_supplied() {
+        let resolved = VerificationProfile::Rust.resolve(vec![], vec![], vec![]);
+
+        assert_eq!(
+            resolved.verify_commands,
+            ["cargo clippy --all-targets -- -D warnings"]
         );
     }
 
