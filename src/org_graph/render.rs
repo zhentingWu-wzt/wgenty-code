@@ -143,8 +143,59 @@ fn format_dot_label(c: &crate::org_graph::NodeContract) -> String {
     )
 }
 
-fn render_mermaid(_registry: &NodeRegistry) -> String {
-    String::new()
+fn render_mermaid(registry: &NodeRegistry) -> String {
+    let mut out = String::new();
+    out.push_str("flowchart LR\n");
+    for c in registry.iter() {
+        let label = format_mermaid_label(c);
+        out.push_str(&format!(
+            "    {}[\"{}\"]:::{}\n",
+            mermaid_node_id(c),
+            label,
+            mermaid_class(c)
+        ));
+    }
+    out.push_str("    classDef readonly fill:#fff,stroke:#999;\n");
+    out.push_str("    classDef spawn fill:#e8f5e9,stroke:#2e7d32;\n");
+    out.push_str("    classDef mutate fill:#fff8e1,stroke:#f57c00;\n");
+    out
+}
+
+/// mermaid 节点 ID（与 dot_node_id 一致，纯字母）。
+fn mermaid_node_id(c: &crate::org_graph::NodeContract) -> String {
+    format!("{:?}", c.node_type).to_lowercase()
+}
+
+/// 优先级：can_spawn -> spawn；否则 can_mutate_fs -> mutate；否则 readonly。
+fn mermaid_class(c: &crate::org_graph::NodeContract) -> &'static str {
+    if c.permissions.can_spawn {
+        "spawn"
+    } else if c.permissions.can_mutate_fs {
+        "mutate"
+    } else {
+        "readonly"
+    }
+}
+
+/// `<br/>` 分行的节点卡标签。含全部五维，省略 system_prompt。
+fn format_mermaid_label(c: &crate::org_graph::NodeContract) -> String {
+    let tools = if c.capabilities.allowed_tools.is_empty() {
+        "*".to_string()
+    } else {
+        c.capabilities.allowed_tools.join(",")
+    };
+    format!(
+        "{}<br/>type={:?}<br/>spawn={}<br/>mutate_fs={}<br/>exec={}<br/>IO={:?}->{:?}<br/>budget={}<br/>tools={}",
+        c.name,
+        c.node_type,
+        c.permissions.can_spawn,
+        c.permissions.can_mutate_fs,
+        c.permissions.can_exec,
+        c.input_type,
+        c.output_type,
+        fmt_budget(&c.budget),
+        tools
+    )
 }
 
 #[cfg(test)]
@@ -247,5 +298,36 @@ mod tests {
             rw_explore.contains("fillcolor=lightyellow"),
             "rw explore should be lightyellow"
         );
+    }
+
+    #[test]
+    fn render_mermaid_is_well_formed_with_five_nodes() {
+        let out = render_mermaid(&registry(true));
+        assert!(
+            out.starts_with("flowchart LR"),
+            "must start with flowchart declaration"
+        );
+        // 5 个节点定义（每行一个 `:::`）。
+        let node_lines = out
+            .lines()
+            .filter(|l| l.contains("[\"") && l.contains(":::"))
+            .count();
+        assert_eq!(node_lines, 5, "expected 5 node definitions");
+        // classDef 声明存在。
+        assert!(out.contains("classDef readonly"));
+        assert!(out.contains("classDef spawn"));
+        assert!(out.contains("classDef mutate"));
+    }
+
+    #[test]
+    fn render_mermaid_encodes_explore_readonly_as_class() {
+        let ro = render_mermaid(&registry(true));
+        let rw = render_mermaid(&registry(false));
+        let ro_explore = ro.lines().find(|l| l.contains("explore[")).unwrap_or("");
+        let rw_explore = rw.lines().find(|l| l.contains("explore[")).unwrap_or("");
+        // readonly=true -> can_mutate_fs=false 且 can_spawn=false -> readonly 类
+        assert!(ro_explore.contains(":::readonly"), "ro explore should be readonly class");
+        // readonly=false -> can_mutate_fs=true（仍 can_spawn=false）-> mutate 类
+        assert!(rw_explore.contains(":::mutate"), "rw explore should be mutate class");
     }
 }
