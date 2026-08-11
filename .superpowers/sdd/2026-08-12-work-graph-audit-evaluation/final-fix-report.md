@@ -121,6 +121,45 @@ The compile-, test-, and final-verification retry controls remained
 - Final `cargo test --all`: library 1,503 passed / 1 ignored; integration 183
   passed / 3 ignored; binary and doc suites passed; 0 failures.
 
+## Follow-up: graph-owned final verification policy
+
+An architecture review found that static graph final verification called the
+legacy `VerifyGate::verify_and_complete`, which applied hook/session/log policy
+before WorkState routing. A hook could therefore mark the session and log
+`Failed` while the persisted Work-Graph route was still `Implement`.
+
+`VerifyGate` now separates executor/boundary/log-attempt evidence from policy.
+The graph-specific path records only real command and boundary evidence; it
+does not invoke hooks or choose terminal state. NodeRuntime consumes that
+evidence, persists anchor and route audit, then applies `Complete` or `Failed`
+through the centralized terminal transition. Legacy `verify_node` retains the
+original `verify_and_complete` hook behavior. Starting a new verify attempt
+also clears an older final log marker so a retryable graph route is durably
+open rather than carrying stale `Completed` evidence.
+
+### RED
+
+`cargo test exec_session::node_runtime::tests::graph_final_failure_uses_work_state_budget_without_invoking_gate_hook --lib`
+failed because the deliberately divergent gate hook was called once before the
+graph returned its retryable `Implement` route.
+
+After seeding a stale `Completed` log, a mutation check that removed the
+reopen-on-attempt assignment failed with `Some(Completed)` instead of `None`.
+
+### GREEN
+
+- The same divergent-hook regression passed with zero hook calls,
+  `SessionStatus::InProgress`, and `verify_log.final_status == None`.
+- `rust_work_graph_persists_real_anchor_and_route_audit_sequence` passed while
+  preserving a verified node, externally `InProgress` node session, and
+  `Completed` verify log after a persisted `Complete` route.
+- `cargo test exec_session::node_runtime::tests --lib`: 35 passed.
+- `cargo test exec_session::verify_gate::tests --lib`: 18 passed.
+- Final `cargo fmt -- --check` and
+  `cargo clippy --all-targets -- -D warnings`: passed.
+- Final `cargo test --all`: library 1,504 passed / 1 ignored; integration 183
+  passed / 3 ignored; binary and doc suites passed; 0 failures.
+
 ## Concerns
 
 No new concerns. Residual multi-file checkpoint atomicity and retention policy

@@ -53,11 +53,16 @@ After each command batch completes, before routing, the runtime appends one
 `anchor_completed` event based on actual `CommandRun` values. It records the
 structured state, checkpoints it, evaluates `next_step`, then appends a
 `route_selected` event with that edge and a cloned budget snapshot, and
-checkpoints again. The final VerifyGate follows the same order after its
-changed-file boundary check. A failed final command consumes iteration budget
-before its anchor checkpoint and route selection; a boundary-only failure
-escalates without consuming retry budget. No coordinator lock is held during
-command execution.
+checkpoints again. The final VerifyGate uses an evidence-only graph path: it
+executes commands, enforces the changed-file boundary, and appends the verify
+attempt without invoking legacy failure hooks or choosing terminal status.
+NodeRuntime then records the anchor and route audit before applying a code-owned
+terminal transition for `complete` or `escalate`; `implement` leaves the session
+and verify log open. A failed final command consumes iteration budget before its
+anchor checkpoint and route selection; a boundary-only failure escalates
+without consuming retry budget. Legacy `verify_node` continues to use
+`verify_and_complete` and its existing hook policy. No coordinator lock is held
+during command execution.
 
 All routes remain code-owned. Audit values describe the decision after it is
 made; they never influence route selection.
