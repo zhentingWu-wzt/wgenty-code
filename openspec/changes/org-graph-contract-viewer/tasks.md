@@ -29,5 +29,5 @@
 
 ## 5. 集成验证
 
-- [ ] 5.1 `cargo build` 通过；`cargo test` 全绿（新增测试通过 + 已有测试零回归）
-- [ ] 5.2 手动验证四种格式输出（`table` / `dot` / `mermaid` / `json`）符合预期，`--format` 缺省为 `table`
+- [x] 5.1 `cargo build` 通过；`cargo test` 全绿（新增测试通过 + 已有测试零回归）
+- [x] 5.2 手动验证四种格式输出（`table` / `dot` / `mermaid` / `json`）符合预期，`--format` 缺省为 `table`
