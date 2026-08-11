@@ -20,6 +20,7 @@ pub mod node_runtime;
 pub mod node_tools;
 pub mod runtime_store;
 pub mod session;
+pub mod specialist_report_tool;
 pub mod verification_profile;
 pub mod verify_gate;
 
@@ -36,6 +37,7 @@ pub use node_runtime::{
 pub use node_tools::{BeginNodeTool, RollbackNodeTool, VerifyNodeTool};
 pub use runtime_store::ExecutionSessionRuntimeStore;
 pub use session::{GitRefs, SessionSource, SessionState, SessionStatus, TurnRecord};
+pub use specialist_report_tool::SubmitSpecialistReportTool;
 pub use verification_profile::{ResolvedVerificationCommands, VerificationProfile};
 pub use verify_gate::{
     CommandExecutor, CommandRun, ProcessCommandExecutor, UnverifiedOutcome, VerifyAndCompleteTool,

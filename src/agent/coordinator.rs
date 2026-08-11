@@ -524,6 +524,56 @@ impl AgentCoordinator {
         );
     }
 
+    /// Returns the trusted node type for a live spawned child.
+    ///
+    /// The persistent root intentionally has no entry in this side table, so
+    /// identity-sensitive tools can reject it rather than treating it as a
+    /// general-purpose specialist. Terminal children are removed by the
+    /// lifecycle chokepoint and are rejected for the same reason.
+    pub async fn active_child_node_type(
+        &self,
+        caller: &AgentExecutionContext,
+    ) -> Result<crate::org_graph::NodeType, CoordinatorError> {
+        self.with_active_child_node_type(caller, |node_type| node_type)
+            .await
+    }
+
+    /// Runs one synchronous operation while a child is verified as a live
+    /// specialist caller.
+    ///
+    /// The operation runs before the lifecycle read lock is released. This is
+    /// required for state-changing tool sinks: `finish_child` cannot transition
+    /// the child to a terminal scope between authorization and persistence.
+    pub async fn with_active_child_node_type<T>(
+        &self,
+        caller: &AgentExecutionContext,
+        operation: impl FnOnce(crate::org_graph::NodeType) -> T,
+    ) -> Result<T, CoordinatorError> {
+        if caller.parent_id.is_none() {
+            return Err(CoordinatorError::NotVisible);
+        }
+
+        let key = (caller.session_id.clone(), caller.agent_id.clone());
+        // Keep the scope read lock until the node-type lookup completes. This
+        // serializes authorization with `finish_child`, whose first terminal
+        // action requires the scope write lock before it removes node_types.
+        let scopes = self.scopes.read().await;
+        let Some(scope) = scopes.get(&key) else {
+            return Err(CoordinatorError::NotVisible);
+        };
+        if scope.status != AgentLifecycleStatus::Running {
+            return Err(CoordinatorError::NotVisible);
+        }
+        let node_type = self
+            .node_types
+            .read()
+            .await
+            .get(&key)
+            .cloned()
+            .ok_or(CoordinatorError::NotVisible)?;
+        Ok(operation(node_type))
+    }
+
     /// Reserves a child agent slot under the given caller context.
     ///
     /// This acquires a concurrency permit, derives the child's trusted
@@ -2021,6 +2071,47 @@ mod tests {
             }
             other => panic!("expected ContractViolation, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn active_child_node_type_rejects_root_and_resolves_live_child() {
+        use crate::org_graph::NodeType;
+
+        let coordinator = test_coordinator(4, 2);
+        let root = coordinator
+            .ensure_root(SessionId::new("specialist-session"))
+            .await
+            .expect("create root");
+
+        assert!(matches!(
+            coordinator.active_child_node_type(&root).await,
+            Err(CoordinatorError::NotVisible)
+        ));
+
+        let child = coordinator
+            .reserve_child(
+                &root,
+                SpawnChildRequest::new("root cause").with_node_type(NodeType::RootCause),
+            )
+            .await
+            .expect("reserve root-cause child");
+
+        assert_eq!(
+            coordinator
+                .active_child_node_type(&child.context)
+                .await
+                .expect("resolve trusted child node type"),
+            NodeType::RootCause
+        );
+
+        coordinator
+            .finish_child(&child.context, ChildTerminal::completed("done"))
+            .await
+            .expect("finish child");
+        assert!(matches!(
+            coordinator.active_child_node_type(&child.context).await,
+            Err(CoordinatorError::NotVisible)
+        ));
     }
 
     #[tokio::test]

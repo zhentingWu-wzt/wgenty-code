@@ -1492,12 +1492,89 @@ mod tests {
             "verify_node",
             "rollback_node",
             "verify_and_complete",
+            "submit_specialist_report",
         ] {
             assert!(
                 state.tool_registry.get(name).is_some(),
                 "missing contextual work-graph tool {name}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn daemon_specialist_tool_accepts_a_trusted_root_cause_child() {
+        use crate::agent::{SpawnChildRequest, ToolContext, ToolInvocationId};
+        use crate::config::Settings;
+        use crate::org_graph::NodeType;
+        use crate::state::AppState;
+
+        let temp = tempfile::tempdir().expect("temp directory");
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        let state = DaemonState::new(AppState::new(settings)).await;
+        let root = state
+            .root_context("specialist-tool-session")
+            .await
+            .expect("root context");
+        let child = state
+            .coordinator
+            .reserve_child(
+                &root,
+                SpawnChildRequest::new("diagnose").with_node_type(NodeType::RootCause),
+            )
+            .await
+            .expect("reserve root-cause child");
+        state
+            .work_graph_runtime_store
+            .ensure_turn(&root.session_id)
+            .expect("start graph turn");
+        let root_tool_context = ToolContext {
+            agent: &root,
+            invocation_id: ToolInvocationId::new("begin-specialist-node"),
+            origin_turn_id: None,
+            workdir: None,
+            effective_mode: crate::sandbox::EffectiveMode::Normal,
+            checkpoint: None,
+        };
+        state
+            .tool_registry
+            .execute_with_context(
+                &root_tool_context,
+                "begin_node",
+                serde_json::json!({
+                    "goal": "diagnose defect",
+                    "verify_commands": [],
+                    "expected_files": []
+                }),
+            )
+            .await
+            .expect("start graph node through daemon registry");
+        let context = ToolContext {
+            agent: &child.context,
+            invocation_id: ToolInvocationId::new("specialist-tool"),
+            origin_turn_id: None,
+            workdir: None,
+            effective_mode: crate::sandbox::EffectiveMode::Normal,
+            checkpoint: None,
+        };
+
+        let output = state
+            .tool_registry
+            .execute_with_context(
+                &context,
+                "submit_specialist_report",
+                serde_json::json!({
+                    "kind": "root_cause",
+                    "summary": "A guard is bypassed.",
+                    "evidence": [{ "path": "src/guard.rs", "detail": "A branch returns before validation." }],
+                    "suspected_files": ["src/guard.rs"],
+                    "recommended_actions": ["Validate before branching."]
+                }),
+            )
+            .await
+            .expect("submit specialist report through daemon registry");
+
+        assert!(output.content.contains("recorded"));
     }
 
     #[tokio::test]

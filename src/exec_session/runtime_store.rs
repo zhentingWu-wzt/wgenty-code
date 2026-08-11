@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use anyhow::{Context, Result};
 
 use crate::agent::SessionId;
+use crate::org_graph::{NodeType, SpecialistReport};
 use crate::tools::checkpoint_store::CheckpointStore;
 
 use super::{NodeRuntime, ProcessCommandExecutor, SessionCoordinator, SessionSource, VerifyGate};
@@ -73,6 +74,35 @@ impl ExecutionSessionRuntimeStore {
         Ok(self.entry_for(session_id)?.gate)
     }
 
+    /// Writes a trusted specialist handoff to the active turn and persists it
+    /// beside the turn checkpoint.
+    ///
+    /// The caller identity comes from the tool context, never from model JSON;
+    /// [`WorkState`] enforces that it may write this field and that the report
+    /// producer and category match the trusted node type.
+    pub fn record_specialist_report(
+        &self,
+        session_id: &SessionId,
+        caller: NodeType,
+        report: SpecialistReport,
+    ) -> Result<()> {
+        let entry = self.entry_for(session_id)?;
+        let mut coordinator = entry.coordinator.write().map_err(|error| {
+            anyhow::anyhow!("execution-session coordinator write lock: {error}")
+        })?;
+        if coordinator.current_turn_id().is_none() || coordinator.current_node().is_none() {
+            anyhow::bail!("specialist reports require an active work-graph node and turn");
+        }
+        coordinator
+            .work_state_mut()
+            .set_specialist_report(caller, report)
+            .map_err(anyhow::Error::from)
+            .context("validate specialist report")?;
+        coordinator
+            .capture_current_work_state()
+            .context("persist specialist report checkpoint")
+    }
+
     fn entry_for(&self, session_id: &SessionId) -> Result<RuntimeEntry> {
         let mut entries = self
             .entries
@@ -121,6 +151,46 @@ impl ExecutionSessionRuntimeStore {
             .session()
             .turns
             .len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn work_state_for_test(
+        &self,
+        session_id: &SessionId,
+    ) -> crate::org_graph::WorkState {
+        self.entries
+            .lock()
+            .expect("runtime store lock")
+            .get(session_id)
+            .expect("runtime exists")
+            .coordinator
+            .read()
+            .expect("coordinator lock")
+            .work_state()
+            .clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn checkpointed_work_state_for_test(
+        &self,
+        session_id: &SessionId,
+    ) -> crate::org_graph::WorkState {
+        let entry = self.entry_for(session_id).expect("runtime exists");
+        let coordinator = entry.coordinator.read().expect("coordinator lock");
+        let turn_id = coordinator.current_turn_id().expect("active turn");
+        let checkpoint_turn_id = coordinator
+            .session()
+            .turns
+            .iter()
+            .find(|turn| turn.turn_id == turn_id)
+            .expect("current turn record")
+            .checkpoint_turn_id
+            .clone();
+        drop(coordinator);
+        self.checkpoint_store
+            .restore_work_state(&checkpoint_turn_id)
+            .expect("restore work state")
+            .expect("checkpointed work state")
     }
 }
 

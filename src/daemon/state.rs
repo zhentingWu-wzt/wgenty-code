@@ -309,6 +309,8 @@ impl DaemonState {
                 2,
             ));
         tool_registry.register_exec_session_tools(work_graph_runtime_store.clone());
+        tool_registry
+            .register_specialist_report_tool(work_graph_runtime_store.clone(), coordinator.clone());
 
         // ── D1: AutoDream startup check (fire-and-forget) ────────────────
         // Replaces the old TUI app-side AutoDream spawn (removed in Task 4).

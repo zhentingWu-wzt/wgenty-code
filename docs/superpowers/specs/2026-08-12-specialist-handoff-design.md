@@ -62,17 +62,18 @@ matching requirement inheritance and preserving checkpoint resume semantics.
 
 ## Trusted Submission Tool
 
-`submit_specialist_report` is a mutating, context-aware built-in tool. It is
-registered only when an ExecutionSession coordinator is available. It receives
-the actual `ToolContext` and never accepts `node_type`, session id, node id, or
-turn id from model input.
+`submit_specialist_report` is a mutating, context-aware daemon built-in tool.
+It is registered only where the ExecutionSession runtime store and daemon
+`AgentCoordinator` are both available. It receives the actual `ToolContext`
+and never accepts `node_type`, session id, node id, or turn id from model
+input.
 
-The tool obtains the caller type from `AgentCoordinator`, rejects non-specialist
-callers, requires an active turn and persisted current node, parses the typed
-report, persists it through `WorkState`, then checkpoints. A persisted report
-therefore has a durable node/turn scope and an ordinary field-level audit
-record. Failed parsing or unauthorized writing changes neither state nor its
-checkpoint.
+The tool obtains the caller type from `AgentCoordinator`, rejects root,
+terminal, and unauthorized callers, requires an active turn and persisted
+current node, parses the typed report, persists it through `WorkState`, then
+checkpoints. A persisted report therefore has a durable node/turn scope and an
+ordinary field-level audit record. Failed parsing or unauthorized writing
+changes neither state nor its checkpoint.
 
 The associated specialist prompts instruct the agent to submit exactly one
 report before its final response. The tool is a handoff endpoint, not a
