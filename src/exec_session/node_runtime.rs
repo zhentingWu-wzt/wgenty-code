@@ -221,6 +221,10 @@ impl NodeRuntime {
     /// Each anchor is persisted before its structured result determines the
     /// next edge. Callers supply commands; the runtime, not an agent report,
     /// is the source of truth for their outcome.
+    ///
+    /// Requires a current node already persisted by [`Self::begin_node`] or
+    /// [`Self::begin_node_with_anchors`] so every audit event has a real node
+    /// identity.
     pub async fn run_work_graph(
         &self,
         compile_commands: Vec<String>,
@@ -434,7 +438,7 @@ impl NodeRuntime {
         let node_id = coord
             .current_node()
             .map(|node| node.id.clone())
-            .unwrap_or_default();
+            .context("run work graph requires a persisted current node")?;
         let attempt = coord
             .work_state()
             .graph_audit()
@@ -1148,6 +1152,17 @@ mod tests {
     async fn compile_failure_is_persisted_and_does_not_run_test_anchor() {
         let setup = TestSetup::new(1);
         setup.begin_turn();
+        setup
+            .runtime
+            .begin_node_with_anchors(
+                "goal".into(),
+                vec!["cargo check".into()],
+                vec!["cargo test".into()],
+                vec!["cargo test --doc".into()],
+                vec![],
+            )
+            .await
+            .expect("persist work-graph node");
 
         let result = setup
             .runtime
@@ -1171,9 +1186,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_work_graph_without_persisted_node_returns_actionable_error() {
+        let setup = TestSetup::new(0);
+        setup.begin_turn();
+
+        let error = setup
+            .runtime
+            .run_work_graph(
+                vec!["compile".into()],
+                vec!["test".into()],
+                vec!["verify".into()],
+                vec![],
+            )
+            .await
+            .expect_err("work graph must require a persisted current node");
+
+        assert!(error.to_string().contains("persisted current node"));
+        assert_eq!(setup.calls.load(Ordering::Relaxed), 0);
+        assert!(setup
+            .coord
+            .read()
+            .expect("coordinator")
+            .work_state()
+            .graph_audit()
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn passing_anchors_complete_the_fixed_work_graph() {
         let setup = TestSetup::new(0);
         setup.begin_turn();
+        setup
+            .runtime
+            .begin_node_with_anchors(
+                "goal".into(),
+                vec!["cargo check".into()],
+                vec!["cargo test".into()],
+                vec!["cargo test --doc".into()],
+                vec![],
+            )
+            .await
+            .expect("persist work-graph node");
 
         let result = setup
             .runtime
@@ -1334,7 +1387,7 @@ mod tests {
             .await
             .expect("verify rust node");
 
-        let checkpoint_turn_id = setup
+        let persisted_checkpoint_turn_id = setup
             .coord
             .read()
             .expect("coordinator")
@@ -1344,19 +1397,31 @@ mod tests {
             .checkpoint_turn_id
             .clone();
         let store = Arc::new(CheckpointStore::new(setup._dir.path()));
-        let reloaded = SessionCoordinator::new(
+        let mut reloaded = SessionCoordinator::new(
             "es-checkpoint-reload".into(),
             SessionSource::AgentSelf,
             setup._dir.path(),
             store,
         )
         .expect("create fresh coordinator over checkpoint store");
-        let restored = reloaded
-            .checkpoint_store()
-            .restore_work_state(&checkpoint_turn_id)
-            .expect("reload audit checkpoint")
-            .expect("persisted work state");
-        let audit = restored.graph_audit();
+        let (reload_turn_id, reload_checkpoint_turn_id) = {
+            let turn = reloaded.begin_turn().expect("begin reload turn");
+            (turn.turn_id.clone(), turn.checkpoint_turn_id.clone())
+        };
+        let checkpoint_root = setup._dir.path().join(".wgenty-code").join("checkpoints");
+        std::fs::copy(
+            checkpoint_root
+                .join(persisted_checkpoint_turn_id)
+                .join("work_state.json"),
+            checkpoint_root
+                .join(reload_checkpoint_turn_id)
+                .join("work_state.json"),
+        )
+        .expect("copy persisted audit into fresh coordinator checkpoint");
+        reloaded
+            .restore_work_state_for_turn(&reload_turn_id)
+            .expect("reload audit through coordinator API");
+        let audit = reloaded.work_state().graph_audit();
 
         assert_eq!(audit[1].node_id, "n1");
         assert_eq!(audit[1].attempt, 1);
@@ -1374,6 +1439,17 @@ mod tests {
         let compile = vec!["compile".to_string()];
         let test = vec!["test".to_string()];
         let verify = vec!["verify".to_string()];
+        setup
+            .runtime
+            .begin_node_with_anchors(
+                "goal".into(),
+                compile.clone(),
+                test.clone(),
+                verify.clone(),
+                vec![],
+            )
+            .await
+            .expect("persist work-graph node");
 
         let first = setup
             .runtime
@@ -1479,6 +1555,17 @@ mod tests {
         let compile = vec!["compile".to_string()];
         let test = vec!["test".to_string()];
         let verify = vec!["verify".to_string()];
+        setup
+            .runtime
+            .begin_node_with_anchors(
+                "goal".into(),
+                compile.clone(),
+                test.clone(),
+                verify.clone(),
+                vec![],
+            )
+            .await
+            .expect("persist work-graph node");
 
         let first = setup
             .runtime
