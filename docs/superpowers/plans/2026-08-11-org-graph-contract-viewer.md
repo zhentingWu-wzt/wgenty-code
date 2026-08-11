@@ -47,7 +47,7 @@ base-ref: 45e31838d271a4cb3617a89a42df50a691f0487c
 **Interfaces:**
 - Produces: `NodeRegistry::iter(&self) -> Vec<&NodeContract>`（按 `CANONICAL_ORDER` 稳定顺序返回全部契约）。后续所有渲染任务消费此方法。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `src/org_graph/registry.rs` 的 `#[cfg(test)] mod tests` 块内（现有测试之后）追加：
 
@@ -83,12 +83,12 @@ base-ref: 45e31838d271a4cb3617a89a42df50a691f0487c
     }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 运行：`cargo test --lib org_graph::registry::tests::iter_`
 预期：编译失败（`method iter not found for NodeRegistry` 或 `CANONICAL_ORDER not found`）。
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 在 `src/org_graph/registry.rs` 的 `impl NodeRegistry {` 块内（紧接 `get` 方法之后）新增：
 
@@ -116,12 +116,12 @@ const CANONICAL_ORDER: [NodeType; 5] = [
 ];
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 运行：`cargo test --lib org_graph::registry::tests`
 预期：全部 PASS（含原有测试与两个新测试）。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/org_graph/registry.rs

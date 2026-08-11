@@ -2,8 +2,8 @@
 
 ## 1. NodeRegistry 遍历入口
 
-- [ ] 1.1 为 `NodeRegistry` 新增 `iter()`（或 `all()`）只读遍历入口，按 `NodeType` 枚举稳定顺序（Explore, Plan, GeneralPurpose, Verification, WgentyCodeGuide）返回全部契约
-- [ ] 1.2 为遍历入口加单测：五个内置契约全部出现、顺序稳定、与逐个 `get()` 结果一致
+- [x] 1.1 为 `NodeRegistry` 新增 `iter()`（或 `all()`）只读遍历入口，按 `NodeType` 枚举稳定顺序（Explore, Plan, GeneralPurpose, Verification, WgentyCodeGuide）返回全部契约
+- [x] 1.2 为遍历入口加单测：五个内置契约全部出现、顺序稳定、与逐个 `get()` 结果一致
 
 ## 2. 渲染模块（`src/org_graph/render.rs`）
 
