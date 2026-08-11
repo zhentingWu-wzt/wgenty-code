@@ -55,7 +55,7 @@ base-ref: a819ff03bb2736519ff1945491c7c21838d5e6d9
 - Consumes: `NodeType`（来自 `super::contract`，已存在）；后续 Task 4 会从 `crate::exec_session::verify_gate::VerifyResult` / `crate::exec_session::hooks::VerifyFailure` 投影转换。
 - Produces: 完整 schema 类型族（签名见 Step 1.3 代码块），后续 Task 2/3/4 全部依赖。
 
-- [ ] **Step 1.1: 写失败测试 —— schema serde 往返 + 默认值（全字段 + 全子类型）**
+- [x] **Step 1.1: 写失败测试 —— schema serde 往返 + 默认值（全字段 + 全子类型）**
 
 在新建文件 `src/org_graph/work_state.rs` 末尾的 `#[cfg(test)] mod tests` 中先写测试（此时类型未定义 → 编译失败 = 红）。
 
@@ -316,12 +316,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 1.2: 跑测试验证失败（红）**
+- [x] **Step 1.2: 跑测试验证失败（红）**
 
 Run: `cargo test --lib org_graph::work_state::tests --no-run`
 Expected: 编译失败 —— `error[E0433]: failed to resolve: could not find work_state in org_graph`（模块尚未在 mod.rs 导出）。
 
-- [ ] **Step 1.3: 在 mod.rs 导出 work_state 模块**
+- [x] **Step 1.3: 在 mod.rs 导出 work_state 模块**
 
 编辑 `src/org_graph/mod.rs`：
 
@@ -344,12 +344,12 @@ pub use work_state::{
 };
 ```
 
-- [ ] **Step 1.4: 跑测试验证通过（绿）**
+- [x] **Step 1.4: 跑测试验证通过（绿）**
 
 Run: `cargo test --lib org_graph::work_state::tests`
 Expected: PASS —— 5 个测试全绿（空 schema 往返、全字段填充往返、子类型往返、VerifyFailureKind 全变体、WorkField 8 变体）。
 
-- [ ] **Step 1.5: Commit**
+- [x] **Step 1.5: Commit**
 
 ```bash
 git add src/org_graph/work_state.rs src/org_graph/mod.rs

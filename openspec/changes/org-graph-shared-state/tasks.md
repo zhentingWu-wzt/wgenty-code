@@ -2,9 +2,9 @@
 
 ## 1. WorkState schema 与模块骨架
 
-- [ ] 1.1 新建 `src/org_graph/work_state.rs`，定义 `WorkState` struct，完整 7+1 字段 schema：`requirement: Option<String>` / `generated_diff: Option<GeneratedDiff>` / `compile_result: Option<CompileResult>`（含 `ok: bool` 与 `stderr`）/ `test_result: Option<TestResult>`（含 `pass: bool` 与 `failed_cases`）/ `human_review: Option<HumanReview>`（enum `Approve`/`Reject`）/ `verify_result: Option<VerifyOutcome>`（pilot 核心字段）/ `budget: Option<Budget>`（含 `max_iter` / `iter_used` / `token_used`）/ `step_log: Vec<StepRecord>`。同时定义子类型 `GeneratedDiff` / `CompileResult` / `TestResult` / `HumanReview` / `Budget` / `VerifyOutcome` / `VerifyFailureKind`（`CommandFailed{exit_code,stderr}` / `BoundaryViolation{unexpected_files}`）与权限/审计类型 `FieldPerms` / `WorkField`（8 变体）/ `StepRecord` / `StepAction`。所有类型派生 `Serialize/Deserialize/Clone/Debug`（枚举合理处加 `Copy/Hash/PartialEq/Eq`）
-- [ ] 1.2 在 `src/org_graph/mod.rs` 导出 `pub mod work_state;` 及相关公开类型
-- [ ] 1.3 为 schema 加单测：序列化往返（serialize → deserialize 字段等价，覆盖 `WorkState` 全字段与各子类型 `GeneratedDiff`/`CompileResult`/`TestResult`/`HumanReview`/`Budget`/`VerifyOutcome`/`VerifyFailureKind`）、默认值符合预期（全 `Option` 为 `None`、`step_log` 为空）、各结构化子字段类型不丢失
+- [x] 1.1 新建 `src/org_graph/work_state.rs`，定义 `WorkState` struct，完整 7+1 字段 schema：`requirement: Option<String>` / `generated_diff: Option<GeneratedDiff>` / `compile_result: Option<CompileResult>`（含 `ok: bool` 与 `stderr`）/ `test_result: Option<TestResult>`（含 `pass: bool` 与 `failed_cases`）/ `human_review: Option<HumanReview>`（enum `Approve`/`Reject`）/ `verify_result: Option<VerifyOutcome>`（pilot 核心字段）/ `budget: Option<Budget>`（含 `max_iter` / `iter_used` / `token_used`）/ `step_log: Vec<StepRecord>`。同时定义子类型 `GeneratedDiff` / `CompileResult` / `TestResult` / `HumanReview` / `Budget` / `VerifyOutcome` / `VerifyFailureKind`（`CommandFailed{exit_code,stderr}` / `BoundaryViolation{unexpected_files}`）与权限/审计类型 `FieldPerms` / `WorkField`（8 变体）/ `StepRecord` / `StepAction`。所有类型派生 `Serialize/Deserialize/Clone/Debug`（枚举合理处加 `Copy/Hash/PartialEq/Eq`）
+- [x] 1.2 在 `src/org_graph/mod.rs` 导出 `pub mod work_state;` 及相关公开类型
+- [x] 1.3 为 schema 加单测：序列化往返（serialize → deserialize 字段等价，覆盖 `WorkState` 全字段与各子类型 `GeneratedDiff`/`CompileResult`/`TestResult`/`HumanReview`/`Budget`/`VerifyOutcome`/`VerifyFailureKind`）、默认值符合预期（全 `Option` 为 `None`、`step_log` 为空）、各结构化子字段类型不丢失
 
 ## 2. 字段级访问权限（真强制）
 
