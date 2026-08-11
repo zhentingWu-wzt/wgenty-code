@@ -2,6 +2,7 @@
 change: org-graph-shared-state
 design-doc: docs/superpowers/specs/2026-08-11-org-graph-shared-state-design.md
 base-ref: a819ff03bb2736519ff1945491c7c21838d5e6d9
+archived-with: 2026-08-11-org-graph-shared-state
 ---
 
 # Org-Graph Shared-State 实施计划

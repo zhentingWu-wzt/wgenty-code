@@ -2,6 +2,8 @@
 comet_change: org-graph-shared-state
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-08-11-org-graph-shared-state
+status: final
 ---
 
 # Design: Org-Graph Shared-State
