@@ -793,26 +793,27 @@ mod tests {
         let turn_id = "test-turn-1";
         store.begin_turn(turn_id).unwrap();
 
-        let state = crate::org_graph::WorkState {
-            requirement: Some("实现持久化".into()),
-            verify_result: Some(crate::org_graph::VerifyOutcome {
-                success: false,
-                fail_reason: Some(crate::org_graph::VerifyFailureKind::CommandFailed {
-                    exit_code: Some(1),
-                    stderr: "error".into(),
-                }),
-            }),
-            ..Default::default()
-        };
+        let mut state = crate::org_graph::WorkState::default();
+        state.set_requirement(Some("实现持久化".into()));
+        state
+            .set_verify_result(
+                crate::org_graph::NodeType::Verification,
+                crate::org_graph::VerifyOutcome {
+                    success: false,
+                    fail_reason: Some(crate::org_graph::VerifyFailureKind::CommandFailed {
+                        exit_code: Some(1),
+                        stderr: "error".into(),
+                    }),
+                },
+            )
+            .expect("Verification may write verify_result");
 
         store.capture_work_state(turn_id, &state).expect("capture");
         let restored = store
             .restore_work_state(turn_id)
             .expect("restore")
             .expect("work_state.json should exist after capture");
-        assert_eq!(restored.requirement, state.requirement);
-        assert_eq!(restored.verify_result, state.verify_result);
-        // 其余 deferred 字段为 default（None），往返等价。
+        assert_eq!(restored, state, "WorkState must round-trip via serde unchanged");
     }
 
     #[test]
