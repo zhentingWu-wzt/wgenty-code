@@ -118,6 +118,8 @@ export interface SessionState {
   /** Push a pre-built display message (used when loading a session's history). */
   pushLoadedMessage: (m: DisplayMessage) => void;
   pushUserMessage: (text: string) => void;
+  /** Remove the most recent user message (roll back an optimistic send). */
+  popUserMessage: () => void;
   /** Start a new assistant message that will be streamed into. */
   beginAssistantRound: (round: number) => string;
   /** Append streamed content/reasoning to the assistant message with `id`. */
@@ -173,6 +175,18 @@ export function createSessionStore() {
 
     pushUserMessage: (text) =>
       set((s) => ({ messages: [...s.messages, { id: genId(), role: "user", content: text }] })),
+
+    popUserMessage: () =>
+      set((s) => {
+        const msgs = [...s.messages];
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i].role === "user") {
+            msgs.splice(i, 1);
+            break;
+          }
+        }
+        return { messages: msgs };
+      }),
 
     pushLoadedMessage: (m) => set((s) => ({ messages: [...s.messages, m] })),
 

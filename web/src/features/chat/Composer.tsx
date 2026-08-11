@@ -48,6 +48,9 @@ export function Composer({ onSend, onStop, onCommand }: ComposerProps) {
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // While an IME composition is active (e.g. Chinese/Japanese/Korean input),
+    // Enter confirms the candidate rather than sending the message.
+    if (e.nativeEvent.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       send();
