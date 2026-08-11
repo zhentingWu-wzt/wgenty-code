@@ -13,10 +13,10 @@ generated_diff/budget 由 GeneralPurpose 可写（权限就绪，生产写入点
 查证依据见 design §1.5。
 
 ## 当前 task
-- **全部 6 task 已完成验收（Task 1-6）。** tasks.md 0 未勾，plan 0 未勾 Step。
-- 下一步：standard review_mode → 全 task 完成后一次最终轻量代码审查（Superpowers `requesting-code-review`），CRITICAL 修复后运行 `comet guard org-graph-shared-state build --apply` 推进 phase: verify。
-- change BASE (base-ref): a819ff03；HEAD（含全部实现 + 验收勾选）: 见 `git log`。
-- 最终 review 范围：`git diff a819ff03..HEAD`（整 change）。
+- **全部 6 task 已完成验收（Task 1-6）+ 最终代码审查闭环。** tasks.md 0 未勾，plan 0 未勾 Step。
+- **最终代码审查（review_mode=standard）已完成**：opus 全量审查 `a819ff03..d5d82a21`（1 Critical + 2 Important + 5 Minor）→ 一次合并修复 commit `536fd182`（Critical 封装化 + Important 持久化接线 + Minor 加固/测试，sonnet 实现 TDD）→ sonnet scoped re-review 复核全部 CLOSED、无新问题、无回归（1468/0/1，clippy clean）。接受理由与延后项已记入 tasks.md「代码审查」节（commit `4b960f41`）。
+- 下一步：运行 `comet guard org-graph-shared-state build --apply` 推进 phase: verify（review-gate 已满足：CRITICAL 已修、非 CRITICAL 已记录）。
+- change BASE (base-ref): a819ff03；当前 HEAD: `4b960f41`。最终 review 范围：`git diff a819ff03..d5d82a21`；修复 diff：`d5d82a21..536fd182`。
 
 ## task 完成记录
 - Task 1: complete (commits f733f6c2..42129f77, review clean) — WorkState 完整 schema（7+1 字段 + 全子类型）+ mod.rs 导出；5/5 serde 往返单测绿；独立复跑 5/5 通过；task-checkoff PASS（plan Step 1.1 + tasks.md 1.1）。RED 信号为「0 tests matched」（orphaned module 未导出），等价 RED，已记录为可接受观察。
