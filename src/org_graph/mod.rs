@@ -2,6 +2,7 @@
 
 pub mod contract;
 pub mod registry;
+pub mod render;
 
 pub use contract::{
     Capability, ContractDimension, IoShape, NodeContract, NodeType, PermissionBoundary,
