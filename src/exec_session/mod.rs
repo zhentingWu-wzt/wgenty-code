@@ -28,7 +28,9 @@ pub use hooks::{
     NoHooks, RollbackContext, SessionHooks, VerifyFailAction, VerifyFailContext, VerifyFailure,
 };
 pub use node::{Node, NodeContract, NodeId, NodeStates, NodeStatus};
-pub use node_runtime::{NodeRollbackResult, NodeRuntime, NodeVerifyResult, WorkGraphRunResult};
+pub use node_runtime::{
+    NodeRollbackResult, NodeRuntime, NodeVerificationOutcome, NodeVerifyResult, WorkGraphRunResult,
+};
 pub use node_tools::{BeginNodeTool, RollbackNodeTool, VerifyNodeTool};
 pub use session::{GitRefs, SessionSource, SessionState, SessionStatus, TurnRecord};
 pub use verify_gate::{

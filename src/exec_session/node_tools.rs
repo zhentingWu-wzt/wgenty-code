@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::tools::{Tool, ToolError, ToolOutput};
 
-use super::node_runtime::{NodeRollbackResult, NodeRuntime, NodeVerifyResult};
+use super::node_runtime::{NodeRollbackResult, NodeRuntime, NodeVerificationOutcome};
 
 /// `begin_node` -- start a new verifiable work unit.
 pub struct BeginNodeTool {
@@ -49,6 +49,14 @@ verify scope and rollback."
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Commands the runtime will execute to verify this node (e.g. cargo test)."
+                },
+                "compile_commands": {
+                    "type": "array", "items": { "type": "string" },
+                    "description": "Optional compile anchor commands run before tests."
+                },
+                "test_commands": {
+                    "type": "array", "items": { "type": "string" },
+                    "description": "Optional test anchor commands run before final verification."
                 },
                 "expected_files": {
                     "type": "array",
@@ -91,10 +99,18 @@ verify scope and rollback."
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let compile_commands = optional_string_array(&input, "compile_commands")?;
+        let test_commands = optional_string_array(&input, "test_commands")?;
 
         let node_id = self
             .runtime
-            .begin_node(goal, verify_commands, expected_files)
+            .begin_node_with_anchors(
+                goal,
+                compile_commands,
+                test_commands,
+                verify_commands,
+                expected_files,
+            )
             .await
             .map_err(|e| ToolError {
                 message: format!("{e:#}"),
@@ -146,10 +162,27 @@ Failed."
     }
 
     async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let result: NodeVerifyResult = self.runtime.verify_node().await.map_err(|e| ToolError {
-            message: format!("{e:#}"),
-            code: Some("verify_node_failed".into()),
-        })?;
+        let outcome = self
+            .runtime
+            .verify_current_node()
+            .await
+            .map_err(|e| ToolError {
+                message: format!("{e:#}"),
+                code: Some("verify_node_failed".into()),
+            })?;
+
+        if let NodeVerificationOutcome::WorkGraph(result) = outcome {
+            let mut metadata = std::collections::HashMap::new();
+            metadata.insert("next_step".into(), json!(result.next_step));
+            return Ok(ToolOutput {
+                output_type: "text".into(),
+                content: json!({ "next_step": result.next_step }).to_string(),
+                metadata,
+            });
+        }
+        let NodeVerificationOutcome::Legacy(result) = outcome else {
+            unreachable!("work graph returned above");
+        };
 
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("status".into(), json!(result.status));
@@ -166,6 +199,25 @@ Failed."
             metadata,
         })
     }
+}
+
+fn optional_string_array(input: &serde_json::Value, field: &str) -> Result<Vec<String>, ToolError> {
+    let Some(value) = input.get(field) else {
+        return Ok(Vec::new());
+    };
+    let array = value.as_array().ok_or_else(|| ToolError {
+        message: format!("invalid '{field}' field"),
+        code: Some("invalid_input".into()),
+    })?;
+    array
+        .iter()
+        .map(|value| {
+            value.as_str().map(String::from).ok_or_else(|| ToolError {
+                message: format!("invalid '{field}' field"),
+                code: Some("invalid_input".into()),
+            })
+        })
+        .collect()
 }
 
 /// `rollback_node` -- roll back to the most recent verified node.

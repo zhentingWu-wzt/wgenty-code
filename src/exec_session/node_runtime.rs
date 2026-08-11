@@ -46,6 +46,13 @@ pub struct WorkGraphRunResult {
     pub next_step: WorkGraphStep,
 }
 
+/// The verification path selected from the persisted node contract.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum NodeVerificationOutcome {
+    Legacy(NodeVerifyResult),
+    WorkGraph(WorkGraphRunResult),
+}
+
 /// Coordinates the node-level state machine. Holds a shared coordinator
 /// (same `Arc<RwLock<SessionCoordinator>>` as the inner-layer `VerifyGate`)
 /// and delegates verification to `VerifyGate`.
@@ -279,6 +286,40 @@ impl NodeRuntime {
         Ok(())
     }
 
+    /// Verify the current node using its persisted contract. Nodes without
+    /// compile/test anchors retain the original verification-only behavior.
+    pub async fn verify_current_node(&self) -> Result<NodeVerificationOutcome> {
+        let (compile_commands, test_commands, verify_commands, expected_files) = {
+            let coord = self
+                .coordinator
+                .read()
+                .map_err(|e| anyhow::anyhow!("coordinator read lock: {e}"))?;
+            let node = coord
+                .current_node()
+                .context("verify_current_node: no current node")?;
+            (
+                node.contract.compile_commands.clone(),
+                node.contract.test_commands.clone(),
+                node.contract.verify_commands.clone(),
+                node.contract.expected_files.clone(),
+            )
+        };
+        if compile_commands.is_empty() && test_commands.is_empty() {
+            return self
+                .verify_node()
+                .await
+                .map(NodeVerificationOutcome::Legacy);
+        }
+        self.run_work_graph(
+            compile_commands,
+            test_commands,
+            verify_commands,
+            expected_files,
+        )
+        .await
+        .map(NodeVerificationOutcome::WorkGraph)
+    }
+
     /// Begin a new verifiable work unit (node).
     ///
     /// Precondition: the current node (if any) must be `Verified`. Creates a
@@ -287,6 +328,25 @@ impl NodeRuntime {
     pub async fn begin_node(
         &self,
         goal: String,
+        verify_commands: Vec<String>,
+        expected_files: Vec<String>,
+    ) -> Result<NodeId> {
+        self.begin_node_with_anchors(
+            goal,
+            Vec::new(),
+            Vec::new(),
+            verify_commands,
+            expected_files,
+        )
+        .await
+    }
+
+    /// Begin a node with optional deterministic compile and test anchors.
+    pub async fn begin_node_with_anchors(
+        &self,
+        goal: String,
+        compile_commands: Vec<String>,
+        test_commands: Vec<String>,
         verify_commands: Vec<String>,
         expected_files: Vec<String>,
     ) -> Result<NodeId> {
@@ -313,6 +373,8 @@ impl NodeRuntime {
             contract: NodeContract {
                 goal,
                 verify_commands,
+                compile_commands,
+                test_commands,
                 expected_files,
             },
             status: NodeStatus::Running,
