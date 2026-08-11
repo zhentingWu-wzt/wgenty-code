@@ -16,16 +16,16 @@
 
 ## 3. 渲染输出单测
 
-- [ ] 3.1 `json` 输出可被 `NodeContract` serde 反序列化，且与 `NodeRegistry::builtin()` 逐字段相等
+- [x] 3.1 `json` 输出可被 `NodeContract` serde 反序列化，且与 `NodeRegistry::builtin()` 逐字段相等
 - [x] 3.2 `explore_readonly=true` / `false` 时，Explore 与 Plan 的 `can_mutate_fs` 在所有四种格式中如实反映
 - [x] 3.3 `dot` 输出以 `digraph` 声明开头、节点闭合（结构断言；CI 有 graphviz 则加 `dot` 解析冒烟测试）
 - [x] 3.4 `mermaid` 输出以合法图类型声明开头，且五个契约均成为图中节点
 
 ## 4. CLI 命令接线
 
-- [ ] 4.1 在 `src/cli/mod.rs` 新增顶层 `OrgGraph` 命令组与 `Contracts` 子命令，带 `--format` value_enum（默认 `table`）
-- [ ] 4.2 命令处理逻辑：加载 `SubagentLimits` 配置 → 构造 `NodeRegistry::builtin()` → `render()` → 打印到 stdout
-- [ ] 4.3 在 `main.rs` 命令分派处接线 `Commands::OrgGraph { action: OrgGraphCommands::Contracts { format } }`
+- [x] 4.1 在 `src/cli/mod.rs` 新增顶层 `OrgGraph` 命令组与 `Contracts` 子命令，带 `--format` value_enum（默认 `table`）
+- [x] 4.2 命令处理逻辑：加载 `SubagentLimits` 配置 → 构造 `NodeRegistry::builtin()` → `render()` → 打印到 stdout
+- [x] 4.3 在 `main.rs` 命令分派处接线 `Commands::OrgGraph { action: OrgGraphCommands::Contracts { format } }`
 
 ## 5. 集成验证
 

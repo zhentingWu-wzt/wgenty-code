@@ -704,7 +704,7 @@ git commit -m "feat(org-graph): implement render_mermaid (flowchart + classDef e
 - Consumes: `crate::org_graph::render::{Format, render}`、`crate::org_graph::NodeRegistry::builtin`、`state.settings.agent.subagent`（`SubagentLimits`）。
 - Produces: 顶层命令 `wgenty-code org-graph contracts [--format table|dot|mermaid|json]`，默认 `table`。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 新建 `src/cli/org_graph.rs`，先写含测试的完整文件（Step 3）。测试意图：
 
@@ -724,12 +724,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 运行：`cargo test --lib cli::org_graph`
 预期：失败（`error[E0432|E0433]: unresolved import / could not find org_graph in cli`）。
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 (a) 新建 `src/cli/org_graph.rs`：
 
@@ -843,7 +843,7 @@ pub enum OrgGraphCommands {
             }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 运行：`cargo test --lib cli::org_graph`
 预期：`format_arg_maps_to_render_format` PASS。
@@ -851,7 +851,7 @@ pub enum OrgGraphCommands {
 运行：`cargo build`
 预期：编译成功（验证 `Commands::OrgGraph` 变体与 `run_async` 接线无误）。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/cli/org_graph.rs src/cli/mod.rs src/cli/args.rs
