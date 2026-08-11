@@ -29,7 +29,7 @@
 
 **Interfaces:**
 
-- `GraphAuditEvent { node_id: String, attempt: u32, kind: GraphAuditKind, anchor: Option<GraphAuditAnchor>, commands: Vec<AuditCommandRun>, route: Option<GraphAuditRoute>, profile: Option<GraphAuditProfile>, budget: Option<Budget>, timestamp: String }`.
+- `GraphAuditEvent { node_id: String, attempt: u32, kind: GraphAuditKind, anchor: Option<GraphAuditAnchor>, commands: Vec<AuditCommandRun>, route: Option<GraphAuditRoute>, profile: Option<GraphAuditProfile>, resolved_commands: Option<GraphAuditCommands>, budget: Option<Budget>, timestamp: String }`.
 - `GraphAuditKind::{ProfileResolved, AnchorCompleted, RouteSelected}`; `GraphAuditAnchor::{Compile, Test, Verify}`; `GraphAuditRoute::{Implement, CompileAnchor, TestAnchor, VerifyGate, Complete, Escalate}`; `GraphAuditProfile::{None, Rust}` serialize with snake-case values.
 - `WorkState::graph_audit(&self) -> &[GraphAuditEvent]` is public read-only; `append_graph_audit` is crate-visible and appends exactly one event.
 

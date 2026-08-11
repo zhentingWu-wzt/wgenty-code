@@ -75,6 +75,7 @@ impl SessionCoordinator {
     /// [`record_git_state`]; non-git projects degrade to `None` / empty (file
     /// rollback via CheckpointStore still applies). See spec §3.2.
     pub fn begin_turn(&mut self) -> Result<&TurnRecord> {
+        let inherited_work_state = self.work_state.inherit_for_new_turn();
         let turn_id = format!("turn-{}", self.session.turns.len());
         let parent = self.session.current_turn.clone();
         let checkpoint_turn_id = uuid::Uuid::new_v4().to_string();
@@ -97,7 +98,9 @@ impl SessionCoordinator {
         self.session.save(&self.session_dir)?;
         // WorkState turn 间继承：requirement 保留，其余产物字段（含 deferred）重置。
         // 同 turn 内 retry 不走 begin_turn（retry 是 node 重试，不是 turn 重置）。
-        self.work_state = self.work_state.inherit_for_new_turn();
+        self.work_state = inherited_work_state;
+        self.capture_current_work_state()
+            .context("persist inherited work state for new turn")?;
         Ok(self.session.turns.last().expect("just pushed"))
     }
 
@@ -1109,6 +1112,39 @@ mod tests {
         assert!(
             ws.step_log().is_empty(),
             "step_log must reset on begin_turn"
+        );
+    }
+
+    #[test]
+    fn begin_turn_immediate_restore_preserves_inherited_graph_audit() {
+        let dir = tempdir().unwrap();
+        let mut coord = make_coordinator(dir.path());
+        coord
+            .work_state_mut()
+            .append_graph_audit(crate::org_graph::GraphAuditEvent {
+                node_id: "n1".into(),
+                attempt: 1,
+                kind: crate::org_graph::GraphAuditKind::ProfileResolved,
+                anchor: None,
+                commands: Vec::new(),
+                route: None,
+                profile: Some(crate::org_graph::GraphAuditProfile::Rust),
+                resolved_commands: None,
+                budget: None,
+                timestamp: "2026-08-12T00:00:00Z".into(),
+            });
+
+        let turn_id = coord.begin_turn().expect("begin turn").turn_id.clone();
+        coord
+            .restore_work_state_for_turn(&turn_id)
+            .expect("restore state captured by begin_turn");
+
+        let audit = coord.work_state().graph_audit();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].node_id, "n1");
+        assert_eq!(
+            audit[0].kind,
+            crate::org_graph::GraphAuditKind::ProfileResolved
         );
     }
 
