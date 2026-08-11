@@ -55,6 +55,8 @@ pub struct DaemonState {
     pub tool_executor: ToolExecutor,
     pub checkpoint_manager: Arc<CheckpointManager>,
     pub checkpoint_store: Arc<CheckpointStore>,
+    /// Per-session static Work-Graph runtimes shared by daemon tool calls.
+    pub work_graph_runtime_store: Arc<crate::exec_session::ExecutionSessionRuntimeStore>,
     pub task_manager: Arc<TaskManagementTool>,
     pub todo_state: Arc<RwLock<TodoState>>,
     pub skill_loader: Arc<SkillLoader>,
@@ -300,6 +302,13 @@ impl DaemonState {
         crate::utils::startup_timing::mark("daemon state: tool registry built");
         let checkpoint_manager = tool_registry.checkpoint_manager.clone();
         let checkpoint_store = tool_registry.checkpoint_store.clone();
+        let work_graph_runtime_store =
+            Arc::new(crate::exec_session::ExecutionSessionRuntimeStore::new(
+                app_state.settings.storage.working_dir.clone(),
+                checkpoint_store.clone(),
+                2,
+            ));
+        tool_registry.register_exec_session_tools(work_graph_runtime_store.clone());
 
         // ── D1: AutoDream startup check (fire-and-forget) ────────────────
         // Replaces the old TUI app-side AutoDream spawn (removed in Task 4).
@@ -417,6 +426,7 @@ impl DaemonState {
             tool_registry,
             checkpoint_manager,
             checkpoint_store,
+            work_graph_runtime_store,
             task_manager,
             todo_state,
             skill_loader,

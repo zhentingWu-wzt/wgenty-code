@@ -258,6 +258,13 @@ pub async fn run_oneshot(settings: Settings, prompt: String) -> anyhow::Result<(
         )
         .with_settings(&settings),
     );
+    let work_graph_runtime_store =
+        Arc::new(crate::exec_session::ExecutionSessionRuntimeStore::new(
+            settings.storage.working_dir.clone(),
+            registry.checkpoint_store.clone(),
+            2,
+        ));
+    registry.register_exec_session_tools(work_graph_runtime_store);
     registry.register(Box::new(crate::tools::meta::MemoryAddTool::new(
         memory_manager.clone(),
     )));

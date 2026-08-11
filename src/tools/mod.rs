@@ -193,43 +193,29 @@ impl ToolRegistry {
         registry
     }
 
-    /// Register the ExecutionSession `verify_and_complete` tool bound to
-    /// `coordinator` (Task 7). Frontends call this after constructing the
-    /// session coordinator so the agent can call `verify_and_complete` to mark
-    /// a session `Completed`. The tool shares the same
-    /// `Arc<RwLock<SessionCoordinator>>` as the agent-loop turn hook, so
-    /// turn-boundary bookkeeping and verify-gate transitions act on one
-    /// session. Uses default hooks (`AutoRetry { max: 2 }` on verify failure)
-    /// and a `ProcessCommandExecutor` (production can swap an executor that
-    /// routes through guardian + sandbox).
+    /// Register context-scoped ExecutionSession tools backed by `runtime_store`.
+    ///
+    /// The registry is global and can serve multiple trusted agent sessions,
+    /// so it must not retain one mutable `SessionCoordinator`. Each adapter
+    /// resolves a per-session runtime exclusively from its [`ToolContext`].
     pub fn register_exec_session_tools(
         &self,
-        coordinator: Arc<RwLock<crate::exec_session::SessionCoordinator>>,
-        auto_retry_max: u32,
+        runtime_store: Arc<crate::exec_session::ExecutionSessionRuntimeStore>,
     ) {
-        let gate = Arc::new(crate::exec_session::VerifyGate::new_with_default_hooks(
-            Arc::clone(&coordinator),
-            Arc::new(crate::exec_session::ProcessCommandExecutor),
+        self.register(Box::new(
+            crate::exec_session::VerifyAndCompleteTool::with_runtime_store(Arc::clone(
+                &runtime_store,
+            )),
         ));
-        self.register(Box::new(crate::exec_session::VerifyAndCompleteTool::new(
-            Arc::clone(&gate),
-        )));
-
-        // Outer-layer node state machine tools.
-        let runtime = Arc::new(crate::exec_session::NodeRuntime::new_with_default_hooks(
-            coordinator,
-            gate,
-            auto_retry_max,
+        self.register(Box::new(
+            crate::exec_session::BeginNodeTool::with_runtime_store(Arc::clone(&runtime_store)),
         ));
-        self.register(Box::new(crate::exec_session::BeginNodeTool::new(
-            Arc::clone(&runtime),
-        )));
-        self.register(Box::new(crate::exec_session::VerifyNodeTool::new(
-            Arc::clone(&runtime),
-        )));
-        self.register(Box::new(crate::exec_session::RollbackNodeTool::new(
-            runtime,
-        )));
+        self.register(Box::new(
+            crate::exec_session::VerifyNodeTool::with_runtime_store(Arc::clone(&runtime_store)),
+        ));
+        self.register(Box::new(
+            crate::exec_session::RollbackNodeTool::with_runtime_store(runtime_store),
+        ));
     }
 
     /// Apply provider-aware configuration after construction.

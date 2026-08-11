@@ -1478,6 +1478,29 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn daemon_registers_contextual_work_graph_tools() {
+        use crate::config::Settings;
+        use crate::state::AppState;
+
+        let temp = tempfile::tempdir().expect("temp directory");
+        let mut settings = Settings::default();
+        settings.storage.working_dir = temp.path().to_path_buf();
+        let state = DaemonState::new(AppState::new(settings)).await;
+
+        for name in [
+            "begin_node",
+            "verify_node",
+            "rollback_node",
+            "verify_and_complete",
+        ] {
+            assert!(
+                state.tool_registry.get(name).is_some(),
+                "missing contextual work-graph tool {name}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn daemon_state_saves_sessions_under_project_local_dir() {
         use crate::config::Settings;
         use crate::daemon::models::{SessionResponse, UpdateSessionRequest};
