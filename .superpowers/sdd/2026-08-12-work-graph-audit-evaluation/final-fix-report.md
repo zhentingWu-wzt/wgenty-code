@@ -90,6 +90,37 @@ The retry control
 - Final `cargo test --all`: library 1,502 passed / 1 ignored; integration 183
   passed / 3 ignored; binary and doc suites passed; 0 failures.
 
+## Follow-up: compile/test escalation consistency
+
+A sibling scope review found that compile- and test-budget exhaustion returned
+early from `run_work_graph`, bypassing the terminal synchronization used by
+final verification. All persisted route exits now pass through one
+`complete_work_graph_route` helper after the corresponding route audit
+checkpoint. Only the code-owned `Escalate` value invokes
+`VerifyGate::mark_failed`; retry routes leave both terminal projections open.
+
+### RED
+
+`cargo test exec_session::node_runtime::tests::audit_ --lib` failed in both new
+terminal checks:
+
+- `audit_exhausted_compile_budget_records_escalate_route` observed
+  `SessionStatus::InProgress` instead of `Failed`.
+- `audit_exhausted_test_budget_records_terminal_failure` observed the same
+  mismatch.
+
+The compile-, test-, and final-verification retry controls remained
+`InProgress` with `verify_log.final_status == None`.
+
+### GREEN
+
+- `cargo test exec_session::node_runtime::tests::audit_ --lib`: 8 passed.
+- `cargo test exec_session::verify_gate::tests --lib`: 18 passed.
+- Final `cargo fmt -- --check` and
+  `cargo clippy --all-targets -- -D warnings`: passed.
+- Final `cargo test --all`: library 1,503 passed / 1 ignored; integration 183
+  passed / 3 ignored; binary and doc suites passed; 0 failures.
+
 ## Concerns
 
 No new concerns. Residual multi-file checkpoint atomicity and retention policy
