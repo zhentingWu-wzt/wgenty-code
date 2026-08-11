@@ -19,21 +19,21 @@ use crate::org_graph::contract::ContractDimension;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkState {
     /// 任务原始需求（跨 turn 继承；coordinator 在 turn 初始化时设置，不经节点权限 API）。
-    pub requirement: Option<String>,
+    requirement: Option<String>,
     /// GeneralPurpose 产出（类型就绪，生产写入待接入）。
-    pub generated_diff: Option<GeneratedDiff>,
+    generated_diff: Option<GeneratedDiff>,
     /// 预留：将来 Compile 节点写入。
-    pub compile_result: Option<CompileResult>,
+    compile_result: Option<CompileResult>,
     /// 预留：将来 Test 节点写入。
-    pub test_result: Option<TestResult>,
+    test_result: Option<TestResult>,
     /// 预留：将来人工评审节点写入。
-    pub human_review: Option<HumanReview>,
+    human_review: Option<HumanReview>,
     /// pilot 核心字段：verify 结果的强类型投影。
-    pub verify_result: Option<VerifyOutcome>,
+    verify_result: Option<VerifyOutcome>,
     /// 预留：预算追踪（类型就绪，生产写入待接入）。
-    pub budget: Option<Budget>,
+    budget: Option<Budget>,
     /// 审计轨迹（授权写记入；读不记）。
-    pub step_log: Vec<StepRecord>,
+    step_log: Vec<StepRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -175,6 +175,22 @@ impl NodeType {
 }
 
 impl WorkState {
+    /// coordinator 特权设置任务需求（不经节点权限 API；design §5）。
+    /// 不记 step_log（requirement 是任务级常量，非节点工作产物）。
+    pub fn set_requirement(&mut self, requirement: Option<String>) {
+        self.requirement = requirement;
+    }
+
+    /// 读任务需求。
+    pub fn requirement(&self) -> Option<&str> {
+        self.requirement.as_deref()
+    }
+
+    /// 读步骤审计日志（只读；仅由授权写自动追加，不可外部直接写）。
+    pub fn step_log(&self) -> &[StepRecord] {
+        &self.step_log
+    }
+
     /// 写 verify_result：pilot 核心字段。查 caller 的 field_perms，越权 →
     /// ContractViolation{State}。写成功自动追加 step_log。
     pub fn set_verify_result(

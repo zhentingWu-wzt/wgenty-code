@@ -221,6 +221,9 @@ impl NodeRuntime {
                 .work_state_mut()
                 .set_verify_result(NodeType::Verification, outcome)
                 .context("write verify_result (success) into WorkState")?;
+            coord
+                .capture_current_work_state()
+                .context("persist work_state after verify_node")?;
             self.hooks.post_node(&node, &result);
             Ok(NodeVerifyResult {
                 status: NodeStatus::Verified,
@@ -246,12 +249,15 @@ impl NodeRuntime {
                 .work_state_mut()
                 .set_verify_result(NodeType::Verification, outcome)
                 .context("write verify_result into WorkState")?;
+            coord
+                .capture_current_work_state()
+                .context("persist work_state after verify_node")?;
             // 从 WorkState 读回（验证读写闭环 + 权限强制生效）。
             let outcome_ref = coord
                 .work_state()
                 .verify_result(NodeType::Verification)
                 .context("read verify_result from WorkState")?
-                .expect("just written");
+                .with_context(|| "verify_result missing after set_verify_result")?;
             // 兼容期：String 字段源头改为从强类型枚举转 debug string。
             let failure_reason = outcome_ref
                 .fail_reason
@@ -665,6 +671,91 @@ mod tests {
             err,
             crate::agent::coordinator::CoordinatorError::ContractViolation { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn verify_node_persists_work_state_to_checkpoint_after_failure() {
+        // spec SHALL: 写入结构化工作状态后随 turn 检查点持久化。
+        // verify_node 失败后，当前 turn 的 work_state.json 必须落盘且含强类型 outcome。
+        let setup = TestSetup::new(1); // exit 1 = failure
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec!["echo ok".into()], vec![])
+            .await
+            .unwrap();
+        setup.runtime.verify_node().await.unwrap();
+
+        let coord = setup.coord.read().unwrap();
+        let current_turn = coord.current_turn_id().expect("active turn").to_string();
+        let checkpoint_turn_id = coord
+            .session()
+            .turns
+            .iter()
+            .find(|t| t.turn_id == current_turn)
+            .expect("active turn")
+            .checkpoint_turn_id
+            .clone();
+        let ws_path = coord
+            .project_root()
+            .join(".wgenty-code")
+            .join("checkpoints")
+            .join(&checkpoint_turn_id)
+            .join("work_state.json");
+        assert!(
+            ws_path.exists(),
+            "work_state.json must be persisted after verify_node: {}",
+            ws_path.display()
+        );
+        let on_disk: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&ws_path).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            on_disk["verify_result"]["success"], false,
+            "persisted verify_result.success must be false: {on_disk}"
+        );
+        assert!(
+            on_disk["verify_result"].get("fail_reason").is_some(),
+            "persisted verify_result must carry structured fail_reason: {on_disk}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_node_retry_overwrites_work_state_in_place_same_turn() {
+        // 同 turn 内第二次 verify_node 覆盖 verify_result（不重置 turn、不丢字段）。
+        // retry 是 count-based，不走 begin_turn；WorkState 在同 turn 内自然保留并被覆盖。
+        let setup = TestSetup::new(1); // exit 1 = always failure
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec!["echo ok".into()], vec![])
+            .await
+            .unwrap();
+        setup.runtime.verify_node().await.unwrap(); // writes first failure outcome
+        {
+            let coord = setup.coord.read().unwrap();
+            let o = coord
+                .work_state()
+                .verify_result(NodeType::Verification)
+                .unwrap()
+                .unwrap();
+            assert!(!o.success);
+        }
+        // Second verify in the same turn — overwrites verify_result in place.
+        setup.runtime.verify_node().await.unwrap();
+        let coord = setup.coord.read().unwrap();
+        let o = coord
+            .work_state()
+            .verify_result(NodeType::Verification)
+            .unwrap()
+            .unwrap();
+        assert!(!o.success, "second failure overwrites the first");
+        assert_eq!(
+            coord.current_turn_id(),
+            Some("turn-0"),
+            "same turn — no begin_turn between retries"
+        );
     }
 
     // 端到端验证测试（Task 6 集成验证）：GREEN on first run。

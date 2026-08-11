@@ -294,6 +294,9 @@ impl SessionCoordinator {
         self.session.updated_at = chrono::Utc::now().to_rfc3339();
         self.session.save(&self.session_dir)?;
 
+        // Restore WorkState from the target turn's snapshot (legacy turn → default()).
+        self.restore_work_state_for_turn(turn_id)?;
+
         Ok(RollbackResult {
             git_reset,
             restored_files,
@@ -1072,22 +1075,30 @@ mod tests {
         // requirement 保留，verify_result / step_log（及所有产物字段）清空。
         let dir = tempdir().unwrap();
         let mut coord = make_coordinator(dir.path());
-        coord.work_state_mut().requirement = Some("实现 WorkState".into());
-        coord.work_state_mut().verify_result = Some(crate::org_graph::VerifyOutcome {
-            success: false,
-            fail_reason: Some(crate::org_graph::VerifyFailureKind::CommandFailed {
-                exit_code: Some(1),
-                stderr: "boom".into(),
-            }),
-        });
+        coord.work_state_mut().set_requirement(Some("实现 WorkState".into()));
+        coord
+            .work_state_mut()
+            .set_verify_result(
+                crate::org_graph::NodeType::Verification,
+                crate::org_graph::VerifyOutcome {
+                    success: false,
+                    fail_reason: Some(crate::org_graph::VerifyFailureKind::CommandFailed {
+                        exit_code: Some(1),
+                        stderr: "boom".into(),
+                    }),
+                },
+            )
+            .expect("Verification may write verify_result");
         coord.begin_turn().unwrap();
         let ws = coord.work_state();
-        assert_eq!(ws.requirement.as_deref(), Some("实现 WorkState"));
+        assert_eq!(ws.requirement(), Some("实现 WorkState"));
         assert!(
-            ws.verify_result.is_none(),
+            ws.verify_result(crate::org_graph::NodeType::Verification)
+                .expect("Verification may read")
+                .is_none(),
             "verify_result must reset on begin_turn"
         );
-        assert!(ws.step_log.is_empty(), "step_log must reset on begin_turn");
+        assert!(ws.step_log().is_empty(), "step_log must reset on begin_turn");
     }
 
     #[test]
@@ -1098,20 +1109,33 @@ mod tests {
         let mut coord = make_coordinator(dir.path());
         coord.begin_turn().unwrap();
         let turn_id = coord.current_turn_id().unwrap().to_string();
-        coord.work_state_mut().verify_result = Some(crate::org_graph::VerifyOutcome {
-            success: false,
-            fail_reason: Some(crate::org_graph::VerifyFailureKind::BoundaryViolation {
-                unexpected_files: vec!["src/oops.rs".into()],
-            }),
-        });
+        coord
+            .work_state_mut()
+            .set_verify_result(
+                crate::org_graph::NodeType::Verification,
+                crate::org_graph::VerifyOutcome {
+                    success: false,
+                    fail_reason: Some(crate::org_graph::VerifyFailureKind::BoundaryViolation {
+                        unexpected_files: vec!["src/oops.rs".into()],
+                    }),
+                },
+            )
+            .expect("Verification may write verify_result");
         coord.capture_current_work_state().unwrap();
         // 模拟崩溃：清空内存 WorkState。
         *coord.work_state_mut() = crate::org_graph::WorkState::default();
-        assert!(coord.work_state().verify_result.is_none());
+        assert!(coord
+            .work_state()
+            .verify_result(crate::org_graph::NodeType::Verification)
+            .expect("Verification may read")
+            .is_none());
         // 从持久化恢复。
         coord.restore_work_state_for_turn(&turn_id).unwrap();
         let ws = coord.work_state();
-        let outcome = ws.verify_result.as_ref().expect("restored");
+        let outcome = ws
+            .verify_result(crate::org_graph::NodeType::Verification)
+            .expect("Verification may read")
+            .expect("restored");
         assert!(!outcome.success);
         match &outcome.fail_reason {
             Some(crate::org_graph::VerifyFailureKind::BoundaryViolation { unexpected_files }) => {
@@ -1119,5 +1143,47 @@ mod tests {
             }
             other => panic!("expected BoundaryViolation, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn rollback_restores_work_state_for_target_turn() {
+        // spec SHALL: rollback 后从目标 turn 的检查点快照恢复结构化工作产物。
+        let dir = tempdir().unwrap();
+        let mut coord = make_coordinator(dir.path());
+        coord.begin_turn().unwrap(); // turn-0
+                                     // Seed turn-0's work_state snapshot (simulating what verify_node's capture does).
+        coord
+            .work_state_mut()
+            .set_verify_result(
+                crate::org_graph::NodeType::Verification,
+                crate::org_graph::VerifyOutcome {
+                    success: false,
+                    fail_reason: Some(crate::org_graph::VerifyFailureKind::CommandFailed {
+                        exit_code: Some(2),
+                        stderr: "seeded".into(),
+                    }),
+                },
+            )
+            .unwrap();
+        coord.capture_current_work_state().unwrap();
+        // Move to turn-1 — begin_turn resets work_state (verify_result → None).
+        coord.begin_turn().unwrap();
+        assert!(coord
+            .work_state()
+            .verify_result(crate::org_graph::NodeType::Verification)
+            .unwrap()
+            .is_none());
+        // Roll back to turn-0 — work_state must restore to turn-0's snapshot.
+        coord.rollback_to("turn-0", &NoHooks).unwrap();
+        let outcome = coord
+            .work_state()
+            .verify_result(crate::org_graph::NodeType::Verification)
+            .unwrap()
+            .expect("restored from turn-0 snapshot");
+        assert!(!outcome.success);
+        assert!(matches!(
+            &outcome.fail_reason,
+            Some(crate::org_graph::VerifyFailureKind::CommandFailed { exit_code: Some(2), .. })
+        ));
     }
 }
