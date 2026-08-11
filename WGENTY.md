@@ -125,6 +125,17 @@ turn。报告只能写入当前 active node/turn 的 `WorkState`，并立即写�
 权限与报告类型仍由 `WorkState` 校验。它是给后续静态 Work-Graph 的类型化交接入口，
 不能写外部锚点、验证结果或路由结论。
 
+当前的静态诊断模板将可重试的 compile/test/final-command 锚点失败先路由到
+`RootCause`，daemon 会通过既有 `task` 执行器启动预注册 leaf 子 Agent，并在 child
+future 启动前把其可信身份绑定到同一 node/attempt；从预留到报告 checkpoint 前，根
+Agent 的非只读工具调用都被拒绝。只有该 child 能成功提交报告，代码才记录并返回
+`Implement` 边。child 失败、取消或完成却未报告时，运行时会耗尽该次重试预算、写入
+`Escalate` 审计事件，并将当前 node / 验证会话标记为 Failed；边界违规和预算耗尽也
+直接 `Escalate`。之后必须通过人工决策或既有 rollback 生命周期恢复，不能把失败诊断
+悄悄转为 `Implement`。
+`submit_specialist_report` 返回的 `next_step` 始终由当前结构化 State 计算，报告不能
+自行批准结果。
+
 请求链路：`用户输入 -> CLI解析 -> Settings加载 -> Prompt组装(8层) -> API SSE -> 工具调用 -> Guardian审查 -> Sandbox执行 -> 流式返回`
 
 Prompt 8 层：base_instructions → permissions → developer → environment → agents_md → collaboration → skills_inventory → wgenty_md_sections

@@ -149,12 +149,23 @@ impl NodeRegistry {
             system_prompt: Self::root_cause_prompt().to_string(),
             model: "default".to_string(),
             capabilities: Capability {
-                allowed_tools: vec![],
+                // RootCause is a diagnostic leaf. Keep its authority narrow:
+                // repository observation plus its typed handoff sink, never
+                // shell execution, lifecycle controls, or mutating tools.
+                allowed_tools: vec![
+                    "file_read".to_string(),
+                    "list_files".to_string(),
+                    "view".to_string(),
+                    "grep".to_string(),
+                    "glob".to_string(),
+                    "search".to_string(),
+                    "submit_specialist_report".to_string(),
+                ],
             },
             permissions: PermissionBoundary {
                 can_spawn: false,
                 can_mutate_fs: false,
-                can_exec: true,
+                can_exec: false,
             },
             budget: ResourceBudget::default(),
             input_type: IoShape::StructuredJson,
@@ -442,7 +453,7 @@ mod tests {
 
     #[test]
     fn builtin_capabilities_all_wildcard() {
-        // 内置契约 allowed_tools 均为空（通配符），照搬现有「无正向白名单」语义。
+        // RootCause 是唯一的显式最小权限 leaf；其余内置契约保留历史通配语义。
         let r = registry(true);
         for nt in [
             NodeType::Explore,
@@ -458,6 +469,27 @@ mod tests {
                 nt
             );
         }
+    }
+
+    #[test]
+    fn root_cause_contract_is_read_only_and_report_only() {
+        let registry = registry(true);
+        let contract = registry.get(&NodeType::RootCause).unwrap();
+        assert!(!contract.permissions.can_spawn);
+        assert!(!contract.permissions.can_mutate_fs);
+        assert!(!contract.permissions.can_exec);
+        assert_eq!(
+            contract.capabilities.allowed_tools,
+            vec![
+                "file_read",
+                "list_files",
+                "view",
+                "grep",
+                "glob",
+                "search",
+                "submit_specialist_report",
+            ]
+        );
     }
 
     #[test]

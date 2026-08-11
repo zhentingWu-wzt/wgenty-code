@@ -149,6 +149,7 @@ fn project_audit_profile(profile: VerificationProfile) -> GraphAuditProfile {
 
 fn project_audit_route(step: WorkGraphStep) -> GraphAuditRoute {
     match step {
+        WorkGraphStep::RootCause => GraphAuditRoute::RootCause,
         WorkGraphStep::Implement => GraphAuditRoute::Implement,
         WorkGraphStep::CompileAnchor => GraphAuditRoute::CompileAnchor,
         WorkGraphStep::TestAnchor => GraphAuditRoute::TestAnchor,
@@ -416,6 +417,15 @@ impl NodeRuntime {
             _ => {}
         }
         Ok(WorkGraphRunResult { next_step })
+    }
+
+    /// Synchronizes an out-of-band static-route failure with the durable node
+    /// and verify-gate lifecycle. RootCause children use this when they reach a
+    /// terminal state without publishing their required handoff.
+    pub(crate) fn escalate_current_work_graph(&self) -> Result<()> {
+        self.complete_work_graph_route(WorkGraphStep::Escalate)
+            .context("synchronize root-cause terminal escalation")?;
+        Ok(())
     }
 
     fn record_compile_result(
@@ -1208,6 +1218,33 @@ mod tests {
                 .try_capture_file(&checkpoint_turn_id, path)
                 .expect("capture changed file in checkpoint manifest");
         }
+
+        /// Simulates the separately-tested authenticated RootCause tool after
+        /// an anchored failure so runtime retry tests can exercise the fixed
+        /// route without embedding agent lifecycle setup in every fixture.
+        fn record_root_cause_handoff(&self) {
+            let mut coordinator = self.coord.write().expect("coordinator");
+            coordinator
+                .work_state_mut()
+                .set_specialist_report(
+                    NodeType::RootCause,
+                    crate::org_graph::SpecialistReport {
+                        producer: NodeType::RootCause,
+                        kind: crate::org_graph::SpecialistReportKind::RootCause,
+                        summary: "The failing branch lacks a guard.".into(),
+                        evidence: vec![crate::org_graph::SpecialistEvidence {
+                            path: "src/guard.rs".into(),
+                            detail: "Validation occurs after the failing branch.".into(),
+                        }],
+                        suspected_files: vec!["src/guard.rs".into()],
+                        recommended_actions: vec!["Move validation before the branch.".into()],
+                    },
+                )
+                .expect("record root-cause handoff");
+            coordinator
+                .capture_current_work_state()
+                .expect("persist root-cause handoff");
+        }
     }
 
     #[tokio::test]
@@ -1430,7 +1467,7 @@ mod tests {
             .await
             .expect("run work graph");
 
-        assert_eq!(result.next_step, WorkGraphStep::Implement);
+        assert_eq!(result.next_step, WorkGraphStep::RootCause);
         assert_eq!(setup.calls.load(Ordering::Relaxed), 1);
         let coord = setup.coord.read().expect("coordinator read lock");
         assert!(coord
@@ -1710,7 +1747,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn audit_compile_failure_records_implement_route_and_consumed_budget() {
+    async fn audit_compile_failure_records_root_cause_route_and_consumed_budget() {
         let setup = ScriptedSetup::with_results([ScriptedCommandResult::failure(
             17,
             "compile diagnostics",
@@ -1731,14 +1768,14 @@ mod tests {
         assert!(matches!(
             outcome,
             NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
-                next_step: WorkGraphStep::Implement
+                next_step: WorkGraphStep::RootCause
             })
         ));
         assert_eq!(setup.calls(), ["cargo check"]);
         let coord = setup.coord.read().expect("coordinator");
         let audit = coord.work_state().graph_audit();
         let route = audit.last().expect("compile route audit");
-        assert_eq!(route.route, Some(GraphAuditRoute::Implement));
+        assert_eq!(route.route, Some(GraphAuditRoute::RootCause));
         assert_eq!(
             route.budget,
             Some(Budget {
@@ -1779,6 +1816,7 @@ mod tests {
             assert_eq!(coord.session().status, SessionStatus::InProgress);
         }
         assert_eq!(setup.verify_log().final_status, None);
+        setup.record_root_cause_handoff();
         let retry = setup
             .runtime
             .verify_current_node()
@@ -1788,7 +1826,7 @@ mod tests {
         assert!(matches!(
             first,
             NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
-                next_step: WorkGraphStep::Implement
+                next_step: WorkGraphStep::RootCause
             })
         ));
         assert!(matches!(
@@ -1830,7 +1868,7 @@ mod tests {
                 ),
                 (
                     1,
-                    Some(GraphAuditRoute::Implement),
+                    Some(GraphAuditRoute::RootCause),
                     Some(Budget {
                         max_iter: 2,
                         iter_used: 1,
@@ -2028,7 +2066,7 @@ mod tests {
         assert!(matches!(
             outcome,
             NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
-                next_step: WorkGraphStep::Implement
+                next_step: WorkGraphStep::RootCause
             })
         ));
         let coord = setup.coord.read().expect("coordinator");
@@ -2093,7 +2131,7 @@ mod tests {
         assert!(matches!(
             outcome,
             NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
-                next_step: WorkGraphStep::Implement
+                next_step: WorkGraphStep::RootCause
             })
         ));
         assert_eq!(hook_calls.load(Ordering::SeqCst), 0);
@@ -2348,7 +2386,8 @@ mod tests {
             .run_work_graph(compile.clone(), test.clone(), verify.clone(), vec![])
             .await
             .expect("first work-graph pass");
-        assert_eq!(first.next_step, WorkGraphStep::Implement);
+        assert_eq!(first.next_step, WorkGraphStep::RootCause);
+        setup.record_root_cause_handoff();
 
         let retry = setup
             .runtime
@@ -2464,7 +2503,8 @@ mod tests {
             .run_work_graph(compile.clone(), test.clone(), verify.clone(), vec![])
             .await
             .expect("failed verification pass");
-        assert_eq!(first.next_step, WorkGraphStep::Implement);
+        assert_eq!(first.next_step, WorkGraphStep::RootCause);
+        setup.record_root_cause_handoff();
 
         let turn_id = {
             let mut coord = setup.coord.write().expect("coordinator");

@@ -1,12 +1,14 @@
 //! Code-owned routing for the fixed compile → test → verify work graph.
 
 use crate::agent::coordinator::CoordinatorError;
-use crate::org_graph::{NodeType, VerifyFailureKind, WorkState};
+use crate::org_graph::{NodeType, SpecialistReportKind, VerifyFailureKind, WorkState};
 use serde::{Deserialize, Serialize};
 
 /// The next fixed work-graph step selected from anchored state.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WorkGraphStep {
+    /// Run the predeclared root-cause specialist before modifying code again.
+    RootCause,
     Implement,
     CompileAnchor,
     TestAnchor,
@@ -52,10 +54,20 @@ pub fn next_step(state: &WorkState) -> Result<WorkGraphStep, CoordinatorError> {
 
 fn retry_or_escalate(state: &WorkState) -> Result<WorkGraphStep, CoordinatorError> {
     let budget = state.budget(NodeType::GeneralPurpose)?;
-    Ok(match budget {
-        Some(budget) if budget.iter_used < budget.max_iter => WorkGraphStep::Implement,
-        _ => WorkGraphStep::Escalate,
-    })
+    if !matches!(budget, Some(budget) if budget.iter_used < budget.max_iter) {
+        return Ok(WorkGraphStep::Escalate);
+    }
+
+    let reports = state.specialist_reports(NodeType::GeneralPurpose)?;
+    Ok(
+        if reports.iter().any(|report| {
+            report.producer == NodeType::RootCause && report.kind == SpecialistReportKind::RootCause
+        }) {
+            WorkGraphStep::Implement
+        } else {
+            WorkGraphStep::RootCause
+        },
+    )
 }
 
 #[cfg(test)]
@@ -67,7 +79,7 @@ mod tests {
     use super::{next_step, WorkGraphStep};
 
     #[test]
-    fn failed_compile_routes_to_implement_when_budget_remains() {
+    fn failed_compile_routes_to_root_cause_when_budget_remains() {
         let mut state = WorkState::default();
         state
             .set_budget(
@@ -88,6 +100,51 @@ mod tests {
                 },
             )
             .expect("verification anchor may record compile failure");
+
+        assert_eq!(
+            next_step(&state).expect("route result"),
+            WorkGraphStep::RootCause
+        );
+    }
+
+    #[test]
+    fn retryable_failure_routes_to_implement_only_after_root_cause_handoff() {
+        let mut state = WorkState::default();
+        state
+            .set_budget(
+                NodeType::GeneralPurpose,
+                Budget {
+                    max_iter: 2,
+                    iter_used: 1,
+                    token_used: 0,
+                },
+            )
+            .expect("coordinator work node may record budget");
+        state
+            .set_compile_result(
+                NodeType::Verification,
+                CompileResult {
+                    ok: false,
+                    stderr: "compile failed".into(),
+                },
+            )
+            .expect("verification anchor may record compile failure");
+        state
+            .set_specialist_report(
+                NodeType::RootCause,
+                crate::org_graph::SpecialistReport {
+                    producer: NodeType::RootCause,
+                    kind: crate::org_graph::SpecialistReportKind::RootCause,
+                    summary: "The guard runs after the fallible branch.".into(),
+                    evidence: vec![crate::org_graph::SpecialistEvidence {
+                        path: "src/guard.rs".into(),
+                        detail: "The branch returns before validation.".into(),
+                    }],
+                    suspected_files: vec!["src/guard.rs".into()],
+                    recommended_actions: vec!["Validate before branching.".into()],
+                },
+            )
+            .expect("root cause handoff");
 
         assert_eq!(
             next_step(&state).expect("route result"),

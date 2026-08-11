@@ -1549,6 +1549,23 @@ mod tests {
             )
             .await
             .expect("start graph node through daemon registry");
+        state
+            .work_graph_runtime_store
+            .seed_root_cause_route_for_test(&root.session_id);
+        assert!(matches!(
+            state
+                .work_graph_runtime_store
+                .prepare_root_cause_dispatch(&root.session_id)
+                .expect("prepare root-cause dispatch"),
+            crate::exec_session::RootCauseDispatchState::Ready(_)
+        ));
+        state
+            .work_graph_runtime_store
+            .bind_root_cause_child(
+                &root.session_id,
+                child.context.agent_id.as_str().to_string(),
+            )
+            .expect("bind root-cause child");
         let context = ToolContext {
             agent: &child.context,
             invocation_id: ToolInvocationId::new("specialist-tool"),

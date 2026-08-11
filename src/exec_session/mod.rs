@@ -35,7 +35,10 @@ pub use node_runtime::{
     NodeRollbackResult, NodeRuntime, NodeVerificationOutcome, NodeVerifyResult, WorkGraphRunResult,
 };
 pub use node_tools::{BeginNodeTool, RollbackNodeTool, VerifyNodeTool};
-pub use runtime_store::ExecutionSessionRuntimeStore;
+pub use runtime_store::{
+    root_cause_runtime_handle, ExecutionSessionRuntimeStore, RootCauseDispatchRequest,
+    RootCauseDispatchState, RootCauseRuntimeHandle,
+};
 pub use session::{GitRefs, SessionSource, SessionState, SessionStatus, TurnRecord};
 pub use specialist_report_tool::SubmitSpecialistReportTool;
 pub use verification_profile::{ResolvedVerificationCommands, VerificationProfile};

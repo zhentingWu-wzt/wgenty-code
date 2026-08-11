@@ -14,6 +14,26 @@ use crate::tools::{Tool, ToolError, ToolOutput};
 
 use super::node_runtime::{NodeRollbackResult, NodeRuntime, NodeVerificationOutcome};
 use super::runtime_store::ExecutionSessionRuntimeStore;
+use super::{RootCauseDispatchRequest, RootCauseDispatchState, WorkGraphStep};
+
+/// Result of launching the predeclared RootCause specialist for one static
+/// Work-Graph route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootCauseDispatch {
+    /// Trusted identity assigned by the coordinator to the launched child.
+    pub child_id: String,
+}
+
+/// Daemon-owned launcher for the fixed RootCause specialist.
+#[async_trait]
+pub trait RootCauseDispatcher: Send + Sync {
+    /// Launch the registered RootCause child using the trusted parent context.
+    async fn dispatch(
+        &self,
+        context: &ToolContext<'_>,
+        request: RootCauseDispatchRequest,
+    ) -> Result<RootCauseDispatch, ToolError>;
+}
 
 enum RuntimeBinding {
     Fixed(Arc<NodeRuntime>),
@@ -182,12 +202,14 @@ verify scope and rollback."
 /// `verify_node` -- verify the current node.
 pub struct VerifyNodeTool {
     runtime: RuntimeBinding,
+    root_cause_dispatcher: Option<Arc<dyn RootCauseDispatcher>>,
 }
 
 impl VerifyNodeTool {
     pub fn new(runtime: Arc<NodeRuntime>) -> Self {
         Self {
             runtime: RuntimeBinding::Fixed(runtime),
+            root_cause_dispatcher: None,
         }
     }
 
@@ -195,6 +217,19 @@ impl VerifyNodeTool {
     pub fn with_runtime_store(store: Arc<ExecutionSessionRuntimeStore>) -> Self {
         Self {
             runtime: RuntimeBinding::Store(store),
+            root_cause_dispatcher: None,
+        }
+    }
+
+    /// Creates a daemon-scoped verification tool that launches the registered
+    /// RootCause child whenever code-owned routing selects that static edge.
+    pub fn with_runtime_store_and_root_cause_dispatcher(
+        store: Arc<ExecutionSessionRuntimeStore>,
+        root_cause_dispatcher: Arc<dyn RootCauseDispatcher>,
+    ) -> Self {
+        Self {
+            runtime: RuntimeBinding::Store(store),
+            root_cause_dispatcher: Some(root_cause_dispatcher),
         }
     }
 
@@ -264,7 +299,56 @@ Failed."
         context: &ToolContext<'_>,
         _input: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
-        Self::execute_for_runtime(self.runtime.resolve(Some(context), false)?).await
+        let runtime = self.runtime.resolve(Some(context), false)?;
+        let mut output = Self::execute_for_runtime(runtime).await?;
+        let is_root_cause_route =
+            output.metadata.get("next_step") == Some(&json!(WorkGraphStep::RootCause));
+        let (RuntimeBinding::Store(store), Some(dispatcher)) =
+            (&self.runtime, &self.root_cause_dispatcher)
+        else {
+            return Ok(output);
+        };
+        if !is_root_cause_route {
+            return Ok(output);
+        }
+
+        match store
+            .prepare_root_cause_dispatch(&context.agent.session_id)
+            .map_err(|error| ToolError {
+                message: format!("{error:#}"),
+                code: Some("root_cause_dispatch_failed".into()),
+            })? {
+            RootCauseDispatchState::Pending { child_id } => {
+                output
+                    .metadata
+                    .insert("root_cause_child_id".into(), json!(child_id));
+            }
+            RootCauseDispatchState::Ready(request) => {
+                match dispatcher.dispatch(context, request).await {
+                    Ok(dispatch) => {
+                        output
+                            .metadata
+                            .insert("root_cause_child_id".into(), json!(dispatch.child_id));
+                    }
+                    Err(error) => {
+                        store
+                            .cancel_root_cause_dispatch(&context.agent.session_id)
+                            .map_err(|cleanup| ToolError {
+                                message: format!("{cleanup:#}"),
+                                code: Some("root_cause_dispatch_failed".into()),
+                            })?;
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        output.content = json!({
+            "next_step": WorkGraphStep::RootCause,
+            "status": "root_cause_dispatched",
+            "root_cause_child_id": output.metadata.get("root_cause_child_id")
+        })
+        .to_string();
+        Ok(output)
     }
 }
 

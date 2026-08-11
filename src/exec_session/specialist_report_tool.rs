@@ -115,7 +115,9 @@ agent context and rejects root, completed, or unauthorized callers."
             })?;
         let runtime_store = Arc::clone(&self.runtime_store);
         let session_id = context.agent.session_id.clone();
-        self.coordinator
+        let agent_id = context.agent.agent_id.as_str().to_string();
+        let next_step = self
+            .coordinator
             .with_active_child_node_type(context.agent, move |producer| {
                 let report = SpecialistReport {
                     producer: producer.clone(),
@@ -126,7 +128,7 @@ agent context and rejects root, completed, or unauthorized callers."
                     recommended_actions: input.recommended_actions,
                 };
                 runtime_store
-                    .record_specialist_report(&session_id, producer, report)
+                    .record_specialist_report(&session_id, producer, &agent_id, report)
                     .map_err(|error| ToolError {
                         message: format!("{error:#}"),
                         code: Some("specialist_report_rejected".into()),
@@ -138,10 +140,12 @@ agent context and rejects root, completed, or unauthorized callers."
                 code: Some("specialist_identity_rejected".into()),
             })??;
 
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("next_step".into(), json!(next_step));
         Ok(ToolOutput {
             output_type: "text".into(),
-            content: json!({ "status": "recorded" }).to_string(),
-            metadata: std::collections::HashMap::new(),
+            content: json!({ "status": "recorded", "next_step": next_step }).to_string(),
+            metadata,
         })
     }
 }
@@ -216,6 +220,19 @@ mod tests {
             .begin_node("diagnose defect".into(), Vec::new(), Vec::new())
             .await
             .expect("start graph node");
+        store.seed_root_cause_route_for_test(&child.context.session_id);
+        assert!(matches!(
+            store
+                .prepare_root_cause_dispatch(&child.context.session_id)
+                .expect("prepare root-cause dispatch"),
+            crate::exec_session::RootCauseDispatchState::Ready(_)
+        ));
+        store
+            .bind_root_cause_child(
+                &child.context.session_id,
+                child.context.agent_id.as_str().to_string(),
+            )
+            .expect("bind trusted specialist child");
         let tool = SubmitSpecialistReportTool::new(Arc::clone(&store), Arc::clone(&coordinator));
 
         let unknown_field_error = tool
@@ -240,6 +257,11 @@ mod tests {
             .expect("submit trusted specialist report");
 
         assert!(output.content.contains("recorded"));
+        assert_eq!(
+            output.metadata.get("next_step"),
+            Some(&serde_json::json!("Implement")),
+            "the static graph must release Implement only after the bound handoff"
+        );
         let work_state = store.work_state_for_test(&child.context.session_id);
         let reports = work_state
             .specialist_reports(NodeType::GeneralPurpose)

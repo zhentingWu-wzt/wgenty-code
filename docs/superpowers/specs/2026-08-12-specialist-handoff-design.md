@@ -16,11 +16,11 @@ running typed child agents, while `ExecutionSession` owns the checkpointed
 disconnected: a child emits free text into a task-group result, and the
 Work-Graph cannot consume it as governed state.
 
-This change connects only the handoff boundary. It deliberately does not make
-an LLM choose graph edges and does not yet auto-spawn a specialist from a
-Work-Graph. The following change will install the fixed diagnostic template on
-top of this boundary; a later policy-constrained selector may choose among
-templates.
+This change connects the handoff boundary and a fixed diagnostic route. It
+deliberately does not make an LLM choose graph edges or auto-spawn an arbitrary
+specialist. A retryable external-anchor failure routes to the predeclared
+`RootCause` step; only a checkpointed RootCause report releases the `Implement`
+edge. A later policy-constrained selector may choose among registered templates.
 
 ## Alternatives Considered
 
@@ -82,12 +82,20 @@ acceptance status.
 
 ## Static and Dynamic Graph Boundaries
 
-The immediate static diagnostic template will use a root-cause report as an
-input product before an implementer runs, then retain the existing code-owned
-compile → test → verify anchors. It will invoke only a predeclared leaf
-specialist and will consume the persisted report rather than its final text.
-The template itself, specialist budget, edge conditions, and retry limit remain
-code-owned.
+The static diagnostic template uses a root-cause report as an input product
+before an implementer runs, then retains the existing code-owned compile → test
+→ verify anchors. On a retryable failure with budget remaining, code returns
+`RootCause` and daemon dispatches the registered leaf child through the
+existing task executor. The task executor binds the coordinator-reserved child
+identity before it spawns the child future, closing the report-before-bind
+race. Root-agent non-read-only tool calls are denied from reservation until a
+typed report bound to the same node and attempt records the `Implement` audit
+edge. A child that fails, is cancelled, or completes without a report consumes
+the retry budget, writes `Escalate`, and marks the current node/session failed.
+The root must use the existing human-decision or rollback lifecycle rather than
+silently turning that diagnosis into `Implement`. Boundary violations and
+exhausted budgets also route directly to `Escalate`. The template itself,
+specialist budget, edge conditions, and retry limit remain code-owned.
 
 Dynamic construction is explicitly deferred until static templates demonstrate
 that report production, checkpoint recovery, external anchors, and global

@@ -172,6 +172,10 @@ impl DaemonState {
         let effective_mode = Arc::new(std::sync::RwLock::new(
             crate::sandbox::EffectiveMode::Normal,
         ));
+        // TaskTool is built inside Arc::new_cyclic, before the per-session
+        // Work-Graph store exists. Keep a late-bound handle so it can bind a
+        // RootCause child before the child future is spawned.
+        let root_cause_runtime_handle = crate::exec_session::root_cause_runtime_handle();
         // ── Shared MemoryManager (D1): backs memory_add tool + AutoDream ──
         let memory_manager = Arc::new(crate::context::MemoryManager::with_settings(
             &app_state.settings,
@@ -251,7 +255,8 @@ impl DaemonState {
             .with_permission_bridge(permission_bridge.clone())
             .with_session_rules(shared_session_rules.clone())
             .with_root_mode(root_mode.clone())
-            .with_effective_mode(effective_mode.clone());
+            .with_effective_mode(effective_mode.clone())
+            .with_root_cause_runtime(root_cause_runtime_handle.clone());
             registry.register(Box::new(task_tool));
 
             // Register subagent trace tool (read-only visualization for subagent transcripts)
@@ -308,7 +313,12 @@ impl DaemonState {
                 checkpoint_store.clone(),
                 2,
             ));
+        *root_cause_runtime_handle
+            .write()
+            .expect("lock poisoned: root-cause runtime handle") =
+            Some(work_graph_runtime_store.clone());
         tool_registry.register_exec_session_tools(work_graph_runtime_store.clone());
+        tool_registry.enable_static_root_cause_route(work_graph_runtime_store.clone());
         tool_registry
             .register_specialist_report_tool(work_graph_runtime_store.clone(), coordinator.clone());
 
