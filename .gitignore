@@ -76,7 +76,8 @@ benchmark_results/
 web/.wgenty-code/
 
 # Tauri dev test artifacts (sessions created during local testing)
-/desktop/src-tauri/.wgenty-code/
+desktop/src-tauri/.wgenty-code/
 
 # pnpm store (web/ dev dependency cache)
 .pnpm-store/
+desktop/.wgenty-code/
