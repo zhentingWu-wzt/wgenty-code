@@ -48,15 +48,7 @@ verify scope and rollback."
                 "verify_commands": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Commands the runtime will execute to verify this node (e.g. cargo test)."
-                },
-                "compile_commands": {
-                    "type": "array", "items": { "type": "string" },
-                    "description": "Optional compile anchor commands run before tests."
-                },
-                "test_commands": {
-                    "type": "array", "items": { "type": "string" },
-                    "description": "Optional test anchor commands run before final verification."
+                    "description": "Supplemental final verification commands run after runtime-owned verification anchors (e.g. cargo test --doc)."
                 },
                 "expected_files": {
                     "type": "array",
@@ -99,15 +91,12 @@ verify scope and rollback."
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let compile_commands = optional_string_array(&input, "compile_commands")?;
-        let test_commands = optional_string_array(&input, "test_commands")?;
-
         let node_id = self
             .runtime
             .begin_node_with_anchors(
                 goal,
-                compile_commands,
-                test_commands,
+                Vec::new(),
+                Vec::new(),
                 verify_commands,
                 expected_files,
             )
@@ -201,25 +190,6 @@ Failed."
     }
 }
 
-fn optional_string_array(input: &serde_json::Value, field: &str) -> Result<Vec<String>, ToolError> {
-    let Some(value) = input.get(field) else {
-        return Ok(Vec::new());
-    };
-    let array = value.as_array().ok_or_else(|| ToolError {
-        message: format!("invalid '{field}' field"),
-        code: Some("invalid_input".into()),
-    })?;
-    array
-        .iter()
-        .map(|value| {
-            value.as_str().map(String::from).ok_or_else(|| ToolError {
-                message: format!("invalid '{field}' field"),
-                code: Some("invalid_input".into()),
-            })
-        })
-        .collect()
-}
-
 /// `rollback_node` -- roll back to the most recent verified node.
 pub struct RollbackNodeTool {
     runtime: Arc<NodeRuntime>,
@@ -302,8 +272,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_tools_run_declared_anchors_and_verify_the_node() {
+    async fn node_tools_use_rust_profile_anchors_in_order() {
         let directory = TempDir::new().expect("temp directory");
+        std::fs::write(
+            directory.path().join("Cargo.toml"),
+            "[package]\nname = \"p\"\n",
+        )
+        .expect("write manifest");
         let coordinator = Arc::new(RwLock::new(
             SessionCoordinator::new(
                 "tool-e2e".into(),
@@ -333,12 +308,14 @@ mod tests {
         let begin = BeginNodeTool::new(Arc::clone(&runtime));
         let verify = VerifyNodeTool::new(runtime);
 
+        let schema = begin.input_schema();
+        assert!(schema["properties"].get("compile_commands").is_none());
+        assert!(schema["properties"].get("test_commands").is_none());
+
         begin
             .execute(json!({
                 "goal": "tool e2e",
-                "compile_commands": ["compile"],
-                "test_commands": ["test"],
-                "verify_commands": ["verify"],
+                "verify_commands": ["cargo test --doc"],
                 "expected_files": []
             }))
             .await
@@ -352,7 +329,12 @@ mod tests {
         );
         assert_eq!(
             calls.lock().expect("calls lock").as_slice(),
-            ["compile", "test", "verify"]
+            [
+                "cargo check",
+                "cargo test --all",
+                "cargo clippy --all-targets -- -D warnings",
+                "cargo test --doc",
+            ]
         );
         assert_eq!(
             coordinator

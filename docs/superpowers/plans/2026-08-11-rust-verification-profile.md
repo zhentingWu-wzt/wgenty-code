@@ -158,7 +158,7 @@ Expected: all runtime tests pass.
 - BeginNodeTool passes empty compile/test command lists to `NodeRuntime`; `verify_commands` are supplemental final verification.
 - In a Rust temp project, VerifyNodeTool executes `[cargo check, cargo test --all, cargo clippy --all-targets -- -D warnings, supplemental]` through the injected executor.
 
-- [ ] **Step 1: Write failing tool schema and end-to-end order test**
+- [x] **Step 1: Write failing tool schema and end-to-end order test**
 
 ```rust
 #[tokio::test]
@@ -179,22 +179,22 @@ async fn node_tools_use_rust_profile_anchors_in_order() {
 }
 ```
 
-- [ ] **Step 2: Run and observe missing Rust profile commands**
+- [x] **Step 2: Run and observe missing Rust profile commands**
 
 Run: `cargo test exec_session::node_tools::tests::node_tools_use_rust_profile_anchors_in_order --lib`
 
 Expected: fails before profile wiring exists.
 
-- [ ] **Step 3: Update tool contract and route only supplemental final commands**
+- [x] **Step 3: Update tool contract and route only supplemental final commands**
 
 Remove compile/test properties and parser calls. Retain required `verify_commands` for compatibility, describe it as supplemental final verification, and call `begin_node_with_anchors(goal, Vec::new(), Vec::new(), verify_commands, expected_files)`.
 
-- [ ] **Step 4: Run focused and full validation**
+- [x] **Step 4: Run focused and full validation**
 
 Run: `cargo test exec_session::node_tools::tests --lib && cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test --all`
 
 Expected: all commands exit 0.
 
-- [ ] **Step 5: Commit the implementation**
+- [x] **Step 5: Commit the implementation**
 
 Run `git add src/exec_session/verification_profile.rs src/exec_session/mod.rs src/exec_session/node.rs src/exec_session/node_runtime.rs src/exec_session/node_tools.rs docs/superpowers/plans/2026-08-11-rust-verification-profile.md` followed by `git commit -m "feat(graph): enforce rust verification profiles"`.
