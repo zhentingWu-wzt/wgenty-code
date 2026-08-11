@@ -18,6 +18,7 @@ pub mod hooks;
 pub mod node;
 pub mod node_runtime;
 pub mod node_tools;
+pub mod runtime_store;
 pub mod session;
 pub mod verification_profile;
 pub mod verify_gate;
