@@ -79,3 +79,5 @@ benchmark_results/
 
 # pnpm store (web/ dev dependency cache)
 .pnpm-store/
+web/.wgenty-code/
+desktop/.wgenty-code/
