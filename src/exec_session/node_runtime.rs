@@ -277,7 +277,7 @@ impl NodeRuntime {
         };
         let step = self.record_compile_result(&audit_context, compile_result, &compile_runs)?;
         if step != WorkGraphStep::TestAnchor {
-            return Ok(WorkGraphRunResult { next_step: step });
+            return self.complete_work_graph_route(step);
         }
 
         let test_runs = self
@@ -295,7 +295,7 @@ impl NodeRuntime {
         };
         let step = self.record_test_result(&audit_context, test_result, &test_runs)?;
         if step != WorkGraphStep::VerifyGate {
-            return Ok(WorkGraphRunResult { next_step: step });
+            return self.complete_work_graph_route(step);
         }
 
         let expected_paths = expected_files.iter().map(PathBuf::from).collect();
@@ -359,6 +359,12 @@ impl NodeRuntime {
             .capture_current_work_state()
             .context("persist verification route audit event")?;
         drop(coord);
+        self.complete_work_graph_route(next_step)
+    }
+
+    /// Finish a persisted, code-owned route and synchronize any terminal edge
+    /// through the VerifyGate's durable session/log transition.
+    fn complete_work_graph_route(&self, next_step: WorkGraphStep) -> Result<WorkGraphRunResult> {
         if next_step == WorkGraphStep::Escalate {
             self.verify_gate
                 .mark_failed()
@@ -1116,9 +1122,10 @@ mod tests {
                 .expect("coordinator")
                 .session_dir()
                 .to_path_buf();
-            let json = std::fs::read_to_string(session_dir.join("verify_log.json"))
-                .expect("read verify log");
-            serde_json::from_str(&json).expect("deserialize verify log")
+            std::fs::read_to_string(session_dir.join("verify_log.json"))
+                .ok()
+                .and_then(|json| serde_json::from_str(&json).ok())
+                .unwrap_or_default()
         }
 
         fn capture_file(&self, path: &str, contents: &str) {
@@ -1616,6 +1623,9 @@ mod tests {
                 token_used: 0,
             })
         );
+        assert_eq!(coord.session().status, SessionStatus::InProgress);
+        drop(coord);
+        assert_eq!(setup.verify_log().final_status, None);
     }
 
     #[tokio::test]
@@ -1640,6 +1650,11 @@ mod tests {
             .verify_current_node()
             .await
             .expect("run failed test pass");
+        {
+            let coord = setup.coord.read().expect("coordinator");
+            assert_eq!(coord.session().status, SessionStatus::InProgress);
+        }
+        assert_eq!(setup.verify_log().final_status, None);
         let retry = setup
             .runtime
             .verify_current_node()
@@ -1942,6 +1957,76 @@ mod tests {
                 iter_used: 1,
                 token_used: 0,
             })
+        );
+        assert_eq!(coord.session().status, SessionStatus::Failed);
+        drop(coord);
+        assert_eq!(
+            setup.verify_log().final_status,
+            Some(VerifyLogFinalStatus::Failed)
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_exhausted_test_budget_records_terminal_failure() {
+        let setup = ScriptedSetup::with_results([
+            ScriptedCommandResult::success(),
+            ScriptedCommandResult::failure(1, "test diagnostics"),
+        ]);
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec![], vec![])
+            .await
+            .expect("persist rust node before work graph invocation");
+        setup
+            .coord
+            .write()
+            .expect("coordinator")
+            .work_state_mut()
+            .set_budget(
+                NodeType::GeneralPurpose,
+                Budget {
+                    max_iter: 1,
+                    iter_used: 0,
+                    token_used: 0,
+                },
+            )
+            .expect("set exhausted-after-failure budget");
+
+        let outcome = setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("run exhausted test pass");
+
+        assert!(matches!(
+            outcome,
+            NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
+                next_step: WorkGraphStep::Escalate
+            })
+        ));
+        assert_eq!(setup.calls(), ["cargo check", "cargo test --all"]);
+        let coord = setup.coord.read().expect("coordinator");
+        let route = coord
+            .work_state()
+            .graph_audit()
+            .last()
+            .expect("test route audit");
+        assert_eq!(route.route, Some(GraphAuditRoute::Escalate));
+        assert_eq!(
+            route.budget,
+            Some(Budget {
+                max_iter: 1,
+                iter_used: 1,
+                token_used: 0,
+            })
+        );
+        assert_eq!(coord.session().status, SessionStatus::Failed);
+        drop(coord);
+        assert_eq!(
+            setup.verify_log().final_status,
+            Some(VerifyLogFinalStatus::Failed)
         );
     }
 
