@@ -131,7 +131,7 @@ Expected: runtime audit tests and clippy pass.
 - Scripted executor support returns configured command results in call order and records every invocation.
 - Each scenario asserts real command calls plus audit route and budget snapshots, never model text.
 
-- [ ] **Step 1: Write failing evaluation tests**
+- [x] **Step 1: Write failing evaluation tests**
 
 Add separate tests with these exact assertions:
 
@@ -143,17 +143,17 @@ Add separate tests with these exact assertions:
 // exhausted compile budget: [check], final route Escalate, iter_used == max_iter
 ```
 
-- [ ] **Step 2: Run the evaluation tests and observe missing audit assertions**
+- [x] **Step 2: Run the evaluation tests and observe missing audit assertions**
 
 Run: `cargo test exec_session::node_runtime::tests::audit_ --lib`
 
 Expected: fails until the runtime exposes all required events and route snapshots.
 
-- [ ] **Step 3: Implement only test-support and audit corrections needed by scenarios**
+- [x] **Step 3: Implement only test-support and audit corrections needed by scenarios**
 
 Extend the existing mock executor with a queue of exit codes/stderr strings. Do not introduce a dynamic router, LLM decision, or new sub-agent. Make the tests assert profile commands and existing `WorkGraphStep` outcomes exactly.
 
-- [ ] **Step 4: Run final validation and commit**
+- [x] **Step 4: Run final validation and commit**
 
 Run: `cargo fmt -- --check && cargo clippy --all-targets -- -D warnings && cargo test --all`
 

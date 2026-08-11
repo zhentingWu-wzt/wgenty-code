@@ -857,39 +857,55 @@ mod tests {
         }
     }
 
-    /// Command executor whose exit codes are consumed in call order. This
-    /// keeps the runtime and verification gate real while making individual
-    /// anchor failures deterministic.
+    /// Scripted result consumed by the test executor in command-call order.
+    #[derive(Clone)]
+    struct ScriptedCommandResult {
+        exit_code: i32,
+        stderr: String,
+    }
+
+    impl ScriptedCommandResult {
+        fn success() -> Self {
+            Self {
+                exit_code: 0,
+                stderr: String::new(),
+            }
+        }
+
+        fn failure(exit_code: i32, stderr: impl Into<String>) -> Self {
+            Self {
+                exit_code,
+                stderr: stderr.into(),
+            }
+        }
+    }
+
+    /// Command executor whose configured results are consumed in call order.
+    /// This keeps the runtime and verification gate real while making
+    /// individual anchor failures and diagnostics deterministic.
     struct ScriptedExecutor {
-        exit_codes: Mutex<VecDeque<i32>>,
+        results: Mutex<VecDeque<ScriptedCommandResult>>,
         calls: Arc<Mutex<Vec<String>>>,
-        fixed_stderr: Option<String>,
     }
 
     #[async_trait]
     impl CommandExecutor for ScriptedExecutor {
         async fn execute(&self, command: &str, _project_root: &Path) -> Result<CommandRun> {
-            let exit_code = self
-                .exit_codes
+            let result = self
+                .results
                 .lock()
-                .map_err(|e| anyhow::anyhow!("exit-code script lock: {e}"))?
+                .map_err(|e| anyhow::anyhow!("result script lock: {e}"))?
                 .pop_front()
-                .context("scripted executor ran out of exit codes")?;
+                .context("scripted executor ran out of configured results")?;
             self.calls
                 .lock()
                 .map_err(|e| anyhow::anyhow!("command call log lock: {e}"))?
                 .push(command.to_string());
             Ok(CommandRun {
                 cmd: command.to_string(),
-                exit_code: Some(exit_code),
+                exit_code: Some(result.exit_code),
                 stdout: String::new(),
-                stderr: self.fixed_stderr.clone().unwrap_or_else(|| {
-                    if exit_code == 0 {
-                        String::new()
-                    } else {
-                        format!("{command} failed")
-                    }
-                }),
+                stderr: result.stderr,
             })
         }
     }
@@ -950,6 +966,7 @@ mod tests {
         runtime: NodeRuntime,
         coord: Arc<RwLock<SessionCoordinator>>,
         calls: Arc<Mutex<Vec<String>>>,
+        store: Arc<CheckpointStore>,
         _dir: TempDir,
     }
 
@@ -962,21 +979,36 @@ mod tests {
             exit_codes: impl IntoIterator<Item = i32>,
             fixed_stderr: Option<String>,
         ) -> Self {
+            let results = exit_codes
+                .into_iter()
+                .map(|exit_code| ScriptedCommandResult {
+                    exit_code,
+                    stderr: fixed_stderr.clone().unwrap_or_else(|| {
+                        if exit_code == 0 {
+                            String::new()
+                        } else {
+                            "command failed".to_string()
+                        }
+                    }),
+                });
+            Self::with_results(results)
+        }
+
+        fn with_results(results: impl IntoIterator<Item = ScriptedCommandResult>) -> Self {
             let dir = TempDir::new().expect("temporary project");
             let store = Arc::new(CheckpointStore::new(dir.path()));
             let coord = SessionCoordinator::new(
                 "es-scripted".into(),
                 SessionSource::AgentSelf,
                 dir.path(),
-                store,
+                Arc::clone(&store),
             )
             .expect("create coordinator");
             let coord = Arc::new(RwLock::new(coord));
             let calls = Arc::new(Mutex::new(Vec::new()));
             let executor = Arc::new(ScriptedExecutor {
-                exit_codes: Mutex::new(exit_codes.into_iter().collect()),
+                results: Mutex::new(results.into_iter().collect()),
                 calls: Arc::clone(&calls),
-                fixed_stderr,
             });
             let gate = Arc::new(VerifyGate::new_with_default_hooks(
                 Arc::clone(&coord),
@@ -987,6 +1019,7 @@ mod tests {
                 runtime,
                 coord,
                 calls,
+                store,
                 _dir: dir,
             }
         }
@@ -1009,6 +1042,29 @@ mod tests {
 
         fn calls(&self) -> Vec<String> {
             self.calls.lock().expect("command call log").clone()
+        }
+
+        fn capture_file(&self, path: &str, contents: &str) {
+            let checkpoint_turn_id = self
+                .coord
+                .read()
+                .expect("coordinator")
+                .session()
+                .current_turn_record()
+                .expect("active turn")
+                .checkpoint_turn_id
+                .clone();
+            let file_path = self._dir.path().join(path);
+            std::fs::create_dir_all(
+                file_path
+                    .parent()
+                    .expect("captured file has a parent directory"),
+            )
+            .expect("create captured file parent");
+            std::fs::write(&file_path, contents).expect("write captured file");
+            self.store
+                .try_capture_file(&checkpoint_turn_id, path)
+                .expect("capture changed file in checkpoint manifest");
         }
     }
 
@@ -1341,6 +1397,263 @@ mod tests {
         assert_eq!(
             audit.last().expect("final route event").route,
             Some(GraphAuditRoute::Complete)
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_compile_failure_records_implement_route_and_consumed_budget() {
+        let setup = ScriptedSetup::with_results([ScriptedCommandResult::failure(
+            17,
+            "compile diagnostics",
+        )]);
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec![], vec![])
+            .await
+            .expect("persist rust node before work graph invocation");
+
+        let outcome = setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("run failed compile pass");
+
+        assert!(matches!(
+            outcome,
+            NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
+                next_step: WorkGraphStep::Implement
+            })
+        ));
+        assert_eq!(setup.calls(), ["cargo check"]);
+        let coord = setup.coord.read().expect("coordinator");
+        let audit = coord.work_state().graph_audit();
+        let route = audit.last().expect("compile route audit");
+        assert_eq!(route.route, Some(GraphAuditRoute::Implement));
+        assert_eq!(
+            route.budget,
+            Some(Budget {
+                max_iter: 2,
+                iter_used: 1,
+                token_used: 0,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_test_failure_retry_restarts_compile_and_retains_attempts() {
+        let setup = ScriptedSetup::with_results([
+            ScriptedCommandResult::success(),
+            ScriptedCommandResult::failure(1, "test diagnostics"),
+            ScriptedCommandResult::success(),
+            ScriptedCommandResult::success(),
+            ScriptedCommandResult::success(),
+        ]);
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec![], vec![])
+            .await
+            .expect("persist rust node before work graph invocation");
+
+        let first = setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("run failed test pass");
+        let retry = setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("run complete retry pass");
+
+        assert!(matches!(
+            first,
+            NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
+                next_step: WorkGraphStep::Implement
+            })
+        ));
+        assert!(matches!(
+            retry,
+            NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
+                next_step: WorkGraphStep::Complete
+            })
+        ));
+        assert_eq!(
+            setup.calls(),
+            [
+                "cargo check",
+                "cargo test --all",
+                "cargo check",
+                "cargo test --all",
+                "cargo clippy --all-targets -- -D warnings",
+            ]
+        );
+        let coord = setup.coord.read().expect("coordinator");
+        let audit = coord.work_state().graph_audit();
+        let route_events: Vec<_> = audit
+            .iter()
+            .filter(|event| event.kind == GraphAuditKind::RouteSelected)
+            .collect();
+        assert_eq!(
+            route_events
+                .iter()
+                .map(|event| (event.attempt, event.route, event.budget.clone()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    1,
+                    Some(GraphAuditRoute::TestAnchor),
+                    Some(Budget {
+                        max_iter: 2,
+                        iter_used: 0,
+                        token_used: 0,
+                    }),
+                ),
+                (
+                    1,
+                    Some(GraphAuditRoute::Implement),
+                    Some(Budget {
+                        max_iter: 2,
+                        iter_used: 1,
+                        token_used: 0,
+                    }),
+                ),
+                (
+                    2,
+                    Some(GraphAuditRoute::TestAnchor),
+                    Some(Budget {
+                        max_iter: 2,
+                        iter_used: 1,
+                        token_used: 0,
+                    }),
+                ),
+                (
+                    2,
+                    Some(GraphAuditRoute::VerifyGate),
+                    Some(Budget {
+                        max_iter: 2,
+                        iter_used: 1,
+                        token_used: 0,
+                    }),
+                ),
+                (
+                    2,
+                    Some(GraphAuditRoute::Complete),
+                    Some(Budget {
+                        max_iter: 2,
+                        iter_used: 1,
+                        token_used: 0,
+                    }),
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_boundary_violation_records_escalate_route() {
+        let setup = ScriptedSetup::with_results([
+            ScriptedCommandResult::success(),
+            ScriptedCommandResult::success(),
+            ScriptedCommandResult::success(),
+        ]);
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec![], vec![])
+            .await
+            .expect("persist rust node before work graph invocation");
+        setup.capture_file("src/unexpected.rs", "unexpected change\n");
+
+        let outcome = setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("run boundary violation pass");
+
+        assert!(matches!(
+            outcome,
+            NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
+                next_step: WorkGraphStep::Escalate
+            })
+        ));
+        assert_eq!(
+            setup.calls(),
+            [
+                "cargo check",
+                "cargo test --all",
+                "cargo clippy --all-targets -- -D warnings",
+            ]
+        );
+        let coord = setup.coord.read().expect("coordinator");
+        let audit = coord.work_state().graph_audit();
+        let route = audit.last().expect("verification route audit");
+        assert_eq!(route.route, Some(GraphAuditRoute::Escalate));
+        assert_eq!(
+            route.budget,
+            Some(Budget {
+                max_iter: 2,
+                iter_used: 0,
+                token_used: 0,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_exhausted_compile_budget_records_escalate_route() {
+        let setup = ScriptedSetup::with_results([ScriptedCommandResult::failure(
+            101,
+            "compile diagnostics",
+        )]);
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec![], vec![])
+            .await
+            .expect("persist rust node before work graph invocation");
+        setup
+            .coord
+            .write()
+            .expect("coordinator")
+            .work_state_mut()
+            .set_budget(
+                NodeType::GeneralPurpose,
+                Budget {
+                    max_iter: 1,
+                    iter_used: 0,
+                    token_used: 0,
+                },
+            )
+            .expect("set exhausted-after-failure budget");
+
+        let outcome = setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("run exhausted compile pass");
+
+        assert!(matches!(
+            outcome,
+            NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
+                next_step: WorkGraphStep::Escalate
+            })
+        ));
+        assert_eq!(setup.calls(), ["cargo check"]);
+        let coord = setup.coord.read().expect("coordinator");
+        let audit = coord.work_state().graph_audit();
+        let route = audit.last().expect("compile route audit");
+        assert_eq!(route.route, Some(GraphAuditRoute::Escalate));
+        assert_eq!(
+            route.budget,
+            Some(Budget {
+                max_iter: 1,
+                iter_used: 1,
+                token_used: 0,
+            })
         );
     }
 
