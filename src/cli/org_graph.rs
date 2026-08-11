@@ -40,7 +40,7 @@ pub async fn run(
             // SubagentLimits 驱动 explore/plan 的 can_mutate_fs（explore_readonly）。
             let registry = NodeRegistry::builtin(&state.settings.agent.subagent);
             let out = crate::org_graph::render::render(&registry, (*format).into());
-            print!("{}", out);
+            println!("{}", out);
             Ok(())
         }
     }
