@@ -998,6 +998,7 @@ mod tests {
                 verify_commands: vec!["echo ok".to_string()],
                 compile_commands: vec![],
                 test_commands: vec![],
+                verification_profile: crate::exec_session::VerificationProfile::None,
                 expected_files: vec![],
             },
             status,

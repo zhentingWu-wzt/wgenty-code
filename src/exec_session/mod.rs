@@ -19,6 +19,7 @@ pub mod node;
 pub mod node_runtime;
 pub mod node_tools;
 pub mod session;
+pub mod verification_profile;
 pub mod verify_gate;
 
 pub mod work_graph;
@@ -33,6 +34,7 @@ pub use node_runtime::{
 };
 pub use node_tools::{BeginNodeTool, RollbackNodeTool, VerifyNodeTool};
 pub use session::{GitRefs, SessionSource, SessionState, SessionStatus, TurnRecord};
+pub use verification_profile::{ResolvedVerificationCommands, VerificationProfile};
 pub use verify_gate::{
     CommandExecutor, CommandRun, ProcessCommandExecutor, UnverifiedOutcome, VerifyAndCompleteTool,
     VerifyGate, VerifyLog, VerifyLogEntry, VerifyLogFinalStatus, VerifyLogResult, VerifyResult,

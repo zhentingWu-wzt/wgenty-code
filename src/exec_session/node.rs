@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::verification_profile::VerificationProfile;
+
 /// Type alias for node identifiers (e.g. "n1", "n2").
 pub type NodeId = String;
 
@@ -23,6 +25,9 @@ pub struct NodeContract {
     /// Optional test anchor commands. Empty preserves the legacy path.
     #[serde(default)]
     pub test_commands: Vec<String>,
+    /// Profile used to derive deterministic verification command anchors.
+    #[serde(default)]
+    pub verification_profile: VerificationProfile,
     /// Out-of-bounds detection boundary. Empty = no boundary check.
     pub expected_files: Vec<String>,
 }
@@ -69,6 +74,7 @@ pub type NodeStates = Vec<Node>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec_session::VerificationProfile;
 
     #[test]
     fn test_node_contract_serialization() {
@@ -77,6 +83,7 @@ mod tests {
             verify_commands: vec!["cargo test".to_string(), "cargo clippy".to_string()],
             compile_commands: vec![],
             test_commands: vec![],
+            verification_profile: VerificationProfile::None,
             expected_files: vec!["src/cli.rs".to_string(), "src/memory/list.rs".to_string()],
         };
         let json = serde_json::to_string(&contract).expect("serialize");
@@ -91,6 +98,7 @@ mod tests {
             verify_commands: vec!["echo ok".to_string()],
             compile_commands: vec![],
             test_commands: vec![],
+            verification_profile: VerificationProfile::None,
             expected_files: vec![],
         };
         let json = serde_json::to_string(&contract).expect("serialize");
@@ -107,6 +115,24 @@ mod tests {
         .expect("legacy contract deserializes");
         assert!(contract.compile_commands.is_empty());
         assert!(contract.test_commands.is_empty());
+        assert_eq!(contract.verification_profile, VerificationProfile::None);
+    }
+
+    #[test]
+    fn node_contract_verification_profile_round_trips() {
+        let contract = NodeContract {
+            goal: "verify a Rust project".to_string(),
+            verify_commands: vec!["cargo clippy --all-targets -- -D warnings".to_string()],
+            compile_commands: vec!["cargo check".to_string()],
+            test_commands: vec!["cargo test --all".to_string()],
+            verification_profile: VerificationProfile::Rust,
+            expected_files: vec![],
+        };
+
+        let json = serde_json::to_string(&contract).expect("serialize");
+        assert!(json.contains("\"verification_profile\":\"rust\""));
+        let deserialized: NodeContract = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(contract, deserialized);
     }
 
     #[test]
@@ -141,6 +167,7 @@ mod tests {
                 verify_commands: vec!["cargo test".to_string()],
                 compile_commands: vec![],
                 test_commands: vec![],
+                verification_profile: VerificationProfile::None,
                 expected_files: vec!["src/cli.rs".to_string()],
             },
             status: NodeStatus::Running,
@@ -164,6 +191,7 @@ mod tests {
                     verify_commands: vec!["echo ok".to_string()],
                     compile_commands: vec![],
                     test_commands: vec![],
+                    verification_profile: VerificationProfile::None,
                     expected_files: vec![],
                 },
                 status: NodeStatus::Verified,
@@ -179,6 +207,7 @@ mod tests {
                     verify_commands: vec!["echo ok".to_string()],
                     compile_commands: vec![],
                     test_commands: vec![],
+                    verification_profile: VerificationProfile::None,
                     expected_files: vec![],
                 },
                 status: NodeStatus::Running,
