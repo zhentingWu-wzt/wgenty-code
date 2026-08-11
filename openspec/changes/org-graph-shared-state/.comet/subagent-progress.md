@@ -13,12 +13,10 @@ generated_diff/budget 由 GeneralPurpose 可写（权限就绪，生产写入点
 查证依据见 design §1.5。
 
 ## 当前 task
-- plan task: Task 6 — 集成验证（cargo build/test 全绿 + 手动验证 pilot 路由）
-- OpenSpec task: tasks.md `6.1` / `6.2`
-- stage: pending（Task 5 已完成验收，coordinator 直接执行 Task 6 集成验证）
-- BASE: 待记录
-- 实现提交 / 变更文件 / RED-GREEN 证据：待验证
-- 审查阶段：standard → 无 per-task reviewer；待全 task 完成后最终 review
+- **全部 6 task 已完成验收（Task 1-6）。** tasks.md 0 未勾，plan 0 未勾 Step。
+- 下一步：standard review_mode → 全 task 完成后一次最终轻量代码审查（Superpowers `requesting-code-review`），CRITICAL 修复后运行 `comet guard org-graph-shared-state build --apply` 推进 phase: verify。
+- change BASE (base-ref): a819ff03；HEAD（含全部实现 + 验收勾选）: 见 `git log`。
+- 最终 review 范围：`git diff a819ff03..HEAD`（整 change）。
 
 ## task 完成记录
 - Task 1: complete (commits f733f6c2..42129f77, review clean) — WorkState 完整 schema（7+1 字段 + 全子类型）+ mod.rs 导出；5/5 serde 往返单测绿；独立复跑 5/5 通过；task-checkoff PASS（plan Step 1.1 + tasks.md 1.1）。RED 信号为「0 tests matched」（orphaned module 未导出），等价 RED，已记录为可接受观察。
@@ -26,3 +24,4 @@ generated_diff/budget 由 GeneralPurpose 可写（权限就绪，生产写入点
 - Task 3: complete (commit 353e0915, standard-mode 验收) — SessionCoordinator 新增 `work_state` 字段 + `work_state()`/`work_state_mut()` 访问器；`begin_turn` 调 `inherit_for_new_turn` 完成 turn 间继承（requirement 保留、产物字段重置）；`capture_current_work_state`/`restore_work_state_for_turn` 触发持久化。CheckpointStore 新增 `capture_work_state`/`restore_work_state`（per-turn `work_state.json` 旁路，不动文件 capture 语义）；legacy turn 缺失→`default()` 向后兼容。4/4 新单测绿（2 checkpoint_store + 2 coordinator）；独立复跑 checkpoint_store 21/21 + coordinator 24/24 零回归；full lib 1459/0/1。task-checkoff PASS（plan Step 3.1-3.9 + tasks.md 3.1/3.2/3.3）。两处 test-side 适配（brief 的字面代码与现实 fixture 不符）：`make_coordinator(&dir)` owned-fixture 取代 brief 假设的 `coordinator_setup()`/`Arc<RwLock>`；`unexpected_files.clone()` 满足借检；生产代码与 brief 逐字一致。Phase A RED=3 method-not-found→GREEN 21/21；Phase B RED=4 method-not-found→GREEN 24/24。
 - Task 4: complete (commit 534265a8, standard-mode 验收) — **核心 pilot 修复**。`node_runtime.rs` verify_node 出口降级点（旧 `result.fail_reason.as_ref().map(|f| format!("{f:?}"))`）已移除。新增 `project_failure`/`project_outcome`（exec_session::VerifyResult → org_graph::VerifyOutcome 投影，`CommandFailed{command,..}` 丢 command 保 exit_code+stderr）+ `VerifyOutcome::from_parts`（work_state.rs，org_graph 不反向依赖 exec_session）。verify_node 成功+失败两分支均经 `set_verify_result(NodeType::Verification, outcome)` 写 WorkState（受字段级权限强制），失败分支再 `verify_result()` 读回组装兼容期 failure_reason（源头改为读回的强类型枚举）。retry 保持 count-based 不变。5/5 新测试绿（3 pilot tokio + from_parts + unauthorized-node enforcement）；独立复跑 5/5 通过；full lib 1464/1464 零回归；clippy clean。task-checkoff PASS（plan Step 4.1-4.8 + tasks.md 4.1/4.2/4.3）。D5 Branch A（pre-flight 三查证：降级点@204、VerifyResult.fail_reason 强类型、node_tools.rs:163 读 failure_reason；retry count-based 非 failure_reason-based，pilot 读闭环由 verify_node 写→读回→node_tools 序列化构成）。RED=pilot 测试因 WorkState.verify_result 为 None 而失败；GREEN=5/5。
 - Task 5: complete (无代码改动 — coordinator 直接执行的验证型审计) — 三层状态分层与零回归。5.1：`git diff a819ff03 -- session.rs/config/state/` 空 → SessionState 语义 + AppState 未动；WorkState 仅作为 SessionCoordinator 单字段（coordinator.rs:35），与 SessionState 字段无交叉。5.2：`git diff a819ff03 -- subagent_mailbox.rs task.rs` 空 → mailbox 未动；ContractDimension::State 无需任何 match-arm 补丁（印证 Task 2 审计）。5.3：与 org-graph-dispatch-telemetry 正交——唯一 `verify_result` 命中是 dispatch-telemetry `.comet.yaml` 的 Comet 阶段状态字段（`verify_result: pending`），非 WorkState 字段；diff base-ref 空。5.4 跳过（无源码改动）。task-checkoff PASS（plan Step 5.1-5.4 + tasks.md 5.1/5.2/5.3）。
+- Task 6: complete (commit e3c3ed9f, coordinator 派发 sonnet subagent 执行集成验证) — 集成验证。6.1：`cargo build --lib` 干净；full `cargo test --lib` **1465 passed / 0 failed / 1 ignored**（独立复跑确认）；既有套件零回归（agent::coordinator/fallback、tools::meta::task、exec_session::coordinator/verify_gate/node_runtime、org_graph::*、tools::checkpoint_store 全绿）；integration tests 183/0/3。6.2：新增端到端 `pilot_end_to_end_retry_reads_structured_failure_kind`（GREEN on first run — 验证型测试，确认 Task 4 pilot 而非驱动新代码）。6.3：3 个字段强制测试（unauthorized pilot site + reserved fields + ContractViolation{State}）全 PASS。6.4：commit e3c3ed9f。task-checkoff PASS（plan Step 6.1-6.4 + tasks.md 6.1/6.2）。
