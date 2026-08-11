@@ -218,6 +218,21 @@ impl ToolRegistry {
         ));
     }
 
+    /// Register the trusted specialist handoff sink used by daemon sub-agents.
+    ///
+    /// Unlike general ExecutionSession lifecycle tools, this adapter also
+    /// needs the daemon's [`AgentCoordinator`](crate::agent::AgentCoordinator)
+    /// to derive the live child role from a trusted execution context.
+    pub fn register_specialist_report_tool(
+        &self,
+        runtime_store: Arc<crate::exec_session::ExecutionSessionRuntimeStore>,
+        coordinator: Arc<crate::agent::AgentCoordinator>,
+    ) {
+        self.register(Box::new(
+            crate::exec_session::SubmitSpecialistReportTool::new(runtime_store, coordinator),
+        ));
+    }
+
     /// Apply provider-aware configuration after construction.
     ///
     /// Nearly all major providers now ship with built-in web search:

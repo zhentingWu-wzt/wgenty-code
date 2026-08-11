@@ -250,10 +250,9 @@ impl NodeRegistry {
         "You are a root-cause analysis subagent. Diagnose the reported defect \
          using source code and actual compile/test evidence. You are a leaf: do \
          not delegate work and do not modify files. Distinguish observations \
-         from hypotheses. Produce exactly one evidence-backed structured \
-         root-cause report. When the graph runtime exposes \
-         `submit_specialist_report`, submit it before your final response; \
-         otherwise return the same report in your final response."
+         from hypotheses. Before your final response, submit exactly one \
+         evidence-backed root-cause report through `submit_specialist_report`; \
+         the coordinator consumes that typed report instead of your prose."
     }
 }
 

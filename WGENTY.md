@@ -119,6 +119,12 @@ full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqli
 WorkState / 审计轨迹，不同 session 相互隔离。第一次 `begin_node` 会惰性创建图
 turn；编译、测试和最终验证仍由代码执行的外部锚点决定，模型文本不能声明通过。
 
+daemon 还向已注册的专用子 Agent 提供 `submit_specialist_report`：该工具只从可信
+`ToolContext` 识别仍存活的 child `NodeType`，不接受模型提供的 producer、session 或
+turn。报告只能写入当前 active node/turn 的 `WorkState`，并立即写入 checkpoint；字段
+权限与报告类型仍由 `WorkState` 校验。它是给后续静态 Work-Graph 的类型化交接入口，
+不能写外部锚点、验证结果或路由结论。
+
 请求链路：`用户输入 -> CLI解析 -> Settings加载 -> Prompt组装(8层) -> API SSE -> 工具调用 -> Guardian审查 -> Sandbox执行 -> 流式返回`
 
 Prompt 8 层：base_instructions → permissions → developer → environment → agents_md → collaboration → skills_inventory → wgenty_md_sections

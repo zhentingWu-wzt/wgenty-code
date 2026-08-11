@@ -389,7 +389,7 @@ impl Tool for TaskTool {
     fn description(&self) -> &str {
         "Launch a subagent to handle complex, multi-step tasks. \
          Available types: general-purpose (default), explore (codebase search), \
-         plan (architecture). Subagents have isolated context and filtered tools. \
+         plan (architecture), root-cause (read-only diagnosis). Subagents have isolated context and filtered tools. \
          Explore/plan never spawn further agents. General-purpose may call task \
          again; if depth limit blocks the nested spawn, the system self-executes \
          that delegated prompt in the calling subagent (structural fallback) so \
@@ -410,8 +410,8 @@ impl Tool for TaskTool {
             "properties": {
                 "subagent_type": {
                     "type": "string",
-                    "description": "Type of subagent: general-purpose, explore, or plan",
-                    "enum": ["general-purpose", "explore", "plan"]
+                    "description": "Type of subagent: general-purpose, explore, plan, or root-cause",
+                    "enum": ["general-purpose", "explore", "plan", "root-cause"]
                 },
                 "description": {
                     "type": "string",
