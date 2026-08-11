@@ -87,8 +87,60 @@ fn render_table(registry: &NodeRegistry) -> String {
     out
 }
 
-fn render_dot(_registry: &NodeRegistry) -> String {
-    String::new()
+fn render_dot(registry: &NodeRegistry) -> String {
+    let mut out = String::new();
+    out.push_str("digraph org_graph_contract {\n");
+    out.push_str("    rankdir=LR;\n");
+    out.push_str("    node [fontname=\"Helvetica\"];\n");
+    for c in registry.iter() {
+        // 视觉编码：can_spawn -> 形状；can_mutate_fs -> 填充色。
+        let shape = if c.permissions.can_spawn {
+            "component"
+        } else {
+            "box"
+        };
+        let fill = if c.permissions.can_mutate_fs {
+            "lightyellow"
+        } else {
+            "white"
+        };
+        let label = format_dot_label(c);
+        out.push_str(&format!(
+            "    {} [label=\"{}\", shape={}, style=filled, fillcolor={}];\n",
+            dot_node_id(c),
+            label,
+            shape,
+            fill
+        ));
+    }
+    out.push_str("}\n");
+    out
+}
+
+/// DOT 标识符不允许连字符；用 NodeType 的 Debug 小写形式（纯字母）。
+fn dot_node_id(c: &crate::org_graph::NodeContract) -> String {
+    format!("{:?}", c.node_type).to_lowercase()
+}
+
+/// record 式多行 label（\\l = 左对齐换行）。含全部五维，省略 system_prompt。
+fn format_dot_label(c: &crate::org_graph::NodeContract) -> String {
+    let tools = if c.capabilities.allowed_tools.is_empty() {
+        "*".to_string()
+    } else {
+        c.capabilities.allowed_tools.join(",")
+    };
+    format!(
+        "name={}\\ltype={:?}\\lspawn={}\\lmutate_fs={}\\lexec={}\\lIO={:?}->{:?}\\lbudget={}\\ltools={}\\l",
+        c.name,
+        c.node_type,
+        c.permissions.can_spawn,
+        c.permissions.can_mutate_fs,
+        c.permissions.can_exec,
+        c.input_type,
+        c.output_type,
+        fmt_budget(&c.budget),
+        tools
+    )
 }
 
 fn render_mermaid(_registry: &NodeRegistry) -> String {
@@ -164,5 +216,36 @@ mod tests {
         assert_ne!(ro_explore, rw_explore, "explore row must differ when explore_readonly flips");
         // readonly=true -> explore can_mutate_fs=false -> 行内含 false（在 MUTATE-FS 列）。
         // 非 readonly -> true。两行其余列相同，故差异即 mutate_fs 反映。
+    }
+
+    #[test]
+    fn render_dot_is_well_formed_with_five_nodes() {
+        let out = render_dot(&registry(true));
+        assert!(
+            out.starts_with("digraph org_graph_contract {"),
+            "must start with digraph header"
+        );
+        assert!(out.trim_end().ends_with('}'), "must close brace");
+        // 5 个节点声明（每行一个 `];`）。
+        let node_lines = out
+            .lines()
+            .filter(|l| l.contains("[label=") && l.contains("];"))
+            .count();
+        assert_eq!(node_lines, 5, "expected 5 node declarations");
+    }
+
+    #[test]
+    fn render_dot_encodes_explore_readonly_as_fillcolor() {
+        let ro = render_dot(&registry(true));
+        let rw = render_dot(&registry(false));
+        let ro_explore = ro.lines().find(|l| l.contains("explore [")).unwrap_or("");
+        let rw_explore = rw.lines().find(|l| l.contains("explore [")).unwrap_or("");
+        // readonly=true -> can_mutate_fs=false -> fillcolor=white
+        assert!(ro_explore.contains("fillcolor=white"), "ro explore should be white");
+        // readonly=false -> can_mutate_fs=true -> lightyellow
+        assert!(
+            rw_explore.contains("fillcolor=lightyellow"),
+            "rw explore should be lightyellow"
+        );
     }
 }
