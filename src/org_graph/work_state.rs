@@ -34,6 +34,9 @@ pub struct WorkState {
     budget: Option<Budget>,
     /// 审计轨迹（授权写记入；读不记）。
     step_log: Vec<StepRecord>,
+    /// 工作图执行审计轨迹（跨节点、pass 与 turn 保留，兼容既有 checkpoint）。
+    #[serde(default)]
+    graph_audit: Vec<GraphAuditEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,6 +68,66 @@ pub struct Budget {
     pub max_iter: u32,
     pub iter_used: u32,
     pub token_used: u64,
+}
+
+/// 单个外部命令的工作图审计投影。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuditCommandRun {
+    pub command: String,
+    pub exit_code: Option<i32>,
+    pub stderr: String,
+}
+
+/// 工作图节点执行期间记录的一条审计事件。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GraphAuditEvent {
+    pub node_id: String,
+    pub attempt: u32,
+    pub kind: GraphAuditKind,
+    pub anchor: Option<GraphAuditAnchor>,
+    pub commands: Vec<AuditCommandRun>,
+    pub route: Option<GraphAuditRoute>,
+    pub profile: Option<GraphAuditProfile>,
+    pub budget: Option<Budget>,
+    pub timestamp: String,
+}
+
+/// 工作图审计事件类别。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphAuditKind {
+    ProfileResolved,
+    AnchorCompleted,
+    RouteSelected,
+}
+
+/// 已执行的外部锚点类别。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphAuditAnchor {
+    Compile,
+    Test,
+    Verify,
+}
+
+/// 工作图下一步路由决策。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphAuditRoute {
+    Implement,
+    CompileAnchor,
+    TestAnchor,
+    VerifyGate,
+    Complete,
+    Escalate,
+}
+
+/// 工作图执行使用的项目配置。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphAuditProfile {
+    None,
+    Rust,
 }
 
 /// org_graph 内聚的独立类型（exec_session 集成时从 VerifyResult 投影转换）。
@@ -195,6 +258,16 @@ impl WorkState {
     /// 读步骤审计日志（只读；仅由授权写自动追加，不可外部直接写）。
     pub fn step_log(&self) -> &[StepRecord] {
         &self.step_log
+    }
+
+    /// 读取跨 checkpoint 保留的工作图审计记录。
+    pub fn graph_audit(&self) -> &[GraphAuditEvent] {
+        &self.graph_audit
+    }
+
+    /// coordinator 专用：追加一条工作图审计事件。
+    pub(crate) fn append_graph_audit(&mut self, event: GraphAuditEvent) {
+        self.graph_audit.push(event);
     }
 
     /// 写 verify_result：pilot 核心字段。查 caller 的 field_perms，越权 →
@@ -461,6 +534,7 @@ impl WorkState {
             verify_result: None,
             budget: None,
             step_log: Vec::new(),
+            graph_audit: self.graph_audit.clone(),
         }
     }
 }
@@ -481,6 +555,63 @@ impl VerifyOutcome {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    fn event(node_id: &str, attempt: u32, kind: GraphAuditKind) -> GraphAuditEvent {
+        GraphAuditEvent {
+            node_id: node_id.into(),
+            attempt,
+            kind,
+            anchor: Some(GraphAuditAnchor::Compile),
+            commands: vec![AuditCommandRun {
+                command: "cargo check".into(),
+                exit_code: Some(0),
+                stderr: String::new(),
+            }],
+            route: Some(GraphAuditRoute::CompileAnchor),
+            profile: Some(GraphAuditProfile::Rust),
+            budget: Some(Budget {
+                max_iter: 3,
+                iter_used: 1,
+                token_used: 42,
+            }),
+            timestamp: "2026-08-12T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn graph_audit_round_trips_and_survives_all_work_state_resets() {
+        let mut state = WorkState::default();
+        state.append_graph_audit(event("n1", 1, GraphAuditKind::ProfileResolved));
+        state.reset_for_new_node();
+        state.reset_for_work_graph_pass();
+        let inherited = state.inherit_for_new_turn();
+
+        assert_eq!(inherited.graph_audit().len(), 1);
+        assert_eq!(
+            serde_json::from_str::<WorkState>(&serde_json::to_string(&inherited).unwrap()).unwrap(),
+            inherited
+        );
+    }
+
+    #[test]
+    fn graph_audit_enums_serialize_with_snake_case_values() {
+        assert_eq!(
+            serde_json::to_string(&GraphAuditKind::ProfileResolved).unwrap(),
+            "\"profile_resolved\""
+        );
+        assert_eq!(
+            serde_json::to_string(&GraphAuditAnchor::Compile).unwrap(),
+            "\"compile\""
+        );
+        assert_eq!(
+            serde_json::to_string(&GraphAuditRoute::CompileAnchor).unwrap(),
+            "\"compile_anchor\""
+        );
+        assert_eq!(
+            serde_json::to_string(&GraphAuditProfile::Rust).unwrap(),
+            "\"rust\""
+        );
+    }
 
     #[test]
     fn workstate_serde_roundtrip_empty() {
@@ -533,6 +664,7 @@ mod tests {
                 action: StepAction::Wrote,
                 timestamp: "2026-08-11T00:00:00Z".into(),
             }],
+            graph_audit: vec![event("verify", 1, GraphAuditKind::AnchorCompleted)],
         };
         let json = serde_json::to_string(&state).expect("serialize");
         let back: WorkState = serde_json::from_str(&json).expect("deserialize");
@@ -936,6 +1068,7 @@ mod tests {
                 action: StepAction::Wrote,
                 timestamp: "2026-08-11T00:00:00Z".into(),
             }],
+            graph_audit: vec![event("verify", 1, GraphAuditKind::AnchorCompleted)],
         };
         let next = state.inherit_for_new_turn();
         assert_eq!(next.requirement.as_deref(), Some("跨 turn"));
@@ -946,6 +1079,7 @@ mod tests {
         assert!(next.verify_result.is_none());
         assert!(next.budget.is_none());
         assert!(next.step_log.is_empty());
+        assert_eq!(next.graph_audit.len(), 1);
     }
 
     #[test]
