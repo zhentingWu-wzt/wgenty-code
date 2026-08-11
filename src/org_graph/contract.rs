@@ -13,6 +13,7 @@ pub enum NodeType {
     #[default]
     GeneralPurpose,
     Verification,
+    RootCause,
     WgentyCodeGuide,
 }
 
