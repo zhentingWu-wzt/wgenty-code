@@ -1653,7 +1653,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Consumes: Task 1-4 的全部产物。
 - Produces: 无新代码；本任务是验证性审计。
 
-- [ ] **Step 5.1: 验证 WorkState 与 SessionState / AppState 三层职责分明**
+- [x] **Step 5.1: 验证 WorkState 与 SessionState / AppState 三层职责分明**
 
 Run:
 ```bash
@@ -1668,7 +1668,7 @@ grep -rn "pub struct SessionState\|pub struct AppState" src/
 Run: `git diff a819ff03 -- src/exec_session/session.rs src/config/ src/state/ | head`
 Expected: 空 diff（这三处本 change 不改）。
 
-- [ ] **Step 5.2: 验证 SubagentResultMailbox 在非 pilot 路径维持原状**
+- [x] **Step 5.2: 验证 SubagentResultMailbox 在非 pilot 路径维持原状**
 
 Run:
 ```bash
@@ -1679,7 +1679,7 @@ git diff a819ff03 -- src/teams/subagent_mailbox.rs src/tools/meta/task.rs | head
 
 若 `task.rs` 因 Task 2 的 ContractDimension::State 变更有改动，确认改动仅为补 `State` arm（透传错误消息），不改 dispatch / fallback 语义。
 
-- [ ] **Step 5.3: 验证与 org-graph-dispatch-telemetry 的正交性**
+- [x] **Step 5.3: 验证与 org-graph-dispatch-telemetry 的正交性**
 
 Run:
 ```bash
@@ -1692,7 +1692,7 @@ grep -rn "WorkState\|work_state\|verify_result" openspec/changes/org-graph-dispa
 Run: `git diff a819ff03 -- openspec/changes/org-graph-dispatch-telemetry/ | head`
 Expected: 空 diff（本 change 不改 dispatch-telemetry 任何文件）。
 
-- [ ] **Step 5.4: Commit（若 Task 5 仅审计、无代码改动则跳过）**
+- [x] **Step 5.4: Commit（若 Task 5 仅审计、无代码改动则跳过）**
 
 若 Task 2 审计触发了 `task.rs` 或 `fallback.rs` 的 match arm 补丁，且尚未在 Task 2.8 提交，则此处一并提交：
 
