@@ -380,7 +380,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Consumes: `NodeType`（来自 `super::contract`）；`CoordinatorError::ContractViolation`（来自 `crate::agent::coordinator`，已存在 `{ node_type, dimension, reason }` 形状）。
 - Produces: `pub struct FieldPerms { readable: HashSet<WorkField>, writable: HashSet<WorkField> }`；`impl NodeType { pub fn field_perms(&self) -> FieldPerms }`；全字段 setter/getter（pilot: `set_verify_result` / `verify_result`；deferred: `set_generated_diff` / `generated_diff` / `set_budget` / `budget` / `set_compile_result` / `compile_result` / `set_test_result` / `test_result` / `set_human_review` / `human_review`）；`impl WorkState { pub fn inherit_for_new_turn(&self) -> WorkState }`。
 
-- [ ] **Step 2.1: 写失败测试 —— 全字段权限矩阵 + 越权写拒绝 + 预留字段强制为空 + step_log 记入**
+- [x] **Step 2.1: 写失败测试 —— 全字段权限矩阵 + 越权写拒绝 + 预留字段强制为空 + step_log 记入**
 
 在 `src/org_graph/work_state.rs` 的 `#[cfg(test)] mod tests` 末尾追加测试（此时 `field_perms` / setter / getter 尚未实现 → 编译失败 = 红）。
 
@@ -612,12 +612,12 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
     }
 ```
 
-- [ ] **Step 2.2: 跑测试验证失败（红）**
+- [x] **Step 2.2: 跑测试验证失败（红）**
 
 Run: `cargo test --lib org_graph::work_state::tests --no-run`
 Expected: 编译失败 —— `field_perms` / setter / getter / `inherit_for_new_turn` / `CoordinatorError` 引用未定义。
 
-- [ ] **Step 2.3: 在 ContractDimension 新增 State 变体**
+- [x] **Step 2.3: 在 ContractDimension 新增 State 变体**
 
 编辑 `src/org_graph/contract.rs`，给 `ContractDimension` 加 `State` 变体（保持 enum 顺序，置于 `Budget` 之后）：
 
@@ -653,7 +653,7 @@ pub enum ContractDimension {
     }
 ```
 
-- [ ] **Step 2.4: 审计全仓库对 ContractDimension 的 exhaustive match**
+- [x] **Step 2.4: 审计全仓库对 ContractDimension 的 exhaustive match**
 
 Run:
 ```bash
@@ -670,7 +670,7 @@ grep -rn "match.*ContractDimension\|ContractDimension::" src/ | grep -v "test\|/
 Run: `cargo build --lib`
 Expected: 编译通过；若有遗漏的 exhaustive match，编译器会报 `error[E0004]: non-exhaustive patterns`，按报错补 `State` arm。
 
-- [ ] **Step 2.5: 实现 FieldPerms + NodeType::field_perms + 全字段读写 API + inherit_for_new_turn**
+- [x] **Step 2.5: 实现 FieldPerms + NodeType::field_perms + 全字段读写 API + inherit_for_new_turn**
 
 在 `src/org_graph/work_state.rs` 顶部 imports 追加 `CoordinatorError` / `ContractDimension`（注意：`field_perms` impl 必须放在 `work_state.rs`，因为返回类型 `FieldPerms` 引用 `WorkField`，遵循 Rust orphan rule；不能放 `contract.rs`）：
 
@@ -969,17 +969,17 @@ pub use work_state::{
 
 注意：`work_state.rs` 此刻开始依赖 `crate::agent::coordinator::CoordinatorError` 与 `chrono`。检查 `Cargo.toml` 已有 `chrono` 依赖（coordinator.rs 已用），无需新增。
 
-- [ ] **Step 2.6: 跑测试验证通过（绿）**
+- [x] **Step 2.6: 跑测试验证通过（绿）**
 
 Run: `cargo test --lib org_graph::work_state::tests`
 Expected: PASS —— Task 1 的 5 个 serde 测试 + Task 2 新增的 11 个权限测试全绿；`contract_dimension_serde_roundtrip` 也通过（已含 `State`）。
 
-- [ ] **Step 2.7: 跑全库 build 验证 exhaustive match 已补齐**
+- [x] **Step 2.7: 跑全库 build 验证 exhaustive match 已补齐**
 
 Run: `cargo build --lib && cargo test --lib`
 Expected: build 通过；既有 `agent::coordinator` / `agent::fallback` / `tools::meta::task` 测试零回归。
 
-- [ ] **Step 2.8: Commit**
+- [x] **Step 2.8: Commit**
 
 ```bash
 git add src/org_graph/work_state.rs src/org_graph/contract.rs src/org_graph/mod.rs

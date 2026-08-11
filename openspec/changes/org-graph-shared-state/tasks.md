@@ -8,9 +8,9 @@
 
 ## 2. 字段级访问权限（真强制）
 
-- [ ] 2.1 设计并定义每个 `NodeType` 的「可读字段集 + 可写字段集」声明矩阵，覆盖全部 8 个 `WorkField`（含预留字段 `compile_result` / `test_result` / `human_review` 对所有现存 `NodeType` 的 writable 强制为 `{}`——这是全字段权限真强制的核心保证；矩阵细则见 design doc §4）
-- [ ] 2.2 实现 `WorkState` 受权限约束的读写 API：调用方提供 `NodeType`，越权写直接返回 `ContractViolation`（复用 `ContractDimension`，复用 `Permission` 还是新增 `State` 维度见 design 阶段定）
-- [ ] 2.3 为权限强制加单测：节点正常读写授权字段成功（含 GeneralPurpose 合成写 `generated_diff`/`budget`）、越权写字段被拒绝并触发 `ContractViolation{State}`、授权读不写审计日志而授权写记入 `step_log`、**预留字段强制为空**（任何 `NodeType` 调 `set_compile_result`/`set_test_result`/`set_human_review` → `ContractViolation{State}`）
+- [x] 2.1 设计并定义每个 `NodeType` 的「可读字段集 + 可写字段集」声明矩阵，覆盖全部 8 个 `WorkField`（含预留字段 `compile_result` / `test_result` / `human_review` 对所有现存 `NodeType` 的 writable 强制为 `{}`——这是全字段权限真强制的核心保证；矩阵细则见 design doc §4）
+- [x] 2.2 实现 `WorkState` 受权限约束的读写 API：调用方提供 `NodeType`，越权写直接返回 `ContractViolation`（复用 `ContractDimension`，复用 `Permission` 还是新增 `State` 维度见 design 阶段定）
+- [x] 2.3 为权限强制加单测：节点正常读写授权字段成功（含 GeneralPurpose 合成写 `generated_diff`/`budget`）、越权写字段被拒绝并触发 `ContractViolation{State}`、授权读不写审计日志而授权写记入 `step_log`、**预留字段强制为空**（任何 `NodeType` 调 `set_compile_result`/`set_test_result`/`set_human_review` → `ContractViolation{State}`）
 
 ## 3. turn 集成与检查点持久化
 
