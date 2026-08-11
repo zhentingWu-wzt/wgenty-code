@@ -15,6 +15,7 @@ use super::{NodeRuntime, ProcessCommandExecutor, SessionCoordinator, SessionSour
 struct RuntimeEntry {
     runtime: Arc<NodeRuntime>,
     coordinator: Arc<RwLock<SessionCoordinator>>,
+    gate: Arc<VerifyGate>,
 }
 
 /// Lazily creates one isolated Work-Graph runtime for each trusted agent session.
@@ -66,6 +67,12 @@ impl ExecutionSessionRuntimeStore {
         Ok(entry.runtime)
     }
 
+    /// Returns the verification gate belonging to `session_id`, creating its
+    /// scoped runtime when necessary.
+    pub fn gate_for(&self, session_id: &SessionId) -> Result<Arc<VerifyGate>> {
+        Ok(self.entry_for(session_id)?.gate)
+    }
+
     fn entry_for(&self, session_id: &SessionId) -> Result<RuntimeEntry> {
         let mut entries = self
             .entries
@@ -91,10 +98,11 @@ impl ExecutionSessionRuntimeStore {
         let entry = RuntimeEntry {
             runtime: Arc::new(NodeRuntime::new_with_default_hooks(
                 Arc::clone(&coordinator),
-                gate,
+                Arc::clone(&gate),
                 self.auto_retry_max,
             )),
             coordinator,
+            gate,
         };
         entries.insert(session_id.clone(), entry.clone());
         Ok(entry)
