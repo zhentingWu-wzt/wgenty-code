@@ -1312,7 +1312,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 design doc §1.5 已基于二次 CodeGraph 查证得出结论：compile/test 闭环不存在（`NodeType` 无对应变体、`parse_node_type` 不识别、全仓库无对应节点/结果类型），唯一真实闭环是 verify——pilot = 修复 `node_runtime.rs:204` 的 `format!("{f:?}")` 结构化降级点（verify→retry 闭环真实存在、`VerifyResult.fail_reason: Option<VerifyFailure>` 强类型在内部已存在、出口降级为 String）。**Task 4.1 必须在实现期重新查证降级点仍在原位**，因为 design 与 build 之间代码库可能漂移。
 
-- [ ] **Step 4.1: 复核 pilot 路由点（D5 硬约束分支决策）**
+- [x] **Step 4.1: 复核 pilot 路由点（D5 硬约束分支决策）**
 
 按 design doc §1.5 结论 + D5 硬约束（pilot 必须含真实写字段场景），重新查证三件事：
 
@@ -1351,7 +1351,7 @@ grep -rn 'failure_reason\|NodeVerifyResult' src/ | grep -v "test\|^src/exec_sess
 
 在本步完成后，于 commit message 中记录命中分支（A/B/C）与查证证据（命中的文件:行号）。
 
-- [ ] **Step 4.2: 写失败测试 —— pilot 降级点修复 + retry 决策读 VerifyFailureKind 枚举**
+- [x] **Step 4.2: 写失败测试 —— pilot 降级点修复 + retry 决策读 VerifyFailureKind 枚举**
 
 在 `src/org_graph/work_state.rs` 的 `#[cfg(test)] mod tests` 末尾追加（验证 `VerifyOutcome::from_parts` 投影正确性）：
 
@@ -1454,12 +1454,12 @@ grep -rn 'failure_reason\|NodeVerifyResult' src/ | grep -v "test\|^src/exec_sess
     }
 ```
 
-- [ ] **Step 4.3: 跑测试验证失败（红）**
+- [x] **Step 4.3: 跑测试验证失败（红）**
 
 Run: `cargo test --lib exec_session::node_runtime::tests`
 Expected: FAIL —— `verify_node_failure_writes_structured_outcome_to_work_state` 与 `verify_node_success_clears_fail_reason_in_work_state` 失败（WorkState.verify_result 为 None，因为 verify_node 还没写 WorkState）；`verify_node_failure_reason_string_comes_from_work_state` 可能恰好通过（旧路径也产出 debug string），但源头未改。
 
-- [ ] **Step 4.4: 实现 VerifyOutcome::from_parts 投影转换**
+- [x] **Step 4.4: 实现 VerifyOutcome::from_parts 投影转换**
 
 为避免 `org_graph` 反向依赖 `exec_session`（org_graph 是纯数据层），投影转换用原语参数隔离：在 `work_state.rs` 加一个不引用 exec_session 类型的构造器（在 `impl WorkState { ... }` 之后追加独立 impl）：
 
@@ -1507,7 +1507,7 @@ fn project_outcome(result: &VerifyResult) -> crate::org_graph::VerifyOutcome {
 
 注意 imports：`VerifyResult` 来自 `super::verify_gate::VerifyResult`（已在文件顶部 `use super::verify_gate::VerifyGate;` 附近），需补 `use super::verify_gate::VerifyResult;` 或用全路径。`VerifyFailure` 来自 `super::hooks`（已在顶部 `use super::hooks::{NoHooks, SessionHooks};` 附近），需补 `use super::hooks::VerifyFailure;` 或用全路径。
 
-- [ ] **Step 4.5: 修复 node_runtime.rs:204 降级点**
+- [x] **Step 4.5: 修复 node_runtime.rs:204 降级点**
 
 编辑 `src/exec_session/node_runtime.rs` 的 `verify_node` 失败分支（line 195-217 附近）。在拿到 `result`（`VerifyResult`）后、组装 `NodeVerifyResult` 前，先写 WorkState：
 
@@ -1580,12 +1580,12 @@ fn project_outcome(result: &VerifyResult) -> crate::org_graph::VerifyOutcome {
 
 `NodeType` 需 import：在文件顶部 `use super::node::{Node, NodeContract, NodeId, NodeStatus};` 附近加 `use crate::org_graph::NodeType;`（若已被 node_runtime.rs 间接引入则跳过）。
 
-- [ ] **Step 4.6: 跑测试验证通过（绿）**
+- [x] **Step 4.6: 跑测试验证通过（绿）**
 
 Run: `cargo test --lib exec_session::node_runtime::tests`
 Expected: PASS —— Task 4 新增 3 个测试全绿；既有 `verify_node_success_transitions_to_verified` / `verify_node_failure_within_retry_budget` 等测试零回归（成功路径也写 WorkState，但既有断言不读 WorkState，故不破坏）。
 
-- [ ] **Step 4.7: 字段级权限强制在 pilot 写场景的可验证性检查**
+- [x] **Step 4.7: 字段级权限强制在 pilot 写场景的可验证性检查**
 
 pilot 的写字段场景是 `NodeType::Verification` 写 `verify_result`（Task 2 的 `field_perms` 矩阵中 `Verification.writable` 含 `VerifyResult`，已授权）。本步验证：**若改为非授权节点写，应被拦截**。
 
@@ -1617,7 +1617,7 @@ pilot 的写字段场景是 `NodeType::Verification` 写 `verify_result`（Task 
 Run: `cargo test --lib exec_session::node_runtime::tests::set_verify_result_rejects_unauthorized_node_type_at_pilot_site`
 Expected: PASS。
 
-- [ ] **Step 4.8: Commit**
+- [x] **Step 4.8: Commit**
 
 ```bash
 git add src/org_graph/work_state.rs src/exec_session/node_runtime.rs
