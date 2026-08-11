@@ -34,6 +34,7 @@ pub use node_runtime::{
     NodeRollbackResult, NodeRuntime, NodeVerificationOutcome, NodeVerifyResult, WorkGraphRunResult,
 };
 pub use node_tools::{BeginNodeTool, RollbackNodeTool, VerifyNodeTool};
+pub use runtime_store::ExecutionSessionRuntimeStore;
 pub use session::{GitRefs, SessionSource, SessionState, SessionStatus, TurnRecord};
 pub use verification_profile::{ResolvedVerificationCommands, VerificationProfile};
 pub use verify_gate::{
