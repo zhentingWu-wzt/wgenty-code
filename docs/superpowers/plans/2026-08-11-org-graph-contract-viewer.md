@@ -2,6 +2,7 @@
 change: org-graph-contract-viewer
 design-doc: docs/superpowers/specs/2026-08-11-org-graph-contract-viewer-design.md
 base-ref: 45e31838d271a4cb3617a89a42df50a691f0487c
+archived-with: 2026-08-11-org-graph-contract-viewer
 ---
 
 # Org-Graph Contract Viewer 实现计划

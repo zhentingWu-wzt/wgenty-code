@@ -1,6 +1,0 @@
-{
-  "schema": "comet.selection.v2",
-  "workflow": "classic",
-  "change": "org-graph-contract-viewer",
-  "branch": "feature/graph-engineering"
-}
