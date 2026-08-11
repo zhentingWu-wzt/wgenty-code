@@ -11,6 +11,7 @@ pub use contract::{
 };
 pub use registry::NodeRegistry;
 pub use work_state::{
-    Budget, CompileResult, FieldPerms, GeneratedDiff, HumanReview, StepAction, StepRecord,
-    TestResult, VerifyFailureKind, VerifyOutcome, WorkField, WorkState,
+    AuditCommandRun, Budget, CompileResult, FieldPerms, GeneratedDiff, GraphAuditAnchor,
+    GraphAuditEvent, GraphAuditKind, GraphAuditProfile, GraphAuditRoute, HumanReview, StepAction,
+    StepRecord, TestResult, VerifyFailureKind, VerifyOutcome, WorkField, WorkState,
 };
