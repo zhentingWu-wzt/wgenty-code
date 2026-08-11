@@ -125,7 +125,7 @@ cargo run -- daemon --port 8371
 cd web && npm run dev
 
 # 3. 启动 Tauri（第三个终端）
-cd desktop/src-tauri && cargo tauri dev
+cd desktop/src-tauri && cargo tauri dev --config tauri.conf.dev.json
 ```
 
 Dev 模式下 Tauri webview 加载 Vite dev server（HMR 热更新可用）。

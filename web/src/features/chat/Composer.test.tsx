@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Composer } from "./Composer";
 import { SessionStoreContext } from "../../state/sessionContext";
@@ -43,6 +43,20 @@ describe("Composer", () => {
 
     expect(onSend).not.toHaveBeenCalled();
     expect(input).toHaveValue("line one\nline two");
+  });
+
+  it("does not send on Enter while an IME composition is active", async () => {
+    const onSend = vi.fn();
+    const user = userEvent.setup();
+    renderComposer(onSend);
+
+    const input = screen.getByRole("textbox");
+    await user.type(input, "你好");
+    // Simulate Enter used to confirm an IME candidate (Chinese/Japanese/Korean).
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+
+    expect(onSend).not.toHaveBeenCalled();
+    expect(input).toHaveValue("你好");
   });
 
   it("disables Send when the input is empty or whitespace", async () => {
