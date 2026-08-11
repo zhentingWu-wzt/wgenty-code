@@ -896,7 +896,7 @@ git commit -m "feat(cli): add `org-graph contracts` command wiring render module
 运行：`cargo run -- org-graph contracts --format mermaid`
 预期：以 `flowchart LR` 开头，含 5 个 `["..."]:::<class>` 节点定义与 3 个 `classDef` 声明。
 
-- [x] **Step 6（可选，CI 有 graphviz 时）: dot 冒烟解析** — 跳过（SKIPPED）：本机未安装 graphviz（`which dot` 无结果），按计划"无 graphviz 时跳过（不阻塞本任务）"条件触发跳过。DOT 语法合法性已由 Task 4 单测 `render_dot_is_well_formed_with_five_nodes`（digraph 头 + 5 节点 + 闭合括号结构断言）覆盖。
+- [x] **Step 6（可选，CI 有 graphviz 时）: dot 冒烟解析** — 已验证（VERIFIED）：graphviz 15.1.1 安装后补跑，`cargo run --quiet -- org-graph contracts --format dot | dot -Tsvg -o /tmp/org-graph-contracts.svg` 退出码 0，生成 7520 字节合法 SVG（`<?xml ...?>` 头），SVG 内含全部 5 个节点 id（explore/plan/generalpurpose/verification/wgentycodeguide）。证明 render_dot 输出不仅结构合法，且能被真实 Graphviz 引擎渲染。
 
 运行：`cargo run -- org-graph contracts --format dot | dot -Tsvg -o /tmp/org-graph-contracts.svg`
 预期：若系统装有 graphviz，`dot` 成功解析生成 SVG，退出码 0；无 graphviz 时跳过（不阻塞本任务，仅作冒烟）。
