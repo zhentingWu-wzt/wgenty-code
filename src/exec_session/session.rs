@@ -360,6 +360,8 @@ mod tests {
             contract: crate::exec_session::node::NodeContract {
                 goal: "test goal".into(),
                 verify_commands: vec!["echo ok".into()],
+                compile_commands: vec![],
+                test_commands: vec![],
                 expected_files: vec![],
             },
             status: crate::exec_session::node::NodeStatus::Verified,

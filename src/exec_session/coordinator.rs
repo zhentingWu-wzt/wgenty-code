@@ -996,6 +996,8 @@ mod tests {
             contract: NodeContract {
                 goal: "test goal".to_string(),
                 verify_commands: vec!["echo ok".to_string()],
+                compile_commands: vec![],
+                test_commands: vec![],
                 expected_files: vec![],
             },
             status,

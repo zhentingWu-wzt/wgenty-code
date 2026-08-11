@@ -17,6 +17,12 @@ pub struct NodeContract {
     pub goal: String,
     /// Verify commands the runtime executes (via guardian + sandbox).
     pub verify_commands: Vec<String>,
+    /// Optional compile anchor commands. Empty preserves the legacy path.
+    #[serde(default)]
+    pub compile_commands: Vec<String>,
+    /// Optional test anchor commands. Empty preserves the legacy path.
+    #[serde(default)]
+    pub test_commands: Vec<String>,
     /// Out-of-bounds detection boundary. Empty = no boundary check.
     pub expected_files: Vec<String>,
 }
@@ -69,6 +75,8 @@ mod tests {
         let contract = NodeContract {
             goal: "add memory clear command".to_string(),
             verify_commands: vec!["cargo test".to_string(), "cargo clippy".to_string()],
+            compile_commands: vec![],
+            test_commands: vec![],
             expected_files: vec!["src/cli.rs".to_string(), "src/memory/list.rs".to_string()],
         };
         let json = serde_json::to_string(&contract).expect("serialize");
@@ -81,12 +89,24 @@ mod tests {
         let contract = NodeContract {
             goal: "explore codebase".to_string(),
             verify_commands: vec!["echo ok".to_string()],
+            compile_commands: vec![],
+            test_commands: vec![],
             expected_files: vec![],
         };
         let json = serde_json::to_string(&contract).expect("serialize");
         let deserialized: NodeContract = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(contract, deserialized);
         assert!(deserialized.expected_files.is_empty());
+    }
+
+    #[test]
+    fn node_contract_missing_anchor_arrays_defaults_to_empty() {
+        let contract: NodeContract = serde_json::from_str(
+            r#"{"goal":"legacy","verify_commands":["cargo test"],"expected_files":[]}"#,
+        )
+        .expect("legacy contract deserializes");
+        assert!(contract.compile_commands.is_empty());
+        assert!(contract.test_commands.is_empty());
     }
 
     #[test]
@@ -119,6 +139,8 @@ mod tests {
             contract: NodeContract {
                 goal: "add memory clear command".to_string(),
                 verify_commands: vec!["cargo test".to_string()],
+                compile_commands: vec![],
+                test_commands: vec![],
                 expected_files: vec!["src/cli.rs".to_string()],
             },
             status: NodeStatus::Running,
@@ -140,6 +162,8 @@ mod tests {
                 contract: NodeContract {
                     goal: "task 1".to_string(),
                     verify_commands: vec!["echo ok".to_string()],
+                    compile_commands: vec![],
+                    test_commands: vec![],
                     expected_files: vec![],
                 },
                 status: NodeStatus::Verified,
@@ -153,6 +177,8 @@ mod tests {
                 contract: NodeContract {
                     goal: "task 2".to_string(),
                     verify_commands: vec!["echo ok".to_string()],
+                    compile_commands: vec![],
+                    test_commands: vec![],
                     expected_files: vec![],
                 },
                 status: NodeStatus::Running,
