@@ -30,8 +30,61 @@ fn render_json(registry: &NodeRegistry) -> String {
 }
 
 // 以下三个格式在 Task 3/4/5 实现真实逻辑；此处为编译期桩，保证每一步都编译通过。
-fn render_table(_registry: &NodeRegistry) -> String {
-    String::new()
+
+/// budget 的紧凑表示：全 None -> "all None"，否则 key=val 逗号连接。
+fn fmt_budget(b: &crate::org_graph::ResourceBudget) -> String {
+    let mut parts = Vec::new();
+    if let Some(d) = b.max_depth {
+        parts.push(format!("depth={}", d));
+    }
+    if let Some(c) = b.max_concurrent {
+        parts.push(format!("conc={}", c));
+    }
+    if let Some(t) = b.token_budget_k {
+        parts.push(format!("tok={}", t));
+    }
+    if let Some(r) = b.max_rounds {
+        parts.push(format!("rounds={}", r));
+    }
+    if parts.is_empty() {
+        "all None".to_string()
+    } else {
+        parts.join(",")
+    }
+}
+
+/// 截断到 max 个字符（内置 name 均为 ASCII，char 计数 ≈ 显示宽度）。
+fn truncate_str(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+fn render_table(registry: &NodeRegistry) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{:<18} {:<20} {:<6} {:<11} {:<5} {:<18} {:<10} {}\n",
+        "NODE-TYPE", "NAME", "SPAWN", "MUTATE-FS", "EXEC", "IO", "BUDGET", "TOOLS"
+    ));
+    out.push_str(&format!("{}\n", "-".repeat(100)));
+    for c in registry.iter() {
+        let io = format!("{:?}->{:?}", c.input_type, c.output_type);
+        let tools = if c.capabilities.allowed_tools.is_empty() {
+            "*".to_string()
+        } else {
+            c.capabilities.allowed_tools.join(",")
+        };
+        out.push_str(&format!(
+            "{:<18} {:<20} {:<6} {:<11} {:<5} {:<18} {:<10} {}\n",
+            format!("{:?}", c.node_type),
+            truncate_str(&c.name, 20),
+            c.permissions.can_spawn,
+            c.permissions.can_mutate_fs,
+            c.permissions.can_exec,
+            truncate_str(&io, 18),
+            fmt_budget(&c.budget),
+            tools
+        ));
+    }
+    out
 }
 
 fn render_dot(_registry: &NodeRegistry) -> String {
@@ -82,5 +135,34 @@ mod tests {
         let out = render_json(&registry(true));
         assert!(out.contains("system_prompt"));
         assert!(out.contains("code exploration subagent"));
+    }
+
+    #[test]
+    fn render_table_has_header_and_five_rows() {
+        let out = render_table(&registry(true));
+        assert!(out.contains("NODE-TYPE"), "header present");
+        assert!(out.contains("NAME"));
+        for nt in [
+            "Explore",
+            "Plan",
+            "GeneralPurpose",
+            "Verification",
+            "WgentyCodeGuide",
+        ] {
+            assert!(out.contains(nt), "table missing {:?}", nt);
+        }
+        // 1 表头 + 1 分隔线 + 5 数据行 = 7 行
+        assert_eq!(out.lines().count(), 7);
+    }
+
+    #[test]
+    fn render_table_reflects_explore_readonly() {
+        let ro = render_table(&registry(true));
+        let rw = render_table(&registry(false));
+        let ro_explore = ro.lines().find(|l| l.starts_with("Explore")).unwrap_or("");
+        let rw_explore = rw.lines().find(|l| l.starts_with("Explore")).unwrap_or("");
+        assert_ne!(ro_explore, rw_explore, "explore row must differ when explore_readonly flips");
+        // readonly=true -> explore can_mutate_fs=false -> 行内含 false（在 MUTATE-FS 列）。
+        // 非 readonly -> true。两行其余列相同，故差异即 mutate_fs 反映。
     }
 }
