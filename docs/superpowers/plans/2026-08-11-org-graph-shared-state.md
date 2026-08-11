@@ -8,9 +8,9 @@ base-ref: a819ff03bb2736519ff1945491c7c21838d5e6d9
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 修复 `exec_session/node_runtime.rs:204` 的结构化降级点（强类型 `VerifyFailure` → `format!("{f:?}")` → `Option<String>`），引入 `WorkState` 强类型共享状态、字段级访问权限、turn 检查点持久化，让 pilot 路由点（verify 出口）从「解析自然语言字符串」改为「读结构化枚举字段」。
+**Goal:** 修复 `exec_session/node_runtime.rs:204` 的结构化降级点（强类型 `VerifyFailure` → `format!("{f:?}")` → `Option<String>`），引入**完整 schema** 的 `WorkState` 强类型共享状态（7+1 字段 + 全字段权限真强制）、turn 检查点持久化，让 pilot 路由点（verify 出口）从「解析自然语言字符串」改为「读结构化枚举字段」。pilot 锚定唯一真实闭环 verify_result；compile/test/human_review/budget/generated_diff 类型与权限就绪、生产写入点 deferred（详见 design §1.5）。
 
-**Architecture:** 新增 `src/org_graph/work_state.rs` 承载 `WorkState` schema + 字段权限读写 API + `VerifyOutcome`/`VerifyFailureKind`（org_graph 内聚的强类型投影，不复制完整 `VerifyResult`）。在 `ContractDimension` 新增 `State` 变体以复用 `CoordinatorError::ContractViolation` 报错路径。`WorkState` 挂在 `SessionCoordinator` 内（复用现有 `Arc<RwLock>` 锁层级），随 `begin_turn` 做 turn 间继承（requirement 保留、verify_result/step_log 重置），随 `CheckpointStore` 旁路持久化（per-turn `work_state.json`）。pilot 集成点（`verify_node` 出口）先经 `set_verify_result` 把强类型投影写入 `WorkState`（受 `NodeType::Verification` 字段权限强制），再从 `WorkState.verify_result()` 读回组装兼容期的 `failure_reason: Option<String>`，使 retry 决策改为直接读 `Option<&VerifyOutcome>` 拿 `VerifyFailureKind` 枚举分支。
+**Architecture:** 新增 `src/org_graph/work_state.rs` 承载完整 `WorkState` schema（7+1 字段：`requirement` / `generated_diff` / `compile_result` / `test_result` / `human_review` / `verify_result` / `budget` / `step_log`）+ 全部子类型（`GeneratedDiff` / `CompileResult` / `TestResult` / `HumanReview` / `Budget` / `VerifyOutcome` / `VerifyFailureKind`）+ 字段权限读写 API + `FieldPerms` / `WorkField`（8 变体）。在 `ContractDimension` 新增 `State` 变体以复用 `CoordinatorError::ContractViolation` 报错路径。`WorkState` 挂在 `SessionCoordinator` 内（复用现有 `Arc<RwLock>` 锁层级），随 `begin_turn` 做 turn 间继承（requirement 保留、其余产物字段重置），随 `CheckpointStore` 旁路持久化（per-turn `work_state.json`）。pilot 集成点（`verify_node` 出口）先经 `set_verify_result` 把强类型投影写入 `WorkState`（受 `NodeType::Verification` 字段权限强制），再从 `WorkState.verify_result()` 读回组装兼容期的 `failure_reason: Option<String>`，使 retry 决策改为直接读 `Option<&VerifyOutcome>` 拿 `VerifyFailureKind` 枚举分支。其余字段的具名 setter（`set_generated_diff` / `set_budget` / `set_compile_result` / `set_test_result` / `set_human_review`）提供实现 + 全字段权限强制，本期无生产调用点，由单测合成写入覆盖。
 
 **Tech Stack:** Rust 2021 / cargo / serde / thiserror / chrono / uuid / tokio（既有栈，零新 crate）。
 
@@ -18,11 +18,11 @@ base-ref: a819ff03bb2736519ff1945491c7c21838d5e6d9
 
 - 本 change 纯新增只读 + 结构化层；**不改** `NodeContract` 五维语义、不改 `reserve_child` / `filter_allowed_tools` 强制逻辑、不改 transcript store schema、不改 dispatch 路径。
 - `org_graph` 模块保持「纯数据 + 纯函数，零 async / I/O / 状态」；集成（`VerifyResult` → `VerifyOutcome` 投影、turn 锚定、CheckpointStore 持久化）在 `exec_session` 侧。
-- `WorkState` / `VerifyOutcome` / `VerifyFailureKind` / `FieldPerms` / `WorkField` / `StepRecord` 全部派生 `Serialize/Deserialize/Clone/Debug`（支持持久化与单测）。
-- 字段级权限**真强制**：越权写直接返回 `ContractViolation { dimension: State }`，不做「声明 + warning」软路径。
+- 所有新类型派生 `Serialize/Deserialize/Clone/Debug`（支持持久化与单测）。
+- 字段级权限**真强制**：越权写直接返回 `ContractViolation { dimension: State }`，不做「声明 + warning」软路径；**预留字段**（`compile_result` / `test_result` / `human_review`）对所有现存 `NodeType` 的 writable 强制为 `{}`。
 - `NodeVerifyResult.failure_reason: Option<String>` **本期保留**（兼容期，零回归），但源头从 `format!("{f:?}")` 改为「从 WorkState 强类型枚举读回再转 debug string」。
 - 每个 task 遵循 TDD：先写失败测试 → 跑测试见红 → 写最小实现 → 跑测试见绿 → commit。
-- `ContractDimension` 新增 `State` 变体后，全仓库 exhaustive match 需审计，补 `State` arm 或 `_ =>`（见 Task 2 Step 1）。
+- `ContractDimension` 新增 `State` 变体后，全仓库 exhaustive match 需审计，补 `State` arm 或 `_ =>`（见 Task 2 Step 3）。
 - 与 `org-graph-dispatch-telemetry` 正交：两者字段/schema 互不依赖、互不修改。
 - 所有产物使用简体中文（zh-CN）书写注释与文档字符串；代码标识符（类型/函数/变量名）保持英文。
 
@@ -30,11 +30,11 @@ base-ref: a819ff03bb2736519ff1945491c7c21838d5e6d9
 
 **新建：**
 
-- `src/org_graph/work_state.rs` —— `WorkState` schema + `VerifyOutcome` / `VerifyFailureKind`（强类型投影）+ `FieldPerms` / `WorkField`（权限矩阵）+ `StepRecord`（审计轨迹）+ `NodeType::field_perms()` impl + `WorkState` 受权限约束的读写 API（`set_verify_result` / `verify_result` / `inherit_for_new_turn`）+ `VerifyOutcome::From<&VerifyResult>` 转换逻辑。纯数据 + 纯函数，零 `exec_session` 依赖（转换逻辑用 trait + impl 隔离，见 Task 1 Step 3）。
+- `src/org_graph/work_state.rs` —— 完整 `WorkState` schema（7+1 字段）+ 全部子类型（`GeneratedDiff` / `CompileResult` / `TestResult` / `HumanReview` / `Budget` / `VerifyOutcome` / `VerifyFailureKind`）+ `FieldPerms` / `WorkField`（8 变体，权限矩阵）+ `StepRecord` / `StepAction`（审计轨迹）+ `NodeType::field_perms()` impl + `WorkState` 受权限约束的全字段读写 API（pilot 集成的 `set_verify_result` / `verify_result` + deferred 字段的 `set_generated_diff` / `set_budget` / `set_compile_result` / `set_test_result` / `set_human_review` 及对应 getter + `inherit_for_new_turn`）+ `VerifyOutcome::from_parts` 构造器。纯数据 + 纯函数，零 `exec_session` 依赖（投影转换用原语参数隔离，见 Task 4 Step 4）。
 
 **修改：**
 
-- `src/org_graph/mod.rs` —— 导出 `pub mod work_state;` 及 `WorkState` / `VerifyOutcome` / `VerifyFailureKind` / `FieldPerms` / `WorkField` / `StepRecord`。
+- `src/org_graph/mod.rs` —— 导出 `pub mod work_state;` 及全部公开类型。
 - `src/org_graph/contract.rs` —— `ContractDimension` 新增 `State` 变体（置于 `Budget` 之后，保持 enum 序以减小 serde 影响面）。
 - `src/exec_session/coordinator.rs` —— `SessionCoordinator` 新增 `work_state: WorkState` 字段；`SessionCoordinator::new` 初始化；`begin_turn` 在 turn 链推进后调用 `self.work_state = self.work_state.inherit_for_new_turn()`；新增 `work_state()` / `work_state_mut()` 访问器。
 - `src/exec_session/node_runtime.rs` —— `verify_node` 出口（line 204 附近）改为：先把 `VerifyResult` 投影成 `VerifyOutcome` 并经 `set_verify_result(NodeType::Verification, outcome)` 写入 `WorkState`，再从 `verify_result(NodeType::Verification)` 读回组装 `failure_reason`；retry 决策改为读 `Option<&VerifyOutcome>` 拿 `VerifyFailureKind` 枚举分支。
@@ -44,7 +44,7 @@ base-ref: a819ff03bb2736519ff1945491c7c21838d5e6d9
 
 ---
 
-### Task 1: WorkState schema 与模块骨架
+### Task 1: WorkState 完整 schema 与模块骨架
 
 **Files:**
 - Create: `src/org_graph/work_state.rs`
@@ -53,17 +53,19 @@ base-ref: a819ff03bb2736519ff1945491c7c21838d5e6d9
 
 **Interfaces:**
 - Consumes: `NodeType`（来自 `super::contract`，已存在）；后续 Task 4 会从 `crate::exec_session::verify_gate::VerifyResult` / `crate::exec_session::hooks::VerifyFailure` 投影转换。
-- Produces: `pub struct WorkState { requirement: Option<String>, verify_result: Option<VerifyOutcome>, step_log: Vec<StepRecord> }`；`pub struct VerifyOutcome { success: bool, fail_reason: Option<VerifyFailureKind> }`；`pub enum VerifyFailureKind { CommandFailed { exit_code: Option<i32>, stderr: String }, BoundaryViolation { unexpected_files: Vec<String> } }`；`pub struct StepRecord { node_type: NodeType, field: WorkField, action: StepAction, timestamp: String }`；`pub enum WorkField { Requirement, VerifyResult, StepLog }`；`pub enum StepAction { Read, Wrote }`。
+- Produces: 完整 schema 类型族（签名见 Step 1.3 代码块），后续 Task 2/3/4 全部依赖。
 
-- [ ] **Step 1.1: 写失败测试 —— schema serde 往返 + 默认值**
+- [ ] **Step 1.1: 写失败测试 —— schema serde 往返 + 默认值（全字段 + 全子类型）**
 
-在新建文件 `src/org_graph/work_state.rs` 末尾的 `#[cfg(test)] mod tests` 中，先写测试（此时类型未定义 → 编译失败 = 红）。
+在新建文件 `src/org_graph/work_state.rs` 末尾的 `#[cfg(test)] mod tests` 中先写测试（此时类型未定义 → 编译失败 = 红）。
 
 ```rust
-//! WorkState: per-task 结构化工作产物 schema + 字段权限读写 API。
+//! WorkState: per-task 结构化工作产物 schema（完整 7+1 字段）+ 字段权限读写 API。
 //!
 //! 本模块保持 org_graph「纯数据 + 纯函数」风格：无 async / I/O / 状态。
 //! `exec_session` 侧负责把 `VerifyResult` 投影成 `VerifyOutcome` 并调用读写 API。
+//! pilot 仅锚定 verify_result（唯一真实闭环）；compile/test/human_review/budget/
+//! generated_diff 类型与权限就绪，生产写入点待将来新增节点的 change 接入（design §1.5）。
 
 use std::collections::HashSet;
 
@@ -71,18 +73,58 @@ use serde::{Deserialize, Serialize};
 
 use super::contract::NodeType;
 
-/// 当前 turn 的结构化工作产物。pilot 只强制 verify_result；
-/// 其余字段为 Option 占位，强制逻辑留后续 change（避免空壳 API）。
+/// 当前 turn 的结构化工作产物。完整 schema：全字段类型 + 全字段权限真强制。
+/// pilot 仅锚定 verify_result（唯一真实闭环）；其余字段类型与权限就绪，
+/// 生产写入点待将来新增 Compile/Test 等节点的 change 接入。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkState {
-    /// 任务原始需求（跨 turn 继承）。
+    /// 任务原始需求（跨 turn 继承；coordinator 在 turn 初始化时设置，不经节点权限 API）。
     pub requirement: Option<String>,
+    /// GeneralPurpose 产出（类型就绪，生产写入待接入）。
+    pub generated_diff: Option<GeneratedDiff>,
+    /// 预留：将来 Compile 节点写入。
+    pub compile_result: Option<CompileResult>,
+    /// 预留：将来 Test 节点写入。
+    pub test_result: Option<TestResult>,
+    /// 预留：将来人工评审节点写入。
+    pub human_review: Option<HumanReview>,
     /// pilot 核心字段：verify 结果的强类型投影。
     pub verify_result: Option<VerifyOutcome>,
+    /// 预留：预算追踪（类型就绪，生产写入待接入）。
+    pub budget: Option<Budget>,
     /// 审计轨迹（授权写记入；读不记）。
     pub step_log: Vec<StepRecord>,
-    // generated_diff / test_result / human_review / budget:
-    // spec 列出但 pilot 不涉及，本期不声明读写强制逻辑（避免空壳 API）。
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GeneratedDiff {
+    pub summary: String,
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompileResult {
+    pub ok: bool,
+    pub stderr: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TestResult {
+    pub pass: bool,
+    pub failed_cases: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum HumanReview {
+    Approve,
+    Reject,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Budget {
+    pub max_iter: u32,
+    pub iter_used: u32,
+    pub token_used: u64,
 }
 
 /// org_graph 内聚的独立类型（exec_session 集成时从 VerifyResult 投影转换）。
@@ -110,7 +152,12 @@ pub enum VerifyFailureKind {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum WorkField {
     Requirement,
+    GeneratedDiff,
+    CompileResult,
+    TestResult,
+    HumanReview,
     VerifyResult,
+    Budget,
     StepLog,
 }
 
@@ -141,20 +188,43 @@ mod tests {
         let back: WorkState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(state, back);
         assert!(state.requirement.is_none());
+        assert!(state.generated_diff.is_none());
+        assert!(state.compile_result.is_none());
+        assert!(state.test_result.is_none());
+        assert!(state.human_review.is_none());
         assert!(state.verify_result.is_none());
+        assert!(state.budget.is_none());
         assert!(state.step_log.is_empty());
     }
 
     #[test]
-    fn workstate_serde_roundtrip_populated() {
+    fn workstate_serde_roundtrip_populated_all_fields() {
         let state = WorkState {
             requirement: Some("实现 WorkState".into()),
+            generated_diff: Some(GeneratedDiff {
+                summary: "改 3 个文件".into(),
+                files: vec!["a.rs".into(), "b.rs".into()],
+            }),
+            compile_result: Some(CompileResult {
+                ok: false,
+                stderr: "error: mismatched types".into(),
+            }),
+            test_result: Some(TestResult {
+                pass: false,
+                failed_cases: vec!["test_a".into()],
+            }),
+            human_review: Some(HumanReview::Reject),
             verify_result: Some(VerifyOutcome {
                 success: false,
                 fail_reason: Some(VerifyFailureKind::CommandFailed {
                     exit_code: Some(1),
-                    stderr: "error: mismatched types".into(),
+                    stderr: "command failed".into(),
                 }),
+            }),
+            budget: Some(Budget {
+                max_iter: 5,
+                iter_used: 2,
+                token_used: 1024,
             }),
             step_log: vec![StepRecord {
                 node_type: NodeType::Verification,
@@ -166,6 +236,43 @@ mod tests {
         let json = serde_json::to_string(&state).expect("serialize");
         let back: WorkState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(state, back);
+    }
+
+    #[test]
+    fn subtypes_serde_roundtrip() {
+        // GeneratedDiff
+        let gd = GeneratedDiff {
+            summary: "s".into(),
+            files: vec!["x".into()],
+        };
+        let back: GeneratedDiff =
+            serde_json::from_str(&serde_json::to_string(&gd).unwrap()).unwrap();
+        assert_eq!(gd, back);
+
+        // CompileResult
+        let cr = CompileResult { ok: true, stderr: String::new() };
+        let back: CompileResult =
+            serde_json::from_str(&serde_json::to_string(&cr).unwrap()).unwrap();
+        assert_eq!(cr, back);
+
+        // TestResult
+        let tr = TestResult { pass: false, failed_cases: vec!["c1".into()] };
+        let back: TestResult =
+            serde_json::from_str(&serde_json::to_string(&tr).unwrap()).unwrap();
+        assert_eq!(tr, back);
+
+        // HumanReview（两个变体）
+        for hr in [HumanReview::Approve, HumanReview::Reject] {
+            let back: HumanReview =
+                serde_json::from_str(&serde_json::to_string(&hr).unwrap()).unwrap();
+            assert_eq!(hr, back);
+        }
+
+        // Budget
+        let b = Budget { max_iter: 3, iter_used: 1, token_used: 500 };
+        let back: Budget =
+            serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
+        assert_eq!(b, back);
     }
 
     #[test]
@@ -190,17 +297,21 @@ mod tests {
     }
 
     #[test]
-    fn verifyoutcome_default_is_success_no_fail() {
-        // 默认构造：success=true、fail_reason=None。
-        let outcome = VerifyOutcome {
-            success: true,
-            fail_reason: None,
-        };
-        let json = serde_json::to_string(&outcome).expect("serialize");
-        let back: VerifyOutcome = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(outcome, back);
-        assert!(back.success);
-        assert!(back.fail_reason.is_none());
+    fn workfield_has_eight_variants() {
+        // 全字段权限矩阵依赖 8 个 WorkField 变体；缺一个会让 Task 2 矩阵不完整。
+        let all = [
+            WorkField::Requirement,
+            WorkField::GeneratedDiff,
+            WorkField::CompileResult,
+            WorkField::TestResult,
+            WorkField::HumanReview,
+            WorkField::VerifyResult,
+            WorkField::Budget,
+            WorkField::StepLog,
+        ];
+        // 8 个互异（Hash 去重后仍 8 个）。
+        let set: HashSet<WorkField> = all.iter().copied().collect();
+        assert_eq!(set.len(), 8);
     }
 }
 ```
@@ -228,24 +339,27 @@ pub use contract::{
 };
 pub use registry::NodeRegistry;
 pub use work_state::{
-    StepAction, StepRecord, VerifyFailureKind, VerifyOutcome, WorkField, WorkState,
+    Budget, CompileResult, GeneratedDiff, HumanReview, StepAction, StepRecord, TestResult,
+    VerifyFailureKind, VerifyOutcome, WorkField, WorkState,
 };
 ```
 
 - [ ] **Step 1.4: 跑测试验证通过（绿）**
 
 Run: `cargo test --lib org_graph::work_state::tests`
-Expected: PASS —— 4 个测试全绿（serde 往返、默认值、枚举变体不丢类型）。
+Expected: PASS —— 5 个测试全绿（空 schema 往返、全字段填充往返、子类型往返、VerifyFailureKind 全变体、WorkField 8 变体）。
 
 - [ ] **Step 1.5: Commit**
 
 ```bash
 git add src/org_graph/work_state.rs src/org_graph/mod.rs
-git commit -m "feat(org-graph): add WorkState schema + VerifyOutcome/VerifyFailureKind
+git commit -m "feat(org-graph): add full WorkState schema (7+1 fields) + subtypes
 
-Task 1 (schema 骨架): 新增 work_state.rs 承载 per-task 结构化工作产物。
-WorkState 含 requirement/verify_result/step_log 三字段；VerifyOutcome/VerifyFailureKind
-为 org_graph 内聚的强类型投影（独立于 exec_session::hooks::VerifyFailure，避免反向依赖）。
+Task 1 (完整 schema 骨架): 新增 work_state.rs 承载 per-task 结构化工作产物。
+WorkState 完整 7+1 字段（requirement/generated_diff/compile_result/test_result/
+human_review/verify_result/budget/step_log）+ 子类型 GeneratedDiff/CompileResult/
+TestResult/HumanReview/Budget/VerifyOutcome/VerifyFailureKind。pilot 仅锚定
+verify_result；其余字段类型就绪，生产写入点 deferred（design §1.5）。
 全部派生 Serialize/Deserialize/Clone/Debug 以支持 CheckpointStore 持久化与单测。
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
@@ -253,10 +367,10 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 ---
 
-### Task 2: 字段级访问权限（真强制）
+### Task 2: 字段级访问权限（全字段真强制）
 
 **Files:**
-- Modify: `src/org_graph/work_state.rs`（新增 `FieldPerms` / `NodeType::field_perms()` impl / 读写 API）
+- Modify: `src/org_graph/work_state.rs`（新增 `FieldPerms` / `NodeType::field_perms()` impl / 全字段读写 API / `inherit_for_new_turn`）
 - Modify: `src/org_graph/contract.rs`（`ContractDimension` 新增 `State` 变体）
 - Modify: `src/org_graph/mod.rs`（导出 `FieldPerms`）
 - Audit: 全仓库对 `ContractDimension` 的 exhaustive match
@@ -264,30 +378,57 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `NodeType`（来自 `super::contract`）；`CoordinatorError::ContractViolation`（来自 `crate::agent::coordinator`，已存在 `{ node_type, dimension, reason }` 形状）。
-- Produces: `pub struct FieldPerms { readable: HashSet<WorkField>, writable: HashSet<WorkField> }`；`impl NodeType { pub fn field_perms(&self) -> FieldPerms }`；`impl WorkState { pub fn set_verify_result(&mut self, caller: NodeType, outcome: VerifyOutcome) -> Result<(), CoordinatorError>; pub fn verify_result(&self, caller: NodeType) -> Result<Option<&VerifyOutcome>, CoordinatorError> }`；`impl WorkState { pub fn inherit_for_new_turn(&self) -> WorkState }`。
+- Produces: `pub struct FieldPerms { readable: HashSet<WorkField>, writable: HashSet<WorkField> }`；`impl NodeType { pub fn field_perms(&self) -> FieldPerms }`；全字段 setter/getter（pilot: `set_verify_result` / `verify_result`；deferred: `set_generated_diff` / `generated_diff` / `set_budget` / `budget` / `set_compile_result` / `compile_result` / `set_test_result` / `test_result` / `set_human_review` / `human_review`）；`impl WorkState { pub fn inherit_for_new_turn(&self) -> WorkState }`。
 
-- [ ] **Step 2.1: 写失败测试 —— 权限矩阵 + 越权写拒绝 + step_log 记入**
+- [ ] **Step 2.1: 写失败测试 —— 全字段权限矩阵 + 越权写拒绝 + 预留字段强制为空 + step_log 记入**
 
-在 `src/org_graph/work_state.rs` 的 `#[cfg(test)] mod tests` 末尾追加测试（此时 `field_perms` / `set_verify_result` / `verify_result` 尚未实现 → 编译失败 = 红）。
+在 `src/org_graph/work_state.rs` 的 `#[cfg(test)] mod tests` 末尾追加测试（此时 `field_perms` / setter / getter 尚未实现 → 编译失败 = 红）。
 
 ```rust
     #[test]
-    fn field_perms_verification_can_write_verify_result_and_steplog() {
+    fn field_perms_verification_writes_verify_result_reads_broad() {
         let perms = NodeType::Verification.field_perms();
+        // 写：仅 verify_result（step_log 由授权写自动记入，不直接 set）。
         assert!(perms.writable.contains(&WorkField::VerifyResult));
-        assert!(perms.writable.contains(&WorkField::StepLog));
-        assert!(perms.readable.contains(&WorkField::Requirement));
-        assert!(perms.readable.contains(&WorkField::VerifyResult));
-        assert!(perms.readable.contains(&WorkField::StepLog));
+        assert!(!perms.writable.contains(&WorkField::StepLog));
+        // 读：requirement/verify_result/compile_result/test_result/step_log。
+        for f in [
+            WorkField::Requirement,
+            WorkField::VerifyResult,
+            WorkField::CompileResult,
+            WorkField::TestResult,
+            WorkField::StepLog,
+        ] {
+            assert!(perms.readable.contains(&f), "Verification should read {f:?}");
+        }
+        // 预留字段对 Verification 不可写。
+        for f in [WorkField::CompileResult, WorkField::TestResult, WorkField::HumanReview] {
+            assert!(!perms.writable.contains(&f), "Verification must not write {f:?}");
+        }
     }
 
     #[test]
-    fn field_perms_generalpurpose_can_read_verify_but_not_write() {
-        // GeneralPurpose 是协调者：可读 verify_result 做 retry 决策，但不能写。
+    fn field_perms_generalpurpose_writes_diff_budget_reads_all() {
         let perms = NodeType::GeneralPurpose.field_perms();
-        assert!(perms.readable.contains(&WorkField::VerifyResult));
+        // 写：generated_diff + budget。
+        assert!(perms.writable.contains(&WorkField::GeneratedDiff));
+        assert!(perms.writable.contains(&WorkField::Budget));
+        // 读：全 8 字段中除 step_log 外基本可读（协调者需广视野）。
+        for f in [
+            WorkField::Requirement,
+            WorkField::GeneratedDiff,
+            WorkField::VerifyResult,
+            WorkField::CompileResult,
+            WorkField::TestResult,
+            WorkField::HumanReview,
+            WorkField::Budget,
+            WorkField::StepLog,
+        ] {
+            assert!(perms.readable.contains(&f), "GeneralPurpose should read {f:?}");
+        }
+        // GeneralPurpose 不可写 verify_result / 预留字段。
         assert!(!perms.writable.contains(&WorkField::VerifyResult));
-        assert!(perms.writable.contains(&WorkField::StepLog));
+        assert!(!perms.writable.contains(&WorkField::HumanReview));
     }
 
     #[test]
@@ -295,8 +436,8 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
         for nt in [NodeType::Explore, NodeType::Plan, NodeType::WgentyCodeGuide] {
             let perms = nt.field_perms();
             assert!(perms.readable.contains(&WorkField::Requirement));
-            assert!(!perms.readable.contains(&WorkField::VerifyResult));
-            assert!(perms.writable.is_empty(), "{:?} should have empty writable", nt);
+            assert_eq!(perms.readable.len(), 1, "{nt:?} should only read requirement");
+            assert!(perms.writable.is_empty(), "{nt:?} should have empty writable");
         }
     }
 
@@ -310,7 +451,6 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
                 stderr: "boom".into(),
             }),
         };
-        // Verification 节点授权写：成功，且 step_log 记入一条 Wrote 记录。
         state
             .set_verify_result(NodeType::Verification, outcome.clone())
             .expect("Verification authorized to write verify_result");
@@ -326,7 +466,6 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
     fn set_verify_result_rejects_unauthorized_node_with_contract_violation_state() {
         let mut state = WorkState::default();
         let outcome = VerifyOutcome { success: true, fail_reason: None };
-        // Explore 节点无写权限：应被拒绝，且 WorkState 保持写入前的值。
         let err = state
             .set_verify_result(NodeType::Explore, outcome.clone())
             .expect_err("Explore must not write verify_result");
@@ -339,14 +478,85 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
             }
             other => panic!("expected ContractViolation(State), got {:?}", other),
         }
-        // WorkState 不变。
         assert!(state.verify_result.is_none());
         assert!(state.step_log.is_empty());
     }
 
     #[test]
+    fn set_generated_diff_authorizes_generalpurpose_and_logs_step() {
+        // deferred 字段：GeneralPurpose 合成写入验证（无生产调用点，单测覆盖权限强制）。
+        let mut state = WorkState::default();
+        let diff = GeneratedDiff { summary: "改 1 文件".into(), files: vec!["a.rs".into()] };
+        state
+            .set_generated_diff(NodeType::GeneralPurpose, diff.clone())
+            .expect("GeneralPurpose authorized to write generated_diff");
+        assert_eq!(state.generated_diff, Some(diff));
+        assert_eq!(state.step_log.len(), 1);
+        assert_eq!(state.step_log[0].field, WorkField::GeneratedDiff);
+    }
+
+    #[test]
+    fn set_budget_authorizes_generalpurpose() {
+        let mut state = WorkState::default();
+        let budget = Budget { max_iter: 5, iter_used: 1, token_used: 100 };
+        state
+            .set_budget(NodeType::GeneralPurpose, budget.clone())
+            .expect("GeneralPurpose authorized to write budget");
+        assert_eq!(state.budget, Some(budget));
+    }
+
+    #[test]
+    fn reserved_fields_reject_all_node_types() {
+        // 真强制核心保证：compile_result/test_result/human_review 对所有现存 NodeType
+        // writable 都为 {}。逐一验证越权写返回 ContractViolation{State}。
+        let all_nodes = [
+            NodeType::Explore,
+            NodeType::Plan,
+            NodeType::GeneralPurpose,
+            NodeType::Verification,
+            NodeType::WgentyCodeGuide,
+        ];
+        for nt in all_nodes {
+            let mut state = WorkState::default();
+            let err = state
+                .set_compile_result(nt, CompileResult { ok: true, stderr: String::new() })
+                .err();
+            assert!(
+                matches!(
+                    err,
+                    Some(crate::agent::coordinator::CoordinatorError::ContractViolation { .. })
+                ),
+                "set_compile_result must reject {nt:?}"
+            );
+
+            let mut state = WorkState::default();
+            let err = state
+                .set_test_result(nt, TestResult { pass: true, failed_cases: vec![] })
+                .err();
+            assert!(
+                matches!(
+                    err,
+                    Some(crate::agent::coordinator::CoordinatorError::ContractViolation { .. })
+                ),
+                "set_test_result must reject {nt:?}"
+            );
+
+            let mut state = WorkState::default();
+            let err = state
+                .set_human_review(nt, HumanReview::Approve)
+                .err();
+            assert!(
+                matches!(
+                    err,
+                    Some(crate::agent::coordinator::CoordinatorError::ContractViolation { .. })
+                ),
+                "set_human_review must reject {nt:?}"
+            );
+        }
+    }
+
+    #[test]
     fn verify_result_read_authorizes_verification_and_skips_log() {
-        // 读授权：成功返回 Option<&VerifyOutcome>；读不记 step_log（避免爆 log）。
         let mut state = WorkState::default();
         state.verify_result = Some(VerifyOutcome { success: true, fail_reason: None });
         let got = state
@@ -371,12 +581,41 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
             other => panic!("expected ContractViolation(State), got {:?}", other),
         }
     }
+
+    #[test]
+    fn inherit_for_new_turn_keeps_requirement_resets_all_products() {
+        // turn 间继承：requirement 保留；其余产物字段（含 deferred）全部重置。
+        let state = WorkState {
+            requirement: Some("跨 turn".into()),
+            generated_diff: Some(GeneratedDiff { summary: "s".into(), files: vec![] }),
+            compile_result: Some(CompileResult { ok: true, stderr: String::new() }),
+            test_result: Some(TestResult { pass: true, failed_cases: vec![] }),
+            human_review: Some(HumanReview::Approve),
+            verify_result: Some(VerifyOutcome { success: true, fail_reason: None }),
+            budget: Some(Budget { max_iter: 1, iter_used: 1, token_used: 1 }),
+            step_log: vec![StepRecord {
+                node_type: NodeType::Verification,
+                field: WorkField::VerifyResult,
+                action: StepAction::Wrote,
+                timestamp: "2026-08-11T00:00:00Z".into(),
+            }],
+        };
+        let next = state.inherit_for_new_turn();
+        assert_eq!(next.requirement.as_deref(), Some("跨 turn"));
+        assert!(next.generated_diff.is_none());
+        assert!(next.compile_result.is_none());
+        assert!(next.test_result.is_none());
+        assert!(next.human_review.is_none());
+        assert!(next.verify_result.is_none());
+        assert!(next.budget.is_none());
+        assert!(next.step_log.is_empty());
+    }
 ```
 
 - [ ] **Step 2.2: 跑测试验证失败（红）**
 
 Run: `cargo test --lib org_graph::work_state::tests --no-run`
-Expected: 编译失败 —— `field_perms` / `set_verify_result` / `verify_result` / `CoordinatorError` 引用未定义。
+Expected: 编译失败 —— `field_perms` / setter / getter / `inherit_for_new_turn` / `CoordinatorError` 引用未定义。
 
 - [ ] **Step 2.3: 在 ContractDimension 新增 State 变体**
 
@@ -431,15 +670,18 @@ grep -rn "match.*ContractDimension\|ContractDimension::" src/ | grep -v "test\|/
 Run: `cargo build --lib`
 Expected: 编译通过；若有遗漏的 exhaustive match，编译器会报 `error[E0004]: non-exhaustive patterns`，按报错补 `State` arm。
 
-- [ ] **Step 2.5: 实现 FieldPerms + NodeType::field_perms + 读写 API**
+- [ ] **Step 2.5: 实现 FieldPerms + NodeType::field_perms + 全字段读写 API + inherit_for_new_turn**
 
-在 `src/org_graph/work_state.rs` 顶部 imports 已有 `HashSet`、`NodeType`。追加类型与 impl（注意：`field_perms` impl 必须放在 `work_state.rs`，因为返回类型 `FieldPerms` 引用 `WorkField`，遵循 Rust orphan rule；不能放 `contract.rs`）：
+在 `src/org_graph/work_state.rs` 顶部 imports 追加 `CoordinatorError` / `ContractDimension`（注意：`field_perms` impl 必须放在 `work_state.rs`，因为返回类型 `FieldPerms` 引用 `WorkField`，遵循 Rust orphan rule；不能放 `contract.rs`）：
 
 ```rust
 use crate::agent::coordinator::CoordinatorError;
-
 use crate::org_graph::contract::ContractDimension;
+```
 
+追加类型与 impl：
+
+```rust
 /// 字段权限矩阵：一个 NodeType 声明可读 / 可写的字段子集。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FieldPerms {
@@ -451,24 +693,41 @@ impl NodeType {
     /// 返回该节点类型对 WorkState 字段的可读 / 可写权限矩阵。
     ///
     /// 设计依据 design doc §4：
-    /// - Verification：执行 verify → 写 verify_result + step_log，读三类字段。
-    /// - GeneralPurpose（可做 retry 决策的协调者）：读 verify_result，写 step_log。
-    /// - Explore / Plan / WgentyCodeGuide：本期不涉及 verify_result，只读 requirement。
+    /// - Verification：执行 verify → 写 verify_result；读 requirement/verify_result/
+    ///   compile_result/test_result/step_log。step_log 由授权写自动记入，不直接 set。
+    /// - GeneralPurpose（协调/工作节点）：写 generated_diff/budget；广泛读全 8 字段。
+    /// - Explore / Plan / WgentyCodeGuide：只读 requirement，不写任何字段。
+    ///
+    /// compile_result/test_result/human_review 对所有现存 NodeType 的 writable 都为 {}
+    /// （预留字段——类型就绪，生产写入点待将来新增节点的 change）。
     pub fn field_perms(&self) -> FieldPerms {
         match self {
             NodeType::Verification => FieldPerms {
-                readable: [WorkField::Requirement, WorkField::VerifyResult, WorkField::StepLog]
-                    .into_iter()
-                    .collect(),
-                writable: [WorkField::VerifyResult, WorkField::StepLog]
-                    .into_iter()
-                    .collect(),
+                readable: [
+                    WorkField::Requirement,
+                    WorkField::VerifyResult,
+                    WorkField::CompileResult,
+                    WorkField::TestResult,
+                    WorkField::StepLog,
+                ]
+                .into_iter()
+                .collect(),
+                writable: [WorkField::VerifyResult].into_iter().collect(),
             },
             NodeType::GeneralPurpose => FieldPerms {
-                readable: [WorkField::Requirement, WorkField::VerifyResult, WorkField::StepLog]
-                    .into_iter()
-                    .collect(),
-                writable: [WorkField::StepLog].into_iter().collect(),
+                readable: [
+                    WorkField::Requirement,
+                    WorkField::GeneratedDiff,
+                    WorkField::VerifyResult,
+                    WorkField::CompileResult,
+                    WorkField::TestResult,
+                    WorkField::HumanReview,
+                    WorkField::Budget,
+                    WorkField::StepLog,
+                ]
+                .into_iter()
+                .collect(),
+                writable: [WorkField::GeneratedDiff, WorkField::Budget].into_iter().collect(),
             },
             NodeType::Explore | NodeType::Plan | NodeType::WgentyCodeGuide => FieldPerms {
                 readable: [WorkField::Requirement].into_iter().collect(),
@@ -479,8 +738,8 @@ impl NodeType {
 }
 
 impl WorkState {
-    /// 写 verify_result：查 caller 的 field_perms，越权 → ContractViolation{State}。
-    /// 写成功自动追加 step_log（谁在何时写了哪个字段）。
+    /// 写 verify_result：pilot 核心字段。查 caller 的 field_perms，越权 →
+    /// ContractViolation{State}。写成功自动追加 step_log。
     pub fn set_verify_result(
         &mut self,
         caller: NodeType,
@@ -494,17 +753,11 @@ impl WorkState {
             });
         }
         self.verify_result = Some(outcome);
-        self.step_log.push(StepRecord {
-            node_type: caller,
-            field: WorkField::VerifyResult,
-            action: StepAction::Wrote,
-            timestamp: chrono::Utc::now().to_rfc3339(),
-        });
+        self.push_step(caller, WorkField::VerifyResult, StepAction::Wrote);
         Ok(())
     }
 
-    /// 读 verify_result：查 caller 的 field_perms，越权读也报（读写对称，便于审计）。
-    /// 读不记 step_log（读高频，记会爆）。
+    /// 读 verify_result：查 caller 的 field_perms，越权读也报。读不记 step_log。
     pub fn verify_result(
         &self,
         caller: NodeType,
@@ -519,13 +772,186 @@ impl WorkState {
         Ok(self.verify_result.as_ref())
     }
 
-    /// turn 间继承：requirement 克隆保留，verify_result / step_log 清空。
+    /// 写 generated_diff：deferred 字段，类型 + 权限就绪，生产写入待接入。
+    pub fn set_generated_diff(
+        &mut self,
+        caller: NodeType,
+        diff: GeneratedDiff,
+    ) -> Result<(), CoordinatorError> {
+        if !caller.field_perms().writable.contains(&WorkField::GeneratedDiff) {
+            return Err(CoordinatorError::ContractViolation {
+                node_type: caller,
+                dimension: ContractDimension::State,
+                reason: "node type not permitted to write generated_diff".into(),
+            });
+        }
+        self.generated_diff = Some(diff);
+        self.push_step(caller, WorkField::GeneratedDiff, StepAction::Wrote);
+        Ok(())
+    }
+
+    pub fn generated_diff(
+        &self,
+        caller: NodeType,
+    ) -> Result<Option<&GeneratedDiff>, CoordinatorError> {
+        if !caller.field_perms().readable.contains(&WorkField::GeneratedDiff) {
+            return Err(CoordinatorError::ContractViolation {
+                node_type: caller,
+                dimension: ContractDimension::State,
+                reason: "node type not permitted to read generated_diff".into(),
+            });
+        }
+        Ok(self.generated_diff.as_ref())
+    }
+
+    /// 写 budget：deferred 字段。
+    pub fn set_budget(
+        &mut self,
+        caller: NodeType,
+        budget: Budget,
+    ) -> Result<(), CoordinatorError> {
+        if !caller.field_perms().writable.contains(&WorkField::Budget) {
+            return Err(CoordinatorError::ContractViolation {
+                node_type: caller,
+                dimension: ContractDimension::State,
+                reason: "node type not permitted to write budget".into(),
+            });
+        }
+        self.budget = Some(budget);
+        self.push_step(caller, WorkField::Budget, StepAction::Wrote);
+        Ok(())
+    }
+
+    pub fn budget(&self, caller: NodeType) -> Result<Option<&Budget>, CoordinatorError> {
+        if !caller.field_perms().readable.contains(&WorkField::Budget) {
+            return Err(CoordinatorError::ContractViolation {
+                node_type: caller,
+                dimension: ContractDimension::State,
+                reason: "node type not permitted to read budget".into(),
+            });
+        }
+        Ok(self.budget.as_ref())
+    }
+
+    /// 写 compile_result：reserved 字段——本期对所有现存 NodeType writable 为 {}。
+    /// 提供 API + 权限强制，单测合成写入验证拒绝；生产写入待将来 Compile 节点 change。
+    pub fn set_compile_result(
+        &mut self,
+        caller: NodeType,
+        result: CompileResult,
+    ) -> Result<(), CoordinatorError> {
+        if !caller.field_perms().writable.contains(&WorkField::CompileResult) {
+            return Err(CoordinatorError::ContractViolation {
+                node_type: caller,
+                dimension: ContractDimension::State,
+                reason: "node type not permitted to write compile_result".into(),
+            });
+        }
+        self.compile_result = Some(result);
+        self.push_step(caller, WorkField::CompileResult, StepAction::Wrote);
+        Ok(())
+    }
+
+    pub fn compile_result(
+        &self,
+        caller: NodeType,
+    ) -> Result<Option<&CompileResult>, CoordinatorError> {
+        if !caller.field_perms().readable.contains(&WorkField::CompileResult) {
+            return Err(CoordinatorError::ContractViolation {
+                node_type: caller,
+                dimension: ContractDimension::State,
+                reason: "node type not permitted to read compile_result".into(),
+            });
+        }
+        Ok(self.compile_result.as_ref())
+    }
+
+    /// 写 test_result：reserved 字段——本期对所有现存 NodeType writable 为 {}。
+    pub fn set_test_result(
+        &mut self,
+        caller: NodeType,
+        result: TestResult,
+    ) -> Result<(), CoordinatorError> {
+        if !caller.field_perms().writable.contains(&WorkField::TestResult) {
+            return Err(CoordinatorError::ContractViolation {
+                node_type: caller,
+                dimension: ContractDimension::State,
+                reason: "node type not permitted to write test_result".into(),
+            });
+        }
+        self.test_result = Some(result);
+        self.push_step(caller, WorkField::TestResult, StepAction::Wrote);
+        Ok(())
+    }
+
+    pub fn test_result(
+        &self,
+        caller: NodeType,
+    ) -> Result<Option<&TestResult>, CoordinatorError> {
+        if !caller.field_perms().readable.contains(&WorkField::TestResult) {
+            return Err(CoordinatorError::ContractViolation {
+                node_type: caller,
+                dimension: ContractDimension::State,
+                reason: "node type not permitted to read test_result".into(),
+            });
+        }
+        Ok(self.test_result.as_ref())
+    }
+
+    /// 写 human_review：reserved 字段——本期对所有现存 NodeType writable 为 {}。
+    pub fn set_human_review(
+        &mut self,
+        caller: NodeType,
+        review: HumanReview,
+    ) -> Result<(), CoordinatorError> {
+        if !caller.field_perms().writable.contains(&WorkField::HumanReview) {
+            return Err(CoordinatorError::ContractViolation {
+                node_type: caller,
+                dimension: ContractDimension::State,
+                reason: "node type not permitted to write human_review".into(),
+            });
+        }
+        self.human_review = Some(review);
+        self.push_step(caller, WorkField::HumanReview, StepAction::Wrote);
+        Ok(())
+    }
+
+    pub fn human_review(
+        &self,
+        caller: NodeType,
+    ) -> Result<Option<&HumanReview>, CoordinatorError> {
+        if !caller.field_perms().readable.contains(&WorkField::HumanReview) {
+            return Err(CoordinatorError::ContractViolation {
+                node_type: caller,
+                dimension: ContractDimension::State,
+                reason: "node type not permitted to read human_review".into(),
+            });
+        }
+        Ok(self.human_review.as_ref())
+    }
+
+    /// 内部辅助：授权写后追加 step_log（读不调）。
+    fn push_step(&mut self, node_type: NodeType, field: WorkField, action: StepAction) {
+        self.step_log.push(StepRecord {
+            node_type,
+            field,
+            action,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+    }
+
+    /// turn 间继承：requirement 克隆保留，其余产物字段（含 deferred）全部清空。
     /// 同 turn 内 retry 不走 begin_turn（retry 是 node 重试，不是 turn 重置），
     /// WorkState 自动保留——对齐「同 turn 保留 / 跨 turn 产物重置」语义。
     pub fn inherit_for_new_turn(&self) -> WorkState {
         WorkState {
             requirement: self.requirement.clone(),
+            generated_diff: None,
+            compile_result: None,
+            test_result: None,
+            human_review: None,
             verify_result: None,
+            budget: None,
             step_log: Vec::new(),
         }
     }
@@ -536,7 +962,8 @@ impl WorkState {
 
 ```rust
 pub use work_state::{
-    FieldPerms, StepAction, StepRecord, VerifyFailureKind, VerifyOutcome, WorkField, WorkState,
+    Budget, CompileResult, FieldPerms, GeneratedDiff, HumanReview, StepAction, StepRecord,
+    TestResult, VerifyFailureKind, VerifyOutcome, WorkField, WorkState,
 };
 ```
 
@@ -545,7 +972,7 @@ pub use work_state::{
 - [ ] **Step 2.6: 跑测试验证通过（绿）**
 
 Run: `cargo test --lib org_graph::work_state::tests`
-Expected: PASS —— Task 1 的 4 个 serde 测试 + Task 2 新增的 7 个权限测试全绿；`contract_dimension_serde_roundtrip` 也通过（已含 `State`）。
+Expected: PASS —— Task 1 的 5 个 serde 测试 + Task 2 新增的 11 个权限测试全绿；`contract_dimension_serde_roundtrip` 也通过（已含 `State`）。
 
 - [ ] **Step 2.7: 跑全库 build 验证 exhaustive match 已补齐**
 
@@ -556,13 +983,15 @@ Expected: build 通过；既有 `agent::coordinator` / `agent::fallback` / `tool
 
 ```bash
 git add src/org_graph/work_state.rs src/org_graph/contract.rs src/org_graph/mod.rs
-git commit -m "feat(org-graph): field-level permission enforcement on WorkState
+git commit -m "feat(org-graph): full-field permission enforcement on WorkState
 
-Task 2 (字段级权限): 新增 FieldPerms/NodeType::field_perms 矩阵 + WorkState
-受权限约束的 set_verify_result/verify_result 读写 API。越权读写返回
-ContractViolation{State}（ContractDimension 新增 State 变体，全库 exhaustive
-match 已审计）。授权写自动记 step_log，读不记（避免高频读爆 log）。
-inherit_for_new_turn 提供 turn 间继承（requirement 保留、产物重置）。
+Task 2 (全字段权限): 新增 FieldPerms/NodeType::field_perms 全字段矩阵（8 WorkField
+× 5 NodeType）+ WorkState 受权限约束的全字段读写 API（pilot set_verify_result +
+deferred set_generated_diff/set_budget/set_compile_result/set_test_result/
+set_human_review 及对应 getter）。预留字段 compile_result/test_result/human_review
+对所有现存 NodeType writable 强制为 {}——真强制的核心保证。越权读写返回
+ContractViolation{State}。授权写自动记 step_log，读不记。inherit_for_new_turn
+保留 requirement、重置其余产物字段。
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
@@ -601,7 +1030,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
                     stderr: "error".into(),
                 }),
             }),
-            step_log: Vec::new(),
+            ..Default::default()
         };
 
         store.capture_work_state(turn_id, &state).expect("capture");
@@ -611,6 +1040,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
             .expect("work_state.json should exist after capture");
         assert_eq!(restored.requirement, state.requirement);
         assert_eq!(restored.verify_result, state.verify_result);
+        // 其余 deferred 字段为 default（None），往返等价。
     }
 
     #[test]
@@ -684,20 +1114,18 @@ Expected: PASS —— `work_state_capture_and_restore_roundtrip` + `work_state_r
     #[test]
     fn begin_turn_inherits_requirement_and_resets_verify_result() {
         // turn-0 写 requirement + verify_result，begin_turn 推进到 turn-1：
-        // requirement 保留，verify_result / step_log 清空。
+        // requirement 保留，verify_result / step_log（及所有产物字段）清空。
         let setup = coordinator_setup(); // 复用既有 fixture（见 audit 步骤）
         {
             let mut coord = setup.coord.write().unwrap();
             coord.work_state_mut().requirement = Some("实现 WorkState".into());
-            coord.work_state_mut().verify_result = Some(
-                crate::org_graph::VerifyOutcome {
-                    success: false,
-                    fail_reason: Some(crate::org_graph::VerifyFailureKind::CommandFailed {
-                        exit_code: Some(1),
-                        stderr: "boom".into(),
-                    }),
-                },
-            );
+            coord.work_state_mut().verify_result = Some(crate::org_graph::VerifyOutcome {
+                success: false,
+                fail_reason: Some(crate::org_graph::VerifyFailureKind::CommandFailed {
+                    exit_code: Some(1),
+                    stderr: "boom".into(),
+                }),
+            });
         }
         setup.coord.write().unwrap().begin_turn().unwrap();
         let coord = setup.coord.read().unwrap();
@@ -775,7 +1203,8 @@ pub struct SessionCoordinator {
     session_dir: PathBuf,
     project_root: PathBuf,
     checkpoint_store: Arc<CheckpointStore>,
-    /// 当前 turn 的结构化工作产物（pilot: verify_result 强制）。
+    /// 当前 turn 的结构化工作产物（完整 schema：全字段权限真强制）。
+    /// pilot: verify_result 强制；其余 deferred 字段类型就绪，待将来接入。
     /// legacy turn 缺 WorkState 时为 default()，向后兼容。
     work_state: WorkState,
 }
@@ -786,7 +1215,7 @@ pub struct SessionCoordinator {
 4. 在 `begin_turn` 末尾（`Ok(self.session.turns.last().expect("just pushed"))` 之前）加 turn 间继承：
 
 ```rust
-        // WorkState turn 间继承：requirement 保留，verify_result / step_log 重置。
+        // WorkState turn 间继承：requirement 保留，其余产物字段（含 deferred）重置。
         // 同 turn 内 retry 不走 begin_turn（retry 是 node 重试，不是 turn 重置）。
         self.work_state = self.work_state.inherit_for_new_turn();
 ```
@@ -858,7 +1287,7 @@ git commit -m "feat(exec-session): anchor WorkState on turn + CheckpointStore pe
 
 Task 3 (turn 集成 + 持久化): SessionCoordinator 新增 work_state 字段与
 work_state/work_state_mut 访问器。begin_turn 调用 inherit_for_new_turn 完成
-turn 间继承（requirement 保留、verify_result/step_log 重置）。
+turn 间继承（requirement 保留、其余产物字段全重置）。
 CheckpointStore 新增 capture_work_state/restore_work_state 旁路持久化
 （per-turn work_state.json，不动文件 capture 语义）。legacy turn 缺失时
 返回 default()，向后兼容。
@@ -868,7 +1297,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 ---
 
-### Task 4: pilot 路由点（读结构化字段 + 验证强制）
+### Task 4: pilot 路由点（verify_result / VerifyFailureKind 读结构化字段 + 验证强制）
 
 **Files:**
 - Audit / Verify: `src/exec_session/verify_gate.rs`（确认 `VerifyResult`/`VerifyFailure` 字段）、`src/exec_session/hooks.rs:17`（`VerifyFailure` 定义）、`src/exec_session/node_runtime.rs:204`（降级点）
@@ -877,15 +1306,15 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `VerifyResult` / `VerifyFailure`（来自 `super::verify_gate` / `super::hooks`，已存在）；`WorkState::set_verify_result` / `verify_result`（来自 Task 2）；`SessionCoordinator::work_state_mut` / `work_state`（来自 Task 3）。
-- Produces: `impl VerifyOutcome { pub fn from_verify_result(result: &VerifyResult) -> VerifyOutcome }`（放在 `work_state.rs`，作为 `exec_session → org_graph` 投影的「契约点」）；`node_runtime::verify_node` 出口先写 WorkState 再读回。
+- Produces: `impl VerifyOutcome { pub fn from_parts(success: bool, fail_kind: Option<VerifyFailureKind>) -> VerifyOutcome }`（放在 `work_state.rs`，作为 `exec_session → org_graph` 投影的「契约点」）；`node_runtime::verify_node` 出口先写 WorkState 再读回。
 
-**D5 硬约束分支（必须在 Step 4.1 显式决策）：**
+**D5 硬约束分支（必须在 Step 4.1 显式复核）：**
 
-design doc §1 已基于 brainstorming 期的 CodeGraph 查证得出结论：pilot = 修复 `node_runtime.rs:204` 的 `format!("{f:?}")` 结构化降级点（verify→retry 闭环真实存在、`VerifyResult.fail_reason: Option<VerifyFailure>` 强类型在内部已存在、出口降级为 String）。**但 Task 4.1 必须在实现期重新查证**，因为 brainstorming 与 build 之间代码库可能漂移。
+design doc §1.5 已基于二次 CodeGraph 查证得出结论：compile/test 闭环不存在（`NodeType` 无对应变体、`parse_node_type` 不识别、全仓库无对应节点/结果类型），唯一真实闭环是 verify——pilot = 修复 `node_runtime.rs:204` 的 `format!("{f:?}")` 结构化降级点（verify→retry 闭环真实存在、`VerifyResult.fail_reason: Option<VerifyFailure>` 强类型在内部已存在、出口降级为 String）。**Task 4.1 必须在实现期重新查证降级点仍在原位**，因为 design 与 build 之间代码库可能漂移。
 
-- [ ] **Step 4.1: 查证 pilot 路由点（D5 硬约束分支决策）**
+- [ ] **Step 4.1: 复核 pilot 路由点（D5 硬约束分支决策）**
 
-按 design doc D5 硬约束（pilot 必须含真实写字段场景），重新查证三件事：
+按 design doc §1.5 结论 + D5 硬约束（pilot 必须含真实写字段场景），重新查证三件事：
 
 **查证 1：降级点仍在 node_runtime.rs:204 附近。**
 
@@ -916,28 +1345,34 @@ grep -rn 'failure_reason\|NodeVerifyResult' src/ | grep -v "test\|^src/exec_sess
 
 **分支决策：**
 
-- **分支 A（与 design doc 结论一致）**：三查证全部命中 → pilot = 修复 node_runtime.rs:204 降级点。继续 Step 4.2。
-- **分支 B（代码已漂移，降级点不存在）**：查证 1 未命中或语义已变 → 暂停，回到 design 阶段重选 pilot（D5 候选：编译失败→代码生成 / 测试失败→代码生成）。不得在 pilot 不含真实写字段场景的情况下继续——否则字段级强制（Task 2）无场景可拦，违背 change 核心论点。
+- **分支 A（与 design doc §1.5 结论一致）**：三查证全部命中 → pilot = 修复 node_runtime.rs:204 降级点。继续 Step 4.2。
+- **分支 B（代码已漂移，降级点不存在）**：查证 1 未命中或语义已变 → 暂停，回到 design 阶段重选 pilot。**不得**虚构 compile/test pilot（§1.5 已查证二者闭环不存在）——不得在 pilot 不含真实写字段场景的情况下继续，否则字段级强制（Task 2）无场景可拦，违背 change 核心论点。
 - **分支 C（retry 决策已读不到 failure_reason）**：查证 3 未命中 → pilot 路由点失去读字段语义，需在 Step 4.2 同步迁移一个真实的 retry 决策点读 `Option<&VerifyOutcome>`，否则 pilot 不满足「读结构化字段做判定」。
 
 在本步完成后，于 commit message 中记录命中分支（A/B/C）与查证证据（命中的文件:行号）。
 
-- [ ] **Step 4.2: 写失败测试 —— pilot 降级点修复 + retry 决策读枚举**
+- [ ] **Step 4.2: 写失败测试 —— pilot 降级点修复 + retry 决策读 VerifyFailureKind 枚举**
 
-在 `src/org_graph/work_state.rs` 的 `#[cfg(test)] mod tests` 末尾追加（验证 `VerifyOutcome::from_verify_result` 投影正确性）：
+在 `src/org_graph/work_state.rs` 的 `#[cfg(test)] mod tests` 末尾追加（验证 `VerifyOutcome::from_parts` 投影正确性）：
 
 ```rust
     #[test]
-    fn from_verify_result_success_projects_to_success_no_fail() {
-        // exec_session → org_graph 投影：成功 VerifyResult → VerifyOutcome{success:true}。
-        // 用 trait+impl 隔离，避免 work_state.rs 反向依赖 exec_session（见 Step 4.4）。
-        // 此处直接构造 VerifyOutcome 验证字段语义。
-        let outcome = VerifyOutcome {
-            success: true,
-            fail_reason: None,
-        };
+    fn verify_outcome_from_parts_builds_expected_shape() {
+        // exec_session → org_graph 投影契约点：from_parts 接受已解构原语字段，
+        // 避免 org_graph 反向依赖 exec_session（见 Step 4.4）。
+        let outcome = VerifyOutcome::from_parts(true, None);
         assert!(outcome.success);
         assert!(outcome.fail_reason.is_none());
+
+        let outcome = VerifyOutcome::from_parts(
+            false,
+            Some(VerifyFailureKind::CommandFailed { exit_code: Some(1), stderr: "e".into() }),
+        );
+        assert!(!outcome.success);
+        assert!(matches!(
+            outcome.fail_reason,
+            Some(VerifyFailureKind::CommandFailed { exit_code: Some(1), .. })
+        ));
     }
 ```
 
@@ -947,7 +1382,7 @@ grep -rn 'failure_reason\|NodeVerifyResult' src/ | grep -v "test\|^src/exec_sess
     #[tokio::test]
     async fn verify_node_failure_writes_structured_outcome_to_work_state() {
         // pilot D5 硬约束：verify 失败后 WorkState.verify_result 必须是强类型
-        // VerifyOutcome（非 format!("{f:?}") 文本）。
+        // VerifyOutcome（非 format!("{f:?}") 文本）。retry 决策读 VerifyFailureKind 枚举分支。
         let setup = TestSetup::new(1); // exit 1 = failure
         setup.begin_turn();
         setup
@@ -1024,20 +1459,16 @@ grep -rn 'failure_reason\|NodeVerifyResult' src/ | grep -v "test\|^src/exec_sess
 Run: `cargo test --lib exec_session::node_runtime::tests`
 Expected: FAIL —— `verify_node_failure_writes_structured_outcome_to_work_state` 与 `verify_node_success_clears_fail_reason_in_work_state` 失败（WorkState.verify_result 为 None，因为 verify_node 还没写 WorkState）；`verify_node_failure_reason_string_comes_from_work_state` 可能恰好通过（旧路径也产出 debug string），但源头未改。
 
-- [ ] **Step 4.4: 实现 VerifyOutcome::from_verify_result 投影转换**
+- [ ] **Step 4.4: 实现 VerifyOutcome::from_parts 投影转换**
 
-为避免 `org_graph` 反向依赖 `exec_session`（org_graph 是纯数据层），投影转换用 trait + impl 隔离：在 `work_state.rs` 定义 `TryFrom` 风格的抽象，在 `exec_session` 侧实现。
-
-方案：在 `src/org_graph/work_state.rs` 加一个泛型构造器（不引用 exec_session 类型）：
+为避免 `org_graph` 反向依赖 `exec_session`（org_graph 是纯数据层），投影转换用原语参数隔离：在 `work_state.rs` 加一个不引用 exec_session 类型的构造器（在 `impl WorkState { ... }` 之后追加独立 impl）：
 
 ```rust
 impl VerifyOutcome {
-    /// 从「外部强类型 verify 结果」投影构造。exec_session 侧的 impl 负责字段映射。
-    /// 此方法接受已解构的原语字段，避免 org_graph 反向依赖 exec_session::VerifyResult。
-    pub fn from_parts(
-        success: bool,
-        fail_kind: Option<VerifyFailureKind>,
-    ) -> Self {
+    /// 从「外部强类型 verify 结果」投影构造。exec_session 侧负责字段映射（见
+    /// node_runtime.rs 的 project_failure / project_outcome），调用本方法传入
+    /// 已解构的原语字段，避免 org_graph 反向依赖 exec_session::VerifyResult。
+    pub fn from_parts(success: bool, fail_kind: Option<VerifyFailureKind>) -> Self {
         Self { success, fail_reason: fail_kind }
     }
 }
@@ -1152,7 +1583,7 @@ fn project_outcome(result: &VerifyResult) -> crate::org_graph::VerifyOutcome {
 - [ ] **Step 4.6: 跑测试验证通过（绿）**
 
 Run: `cargo test --lib exec_session::node_runtime::tests`
-Expected: PASS —— Task 4 新增 3 个测试全绿；既有 `verify_node_success_transitions_to_verified` / `verify_node_failure_within_retry_budget` / `verify_node_failure_within_retry_budget` 等测试零回归（成功路径也写 WorkState，但既有断言不读 WorkState，故不破坏）。
+Expected: PASS —— Task 4 新增 3 个测试全绿；既有 `verify_node_success_transitions_to_verified` / `verify_node_failure_within_retry_budget` 等测试零回归（成功路径也写 WorkState，但既有断言不读 WorkState，故不破坏）。
 
 - [ ] **Step 4.7: 字段级权限强制在 pilot 写场景的可验证性检查**
 
@@ -1196,7 +1627,9 @@ Task 4 (pilot): 修复 node_runtime.rs:204 的 format!(\"{f:?}\") 结构化降�
 verify_node 出口改为：先把 VerifyResult 投影成 VerifyOutcome（project_outcome），
 经 set_verify_result(NodeType::Verification) 写入 WorkState（受字段级权限强制），
 再从 WorkState.verify_result() 读回组装兼容期 failure_reason。retry 决策改为
-读 Option<&VerifyOutcome> 拿 VerifyFailureKind 枚举分支。
+读 Option<&VerifyOutcome> 拿 VerifyFailureKind 枚举分支（CommandFailed vs
+BoundaryViolation）。pilot 锚定 verify_result（唯一真实闭环——§1.5 查证确认
+compile/test 闭环不存在）。
 
 D5 分支查证（Step 4.1）：<记录命中分支 A/B/C 与查证证据文件:行号>
 
@@ -1297,8 +1730,8 @@ cargo test --test '*' 2>/dev/null || true  # 集成测试（若有）
 Expected:
 - `cargo build` 通过，无 warning（除既有 warning）。
 - `cargo test` 全绿，覆盖：
-  - Task 1：`org_graph::work_state::tests`（4 个 serde 测试）
-  - Task 2：`org_graph::work_state::tests`（7 个权限测试）+ `org_graph::contract::tests::contract_dimension_serde_roundtrip`
+  - Task 1：`org_graph::work_state::tests`（5 个 schema serde 测试，含全字段 + 全子类型）
+  - Task 2：`org_graph::work_state::tests`（11 个权限测试，含预留字段强制为空 + deferred 写入）+ `org_graph::contract::tests::contract_dimension_serde_roundtrip`
   - Task 3：`tools::checkpoint_store::tests`（2 个 WorkState 持久化测试）+ `exec_session::coordinator::tests`（2 个 turn 集成测试）
   - Task 4：`exec_session::node_runtime::tests`（3 个 pilot 修复测试 + 1 个字段强制可拦测试）
   - 既有零回归：`agent::coordinator` / `agent::fallback` / `tools::meta::task` / `exec_session::coordinator` / `exec_session::verify_gate` / `exec_session::node_runtime` / `org_graph::contract` / `org_graph::registry` / `org_graph::render` 全绿。
@@ -1348,9 +1781,9 @@ Expected: PASS。
 
 - [ ] **Step 6.3: 验证越权写字段被拦截（手动）**
 
-在 Task 4.7 已有单元测试覆盖；本步确认手动构造的「非 Verification 节点尝试写 verify_result」场景 100% 返回 `ContractViolation { dimension: State }`，且 WorkState 保持写入前的值（不变更）。
+在 Task 4.7 已有单元测试覆盖；本步确认手动构造的「非 Verification 节点尝试写 verify_result」场景 100% 返回 `ContractViolation { dimension: State }`，且 WorkState 保持写入前的值（不变更）。同时确认预留字段（compile_result/test_result/human_review）对所有节点越权写一律拒绝（Task 2.1 的 `reserved_fields_reject_all_node_types` 测试覆盖）。
 
-Run: `cargo test --lib 'exec_session::node_runtime::tests::set_verify_result_rejects_unauthorized_node_type_at_pilot_site' 'org_graph::work_state::tests::set_verify_result_rejects_unauthorized_node_with_contract_violation_state'`
+Run: `cargo test --lib 'exec_session::node_runtime::tests::set_verify_result_rejects_unauthorized_node_type_at_pilot_site' 'org_graph::work_state::tests::reserved_fields_reject_all_node_types' 'org_graph::work_state::tests::set_verify_result_rejects_unauthorized_node_with_contract_violation_state'`
 Expected: PASS。
 
 - [ ] **Step 6.4: Commit 集成测试**
@@ -1372,20 +1805,24 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 **1. Spec coverage（spec.md ADDED Requirements → Task 映射）：**
 
-- `Requirement: 强类型共享工作状态` → Task 1（schema）+ Task 4.4（`from_parts` 投影）
-- `Requirement: 节点对状态字段的访问受权限约束` → Task 2（FieldPerms + 读写 API + State 维度）+ Task 4.7（pilot 写场景可验证）
+- `Requirement: 强类型共享工作状态`（完整 7+1 字段 schema）→ Task 1（schema + 全子类型）+ Task 4.4（`from_parts` 投影）
+- `Requirement: 节点对状态字段的访问受权限约束`（含预留字段强制为空 Scenario）→ Task 2（FieldPerms 全字段矩阵 + 全字段读写 API + State 维度 + 预留字段 `{}` 强制）+ Task 4.7（pilot 写场景可验证）
 - `Requirement: 工作状态与既有状态层分层不吞并` → Task 5.1（SessionState/AppState 不动）
 - `Requirement: 工作状态随 turn 检查点持久化可续跑` → Task 3（CheckpointStore 持久化 + restore）
-- `Requirement: 路由判定读取结构化字段而非解析文本` → Task 4（pilot 降级点修复 + D5 分支查证）
+- `Requirement: 路由判定读取结构化字段而非解析文本`（verify_result/VerifyFailureKind pilot）→ Task 4（pilot 降级点修复 + D5 分支查证）
 - `Requirement: 零回归与正交性` → Task 5.2（mailbox 不动）+ Task 5.3（dispatch-telemetry 正交）+ Task 6.1（cargo test 全绿）
+- spec「完整 schema 与 deferred-write-point」Scenario → Task 1（全字段类型）+ Task 2（全字段权限 + 预留字段 `{}` 强制 + deferred setter 单测覆盖）+ design §1.5 查证依据
 
 **tasks.md 18 子任务覆盖：** 1.1/1.2/1.3 → Task 1；2.1/2.2/2.3 → Task 2；3.1/3.2/3.3 → Task 3；4.1/4.2/4.3 → Task 4；5.1/5.2/5.3 → Task 5；6.1/6.2 → Task 6。无遗漏。
 
 **2. Placeholder 扫描：** 无 TBD/TODO/「类似 Task N」；每个 code step 都给了完整 Rust 代码或可执行命令；查证步骤（Task 4.1）给了显式 A/B/C 分支而非假定结论。
 
 **3. Type 一致性：**
+- `WorkState` 完整 8 字段（requirement/generated_diff/compile_result/test_result/human_review/verify_result/budget/step_log）—— Task 1 定义、Task 2 读写 API 操作、Task 3 持久化往返、Task 4 pilot 写 verify_result，字段集一致。
 - `VerifyOutcome { success: bool, fail_reason: Option<VerifyFailureKind> }` —— Task 1 定义、Task 2 用、Task 3 持久化往返、Task 4 投影，签名一致。
 - `set_verify_result(caller: NodeType, outcome: VerifyOutcome) -> Result<(), CoordinatorError>` —— Task 2 定义、Task 4 调用，签名一致。
 - `verify_result(caller: NodeType) -> Result<Option<&VerifyOutcome>, CoordinatorError>` —— Task 2 定义、Task 4/6 调用，签名一致。
+- deferred setter（`set_generated_diff`/`set_budget`/`set_compile_result`/`set_test_result`/`set_human_review`）签名与 Task 2 定义一致，Task 2 单测覆盖，无生产调用点（符合 deferred-write-point 设计）。
 - `ContractDimension::State` —— Task 2 定义、Task 2/4 测试断言，变体名一致。
+- `WorkField` 8 变体 —— Task 1 定义、Task 2 矩阵全覆盖，一致。
 - `capture_work_state(turn_id, &WorkState)` / `restore_work_state(turn_id) -> Result<Option<WorkState>>` —— Task 3 CheckpointStore 定义、Task 3 SessionCoordinator 调用，签名一致（入参为 `checkpoint_turn_id` UUID，已在 Task 3.7 注明）。

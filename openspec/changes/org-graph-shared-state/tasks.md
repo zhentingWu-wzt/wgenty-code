@@ -2,15 +2,15 @@
 
 ## 1. WorkState schema 与模块骨架
 
-- [ ] 1.1 新建 `src/org_graph/work_state.rs`，定义 `WorkState` struct，至少含字段：`requirement` / `generated_diff` / `compile_result`（含 `ok: bool` 与 `stderr`）/ `test_result`（含 `pass: bool` 与 `failed_cases`）/ `human_review`（enum `Approve`/`Reject`）/ `budget`（含 `max_iter` / `iter_used` / `token_used`）/ `step_log`；派生 `Serialize/Deserialize/Clone/Debug`
+- [ ] 1.1 新建 `src/org_graph/work_state.rs`，定义 `WorkState` struct，完整 7+1 字段 schema：`requirement: Option<String>` / `generated_diff: Option<GeneratedDiff>` / `compile_result: Option<CompileResult>`（含 `ok: bool` 与 `stderr`）/ `test_result: Option<TestResult>`（含 `pass: bool` 与 `failed_cases`）/ `human_review: Option<HumanReview>`（enum `Approve`/`Reject`）/ `verify_result: Option<VerifyOutcome>`（pilot 核心字段）/ `budget: Option<Budget>`（含 `max_iter` / `iter_used` / `token_used`）/ `step_log: Vec<StepRecord>`。同时定义子类型 `GeneratedDiff` / `CompileResult` / `TestResult` / `HumanReview` / `Budget` / `VerifyOutcome` / `VerifyFailureKind`（`CommandFailed{exit_code,stderr}` / `BoundaryViolation{unexpected_files}`）与权限/审计类型 `FieldPerms` / `WorkField`（8 变体）/ `StepRecord` / `StepAction`。所有类型派生 `Serialize/Deserialize/Clone/Debug`（枚举合理处加 `Copy/Hash/PartialEq/Eq`）
 - [ ] 1.2 在 `src/org_graph/mod.rs` 导出 `pub mod work_state;` 及相关公开类型
-- [ ] 1.3 为 schema 加单测：序列化往返（serialize → deserialize 字段等价）、默认值符合预期、各结构化子字段类型不丢失
+- [ ] 1.3 为 schema 加单测：序列化往返（serialize → deserialize 字段等价，覆盖 `WorkState` 全字段与各子类型 `GeneratedDiff`/`CompileResult`/`TestResult`/`HumanReview`/`Budget`/`VerifyOutcome`/`VerifyFailureKind`）、默认值符合预期（全 `Option` 为 `None`、`step_log` 为空）、各结构化子字段类型不丢失
 
 ## 2. 字段级访问权限（真强制）
 
-- [ ] 2.1 设计并定义每个 `NodeType` 的「可读字段集 + 可写字段集」声明矩阵（至少覆盖 5 个内置节点类型的 pilot 相关字段）
+- [ ] 2.1 设计并定义每个 `NodeType` 的「可读字段集 + 可写字段集」声明矩阵，覆盖全部 8 个 `WorkField`（含预留字段 `compile_result` / `test_result` / `human_review` 对所有现存 `NodeType` 的 writable 强制为 `{}`——这是全字段权限真强制的核心保证；矩阵细则见 design doc §4）
 - [ ] 2.2 实现 `WorkState` 受权限约束的读写 API：调用方提供 `NodeType`，越权写直接返回 `ContractViolation`（复用 `ContractDimension`，复用 `Permission` 还是新增 `State` 维度见 design 阶段定）
-- [ ] 2.3 为权限强制加单测：节点正常读写授权字段成功、越权写字段被拒绝并触发 `ContractViolation`、授权读不写审计日志而授权写记入 `step_log`
+- [ ] 2.3 为权限强制加单测：节点正常读写授权字段成功（含 GeneralPurpose 合成写 `generated_diff`/`budget`）、越权写字段被拒绝并触发 `ContractViolation{State}`、授权读不写审计日志而授权写记入 `step_log`、**预留字段强制为空**（任何 `NodeType` 调 `set_compile_result`/`set_test_result`/`set_human_review` → `ContractViolation{State}`）
 
 ## 3. turn 集成与检查点持久化
 
@@ -20,8 +20,8 @@
 
 ## 4. pilot 路由点（读结构化字段 + 验证强制）
 
-- [ ] 4.1 查证现有代码是否存在真实的编译闭环或测试闭环路由（编译/测试结果是否真的回流驱动重试），按查证结果与 design D5 硬约束（必须含真实写字段场景）选定 pilot 路由点
-- [ ] 4.2 实现 pilot 路由点：从「解析节点自然语言输出」改为「读取 `WorkState` 结构化字段」（如读 `compile_result.ok` 或 `test_result.pass`）做下一跳判定
+- [ ] 4.1 二次查证已完成（design §1.5，带 file:line 证据）：compile 闭环不存在（`NodeType` 枚举 `src/org_graph/contract.rs:10-17` 无 `Compile` 变体、`parse_node_type` `src/tools/meta/task.rs:1070-1080` 不识别 compile、全仓库无 `compile_node`/`CompileResult`/`NodeType::Compile`）、test 闭环同理不存在（测试结果至多作不透明 exit code 塞进 `VerifyFailure::CommandFailed`，无 `failed_cases` 解析）——故 pilot 锚定唯一真实闭环 verify（`verify_gate.rs:208 verify_and_complete` → `VerifyResult{fail_reason: Option<VerifyFailure>}`，出口 `node_runtime.rs:204` 用 `format!("{f:?}")` 降级）。实现期按 design D5 硬约束复核降级点仍在原位
+- [ ] 4.2 实现 pilot 路由点：`verify_node` 出口从 `format!("{f:?}")` 降级改为「投影 `VerifyResult` → 经 `set_verify_result(NodeType::Verification, outcome)` 写入 WorkState（受字段级权限强制）→ 读回 `verify_result()` 的 `VerifyFailureKind` 枚举做 retry 决策」（不是 compile/test——查证确认二者闭环不存在，详见 design §1.5）
 - [ ] 4.3 确保 pilot 路由点涉及的写字段场景受 2.x 字段级权限强制（节点须声明可写该字段），并提供验证该强制的测试
 
 ## 5. 三层状态分层与零回归
