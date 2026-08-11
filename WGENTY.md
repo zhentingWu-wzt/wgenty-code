@@ -111,6 +111,14 @@ full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqli
      config/       配置管理
 ```
 
+### Work-Graph 运行时
+
+`begin_node`、`verify_node`、`rollback_node` 与 `verify_and_complete` 通过可信
+`ToolContext` 中的 agent session 解析其 ExecutionSession runtime。daemon 与
+`query` headless 入口均注册这些工具；同一 session 复用一个 checkpointed
+WorkState / 审计轨迹，不同 session 相互隔离。第一次 `begin_node` 会惰性创建图
+turn；编译、测试和最终验证仍由代码执行的外部锚点决定，模型文本不能声明通过。
+
 请求链路：`用户输入 -> CLI解析 -> Settings加载 -> Prompt组装(8层) -> API SSE -> 工具调用 -> Guardian审查 -> Sandbox执行 -> 流式返回`
 
 Prompt 8 层：base_instructions → permissions → developer → environment → agents_md → collaboration → skills_inventory → wgenty_md_sections
