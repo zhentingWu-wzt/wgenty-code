@@ -666,4 +666,38 @@ mod tests {
             crate::agent::coordinator::CoordinatorError::ContractViolation { .. }
         ));
     }
+
+    // 端到端验证测试（Task 6 集成验证）：GREEN on first run。
+    // 验证 Task 4 pilot 修复端到端成立——非新增实现，故无 RED 阶段。
+    #[tokio::test]
+    async fn pilot_end_to_end_retry_reads_structured_failure_kind() {
+        // 端到端：verify 失败 → WorkState 写入强类型 → retry 决策读 VerifyFailureKind
+        // 分支（CommandFailed vs BoundaryViolation）做不同处理。
+        let setup = TestSetup::new(1); // CommandFailed
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec!["echo ok".into()], vec![])
+            .await
+            .unwrap();
+        setup.runtime.verify_node().await.unwrap();
+
+        // 模拟 retry 决策点：读 WorkState.verify_result 拿强类型分支。
+        let coord = setup.coord.read().unwrap();
+        let outcome = coord
+            .work_state()
+            .verify_result(NodeType::Verification)
+            .unwrap()
+            .unwrap();
+        // 路由判定：CommandFailed → 回到代码生成（pilot 文本不再参与判定）。
+        match &outcome.fail_reason {
+            Some(crate::org_graph::VerifyFailureKind::CommandFailed { .. }) => {
+                // 命中「回到代码生成」分支
+            }
+            Some(crate::org_graph::VerifyFailureKind::BoundaryViolation { .. }) => {
+                panic!("expected CommandFailed for exit 1, got BoundaryViolation");
+            }
+            None => panic!("expected failure, got success"),
+        }
+    }
 }
