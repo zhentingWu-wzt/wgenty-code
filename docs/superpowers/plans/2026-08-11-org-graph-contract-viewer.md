@@ -450,7 +450,7 @@ git commit -m "feat(org-graph): implement render_table with manual column layout
 **Interfaces:**
 - Produces: `render_dot` 真实输出。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `#[cfg(test)] mod tests` 内追加：
 
@@ -487,12 +487,12 @@ git commit -m "feat(org-graph): implement render_table with manual column layout
     }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 运行：`cargo test --lib org_graph::render::tests::render_dot`
 预期：失败（桩返回空串，`starts_with("digraph ...")` 不成立）。
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 (a) 替换 `render_dot` 桩：
 
@@ -554,12 +554,12 @@ fn format_dot_label(c: &crate::org_graph::NodeContract) -> String {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 运行：`cargo test --lib org_graph::render`
 预期：7 个测试全部 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/org_graph/render.rs
