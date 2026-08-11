@@ -9,7 +9,7 @@
 
 - [x] 2.1 定义 `Format` 枚举（`Table` / `Dot` / `Mermaid` / `Json`），派生 `clap::ValueEnum`，默认 `Table`
 - [x] 2.2 实现 `render_json`：复用 `NodeContract` 的 `Serialize`，输出 `NodeContract` JSON 数组
-- [ ] 2.3 实现 `render_table`：终端表格，覆盖五维字段（`system_prompt` 过长，默认截断/省略）
+- [x] 2.3 实现 `render_table`：终端表格，覆盖五维字段（`system_prompt` 过长，默认截断/省略）
 - [ ] 2.4 实现 `render_dot`：合法 Graphviz DOT，每个契约渲染为节点
 - [ ] 2.5 实现 `render_mermaid`：合法 mermaid 图定义，每个契约渲染为节点
 - [x] 2.6 实现统一入口 `render(registry, format) -> String`，按 `Format` 分派到上述函数

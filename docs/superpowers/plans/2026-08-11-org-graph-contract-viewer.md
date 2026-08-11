@@ -320,7 +320,7 @@ git commit -m "feat(org-graph): add render module scaffold + render_json (serde 
 - Consumes: `registry.iter()`、`NodeContract` 各字段。
 - Produces: `render_table` 真实输出（供 `render(_, Format::Table)` 调用）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `src/org_graph/render.rs` 的 `#[cfg(test)] mod tests` 块内追加：
 
@@ -355,12 +355,12 @@ git commit -m "feat(org-graph): add render module scaffold + render_json (serde 
     }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 运行：`cargo test --lib org_graph::render::tests::render_table`
 预期：失败（`render_table` 桩返回空串，断言 `contains("NODE-TYPE")` 与 `lines().count() == 7` 不成立）。
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 在 `src/org_graph/render.rs` 内：
 
@@ -428,12 +428,12 @@ fn truncate_str(s: &str, max: usize) -> String {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 运行：`cargo test --lib org_graph::render`
 预期：Task 2 的 3 个 + Task 3 的 2 个，共 5 个测试全部 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/org_graph/render.rs
