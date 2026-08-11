@@ -24,7 +24,13 @@ use super::session::SessionStatus;
 use super::verification_profile::VerificationProfile;
 use super::verify_gate::{VerifyGate, VerifyResult};
 use super::work_graph::{next_step, WorkGraphStep};
-use crate::org_graph::{Budget, CompileResult, GeneratedDiff, NodeType, TestResult};
+use crate::org_graph::{
+    AuditCommandRun, Budget, CompileResult, GeneratedDiff, GraphAuditAnchor, GraphAuditEvent,
+    GraphAuditKind, GraphAuditProfile, GraphAuditRoute, NodeType, TestResult,
+};
+
+const AUDIT_STDERR_LIMIT_BYTES: usize = 8_192;
+const AUDIT_STDERR_TRUNCATION_MARKER: &str = "\n...[stderr truncated]";
 
 /// Result of a `verify_node` call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +106,78 @@ fn collect_stderr(runs: &[crate::exec_session::CommandRun]) -> String {
         .join("\n")
 }
 
+/// Work-graph identity cloned from coordinator state before command execution.
+struct WorkGraphAuditContext {
+    node_id: String,
+    attempt: u32,
+}
+
+fn project_audit_profile(profile: VerificationProfile) -> GraphAuditProfile {
+    match profile {
+        VerificationProfile::None => GraphAuditProfile::None,
+        VerificationProfile::Rust => GraphAuditProfile::Rust,
+    }
+}
+
+fn project_audit_route(step: WorkGraphStep) -> GraphAuditRoute {
+    match step {
+        WorkGraphStep::Implement => GraphAuditRoute::Implement,
+        WorkGraphStep::CompileAnchor => GraphAuditRoute::CompileAnchor,
+        WorkGraphStep::TestAnchor => GraphAuditRoute::TestAnchor,
+        WorkGraphStep::VerifyGate => GraphAuditRoute::VerifyGate,
+        WorkGraphStep::Complete => GraphAuditRoute::Complete,
+        WorkGraphStep::Escalate => GraphAuditRoute::Escalate,
+    }
+}
+
+fn truncate_audit_stderr(stderr: &str) -> String {
+    if stderr.len() <= AUDIT_STDERR_LIMIT_BYTES {
+        return stderr.to_string();
+    }
+
+    let mut prefix_len = AUDIT_STDERR_LIMIT_BYTES - AUDIT_STDERR_TRUNCATION_MARKER.len();
+    while !stderr.is_char_boundary(prefix_len) {
+        prefix_len -= 1;
+    }
+    format!(
+        "{}{}",
+        &stderr[..prefix_len],
+        AUDIT_STDERR_TRUNCATION_MARKER
+    )
+}
+
+fn project_audit_commands(runs: &[crate::exec_session::CommandRun]) -> Vec<AuditCommandRun> {
+    runs.iter()
+        .map(|run| AuditCommandRun {
+            command: run.cmd.clone(),
+            exit_code: run.exit_code,
+            stderr: truncate_audit_stderr(&run.stderr),
+        })
+        .collect()
+}
+
+fn audit_event(
+    context: &WorkGraphAuditContext,
+    kind: GraphAuditKind,
+    anchor: Option<GraphAuditAnchor>,
+    commands: Vec<AuditCommandRun>,
+    route: Option<GraphAuditRoute>,
+    profile: Option<GraphAuditProfile>,
+    budget: Option<Budget>,
+) -> GraphAuditEvent {
+    GraphAuditEvent {
+        node_id: context.node_id.clone(),
+        attempt: context.attempt,
+        kind,
+        anchor,
+        commands,
+        route,
+        profile,
+        budget,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
 /// Charge one coordinator-owned work-graph iteration after a failed anchor.
 fn consume_iteration_budget(coord: &mut SessionCoordinator) -> Result<()> {
     let mut budget = coord
@@ -150,7 +228,7 @@ impl NodeRuntime {
         verify_commands: Vec<String>,
         expected_files: Vec<String>,
     ) -> Result<WorkGraphRunResult> {
-        self.prepare_work_graph_pass()?;
+        let audit_context = self.prepare_work_graph_pass()?;
         let compile_runs = self
             .verify_gate
             .run_anchor_commands(&compile_commands)
@@ -160,7 +238,7 @@ impl NodeRuntime {
             ok: compile_runs.iter().all(|run| run.exit_code == Some(0)),
             stderr: collect_stderr(&compile_runs),
         };
-        let step = self.record_compile_result(compile_result)?;
+        let step = self.record_compile_result(&audit_context, compile_result, &compile_runs)?;
         if step != WorkGraphStep::TestAnchor {
             return Ok(WorkGraphRunResult { next_step: step });
         }
@@ -178,7 +256,7 @@ impl NodeRuntime {
                 .map(|run| run.cmd.clone())
                 .collect(),
         };
-        let step = self.record_test_result(test_result)?;
+        let step = self.record_test_result(&audit_context, test_result, &test_runs)?;
         if step != WorkGraphStep::VerifyGate {
             return Ok(WorkGraphRunResult { next_step: step });
         }
@@ -213,14 +291,45 @@ impl NodeRuntime {
             .work_state_mut()
             .set_verify_result(NodeType::Verification, outcome)
             .context("record verification anchor result")?;
+        coord.work_state_mut().append_graph_audit(audit_event(
+            &audit_context,
+            GraphAuditKind::AnchorCompleted,
+            Some(GraphAuditAnchor::Verify),
+            project_audit_commands(&result.commands_run),
+            None,
+            None,
+            None,
+        ));
         coord
             .capture_current_work_state()
-            .context("persist verification anchor result")?;
+            .context("persist verification anchor audit event")?;
         let next_step = next_step(coord.work_state()).context("route verification result")?;
+        let budget = coord
+            .work_state()
+            .budget(NodeType::GeneralPurpose)
+            .context("read verification route budget")?
+            .cloned();
+        coord.work_state_mut().append_graph_audit(audit_event(
+            &audit_context,
+            GraphAuditKind::RouteSelected,
+            None,
+            Vec::new(),
+            Some(project_audit_route(next_step)),
+            None,
+            budget,
+        ));
+        coord
+            .capture_current_work_state()
+            .context("persist verification route audit event")?;
         Ok(WorkGraphRunResult { next_step })
     }
 
-    fn record_compile_result(&self, result: CompileResult) -> Result<WorkGraphStep> {
+    fn record_compile_result(
+        &self,
+        audit_context: &WorkGraphAuditContext,
+        result: CompileResult,
+        runs: &[crate::exec_session::CommandRun],
+    ) -> Result<WorkGraphStep> {
         let failed = !result.ok;
         let mut coord = self
             .coordinator
@@ -233,13 +342,45 @@ impl NodeRuntime {
         if failed {
             consume_iteration_budget(&mut coord)?;
         }
+        coord.work_state_mut().append_graph_audit(audit_event(
+            audit_context,
+            GraphAuditKind::AnchorCompleted,
+            Some(GraphAuditAnchor::Compile),
+            project_audit_commands(runs),
+            None,
+            None,
+            None,
+        ));
         coord
             .capture_current_work_state()
-            .context("persist compile anchor result")?;
-        next_step(coord.work_state()).context("route compile anchor result")
+            .context("persist compile anchor audit event")?;
+        let next_step = next_step(coord.work_state()).context("route compile anchor result")?;
+        let budget = coord
+            .work_state()
+            .budget(NodeType::GeneralPurpose)
+            .context("read compile route budget")?
+            .cloned();
+        coord.work_state_mut().append_graph_audit(audit_event(
+            audit_context,
+            GraphAuditKind::RouteSelected,
+            None,
+            Vec::new(),
+            Some(project_audit_route(next_step)),
+            None,
+            budget,
+        ));
+        coord
+            .capture_current_work_state()
+            .context("persist compile route audit event")?;
+        Ok(next_step)
     }
 
-    fn record_test_result(&self, result: TestResult) -> Result<WorkGraphStep> {
+    fn record_test_result(
+        &self,
+        audit_context: &WorkGraphAuditContext,
+        result: TestResult,
+        runs: &[crate::exec_session::CommandRun],
+    ) -> Result<WorkGraphStep> {
         let failed = !result.pass;
         let mut coord = self
             .coordinator
@@ -252,17 +393,59 @@ impl NodeRuntime {
         if failed {
             consume_iteration_budget(&mut coord)?;
         }
+        coord.work_state_mut().append_graph_audit(audit_event(
+            audit_context,
+            GraphAuditKind::AnchorCompleted,
+            Some(GraphAuditAnchor::Test),
+            project_audit_commands(runs),
+            None,
+            None,
+            None,
+        ));
         coord
             .capture_current_work_state()
-            .context("persist test anchor result")?;
-        next_step(coord.work_state()).context("route test anchor result")
+            .context("persist test anchor audit event")?;
+        let next_step = next_step(coord.work_state()).context("route test anchor result")?;
+        let budget = coord
+            .work_state()
+            .budget(NodeType::GeneralPurpose)
+            .context("read test route budget")?
+            .cloned();
+        coord.work_state_mut().append_graph_audit(audit_event(
+            audit_context,
+            GraphAuditKind::RouteSelected,
+            None,
+            Vec::new(),
+            Some(project_audit_route(next_step)),
+            None,
+            budget,
+        ));
+        coord
+            .capture_current_work_state()
+            .context("persist test route audit event")?;
+        Ok(next_step)
     }
 
-    fn prepare_work_graph_pass(&self) -> Result<()> {
+    fn prepare_work_graph_pass(&self) -> Result<WorkGraphAuditContext> {
         let mut coord = self
             .coordinator
             .write()
             .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+        let node_id = coord
+            .current_node()
+            .map(|node| node.id.clone())
+            .unwrap_or_default();
+        let attempt = coord
+            .work_state()
+            .graph_audit()
+            .iter()
+            .filter(|event| {
+                event.node_id == node_id && event.kind != GraphAuditKind::ProfileResolved
+            })
+            .map(|event| event.attempt)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
         coord.work_state_mut().reset_for_work_graph_pass();
         if coord
             .work_state()
@@ -285,7 +468,7 @@ impl NodeRuntime {
         coord
             .capture_current_work_state()
             .context("persist fresh work graph pass state")?;
-        Ok(())
+        Ok(WorkGraphAuditContext { node_id, attempt })
     }
 
     /// Verify the current node using its persisted contract. Nodes without
@@ -423,6 +606,26 @@ impl NodeRuntime {
         coord
             .capture_current_work_state()
             .context("persist fresh node work state")?;
+        let persisted_node = coord
+            .current_node()
+            .context("read persisted node contract")?;
+        let audit_context = WorkGraphAuditContext {
+            node_id: persisted_node.id.clone(),
+            attempt: 1,
+        };
+        let profile = project_audit_profile(persisted_node.contract.verification_profile);
+        coord.work_state_mut().append_graph_audit(audit_event(
+            &audit_context,
+            GraphAuditKind::ProfileResolved,
+            None,
+            Vec::new(),
+            None,
+            Some(profile),
+            None,
+        ));
+        coord
+            .capture_current_work_state()
+            .context("persist resolved profile audit event")?;
         Ok(node_id)
     }
 
@@ -617,7 +820,7 @@ mod tests {
     use crate::exec_session::session::SessionSource;
     use crate::exec_session::verify_gate::{CommandExecutor, CommandRun};
     use crate::exec_session::WorkGraphStep;
-    use crate::org_graph::NodeType;
+    use crate::org_graph::{GraphAuditKind, GraphAuditRoute, NodeType};
     use crate::tools::checkpoint_store::CheckpointStore;
     use async_trait::async_trait;
     use tempfile::TempDir;
@@ -656,6 +859,7 @@ mod tests {
     struct ScriptedExecutor {
         exit_codes: Mutex<VecDeque<i32>>,
         calls: Arc<Mutex<Vec<String>>>,
+        fixed_stderr: Option<String>,
     }
 
     #[async_trait]
@@ -675,11 +879,13 @@ mod tests {
                 cmd: command.to_string(),
                 exit_code: Some(exit_code),
                 stdout: String::new(),
-                stderr: if exit_code == 0 {
-                    String::new()
-                } else {
-                    format!("{command} failed")
-                },
+                stderr: self.fixed_stderr.clone().unwrap_or_else(|| {
+                    if exit_code == 0 {
+                        String::new()
+                    } else {
+                        format!("{command} failed")
+                    }
+                }),
             })
         }
     }
@@ -745,6 +951,13 @@ mod tests {
 
     impl ScriptedSetup {
         fn new(exit_codes: impl IntoIterator<Item = i32>) -> Self {
+            Self::with_fixed_stderr(exit_codes, None)
+        }
+
+        fn with_fixed_stderr(
+            exit_codes: impl IntoIterator<Item = i32>,
+            fixed_stderr: Option<String>,
+        ) -> Self {
             let dir = TempDir::new().expect("temporary project");
             let store = Arc::new(CheckpointStore::new(dir.path()));
             let coord = SessionCoordinator::new(
@@ -759,6 +972,7 @@ mod tests {
             let executor = Arc::new(ScriptedExecutor {
                 exit_codes: Mutex::new(exit_codes.into_iter().collect()),
                 calls: Arc::clone(&calls),
+                fixed_stderr,
             });
             let gate = Arc::new(VerifyGate::new_with_default_hooks(
                 Arc::clone(&coord),
@@ -1004,6 +1218,153 @@ mod tests {
             .generated_diff(NodeType::GeneralPurpose)
             .expect("work node may read generated diff")
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn rust_work_graph_persists_real_anchor_and_route_audit_sequence() {
+        let setup = ScriptedSetup::new([0, 0, 0]);
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec![], vec![])
+            .await
+            .expect("begin rust node");
+        setup
+            .coord
+            .write()
+            .expect("coordinator")
+            .work_state_mut()
+            .set_budget(
+                NodeType::GeneralPurpose,
+                Budget {
+                    max_iter: 7,
+                    iter_used: 3,
+                    token_used: 42,
+                },
+            )
+            .expect("set state-owned budget");
+
+        assert!(matches!(
+            setup
+                .runtime
+                .verify_current_node()
+                .await
+                .expect("verify rust node"),
+            NodeVerificationOutcome::WorkGraph(_)
+        ));
+
+        let coord = setup.coord.read().expect("coordinator");
+        let audit = coord.work_state().graph_audit();
+        assert_eq!(
+            audit.iter().map(|event| &event.kind).collect::<Vec<_>>(),
+            [
+                &GraphAuditKind::ProfileResolved,
+                &GraphAuditKind::AnchorCompleted,
+                &GraphAuditKind::RouteSelected,
+                &GraphAuditKind::AnchorCompleted,
+                &GraphAuditKind::RouteSelected,
+                &GraphAuditKind::AnchorCompleted,
+                &GraphAuditKind::RouteSelected,
+            ]
+        );
+        assert_eq!(audit[0].node_id, "n1");
+        assert_eq!(audit[0].attempt, 1);
+        assert_eq!(audit[0].profile, Some(GraphAuditProfile::Rust));
+        assert_eq!(audit[1].anchor, Some(GraphAuditAnchor::Compile));
+        assert_eq!(audit[1].commands[0].command, "cargo check");
+        assert_eq!(audit[1].commands[0].exit_code, Some(0));
+        assert!(audit
+            .iter()
+            .filter(|event| event.kind == GraphAuditKind::RouteSelected)
+            .all(|event| {
+                event.budget
+                    == Some(Budget {
+                        max_iter: 7,
+                        iter_used: 3,
+                        token_used: 42,
+                    })
+            }));
+        assert_eq!(
+            audit.last().expect("final route event").route,
+            Some(GraphAuditRoute::Complete)
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_stderr_truncation_is_utf8_safe_and_bounded() {
+        let oversized_stderr = "界".repeat(3_000);
+        let setup = ScriptedSetup::with_fixed_stderr([17], Some(oversized_stderr));
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec![], vec![])
+            .await
+            .expect("begin rust node");
+
+        setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("record failed compile anchor");
+
+        let coord = setup.coord.read().expect("coordinator");
+        let command = &coord.work_state().graph_audit()[1].commands[0];
+        assert_eq!(command.command, "cargo check");
+        assert_eq!(command.exit_code, Some(17));
+        assert!(command.stderr.len() <= 8_192);
+        assert!(std::str::from_utf8(command.stderr.as_bytes()).is_ok());
+        assert!(command.stderr.ends_with("\n...[stderr truncated]"));
+    }
+
+    #[tokio::test]
+    async fn graph_audit_recovers_from_checkpoint_with_event_facts_intact() {
+        let setup = ScriptedSetup::new([0, 0, 0]);
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec![], vec![])
+            .await
+            .expect("begin rust node");
+        setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("verify rust node");
+
+        let checkpoint_turn_id = setup
+            .coord
+            .read()
+            .expect("coordinator")
+            .session()
+            .current_turn_record()
+            .expect("active turn")
+            .checkpoint_turn_id
+            .clone();
+        let store = Arc::new(CheckpointStore::new(setup._dir.path()));
+        let reloaded = SessionCoordinator::new(
+            "es-checkpoint-reload".into(),
+            SessionSource::AgentSelf,
+            setup._dir.path(),
+            store,
+        )
+        .expect("create fresh coordinator over checkpoint store");
+        let restored = reloaded
+            .checkpoint_store()
+            .restore_work_state(&checkpoint_turn_id)
+            .expect("reload audit checkpoint")
+            .expect("persisted work state");
+        let audit = restored.graph_audit();
+
+        assert_eq!(audit[1].node_id, "n1");
+        assert_eq!(audit[1].attempt, 1);
+        assert_eq!(audit[1].commands[0].exit_code, Some(0));
+        assert_eq!(
+            audit.last().expect("final route event").route,
+            Some(GraphAuditRoute::Complete)
+        );
     }
 
     #[tokio::test]
