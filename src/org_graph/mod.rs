@@ -13,6 +13,6 @@ pub use registry::NodeRegistry;
 pub use work_state::{
     AuditCommandRun, Budget, CompileResult, FieldPerms, GeneratedDiff, GraphAuditAnchor,
     GraphAuditCommands, GraphAuditEvent, GraphAuditKind, GraphAuditProfile, GraphAuditRoute,
-    HumanReview, StepAction, StepRecord, TestResult, VerifyFailureKind, VerifyOutcome, WorkField,
-    WorkState,
+    HumanReview, SpecialistEvidence, SpecialistReport, SpecialistReportKind, StepAction,
+    StepRecord, TestResult, VerifyFailureKind, VerifyOutcome, WorkField, WorkState,
 };

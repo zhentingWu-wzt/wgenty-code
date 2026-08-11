@@ -37,6 +37,9 @@ pub struct WorkState {
     /// 工作图执行审计轨迹（跨节点、pass 与 turn 保留，兼容既有 checkpoint）。
     #[serde(default)]
     graph_audit: Vec<GraphAuditEvent>,
+    /// 专用子 Agent 的结构化交接报告（兼容既有 checkpoint）。
+    #[serde(default)]
+    specialist_reports: Vec<SpecialistReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -68,6 +71,42 @@ pub struct Budget {
     pub max_iter: u32,
     pub iter_used: u32,
     pub token_used: u64,
+}
+
+/// A specialist role's typed report category.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SpecialistReportKind {
+    /// Read-only repository exploration findings.
+    Exploration,
+    /// An actionable implementation plan.
+    ImplementationPlan,
+}
+
+/// One evidence item cited by a specialist report.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpecialistEvidence {
+    /// Repository-relative path that supports the finding.
+    pub path: String,
+    /// Concise observation derived from the path.
+    pub detail: String,
+}
+
+/// A validated, checkpointed handoff product from a specialist sub-agent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpecialistReport {
+    /// Trusted producer persisted alongside its self-described report.
+    pub producer: NodeType,
+    /// The report's structured purpose.
+    pub kind: SpecialistReportKind,
+    /// Bounded conclusion for the next node.
+    pub summary: String,
+    /// Non-empty source observations supporting the conclusion.
+    pub evidence: Vec<SpecialistEvidence>,
+    /// Deduplicated files likely to require attention.
+    pub suspected_files: Vec<String>,
+    /// Ordered, non-empty recommended next actions.
+    pub recommended_actions: Vec<String>,
 }
 
 /// 单个外部命令的工作图审计投影。
@@ -175,6 +214,7 @@ pub enum WorkField {
     HumanReview,
     VerifyResult,
     Budget,
+    SpecialistReports,
     StepLog,
 }
 
@@ -208,8 +248,9 @@ impl NodeType {
     /// - Verification：执行外部锚点 → 写 compile_result/test_result/verify_result；读
     ///   requirement/verify_result/compile_result/test_result/step_log。step_log 由授权写
     ///   自动记入，不直接 set。
-    /// - GeneralPurpose（协调/工作节点）：写 generated_diff/budget；广泛读全 8 字段。
-    /// - Explore / Plan / WgentyCodeGuide：只读 requirement，不写任何字段。
+    /// - GeneralPurpose（协调/工作节点）：写 generated_diff/budget；广泛读工作产物。
+    /// - Explore / Plan：读 requirement，写自己的 specialist_reports。
+    /// - WgentyCodeGuide：只读 requirement，不写任何字段。
     ///
     /// human_review 对所有现存 NodeType 的 writable 都为 {}（仍需人工审批节点）。
     pub fn field_perms(&self) -> FieldPerms {
@@ -220,6 +261,7 @@ impl NodeType {
                     WorkField::VerifyResult,
                     WorkField::CompileResult,
                     WorkField::TestResult,
+                    WorkField::SpecialistReports,
                     WorkField::StepLog,
                 ]
                 .into_iter()
@@ -241,6 +283,7 @@ impl NodeType {
                     WorkField::TestResult,
                     WorkField::HumanReview,
                     WorkField::Budget,
+                    WorkField::SpecialistReports,
                     WorkField::StepLog,
                 ]
                 .into_iter()
@@ -249,7 +292,11 @@ impl NodeType {
                     .into_iter()
                     .collect(),
             },
-            NodeType::Explore | NodeType::Plan | NodeType::WgentyCodeGuide => FieldPerms {
+            NodeType::Explore | NodeType::Plan => FieldPerms {
+                readable: [WorkField::Requirement].into_iter().collect(),
+                writable: [WorkField::SpecialistReports].into_iter().collect(),
+            },
+            NodeType::WgentyCodeGuide => FieldPerms {
                 readable: [WorkField::Requirement].into_iter().collect(),
                 writable: HashSet::new(),
             },
@@ -277,6 +324,68 @@ impl WorkState {
     /// 读取跨 checkpoint 保留的工作图审计记录。
     pub fn graph_audit(&self) -> &[GraphAuditEvent] {
         &self.graph_audit
+    }
+
+    /// Read all persisted specialist reports when the caller's contract allows
+    /// access to the shared handoff field.
+    pub fn specialist_reports(
+        &self,
+        caller: NodeType,
+    ) -> Result<&[SpecialistReport], CoordinatorError> {
+        if !caller
+            .field_perms()
+            .readable
+            .contains(&WorkField::SpecialistReports)
+        {
+            return Err(CoordinatorError::ContractViolation {
+                node_type: caller,
+                dimension: ContractDimension::State,
+                reason: "node type not permitted to read specialist_reports".into(),
+            });
+        }
+        Ok(&self.specialist_reports)
+    }
+
+    /// Persist one validated specialist report through the caller's field
+    /// permission. A repeated `(producer, kind)` handoff replaces its prior
+    /// report so retries do not leave ambiguous competing products.
+    pub fn set_specialist_report(
+        &mut self,
+        caller: NodeType,
+        report: SpecialistReport,
+    ) -> Result<(), CoordinatorError> {
+        if !caller
+            .field_perms()
+            .writable
+            .contains(&WorkField::SpecialistReports)
+        {
+            return Err(CoordinatorError::ContractViolation {
+                node_type: caller,
+                dimension: ContractDimension::State,
+                reason: "node type not permitted to write specialist_reports".into(),
+            });
+        }
+        if report.producer != caller {
+            return Err(CoordinatorError::ContractViolation {
+                node_type: caller,
+                dimension: ContractDimension::State,
+                reason: "specialist report producer does not match trusted caller".into(),
+            });
+        }
+        validate_specialist_report_kind(&caller, report.kind)?;
+        validate_specialist_report_contents(&report)?;
+
+        if let Some(existing) = self
+            .specialist_reports
+            .iter_mut()
+            .find(|existing| existing.producer == report.producer && existing.kind == report.kind)
+        {
+            *existing = report;
+        } else {
+            self.specialist_reports.push(report);
+        }
+        self.push_step(caller, WorkField::SpecialistReports, StepAction::Wrote);
+        Ok(())
     }
 
     /// coordinator 专用：追加一条工作图审计事件。
@@ -524,6 +633,7 @@ impl WorkState {
         self.test_result = None;
         self.verify_result = None;
         self.budget = None;
+        self.specialist_reports.clear();
     }
 
     /// Invalidate every result derived from a prior work-graph pass before a
@@ -533,6 +643,7 @@ impl WorkState {
         self.compile_result = None;
         self.test_result = None;
         self.verify_result = None;
+        self.specialist_reports.clear();
     }
 
     /// turn 间继承：requirement 克隆保留，其余产物字段（含 deferred）全部清空。
@@ -549,8 +660,55 @@ impl WorkState {
             budget: None,
             step_log: Vec::new(),
             graph_audit: self.graph_audit.clone(),
+            specialist_reports: self.specialist_reports.clone(),
         }
     }
+}
+
+fn validate_specialist_report_kind(
+    caller: &NodeType,
+    kind: SpecialistReportKind,
+) -> Result<(), CoordinatorError> {
+    let allowed = matches!(
+        (caller, kind),
+        (NodeType::Explore, SpecialistReportKind::Exploration)
+            | (NodeType::Plan, SpecialistReportKind::ImplementationPlan)
+    );
+    if allowed {
+        return Ok(());
+    }
+    Err(CoordinatorError::ContractViolation {
+        node_type: caller.clone(),
+        dimension: ContractDimension::State,
+        reason: "specialist report kind is not allowed for node type".into(),
+    })
+}
+
+fn validate_specialist_report_contents(report: &SpecialistReport) -> Result<(), CoordinatorError> {
+    let contents_valid = !report.summary.trim().is_empty()
+        && !report.evidence.is_empty()
+        && report
+            .evidence
+            .iter()
+            .all(|evidence| !evidence.path.trim().is_empty() && !evidence.detail.trim().is_empty())
+        && !report.recommended_actions.is_empty()
+        && report
+            .recommended_actions
+            .iter()
+            .all(|action| !action.trim().is_empty());
+    let mut paths = HashSet::new();
+    let suspected_files_unique = report
+        .suspected_files
+        .iter()
+        .all(|path| !path.trim().is_empty() && paths.insert(path));
+    if contents_valid && suspected_files_unique {
+        return Ok(());
+    }
+    Err(CoordinatorError::ContractViolation {
+        node_type: report.producer.clone(),
+        dimension: ContractDimension::State,
+        reason: "specialist report must contain non-empty evidence/actions and unique files".into(),
+    })
 }
 
 impl VerifyOutcome {
@@ -569,6 +727,85 @@ impl VerifyOutcome {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    fn exploration_report() -> SpecialistReport {
+        SpecialistReport {
+            producer: NodeType::Explore,
+            kind: SpecialistReportKind::Exploration,
+            summary: "the parser owns the failing branch".into(),
+            evidence: vec![SpecialistEvidence {
+                path: "src/parser.rs".into(),
+                detail: "parse() rejects empty input".into(),
+            }],
+            suspected_files: vec!["src/parser.rs".into()],
+            recommended_actions: vec!["add an empty-input regression test".into()],
+        }
+    }
+
+    #[test]
+    fn specialist_report_is_authorized_checkpoint_compatible_and_inherited() {
+        let mut state = WorkState::default();
+        state
+            .set_specialist_report(NodeType::Explore, exploration_report())
+            .expect("explore may write an exploration report");
+        assert_eq!(
+            state
+                .specialist_reports(NodeType::GeneralPurpose)
+                .expect("general purpose may read reports")
+                .len(),
+            1
+        );
+        assert_eq!(
+            state.step_log().last().expect("report write log").field,
+            WorkField::SpecialistReports
+        );
+
+        state.reset_for_work_graph_pass();
+        assert!(state
+            .specialist_reports(NodeType::GeneralPurpose)
+            .expect("general purpose may read reports")
+            .is_empty());
+        state
+            .set_specialist_report(NodeType::Explore, exploration_report())
+            .expect("record retry report");
+        let inherited = state.inherit_for_new_turn();
+        assert_eq!(
+            inherited
+                .specialist_reports(NodeType::GeneralPurpose)
+                .expect("general purpose may read inherited reports"),
+            state
+                .specialist_reports(NodeType::GeneralPurpose)
+                .expect("general purpose may read current reports")
+        );
+        assert_eq!(
+            serde_json::from_str::<WorkState>(&serde_json::to_string(&inherited).unwrap()).unwrap(),
+            inherited
+        );
+    }
+
+    #[test]
+    fn specialist_report_rejects_spoofed_producer_and_invalid_contents_without_mutation() {
+        let mut state = WorkState::default();
+        let mut report = exploration_report();
+        report.producer = NodeType::Plan;
+        assert!(state
+            .set_specialist_report(NodeType::Explore, report)
+            .is_err());
+        assert!(state
+            .specialist_reports(NodeType::GeneralPurpose)
+            .expect("general purpose may read reports")
+            .is_empty());
+
+        let mut report = exploration_report();
+        report.recommended_actions.clear();
+        assert!(state
+            .set_specialist_report(NodeType::Explore, report)
+            .is_err());
+        assert!(state
+            .specialist_reports(NodeType::GeneralPurpose)
+            .expect("general purpose may read reports")
+            .is_empty());
+    }
 
     fn event(node_id: &str, attempt: u32, kind: GraphAuditKind) -> GraphAuditEvent {
         GraphAuditEvent {
@@ -698,6 +935,7 @@ mod tests {
                 timestamp: "2026-08-11T00:00:00Z".into(),
             }],
             graph_audit: vec![event("verify", 1, GraphAuditKind::AnchorCompleted)],
+            specialist_reports: Vec::new(),
         };
         let json = serde_json::to_string(&state).expect("serialize");
         let back: WorkState = serde_json::from_str(&json).expect("deserialize");
@@ -771,8 +1009,8 @@ mod tests {
     }
 
     #[test]
-    fn workfield_has_eight_variants() {
-        // 全字段权限矩阵依赖 8 个 WorkField 变体；缺一个会让 Task 2 矩阵不完整。
+    fn workfield_has_nine_variants() {
+        // 全字段权限矩阵依赖 9 个 WorkField 变体；缺一个会让 Task 2 矩阵不完整。
         let all = [
             WorkField::Requirement,
             WorkField::GeneratedDiff,
@@ -781,11 +1019,12 @@ mod tests {
             WorkField::HumanReview,
             WorkField::VerifyResult,
             WorkField::Budget,
+            WorkField::SpecialistReports,
             WorkField::StepLog,
         ];
-        // 8 个互异（Hash 去重后仍 8 个）。
+        // 9 个互异（Hash 去重后仍 9 个）。
         let set: HashSet<WorkField> = all.iter().copied().collect();
-        assert_eq!(set.len(), 8);
+        assert_eq!(set.len(), 9);
     }
 
     #[test]
@@ -855,7 +1094,7 @@ mod tests {
         // 写：generated_diff + budget。
         assert!(perms.writable.contains(&WorkField::GeneratedDiff));
         assert!(perms.writable.contains(&WorkField::Budget));
-        // 读：全 8 字段中除 step_log 外基本可读（协调者需广视野）。
+        // 读：全部工作产物字段（协调者需广视野）。
         for f in [
             WorkField::Requirement,
             WorkField::GeneratedDiff,
@@ -864,6 +1103,7 @@ mod tests {
             WorkField::TestResult,
             WorkField::HumanReview,
             WorkField::Budget,
+            WorkField::SpecialistReports,
             WorkField::StepLog,
         ] {
             assert!(
@@ -877,8 +1117,8 @@ mod tests {
     }
 
     #[test]
-    fn field_perms_explore_plan_guide_only_read_requirement() {
-        for nt in [NodeType::Explore, NodeType::Plan, NodeType::WgentyCodeGuide] {
+    fn field_perms_specialists_write_reports_while_guide_remains_read_only() {
+        for nt in [NodeType::Explore, NodeType::Plan] {
             let perms = nt.field_perms();
             assert!(perms.readable.contains(&WorkField::Requirement));
             assert_eq!(
@@ -886,11 +1126,19 @@ mod tests {
                 1,
                 "{nt:?} should only read requirement"
             );
-            assert!(
-                perms.writable.is_empty(),
-                "{nt:?} should have empty writable"
+            assert_eq!(
+                perms.writable,
+                [WorkField::SpecialistReports].into_iter().collect(),
+                "{nt:?} should write only specialist reports"
             );
         }
+
+        let guide = NodeType::WgentyCodeGuide.field_perms();
+        assert_eq!(
+            guide.readable,
+            [WorkField::Requirement].into_iter().collect()
+        );
+        assert!(guide.writable.is_empty());
     }
 
     #[test]
@@ -1102,6 +1350,7 @@ mod tests {
                 timestamp: "2026-08-11T00:00:00Z".into(),
             }],
             graph_audit: vec![event("verify", 1, GraphAuditKind::AnchorCompleted)],
+            specialist_reports: Vec::new(),
         };
         let next = state.inherit_for_new_turn();
         assert_eq!(next.requirement.as_deref(), Some("跨 turn"));
