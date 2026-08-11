@@ -33,7 +33,7 @@
 - `GraphAuditKind::{ProfileResolved, AnchorCompleted, RouteSelected}`; `GraphAuditAnchor::{Compile, Test, Verify}`; `GraphAuditRoute::{Implement, CompileAnchor, TestAnchor, VerifyGate, Complete, Escalate}`; `GraphAuditProfile::{None, Rust}` serialize with snake-case values.
 - `WorkState::graph_audit(&self) -> &[GraphAuditEvent]` is public read-only; `append_graph_audit` is crate-visible and appends exactly one event.
 
-- [ ] **Step 1: Write failing serde and reset-retention tests**
+- [x] **Step 1: Write failing serde and reset-retention tests**
 
 ```rust
 #[test]
@@ -48,17 +48,17 @@ fn graph_audit_round_trips_and_survives_all_work_state_resets() {
 }
 ```
 
-- [ ] **Step 2: Run the focused test and observe the missing audit API**
+- [x] **Step 2: Run the focused test and observe the missing audit API**
 
 Run: `cargo test org_graph::work_state::tests::graph_audit_round_trips_and_survives_all_work_state_resets --lib`
 
 Expected: compilation fails because `GraphAuditEvent` and `graph_audit` are absent.
 
-- [ ] **Step 3: Implement the types and retention semantics**
+- [x] **Step 3: Implement the types and retention semantics**
 
 Add the serde-defaulted collection to `WorkState`, all public types to `org_graph::mod`, and the crate-visible append method. Update equality/round-trip fixtures and make every reset/inheritance constructor clone existing audit history rather than clearing it.
 
-- [ ] **Step 4: Verify Task 1**
+- [x] **Step 4: Verify Task 1**
 
 Run: `cargo test org_graph::work_state::tests --lib && cargo fmt -- --check`
 
@@ -77,7 +77,7 @@ Expected: all WorkState tests and formatting pass.
 - A fresh node appends one profile event after its resolved contract persists.
 - Each pass appends an anchor event followed by a route event after compile, test, and final verification; route events carry the budget snapshot.
 
-- [ ] **Step 1: Write a failing success-path audit sequence test**
+- [x] **Step 1: Write a failing success-path audit sequence test**
 
 ```rust
 #[tokio::test]
@@ -98,21 +98,21 @@ async fn rust_work_graph_persists_real_anchor_and_route_audit_sequence() {
 }
 ```
 
-- [ ] **Step 2: Run the focused test and observe absent events**
+- [x] **Step 2: Run the focused test and observe absent events**
 
 Run: `cargo test exec_session::node_runtime::tests::rust_work_graph_persists_real_anchor_and_route_audit_sequence --lib`
 
 Expected: fails because no graph audit events are emitted.
 
-- [ ] **Step 3: Implement non-forgeable runtime emission**
+- [x] **Step 3: Implement non-forgeable runtime emission**
 
 After resolved-node persistence, append/checkpoint `ProfileResolved`. For every actual command batch, copy command, exit code, and truncated stderr into `AuditCommandRun`, append/checkpoint `AnchorCompleted`, then append/checkpoint `RouteSelected` only after `next_step` returns. Use explicit conversion helpers for profile/step and a UTF-8-safe truncation helper. Clone all data under a short lock and never retain locks across `.await`.
 
-- [ ] **Step 4: Add truncation and checkpoint recovery coverage**
+- [x] **Step 4: Add truncation and checkpoint recovery coverage**
 
 Add a test with an oversized multi-byte stderr proving the stored string is valid UTF-8 and bounded. Add a checkpoint reload test that reads emitted events after a fresh `SessionCoordinator` load, then assert node id, attempt, command exit code, and route remain intact.
 
-- [ ] **Step 5: Verify Task 2**
+- [x] **Step 5: Verify Task 2**
 
 Run: `cargo test exec_session::node_runtime::tests --lib && cargo clippy --all-targets -- -D warnings`
 

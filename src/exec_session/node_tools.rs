@@ -258,6 +258,8 @@ mod tests {
         calls: Arc<Mutex<Vec<String>>>,
     }
 
+    struct FailingExecutor;
+
     #[async_trait]
     impl CommandExecutor for RecordingExecutor {
         async fn execute(&self, command: &str, _project_root: &Path) -> Result<CommandRun> {
@@ -267,6 +269,18 @@ mod tests {
                 exit_code: Some(0),
                 stdout: String::new(),
                 stderr: String::new(),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl CommandExecutor for FailingExecutor {
+        async fn execute(&self, command: &str, _project_root: &Path) -> Result<CommandRun> {
+            Ok(CommandRun {
+                cmd: command.into(),
+                exit_code: Some(1),
+                stdout: String::new(),
+                stderr: "command failed".into(),
             })
         }
     }
@@ -344,6 +358,67 @@ mod tests {
                 .expect("current node")
                 .status,
             NodeStatus::Verified
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_node_tool_marks_node_failed_when_work_graph_escalates() {
+        let directory = TempDir::new().expect("temp directory");
+        std::fs::write(
+            directory.path().join("Cargo.toml"),
+            "[package]\nname = \"p\"\n",
+        )
+        .expect("write manifest");
+        let coordinator = Arc::new(RwLock::new(
+            SessionCoordinator::new(
+                "tool-escalation".into(),
+                SessionSource::AgentSelf,
+                directory.path(),
+                Arc::new(CheckpointStore::new(directory.path())),
+            )
+            .expect("session coordinator"),
+        ));
+        coordinator
+            .write()
+            .expect("coordinator write lock")
+            .begin_turn()
+            .expect("begin turn");
+        let gate = Arc::new(VerifyGate::new_with_default_hooks(
+            Arc::clone(&coordinator),
+            Arc::new(FailingExecutor),
+        ));
+        let runtime = Arc::new(NodeRuntime::new_with_default_hooks(
+            Arc::clone(&coordinator),
+            gate,
+            1,
+        ));
+        BeginNodeTool::new(Arc::clone(&runtime))
+            .execute(json!({
+                "goal": "tool escalation",
+                "verify_commands": [],
+                "expected_files": []
+            }))
+            .await
+            .expect("begin node tool");
+
+        let output = VerifyNodeTool::new(runtime)
+            .execute(json!({}))
+            .await
+            .expect("verify node tool");
+
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&output.content).expect("structured output")
+                ["next_step"],
+            "Escalate"
+        );
+        assert_eq!(
+            coordinator
+                .read()
+                .expect("coordinator")
+                .current_node()
+                .expect("current node")
+                .status,
+            NodeStatus::Failed
         );
     }
 }

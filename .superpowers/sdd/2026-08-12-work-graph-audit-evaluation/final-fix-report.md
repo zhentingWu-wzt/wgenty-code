@@ -164,3 +164,56 @@ reopen-on-attempt assignment failed with `Some(Completed)` instead of `None`.
 
 No new concerns. Residual multi-file checkpoint atomicity and retention policy
 remain explicitly out of scope for this fix wave and were not broadened.
+
+## Final whole-phase review: lifecycle, identity, and turn invariants
+
+The final review identified three related audit-consistency gaps and stale plan
+bookkeeping. The code-owned `Escalate` completion path now performs the durable
+transition in the required order: route audit checkpoint first, synchronized
+failed session/verify log second, and current node `Failed` last. This applies
+uniformly to compile exhaustion, test exhaustion, final-command exhaustion,
+and boundary escalation, including the `VerifyNodeTool` surface. Retry routes
+still leave the node/session active and the verify-log final status unset.
+
+Node allocation now derives the next numeric `n<id>` from both the live node
+chain and retained graph audit. Consequently, rollback/truncation cannot reuse
+an identity whose audit remains historical, and a replacement node starts its
+own attempt sequence at 1. The parser ignores legacy/custom non-numeric IDs and
+uses checked increment for numeric exhaustion.
+
+`begin_node` and audited Work-Graph passes now require an active turn record
+(and therefore a real checkpoint) before any node, WorkState, audit, or command
+mutation. The fabricated `turn-0` fallback was removed. Finally, all completed
+Task 1 and Task 2 plan checkboxes and the phase ledger were reconciled with the
+implemented state.
+
+### RED
+
+- `cargo test exec_session::node_runtime::tests::audit_ --lib` failed four
+  terminal scenarios because the session/log were `Failed` while the current
+  node remained `Running`.
+- `cargo test exec_session::node_tools::tests::verify_node_tool_marks_node_failed_when_work_graph_escalates --lib`
+  failed with `Running` instead of `Failed`.
+- `cargo test exec_session::node_runtime::tests::rollback_replacement_node_uses_fresh_audit_identity_and_attempt --lib`
+  failed because both the removed node and its replacement were allocated
+  `n2`.
+- `cargo test exec_session::node_runtime::tests::begin_node_without_active_turn_fails_without_mutating_node_or_audit --lib`
+  unexpectedly succeeded with `n1`.
+- `cargo test exec_session::node_runtime::tests::work_graph_without_active_turn_fails_without_mutating_node_or_audit --lib`
+  unexpectedly succeeded with `WorkGraphStep::Complete`.
+
+### GREEN
+
+- `cargo test exec_session::node_runtime::tests --lib`: 38 passed.
+- `cargo test exec_session::node_tools::tests --lib`: 2 passed.
+- `cargo test exec_session::session::tests --lib`: 14 passed.
+- `cargo fmt -- --check`: passed.
+- `git diff --check`: passed.
+- `cargo clippy --all-targets -- -D warnings`: passed with zero warnings.
+- `cargo test --all`: library 1,508 passed / 1 ignored; integration 183 passed /
+  3 ignored; binary and doc suites passed; 0 failures.
+
+### Concerns
+
+No new concerns. Residual non-atomic multi-file checkpoint writes and retention
+policy remain outside this fix scope, as requested.

@@ -114,6 +114,32 @@ struct WorkGraphAuditContext {
     attempt: u32,
 }
 
+fn numeric_node_id(node_id: &str) -> Option<u64> {
+    node_id
+        .strip_prefix('n')
+        .filter(|suffix| !suffix.is_empty())
+        .and_then(|suffix| suffix.parse().ok())
+}
+
+fn next_node_id(coordinator: &SessionCoordinator) -> Result<NodeId> {
+    let max_id = coordinator
+        .node_states()
+        .iter()
+        .map(|node| node.id.as_str())
+        .chain(
+            coordinator
+                .work_state()
+                .graph_audit()
+                .iter()
+                .map(|event| event.node_id.as_str()),
+        )
+        .filter_map(numeric_node_id)
+        .max()
+        .unwrap_or(0);
+    let next_id = max_id.checked_add(1).context("node id space exhausted")?;
+    Ok(format!("n{next_id}"))
+}
+
 fn project_audit_profile(profile: VerificationProfile) -> GraphAuditProfile {
     match profile {
         VerificationProfile::None => GraphAuditProfile::None,
@@ -370,10 +396,23 @@ impl NodeRuntime {
                 .verify_gate
                 .mark_completed()
                 .context("synchronize work graph completion status")?,
-            WorkGraphStep::Escalate => self
-                .verify_gate
-                .mark_failed()
-                .context("synchronize work graph escalation status")?,
+            WorkGraphStep::Escalate => {
+                self.verify_gate
+                    .mark_failed()
+                    .context("synchronize work graph escalation status")?;
+                let mut coord = self
+                    .coordinator
+                    .write()
+                    .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+                let node_id = coord
+                    .current_node()
+                    .context("work graph escalation requires a current node")?
+                    .id
+                    .clone();
+                coord
+                    .update_node_status(&node_id, NodeStatus::Failed)
+                    .context("mark escalated work graph node failed")?;
+            }
             _ => {}
         }
         Ok(WorkGraphRunResult { next_step })
@@ -474,6 +513,10 @@ impl NodeRuntime {
             .coordinator
             .write()
             .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+        coord
+            .session()
+            .current_turn_record()
+            .context("run work graph requires an active turn/checkpoint")?;
         let node_id = coord
             .current_node()
             .map(|node| node.id.clone())
@@ -613,6 +656,13 @@ impl NodeRuntime {
             .write()
             .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
 
+        let start_turn_id = coord
+            .session()
+            .current_turn_record()
+            .context("begin_node requires an active turn/checkpoint")?
+            .turn_id
+            .clone();
+
         // Precondition: current node must be Verified or absent.
         if let Some(node) = coord.current_node() {
             if node.status != NodeStatus::Verified {
@@ -623,9 +673,7 @@ impl NodeRuntime {
             }
         }
 
-        let start_turn_id = coord.current_turn_id().unwrap_or("turn-0").to_string();
-        let node_index = coord.node_states().len() + 1;
-        let node_id = format!("n{}", node_index);
+        let node_id = next_node_id(&coord)?;
         let node = Node {
             id: node_id.clone(),
             contract: NodeContract {
@@ -1179,6 +1227,63 @@ mod tests {
         assert_eq!(node.id, "n1");
         assert_eq!(node.status, NodeStatus::Running);
         assert_eq!(node.start_turn_id, "turn-0");
+    }
+
+    #[tokio::test]
+    async fn begin_node_without_active_turn_fails_without_mutating_node_or_audit() {
+        let setup = TestSetup::new(0);
+
+        let error = setup
+            .runtime
+            .begin_node("test goal".into(), vec!["echo ok".into()], vec![])
+            .await
+            .expect_err("begin_node must require an active turn");
+
+        assert!(format!("{error:#}").contains("active turn"));
+        assert_eq!(setup.calls.load(Ordering::Relaxed), 0);
+        let coord = setup.coord.read().expect("coordinator");
+        assert!(coord.node_states().is_empty());
+        assert!(coord.current_node().is_none());
+        assert!(coord.work_state().graph_audit().is_empty());
+    }
+
+    #[tokio::test]
+    async fn work_graph_without_active_turn_fails_without_mutating_node_or_audit() {
+        let setup = TestSetup::new(0);
+        let node = Node {
+            id: "n1".into(),
+            contract: NodeContract {
+                goal: "persisted without a turn".into(),
+                verify_commands: vec![],
+                compile_commands: vec!["cargo check".into()],
+                test_commands: vec![],
+                verification_profile: VerificationProfile::Rust,
+                expected_files: vec![],
+            },
+            status: NodeStatus::Running,
+            start_turn_id: "missing-turn".into(),
+            retry_count: 0,
+            verify_log_path: String::new(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        setup
+            .coord
+            .write()
+            .expect("coordinator")
+            .add_node(node.clone())
+            .expect("seed persisted node");
+
+        let error = setup
+            .runtime
+            .run_work_graph(vec!["cargo check".into()], vec![], vec![], vec![])
+            .await
+            .expect_err("audited graph must require an active turn");
+
+        assert!(format!("{error:#}").contains("active turn"));
+        assert_eq!(setup.calls.load(Ordering::Relaxed), 0);
+        let coord = setup.coord.read().expect("coordinator");
+        assert_eq!(coord.node_states(), [node]);
+        assert!(coord.work_state().graph_audit().is_empty());
     }
 
     #[tokio::test]
@@ -1812,6 +1917,10 @@ mod tests {
             })
         );
         assert_eq!(coord.session().status, SessionStatus::Failed);
+        assert_eq!(
+            coord.current_node().expect("current node").status,
+            NodeStatus::Failed
+        );
         drop(coord);
         assert_eq!(
             setup.verify_log().final_status,
@@ -1884,6 +1993,10 @@ mod tests {
             })
         );
         assert_eq!(coord.session().status, SessionStatus::Failed);
+        assert_eq!(
+            coord.current_node().expect("current node").status,
+            NodeStatus::Failed
+        );
         drop(coord);
         assert_eq!(
             setup.verify_log().final_status,
@@ -2044,6 +2157,10 @@ mod tests {
             })
         );
         assert_eq!(coord.session().status, SessionStatus::Failed);
+        assert_eq!(
+            coord.current_node().expect("current node").status,
+            NodeStatus::Failed
+        );
         drop(coord);
         assert_eq!(
             setup.verify_log().final_status,
@@ -2108,6 +2225,10 @@ mod tests {
             })
         );
         assert_eq!(coord.session().status, SessionStatus::Failed);
+        assert_eq!(
+            coord.current_node().expect("current node").status,
+            NodeStatus::Failed
+        );
         drop(coord);
         assert_eq!(
             setup.verify_log().final_status,
@@ -2427,6 +2548,77 @@ mod tests {
         assert_eq!(coord.node_states().len(), 1);
         assert_eq!(coord.current_node().unwrap().id, "n1");
         assert_eq!(coord.current_node().unwrap().status, NodeStatus::Verified);
+    }
+
+    #[tokio::test]
+    async fn rollback_replacement_node_uses_fresh_audit_identity_and_attempt() {
+        let setup = TestSetup::new(0);
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("node1".into(), vec![], vec![])
+            .await
+            .expect("begin first node");
+        setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("verify first node");
+
+        setup.begin_turn();
+        let removed_node_id = setup
+            .runtime
+            .begin_node("node2".into(), vec![], vec![])
+            .await
+            .expect("begin node that will be rolled back");
+        setup
+            .runtime
+            .run_work_graph(
+                vec!["cargo check".into()],
+                vec!["cargo test --all".into()],
+                vec!["cargo clippy --all-targets -- -D warnings".into()],
+                vec![],
+            )
+            .await
+            .expect("record historical audit for removed node");
+        let rollback = setup.runtime.rollback_node().await.expect("rollback node2");
+        assert_eq!(rollback.removed_nodes, vec![removed_node_id.clone()]);
+        assert!(setup
+            .coord
+            .read()
+            .expect("coordinator")
+            .work_state()
+            .graph_audit()
+            .iter()
+            .any(|event| event.node_id == removed_node_id));
+
+        let replacement_id = setup
+            .runtime
+            .begin_node("replacement".into(), vec![], vec![])
+            .await
+            .expect("begin replacement node");
+        setup
+            .runtime
+            .run_work_graph(
+                vec!["cargo check".into()],
+                vec!["cargo test --all".into()],
+                vec!["cargo clippy --all-targets -- -D warnings".into()],
+                vec![],
+            )
+            .await
+            .expect("record replacement audit");
+
+        assert_ne!(replacement_id, removed_node_id);
+        let coord = setup.coord.read().expect("coordinator");
+        let replacement_audit: Vec<_> = coord
+            .work_state()
+            .graph_audit()
+            .iter()
+            .filter(|event| event.node_id == replacement_id)
+            .collect();
+        assert!(!replacement_audit.is_empty());
+        assert!(replacement_audit.iter().all(|event| event.attempt == 1));
     }
 
     #[tokio::test]
