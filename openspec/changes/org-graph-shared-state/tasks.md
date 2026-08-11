@@ -20,9 +20,9 @@
 
 ## 4. pilot 路由点（读结构化字段 + 验证强制）
 
-- [ ] 4.1 二次查证已完成（design §1.5，带 file:line 证据）：compile 闭环不存在（`NodeType` 枚举 `src/org_graph/contract.rs:10-17` 无 `Compile` 变体、`parse_node_type` `src/tools/meta/task.rs:1070-1080` 不识别 compile、全仓库无 `compile_node`/`CompileResult`/`NodeType::Compile`）、test 闭环同理不存在（测试结果至多作不透明 exit code 塞进 `VerifyFailure::CommandFailed`，无 `failed_cases` 解析）——故 pilot 锚定唯一真实闭环 verify（`verify_gate.rs:208 verify_and_complete` → `VerifyResult{fail_reason: Option<VerifyFailure>}`，出口 `node_runtime.rs:204` 用 `format!("{f:?}")` 降级）。实现期按 design D5 硬约束复核降级点仍在原位
-- [ ] 4.2 实现 pilot 路由点：`verify_node` 出口从 `format!("{f:?}")` 降级改为「投影 `VerifyResult` → 经 `set_verify_result(NodeType::Verification, outcome)` 写入 WorkState（受字段级权限强制）→ 读回 `verify_result()` 的 `VerifyFailureKind` 枚举做 retry 决策」（不是 compile/test——查证确认二者闭环不存在，详见 design §1.5）
-- [ ] 4.3 确保 pilot 路由点涉及的写字段场景受 2.x 字段级权限强制（节点须声明可写该字段），并提供验证该强制的测试
+- [x] 4.1 二次查证已完成（design §1.5，带 file:line 证据）：compile 闭环不存在（`NodeType` 枚举 `src/org_graph/contract.rs:10-17` 无 `Compile` 变体、`parse_node_type` `src/tools/meta/task.rs:1070-1080` 不识别 compile、全仓库无 `compile_node`/`CompileResult`/`NodeType::Compile`）、test 闭环同理不存在（测试结果至多作不透明 exit code 塞进 `VerifyFailure::CommandFailed`，无 `failed_cases` 解析）——故 pilot 锚定唯一真实闭环 verify（`verify_gate.rs:208 verify_and_complete` → `VerifyResult{fail_reason: Option<VerifyFailure>}`，出口 `node_runtime.rs:204` 用 `format!("{f:?}")` 降级）。实现期按 design D5 硬约束复核降级点仍在原位
+- [x] 4.2 实现 pilot 路由点：`verify_node` 出口从 `format!("{f:?}")` 降级改为「投影 `VerifyResult` → 经 `set_verify_result(NodeType::Verification, outcome)` 写入 WorkState（受字段级权限强制）→ 读回 `verify_result()` 的 `VerifyFailureKind` 枚举做 retry 决策」（不是 compile/test——查证确认二者闭环不存在，详见 design §1.5）
+- [x] 4.3 确保 pilot 路由点涉及的写字段场景受 2.x 字段级权限强制（节点须声明可写该字段），并提供验证该强制的测试
 
 ## 5. 三层状态分层与零回归
 
