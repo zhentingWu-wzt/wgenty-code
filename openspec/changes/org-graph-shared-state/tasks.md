@@ -26,9 +26,9 @@
 
 ## 5. 三层状态分层与零回归
 
-- [ ] 5.1 验证 `WorkState` 与 `SessionState`（会话骨架）/ `AppState`（全局配置）三层职责分明：`SessionState` 字段语义不变、`AppState` 完全不动
-- [ ] 5.2 `SubagentResultMailbox` 在非 pilot 路径维持原状（与 `WorkState` 并存，不强制同步、不强制淘汰）
-- [ ] 5.3 与 `org-graph-dispatch-telemetry` 正交性验证：两者字段/schema 互不依赖、互不修改
+- [x] 5.1 验证 `WorkState` 与 `SessionState`（会话骨架）/ `AppState`（全局配置）三层职责分明：`SessionState` 字段语义不变、`AppState` 完全不动
+- [x] 5.2 `SubagentResultMailbox` 在非 pilot 路径维持原状（与 `WorkState` 并存，不强制同步、不强制淘汰）
+- [x] 5.3 与 `org-graph-dispatch-telemetry` 正交性验证：两者字段/schema 互不依赖、互不修改
 
 ## 6. 集成验证
 
