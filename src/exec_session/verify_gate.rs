@@ -196,6 +196,27 @@ impl VerifyGate {
         Self::new(coordinator, executor, Arc::new(NoHooks))
     }
 
+    /// Execute deterministic anchor commands without mutating session status.
+    ///
+    /// Compile and test anchors use this path; final verification continues to
+    /// use [`Self::verify_and_complete`] because it also enforces the changed
+    /// file boundary and terminal session transition.
+    pub async fn run_anchor_commands(&self, commands: &[String]) -> Result<Vec<CommandRun>> {
+        let project_root = {
+            let coord = self
+                .coordinator
+                .read()
+                .map_err(|e| anyhow::anyhow!("coordinator read lock: {e}"))?;
+            coord.project_root().to_path_buf()
+        };
+
+        let mut commands_run = Vec::with_capacity(commands.len());
+        for command in commands {
+            commands_run.push(self.executor.execute(command, &project_root).await?);
+        }
+        Ok(commands_run)
+    }
+
     /// Run `commands` (via the executor, which routes through guardian+sandbox
     /// in production), compute `actual_changed_files` (three sources, spec
     /// §3.3), check `actual ⊆ expected`, write `verify_log.json`, and on

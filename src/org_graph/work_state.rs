@@ -128,13 +128,13 @@ impl NodeType {
     /// 返回该节点类型对 WorkState 字段的可读 / 可写权限矩阵。
     ///
     /// 设计依据 design doc §4：
-    /// - Verification：执行 verify → 写 verify_result；读 requirement/verify_result/
-    ///   compile_result/test_result/step_log。step_log 由授权写自动记入，不直接 set。
+    /// - Verification：执行外部锚点 → 写 compile_result/test_result/verify_result；读
+    ///   requirement/verify_result/compile_result/test_result/step_log。step_log 由授权写
+    ///   自动记入，不直接 set。
     /// - GeneralPurpose（协调/工作节点）：写 generated_diff/budget；广泛读全 8 字段。
     /// - Explore / Plan / WgentyCodeGuide：只读 requirement，不写任何字段。
     ///
-    /// compile_result/test_result/human_review 对所有现存 NodeType 的 writable 都为 {}
-    /// （预留字段——类型就绪，生产写入点待将来新增节点的 change）。
+    /// human_review 对所有现存 NodeType 的 writable 都为 {}（仍需人工审批节点）。
     pub fn field_perms(&self) -> FieldPerms {
         match self {
             NodeType::Verification => FieldPerms {
@@ -147,7 +147,13 @@ impl NodeType {
                 ]
                 .into_iter()
                 .collect(),
-                writable: [WorkField::VerifyResult].into_iter().collect(),
+                writable: [
+                    WorkField::CompileResult,
+                    WorkField::TestResult,
+                    WorkField::VerifyResult,
+                ]
+                .into_iter()
+                .collect(),
             },
             NodeType::GeneralPurpose => FieldPerms {
                 readable: [
@@ -198,7 +204,11 @@ impl WorkState {
         caller: NodeType,
         outcome: VerifyOutcome,
     ) -> Result<(), CoordinatorError> {
-        if !caller.field_perms().writable.contains(&WorkField::VerifyResult) {
+        if !caller
+            .field_perms()
+            .writable
+            .contains(&WorkField::VerifyResult)
+        {
             return Err(CoordinatorError::ContractViolation {
                 node_type: caller,
                 dimension: ContractDimension::State,
@@ -215,7 +225,11 @@ impl WorkState {
         &self,
         caller: NodeType,
     ) -> Result<Option<&VerifyOutcome>, CoordinatorError> {
-        if !caller.field_perms().readable.contains(&WorkField::VerifyResult) {
+        if !caller
+            .field_perms()
+            .readable
+            .contains(&WorkField::VerifyResult)
+        {
             return Err(CoordinatorError::ContractViolation {
                 node_type: caller,
                 dimension: ContractDimension::State,
@@ -231,7 +245,11 @@ impl WorkState {
         caller: NodeType,
         diff: GeneratedDiff,
     ) -> Result<(), CoordinatorError> {
-        if !caller.field_perms().writable.contains(&WorkField::GeneratedDiff) {
+        if !caller
+            .field_perms()
+            .writable
+            .contains(&WorkField::GeneratedDiff)
+        {
             return Err(CoordinatorError::ContractViolation {
                 node_type: caller,
                 dimension: ContractDimension::State,
@@ -247,7 +265,11 @@ impl WorkState {
         &self,
         caller: NodeType,
     ) -> Result<Option<&GeneratedDiff>, CoordinatorError> {
-        if !caller.field_perms().readable.contains(&WorkField::GeneratedDiff) {
+        if !caller
+            .field_perms()
+            .readable
+            .contains(&WorkField::GeneratedDiff)
+        {
             return Err(CoordinatorError::ContractViolation {
                 node_type: caller,
                 dimension: ContractDimension::State,
@@ -258,11 +280,7 @@ impl WorkState {
     }
 
     /// 写 budget：deferred 字段。
-    pub fn set_budget(
-        &mut self,
-        caller: NodeType,
-        budget: Budget,
-    ) -> Result<(), CoordinatorError> {
+    pub fn set_budget(&mut self, caller: NodeType, budget: Budget) -> Result<(), CoordinatorError> {
         if !caller.field_perms().writable.contains(&WorkField::Budget) {
             return Err(CoordinatorError::ContractViolation {
                 node_type: caller,
@@ -286,14 +304,17 @@ impl WorkState {
         Ok(self.budget.as_ref())
     }
 
-    /// 写 compile_result：reserved 字段——本期对所有现存 NodeType writable 为 {}。
-    /// 提供 API + 权限强制，单测合成写入验证拒绝；生产写入待将来 Compile 节点 change。
+    /// 写 compile_result：仅 Verification 外部锚点可写。
     pub fn set_compile_result(
         &mut self,
         caller: NodeType,
         result: CompileResult,
     ) -> Result<(), CoordinatorError> {
-        if !caller.field_perms().writable.contains(&WorkField::CompileResult) {
+        if !caller
+            .field_perms()
+            .writable
+            .contains(&WorkField::CompileResult)
+        {
             return Err(CoordinatorError::ContractViolation {
                 node_type: caller,
                 dimension: ContractDimension::State,
@@ -309,7 +330,11 @@ impl WorkState {
         &self,
         caller: NodeType,
     ) -> Result<Option<&CompileResult>, CoordinatorError> {
-        if !caller.field_perms().readable.contains(&WorkField::CompileResult) {
+        if !caller
+            .field_perms()
+            .readable
+            .contains(&WorkField::CompileResult)
+        {
             return Err(CoordinatorError::ContractViolation {
                 node_type: caller,
                 dimension: ContractDimension::State,
@@ -319,13 +344,17 @@ impl WorkState {
         Ok(self.compile_result.as_ref())
     }
 
-    /// 写 test_result：reserved 字段——本期对所有现存 NodeType writable 为 {}。
+    /// 写 test_result：仅 Verification 外部锚点可写。
     pub fn set_test_result(
         &mut self,
         caller: NodeType,
         result: TestResult,
     ) -> Result<(), CoordinatorError> {
-        if !caller.field_perms().writable.contains(&WorkField::TestResult) {
+        if !caller
+            .field_perms()
+            .writable
+            .contains(&WorkField::TestResult)
+        {
             return Err(CoordinatorError::ContractViolation {
                 node_type: caller,
                 dimension: ContractDimension::State,
@@ -337,11 +366,12 @@ impl WorkState {
         Ok(())
     }
 
-    pub fn test_result(
-        &self,
-        caller: NodeType,
-    ) -> Result<Option<&TestResult>, CoordinatorError> {
-        if !caller.field_perms().readable.contains(&WorkField::TestResult) {
+    pub fn test_result(&self, caller: NodeType) -> Result<Option<&TestResult>, CoordinatorError> {
+        if !caller
+            .field_perms()
+            .readable
+            .contains(&WorkField::TestResult)
+        {
             return Err(CoordinatorError::ContractViolation {
                 node_type: caller,
                 dimension: ContractDimension::State,
@@ -357,7 +387,11 @@ impl WorkState {
         caller: NodeType,
         review: HumanReview,
     ) -> Result<(), CoordinatorError> {
-        if !caller.field_perms().writable.contains(&WorkField::HumanReview) {
+        if !caller
+            .field_perms()
+            .writable
+            .contains(&WorkField::HumanReview)
+        {
             return Err(CoordinatorError::ContractViolation {
                 node_type: caller,
                 dimension: ContractDimension::State,
@@ -369,11 +403,12 @@ impl WorkState {
         Ok(())
     }
 
-    pub fn human_review(
-        &self,
-        caller: NodeType,
-    ) -> Result<Option<&HumanReview>, CoordinatorError> {
-        if !caller.field_perms().readable.contains(&WorkField::HumanReview) {
+    pub fn human_review(&self, caller: NodeType) -> Result<Option<&HumanReview>, CoordinatorError> {
+        if !caller
+            .field_perms()
+            .readable
+            .contains(&WorkField::HumanReview)
+        {
             return Err(CoordinatorError::ContractViolation {
                 node_type: caller,
                 dimension: ContractDimension::State,
@@ -415,7 +450,10 @@ impl VerifyOutcome {
     /// node_runtime.rs 的 project_failure / project_outcome），调用本方法传入
     /// 已解构的原语字段，避免 org_graph 反向依赖 exec_session::VerifyResult。
     pub fn from_parts(success: bool, fail_kind: Option<VerifyFailureKind>) -> Self {
-        Self { success, fail_reason: fail_kind }
+        Self {
+            success,
+            fail_reason: fail_kind,
+        }
     }
 }
 
@@ -493,15 +531,20 @@ mod tests {
         assert_eq!(gd, back);
 
         // CompileResult
-        let cr = CompileResult { ok: true, stderr: String::new() };
+        let cr = CompileResult {
+            ok: true,
+            stderr: String::new(),
+        };
         let back: CompileResult =
             serde_json::from_str(&serde_json::to_string(&cr).unwrap()).unwrap();
         assert_eq!(cr, back);
 
         // TestResult
-        let tr = TestResult { pass: false, failed_cases: vec!["c1".into()] };
-        let back: TestResult =
-            serde_json::from_str(&serde_json::to_string(&tr).unwrap()).unwrap();
+        let tr = TestResult {
+            pass: false,
+            failed_cases: vec!["c1".into()],
+        };
+        let back: TestResult = serde_json::from_str(&serde_json::to_string(&tr).unwrap()).unwrap();
         assert_eq!(tr, back);
 
         // HumanReview（两个变体）
@@ -512,9 +555,12 @@ mod tests {
         }
 
         // Budget
-        let b = Budget { max_iter: 3, iter_used: 1, token_used: 500 };
-        let back: Budget =
-            serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
+        let b = Budget {
+            max_iter: 3,
+            iter_used: 1,
+            token_used: 500,
+        };
+        let back: Budget = serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
         assert_eq!(b, back);
     }
 
@@ -560,8 +606,10 @@ mod tests {
     #[test]
     fn field_perms_verification_writes_verify_result_reads_broad() {
         let perms = NodeType::Verification.field_perms();
-        // 写：仅 verify_result（step_log 由授权写自动记入，不直接 set）。
+        // 写：三个外部锚点结果（step_log 由授权写自动记入，不直接 set）。
         assert!(perms.writable.contains(&WorkField::VerifyResult));
+        assert!(perms.writable.contains(&WorkField::CompileResult));
+        assert!(perms.writable.contains(&WorkField::TestResult));
         assert!(!perms.writable.contains(&WorkField::StepLog));
         // 读：requirement/verify_result/compile_result/test_result/step_log。
         for f in [
@@ -571,12 +619,49 @@ mod tests {
             WorkField::TestResult,
             WorkField::StepLog,
         ] {
-            assert!(perms.readable.contains(&f), "Verification should read {f:?}");
+            assert!(
+                perms.readable.contains(&f),
+                "Verification should read {f:?}"
+            );
         }
-        // 预留字段对 Verification 不可写。
-        for f in [WorkField::CompileResult, WorkField::TestResult, WorkField::HumanReview] {
-            assert!(!perms.writable.contains(&f), "Verification must not write {f:?}");
-        }
+        // 人工审批字段对 Verification 不可写。
+        let f = WorkField::HumanReview;
+        assert!(
+            !perms.writable.contains(&f),
+            "Verification must not write {f:?}"
+        );
+    }
+
+    #[test]
+    fn verification_can_write_compile_and_test_anchor_results() {
+        let mut state = WorkState::default();
+        state
+            .set_compile_result(
+                NodeType::Verification,
+                CompileResult {
+                    ok: false,
+                    stderr: "compile failed".into(),
+                },
+            )
+            .expect("verification anchor should record compile result");
+        state
+            .set_test_result(
+                NodeType::Verification,
+                TestResult {
+                    pass: false,
+                    failed_cases: vec!["unit::fails".into()],
+                },
+            )
+            .expect("verification anchor should record test result");
+
+        assert!(state
+            .compile_result(NodeType::Verification)
+            .expect("verification may read compile result")
+            .is_some());
+        assert!(state
+            .test_result(NodeType::Verification)
+            .expect("verification may read test result")
+            .is_some());
     }
 
     #[test]
@@ -596,7 +681,10 @@ mod tests {
             WorkField::Budget,
             WorkField::StepLog,
         ] {
-            assert!(perms.readable.contains(&f), "GeneralPurpose should read {f:?}");
+            assert!(
+                perms.readable.contains(&f),
+                "GeneralPurpose should read {f:?}"
+            );
         }
         // GeneralPurpose 不可写 verify_result / 预留字段。
         assert!(!perms.writable.contains(&WorkField::VerifyResult));
@@ -608,8 +696,15 @@ mod tests {
         for nt in [NodeType::Explore, NodeType::Plan, NodeType::WgentyCodeGuide] {
             let perms = nt.field_perms();
             assert!(perms.readable.contains(&WorkField::Requirement));
-            assert_eq!(perms.readable.len(), 1, "{nt:?} should only read requirement");
-            assert!(perms.writable.is_empty(), "{nt:?} should have empty writable");
+            assert_eq!(
+                perms.readable.len(),
+                1,
+                "{nt:?} should only read requirement"
+            );
+            assert!(
+                perms.writable.is_empty(),
+                "{nt:?} should have empty writable"
+            );
         }
     }
 
@@ -637,13 +732,18 @@ mod tests {
     #[test]
     fn set_verify_result_rejects_unauthorized_node_with_contract_violation_state() {
         let mut state = WorkState::default();
-        let outcome = VerifyOutcome { success: true, fail_reason: None };
+        let outcome = VerifyOutcome {
+            success: true,
+            fail_reason: None,
+        };
         let err = state
             .set_verify_result(NodeType::Explore, outcome.clone())
             .expect_err("Explore must not write verify_result");
         match err {
             crate::agent::coordinator::CoordinatorError::ContractViolation {
-                dimension, reason, ..
+                dimension,
+                reason,
+                ..
             } => {
                 assert_eq!(dimension, crate::org_graph::ContractDimension::State);
                 assert!(reason.contains("verify_result"));
@@ -658,7 +758,10 @@ mod tests {
     fn set_generated_diff_authorizes_generalpurpose_and_logs_step() {
         // deferred 字段：GeneralPurpose 合成写入验证（无生产调用点，单测覆盖权限强制）。
         let mut state = WorkState::default();
-        let diff = GeneratedDiff { summary: "改 1 文件".into(), files: vec!["a.rs".into()] };
+        let diff = GeneratedDiff {
+            summary: "改 1 文件".into(),
+            files: vec!["a.rs".into()],
+        };
         state
             .set_generated_diff(NodeType::GeneralPurpose, diff.clone())
             .expect("GeneralPurpose authorized to write generated_diff");
@@ -670,7 +773,11 @@ mod tests {
     #[test]
     fn set_budget_authorizes_generalpurpose() {
         let mut state = WorkState::default();
-        let budget = Budget { max_iter: 5, iter_used: 1, token_used: 100 };
+        let budget = Budget {
+            max_iter: 5,
+            iter_used: 1,
+            token_used: 100,
+        };
         state
             .set_budget(NodeType::GeneralPurpose, budget.clone())
             .expect("GeneralPurpose authorized to write budget");
@@ -678,20 +785,25 @@ mod tests {
     }
 
     #[test]
-    fn reserved_fields_reject_all_node_types() {
-        // 真强制核心保证：compile_result/test_result/human_review 对所有现存 NodeType
-        // writable 都为 {}。逐一验证越权写返回 ContractViolation{State}。
+    fn unauthorized_nodes_cannot_write_anchor_or_human_review_fields() {
+        // 真强制核心保证：只有 Verification 能写外部锚点，HumanReview 对全部节点
+        // 不可写。逐一验证越权写返回 ContractViolation{State}。
         let all_nodes = [
             NodeType::Explore,
             NodeType::Plan,
             NodeType::GeneralPurpose,
-            NodeType::Verification,
             NodeType::WgentyCodeGuide,
         ];
         for nt in all_nodes {
             let mut state = WorkState::default();
             let err = state
-                .set_compile_result(nt.clone(), CompileResult { ok: true, stderr: String::new() })
+                .set_compile_result(
+                    nt.clone(),
+                    CompileResult {
+                        ok: true,
+                        stderr: String::new(),
+                    },
+                )
                 .err();
             assert!(
                 matches!(
@@ -703,7 +815,13 @@ mod tests {
 
             let mut state = WorkState::default();
             let err = state
-                .set_test_result(nt.clone(), TestResult { pass: true, failed_cases: vec![] })
+                .set_test_result(
+                    nt.clone(),
+                    TestResult {
+                        pass: true,
+                        failed_cases: vec![],
+                    },
+                )
                 .err();
             assert!(
                 matches!(
@@ -729,8 +847,13 @@ mod tests {
 
     #[test]
     fn verify_result_read_authorizes_verification_and_skips_log() {
-        let mut state = WorkState::default();
-        state.verify_result = Some(VerifyOutcome { success: true, fail_reason: None });
+        let state = WorkState {
+            verify_result: Some(VerifyOutcome {
+                success: true,
+                fail_reason: None,
+            }),
+            ..Default::default()
+        };
         let got = state
             .verify_result(NodeType::Verification)
             .expect("Verification authorized to read verify_result");
@@ -740,14 +863,20 @@ mod tests {
 
     #[test]
     fn verify_result_read_rejects_unauthorized_node() {
-        let mut state = WorkState::default();
-        state.verify_result = Some(VerifyOutcome { success: true, fail_reason: None });
+        let state = WorkState {
+            verify_result: Some(VerifyOutcome {
+                success: true,
+                fail_reason: None,
+            }),
+            ..Default::default()
+        };
         let err = state
             .verify_result(NodeType::Explore)
-            .err()
-            .expect("Explore must not read verify_result");
+            .expect_err("Explore must not read verify_result");
         match err {
-            crate::agent::coordinator::CoordinatorError::ContractViolation { dimension, .. } => {
+            crate::agent::coordinator::CoordinatorError::ContractViolation {
+                dimension, ..
+            } => {
                 assert_eq!(dimension, crate::org_graph::ContractDimension::State);
             }
             other => panic!("expected ContractViolation(State), got {:?}", other),
@@ -759,12 +888,28 @@ mod tests {
         // turn 间继承：requirement 保留；其余产物字段（含 deferred）全部重置。
         let state = WorkState {
             requirement: Some("跨 turn".into()),
-            generated_diff: Some(GeneratedDiff { summary: "s".into(), files: vec![] }),
-            compile_result: Some(CompileResult { ok: true, stderr: String::new() }),
-            test_result: Some(TestResult { pass: true, failed_cases: vec![] }),
+            generated_diff: Some(GeneratedDiff {
+                summary: "s".into(),
+                files: vec![],
+            }),
+            compile_result: Some(CompileResult {
+                ok: true,
+                stderr: String::new(),
+            }),
+            test_result: Some(TestResult {
+                pass: true,
+                failed_cases: vec![],
+            }),
             human_review: Some(HumanReview::Approve),
-            verify_result: Some(VerifyOutcome { success: true, fail_reason: None }),
-            budget: Some(Budget { max_iter: 1, iter_used: 1, token_used: 1 }),
+            verify_result: Some(VerifyOutcome {
+                success: true,
+                fail_reason: None,
+            }),
+            budget: Some(Budget {
+                max_iter: 1,
+                iter_used: 1,
+                token_used: 1,
+            }),
             step_log: vec![StepRecord {
                 node_type: NodeType::Verification,
                 field: WorkField::VerifyResult,
@@ -793,12 +938,18 @@ mod tests {
 
         let outcome = VerifyOutcome::from_parts(
             false,
-            Some(VerifyFailureKind::CommandFailed { exit_code: Some(1), stderr: "e".into() }),
+            Some(VerifyFailureKind::CommandFailed {
+                exit_code: Some(1),
+                stderr: "e".into(),
+            }),
         );
         assert!(!outcome.success);
         assert!(matches!(
             outcome.fail_reason,
-            Some(VerifyFailureKind::CommandFailed { exit_code: Some(1), .. })
+            Some(VerifyFailureKind::CommandFailed {
+                exit_code: Some(1),
+                ..
+            })
         ));
     }
 }

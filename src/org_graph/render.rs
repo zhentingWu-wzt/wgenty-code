@@ -226,8 +226,7 @@ mod tests {
         let r = registry(false);
         let parsed: Vec<crate::org_graph::NodeContract> =
             serde_json::from_str(&render_json(&r)).expect("valid json");
-        let original: Vec<crate::org_graph::NodeContract> =
-            r.iter().into_iter().map(|c| c.clone()).collect();
+        let original: Vec<crate::org_graph::NodeContract> = r.iter().into_iter().cloned().collect();
         assert_eq!(parsed.len(), 5);
         assert_eq!(parsed, original, "serde roundtrip must be field-exact");
     }
@@ -264,7 +263,10 @@ mod tests {
         let rw = render_table(&registry(false));
         let ro_explore = ro.lines().find(|l| l.starts_with("Explore")).unwrap_or("");
         let rw_explore = rw.lines().find(|l| l.starts_with("Explore")).unwrap_or("");
-        assert_ne!(ro_explore, rw_explore, "explore row must differ when explore_readonly flips");
+        assert_ne!(
+            ro_explore, rw_explore,
+            "explore row must differ when explore_readonly flips"
+        );
         // readonly=true -> explore can_mutate_fs=false -> 行内含 false（在 MUTATE-FS 列）。
         // 非 readonly -> true。两行其余列相同，故差异即 mutate_fs 反映。
     }
@@ -292,7 +294,10 @@ mod tests {
         let ro_explore = ro.lines().find(|l| l.contains("explore [")).unwrap_or("");
         let rw_explore = rw.lines().find(|l| l.contains("explore [")).unwrap_or("");
         // readonly=true -> can_mutate_fs=false -> fillcolor=white
-        assert!(ro_explore.contains("fillcolor=white"), "ro explore should be white");
+        assert!(
+            ro_explore.contains("fillcolor=white"),
+            "ro explore should be white"
+        );
         // readonly=false -> can_mutate_fs=true -> lightyellow
         assert!(
             rw_explore.contains("fillcolor=lightyellow"),
@@ -326,8 +331,14 @@ mod tests {
         let ro_explore = ro.lines().find(|l| l.contains("explore[")).unwrap_or("");
         let rw_explore = rw.lines().find(|l| l.contains("explore[")).unwrap_or("");
         // readonly=true -> can_mutate_fs=false 且 can_spawn=false -> readonly 类
-        assert!(ro_explore.contains(":::readonly"), "ro explore should be readonly class");
+        assert!(
+            ro_explore.contains(":::readonly"),
+            "ro explore should be readonly class"
+        );
         // readonly=false -> can_mutate_fs=true（仍 can_spawn=false）-> mutate 类
-        assert!(rw_explore.contains(":::mutate"), "rw explore should be mutate class");
+        assert!(
+            rw_explore.contains(":::mutate"),
+            "rw explore should be mutate class"
+        );
     }
 }

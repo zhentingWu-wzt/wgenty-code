@@ -21,15 +21,18 @@ pub mod node_tools;
 pub mod session;
 pub mod verify_gate;
 
+pub mod work_graph;
+
 pub use coordinator::{RollbackResult, SessionCoordinator, SessionCoordinatorPort};
 pub use hooks::{
     NoHooks, RollbackContext, SessionHooks, VerifyFailAction, VerifyFailContext, VerifyFailure,
 };
 pub use node::{Node, NodeContract, NodeId, NodeStates, NodeStatus};
-pub use node_runtime::{NodeRollbackResult, NodeRuntime, NodeVerifyResult};
+pub use node_runtime::{NodeRollbackResult, NodeRuntime, NodeVerifyResult, WorkGraphRunResult};
 pub use node_tools::{BeginNodeTool, RollbackNodeTool, VerifyNodeTool};
 pub use session::{GitRefs, SessionSource, SessionState, SessionStatus, TurnRecord};
 pub use verify_gate::{
     CommandExecutor, CommandRun, ProcessCommandExecutor, UnverifiedOutcome, VerifyAndCompleteTool,
     VerifyGate, VerifyLog, VerifyLogEntry, VerifyLogFinalStatus, VerifyLogResult, VerifyResult,
 };
+pub use work_graph::{next_step, WorkGraphStep};
