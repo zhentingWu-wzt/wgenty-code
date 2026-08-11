@@ -23,11 +23,13 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::agent::ToolContext;
 use crate::exec_session::git::run_git;
 use crate::exec_session::hooks::{
     NoHooks, SessionHooks, VerifyFailAction, VerifyFailContext, VerifyFailure,
 };
 use crate::exec_session::session::{SessionStatus, TurnRecord};
+use crate::exec_session::ExecutionSessionRuntimeStore;
 use crate::exec_session::SessionCoordinator;
 use crate::tools::checkpoint_store::{FileState, Manifest};
 use crate::tools::{Tool, ToolError, ToolOutput};
@@ -673,12 +675,81 @@ fn set_verify_log_final_status(session_dir: &Path, status: VerifyLogFinalStatus)
 /// `ToolRegistry::with_project_root` because it needs the session's
 /// coordinator.
 pub struct VerifyAndCompleteTool {
-    gate: Arc<VerifyGate>,
+    gate: VerifyGateBinding,
+}
+
+enum VerifyGateBinding {
+    Fixed(Arc<VerifyGate>),
+    Store(Arc<ExecutionSessionRuntimeStore>),
+}
+
+impl VerifyGateBinding {
+    fn resolve(&self, context: Option<&ToolContext<'_>>) -> Result<Arc<VerifyGate>, ToolError> {
+        match self {
+            Self::Fixed(gate) => Ok(Arc::clone(gate)),
+            Self::Store(store) => {
+                let context = context.ok_or_else(|| ToolError {
+                    message: "work-graph tools require a trusted tool context".into(),
+                    code: Some("missing_tool_context".into()),
+                })?;
+                store
+                    .ensure_turn(&context.agent.session_id)
+                    .and_then(|_| store.gate_for(&context.agent.session_id))
+                    .map_err(|error| ToolError {
+                        message: format!("{error:#}"),
+                        code: Some("execution_session_runtime_failed".into()),
+                    })
+            }
+        }
+    }
 }
 
 impl VerifyAndCompleteTool {
     pub fn new(gate: Arc<VerifyGate>) -> Self {
-        Self { gate }
+        Self {
+            gate: VerifyGateBinding::Fixed(gate),
+        }
+    }
+
+    /// Creates a context-scoped verification tool backed by a runtime store.
+    pub fn with_runtime_store(store: Arc<ExecutionSessionRuntimeStore>) -> Self {
+        Self {
+            gate: VerifyGateBinding::Store(store),
+        }
+    }
+
+    async fn execute_for_gate(
+        gate: Arc<VerifyGate>,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        let commands = parse_string_array(&input, "commands")?;
+        let expected = parse_string_array(&input, "expected_changed_files")?
+            .into_iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let result = gate
+            .verify_and_complete(commands, expected)
+            .await
+            .map_err(|e| ToolError {
+                message: format!("{e:#}"),
+                code: Some("verify_failed".to_string()),
+            })?;
+        let content = format_verify_result(&result);
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("success".to_string(), serde_json::json!(result.success));
+        metadata.insert(
+            "out_of_scope".to_string(),
+            serde_json::json!(result
+                .out_of_scope
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()),
+        );
+        Ok(ToolOutput {
+            output_type: "text".to_string(),
+            content,
+            metadata,
+        })
     }
 }
 
@@ -717,35 +788,15 @@ runs the commands itself (anti-fabrication) and rejects out-of-scope changes."
     // Completed and writes verify_log.json.
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let commands = parse_string_array(&input, "commands")?;
-        let expected = parse_string_array(&input, "expected_changed_files")?
-            .into_iter()
-            .map(PathBuf::from)
-            .collect::<Vec<_>>();
-        let result = self
-            .gate
-            .verify_and_complete(commands, expected)
-            .await
-            .map_err(|e| ToolError {
-                message: format!("{e:#}"),
-                code: Some("verify_failed".to_string()),
-            })?;
-        let content = format_verify_result(&result);
-        let mut metadata = std::collections::HashMap::new();
-        metadata.insert("success".to_string(), serde_json::json!(result.success));
-        metadata.insert(
-            "out_of_scope".to_string(),
-            serde_json::json!(result
-                .out_of_scope
-                .iter()
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect::<Vec<_>>()),
-        );
-        Ok(ToolOutput {
-            output_type: "text".to_string(),
-            content,
-            metadata,
-        })
+        Self::execute_for_gate(self.gate.resolve(None)?, input).await
+    }
+
+    async fn execute_with_context(
+        &self,
+        context: &ToolContext<'_>,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        Self::execute_for_gate(self.gate.resolve(Some(context))?, input).await
     }
 }
 
@@ -850,7 +901,9 @@ fn format_verify_result(result: &VerifyResult) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
     use crate::exec_session::session::SessionSource;
+    use crate::exec_session::ExecutionSessionRuntimeStore;
     use crate::tools::checkpoint_store::CheckpointStore;
     use std::process::Command;
     use std::sync::Mutex;
@@ -1301,6 +1354,39 @@ mod tests {
         let err = tool.execute(input).await.unwrap_err();
         assert!(err.message.contains("commands"));
         assert_eq!(err.code.as_deref(), Some("missing_parameter"));
+    }
+
+    #[tokio::test]
+    async fn store_backed_tool_uses_the_trusted_context_session() {
+        let dir = tempdir().expect("temp directory");
+        let store = Arc::new(ExecutionSessionRuntimeStore::new(
+            dir.path().to_path_buf(),
+            Arc::new(CheckpointStore::new(dir.path())),
+            2,
+        ));
+        let root = AgentExecutionContext::root(SessionId::new("verify-context"));
+        let context = ToolContext {
+            agent: &root,
+            invocation_id: ToolInvocationId::new("verify-tool"),
+            origin_turn_id: None,
+            workdir: None,
+            effective_mode: crate::sandbox::EffectiveMode::Normal,
+            checkpoint: None,
+        };
+        let tool = VerifyAndCompleteTool::with_runtime_store(store);
+
+        let output = tool
+            .execute_with_context(
+                &context,
+                serde_json::json!({
+                    "commands": ["true"],
+                    "expected_changed_files": []
+                }),
+            )
+            .await
+            .expect("verify scoped session");
+
+        assert_eq!(output.metadata["success"], true);
     }
 
     // ---- process executor smoke test (uses real `sh`) ----

@@ -9,18 +9,121 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::json;
 
+use crate::agent::ToolContext;
 use crate::tools::{Tool, ToolError, ToolOutput};
 
 use super::node_runtime::{NodeRollbackResult, NodeRuntime, NodeVerificationOutcome};
+use super::runtime_store::ExecutionSessionRuntimeStore;
+
+enum RuntimeBinding {
+    Fixed(Arc<NodeRuntime>),
+    Store(Arc<ExecutionSessionRuntimeStore>),
+}
+
+impl RuntimeBinding {
+    fn resolve(
+        &self,
+        context: Option<&ToolContext<'_>>,
+        ensure_turn: bool,
+    ) -> Result<Arc<NodeRuntime>, ToolError> {
+        match self {
+            Self::Fixed(runtime) => Ok(Arc::clone(runtime)),
+            Self::Store(store) => {
+                let context = context.ok_or_else(missing_tool_context)?;
+                let result = if ensure_turn {
+                    store.ensure_turn(&context.agent.session_id)
+                } else {
+                    store.runtime_for(&context.agent.session_id)
+                };
+                result.map_err(|error| ToolError {
+                    message: format!("{error:#}"),
+                    code: Some("execution_session_runtime_failed".into()),
+                })
+            }
+        }
+    }
+}
+
+fn missing_tool_context() -> ToolError {
+    ToolError {
+        message: "work-graph tools require a trusted tool context".into(),
+        code: Some("missing_tool_context".into()),
+    }
+}
 
 /// `begin_node` -- start a new verifiable work unit.
 pub struct BeginNodeTool {
-    runtime: Arc<NodeRuntime>,
+    runtime: RuntimeBinding,
 }
 
 impl BeginNodeTool {
     pub fn new(runtime: Arc<NodeRuntime>) -> Self {
-        Self { runtime }
+        Self {
+            runtime: RuntimeBinding::Fixed(runtime),
+        }
+    }
+
+    /// Creates a context-scoped node tool backed by a runtime store.
+    pub fn with_runtime_store(store: Arc<ExecutionSessionRuntimeStore>) -> Self {
+        Self {
+            runtime: RuntimeBinding::Store(store),
+        }
+    }
+
+    async fn execute_for_runtime(
+        runtime: Arc<NodeRuntime>,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        let goal = input
+            .get("goal")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError {
+                message: "missing or invalid 'goal' field".into(),
+                code: Some("invalid_input".into()),
+            })?
+            .to_string();
+        let verify_commands = input
+            .get("verify_commands")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| ToolError {
+                message: "missing or invalid 'verify_commands' field".into(),
+                code: Some("invalid_input".into()),
+            })?
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect::<Vec<_>>();
+        let expected_files = input
+            .get("expected_files")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let node_id = runtime
+            .begin_node_with_anchors(
+                goal,
+                Vec::new(),
+                Vec::new(),
+                verify_commands,
+                expected_files,
+            )
+            .await
+            .map_err(|e| ToolError {
+                message: format!("{e:#}"),
+                code: Some("begin_node_failed".into()),
+            })?;
+
+        Ok(ToolOutput {
+            output_type: "text".into(),
+            content: json!({
+                "node_id": node_id,
+                "status": "running"
+            })
+            .to_string(),
+            metadata: std::collections::HashMap::new(),
+        })
     }
 }
 
@@ -64,101 +167,42 @@ verify scope and rollback."
     // is_read_only defaults to false.
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let goal = input
-            .get("goal")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError {
-                message: "missing or invalid 'goal' field".into(),
-                code: Some("invalid_input".into()),
-            })?
-            .to_string();
-        let verify_commands = input
-            .get("verify_commands")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| ToolError {
-                message: "missing or invalid 'verify_commands' field".into(),
-                code: Some("invalid_input".into()),
-            })?
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect::<Vec<_>>();
-        let expected_files = input
-            .get("expected_files")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let node_id = self
-            .runtime
-            .begin_node_with_anchors(
-                goal,
-                Vec::new(),
-                Vec::new(),
-                verify_commands,
-                expected_files,
-            )
-            .await
-            .map_err(|e| ToolError {
-                message: format!("{e:#}"),
-                code: Some("begin_node_failed".into()),
-            })?;
+        Self::execute_for_runtime(self.runtime.resolve(None, false)?, input).await
+    }
 
-        Ok(ToolOutput {
-            output_type: "text".into(),
-            content: json!({
-                "node_id": node_id,
-                "status": "running"
-            })
-            .to_string(),
-            metadata: std::collections::HashMap::new(),
-        })
+    async fn execute_with_context(
+        &self,
+        context: &ToolContext<'_>,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        Self::execute_for_runtime(self.runtime.resolve(Some(context), true)?, input).await
     }
 }
 
 /// `verify_node` -- verify the current node.
 pub struct VerifyNodeTool {
-    runtime: Arc<NodeRuntime>,
+    runtime: RuntimeBinding,
 }
 
 impl VerifyNodeTool {
     pub fn new(runtime: Arc<NodeRuntime>) -> Self {
-        Self { runtime }
-    }
-}
-
-#[async_trait]
-impl Tool for VerifyNodeTool {
-    fn name(&self) -> &str {
-        "verify_node"
+        Self {
+            runtime: RuntimeBinding::Fixed(runtime),
+        }
     }
 
-    fn description(&self) -> &str {
-        "Verify the current node by executing its verify commands and checking \
-for out-of-bounds changes. On success the node transitions to Verified. \
-On failure the node transitions to Failed and the failure reason is returned \
-for self-correction. After exceeding the retry budget, the session is marked \
-Failed."
+    /// Creates a context-scoped verification tool backed by a runtime store.
+    pub fn with_runtime_store(store: Arc<ExecutionSessionRuntimeStore>) -> Self {
+        Self {
+            runtime: RuntimeBinding::Store(store),
+        }
     }
 
-    fn input_schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {}
-        })
-    }
-
-    async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let outcome = self
-            .runtime
-            .verify_current_node()
-            .await
-            .map_err(|e| ToolError {
-                message: format!("{e:#}"),
-                code: Some("verify_node_failed".into()),
-            })?;
+    async fn execute_for_runtime(runtime: Arc<NodeRuntime>) -> Result<ToolOutput, ToolError> {
+        let outcome = runtime.verify_current_node().await.map_err(|e| ToolError {
+            message: format!("{e:#}"),
+            code: Some("verify_node_failed".into()),
+        })?;
 
         if let NodeVerificationOutcome::WorkGraph(result) = outcome {
             let mut metadata = std::collections::HashMap::new();
@@ -190,14 +234,74 @@ Failed."
     }
 }
 
+#[async_trait]
+impl Tool for VerifyNodeTool {
+    fn name(&self) -> &str {
+        "verify_node"
+    }
+
+    fn description(&self) -> &str {
+        "Verify the current node by executing its verify commands and checking \
+for out-of-bounds changes. On success the node transitions to Verified. \
+On failure the node transitions to Failed and the failure reason is returned \
+for self-correction. After exceeding the retry budget, the session is marked \
+Failed."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {}
+        })
+    }
+
+    async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        Self::execute_for_runtime(self.runtime.resolve(None, false)?).await
+    }
+
+    async fn execute_with_context(
+        &self,
+        context: &ToolContext<'_>,
+        _input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        Self::execute_for_runtime(self.runtime.resolve(Some(context), false)?).await
+    }
+}
+
 /// `rollback_node` -- roll back to the most recent verified node.
 pub struct RollbackNodeTool {
-    runtime: Arc<NodeRuntime>,
+    runtime: RuntimeBinding,
 }
 
 impl RollbackNodeTool {
     pub fn new(runtime: Arc<NodeRuntime>) -> Self {
-        Self { runtime }
+        Self {
+            runtime: RuntimeBinding::Fixed(runtime),
+        }
+    }
+
+    /// Creates a context-scoped rollback tool backed by a runtime store.
+    pub fn with_runtime_store(store: Arc<ExecutionSessionRuntimeStore>) -> Self {
+        Self {
+            runtime: RuntimeBinding::Store(store),
+        }
+    }
+
+    async fn execute_for_runtime(runtime: Arc<NodeRuntime>) -> Result<ToolOutput, ToolError> {
+        let result: NodeRollbackResult = runtime.rollback_node().await.map_err(|e| ToolError {
+            message: format!("{e:#}"),
+            code: Some("rollback_node_failed".into()),
+        })?;
+
+        Ok(ToolOutput {
+            output_type: "text".into(),
+            content: json!({
+                "rolled_back_to": result.rolled_back_to,
+                "removed_nodes": result.removed_nodes
+            })
+            .to_string(),
+            metadata: std::collections::HashMap::new(),
+        })
     }
 }
 
@@ -221,21 +325,15 @@ Verified node."
     }
 
     async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let result: NodeRollbackResult =
-            self.runtime.rollback_node().await.map_err(|e| ToolError {
-                message: format!("{e:#}"),
-                code: Some("rollback_node_failed".into()),
-            })?;
+        Self::execute_for_runtime(self.runtime.resolve(None, false)?).await
+    }
 
-        Ok(ToolOutput {
-            output_type: "text".into(),
-            content: json!({
-                "rolled_back_to": result.rolled_back_to,
-                "removed_nodes": result.removed_nodes
-            })
-            .to_string(),
-            metadata: std::collections::HashMap::new(),
-        })
+    async fn execute_with_context(
+        &self,
+        context: &ToolContext<'_>,
+        _input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        Self::execute_for_runtime(self.runtime.resolve(Some(context), false)?).await
     }
 }
 
@@ -249,8 +347,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
     use crate::exec_session::{
-        CommandExecutor, CommandRun, NodeStatus, SessionCoordinator, SessionSource, VerifyGate,
+        CommandExecutor, CommandRun, ExecutionSessionRuntimeStore, NodeStatus, SessionCoordinator,
+        SessionSource, VerifyGate,
     };
     use crate::tools::checkpoint_store::CheckpointStore;
 
@@ -283,6 +383,79 @@ mod tests {
                 stderr: "command failed".into(),
             })
         }
+    }
+
+    #[tokio::test]
+    async fn contextual_begin_and_verify_run_one_session_graph() {
+        let directory = TempDir::new().expect("temp directory");
+        let store = Arc::new(ExecutionSessionRuntimeStore::new(
+            directory.path().to_path_buf(),
+            Arc::new(CheckpointStore::new(directory.path())),
+            2,
+        ));
+        let root = AgentExecutionContext::root(SessionId::new("contextual-session"));
+        let context = ToolContext {
+            agent: &root,
+            invocation_id: ToolInvocationId::new("tool-a"),
+            origin_turn_id: None,
+            workdir: None,
+            effective_mode: crate::sandbox::EffectiveMode::Normal,
+            checkpoint: None,
+        };
+        let begin = BeginNodeTool::with_runtime_store(Arc::clone(&store));
+        let verify = VerifyNodeTool::with_runtime_store(store);
+
+        let begin_output = begin
+            .execute_with_context(
+                &context,
+                json!({
+                    "goal": "contextual graph",
+                    "verify_commands": ["true"],
+                    "expected_files": []
+                }),
+            )
+            .await
+            .expect("begin scoped node");
+        let verify_output = verify
+            .execute_with_context(&context, json!({}))
+            .await
+            .expect("verify scoped node");
+
+        assert!(begin_output.content.contains("node_id"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&verify_output.content)
+                .expect("structured verify output")["status"],
+            "verified"
+        );
+    }
+
+    #[tokio::test]
+    async fn store_backed_begin_without_context_is_rejected_without_creating_a_runtime() {
+        let directory = TempDir::new().expect("temp directory");
+        let begin = BeginNodeTool::with_runtime_store(Arc::new(ExecutionSessionRuntimeStore::new(
+            directory.path().to_path_buf(),
+            Arc::new(CheckpointStore::new(directory.path())),
+            2,
+        )));
+
+        let error = begin
+            .execute(json!({
+                "goal": "unscoped graph",
+                "verify_commands": ["true"],
+                "expected_files": []
+            }))
+            .await
+            .expect_err("context-free graph tool must fail closed");
+
+        assert_eq!(error.code.as_deref(), Some("missing_tool_context"));
+        assert!(
+            !directory
+                .path()
+                .join(".wgenty-code")
+                .join("snapshots")
+                .exists(),
+            "unscoped tool call must not create a runtime session"
+        );
     }
 
     #[tokio::test]
