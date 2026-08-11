@@ -115,6 +115,9 @@ pub struct TaskTool {
     /// Sandbox effective mode (includes Plan). Snapshotted into
     /// SubagentPermissionContext at spawn.
     effective_mode: Arc<std::sync::RwLock<crate::sandbox::EffectiveMode>>,
+    /// Daemon-only binding for the code-selected RootCause route. The handle
+    /// remains empty for normal registry/test construction.
+    root_cause_runtime: crate::exec_session::RootCauseRuntimeHandle,
 }
 
 impl TaskTool {
@@ -138,6 +141,7 @@ impl TaskTool {
             effective_mode: Arc::new(std::sync::RwLock::new(
                 crate::sandbox::EffectiveMode::Normal,
             )),
+            root_cause_runtime: crate::exec_session::root_cause_runtime_handle(),
         }
     }
 
@@ -164,6 +168,15 @@ impl TaskTool {
         mode: Arc<std::sync::RwLock<crate::sandbox::EffectiveMode>>,
     ) -> Self {
         self.effective_mode = mode;
+        self
+    }
+
+    /// Shares the daemon's late-bound static RootCause route runtime.
+    pub fn with_root_cause_runtime(
+        mut self,
+        runtime: crate::exec_session::RootCauseRuntimeHandle,
+    ) -> Self {
+        self.root_cause_runtime = runtime;
         self
     }
 
@@ -825,6 +838,56 @@ impl Tool for TaskTool {
         // root children become deliverable even when no parent joins them.
         let bg_child_context = child_context.clone();
         let worktree_guard_bg = worktree_guard;
+        // Bind the code-owned diagnostic route after the coordinator has
+        // reserved a trusted child identity, but *before* spawning its future.
+        // A RootCause child can publish immediately on its first poll, so
+        // binding after the task acknowledgement is a real TOCTOU bug.
+        let root_cause_route_bound =
+            if is_root_call && node_type == crate::org_graph::NodeType::RootCause {
+                let runtime = self
+                    .root_cause_runtime
+                    .read()
+                    .map_err(|error| ToolError {
+                        message: format!("root-cause runtime handle lock: {error}"),
+                        code: Some("root_cause_dispatch_failed".into()),
+                    })?
+                    .clone();
+                if let Some(runtime) = runtime {
+                    match runtime.try_bind_root_cause_child(
+                        &child_context.session_id,
+                        child_id.as_str().to_string(),
+                    ) {
+                        Ok(bound) => bound,
+                        Err(error) => {
+                            self.coordinator
+                                .finish_child(&child_context, ChildTerminal::Cancelled)
+                                .await
+                                .map_err(map_coordinator_error)?;
+                            return Err(ToolError {
+                                message: format!("bind static root-cause child: {error:#}"),
+                                code: Some("root_cause_dispatch_failed".into()),
+                            });
+                        }
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+        let root_cause_runtime_bg = if root_cause_route_bound {
+            self.root_cause_runtime
+                .read()
+                .map_err(|error| ToolError {
+                    message: format!("root-cause runtime handle lock: {error}"),
+                    code: Some("root_cause_dispatch_failed".into()),
+                })?
+                .clone()
+        } else {
+            None
+        };
+        let root_cause_session_bg = child_context.session_id.clone();
+        let root_cause_child_id_bg = child_id.as_str().to_string();
 
         let handle = tokio::spawn(async move {
             let _worktree_guard = worktree_guard_bg;
@@ -949,6 +1012,23 @@ impl Tool for TaskTool {
                     .await;
             }
 
+            // A report clears the route synchronously before the child reaches
+            // this terminal path. Any other terminal outcome must fail closed:
+            // record Escalate and consume the pending route rather than leaving
+            // the root agent blocked forever or letting it edit around it.
+            if let Some(runtime) = root_cause_runtime_bg {
+                if let Err(error) = runtime.resolve_root_cause_child_terminal(
+                    &root_cause_session_bg,
+                    &root_cause_child_id_bg,
+                ) {
+                    tracing::error!(
+                        child_id = %root_cause_child_id_bg,
+                        error = %error,
+                        "failed to resolve static root-cause child terminal"
+                    );
+                }
+            }
+
             // Offload large results to mailbox before storing transcript.
             let content = mailbox_bg
                 .offload_if_large(&st_bg, &desc_full_bg, &sid_bg, &content)
@@ -1037,6 +1117,12 @@ impl Tool for TaskTool {
             ),
             ("description".to_string(), serde_json::json!(description)),
         ]);
+        if root_cause_route_bound {
+            metadata.insert(
+                "root_cause_route_bound".to_string(),
+                serde_json::json!(true),
+            );
+        }
         // Compatibility: report the legacy `background` switch as ignored when
         // the model supplies it, instead of branching on its value.
         if background_supplied {
