@@ -79,6 +79,8 @@ pub struct Budget {
 pub enum SpecialistReportKind {
     /// Read-only repository exploration findings.
     Exploration,
+    /// A diagnosis grounded in source and external-anchor evidence.
+    RootCause,
     /// An actionable implementation plan.
     ImplementationPlan,
 }
@@ -291,6 +293,19 @@ impl NodeType {
                 writable: [WorkField::GeneratedDiff, WorkField::Budget]
                     .into_iter()
                     .collect(),
+            },
+            NodeType::RootCause => FieldPerms {
+                readable: [
+                    WorkField::Requirement,
+                    WorkField::GeneratedDiff,
+                    WorkField::VerifyResult,
+                    WorkField::CompileResult,
+                    WorkField::TestResult,
+                    WorkField::SpecialistReports,
+                ]
+                .into_iter()
+                .collect(),
+                writable: [WorkField::SpecialistReports].into_iter().collect(),
             },
             NodeType::Explore | NodeType::Plan => FieldPerms {
                 readable: [WorkField::Requirement].into_iter().collect(),
@@ -672,6 +687,7 @@ fn validate_specialist_report_kind(
     let allowed = matches!(
         (caller, kind),
         (NodeType::Explore, SpecialistReportKind::Exploration)
+            | (NodeType::RootCause, SpecialistReportKind::RootCause)
             | (NodeType::Plan, SpecialistReportKind::ImplementationPlan)
     );
     if allowed {

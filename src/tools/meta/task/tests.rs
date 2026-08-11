@@ -110,6 +110,8 @@ fn parse_node_type_maps_all_known_strings() {
     assert_eq!(parse_node_type("general"), NodeType::GeneralPurpose);
     assert_eq!(parse_node_type("verify"), NodeType::Verification);
     assert_eq!(parse_node_type("verification"), NodeType::Verification);
+    assert_eq!(parse_node_type("root-cause"), NodeType::RootCause);
+    assert_eq!(parse_node_type("root_cause"), NodeType::RootCause);
     assert_eq!(parse_node_type("guide"), NodeType::WgentyCodeGuide);
     assert_eq!(
         parse_node_type("wgenty-code-guide"),

@@ -1074,6 +1074,7 @@ fn parse_node_type(s: &str) -> crate::org_graph::NodeType {
         "plan" => NodeType::Plan,
         "general-purpose" | "general" => NodeType::GeneralPurpose,
         "verify" | "verification" => NodeType::Verification,
+        "root-cause" | "root_cause" => NodeType::RootCause,
         "guide" | "wgenty-code-guide" => NodeType::WgentyCodeGuide,
         _ => NodeType::GeneralPurpose,
     }

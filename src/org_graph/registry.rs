@@ -15,11 +15,12 @@ pub struct NodeRegistry {
 }
 
 /// 渲染用的稳定枚举顺序（枚举声明序）。HashMap 遍历无序，渲染/测试要求确定性。
-const CANONICAL_ORDER: [NodeType; 5] = [
+const CANONICAL_ORDER: [NodeType; 6] = [
     NodeType::Explore,
     NodeType::Plan,
     NodeType::GeneralPurpose,
     NodeType::Verification,
+    NodeType::RootCause,
     NodeType::WgentyCodeGuide,
 ];
 
@@ -31,6 +32,7 @@ impl NodeRegistry {
         contracts.insert(NodeType::Plan, Self::plan_contract(settings));
         contracts.insert(NodeType::GeneralPurpose, Self::gp_contract(settings));
         contracts.insert(NodeType::Verification, Self::verify_contract(settings));
+        contracts.insert(NodeType::RootCause, Self::root_cause_contract(settings));
         contracts.insert(NodeType::WgentyCodeGuide, Self::guide_contract(settings));
         Self { contracts }
     }
@@ -138,6 +140,28 @@ impl NodeRegistry {
         }
     }
 
+    fn root_cause_contract(_s: &SubagentLimits) -> NodeContract {
+        NodeContract {
+            node_type: NodeType::RootCause,
+            name: "root-cause".to_string(),
+            description: "Root-cause analysis subagent.".to_string(),
+            when_to_use: "Diagnosing a defect from code and external-anchor evidence".to_string(),
+            system_prompt: Self::root_cause_prompt().to_string(),
+            model: "default".to_string(),
+            capabilities: Capability {
+                allowed_tools: vec![],
+            },
+            permissions: PermissionBoundary {
+                can_spawn: false,
+                can_mutate_fs: false,
+                can_exec: true,
+            },
+            budget: ResourceBudget::default(),
+            input_type: IoShape::StructuredJson,
+            output_type: IoShape::Report,
+        }
+    }
+
     fn guide_contract(_s: &SubagentLimits) -> NodeContract {
         NodeContract {
             node_type: NodeType::WgentyCodeGuide,
@@ -221,6 +245,15 @@ impl NodeRegistry {
          If you need to read files, search, or execute commands, use the \
          appropriate tools. Return a complete summary of what was accomplished."
     }
+
+    fn root_cause_prompt() -> &'static str {
+        "You are a root-cause analysis subagent. Diagnose the reported defect \
+         using source code and actual compile/test evidence. You are a leaf: do \
+         not delegate work and do not modify files. Distinguish observations \
+         from hypotheses. Before your final response, submit exactly one \
+         evidence-backed root-cause report through `submit_specialist_report`; \
+         the coordinator consumes that typed report instead of your prose."
+    }
 }
 
 #[cfg(test)]
@@ -236,13 +269,14 @@ mod tests {
     }
 
     #[test]
-    fn all_five_builtin_contracts_present() {
+    fn all_six_builtin_contracts_present() {
         let r = registry(true);
         for nt in [
             NodeType::Explore,
             NodeType::Plan,
             NodeType::GeneralPurpose,
             NodeType::Verification,
+            NodeType::RootCause,
             NodeType::WgentyCodeGuide,
         ] {
             assert!(r.get(&nt).is_some(), "missing contract for {:?}", nt);
@@ -318,6 +352,20 @@ mod tests {
     }
 
     #[test]
+    fn root_cause_is_a_read_only_leaf_reporter() {
+        let node_registry = registry(true);
+        let contract = node_registry
+            .get(&NodeType::RootCause)
+            .expect("root-cause contract");
+
+        assert_eq!(contract.name, "root-cause");
+        assert!(!contract.permissions.can_spawn);
+        assert!(!contract.permissions.can_mutate_fs);
+        assert_eq!(contract.input_type, IoShape::StructuredJson);
+        assert_eq!(contract.output_type, IoShape::Report);
+    }
+
+    #[test]
     fn verification_is_non_mutating_leaf() {
         let r = registry(true);
         let c = r.get(&NodeType::Verification).unwrap();
@@ -351,6 +399,7 @@ mod tests {
             NodeType::Plan,
             NodeType::GeneralPurpose,
             NodeType::Verification,
+            NodeType::RootCause,
             NodeType::WgentyCodeGuide,
         ] {
             let c = r.get(&nt).unwrap();
@@ -412,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn iter_returns_all_five_in_canonical_order() {
+    fn iter_returns_all_six_in_canonical_order() {
         let r = registry(true);
         let ordered: Vec<NodeType> = r.iter().into_iter().map(|c| c.node_type.clone()).collect();
         assert_eq!(
@@ -422,6 +471,7 @@ mod tests {
                 NodeType::Plan,
                 NodeType::GeneralPurpose,
                 NodeType::Verification,
+                NodeType::RootCause,
                 NodeType::WgentyCodeGuide,
             ]
         );
@@ -431,7 +481,7 @@ mod tests {
     fn iter_consistent_with_get() {
         let r = registry(true);
         let collected: Vec<&NodeContract> = r.iter();
-        assert_eq!(collected.len(), 5, "iter returns all five builtins");
+        assert_eq!(collected.len(), 6, "iter returns all six builtins");
         for c in r.iter() {
             assert_eq!(
                 c,
