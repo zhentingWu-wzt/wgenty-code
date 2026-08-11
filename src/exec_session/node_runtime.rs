@@ -16,6 +16,7 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex as AsyncMutex;
 
 use super::coordinator::SessionCoordinator;
 use super::hooks::{NoHooks, SessionHooks, VerifyFailure};
@@ -25,8 +26,8 @@ use super::verification_profile::VerificationProfile;
 use super::verify_gate::{VerifyGate, VerifyResult};
 use super::work_graph::{next_step, WorkGraphStep};
 use crate::org_graph::{
-    AuditCommandRun, Budget, CompileResult, GeneratedDiff, GraphAuditAnchor, GraphAuditEvent,
-    GraphAuditKind, GraphAuditProfile, GraphAuditRoute, NodeType, TestResult,
+    AuditCommandRun, Budget, CompileResult, GeneratedDiff, GraphAuditAnchor, GraphAuditCommands,
+    GraphAuditEvent, GraphAuditKind, GraphAuditProfile, GraphAuditRoute, NodeType, TestResult,
 };
 
 const AUDIT_STDERR_LIMIT_BYTES: usize = 8_192;
@@ -66,6 +67,7 @@ pub enum NodeVerificationOutcome {
 pub struct NodeRuntime {
     coordinator: Arc<RwLock<SessionCoordinator>>,
     verify_gate: Arc<VerifyGate>,
+    work_graph_gate: AsyncMutex<()>,
     auto_retry_max: u32,
     hooks: Arc<dyn SessionHooks>,
 }
@@ -156,26 +158,52 @@ fn project_audit_commands(runs: &[crate::exec_session::CommandRun]) -> Vec<Audit
         .collect()
 }
 
-fn audit_event(
-    context: &WorkGraphAuditContext,
-    kind: GraphAuditKind,
-    anchor: Option<GraphAuditAnchor>,
-    commands: Vec<AuditCommandRun>,
-    route: Option<GraphAuditRoute>,
-    profile: Option<GraphAuditProfile>,
-    budget: Option<Budget>,
-) -> GraphAuditEvent {
+fn base_audit_event(context: &WorkGraphAuditContext, kind: GraphAuditKind) -> GraphAuditEvent {
     GraphAuditEvent {
         node_id: context.node_id.clone(),
         attempt: context.attempt,
         kind,
-        anchor,
-        commands,
-        route,
-        profile,
-        budget,
+        anchor: None,
+        commands: Vec::new(),
+        route: None,
+        profile: None,
+        resolved_commands: None,
+        budget: None,
         timestamp: chrono::Utc::now().to_rfc3339(),
     }
+}
+
+fn anchor_audit_event(
+    context: &WorkGraphAuditContext,
+    anchor: GraphAuditAnchor,
+    commands: Vec<AuditCommandRun>,
+) -> GraphAuditEvent {
+    let mut event = base_audit_event(context, GraphAuditKind::AnchorCompleted);
+    event.anchor = Some(anchor);
+    event.commands = commands;
+    event
+}
+
+fn route_audit_event(
+    context: &WorkGraphAuditContext,
+    route: WorkGraphStep,
+    budget: Option<Budget>,
+) -> GraphAuditEvent {
+    let mut event = base_audit_event(context, GraphAuditKind::RouteSelected);
+    event.route = Some(project_audit_route(route));
+    event.budget = budget;
+    event
+}
+
+fn profile_audit_event(
+    context: &WorkGraphAuditContext,
+    profile: GraphAuditProfile,
+    resolved_commands: GraphAuditCommands,
+) -> GraphAuditEvent {
+    let mut event = base_audit_event(context, GraphAuditKind::ProfileResolved);
+    event.profile = Some(profile);
+    event.resolved_commands = Some(resolved_commands);
+    event
 }
 
 /// Charge one coordinator-owned work-graph iteration after a failed anchor.
@@ -203,6 +231,7 @@ impl NodeRuntime {
         Self {
             coordinator,
             verify_gate,
+            work_graph_gate: AsyncMutex::new(()),
             auto_retry_max,
             hooks,
         }
@@ -232,6 +261,10 @@ impl NodeRuntime {
         verify_commands: Vec<String>,
         expected_files: Vec<String>,
     ) -> Result<WorkGraphRunResult> {
+        // Serialize complete passes without retaining the coordinator lock
+        // across external command awaits. This keeps attempt allocation and
+        // every state transition for a node in one non-interleaved sequence.
+        let _pass_guard = self.work_graph_gate.lock().await;
         let audit_context = self.prepare_work_graph_pass()?;
         let compile_runs = self
             .verify_gate
@@ -295,31 +328,36 @@ impl NodeRuntime {
             .work_state_mut()
             .set_verify_result(NodeType::Verification, outcome)
             .context("record verification anchor result")?;
-        coord.work_state_mut().append_graph_audit(audit_event(
-            &audit_context,
-            GraphAuditKind::AnchorCompleted,
-            Some(GraphAuditAnchor::Verify),
-            project_audit_commands(&result.commands_run),
-            None,
-            None,
-            None,
-        ));
+        if matches!(
+            result.fail_reason.as_ref(),
+            Some(VerifyFailure::CommandFailed { .. })
+        ) {
+            consume_iteration_budget(&mut coord)?;
+        }
+        coord
+            .work_state_mut()
+            .append_graph_audit(anchor_audit_event(
+                &audit_context,
+                GraphAuditAnchor::Verify,
+                project_audit_commands(&result.commands_run),
+            ));
         coord
             .capture_current_work_state()
             .context("persist verification anchor audit event")?;
         let next_step = next_step(coord.work_state()).context("route verification result")?;
+        if next_step == WorkGraphStep::Escalate {
+            coord
+                .set_status(SessionStatus::Failed)
+                .context("align session status with work graph escalation")?;
+        }
         let budget = coord
             .work_state()
             .budget(NodeType::GeneralPurpose)
             .context("read verification route budget")?
             .cloned();
-        coord.work_state_mut().append_graph_audit(audit_event(
+        coord.work_state_mut().append_graph_audit(route_audit_event(
             &audit_context,
-            GraphAuditKind::RouteSelected,
-            None,
-            Vec::new(),
-            Some(project_audit_route(next_step)),
-            None,
+            next_step,
             budget,
         ));
         coord
@@ -346,15 +384,13 @@ impl NodeRuntime {
         if failed {
             consume_iteration_budget(&mut coord)?;
         }
-        coord.work_state_mut().append_graph_audit(audit_event(
-            audit_context,
-            GraphAuditKind::AnchorCompleted,
-            Some(GraphAuditAnchor::Compile),
-            project_audit_commands(runs),
-            None,
-            None,
-            None,
-        ));
+        coord
+            .work_state_mut()
+            .append_graph_audit(anchor_audit_event(
+                audit_context,
+                GraphAuditAnchor::Compile,
+                project_audit_commands(runs),
+            ));
         coord
             .capture_current_work_state()
             .context("persist compile anchor audit event")?;
@@ -364,13 +400,9 @@ impl NodeRuntime {
             .budget(NodeType::GeneralPurpose)
             .context("read compile route budget")?
             .cloned();
-        coord.work_state_mut().append_graph_audit(audit_event(
+        coord.work_state_mut().append_graph_audit(route_audit_event(
             audit_context,
-            GraphAuditKind::RouteSelected,
-            None,
-            Vec::new(),
-            Some(project_audit_route(next_step)),
-            None,
+            next_step,
             budget,
         ));
         coord
@@ -397,15 +429,13 @@ impl NodeRuntime {
         if failed {
             consume_iteration_budget(&mut coord)?;
         }
-        coord.work_state_mut().append_graph_audit(audit_event(
-            audit_context,
-            GraphAuditKind::AnchorCompleted,
-            Some(GraphAuditAnchor::Test),
-            project_audit_commands(runs),
-            None,
-            None,
-            None,
-        ));
+        coord
+            .work_state_mut()
+            .append_graph_audit(anchor_audit_event(
+                audit_context,
+                GraphAuditAnchor::Test,
+                project_audit_commands(runs),
+            ));
         coord
             .capture_current_work_state()
             .context("persist test anchor audit event")?;
@@ -415,13 +445,9 @@ impl NodeRuntime {
             .budget(NodeType::GeneralPurpose)
             .context("read test route budget")?
             .cloned();
-        coord.work_state_mut().append_graph_audit(audit_event(
+        coord.work_state_mut().append_graph_audit(route_audit_event(
             audit_context,
-            GraphAuditKind::RouteSelected,
-            None,
-            Vec::new(),
-            Some(project_audit_route(next_step)),
-            None,
+            next_step,
             budget,
         ));
         coord
@@ -618,15 +644,18 @@ impl NodeRuntime {
             attempt: 1,
         };
         let profile = project_audit_profile(persisted_node.contract.verification_profile);
-        coord.work_state_mut().append_graph_audit(audit_event(
-            &audit_context,
-            GraphAuditKind::ProfileResolved,
-            None,
-            Vec::new(),
-            None,
-            Some(profile),
-            None,
-        ));
+        let resolved_commands = GraphAuditCommands {
+            compile_commands: persisted_node.contract.compile_commands.clone(),
+            test_commands: persisted_node.contract.test_commands.clone(),
+            verify_commands: persisted_node.contract.verify_commands.clone(),
+        };
+        coord
+            .work_state_mut()
+            .append_graph_audit(profile_audit_event(
+                &audit_context,
+                profile,
+                resolved_commands,
+            ));
         coord
             .capture_current_work_state()
             .context("persist resolved profile audit event")?;
@@ -824,7 +853,7 @@ mod tests {
     use crate::exec_session::session::SessionSource;
     use crate::exec_session::verify_gate::{CommandExecutor, CommandRun};
     use crate::exec_session::WorkGraphStep;
-    use crate::org_graph::{GraphAuditKind, GraphAuditRoute, NodeType};
+    use crate::org_graph::{GraphAuditCommands, GraphAuditKind, GraphAuditRoute, NodeType};
     use crate::tools::checkpoint_store::CheckpointStore;
     use async_trait::async_trait;
     use tempfile::TempDir;
@@ -833,6 +862,8 @@ mod tests {
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::time::Duration;
+    use tokio::sync::{Barrier, Semaphore};
 
     /// Mock command executor with a configurable exit code.
     struct MockExecutor {
@@ -906,6 +937,37 @@ mod tests {
                 exit_code: Some(result.exit_code),
                 stdout: String::new(),
                 stderr: result.stderr,
+            })
+        }
+    }
+
+    struct BarrierExecutor {
+        calls: Arc<Mutex<Vec<String>>>,
+        call_count: AtomicUsize,
+        first_call_started: Arc<Barrier>,
+        release_first_call: Arc<Barrier>,
+        concurrent_call: Arc<Semaphore>,
+    }
+
+    #[async_trait]
+    impl CommandExecutor for BarrierExecutor {
+        async fn execute(&self, command: &str, _project_root: &Path) -> Result<CommandRun> {
+            let call_index = self.call_count.fetch_add(1, Ordering::SeqCst);
+            self.calls
+                .lock()
+                .map_err(|e| anyhow::anyhow!("command call log lock: {e}"))?
+                .push(command.to_string());
+            if call_index == 0 {
+                self.first_call_started.wait().await;
+                self.release_first_call.wait().await;
+            } else {
+                self.concurrent_call.add_permits(1);
+            }
+            Ok(CommandRun {
+                cmd: command.to_string(),
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
             })
         }
     }
@@ -1269,6 +1331,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_work_graph_passes_are_serialized_with_distinct_attempts() {
+        let dir = TempDir::new().expect("temporary project");
+        let store = Arc::new(CheckpointStore::new(dir.path()));
+        let coord = Arc::new(RwLock::new(
+            SessionCoordinator::new(
+                "es-concurrent".into(),
+                SessionSource::AgentSelf,
+                dir.path(),
+                store,
+            )
+            .expect("create coordinator"),
+        ));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let first_call_started = Arc::new(Barrier::new(2));
+        let release_first_call = Arc::new(Barrier::new(2));
+        let concurrent_call = Arc::new(Semaphore::new(0));
+        let executor = Arc::new(BarrierExecutor {
+            calls: Arc::clone(&calls),
+            call_count: AtomicUsize::new(0),
+            first_call_started: Arc::clone(&first_call_started),
+            release_first_call: Arc::clone(&release_first_call),
+            concurrent_call: Arc::clone(&concurrent_call),
+        });
+        let gate = Arc::new(VerifyGate::new_with_default_hooks(
+            Arc::clone(&coord),
+            executor,
+        ));
+        let runtime = NodeRuntime::new_with_default_hooks(Arc::clone(&coord), gate, 2);
+        coord
+            .write()
+            .expect("coordinator")
+            .begin_turn()
+            .expect("begin turn");
+        runtime
+            .begin_node_with_anchors(
+                "goal".into(),
+                vec!["compile".into()],
+                vec!["test".into()],
+                vec!["verify".into()],
+                vec![],
+            )
+            .await
+            .expect("begin node");
+
+        let commands = || {
+            (
+                vec!["compile".to_string()],
+                vec!["test".to_string()],
+                vec!["verify".to_string()],
+            )
+        };
+        let (compile, test, verify) = commands();
+        let first = runtime.run_work_graph(compile, test, verify, vec![]);
+        let (compile, test, verify) = commands();
+        let second = runtime.run_work_graph(compile, test, verify, vec![]);
+        let observe_serialization = async {
+            first_call_started.wait().await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), concurrent_call.acquire())
+                    .await
+                    .is_err(),
+                "a second graph pass entered command execution before the first pass finished"
+            );
+            release_first_call.wait().await;
+        };
+
+        let (first, second, ()) = tokio::join!(first, second, observe_serialization);
+        assert_eq!(
+            first.expect("first pass").next_step,
+            WorkGraphStep::Complete
+        );
+        assert_eq!(
+            second.expect("second pass").next_step,
+            WorkGraphStep::Complete
+        );
+        assert_eq!(
+            calls.lock().expect("command call log").as_slice(),
+            ["compile", "test", "verify", "compile", "test", "verify"]
+        );
+        let attempts: Vec<_> = coord
+            .read()
+            .expect("coordinator")
+            .work_state()
+            .graph_audit()
+            .iter()
+            .filter(|event| event.kind != GraphAuditKind::ProfileResolved)
+            .map(|event| event.attempt)
+            .collect();
+        assert_eq!(attempts, [1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2]);
+    }
+
+    #[tokio::test]
     async fn passing_anchors_complete_the_fixed_work_graph() {
         let setup = TestSetup::new(0);
         setup.begin_turn();
@@ -1380,6 +1534,14 @@ mod tests {
         assert_eq!(audit[0].node_id, "n1");
         assert_eq!(audit[0].attempt, 1);
         assert_eq!(audit[0].profile, Some(GraphAuditProfile::Rust));
+        assert_eq!(
+            audit[0].resolved_commands,
+            Some(GraphAuditCommands {
+                compile_commands: vec!["cargo check".into()],
+                test_commands: vec!["cargo test --all".into()],
+                verify_commands: vec!["cargo clippy --all-targets -- -D warnings".into()],
+            })
+        );
         assert_eq!(audit[1].anchor, Some(GraphAuditAnchor::Compile));
         assert_eq!(audit[1].commands[0].command, "cargo check");
         assert_eq!(audit[1].commands[0].exit_code, Some(0));
@@ -1600,6 +1762,74 @@ mod tests {
                 token_used: 0,
             })
         );
+        assert_eq!(coord.session().status, SessionStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn audit_exhausted_final_verification_records_consumed_budget_and_escalates_session() {
+        let setup = ScriptedSetup::with_results([
+            ScriptedCommandResult::success(),
+            ScriptedCommandResult::success(),
+            ScriptedCommandResult::failure(9, "final verification diagnostics"),
+        ]);
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec![], vec![])
+            .await
+            .expect("persist rust node before work graph invocation");
+        setup
+            .coord
+            .write()
+            .expect("coordinator")
+            .work_state_mut()
+            .set_budget(
+                NodeType::GeneralPurpose,
+                Budget {
+                    max_iter: 1,
+                    iter_used: 0,
+                    token_used: 0,
+                },
+            )
+            .expect("set exhausted-after-failure budget");
+
+        let outcome = setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("run exhausted final verification pass");
+
+        assert!(matches!(
+            outcome,
+            NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
+                next_step: WorkGraphStep::Escalate
+            })
+        ));
+        assert_eq!(
+            setup.calls(),
+            [
+                "cargo check",
+                "cargo test --all",
+                "cargo clippy --all-targets -- -D warnings",
+            ]
+        );
+        let coord = setup.coord.read().expect("coordinator");
+        let route = coord
+            .work_state()
+            .graph_audit()
+            .last()
+            .expect("verification route audit");
+        assert_eq!(route.route, Some(GraphAuditRoute::Escalate));
+        assert_eq!(
+            route.budget,
+            Some(Budget {
+                max_iter: 1,
+                iter_used: 1,
+                token_used: 0,
+            })
+        );
+        assert_eq!(coord.session().status, SessionStatus::Failed);
     }
 
     #[tokio::test]

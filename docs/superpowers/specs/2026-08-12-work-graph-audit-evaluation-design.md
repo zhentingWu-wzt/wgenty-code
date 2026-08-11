@@ -23,6 +23,8 @@ dependency. It contains:
 - `kind`: `profile_resolved`, `anchor_completed`, or `route_selected`;
 - `anchor`: optional `compile`, `test`, or `verify` phase;
 - `commands`: zero or more `AuditCommandRun { command, exit_code, stderr }`;
+- `resolved_commands`: optional typed compile/test/verify command vectors selected
+  for the persisted profile;
 - `route`: optional selected `WorkGraphStep` as a stable snake-case value;
 - `budget`: optional immutable snapshot of `{ max_iter, iter_used, token_used }`;
 - RFC 3339 `timestamp`.
@@ -41,15 +43,21 @@ events; audit is historical evidence, not a node product.
 ## Runtime Flow
 
 At node creation, `NodeRuntime` appends `profile_resolved` with the persisted
-profile and resolved anchor names. At the start of `run_work_graph`, it derives
-the current node id and attempt number from the persisted audit history.
+profile and exact resolved compile, test, and final verification commands. At
+the start of `run_work_graph`, it derives the current node id and attempt number
+from the persisted audit history. An async pass gate serializes the complete
+pass for a runtime while coordinator locks remain short-lived around state
+transitions and checkpoints.
 
 After each command batch completes, before routing, the runtime appends one
 `anchor_completed` event based on actual `CommandRun` values. It records the
 structured state, checkpoints it, evaluates `next_step`, then appends a
 `route_selected` event with that edge and a cloned budget snapshot, and
 checkpoints again. The final VerifyGate follows the same order after its
-changed-file boundary check. No lock is held during command execution.
+changed-file boundary check. A failed final command consumes iteration budget
+before its anchor checkpoint and route selection; a boundary-only failure
+escalates without consuming retry budget. No coordinator lock is held during
+command execution.
 
 All routes remain code-owned. Audit values describe the decision after it is
 made; they never influence route selection.

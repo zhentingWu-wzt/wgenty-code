@@ -78,6 +78,17 @@ pub struct AuditCommandRun {
     pub stderr: String,
 }
 
+/// Resolved command anchors selected for a work-graph node profile.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GraphAuditCommands {
+    /// Commands executed by the compile anchor.
+    pub compile_commands: Vec<String>,
+    /// Commands executed by the test anchor.
+    pub test_commands: Vec<String>,
+    /// Commands executed by the final verification gate.
+    pub verify_commands: Vec<String>,
+}
+
 /// 工作图节点执行期间记录的一条审计事件。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GraphAuditEvent {
@@ -88,6 +99,9 @@ pub struct GraphAuditEvent {
     pub commands: Vec<AuditCommandRun>,
     pub route: Option<GraphAuditRoute>,
     pub profile: Option<GraphAuditProfile>,
+    /// Present on `profile_resolved`; absent from historical events.
+    #[serde(default)]
+    pub resolved_commands: Option<GraphAuditCommands>,
     pub budget: Option<Budget>,
     pub timestamp: String,
 }
@@ -569,6 +583,7 @@ mod tests {
             }],
             route: Some(GraphAuditRoute::CompileAnchor),
             profile: Some(GraphAuditProfile::Rust),
+            resolved_commands: None,
             budget: Some(Budget {
                 max_iter: 3,
                 iter_used: 1,
@@ -611,6 +626,24 @@ mod tests {
             serde_json::to_string(&GraphAuditProfile::Rust).unwrap(),
             "\"rust\""
         );
+    }
+
+    #[test]
+    fn historical_graph_audit_event_defaults_missing_resolved_commands() {
+        let json = r#"{
+            "node_id":"n1",
+            "attempt":1,
+            "kind":"profile_resolved",
+            "anchor":null,
+            "commands":[],
+            "route":null,
+            "profile":"rust",
+            "budget":null,
+            "timestamp":"2026-08-12T00:00:00Z"
+        }"#;
+
+        let event: GraphAuditEvent = serde_json::from_str(json).expect("deserialize old event");
+        assert_eq!(event.resolved_commands, None);
     }
 
     #[test]
