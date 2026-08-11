@@ -18,6 +18,21 @@ CodeGraph 查证 `exec_session` 的 verify 闭环,得出两个重塑 pilot 的�
 
 **结论**:proposal 核心论点(状态漂移)在代码里有活样本。pilot 的最优形态不是新建路由,而是**修复这个已存在的结构化降级点**——范围更小、零新路由、直击核心论点。
 
+## 1.5 Build 阶段范围决策（full schema）
+
+build 阶段用户明确选择：**回退到完整 schema**（非 design 阶段收窄的 verify-only 版本），pilot 仍锚定 verify（唯一真实闭环）。这一决策基于下述二次代码查证。
+
+**查证结论（definitive，带 file:line 证据）：**
+
+- **Compile 闭环不存在**：`NodeType` 枚举（`src/org_graph/contract.rs:10-17`）无 `Compile` 变体；`parse_node_type`（`src/tools/meta/task.rs:1070-1080`）不识别 `compile`；全仓库无 `compile_node` / `CompileResult` / `NodeType::Compile`。compile 只作为自然语言文本出现在 subagent 自由文本里。
+- **Test 闭环不存在**：同理无 `Test` 变体、无 `test_node` / `TestResult`。测试结果至多作为不透明 exit code 塞进 `VerifyFailure::CommandFailed`（`src/exec_session/hooks.rs:19-23`），无 `failed_cases` 解析。
+- **Verify 闭环真实存在且结构化**：`verify_gate.rs:208 verify_and_complete` → `VerifyResult{success, fail_reason: Option<VerifyFailure>, ...}`，`VerifyFailure` 是枚举。出口 `node_runtime.rs:204` 用 `format!("{f:?}")` 把强类型降级成 `failure_reason: Option<String>`（这就是要修复的降级点）。
+- `NodeType` 变体：`Explore | Plan | GeneralPurpose | Verification | WgentyCodeGuide`，只有 `Verification` 有结构化结果回流驱动路由。
+
+**Deferred-write-point 权衡（明说）：**
+
+完整 schema 的 7 个字段中，**只有 `verify_result` 有真实生产写入点**（pilot：verify_node 出口）。`generated_diff` / `compile_result` / `test_result` / `human_review` / `budget` 本期**类型 + 权限就绪，但无生产写入点**——这些字段的权限强制通过单测（合成写入）验证，生产接入留待将来新增 Compile/Test 等节点的 change。这是「真强制」的完整定义：字段存在、类型强、权限矩阵覆盖所有字段、越权写一律 `ContractViolation{State}`，而非「字段不声明强制逻辑」的窄版。
+
 ## 2. 模块布局
 
 ```
@@ -33,22 +48,27 @@ src/org_graph/
 ## 3. 核心类型(`src/org_graph/work_state.rs`)
 
 ```rust
-/// 当前 turn 的结构化工作产物。pilot 只强制 verify_result;
-/// 其余字段为 Option 占位,强制逻辑留后续 change(避免空壳 API)。
+/// 当前 turn 的结构化工作产物。完整 schema：全字段类型 + 全字段权限真强制。
+/// pilot 仅锚定 verify_result（唯一真实闭环）；其余字段类型与权限就绪，
+/// 生产写入点待将来新增 Compile/Test 等节点的 change 接入。
 pub struct WorkState {
-    pub requirement: Option<String>,            // 跨 turn 继承
-    pub verify_result: Option<VerifyOutcome>,   // pilot 核心字段
-    pub step_log: Vec<StepRecord>,              // 审计轨迹(授权写记入)
-    // generated_diff / test_result / human_review / budget:
-    // spec 列出但 pilot 不涉及,本期不声明读写强制逻辑。
+    pub requirement: Option<String>,            // 跨 turn 继承（coordinator 在 turn 初始化时设置，不经节点权限 API）
+    pub generated_diff: Option<GeneratedDiff>,   // GeneralPurpose 产出（类型就绪，生产写入待接入）
+    pub compile_result: Option<CompileResult>,   // 预留：将来 Compile 节点写入
+    pub test_result: Option<TestResult>,         // 预留：将来 Test 节点写入
+    pub human_review: Option<HumanReview>,       // 预留：将来人工评审节点写入
+    pub verify_result: Option<VerifyOutcome>,    // pilot 核心字段：Verification 写入
+    pub budget: Option<Budget>,                  // 预留：预算追踪（类型就绪，生产写入待接入）
+    pub step_log: Vec<StepRecord>,               // 审计轨迹（授权写自动记入）
 }
 
-/// org_graph 内聚的独立类型(exec_session 集成时从 VerifyResult 投影转换)。
-/// 只保留 retry 决策需要的 success + fail_reason 枚举,不复制完整 VerifyResult。
-pub struct VerifyOutcome {
-    pub success: bool,
-    pub fail_reason: Option<VerifyFailureKind>,
-}
+pub struct GeneratedDiff { pub summary: String, pub files: Vec<String> }
+pub struct CompileResult { pub ok: bool, pub stderr: String }
+pub struct TestResult { pub pass: bool, pub failed_cases: Vec<String> }
+pub enum HumanReview { Approve, Reject }
+pub struct Budget { pub max_iter: u32, pub iter_used: u32, pub token_used: u64 }
+
+pub struct VerifyOutcome { pub success: bool, pub fail_reason: Option<VerifyFailureKind> }
 pub enum VerifyFailureKind {
     CommandFailed { exit_code: Option<i32>, stderr: String },
     BoundaryViolation { unexpected_files: Vec<String> },
@@ -59,10 +79,10 @@ pub struct FieldPerms {
     pub readable: HashSet<WorkField>,
     pub writable: HashSet<WorkField>,
 }
-pub enum WorkField { Requirement, VerifyResult, StepLog }
+pub enum WorkField { Requirement, GeneratedDiff, CompileResult, TestResult, HumanReview, VerifyResult, Budget, StepLog }
 ```
 
-`WorkState` / `VerifyOutcome` / `VerifyFailureKind` / `FieldPerms` / `WorkField` 全部派生 `Serialize/Deserialize/Clone/Debug`,支持 CheckpointStore 持久化与单测。
+所有新类型派生 `Serialize/Deserialize/Clone/Debug`（`PartialField` 能加就加；枚举加 `Copy/Hash` where 合理）。`WorkState` / `GeneratedDiff` / `CompileResult` / `TestResult` / `HumanReview` / `Budget` / `VerifyOutcome` / `VerifyFailureKind` / `FieldPerms` / `WorkField` 全部派生以支持 CheckpointStore 持久化与单测。保留原有 `FieldPerms`、`StepRecord`、`StepAction` 定义。
 
 ## 4. 字段权限矩阵(`NodeType::field_perms`)
 
@@ -70,17 +90,17 @@ pub enum WorkField { Requirement, VerifyResult, StepLog }
 impl NodeType {
     pub fn field_perms(&self) -> FieldPerms {
         match self {
-            // verify 节点:执行 verify → 写 verify_result,读 requirement/verify_result/step_log
+            // verify 节点：执行 verify → 写 verify_result；可读 requirement/verify_result/compile_result/test_result/step_log
             NodeType::Verification => FieldPerms {
-                readable: {Requirement, VerifyResult, StepLog},
-                writable: {VerifyResult, StepLog},
+                readable: {Requirement, VerifyResult, CompileResult, TestResult, StepLog},
+                writable: {VerifyResult},  // step_log 由授权写自动记入，不直接 set
             },
-            // GeneralPurpose(可做 retry 决策的协调者):读 verify_result,写 step_log
+            // GeneralPurpose（协调/工作节点）：写 generated_diff/budget；广泛读
             NodeType::GeneralPurpose => FieldPerms {
-                readable: {Requirement, VerifyResult, StepLog},
-                writable: {StepLog},
+                readable: {Requirement, GeneratedDiff, VerifyResult, CompileResult, TestResult, HumanReview, Budget, StepLog},
+                writable: {GeneratedDiff, Budget},
             },
-            // explore/plan/guide:本期不涉及 verify_result,只读 requirement
+            // explore/plan/guide：只读 requirement，不写任何字段
             NodeType::Explore | NodeType::Plan | NodeType::WgentyCodeGuide => FieldPerms {
                 readable: {Requirement},
                 writable: {},
@@ -89,6 +109,8 @@ impl NodeType {
     }
 }
 ```
+
+**预留字段强制为空（真强制的核心保证）：** `compile_result` / `test_result` / `human_review` 三个字段本期对所有现存 `NodeType` 的 `writable` 都为 `{}`（`human_review` 连 `GeneralPurpose` 都不写——纯预留）。也就是说这些字段的 setter 对所有现存节点类型一律返回 `ContractViolation{dimension: State}`。单测验证「任何 `NodeType` 尝试写 `compile_result` / `test_result` / `human_review` → `ContractViolation{State}`」，这正是「全字段权限真强制」的落地形式。生产写入点留待将来新增 Compile/Test/HumanReview 节点的 change——届时新增 `NodeType` 变体并扩 `field_perms` 矩阵即可，schema 本期已就绪。
 
 ## 5. 读写 API(查表强制)
 
@@ -116,7 +138,10 @@ impl WorkState {
 ```
 
 设计点:
-- **每字段一具名方法**(`set_verify_result`/`verify_result`),非泛型 get/set。字段少且固定,具名让越权点显式、可 grep,对齐现有 `filter_allowed_tools` 风格。
+- **每字段一具名方法**(`set_verify_result`/`verify_result`、`set_generated_diff`/`generated_diff`、`set_budget`/`budget` 等),非泛型 get/set。完整 schema 意味着多个具名 setter/getter——每个可写字段一个 setter、每个可读字段一个 getter,签名与权限校验模式同上。具名让越权点显式、可 grep,对齐现有 `filter_allowed_tools` 风格。
+- **pilot 集成范围**:本期生产代码只集成 `set_verify_result` / `verify_result`(verify_node 出口读写);其余字段的具名方法(`set_generated_diff` / `set_budget` / `set_compile_result` / `set_test_result` / `set_human_review` 等)提供方法实现 + 全字段权限强制,**本期无生产调用点**,由单测(合成写入)覆盖其权限强制与 serde 往返。这是「类型 + 权限就绪,生产写入待接入」的落地形式。
+- **`requirement` 不经节点权限 API**:由 `SessionCoordinator` 在 turn 初始化时直接设置(`inherit_for_new_turn` 克隆继承),不走 `set_requirement` 节点权限路径——requirement 是任务级常量,不属于任何节点的工作产物产出。
+- **`step_log` 不可直接 set**:没有 `set_step_log` / `append_step_log` 方法;授权写任意字段时由 setter 自动 `push(StepRecord::wrote(...))`。这避免节点绕过字段权限直接伪造审计轨迹。
 - **写成功自动记 step_log**(谁在何时写了哪个字段);读不记(读高频,记会爆)。
 - **读越权也报**,读写权限对称,便于审计。
 
@@ -180,6 +205,7 @@ WorkState 挂在 `SessionCoordinator` 内(复用现有 `Arc<RwLock>` 锁层级,�
 
 - **schema 单测**:`VerifyOutcome` serde 往返;`FieldPerms` 矩阵对 5 个 NodeType 符合预期。
 - **权限强制单测**:verify 节点正常写 verify_result;非 verify 节点越权写 → `ContractViolation{State}`;读越权报;授权写记 step_log、读不记。
+- **预留字段强制为空单测**:任何 `NodeType`(含 `Verification` / `GeneralPurpose`)调用 `set_compile_result` / `set_test_result` / `set_human_review` → `ContractViolation{State}`(本期这三个字段对所有现存节点 writable 都为 `{}`,越权写一律拒绝)。GeneralPurpose 正常写 `generated_diff` / `budget` 成功(合成写入验证);`requirement` 不经节点权限 API 由 coordinator 直接设置。
 - **pilot 降级点单测**:verify 失败后 WorkState.verify_result.fail_reason 为强类型枚举(非 `format!("{:?}")` 文本);retry 决策读枚举分支(CommandFailed vs BoundaryViolation)。
 - **turn 继承单测**:同 turn retry 后 WorkState 保留;`begin_turn` 后产物重置、requirement 继承。
 - **CheckpointStore 单测**:写入 WorkState 后崩溃→恢复→字段完整;legacy turn 缺 WorkState 返回空状态不崩。
@@ -191,7 +217,7 @@ brainstorming 发现 proposal/spec 的 pilot 措辞与真实代码不符,需回�
 
 1. **Requirement「路由判定读取结构化字段而非解析文本」**:措辞从「至少一个真实存在的路由判定(pilot)」精确化为「修复 verify_node 出口的 `format!("{f:?}")` 结构化降级点」;Scenario 从「下一跳判定」改为「retry 决策与下游读取强类型 VerifyFailure 枚举分支」。
 2. **Requirement「节点对状态字段的访问受权限约束」**:补一条 Scenario:越权写报 `ContractDimension::State`(确认新增维度)。
-3. **Requirement「强类型共享工作状态」**:字段清单措辞明确本期强制 verify_result,其余字段(diff/test/budget 等)为 Option 占位、强制逻辑留后续 change。
+3. **Requirement「强类型共享工作状态」**:字段清单措辞明确**本期实现完整 schema**(全字段类型 + 全字段权限真强制);pilot 锚定 verify_result(查证确认 compile/test 闭环不存在,故不建虚构 pilot);`compile_result` / `test_result` / `human_review` / `budget` / `generated_diff` 类型与权限就绪,生产写入点待将来新增节点的 change。
 
 ## 10. 风险
 
