@@ -371,6 +371,16 @@ impl NodeRuntime {
         verify_commands: Vec<String>,
         expected_files: Vec<String>,
     ) -> Result<NodeId> {
+        let project_root = {
+            let coord = self
+                .coordinator
+                .read()
+                .map_err(|e| anyhow::anyhow!("coordinator read lock: {e}"))?;
+            coord.project_root().to_path_buf()
+        };
+        let verification_profile = VerificationProfile::detect(&project_root);
+        let resolved_commands =
+            verification_profile.resolve(compile_commands, test_commands, verify_commands);
         let mut coord = self
             .coordinator
             .write()
@@ -393,10 +403,10 @@ impl NodeRuntime {
             id: node_id.clone(),
             contract: NodeContract {
                 goal,
-                verify_commands,
-                compile_commands,
-                test_commands,
-                verification_profile: VerificationProfile::None,
+                verify_commands: resolved_commands.verify_commands,
+                compile_commands: resolved_commands.compile_commands,
+                test_commands: resolved_commands.test_commands,
+                verification_profile,
                 expected_files,
             },
             status: NodeStatus::Running,
@@ -675,6 +685,14 @@ mod tests {
         fn begin_turn(&self) {
             self.coord.write().unwrap().begin_turn().unwrap();
         }
+
+        fn write_cargo_manifest(&self) {
+            std::fs::write(
+                self._dir.path().join("Cargo.toml"),
+                "[package]\nname = \"verification-profile-test\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("write Cargo.toml");
+        }
     }
 
     #[tokio::test]
@@ -694,6 +712,61 @@ mod tests {
         assert_eq!(node.id, "n1");
         assert_eq!(node.status, NodeStatus::Running);
         assert_eq!(node.start_turn_id, "turn-0");
+    }
+
+    #[tokio::test]
+    async fn begin_node_in_rust_project_persists_code_owned_profile_commands() {
+        let setup = TestSetup::new(0);
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+
+        setup
+            .runtime
+            .begin_node_with_anchors(
+                "goal".into(),
+                vec![],
+                vec![],
+                vec!["cargo test --doc".into()],
+                vec![],
+            )
+            .await
+            .expect("begin node");
+
+        let coord = setup.coord.read().expect("coordinator");
+        let contract = &coord.current_node().expect("node").contract;
+        assert_eq!(contract.verification_profile, VerificationProfile::Rust);
+        assert_eq!(contract.compile_commands, ["cargo check"]);
+        assert_eq!(contract.test_commands, ["cargo test --all"]);
+        assert_eq!(
+            contract.verify_commands,
+            [
+                "cargo clippy --all-targets -- -D warnings",
+                "cargo test --doc",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn begin_node_in_non_rust_project_preserves_declared_anchors() {
+        let setup = TestSetup::new(0);
+        setup.begin_turn();
+
+        setup
+            .runtime
+            .begin_node_with_anchors(
+                "goal".into(),
+                vec!["compile".into()],
+                vec!["test".into()],
+                vec!["verify".into()],
+                vec![],
+            )
+            .await
+            .expect("begin node");
+
+        let coord = setup.coord.read().expect("coordinator");
+        let contract = &coord.current_node().expect("node").contract;
+        assert_eq!(contract.verification_profile, VerificationProfile::None);
+        assert_eq!(contract.compile_commands, ["compile"]);
     }
 
     #[tokio::test]
