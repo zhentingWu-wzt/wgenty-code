@@ -14,9 +14,9 @@
 
 ## 3. turn 集成与检查点持久化
 
-- [ ] 3.1 把 `WorkState` 锚定到 `exec_session` 的 turn：turn 开始时创建/继承 `WorkState` 实例（turn 间继承策略见 design 阶段定，默认只读字段继承、可写字段按 pilot 语义）
-- [ ] 3.2 随 `CheckpointStore` 持久化 `WorkState`：turn 检查点时一并落盘，崩溃后从最近 turn 快照恢复结构化字段
-- [ ] 3.3 为 turn 集成加单测：写入结构化字段后崩溃→从检查点恢复→字段值完整；既有文件级 capture/rewind 行为零回归
+- [x] 3.1 把 `WorkState` 锚定到 `exec_session` 的 turn：turn 开始时创建/继承 `WorkState` 实例（turn 间继承策略见 design 阶段定，默认只读字段继承、可写字段按 pilot 语义）
+- [x] 3.2 随 `CheckpointStore` 持久化 `WorkState`：turn 检查点时一并落盘，崩溃后从最近 turn 快照恢复结构化字段
+- [x] 3.3 为 turn 集成加单测：写入结构化字段后崩溃→从检查点恢复→字段值完整；既有文件级 capture/rewind 行为零回归
 
 ## 4. pilot 路由点（读结构化字段 + 验证强制）
 

@@ -1009,7 +1009,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Consumes: `WorkState` / `inherit_for_new_turn`（来自 Task 2）；`CheckpointStore::begin_turn` / `CheckpointStore::list`（已存在）。
 - Produces: `impl CheckpointStore { pub fn capture_work_state(&self, turn_id: &str, state: &WorkState) -> Result<()>; pub fn restore_work_state(&self, turn_id: &str) -> Result<Option<WorkState>> }`；`impl SessionCoordinator { pub fn work_state(&self) -> &WorkState; pub fn work_state_mut(&mut self) -> &mut WorkState; pub fn capture_current_work_state(&self) -> Result<()>; pub fn restore_work_state_for_turn(&mut self, turn_id: &str) -> Result<()> }`。
 
-- [ ] **Step 3.1: 写失败测试 —— CheckpointStore 持久化往返**
+- [x] **Step 3.1: 写失败测试 —— CheckpointStore 持久化往返**
 
 在 `src/tools/checkpoint_store.rs` 末尾的 `#[cfg(test)] mod tests` 中追加（若文件无测试模块则新建）。此时 `capture_work_state` / `restore_work_state` 未实现 → 编译失败 = 红。
 
@@ -1055,12 +1055,12 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
     }
 ```
 
-- [ ] **Step 3.2: 跑测试验证失败（红）**
+- [x] **Step 3.2: 跑测试验证失败（红）**
 
 Run: `cargo test --lib tools::checkpoint_store::tests --no-run`
 Expected: 编译失败 —— `capture_work_state` / `restore_work_state` 未定义。
 
-- [ ] **Step 3.3: 实现 CheckpointStore::capture_work_state / restore_work_state**
+- [x] **Step 3.3: 实现 CheckpointStore::capture_work_state / restore_work_state**
 
 编辑 `src/tools/checkpoint_store.rs`。`capture_work_state` 把 WorkState 序列化成 JSON 写到 turn 目录下的 `work_state.json`（与文件 blob 同目录，但语义独立，不影响 capture/rewind 行为）。`restore_work_state` 读回；文件不存在时返回 `Ok(None)`（legacy turn 向后兼容）。
 
@@ -1101,12 +1101,12 @@ Expected: 编译失败 —— `capture_work_state` / `restore_work_state` 未定
 
 注意：`turn_dir(turn_id)` 是 CheckpointStore 内部已有的辅助方法（被 `begin_turn` / `try_capture_file` 复用）。若它不叫 `turn_dir`，用 `grep -n "fn turn_dir\|turn_id) " src/tools/checkpoint_store.rs` 确认实际方法名后替换。若没有该方法，内联构造路径：`self.project_root().join(format!(".checkpoint/turns/{turn_id}"))`（用 `grep -n "turns\|checkpoint" src/tools/checkpoint_store.rs` 确认实际目录布局）。
 
-- [ ] **Step 3.4: 跑测试验证通过（绿）**
+- [x] **Step 3.4: 跑测试验证通过（绿）**
 
 Run: `cargo test --lib tools::checkpoint_store::tests`
 Expected: PASS —— `work_state_capture_and_restore_roundtrip` + `work_state_restore_returns_none_for_legacy_turn_without_snapshot` 全绿；既有 CheckpointStore 测试零回归。
 
-- [ ] **Step 3.5: 写失败测试 —— SessionCoordinator begin_turn 继承 + 持久化触发**
+- [x] **Step 3.5: 写失败测试 —— SessionCoordinator begin_turn 继承 + 持久化触发**
 
 在 `src/exec_session/coordinator.rs` 末尾的 `#[cfg(test)] mod tests` 中追加。此时 `work_state()` / `work_state_mut()` / `capture_current_work_state` / `restore_work_state_for_turn` 未实现 → 编译失败 = 红。
 
@@ -1180,12 +1180,12 @@ Expected: PASS —— `work_state_capture_and_restore_roundtrip` + `work_state_r
 
 注意：`coordinator_setup()` 是新建的 test fixture。先 `grep -n "fn coordinator_setup\|struct.*Setup\|impl.*Setup\|fn make_coord" src/exec_session/coordinator.rs` 查既有 fixture。若存在，复用；若不存在，新建一个返回 `{ coord: Arc<RwLock<SessionCoordinator>>, _dir: TempDir }` 的最小 fixture（参照 `node_runtime.rs:312 TestSetup` 的写法）。
 
-- [ ] **Step 3.6: 跑测试验证失败（红）**
+- [x] **Step 3.6: 跑测试验证失败（红）**
 
 Run: `cargo test --lib exec_session::coordinator::tests --no-run`
 Expected: 编译失败 —— `work_state` / `work_state_mut` / `capture_current_work_state` / `restore_work_state_for_turn` 未定义；`begin_turn` 不会继承 requirement。
 
-- [ ] **Step 3.7: 在 SessionCoordinator 集成 WorkState + begin_turn 继承 + 持久化**
+- [x] **Step 3.7: 在 SessionCoordinator 集成 WorkState + begin_turn 继承 + 持久化**
 
 编辑 `src/exec_session/coordinator.rs`。
 
@@ -1274,12 +1274,12 @@ pub struct SessionCoordinator {
 
 注意：`capture_work_state` / `restore_work_state` 的入参是 `checkpoint_turn_id`（UUID），不是 `turn_id`（turn-{n}）。这与 CheckpointStore 的目录布局对齐——turn 目录用 checkpoint_turn_id 命名。若 Task 3.3 实现的 `capture_work_state` 实际接收的是 `turn-{n}`，则需统一为 `checkpoint_turn_id`（以 CheckpointStore 内部 `begin_turn` 的入参为准，见 `grep -n "begin_turn" src/tools/checkpoint_store.rs`）。
 
-- [ ] **Step 3.8: 跑测试验证通过（绿）**
+- [x] **Step 3.8: 跑测试验证通过（绿）**
 
 Run: `cargo test --lib exec_session::coordinator::tests`
 Expected: PASS —— `begin_turn_inherits_requirement_and_resets_verify_result` + `capture_and_restore_work_state_survives_roundtrip` 全绿；既有 coordinator 测试（`begin_turn_links_checkpoint_store` 等）零回归。
 
-- [ ] **Step 3.9: Commit**
+- [x] **Step 3.9: Commit**
 
 ```bash
 git add src/exec_session/coordinator.rs src/tools/checkpoint_store.rs
