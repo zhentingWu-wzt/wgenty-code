@@ -63,6 +63,12 @@ pub struct VerifyResult {
     pub action: Option<VerifyFailAction>,
 }
 
+struct VerificationAttempt {
+    result: VerifyResult,
+    attempt_num: usize,
+    turns_count: usize,
+}
+
 /// Outcome of [`VerifyGate::mark_unverified_if_incomplete`] (Task 6 agent-loop
 /// fallback). `MarkedUnverified` means the session was `InProgress` and got
 /// transitioned to `Unverified`; `AlreadyTerminal(status)` means the session
@@ -203,6 +209,11 @@ impl VerifyGate {
         self.transition_terminal(SessionStatus::Failed, VerifyLogFinalStatus::Failed)
     }
 
+    /// Persist a code-owned terminal success after graph route evidence.
+    pub(crate) fn mark_completed(&self) -> Result<()> {
+        self.transition_terminal(SessionStatus::Completed, VerifyLogFinalStatus::Completed)
+    }
+
     /// Keep the two durable terminal-status projections synchronized.
     fn transition_terminal(
         &self,
@@ -222,9 +233,9 @@ impl VerifyGate {
 
     /// Execute deterministic anchor commands without mutating session status.
     ///
-    /// Compile and test anchors use this path; final verification continues to
-    /// use [`Self::verify_and_complete`] because it also enforces the changed
-    /// file boundary and terminal session transition.
+    /// Compile and test anchors use this path. Final verification uses either
+    /// [`Self::verify_and_complete`] for the legacy lifecycle or
+    /// [`Self::verify_for_work_graph`] when graph routing owns the transition.
     pub async fn run_anchor_commands(&self, commands: &[String]) -> Result<Vec<CommandRun>> {
         let project_root = {
             let coord = self
@@ -255,6 +266,107 @@ impl VerifyGate {
         commands: Vec<String>,
         expected_changed_files: Vec<PathBuf>,
     ) -> Result<VerifyResult> {
+        let VerificationAttempt {
+            mut result,
+            attempt_num,
+            turns_count,
+        } = self
+            .run_verification_attempt(commands, expected_changed_files)
+            .await?;
+
+        // Apply the legacy VerifyGate policy after durable executor evidence.
+        // Static Work-Graph callers use `verify_for_work_graph` instead and
+        // route exclusively from WorkState budget.
+        let action = if result.success {
+            self.mark_completed()?;
+            None
+        } else {
+            let (session_id, current_turn) = {
+                let coord = self
+                    .coordinator
+                    .read()
+                    .map_err(|e| anyhow::anyhow!("coordinator read lock: {e}"))?;
+                (
+                    coord.session().session_id.clone(),
+                    coord.session().current_turn.clone(),
+                )
+            };
+            let ctx = VerifyFailContext {
+                session_id,
+                turn_id: current_turn.unwrap_or_default(),
+                attempt: attempt_num,
+                failure: result
+                    .fail_reason
+                    .clone()
+                    .expect("failure present when !success"),
+            };
+            let decided = self.hooks.verify_fail(&ctx);
+            let (status, final_status) = match &decided {
+                VerifyFailAction::AutoRetry { remaining: 0 } => {
+                    // Defensive: a well-behaved hook returns Escalate when the
+                    // budget is exhausted, but treat remaining=0 as Escalate
+                    // so the session never gets stuck InProgress forever.
+                    (SessionStatus::Failed, Some(VerifyLogFinalStatus::Failed))
+                }
+                VerifyFailAction::AutoRetry { remaining: _ } => {
+                    // Retry: status stays InProgress, final_status left open.
+                    (SessionStatus::InProgress, None)
+                }
+                VerifyFailAction::Escalate | VerifyFailAction::Abort => {
+                    (SessionStatus::Failed, Some(VerifyLogFinalStatus::Failed))
+                }
+                VerifyFailAction::WarnAndContinue => (
+                    SessionStatus::Completed,
+                    Some(VerifyLogFinalStatus::Completed),
+                ),
+            };
+            if let Some(fs) = final_status {
+                self.transition_terminal(status, fs)?;
+            }
+            Some(decided)
+        };
+        result.action = action;
+
+        tracing::info!(
+            session_turns = turns_count,
+            attempt = attempt_num,
+            success = result.success,
+            "verify_and_complete"
+        );
+
+        Ok(result)
+    }
+
+    /// Execute and durably record a final Work-Graph verification attempt
+    /// without invoking failure hooks or mutating terminal session/log state.
+    /// NodeRuntime persists its route evidence before applying the code-owned
+    /// terminal transition for `Complete` or `Escalate`.
+    pub(crate) async fn verify_for_work_graph(
+        &self,
+        commands: Vec<String>,
+        expected_changed_files: Vec<PathBuf>,
+    ) -> Result<VerifyResult> {
+        let VerificationAttempt {
+            result,
+            attempt_num,
+            turns_count,
+        } = self
+            .run_verification_attempt(commands, expected_changed_files)
+            .await?;
+        tracing::info!(
+            session_turns = turns_count,
+            attempt = attempt_num,
+            success = result.success,
+            "verify_for_work_graph"
+        );
+        Ok(result)
+    }
+
+    async fn run_verification_attempt(
+        &self,
+        commands: Vec<String>,
+        expected_changed_files: Vec<PathBuf>,
+    ) -> Result<VerificationAttempt> {
         let project_root = {
             let coord = self
                 .coordinator
@@ -326,72 +438,18 @@ impl VerifyGate {
             &out_of_scope,
             &fail_reason,
         )?;
-
-        // 6. Transition session status. On success -> Completed. On failure,
-        //    invoke `hooks.verify_fail` (Task 6) and apply the resulting
-        //    `VerifyFailAction`: AutoRetry keeps InProgress (no rollback, spec
-        //    §3.3); Escalate/Abort -> Failed; WarnAndContinue -> Completed.
-        let action = if success {
-            self.transition_terminal(SessionStatus::Completed, VerifyLogFinalStatus::Completed)?;
-            None
-        } else {
-            let (session_id, current_turn) = {
-                let coord = self
-                    .coordinator
-                    .read()
-                    .map_err(|e| anyhow::anyhow!("coordinator read lock: {e}"))?;
-                (
-                    coord.session().session_id.clone(),
-                    coord.session().current_turn.clone(),
-                )
-            };
-            let ctx = VerifyFailContext {
-                session_id,
-                turn_id: current_turn.unwrap_or_default(),
-                attempt: attempt_num,
-                failure: fail_reason.clone().expect("failure present when !success"),
-            };
-            let decided = self.hooks.verify_fail(&ctx);
-            let (status, final_status) = match &decided {
-                VerifyFailAction::AutoRetry { remaining: 0 } => {
-                    // Defensive: a well-behaved hook returns Escalate when the
-                    // budget is exhausted, but treat remaining=0 as Escalate
-                    // so the session never gets stuck InProgress forever.
-                    (SessionStatus::Failed, Some(VerifyLogFinalStatus::Failed))
-                }
-                VerifyFailAction::AutoRetry { remaining: _ } => {
-                    // Retry: status stays InProgress, final_status left open.
-                    (SessionStatus::InProgress, None)
-                }
-                VerifyFailAction::Escalate | VerifyFailAction::Abort => {
-                    (SessionStatus::Failed, Some(VerifyLogFinalStatus::Failed))
-                }
-                VerifyFailAction::WarnAndContinue => (
-                    SessionStatus::Completed,
-                    Some(VerifyLogFinalStatus::Completed),
-                ),
-            };
-            if let Some(fs) = final_status {
-                self.transition_terminal(status, fs)?;
-            }
-            Some(decided)
-        };
-
-        tracing::info!(
-            session_turns = turns_count,
-            attempt = attempt_num,
-            success,
-            "verify_and_complete"
-        );
-
-        Ok(VerifyResult {
-            success,
-            commands_run,
-            actual_changed_files: actual,
-            expected_changed_files,
-            out_of_scope,
-            fail_reason,
-            action,
+        Ok(VerificationAttempt {
+            result: VerifyResult {
+                success,
+                commands_run,
+                actual_changed_files: actual,
+                expected_changed_files,
+                out_of_scope,
+                fail_reason,
+                action: None,
+            },
+            attempt_num,
+            turns_count,
         })
     }
 
@@ -552,9 +610,9 @@ fn write_verify_log(session_dir: &Path, log: &VerifyLog) -> Result<()> {
 }
 
 /// Append an attempt to `verify_log.json` and return the 1-based attempt
-/// number. Does NOT set `final_status` - the caller sets it explicitly via
-/// [`set_verify_log_final_status`] based on the hook decision (Task 6:
-/// Completed / Failed / Unverified) or success.
+/// number. A new attempt reopens the log by clearing any prior terminal status;
+/// the caller sets it again only after its current policy selects a terminal
+/// outcome.
 fn append_verify_log(
     session_dir: &Path,
     commands_run: &[CommandRun],
@@ -564,6 +622,7 @@ fn append_verify_log(
     fail_reason: &Option<VerifyFailure>,
 ) -> Result<usize> {
     let mut log = read_verify_log(session_dir);
+    log.final_status = None;
     let attempt_num = log.attempts.len() + 1;
     let result = match fail_reason {
         None => VerifyLogResult::Completed,

@@ -301,7 +301,7 @@ impl NodeRuntime {
         let expected_paths = expected_files.iter().map(PathBuf::from).collect();
         let result = self
             .verify_gate
-            .verify_and_complete(verify_commands, expected_paths)
+            .verify_for_work_graph(verify_commands, expected_paths)
             .await
             .context("run final verification gate")?;
         let outcome = project_outcome(&result);
@@ -365,10 +365,16 @@ impl NodeRuntime {
     /// Finish a persisted, code-owned route and synchronize any terminal edge
     /// through the VerifyGate's durable session/log transition.
     fn complete_work_graph_route(&self, next_step: WorkGraphStep) -> Result<WorkGraphRunResult> {
-        if next_step == WorkGraphStep::Escalate {
-            self.verify_gate
+        match next_step {
+            WorkGraphStep::Complete => self
+                .verify_gate
+                .mark_completed()
+                .context("synchronize work graph completion status")?,
+            WorkGraphStep::Escalate => self
+                .verify_gate
                 .mark_failed()
-                .context("synchronize work graph escalation status")?;
+                .context("synchronize work graph escalation status")?,
+            _ => {}
         }
         Ok(WorkGraphRunResult { next_step })
     }
@@ -861,7 +867,7 @@ mod tests {
     use crate::exec_session::verify_gate::{
         CommandExecutor, CommandRun, VerifyLog, VerifyLogFinalStatus,
     };
-    use crate::exec_session::WorkGraphStep;
+    use crate::exec_session::{VerifyFailAction, WorkGraphStep};
     use crate::org_graph::{GraphAuditCommands, GraphAuditKind, GraphAuditRoute, NodeType};
     use crate::tools::checkpoint_store::CheckpointStore;
     use async_trait::async_trait;
@@ -1066,6 +1072,13 @@ mod tests {
         }
 
         fn with_results(results: impl IntoIterator<Item = ScriptedCommandResult>) -> Self {
+            Self::with_results_and_gate_hooks(results, Arc::new(NoHooks))
+        }
+
+        fn with_results_and_gate_hooks(
+            results: impl IntoIterator<Item = ScriptedCommandResult>,
+            hooks: Arc<dyn SessionHooks>,
+        ) -> Self {
             let dir = TempDir::new().expect("temporary project");
             let store = Arc::new(CheckpointStore::new(dir.path()));
             let coord = SessionCoordinator::new(
@@ -1081,10 +1094,7 @@ mod tests {
                 results: Mutex::new(results.into_iter().collect()),
                 calls: Arc::clone(&calls),
             });
-            let gate = Arc::new(VerifyGate::new_with_default_hooks(
-                Arc::clone(&coord),
-                executor,
-            ));
+            let gate = Arc::new(VerifyGate::new(Arc::clone(&coord), executor, hooks));
             let runtime = NodeRuntime::new_with_default_hooks(Arc::clone(&coord), gate, 2);
             Self {
                 runtime,
@@ -1582,6 +1592,16 @@ mod tests {
             audit.last().expect("final route event").route,
             Some(GraphAuditRoute::Complete)
         );
+        assert_eq!(
+            coord.current_node().expect("node").status,
+            NodeStatus::Verified
+        );
+        assert_eq!(coord.session().status, SessionStatus::InProgress);
+        drop(coord);
+        assert_eq!(
+            setup.verify_log().final_status,
+            Some(VerifyLogFinalStatus::Completed)
+        );
     }
 
     #[tokio::test]
@@ -1597,7 +1617,6 @@ mod tests {
             .begin_node("goal".into(), vec![], vec![])
             .await
             .expect("persist rust node before work graph invocation");
-
         let outcome = setup
             .runtime
             .verify_current_node()
@@ -1899,6 +1918,72 @@ mod tests {
                 next_step: WorkGraphStep::Implement
             })
         ));
+        let coord = setup.coord.read().expect("coordinator");
+        assert_eq!(coord.session().status, SessionStatus::InProgress);
+        drop(coord);
+        assert_eq!(setup.verify_log().final_status, None);
+    }
+
+    struct EscalatingGateHooks {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl SessionHooks for EscalatingGateHooks {
+        fn verify_fail(&self, _ctx: &crate::exec_session::VerifyFailContext) -> VerifyFailAction {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            VerifyFailAction::Escalate
+        }
+    }
+
+    #[tokio::test]
+    async fn graph_final_failure_uses_work_state_budget_without_invoking_gate_hook() {
+        let hook_calls = Arc::new(AtomicUsize::new(0));
+        let setup = ScriptedSetup::with_results_and_gate_hooks(
+            [
+                ScriptedCommandResult::success(),
+                ScriptedCommandResult::success(),
+                ScriptedCommandResult::failure(9, "final verification diagnostics"),
+            ],
+            Arc::new(EscalatingGateHooks {
+                calls: Arc::clone(&hook_calls),
+            }),
+        );
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec![], vec![])
+            .await
+            .expect("persist rust node before work graph invocation");
+        let stale_log_path = setup
+            .coord
+            .read()
+            .expect("coordinator")
+            .session_dir()
+            .join("verify_log.json");
+        std::fs::write(
+            stale_log_path,
+            serde_json::to_string_pretty(&VerifyLog {
+                attempts: Vec::new(),
+                final_status: Some(VerifyLogFinalStatus::Completed),
+            })
+            .expect("serialize stale verify log"),
+        )
+        .expect("seed stale completed verify log");
+
+        let outcome = setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("run retryable final verification pass");
+
+        assert!(matches!(
+            outcome,
+            NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
+                next_step: WorkGraphStep::Implement
+            })
+        ));
+        assert_eq!(hook_calls.load(Ordering::SeqCst), 0);
         let coord = setup.coord.read().expect("coordinator");
         assert_eq!(coord.session().status, SessionStatus::InProgress);
         drop(coord);
