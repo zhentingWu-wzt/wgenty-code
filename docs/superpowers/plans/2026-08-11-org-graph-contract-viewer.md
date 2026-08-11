@@ -868,27 +868,27 @@ git commit -m "feat(cli): add `org-graph contracts` command wiring render module
 **Interfaces:**
 - Consumes: Task 1–6 全部产出。
 
-- [ ] **Step 1: 全量测试**
+- [x] **Step 1: 全量测试**
 
 运行：`cargo test`
 预期：全部 PASS（含 `org_graph::registry`、`org_graph::render`、`org_graph::contract`、`cli::org_graph`、以及既有全部测试零回归）。
 
-- [ ] **Step 2: 全量构建**
+- [x] **Step 2: 全量构建**
 
 运行：`cargo build`
 预期：编译成功，无 warning 与本 change 相关。
 
-- [ ] **Step 3: 手动验证 —— table（默认）**
+- [x] **Step 3: 手动验证 —— table（默认）**
 
 运行：`cargo run -- org-graph contracts`
 预期：stdout 打印 7 行（表头 + 分隔线 + 5 契约行），列含 NODE-TYPE / NAME / SPAWN / MUTATE-FS / EXEC / IO / BUDGET / TOOLS；GeneralPurpose 的 SPAWN=true，其余=false。
 
-- [ ] **Step 4: 手动验证 —— json（无损）**
+- [x] **Step 4: 手动验证 —— json（无损）**
 
 运行：`cargo run -- org-graph contracts --format json`
 预期：stdout 打印合法 JSON 数组（5 元素），每个对象含 `system_prompt` 字段；explore 对象的 `system_prompt` 含 "code exploration subagent"。
 
-- [ ] **Step 5: 手动验证 —— dot / mermaid**
+- [x] **Step 5: 手动验证 —— dot / mermaid**
 
 运行：`cargo run -- org-graph contracts --format dot`
 预期：以 `digraph org_graph_contract {` 开头、`}` 结尾，含 5 个 `[label=..., shape=..., style=filled, fillcolor=...]` 节点声明。
@@ -901,11 +901,11 @@ git commit -m "feat(cli): add `org-graph contracts` command wiring render module
 运行：`cargo run -- org-graph contracts --format dot | dot -Tsvg -o /tmp/org-graph-contracts.svg`
 预期：若系统装有 graphviz，`dot` 成功解析生成 SVG，退出码 0；无 graphviz 时跳过（不阻塞本任务，仅作冒烟）。
 
-- [ ] **Step 7: 验证 explore_readonly 配置驱动**
+- [x] **Step 7: 验证 explore_readonly 配置驱动**
 
 运行：`cargo run -- org-graph contracts --format dot`（默认配置）观察 explore 节点 `fillcolor=`，与修改 `settings.json` 的 `agent.subagent.explore_readonly` 后的输出对比（若当前环境不便改配置，则依赖 Task 4 单测已覆盖该维度）。
 
-- [ ] **Step 8: 提交验证证据（无源码改动则跳过 commit）**
+- [x] **Step 8: 提交验证证据（无源码改动则跳过 commit）**
 
 本任务无源码改动；若手动验证中发现问题需修补，回到对应 Task 的 TDD 循环。验证全过后，本 change 的 build 阶段产物完成，转入 build 阶段退出条件（guard）。
 
