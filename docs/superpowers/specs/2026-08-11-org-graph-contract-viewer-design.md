@@ -2,6 +2,8 @@
 comet_change: org-graph-contract-viewer
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-08-11-org-graph-contract-viewer
+status: final
 ---
 
 # Design: Org-Graph Contract Viewer
