@@ -218,7 +218,7 @@ mod tests {
         assert!(out.starts_with('['), "json output is an array");
         let parsed: Vec<crate::org_graph::NodeContract> =
             serde_json::from_str(&out).expect("valid json");
-        assert_eq!(parsed.len(), 5);
+        assert_eq!(parsed.len(), 6);
     }
 
     #[test]
@@ -227,7 +227,7 @@ mod tests {
         let parsed: Vec<crate::org_graph::NodeContract> =
             serde_json::from_str(&render_json(&r)).expect("valid json");
         let original: Vec<crate::org_graph::NodeContract> = r.iter().into_iter().cloned().collect();
-        assert_eq!(parsed.len(), 5);
+        assert_eq!(parsed.len(), 6);
         assert_eq!(parsed, original, "serde roundtrip must be field-exact");
     }
 
@@ -240,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn render_table_has_header_and_five_rows() {
+    fn render_table_has_header_and_six_rows() {
         let out = render_table(&registry(true));
         assert!(out.contains("NODE-TYPE"), "header present");
         assert!(out.contains("NAME"));
@@ -249,12 +249,13 @@ mod tests {
             "Plan",
             "GeneralPurpose",
             "Verification",
+            "RootCause",
             "WgentyCodeGuide",
         ] {
             assert!(out.contains(nt), "table missing {:?}", nt);
         }
-        // 1 表头 + 1 分隔线 + 5 数据行 = 7 行
-        assert_eq!(out.lines().count(), 7);
+        // 1 表头 + 1 分隔线 + 6 数据行 = 8 行
+        assert_eq!(out.lines().count(), 8);
     }
 
     #[test]
@@ -272,19 +273,19 @@ mod tests {
     }
 
     #[test]
-    fn render_dot_is_well_formed_with_five_nodes() {
+    fn render_dot_is_well_formed_with_six_nodes() {
         let out = render_dot(&registry(true));
         assert!(
             out.starts_with("digraph org_graph_contract {"),
             "must start with digraph header"
         );
         assert!(out.trim_end().ends_with('}'), "must close brace");
-        // 5 个节点声明（每行一个 `];`）。
+        // 6 个节点声明（每行一个 `];`）。
         let node_lines = out
             .lines()
             .filter(|l| l.contains("[label=") && l.contains("];"))
             .count();
-        assert_eq!(node_lines, 5, "expected 5 node declarations");
+        assert_eq!(node_lines, 6, "expected 6 node declarations");
     }
 
     #[test]
@@ -306,18 +307,18 @@ mod tests {
     }
 
     #[test]
-    fn render_mermaid_is_well_formed_with_five_nodes() {
+    fn render_mermaid_is_well_formed_with_six_nodes() {
         let out = render_mermaid(&registry(true));
         assert!(
             out.starts_with("flowchart LR"),
             "must start with flowchart declaration"
         );
-        // 5 个节点定义（每行一个 `:::`）。
+        // 6 个节点定义（每行一个 `:::`）。
         let node_lines = out
             .lines()
             .filter(|l| l.contains("[\"") && l.contains(":::"))
             .count();
-        assert_eq!(node_lines, 5, "expected 5 node definitions");
+        assert_eq!(node_lines, 6, "expected 6 node definitions");
         // classDef 声明存在。
         assert!(out.contains("classDef readonly"));
         assert!(out.contains("classDef spawn"));
