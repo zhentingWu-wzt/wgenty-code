@@ -150,7 +150,7 @@ impl NodeRuntime {
         verify_commands: Vec<String>,
         expected_files: Vec<String>,
     ) -> Result<WorkGraphRunResult> {
-        self.ensure_work_graph_budget()?;
+        self.prepare_work_graph_pass()?;
         let compile_runs = self
             .verify_gate
             .run_anchor_commands(&compile_commands)
@@ -258,11 +258,12 @@ impl NodeRuntime {
         next_step(coord.work_state()).context("route test anchor result")
     }
 
-    fn ensure_work_graph_budget(&self) -> Result<()> {
+    fn prepare_work_graph_pass(&self) -> Result<()> {
         let mut coord = self
             .coordinator
             .write()
             .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+        coord.work_state_mut().reset_for_work_graph_pass();
         if coord
             .work_state()
             .budget(NodeType::GeneralPurpose)
@@ -280,10 +281,10 @@ impl NodeRuntime {
                     },
                 )
                 .context("initialize work graph budget")?;
-            coord
-                .capture_current_work_state()
-                .context("persist initialized work graph budget")?;
         }
+        coord
+            .capture_current_work_state()
+            .context("persist fresh work graph pass state")?;
         Ok(())
     }
 
@@ -418,6 +419,10 @@ impl NodeRuntime {
 
         self.hooks.pre_node(&node);
         coord.add_node(node).context("add_node failed")?;
+        coord.work_state_mut().reset_for_new_node();
+        coord
+            .capture_current_work_state()
+            .context("persist fresh node work state")?;
         Ok(node_id)
     }
 
@@ -617,8 +622,10 @@ mod tests {
     use async_trait::async_trait;
     use tempfile::TempDir;
 
+    use std::collections::VecDeque;
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     /// Mock command executor with a configurable exit code.
     struct MockExecutor {
@@ -638,6 +645,40 @@ mod tests {
                     "command failed".to_string()
                 } else {
                     String::new()
+                },
+            })
+        }
+    }
+
+    /// Command executor whose exit codes are consumed in call order. This
+    /// keeps the runtime and verification gate real while making individual
+    /// anchor failures deterministic.
+    struct ScriptedExecutor {
+        exit_codes: Mutex<VecDeque<i32>>,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl CommandExecutor for ScriptedExecutor {
+        async fn execute(&self, command: &str, _project_root: &Path) -> Result<CommandRun> {
+            let exit_code = self
+                .exit_codes
+                .lock()
+                .map_err(|e| anyhow::anyhow!("exit-code script lock: {e}"))?
+                .pop_front()
+                .context("scripted executor ran out of exit codes")?;
+            self.calls
+                .lock()
+                .map_err(|e| anyhow::anyhow!("command call log lock: {e}"))?
+                .push(command.to_string());
+            Ok(CommandRun {
+                cmd: command.to_string(),
+                exit_code: Some(exit_code),
+                stdout: String::new(),
+                stderr: if exit_code == 0 {
+                    String::new()
+                } else {
+                    format!("{command} failed")
                 },
             })
         }
@@ -692,6 +733,64 @@ mod tests {
                 "[package]\nname = \"verification-profile-test\"\nversion = \"0.1.0\"\n",
             )
             .expect("write Cargo.toml");
+        }
+    }
+
+    struct ScriptedSetup {
+        runtime: NodeRuntime,
+        coord: Arc<RwLock<SessionCoordinator>>,
+        calls: Arc<Mutex<Vec<String>>>,
+        _dir: TempDir,
+    }
+
+    impl ScriptedSetup {
+        fn new(exit_codes: impl IntoIterator<Item = i32>) -> Self {
+            let dir = TempDir::new().expect("temporary project");
+            let store = Arc::new(CheckpointStore::new(dir.path()));
+            let coord = SessionCoordinator::new(
+                "es-scripted".into(),
+                SessionSource::AgentSelf,
+                dir.path(),
+                store,
+            )
+            .expect("create coordinator");
+            let coord = Arc::new(RwLock::new(coord));
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let executor = Arc::new(ScriptedExecutor {
+                exit_codes: Mutex::new(exit_codes.into_iter().collect()),
+                calls: Arc::clone(&calls),
+            });
+            let gate = Arc::new(VerifyGate::new_with_default_hooks(
+                Arc::clone(&coord),
+                executor,
+            ));
+            let runtime = NodeRuntime::new_with_default_hooks(Arc::clone(&coord), gate, 2);
+            Self {
+                runtime,
+                coord,
+                calls,
+                _dir: dir,
+            }
+        }
+
+        fn begin_turn(&self) {
+            self.coord
+                .write()
+                .expect("coordinator")
+                .begin_turn()
+                .expect("begin turn");
+        }
+
+        fn write_cargo_manifest(&self) {
+            std::fs::write(
+                self._dir.path().join("Cargo.toml"),
+                "[package]\nname = \"state-isolation-test\"\nversion = \"0.1.0\"\n",
+            )
+            .expect("write Cargo.toml");
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().expect("command call log").clone()
         }
     }
 
@@ -905,6 +1004,157 @@ mod tests {
             .generated_diff(NodeType::GeneralPurpose)
             .expect("work node may read generated diff")
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn retry_after_test_failure_runs_all_anchors_from_compile_again() {
+        let setup = ScriptedSetup::new([0, 1, 0, 0, 0]);
+        setup.begin_turn();
+        let compile = vec!["compile".to_string()];
+        let test = vec!["test".to_string()];
+        let verify = vec!["verify".to_string()];
+
+        let first = setup
+            .runtime
+            .run_work_graph(compile.clone(), test.clone(), verify.clone(), vec![])
+            .await
+            .expect("first work-graph pass");
+        assert_eq!(first.next_step, WorkGraphStep::Implement);
+
+        let retry = setup
+            .runtime
+            .run_work_graph(compile, test, verify, vec![])
+            .await
+            .expect("retry work-graph pass");
+
+        assert_eq!(retry.next_step, WorkGraphStep::Complete);
+        assert_eq!(
+            setup.calls(),
+            ["compile", "test", "compile", "test", "verify"]
+        );
+    }
+
+    #[tokio::test]
+    async fn two_rust_nodes_in_one_turn_each_run_the_complete_anchor_chain() {
+        let setup = ScriptedSetup::new([0, 0, 0, 0, 0, 0]);
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+
+        setup
+            .runtime
+            .begin_node("first".into(), vec![], vec![])
+            .await
+            .expect("begin first node");
+        let first = setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("verify first node");
+        assert!(matches!(
+            first,
+            NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
+                next_step: WorkGraphStep::Complete
+            })
+        ));
+
+        setup
+            .runtime
+            .begin_node("second".into(), vec![], vec![])
+            .await
+            .expect("begin second node in the same turn");
+        {
+            let coord = setup.coord.read().expect("coordinator");
+            let state = coord.work_state();
+            assert!(state
+                .compile_result(NodeType::Verification)
+                .expect("read compile result")
+                .is_none());
+            assert!(state
+                .test_result(NodeType::Verification)
+                .expect("read test result")
+                .is_none());
+            assert!(state
+                .verify_result(NodeType::Verification)
+                .expect("read verify result")
+                .is_none());
+            assert!(state
+                .generated_diff(NodeType::GeneralPurpose)
+                .expect("read generated diff")
+                .is_none());
+            assert!(state
+                .budget(NodeType::GeneralPurpose)
+                .expect("read retry budget")
+                .is_none());
+        }
+        let second = setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("verify second node");
+
+        assert!(matches!(
+            second,
+            NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
+                next_step: WorkGraphStep::Complete
+            })
+        ));
+        assert_eq!(
+            setup.calls(),
+            [
+                "cargo check",
+                "cargo test --all",
+                "cargo clippy --all-targets -- -D warnings",
+                "cargo check",
+                "cargo test --all",
+                "cargo clippy --all-targets -- -D warnings",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_after_restoring_failed_verify_checkpoint_reruns_every_anchor() {
+        let setup = ScriptedSetup::new([0, 0, 1, 0, 0, 0]);
+        setup.begin_turn();
+        let compile = vec!["compile".to_string()];
+        let test = vec!["test".to_string()];
+        let verify = vec!["verify".to_string()];
+
+        let first = setup
+            .runtime
+            .run_work_graph(compile.clone(), test.clone(), verify.clone(), vec![])
+            .await
+            .expect("failed verification pass");
+        assert_eq!(first.next_step, WorkGraphStep::Implement);
+
+        let turn_id = {
+            let mut coord = setup.coord.write().expect("coordinator");
+            let turn_id = coord.current_turn_id().expect("active turn").to_string();
+            *coord.work_state_mut() = crate::org_graph::WorkState::default();
+            coord
+                .restore_work_state_for_turn(&turn_id)
+                .expect("restore persisted work state");
+            assert!(
+                !coord
+                    .work_state()
+                    .verify_result(NodeType::Verification)
+                    .expect("read verify result")
+                    .expect("checkpoint contains failed verify result")
+                    .success
+            );
+            turn_id
+        };
+
+        let retry = setup
+            .runtime
+            .run_work_graph(compile, test, verify, vec![])
+            .await
+            .expect("retry after checkpoint restore");
+
+        assert_eq!(retry.next_step, WorkGraphStep::Complete, "turn {turn_id}");
+        assert_eq!(
+            setup.calls(),
+            ["compile", "test", "verify", "compile", "test", "verify"]
+        );
     }
 
     #[tokio::test]

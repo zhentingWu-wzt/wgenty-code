@@ -428,6 +428,26 @@ impl WorkState {
         });
     }
 
+    /// Start a new node without inheriting products or retry accounting from
+    /// the previously completed node in the same turn. The turn-level
+    /// requirement and audit log remain intact.
+    pub fn reset_for_new_node(&mut self) {
+        self.generated_diff = None;
+        self.compile_result = None;
+        self.test_result = None;
+        self.verify_result = None;
+        self.budget = None;
+    }
+
+    /// Invalidate every result derived from a prior work-graph pass before a
+    /// fresh compile anchor runs. Retry budget is deliberately retained.
+    pub fn reset_for_work_graph_pass(&mut self) {
+        self.generated_diff = None;
+        self.compile_result = None;
+        self.test_result = None;
+        self.verify_result = None;
+    }
+
     /// turn 间继承：requirement 克隆保留，其余产物字段（含 deferred）全部清空。
     /// 同 turn 内 retry 不走 begin_turn（retry 是 node 重试，不是 turn 重置），
     /// WorkState 自动保留——对齐「同 turn 保留 / 跨 turn 产物重置」语义。
