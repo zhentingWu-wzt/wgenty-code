@@ -1718,7 +1718,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: Task 1-5 全部产物。
 
-- [ ] **Step 6.1: cargo build + cargo test 全绿**
+- [x] **Step 6.1: cargo build + cargo test 全绿**
 
 Run:
 ```bash
@@ -1738,7 +1738,7 @@ Expected:
 
 若任何既有测试红，按 systematic-debugging skill 定位根因（不得用 `_ =>` 或 unwrap 屏蔽），修复后回归。
 
-- [ ] **Step 6.2: 手动验证 pilot 路由点按结构化字段正确路由**
+- [x] **Step 6.2: 手动验证 pilot 路由点按结构化字段正确路由**
 
 构造一个最小手动场景（可作为 doc test 或 example，也可在 `exec_session/node_runtime.rs::tests` 加一个端到端测试）：
 
@@ -1779,14 +1779,14 @@ Expected:
 Run: `cargo test --lib exec_session::node_runtime::tests::pilot_end_to_end_retry_reads_structured_failure_kind`
 Expected: PASS。
 
-- [ ] **Step 6.3: 验证越权写字段被拦截（手动）**
+- [x] **Step 6.3: 验证越权写字段被拦截（手动）**
 
 在 Task 4.7 已有单元测试覆盖；本步确认手动构造的「非 Verification 节点尝试写 verify_result」场景 100% 返回 `ContractViolation { dimension: State }`，且 WorkState 保持写入前的值（不变更）。同时确认预留字段（compile_result/test_result/human_review）对所有节点越权写一律拒绝（Task 2.1 的 `reserved_fields_reject_all_node_types` 测试覆盖）。
 
 Run: `cargo test --lib 'exec_session::node_runtime::tests::set_verify_result_rejects_unauthorized_node_type_at_pilot_site' 'org_graph::work_state::tests::reserved_fields_reject_all_node_types' 'org_graph::work_state::tests::set_verify_result_rejects_unauthorized_node_with_contract_violation_state'`
 Expected: PASS。
 
-- [ ] **Step 6.4: Commit 集成测试**
+- [x] **Step 6.4: Commit 集成测试**
 
 ```bash
 git add src/exec_session/node_runtime.rs
