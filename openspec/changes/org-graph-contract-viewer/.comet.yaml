@@ -2,12 +2,12 @@ workflow: full
 language: zh-CN
 phase: build
 context_compression: off
-build_mode: null
-build_pause: plan-ready
-subagent_dispatch: null
-tdd_mode: null
+build_mode: subagent-driven-development
+build_pause: null
+subagent_dispatch: confirmed
+tdd_mode: tdd
 review_mode: standard
-isolation: null
+isolation: branch
 verify_mode: null
 auto_transition: true
 base_ref: 45e31838d271a4cb3617a89a42df50a691f0487c
@@ -21,7 +21,7 @@ created_at: 2026-08-10
 verified_at: null
 archive_confirmation: null
 archived: false
-bound_branch: null
+bound_branch: feature/graph-engineering
 direct_override: null
 handoff_context: openspec/changes/org-graph-contract-viewer/.comet/handoff/design-context.json
 handoff_hash: 65696cb1940b08c3649d8bd1ddb37f9defe44e61b868c798c7796cc781b4e689
