@@ -18,10 +18,11 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::coordinator::SessionCoordinator;
-use super::hooks::{NoHooks, SessionHooks};
+use super::hooks::{NoHooks, SessionHooks, VerifyFailure};
 use super::node::{Node, NodeContract, NodeId, NodeStatus};
 use super::session::SessionStatus;
-use super::verify_gate::VerifyGate;
+use super::verify_gate::{VerifyGate, VerifyResult};
+use crate::org_graph::NodeType;
 
 /// Result of a `verify_node` call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +47,33 @@ pub struct NodeRuntime {
     verify_gate: Arc<VerifyGate>,
     auto_retry_max: u32,
     hooks: Arc<dyn SessionHooks>,
+}
+
+/// exec_session::VerifyFailure → org_graph::VerifyFailureKind 投影。
+/// 投影规则：CommandFailed 保留 exit_code + stderr（丢 command 字符串，retry
+/// 决策只需 exit_code 语义）；BoundaryViolation 保留 unexpected_files。
+fn project_failure(f: &VerifyFailure) -> crate::org_graph::VerifyFailureKind {
+    match f {
+        VerifyFailure::CommandFailed { exit_code, stderr, .. } => {
+            crate::org_graph::VerifyFailureKind::CommandFailed {
+                exit_code: *exit_code,
+                stderr: stderr.clone(),
+            }
+        }
+        VerifyFailure::BoundaryViolation { unexpected_files } => {
+            crate::org_graph::VerifyFailureKind::BoundaryViolation {
+                unexpected_files: unexpected_files.clone(),
+            }
+        }
+    }
+}
+
+/// exec_session::VerifyResult → org_graph::VerifyOutcome 投影。
+fn project_outcome(result: &VerifyResult) -> crate::org_graph::VerifyOutcome {
+    crate::org_graph::VerifyOutcome::from_parts(
+        result.success,
+        result.fail_reason.as_ref().map(project_failure),
+    )
 }
 
 impl NodeRuntime {
@@ -186,6 +214,13 @@ impl NodeRuntime {
                 .update_node_status(&node_id, NodeStatus::Verified)
                 .context("set Verified status")?;
             let node = coord.current_node().expect("node just updated").clone();
+            // pilot 修复（D5）：成功也写 WorkState（Success{fail_reason:None}），
+            // 保证字段级强制在成功+失败两路径都可验证。
+            let outcome = project_outcome(&result);
+            coord
+                .work_state_mut()
+                .set_verify_result(NodeType::Verification, outcome)
+                .context("write verify_result (success) into WorkState")?;
             self.hooks.post_node(&node, &result);
             Ok(NodeVerifyResult {
                 status: NodeStatus::Verified,
@@ -201,7 +236,27 @@ impl NodeRuntime {
                 .context("increment retry")?;
             let retry_count = coord.current_node().map(|n| n.retry_count).unwrap_or(0);
             let node = coord.current_node().expect("node just updated").clone();
-            let failure_reason = result.fail_reason.as_ref().map(|f| format!("{f:?}"));
+
+            // pilot 修复（D5）：把强类型 VerifyResult 投影写入 WorkState（受权限强制），
+            // 再从 WorkState 读回组装兼容期 failure_reason。retry 决策保持 count-based
+            // 不变（auto_retry_max）；强类型 VerifyOutcome 入 WorkState 是本期交付物，
+            // 枚举感知 retry 是将来 consumer 的范围。
+            let outcome = project_outcome(&result);
+            coord
+                .work_state_mut()
+                .set_verify_result(NodeType::Verification, outcome)
+                .context("write verify_result into WorkState")?;
+            // 从 WorkState 读回（验证读写闭环 + 权限强制生效）。
+            let outcome_ref = coord
+                .work_state()
+                .verify_result(NodeType::Verification)
+                .context("read verify_result from WorkState")?
+                .expect("just written");
+            // 兼容期：String 字段源头改为从强类型枚举转 debug string。
+            let failure_reason = outcome_ref
+                .fail_reason
+                .as_ref()
+                .map(|f| format!("{f:?}"));
 
             if retry_count >= self.auto_retry_max {
                 coord
@@ -280,6 +335,7 @@ mod tests {
     use super::*;
     use crate::exec_session::session::SessionSource;
     use crate::exec_session::verify_gate::{CommandExecutor, CommandRun};
+    use crate::org_graph::NodeType;
     use crate::tools::checkpoint_store::CheckpointStore;
     use async_trait::async_trait;
     use tempfile::TempDir;
@@ -514,5 +570,100 @@ mod tests {
         let coord = setup.coord.read().unwrap();
         assert_eq!(coord.node_states().len(), 2);
         assert_eq!(coord.current_node().unwrap().id, "n2");
+    }
+
+    #[tokio::test]
+    async fn verify_node_failure_writes_structured_outcome_to_work_state() {
+        // pilot D5 硬约束：verify 失败后 WorkState.verify_result 必须是强类型
+        // VerifyOutcome（非 format!("{f:?}") 文本）。retry 决策读 VerifyFailureKind 枚举分支。
+        let setup = TestSetup::new(1); // exit 1 = failure
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec!["echo ok".into()], vec![])
+            .await
+            .unwrap();
+
+        let result = setup.runtime.verify_node().await.unwrap();
+        assert_eq!(result.status, NodeStatus::Failed);
+
+        // 核心断言：WorkState 持有强类型 VerifyOutcome，retry 决策可读枚举分支。
+        let coord = setup.coord.read().unwrap();
+        let outcome_ref = coord
+            .work_state()
+            .verify_result(NodeType::Verification)
+            .expect("Verification may read")
+            .expect("verify_result must be populated after failed verify_node");
+        assert!(!outcome_ref.success);
+        match &outcome_ref.fail_reason {
+            Some(crate::org_graph::VerifyFailureKind::CommandFailed { exit_code, stderr }) => {
+                assert_eq!(*exit_code, Some(1));
+                assert!(stderr.contains("command failed"));
+            }
+            other => panic!("expected CommandFailed, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn verify_node_failure_reason_string_comes_from_work_state() {
+        // 兼容期：NodeVerifyResult.failure_reason 仍为 String，但源头改为
+        // 从 WorkState 强类型枚举读回转 debug string（而非 format!("{f:?}")）。
+        let setup = TestSetup::new(1);
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec!["echo ok".into()], vec![])
+            .await
+            .unwrap();
+        let result = setup.runtime.verify_node().await.unwrap();
+        assert!(result.failure_reason.is_some());
+        // String 内容应反映 CommandFailed 枚举（debug 格式）。
+        let reason = result.failure_reason.unwrap();
+        assert!(reason.contains("CommandFailed"));
+    }
+
+    #[tokio::test]
+    async fn verify_node_success_clears_fail_reason_in_work_state() {
+        // 成功路径：WorkState.verify_result = Some(Success{fail_reason:None})，
+        // failure_reason String 为 None。
+        let setup = TestSetup::new(0);
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec!["echo ok".into()], vec![])
+            .await
+            .unwrap();
+        let result = setup.runtime.verify_node().await.unwrap();
+        assert_eq!(result.status, NodeStatus::Verified);
+        assert!(result.failure_reason.is_none());
+        let coord = setup.coord.read().unwrap();
+        let outcome = coord
+            .work_state()
+            .verify_result(NodeType::Verification)
+            .expect("Verification may read")
+            .expect("success also writes verify_result");
+        assert!(outcome.success);
+        assert!(outcome.fail_reason.is_none());
+    }
+
+    #[test]
+    fn set_verify_result_rejects_unauthorized_node_type_at_pilot_site() {
+        // pilot 写场景的字段级强制：直接调 WorkState API 验证非授权节点被拦。
+        // 这保证 D5「字段级强制有真实场景可拦」承诺落地——
+        // 若 field_perms 矩阵被错误放宽，本测试会红。
+        let mut state = crate::org_graph::WorkState::default();
+        let err = state
+            .set_verify_result(
+                crate::org_graph::NodeType::Explore,
+                crate::org_graph::VerifyOutcome {
+                    success: true,
+                    fail_reason: None,
+                },
+            )
+            .expect_err("Explore must not write verify_result");
+        assert!(matches!(
+            err,
+            crate::agent::coordinator::CoordinatorError::ContractViolation { .. }
+        ));
     }
 }

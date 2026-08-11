@@ -394,6 +394,15 @@ impl WorkState {
     }
 }
 
+impl VerifyOutcome {
+    /// 从「外部强类型 verify 结果」投影构造。exec_session 侧负责字段映射（见
+    /// node_runtime.rs 的 project_failure / project_outcome），调用本方法传入
+    /// 已解构的原语字段，避免 org_graph 反向依赖 exec_session::VerifyResult。
+    pub fn from_parts(success: bool, fail_kind: Option<VerifyFailureKind>) -> Self {
+        Self { success, fail_reason: fail_kind }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -756,5 +765,24 @@ mod tests {
         assert!(next.verify_result.is_none());
         assert!(next.budget.is_none());
         assert!(next.step_log.is_empty());
+    }
+
+    #[test]
+    fn verify_outcome_from_parts_builds_expected_shape() {
+        // exec_session → org_graph 投影契约点：from_parts 接受已解构原语字段，
+        // 避免 org_graph 反向依赖 exec_session（见 Step 4.4）。
+        let outcome = VerifyOutcome::from_parts(true, None);
+        assert!(outcome.success);
+        assert!(outcome.fail_reason.is_none());
+
+        let outcome = VerifyOutcome::from_parts(
+            false,
+            Some(VerifyFailureKind::CommandFailed { exit_code: Some(1), stderr: "e".into() }),
+        );
+        assert!(!outcome.success);
+        assert!(matches!(
+            outcome.fail_reason,
+            Some(VerifyFailureKind::CommandFailed { exit_code: Some(1), .. })
+        ));
     }
 }
