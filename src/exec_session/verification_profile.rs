@@ -38,23 +38,26 @@ impl VerificationProfile {
         test_commands: Vec<String>,
         verify_commands: Vec<String>,
     ) -> ResolvedVerificationCommands {
-        let required_compile_commands = match self {
-            Self::None => Vec::new(),
-            Self::Rust => vec!["cargo check".to_string()],
-        };
-        let required_test_commands = match self {
-            Self::None => Vec::new(),
-            Self::Rust => vec!["cargo test --all".to_string()],
-        };
-        let required_verify_commands = match self {
-            Self::None => Vec::new(),
-            Self::Rust => vec!["cargo clippy --all-targets -- -D warnings".to_string()],
-        };
-
-        ResolvedVerificationCommands {
-            compile_commands: deduplicate_commands(required_compile_commands, compile_commands),
-            test_commands: deduplicate_commands(required_test_commands, test_commands),
-            verify_commands: deduplicate_commands(required_verify_commands, verify_commands),
+        match self {
+            Self::None => ResolvedVerificationCommands {
+                compile_commands,
+                test_commands,
+                verify_commands,
+            },
+            Self::Rust => ResolvedVerificationCommands {
+                compile_commands: deduplicate_commands(
+                    vec!["cargo check".to_string()],
+                    compile_commands,
+                ),
+                test_commands: deduplicate_commands(
+                    vec!["cargo test --all".to_string()],
+                    test_commands,
+                ),
+                verify_commands: deduplicate_commands(
+                    vec!["cargo clippy --all-targets -- -D warnings".to_string()],
+                    verify_commands,
+                ),
+            },
         }
     }
 }

@@ -755,9 +755,9 @@ mod tests {
             .runtime
             .begin_node_with_anchors(
                 "goal".into(),
-                vec!["compile".into()],
-                vec!["test".into()],
-                vec!["verify".into()],
+                vec!["compile".into(), "compile".into()],
+                vec!["test".into(), "test".into()],
+                vec!["verify".into(), "verify".into()],
                 vec![],
             )
             .await
@@ -766,7 +766,9 @@ mod tests {
         let coord = setup.coord.read().expect("coordinator");
         let contract = &coord.current_node().expect("node").contract;
         assert_eq!(contract.verification_profile, VerificationProfile::None);
-        assert_eq!(contract.compile_commands, ["compile"]);
+        assert_eq!(contract.compile_commands, ["compile", "compile"]);
+        assert_eq!(contract.test_commands, ["test", "test"]);
+        assert_eq!(contract.verify_commands, ["verify", "verify"]);
     }
 
     #[tokio::test]
