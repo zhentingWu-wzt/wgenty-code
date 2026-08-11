@@ -268,3 +268,100 @@ Verified node."
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::sync::{Arc, Mutex, RwLock};
+
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::exec_session::{
+        CommandExecutor, CommandRun, NodeStatus, SessionCoordinator, SessionSource, VerifyGate,
+    };
+    use crate::tools::checkpoint_store::CheckpointStore;
+
+    struct RecordingExecutor {
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl CommandExecutor for RecordingExecutor {
+        async fn execute(&self, command: &str, _project_root: &Path) -> Result<CommandRun> {
+            self.calls.lock().expect("calls lock").push(command.into());
+            Ok(CommandRun {
+                cmd: command.into(),
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn node_tools_run_declared_anchors_and_verify_the_node() {
+        let directory = TempDir::new().expect("temp directory");
+        let coordinator = Arc::new(RwLock::new(
+            SessionCoordinator::new(
+                "tool-e2e".into(),
+                SessionSource::AgentSelf,
+                directory.path(),
+                Arc::new(CheckpointStore::new(directory.path())),
+            )
+            .expect("session coordinator"),
+        ));
+        coordinator
+            .write()
+            .expect("coordinator write lock")
+            .begin_turn()
+            .expect("begin turn");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new(VerifyGate::new_with_default_hooks(
+            Arc::clone(&coordinator),
+            Arc::new(RecordingExecutor {
+                calls: Arc::clone(&calls),
+            }),
+        ));
+        let runtime = Arc::new(NodeRuntime::new_with_default_hooks(
+            coordinator.clone(),
+            gate,
+            2,
+        ));
+        let begin = BeginNodeTool::new(Arc::clone(&runtime));
+        let verify = VerifyNodeTool::new(runtime);
+
+        begin
+            .execute(json!({
+                "goal": "tool e2e",
+                "compile_commands": ["compile"],
+                "test_commands": ["test"],
+                "verify_commands": ["verify"],
+                "expected_files": []
+            }))
+            .await
+            .expect("begin node tool");
+        let output = verify.execute(json!({})).await.expect("verify node tool");
+
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&output.content).expect("structured output")
+                ["next_step"],
+            "Complete"
+        );
+        assert_eq!(
+            calls.lock().expect("calls lock").as_slice(),
+            ["compile", "test", "verify"]
+        );
+        assert_eq!(
+            coordinator
+                .read()
+                .expect("coordinator read lock")
+                .current_node()
+                .expect("current node")
+                .status,
+            NodeStatus::Verified
+        );
+    }
+}

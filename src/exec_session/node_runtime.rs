@@ -310,14 +310,34 @@ impl NodeRuntime {
                 .await
                 .map(NodeVerificationOutcome::Legacy);
         }
-        self.run_work_graph(
-            compile_commands,
-            test_commands,
-            verify_commands,
-            expected_files,
-        )
-        .await
-        .map(NodeVerificationOutcome::WorkGraph)
+        let result = self
+            .run_work_graph(
+                compile_commands,
+                test_commands,
+                verify_commands,
+                expected_files,
+            )
+            .await?;
+        if result.next_step == WorkGraphStep::Complete {
+            let mut coord = self
+                .coordinator
+                .write()
+                .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+            let node_id = coord
+                .current_node()
+                .context("verify_current_node: current node disappeared")?
+                .id
+                .clone();
+            // The final gate completes the turn-level session; a verified node
+            // leaves the outer node lifecycle ready for a subsequent node.
+            coord
+                .set_status(SessionStatus::InProgress)
+                .context("reset session after work graph success")?;
+            coord
+                .update_node_status(&node_id, NodeStatus::Verified)
+                .context("mark node verified after work graph success")?;
+        }
+        Ok(NodeVerificationOutcome::WorkGraph(result))
     }
 
     /// Begin a new verifiable work unit (node).
