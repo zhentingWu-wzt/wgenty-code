@@ -15,4 +15,4 @@ dist-ssr/
 
 # Editor / OS
 .DS_Store
-*.log
+.wgenty-code/
