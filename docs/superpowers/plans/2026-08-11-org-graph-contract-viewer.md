@@ -140,7 +140,7 @@ git commit -m "feat(org-graph): add NodeRegistry::iter() with canonical order"
 - Consumes: `NodeRegistry::iter()`（Task 1）、`NodeContract` 的 `Serialize`（已存在）。
 - Produces: `pub enum Format { Table, Dot, Mermaid, Json }`（仅 `Copy/Clone/Debug/PartialEq/Eq`，**无 clap**）；`pub fn render(&NodeRegistry, Format) -> String`；私有 `render_json`。`render_table` / `render_dot` / `render_mermaid` 本任务先放编译期桩（返回 `String::new()`），由 Task 3/4/5 替换为真实实现。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 新建 `src/org_graph/render.rs`，先只写测试部分（实现部分 Step 3 补全）。为避免循环，本任务的测试文件即源文件本身——先写完整文件骨架含测试，但 `render_json` 主体留到 Step 3。实际操作：直接在 Step 3 一次性写完整文件（含测试），然后 Step 2 跑测试验证其在补 `render_json` 前会失败。
 
@@ -193,12 +193,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 运行：`cargo test --lib org_graph::render`
 预期：失败（`error[E0433]: failed to resolve: could not find render in org_graph`，因为 `mod.rs` 尚未声明 `pub mod render;`，且文件尚未建）。
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 修改 `src/org_graph/mod.rs`，在 `pub mod registry;` 之后新增：
 
@@ -297,12 +297,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 运行：`cargo test --lib org_graph::render`
 预期：3 个测试全部 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/org_graph/render.rs src/org_graph/mod.rs
