@@ -11,6 +11,7 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result};
 
+use crate::org_graph::WorkState;
 use crate::tools::checkpoint_store::{CheckpointStore, FileState, Manifest};
 
 use super::git::{record_git_state, run_git};
@@ -28,6 +29,10 @@ pub struct SessionCoordinator {
     session_dir: PathBuf,
     checkpoint_store: Arc<CheckpointStore>,
     project_root: PathBuf,
+    /// 当前 turn 的结构化工作产物（完整 schema：全字段权限真强制）。
+    /// pilot: verify_result 强制；其余 deferred 字段类型就绪，待将来接入。
+    /// legacy turn 缺 WorkState 时为 default()，向后兼容。
+    work_state: WorkState,
 }
 
 impl SessionCoordinator {
@@ -52,6 +57,7 @@ impl SessionCoordinator {
             session_dir,
             checkpoint_store,
             project_root: project_root.to_path_buf(),
+            work_state: WorkState::default(),
         })
     }
 
@@ -89,6 +95,9 @@ impl SessionCoordinator {
         self.session.current_turn = Some(turn_id);
         self.session.updated_at = now;
         self.session.save(&self.session_dir)?;
+        // WorkState turn 间继承：requirement 保留，其余产物字段（含 deferred）重置。
+        // 同 turn 内 retry 不走 begin_turn（retry 是 node 重试，不是 turn 重置）。
+        self.work_state = self.work_state.inherit_for_new_turn();
         Ok(self.session.turns.last().expect("just pushed"))
     }
 
@@ -366,6 +375,56 @@ impl SessionCoordinator {
             }
         }
         Ok(deleted)
+    }
+
+    // --- WorkState accessors + per-turn persistence (Task 3) ---
+
+    /// 当前 turn 的 WorkState（只读借用）。
+    pub fn work_state(&self) -> &WorkState {
+        &self.work_state
+    }
+
+    /// 当前 turn 的 WorkState（可变借用，用于 set_verify_result 等调用）。
+    pub fn work_state_mut(&mut self) -> &mut WorkState {
+        &mut self.work_state
+    }
+
+    /// 把当前 WorkState 序列化到当前 turn 的检查点旁路文件。
+    /// turn_id 取自 `self.session.current_turn`；无 active turn 时返回 Ok(())。
+    pub fn capture_current_work_state(&self) -> Result<()> {
+        let turn_id = match &self.session.current_turn {
+            Some(id) => id.clone(),
+            None => return Ok(()),
+        };
+        let checkpoint_turn_id = self
+            .session
+            .turns
+            .iter()
+            .find(|t| t.turn_id == turn_id)
+            .map(|t| t.checkpoint_turn_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("current turn {turn_id} not in chain"))?;
+        self.checkpoint_store
+            .capture_work_state(&checkpoint_turn_id, &self.work_state)
+    }
+
+    /// 从指定 turn 的检查点旁路文件恢复 WorkState；文件缺失（legacy turn）→ default()。
+    pub fn restore_work_state_for_turn(&mut self, turn_id: &str) -> Result<()> {
+        let checkpoint_turn_id = self
+            .session
+            .turns
+            .iter()
+            .find(|t| t.turn_id == turn_id)
+            .map(|t| t.checkpoint_turn_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("turn {turn_id} not in chain"))?;
+        match self.checkpoint_store.restore_work_state(&checkpoint_turn_id)? {
+            Some(state) => {
+                self.work_state = state;
+            }
+            None => {
+                self.work_state = WorkState::default();
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1003,5 +1062,62 @@ mod tests {
         assert_eq!(coord.current_turn_id(), None);
         coord.begin_turn().unwrap();
         assert_eq!(coord.current_turn_id(), Some("turn-0"));
+    }
+
+    // --- Task 3: WorkState turn inheritance + persistence ---
+
+    #[test]
+    fn begin_turn_inherits_requirement_and_resets_verify_result() {
+        // turn-0 写 requirement + verify_result，begin_turn 推进到 turn-1：
+        // requirement 保留，verify_result / step_log（及所有产物字段）清空。
+        let dir = tempdir().unwrap();
+        let mut coord = make_coordinator(dir.path());
+        coord.work_state_mut().requirement = Some("实现 WorkState".into());
+        coord.work_state_mut().verify_result = Some(crate::org_graph::VerifyOutcome {
+            success: false,
+            fail_reason: Some(crate::org_graph::VerifyFailureKind::CommandFailed {
+                exit_code: Some(1),
+                stderr: "boom".into(),
+            }),
+        });
+        coord.begin_turn().unwrap();
+        let ws = coord.work_state();
+        assert_eq!(ws.requirement.as_deref(), Some("实现 WorkState"));
+        assert!(
+            ws.verify_result.is_none(),
+            "verify_result must reset on begin_turn"
+        );
+        assert!(ws.step_log.is_empty(), "step_log must reset on begin_turn");
+    }
+
+    #[test]
+    fn capture_and_restore_work_state_survives_roundtrip() {
+        // 写 WorkState → capture_current_work_state → 模拟崩溃（丢弃内存状态）→
+        // restore_work_state_for_turn → 字段完整恢复。
+        let dir = tempdir().unwrap();
+        let mut coord = make_coordinator(dir.path());
+        coord.begin_turn().unwrap();
+        let turn_id = coord.current_turn_id().unwrap().to_string();
+        coord.work_state_mut().verify_result = Some(crate::org_graph::VerifyOutcome {
+            success: false,
+            fail_reason: Some(crate::org_graph::VerifyFailureKind::BoundaryViolation {
+                unexpected_files: vec!["src/oops.rs".into()],
+            }),
+        });
+        coord.capture_current_work_state().unwrap();
+        // 模拟崩溃：清空内存 WorkState。
+        *coord.work_state_mut() = crate::org_graph::WorkState::default();
+        assert!(coord.work_state().verify_result.is_none());
+        // 从持久化恢复。
+        coord.restore_work_state_for_turn(&turn_id).unwrap();
+        let ws = coord.work_state();
+        let outcome = ws.verify_result.as_ref().expect("restored");
+        assert!(!outcome.success);
+        match &outcome.fail_reason {
+            Some(crate::org_graph::VerifyFailureKind::BoundaryViolation { unexpected_files }) => {
+                assert_eq!(unexpected_files.clone(), vec!["src/oops.rs".to_string()]);
+            }
+            other => panic!("expected BoundaryViolation, got {:?}", other),
+        }
     }
 }
