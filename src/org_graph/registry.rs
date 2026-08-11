@@ -14,6 +14,15 @@ pub struct NodeRegistry {
     contracts: HashMap<NodeType, NodeContract>,
 }
 
+/// 渲染用的稳定枚举顺序（枚举声明序）。HashMap 遍历无序，渲染/测试要求确定性。
+const CANONICAL_ORDER: [NodeType; 5] = [
+    NodeType::Explore,
+    NodeType::Plan,
+    NodeType::GeneralPurpose,
+    NodeType::Verification,
+    NodeType::WgentyCodeGuide,
+];
+
 impl NodeRegistry {
     /// 构建内置契约。读取 `settings.explore_readonly` 填充 `can_mutate_fs`。
     pub fn builtin(settings: &SubagentLimits) -> Self {
@@ -29,6 +38,15 @@ impl NodeRegistry {
     /// 查询节点契约。未知节点类型返回 `None`。
     pub fn get(&self, node_type: &NodeType) -> Option<&NodeContract> {
         self.contracts.get(node_type)
+    }
+
+    /// 按稳定顺序（CANONICAL_ORDER）返回全部契约，用于确定性渲染。
+    /// 未来若有缺项（自定义契约未注册），自动跳过。
+    pub fn iter(&self) -> Vec<&NodeContract> {
+        CANONICAL_ORDER
+            .iter()
+            .filter_map(|nt| self.contracts.get(nt))
+            .collect()
     }
 
     fn explore_contract(s: &SubagentLimits) -> NodeContract {
@@ -379,6 +397,36 @@ mod tests {
                 c.capabilities.allowed_tools.is_empty(),
                 "{:?} should have wildcard (empty) allowed_tools",
                 nt
+            );
+        }
+    }
+
+    #[test]
+    fn iter_returns_all_five_in_canonical_order() {
+        let r = registry(true);
+        let ordered: Vec<NodeType> = r.iter().into_iter().map(|c| c.node_type.clone()).collect();
+        assert_eq!(
+            ordered,
+            vec![
+                NodeType::Explore,
+                NodeType::Plan,
+                NodeType::GeneralPurpose,
+                NodeType::Verification,
+                NodeType::WgentyCodeGuide,
+            ]
+        );
+    }
+
+    #[test]
+    fn iter_consistent_with_get() {
+        let r = registry(true);
+        let collected: Vec<&NodeContract> = r.iter();
+        assert_eq!(collected.len(), 5, "iter returns all five builtins");
+        for c in r.iter() {
+            assert_eq!(
+                c, r.get(&c.node_type).unwrap(),
+                "iter entry must match get() for {:?}",
+                c.node_type
             );
         }
     }
