@@ -345,11 +345,6 @@ impl NodeRuntime {
             .capture_current_work_state()
             .context("persist verification anchor audit event")?;
         let next_step = next_step(coord.work_state()).context("route verification result")?;
-        if next_step == WorkGraphStep::Escalate {
-            coord
-                .set_status(SessionStatus::Failed)
-                .context("align session status with work graph escalation")?;
-        }
         let budget = coord
             .work_state()
             .budget(NodeType::GeneralPurpose)
@@ -363,6 +358,12 @@ impl NodeRuntime {
         coord
             .capture_current_work_state()
             .context("persist verification route audit event")?;
+        drop(coord);
+        if next_step == WorkGraphStep::Escalate {
+            self.verify_gate
+                .mark_failed()
+                .context("synchronize work graph escalation status")?;
+        }
         Ok(WorkGraphRunResult { next_step })
     }
 
@@ -851,7 +852,9 @@ impl NodeRuntime {
 mod tests {
     use super::*;
     use crate::exec_session::session::SessionSource;
-    use crate::exec_session::verify_gate::{CommandExecutor, CommandRun};
+    use crate::exec_session::verify_gate::{
+        CommandExecutor, CommandRun, VerifyLog, VerifyLogFinalStatus,
+    };
     use crate::exec_session::WorkGraphStep;
     use crate::org_graph::{GraphAuditCommands, GraphAuditKind, GraphAuditRoute, NodeType};
     use crate::tools::checkpoint_store::CheckpointStore;
@@ -1104,6 +1107,18 @@ mod tests {
 
         fn calls(&self) -> Vec<String> {
             self.calls.lock().expect("command call log").clone()
+        }
+
+        fn verify_log(&self) -> VerifyLog {
+            let session_dir = self
+                .coord
+                .read()
+                .expect("coordinator")
+                .session_dir()
+                .to_path_buf();
+            let json = std::fs::read_to_string(session_dir.join("verify_log.json"))
+                .expect("read verify log");
+            serde_json::from_str(&json).expect("deserialize verify log")
         }
 
         fn capture_file(&self, path: &str, contents: &str) {
@@ -1763,6 +1778,11 @@ mod tests {
             })
         );
         assert_eq!(coord.session().status, SessionStatus::Failed);
+        drop(coord);
+        assert_eq!(
+            setup.verify_log().final_status,
+            Some(VerifyLogFinalStatus::Failed)
+        );
     }
 
     #[tokio::test]
@@ -1830,6 +1850,44 @@ mod tests {
             })
         );
         assert_eq!(coord.session().status, SessionStatus::Failed);
+        drop(coord);
+        assert_eq!(
+            setup.verify_log().final_status,
+            Some(VerifyLogFinalStatus::Failed)
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_final_verification_retry_keeps_session_and_verify_log_open() {
+        let setup = ScriptedSetup::with_results([
+            ScriptedCommandResult::success(),
+            ScriptedCommandResult::success(),
+            ScriptedCommandResult::failure(9, "final verification diagnostics"),
+        ]);
+        setup.write_cargo_manifest();
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node("goal".into(), vec![], vec![])
+            .await
+            .expect("persist rust node before work graph invocation");
+
+        let outcome = setup
+            .runtime
+            .verify_current_node()
+            .await
+            .expect("run retryable final verification pass");
+
+        assert!(matches!(
+            outcome,
+            NodeVerificationOutcome::WorkGraph(WorkGraphRunResult {
+                next_step: WorkGraphStep::Implement
+            })
+        ));
+        let coord = setup.coord.read().expect("coordinator");
+        assert_eq!(coord.session().status, SessionStatus::InProgress);
+        drop(coord);
+        assert_eq!(setup.verify_log().final_status, None);
     }
 
     #[tokio::test]

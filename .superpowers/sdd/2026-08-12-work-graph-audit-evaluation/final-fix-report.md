@@ -59,6 +59,37 @@ Focused suites also passed:
 - `cargo test --all`: library 1,501 passed / 1 ignored; integration 183 passed /
   3 ignored; binary and doc suites passed; 0 failures.
 
+## Follow-up: terminal verify-log consistency
+
+A scoped re-review found that final-command budget exhaustion and boundary
+escalation updated `session.status` to `Failed` without updating
+`verify_log.json.final_status`. `VerifyGate` now owns a centralized terminal
+transition that writes both durable projections, and the code-owned Work-Graph
+`Escalate` route calls it after persisting the route audit. No status is accepted
+from model output.
+
+### RED
+
+`cargo test exec_session::node_runtime::tests::audit_ --lib` failed in both
+terminal scenarios:
+
+- `audit_exhausted_final_verification_records_consumed_budget_and_escalates_session`
+  observed `verify_log.final_status == None` instead of `Some(Failed)`.
+- `audit_boundary_violation_records_escalate_route` observed the same mismatch.
+
+The retry control
+`audit_final_verification_retry_keeps_session_and_verify_log_open` passed with
+`SessionStatus::InProgress` and `final_status == None` before and after the fix.
+
+### GREEN
+
+- `cargo test exec_session::node_runtime::tests::audit_ --lib`: 7 passed.
+- `cargo test exec_session::verify_gate::tests --lib`: 18 passed.
+- Final `cargo fmt -- --check` and
+  `cargo clippy --all-targets -- -D warnings`: passed.
+- Final `cargo test --all`: library 1,502 passed / 1 ignored; integration 183
+  passed / 3 ignored; binary and doc suites passed; 0 failures.
+
 ## Concerns
 
 No new concerns. Residual multi-file checkpoint atomicity and retention policy

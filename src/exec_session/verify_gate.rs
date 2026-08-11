@@ -196,6 +196,30 @@ impl VerifyGate {
         Self::new(coordinator, executor, Arc::new(NoHooks))
     }
 
+    /// Persist a code-owned terminal failure to both session metadata and the
+    /// verification log. Work-Graph routing uses this after selecting its
+    /// terminal `Escalate` edge; no agent-supplied status is accepted.
+    pub(crate) fn mark_failed(&self) -> Result<()> {
+        self.transition_terminal(SessionStatus::Failed, VerifyLogFinalStatus::Failed)
+    }
+
+    /// Keep the two durable terminal-status projections synchronized.
+    fn transition_terminal(
+        &self,
+        session_status: SessionStatus,
+        log_status: VerifyLogFinalStatus,
+    ) -> Result<()> {
+        let session_dir = {
+            let mut coord = self
+                .coordinator
+                .write()
+                .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+            coord.set_status(session_status)?;
+            coord.session_dir().to_path_buf()
+        };
+        set_verify_log_final_status(&session_dir, log_status)
+    }
+
     /// Execute deterministic anchor commands without mutating session status.
     ///
     /// Compile and test anchors use this path; final verification continues to
@@ -308,12 +332,7 @@ impl VerifyGate {
         //    `VerifyFailAction`: AutoRetry keeps InProgress (no rollback, spec
         //    §3.3); Escalate/Abort -> Failed; WarnAndContinue -> Completed.
         let action = if success {
-            let mut coord = self
-                .coordinator
-                .write()
-                .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
-            coord.set_status(SessionStatus::Completed)?;
-            set_verify_log_final_status(&session_dir, VerifyLogFinalStatus::Completed)?;
+            self.transition_terminal(SessionStatus::Completed, VerifyLogFinalStatus::Completed)?;
             None
         } else {
             let (session_id, current_turn) = {
@@ -352,15 +371,8 @@ impl VerifyGate {
                     Some(VerifyLogFinalStatus::Completed),
                 ),
             };
-            if status != SessionStatus::InProgress {
-                let mut coord = self
-                    .coordinator
-                    .write()
-                    .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
-                coord.set_status(status)?;
-            }
             if let Some(fs) = final_status {
-                set_verify_log_final_status(&session_dir, fs)?;
+                self.transition_terminal(status, fs)?;
             }
             Some(decided)
         };
@@ -395,27 +407,22 @@ impl VerifyGate {
     /// workspace (no rollback) - `Unverified` means "work may be fine but was
     /// never proven", which the user can see and act on.
     pub fn mark_unverified_if_incomplete(&self) -> Result<UnverifiedOutcome> {
-        let (session_dir, session_id, current_status) = {
+        let (session_id, current_status) = {
             let coord = self
                 .coordinator
                 .read()
                 .map_err(|e| anyhow::anyhow!("coordinator read lock: {e}"))?;
             (
-                coord.session_dir().to_path_buf(),
                 coord.session().session_id.clone(),
                 coord.session().status.clone(),
             )
         };
         match current_status {
             SessionStatus::InProgress => {
-                {
-                    let mut coord = self
-                        .coordinator
-                        .write()
-                        .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
-                    coord.set_status(SessionStatus::Unverified)?;
-                }
-                set_verify_log_final_status(&session_dir, VerifyLogFinalStatus::Unverified)?;
+                self.transition_terminal(
+                    SessionStatus::Unverified,
+                    VerifyLogFinalStatus::Unverified,
+                )?;
                 tracing::info!(
                     session_id = %session_id,
                     "session marked unverified (agent did not call verify_and_complete)"
