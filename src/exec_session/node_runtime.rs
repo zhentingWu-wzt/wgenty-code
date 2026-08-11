@@ -21,6 +21,7 @@ use super::coordinator::SessionCoordinator;
 use super::hooks::{NoHooks, SessionHooks, VerifyFailure};
 use super::node::{Node, NodeContract, NodeId, NodeStatus};
 use super::session::SessionStatus;
+use super::verification_profile::VerificationProfile;
 use super::verify_gate::{VerifyGate, VerifyResult};
 use super::work_graph::{next_step, WorkGraphStep};
 use crate::org_graph::{Budget, CompileResult, GeneratedDiff, NodeType, TestResult};
@@ -395,6 +396,7 @@ impl NodeRuntime {
                 verify_commands,
                 compile_commands,
                 test_commands,
+                verification_profile: VerificationProfile::None,
                 expected_files,
             },
             status: NodeStatus::Running,

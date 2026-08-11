@@ -362,6 +362,7 @@ mod tests {
                 verify_commands: vec!["echo ok".into()],
                 compile_commands: vec![],
                 test_commands: vec![],
+                verification_profile: crate::exec_session::VerificationProfile::None,
                 expected_files: vec![],
             },
             status: crate::exec_session::node::NodeStatus::Verified,
