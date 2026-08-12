@@ -241,6 +241,12 @@ pub enum OrgGraphCommands {
         )]
         format: crate::cli::org_graph::OrgGraphFormatArg,
     },
+    /// Summarize durable work-graph audit records for one checkpointed session.
+    Audit {
+        /// Trusted session id whose persisted audit should be read.
+        #[arg(long)]
+        session: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]

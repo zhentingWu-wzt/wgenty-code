@@ -43,6 +43,27 @@ pub async fn run(
             println!("{}", out);
             Ok(())
         }
+        super::OrgGraphCommands::Audit { session } => {
+            let session_dir = state
+                .settings
+                .storage
+                .working_dir
+                .join(".wgenty-code")
+                .join("snapshots")
+                .join(session);
+            let persisted = crate::exec_session::SessionState::load(&session_dir)?;
+            let Some(turn) = persisted.current_turn_record() else {
+                anyhow::bail!("session {session} has no active turn to audit");
+            };
+            let store = crate::tools::CheckpointStore::new(&state.settings.storage.working_dir);
+            let work_state = store
+                .restore_work_state(&turn.checkpoint_turn_id)?
+                .ok_or_else(|| anyhow::anyhow!("session {session} has no persisted work state"))?;
+            let summary =
+                crate::org_graph::WorkGraphAuditSummary::from_events(work_state.graph_audit());
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+            Ok(())
+        }
     }
 }
 
