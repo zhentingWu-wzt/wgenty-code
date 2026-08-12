@@ -67,28 +67,31 @@ pub fn select_work_graph(request: &WorkGraphRequest) -> WorkGraphPlan {
             id: "verify".into(),
             role: NodeType::Verification,
         },
+        WorkGraphPlanNode {
+            id: "diagnose".into(),
+            role: NodeType::RootCause,
+        },
     ];
-    let mut edges = vec![WorkGraphPlanEdge {
-        from: "implement".into(),
-        to: "verify".into(),
-    }];
+    let mut edges = vec![
+        WorkGraphPlanEdge {
+            from: "implement".into(),
+            to: "verify".into(),
+        },
+        WorkGraphPlanEdge {
+            from: "verify".into(),
+            to: "diagnose".into(),
+        },
+        WorkGraphPlanEdge {
+            from: "diagnose".into(),
+            to: "implement".into(),
+        },
+    ];
     let template_id = match request.task_kind {
         WorkGraphTaskKind::Implementation => "implementation-v1",
         WorkGraphTaskKind::Diagnosis => {
-            nodes.insert(
-                0,
-                WorkGraphPlanNode {
-                    id: "diagnose".into(),
-                    role: NodeType::RootCause,
-                },
-            );
-            edges.insert(
-                0,
-                WorkGraphPlanEdge {
-                    from: "diagnose".into(),
-                    to: "implement".into(),
-                },
-            );
+            // The first failing external anchor activates the already-present
+            // diagnostic edge. A diagnosis request does not let an LLM claim
+            // a root cause before that anchor exists.
             "diagnosis-v1"
         }
     };
@@ -118,14 +121,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn diagnosis_request_selects_root_cause_before_implementation() {
+    fn diagnosis_request_includes_anchored_root_cause_retry_cycle() {
         let plan = select_work_graph(&WorkGraphRequest {
             task_kind: WorkGraphTaskKind::Diagnosis,
             requires_human_review: false,
         });
 
         assert_eq!(plan.template_id, "diagnosis-v1");
-        assert_eq!(plan.nodes[0].role, NodeType::RootCause);
+        assert!(plan
+            .nodes
+            .iter()
+            .any(|node| node.role == NodeType::RootCause));
+        assert!(plan
+            .edges
+            .iter()
+            .any(|edge| edge.from == "verify" && edge.to == "diagnose"));
         assert!(plan
             .edges
             .iter()

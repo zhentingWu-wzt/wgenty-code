@@ -2019,7 +2019,7 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_default_registry_has_five_contracts() {
+    fn coordinator_default_registry_has_six_agent_contracts() {
         let coord = test_coordinator(5, 3);
         for nt in [
             crate::org_graph::NodeType::Explore,
