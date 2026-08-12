@@ -95,9 +95,7 @@ pub fn select_work_graph(request: &WorkGraphRequest) -> WorkGraphPlan {
     if request.requires_human_review {
         nodes.push(WorkGraphPlanNode {
             id: "human-review".into(),
-            // Verification is the existing least-privilege, non-mutating
-            // gate role. The human itself does not receive agent authority.
-            role: NodeType::Verification,
+            role: NodeType::HumanReview,
         });
         edges.push(WorkGraphPlanEdge {
             from: "verify".into(),

@@ -180,6 +180,7 @@ pub enum GraphAuditRoute {
     CompileAnchor,
     TestAnchor,
     VerifyGate,
+    HumanReview,
     Complete,
     Escalate,
 }
@@ -313,6 +314,16 @@ impl NodeType {
                 .into_iter()
                 .collect(),
                 writable: [WorkField::SpecialistReports].into_iter().collect(),
+            },
+            NodeType::HumanReview => FieldPerms {
+                readable: [
+                    WorkField::Requirement,
+                    WorkField::VerifyResult,
+                    WorkField::HumanReview,
+                ]
+                .into_iter()
+                .collect(),
+                writable: [WorkField::HumanReview].into_iter().collect(),
             },
             NodeType::Explore | NodeType::Plan => FieldPerms {
                 readable: [WorkField::Requirement].into_iter().collect(),
@@ -665,6 +676,7 @@ impl WorkState {
         self.test_result = None;
         self.verify_result = None;
         self.budget = None;
+        self.human_review = None;
         self.specialist_reports.clear();
         self.selected_work_graph = None;
     }
@@ -676,6 +688,7 @@ impl WorkState {
         self.compile_result = None;
         self.test_result = None;
         self.verify_result = None;
+        self.human_review = None;
         self.specialist_reports.clear();
     }
 

@@ -15,12 +15,13 @@ pub struct NodeRegistry {
 }
 
 /// 渲染用的稳定枚举顺序（枚举声明序）。HashMap 遍历无序，渲染/测试要求确定性。
-const CANONICAL_ORDER: [NodeType; 6] = [
+const CANONICAL_ORDER: [NodeType; 7] = [
     NodeType::Explore,
     NodeType::Plan,
     NodeType::GeneralPurpose,
     NodeType::Verification,
     NodeType::RootCause,
+    NodeType::HumanReview,
     NodeType::WgentyCodeGuide,
 ];
 
@@ -33,6 +34,7 @@ impl NodeRegistry {
         contracts.insert(NodeType::GeneralPurpose, Self::gp_contract(settings));
         contracts.insert(NodeType::Verification, Self::verify_contract(settings));
         contracts.insert(NodeType::RootCause, Self::root_cause_contract(settings));
+        contracts.insert(NodeType::HumanReview, Self::human_review_contract(settings));
         contracts.insert(NodeType::WgentyCodeGuide, Self::guide_contract(settings));
         Self { contracts }
     }
@@ -170,6 +172,29 @@ impl NodeRegistry {
             budget: ResourceBudget::default(),
             input_type: IoShape::StructuredJson,
             output_type: IoShape::Report,
+        }
+    }
+
+    fn human_review_contract(_s: &SubagentLimits) -> NodeContract {
+        NodeContract {
+            node_type: NodeType::HumanReview,
+            name: "human-review".to_string(),
+            description: "Authenticated human approval veto gate.".to_string(),
+            when_to_use: "A bounded Work-Graph requires human approval before completion"
+                .to_string(),
+            system_prompt: String::new(),
+            model: "external-human".to_string(),
+            capabilities: Capability {
+                allowed_tools: vec![],
+            },
+            permissions: PermissionBoundary {
+                can_spawn: false,
+                can_mutate_fs: false,
+                can_exec: false,
+            },
+            budget: ResourceBudget::default(),
+            input_type: IoShape::StructuredJson,
+            output_type: IoShape::StructuredJson,
         }
     }
 

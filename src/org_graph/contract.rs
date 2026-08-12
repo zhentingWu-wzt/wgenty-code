@@ -14,6 +14,8 @@ pub enum NodeType {
     GeneralPurpose,
     Verification,
     RootCause,
+    /// External human veto gate; never backed by an LLM sub-agent.
+    HumanReview,
     WgentyCodeGuide,
 }
 
