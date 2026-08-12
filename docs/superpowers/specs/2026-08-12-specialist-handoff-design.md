@@ -97,6 +97,13 @@ silently turning that diagnosis into `Implement`. Boundary violations and
 exhausted budgets also route directly to `Escalate`. The template itself,
 specialist budget, edge conditions, and retry limit remain code-owned.
 
+On daemon restart, the runtime opens the persisted session rather than creating
+a replacement snapshot. Only a restored `RootCause` route creates a new,
+unbound reservation; its node id and audit attempt are retained, while the old
+child id is discarded. The normal task dispatcher binds a fresh child before
+spawn. Restoring this route never executes compile, test, or verify anchors,
+and terminal `Complete` / `Escalate` state does not launch a child.
+
 Dynamic construction is explicitly deferred until static templates demonstrate
 that report production, checkpoint recovery, external anchors, and global
 budgets work together. The dynamic selector will choose from registered

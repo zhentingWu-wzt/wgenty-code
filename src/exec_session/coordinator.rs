@@ -61,6 +61,46 @@ impl SessionCoordinator {
         })
     }
 
+    /// Opens a persisted session when it already exists, otherwise creates a
+    /// fresh one. Existing snapshots are loaded before any write is attempted
+    /// so malformed state fails closed instead of being replaced.
+    pub fn open_or_create(
+        session_id: String,
+        source: SessionSource,
+        project_root: &Path,
+        checkpoint_store: Arc<CheckpointStore>,
+    ) -> Result<Self> {
+        let session_dir = project_root
+            .join(".wgenty-code")
+            .join("snapshots")
+            .join(&session_id);
+        if !session_dir.join("session.json").exists() {
+            return Self::new(session_id, source, project_root, checkpoint_store);
+        }
+
+        let session = SessionState::load(&session_dir)
+            .with_context(|| format!("load existing session: {}", session_dir.display()))?;
+        if session.session_id != session_id {
+            anyhow::bail!(
+                "existing session id {} does not match requested session id {session_id}",
+                session.session_id
+            );
+        }
+        let mut coordinator = Self {
+            session,
+            session_dir,
+            checkpoint_store,
+            project_root: project_root.to_path_buf(),
+            work_state: WorkState::default(),
+        };
+        if let Some(turn_id) = coordinator.current_turn_id().map(str::to_owned) {
+            coordinator
+                .restore_work_state_for_turn(&turn_id)
+                .with_context(|| format!("restore active turn work state: {turn_id}"))?;
+        }
+        Ok(coordinator)
+    }
+
     /// Start a new turn: records `parent` (previous `current_turn` or `None`),
     /// allocates a fresh `checkpoint_turn_id` and tells [`CheckpointStore`] to
     /// begin that snapshot, appends the turn to the chain, and sets
@@ -516,6 +556,61 @@ mod tests {
         assert!(coord
             .session_dir()
             .ends_with(".wgenty-code/snapshots/es-test"));
+    }
+
+    #[test]
+    fn open_or_create_restores_existing_session_and_active_work_state() {
+        let dir = tempdir().expect("create tempdir");
+        let store = Arc::new(CheckpointStore::new(dir.path()));
+        let mut original = SessionCoordinator::new(
+            "resume".into(),
+            SessionSource::AgentSelf,
+            dir.path(),
+            Arc::clone(&store),
+        )
+        .expect("create original coordinator");
+        original.begin_turn().expect("begin original turn");
+        original
+            .work_state_mut()
+            .set_requirement(Some("keep me".into()));
+        original
+            .capture_current_work_state()
+            .expect("persist original work state");
+
+        let restored = SessionCoordinator::open_or_create(
+            "resume".into(),
+            SessionSource::AgentSelf,
+            dir.path(),
+            store,
+        )
+        .expect("restore existing coordinator");
+
+        assert_eq!(restored.current_turn_id(), Some("turn-0"));
+        assert_eq!(restored.work_state().requirement(), Some("keep me"));
+    }
+
+    #[test]
+    fn open_or_create_corrupt_session_does_not_replace_snapshot() {
+        let dir = tempdir().expect("create tempdir");
+        let session_dir = dir.path().join(".wgenty-code/snapshots/resume");
+        std::fs::create_dir_all(&session_dir).expect("create session directory");
+        let snapshot = b"not valid json";
+        std::fs::write(session_dir.join("session.json"), snapshot).expect("write corrupt state");
+
+        let error = SessionCoordinator::open_or_create(
+            "resume".into(),
+            SessionSource::AgentSelf,
+            dir.path(),
+            Arc::new(CheckpointStore::new(dir.path())),
+        )
+        .err()
+        .expect("corrupt existing snapshot must fail closed");
+
+        assert!(error.to_string().contains("load existing session"));
+        assert_eq!(
+            std::fs::read(session_dir.join("session.json")).expect("read original snapshot"),
+            snapshot
+        );
     }
 
     #[test]

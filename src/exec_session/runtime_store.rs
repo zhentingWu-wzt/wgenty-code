@@ -224,29 +224,46 @@ impl ExecutionSessionRuntimeStore {
             .coordinator
             .read()
             .map_err(|error| anyhow::anyhow!("execution-session coordinator read lock: {error}"))?;
-        let node = coordinator
-            .current_node()
-            .context("root-cause dispatch requires a persisted current node")?;
-        let route = latest_root_cause_route(&coordinator, &node.id)?;
-        let state = coordinator.work_state();
-        let prompt = json!({
-            "node_goal": node.contract.goal,
-            "attempt": route.attempt,
-            "compile_result": state.compile_result(NodeType::RootCause).map_err(anyhow::Error::from)?,
-            "test_result": state.test_result(NodeType::RootCause).map_err(anyhow::Error::from)?,
-            "verify_result": state.verify_result(NodeType::RootCause).map_err(anyhow::Error::from)?,
-        })
-        .to_string();
+        let (request, node_id, attempt) = root_cause_dispatch_request(&coordinator)?;
         *pending = Some(PendingRootCause {
-            node_id: node.id.clone(),
-            attempt: route.attempt,
+            node_id,
+            attempt,
             child_id: None,
         });
-        Ok(RootCauseDispatchState::Ready(RootCauseDispatchRequest {
-            prompt: format!(
-                "Diagnose this code-owned failed verification attempt. Use the structured anchor evidence below; do not modify files. Submit your report with submit_specialist_report.\n\n{prompt}"
-            ),
-        }))
+        Ok(RootCauseDispatchState::Ready(request))
+    }
+
+    /// Recovers a lost RootCause child from persisted graph state without
+    /// re-running anchors or restoring the child's stale identity.
+    pub fn prepare_recovered_root_cause_dispatch(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Option<RootCauseDispatchRequest>> {
+        let entry = self.entry_for(session_id)?;
+        let mut pending = entry
+            .pending_root_cause
+            .lock()
+            .map_err(|error| anyhow::anyhow!("pending root-cause dispatch lock: {error}"))?;
+        if pending.is_some() {
+            return Ok(None);
+        }
+
+        let coordinator = entry
+            .coordinator
+            .read()
+            .map_err(|error| anyhow::anyhow!("execution-session coordinator read lock: {error}"))?;
+        if next_step(coordinator.work_state()).map_err(anyhow::Error::from)?
+            != WorkGraphStep::RootCause
+        {
+            return Ok(None);
+        }
+        let (request, node_id, attempt) = root_cause_dispatch_request(&coordinator)?;
+        *pending = Some(PendingRootCause {
+            node_id,
+            attempt,
+            child_id: None,
+        });
+        Ok(Some(request))
     }
 
     /// Binds a successfully created child to the reserved RootCause route.
@@ -414,13 +431,13 @@ impl ExecutionSessionRuntimeStore {
         }
 
         let coordinator = Arc::new(RwLock::new(
-            SessionCoordinator::new(
+            SessionCoordinator::open_or_create(
                 session_id.as_str().to_string(),
                 SessionSource::AgentSelf,
                 &self.project_root,
                 Arc::clone(&self.checkpoint_store),
             )
-            .context("create execution session coordinator")?,
+            .context("open or create execution session coordinator")?,
         ));
         let gate = Arc::new(VerifyGate::new_with_default_hooks(
             Arc::clone(&coordinator),
@@ -563,6 +580,33 @@ impl ExecutionSessionRuntimeStore {
     }
 }
 
+fn root_cause_dispatch_request(
+    coordinator: &SessionCoordinator,
+) -> Result<(RootCauseDispatchRequest, String, u32)> {
+    let node = coordinator
+        .current_node()
+        .context("root-cause dispatch requires a persisted current node")?;
+    let route = latest_root_cause_route(coordinator, &node.id)?;
+    let state = coordinator.work_state();
+    let prompt = json!({
+        "node_goal": node.contract.goal,
+        "attempt": route.attempt,
+        "compile_result": state.compile_result(NodeType::RootCause).map_err(anyhow::Error::from)?,
+        "test_result": state.test_result(NodeType::RootCause).map_err(anyhow::Error::from)?,
+        "verify_result": state.verify_result(NodeType::RootCause).map_err(anyhow::Error::from)?,
+    })
+    .to_string();
+    Ok((
+        RootCauseDispatchRequest {
+            prompt: format!(
+                "Diagnose this code-owned failed verification attempt. Use the structured anchor evidence below; do not modify files. Submit your report with submit_specialist_report.\n\n{prompt}"
+            ),
+        },
+        node.id.clone(),
+        route.attempt,
+    ))
+}
+
 fn latest_root_cause_route(
     coordinator: &SessionCoordinator,
     node_id: &str,
@@ -630,6 +674,44 @@ mod tests {
             .expect("reuse active graph turn");
 
         assert_eq!(store.turn_count_for_test(&session_id), 1);
+    }
+
+    #[tokio::test]
+    async fn recreated_store_restores_root_cause_route_without_old_child() {
+        let dir = TempDir::new().expect("create tempdir");
+        let session_id = SessionId::new("recover-route");
+        let first = test_store(&dir);
+        first.ensure_turn(&session_id).expect("start graph turn");
+        first
+            .runtime_for(&session_id)
+            .expect("resolve runtime")
+            .begin_node("diagnose".into(), Vec::new(), Vec::new())
+            .await
+            .expect("start graph node");
+        first.seed_root_cause_route_for_test(&session_id);
+        drop(first);
+
+        let recovered = test_store(&dir);
+        let request = recovered
+            .prepare_recovered_root_cause_dispatch(&session_id)
+            .expect("inspect recovered route")
+            .expect("recover root-cause route");
+
+        assert!(request.prompt.contains("seeded compile failure"));
+        assert!(recovered
+            .root_cause_pending(&session_id)
+            .expect("recovered route is reserved"));
+        assert!(recovered.prepare_root_cause_dispatch(&session_id).is_err());
+        assert_eq!(
+            recovered
+                .work_state_for_test(&session_id)
+                .graph_audit()
+                .iter()
+                .filter(|event| { event.kind == crate::org_graph::GraphAuditKind::AnchorCompleted })
+                .count(),
+            0,
+            "recovery must not rerun anchors"
+        );
     }
 
     #[tokio::test]
