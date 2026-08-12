@@ -9,7 +9,7 @@ use serde_json::json;
 
 use crate::agent::SessionId;
 use crate::org_graph::{
-    GraphAuditEvent, GraphAuditKind, GraphAuditRoute, NodeType, SpecialistReport,
+    GraphAuditEvent, GraphAuditKind, GraphAuditRoute, HumanReview, NodeType, SpecialistReport,
 };
 use crate::tools::checkpoint_store::CheckpointStore;
 
@@ -111,6 +111,22 @@ impl ExecutionSessionRuntimeStore {
     /// scoped runtime when necessary.
     pub fn gate_for(&self, session_id: &SessionId) -> Result<Arc<VerifyGate>> {
         Ok(self.entry_for(session_id)?.gate)
+    }
+
+    /// Records an authenticated human decision for the session's current
+    /// Work-Graph. The session id is supplied by the daemon's trusted session
+    /// context, never by a model tool payload.
+    pub fn record_human_review(
+        &self,
+        session_id: &SessionId,
+        review: HumanReview,
+    ) -> Result<WorkGraphStep> {
+        let entry = self.entry_for(session_id)?;
+        Ok(entry
+            .runtime
+            .record_human_review(review)
+            .context("record authenticated human Work-Graph review")?
+            .next_step)
     }
 
     /// Writes a trusted specialist handoff to the active turn and persists it
