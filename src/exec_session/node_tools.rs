@@ -548,6 +548,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn begin_node_tool_persists_requested_diagnosis_template() {
+        let directory = TempDir::new().expect("temp directory");
+        let store = Arc::new(ExecutionSessionRuntimeStore::new(
+            directory.path().to_path_buf(),
+            Arc::new(CheckpointStore::new(directory.path())),
+            2,
+        ));
+        let root = AgentExecutionContext::root(SessionId::new("diagnosis-template"));
+        let context = ToolContext {
+            agent: &root,
+            invocation_id: ToolInvocationId::new("tool-diagnosis"),
+            origin_turn_id: None,
+            workdir: None,
+            effective_mode: crate::sandbox::EffectiveMode::Normal,
+            checkpoint: None,
+        };
+        let begin = BeginNodeTool::with_runtime_store(Arc::clone(&store));
+
+        begin
+            .execute_with_context(
+                &context,
+                json!({
+                    "goal": "diagnose a failing test",
+                    "verify_commands": ["true"],
+                    "task_kind": "diagnosis"
+                }),
+            )
+            .await
+            .expect("begin diagnosis node");
+
+        assert_eq!(
+            store.selected_template_id_for_test(&root.session_id),
+            Some("diagnosis-v1".into())
+        );
+    }
+
+    #[tokio::test]
     async fn store_backed_begin_without_context_is_rejected_without_creating_a_runtime() {
         let directory = TempDir::new().expect("temp directory");
         let begin = BeginNodeTool::with_runtime_store(Arc::new(ExecutionSessionRuntimeStore::new(

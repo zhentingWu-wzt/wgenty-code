@@ -506,6 +506,13 @@ impl ExecutionSessionRuntimeStore {
     }
 
     #[cfg(test)]
+    pub(crate) fn selected_template_id_for_test(&self, session_id: &SessionId) -> Option<String> {
+        self.work_state_for_test(session_id)
+            .selected_work_graph()
+            .map(|plan| plan.template_id.clone())
+    }
+
+    #[cfg(test)]
     pub(crate) fn checkpointed_work_state_for_test(
         &self,
         session_id: &SessionId,
