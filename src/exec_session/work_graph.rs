@@ -1,7 +1,7 @@
 //! Code-owned routing for the fixed compile → test → verify work graph.
 
 use crate::agent::coordinator::CoordinatorError;
-use crate::org_graph::{NodeType, SpecialistReportKind, VerifyFailureKind, WorkState};
+use crate::org_graph::{HumanReview, NodeType, SpecialistReportKind, VerifyFailureKind, WorkState};
 use serde::{Deserialize, Serialize};
 
 /// The next fixed work-graph step selected from anchored state.
@@ -13,6 +13,8 @@ pub enum WorkGraphStep {
     CompileAnchor,
     TestAnchor,
     VerifyGate,
+    /// Wait for the external HumanReview veto gate selected in this graph.
+    AwaitHumanReview,
     Complete,
     Escalate,
 }
@@ -40,6 +42,17 @@ pub fn next_step(state: &WorkState) -> Result<WorkGraphStep, CoordinatorError> {
         return Ok(WorkGraphStep::VerifyGate);
     };
     if verify.success {
+        if state.selected_work_graph().is_some_and(|plan| {
+            plan.nodes
+                .iter()
+                .any(|node| node.role == NodeType::HumanReview)
+        }) {
+            return match state.human_review(NodeType::HumanReview)? {
+                None => Ok(WorkGraphStep::AwaitHumanReview),
+                Some(HumanReview::Approve) => Ok(WorkGraphStep::Complete),
+                Some(HumanReview::Reject) => retry_or_escalate(state),
+            };
+        }
         return Ok(WorkGraphStep::Complete);
     }
     if matches!(

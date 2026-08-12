@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use crate::agent::ToolContext;
+use crate::org_graph::{WorkGraphRequest, WorkGraphTaskKind};
 use crate::tools::{Tool, ToolError, ToolOutput};
 
 use super::node_runtime::{NodeRollbackResult, NodeRuntime, NodeVerificationOutcome};
@@ -121,13 +122,35 @@ impl BeginNodeTool {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let task_kind = match input.get("task_kind").and_then(|value| value.as_str()) {
+            None => WorkGraphTaskKind::Implementation,
+            Some(value) => serde_json::from_value(serde_json::Value::String(value.into()))
+                .map_err(|_| ToolError {
+                    message: "invalid 'task_kind': expected 'implementation' or 'diagnosis'".into(),
+                    code: Some("invalid_input".into()),
+                })?,
+        };
+        let requires_human_review = input
+            .get("requires_human_review")
+            .map(|value| {
+                value.as_bool().ok_or_else(|| ToolError {
+                    message: "invalid 'requires_human_review': expected boolean".into(),
+                    code: Some("invalid_input".into()),
+                })
+            })
+            .transpose()?
+            .unwrap_or(false);
         let node_id = runtime
-            .begin_node_with_anchors(
+            .begin_node_with_work_graph(
                 goal,
                 Vec::new(),
                 Vec::new(),
                 verify_commands,
                 expected_files,
+                WorkGraphRequest {
+                    task_kind,
+                    requires_human_review,
+                },
             )
             .await
             .map_err(|e| ToolError {
@@ -178,6 +201,17 @@ verify scope and rollback."
                     "items": { "type": "string" },
                     "description": "Files expected to change within this node. Empty = no boundary check.",
                     "default": []
+                },
+                "task_kind": {
+                    "type": "string",
+                    "enum": ["implementation", "diagnosis"],
+                    "description": "Bounded code-owned Work-Graph template category.",
+                    "default": "implementation"
+                },
+                "requires_human_review": {
+                    "type": "boolean",
+                    "description": "Require a trusted human approval before completion.",
+                    "default": false
                 }
             },
             "required": ["goal", "verify_commands"]

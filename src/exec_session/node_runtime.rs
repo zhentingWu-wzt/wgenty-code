@@ -28,7 +28,8 @@ use super::work_graph::{next_step, WorkGraphStep};
 use crate::org_graph::{select_work_graph, WorkGraphRequest};
 use crate::org_graph::{
     AuditCommandRun, Budget, CompileResult, GeneratedDiff, GraphAuditAnchor, GraphAuditCommands,
-    GraphAuditEvent, GraphAuditKind, GraphAuditProfile, GraphAuditRoute, NodeType, TestResult,
+    GraphAuditEvent, GraphAuditKind, GraphAuditProfile, GraphAuditRoute, HumanReview, NodeType,
+    TestResult,
 };
 
 const AUDIT_STDERR_LIMIT_BYTES: usize = 8_192;
@@ -155,6 +156,7 @@ fn project_audit_route(step: WorkGraphStep) -> GraphAuditRoute {
         WorkGraphStep::CompileAnchor => GraphAuditRoute::CompileAnchor,
         WorkGraphStep::TestAnchor => GraphAuditRoute::TestAnchor,
         WorkGraphStep::VerifyGate => GraphAuditRoute::VerifyGate,
+        WorkGraphStep::AwaitHumanReview => GraphAuditRoute::HumanReview,
         WorkGraphStep::Complete => GraphAuditRoute::Complete,
         WorkGraphStep::Escalate => GraphAuditRoute::Escalate,
     }
@@ -427,6 +429,85 @@ impl NodeRuntime {
         self.complete_work_graph_route(WorkGraphStep::Escalate)
             .context("synchronize root-cause terminal escalation")?;
         Ok(())
+    }
+
+    /// Record an authenticated external HumanReview decision for the current
+    /// graph. This is intentionally not an agent-facing tool: callers must
+    /// authenticate the human outside the model tool channel.
+    pub fn record_human_review(&self, review: HumanReview) -> Result<WorkGraphRunResult> {
+        let mut coord = self
+            .coordinator
+            .write()
+            .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+        let current_node = coord
+            .current_node()
+            .context("human review requires a persisted current node")?;
+        let node_id = current_node.id.clone();
+        let requires_review = coord
+            .work_state()
+            .selected_work_graph()
+            .is_some_and(|plan| {
+                plan.nodes
+                    .iter()
+                    .any(|node| node.role == NodeType::HumanReview)
+            });
+        if !requires_review {
+            anyhow::bail!("current Work-Graph does not include a human-review gate");
+        }
+        let verified = coord
+            .work_state()
+            .verify_result(NodeType::HumanReview)
+            .context("read verification outcome for human review")?
+            .is_some_and(|outcome| outcome.success);
+        if !verified {
+            anyhow::bail!("human review requires a successful external verification anchor");
+        }
+        coord
+            .work_state_mut()
+            .set_human_review(NodeType::HumanReview, review)
+            .context("record authenticated human review")?;
+        let next_step = next_step(coord.work_state()).context("route human review decision")?;
+        let attempt = coord
+            .work_state()
+            .graph_audit()
+            .iter()
+            .filter(|event| event.node_id == node_id)
+            .map(|event| event.attempt)
+            .max()
+            .unwrap_or(1);
+        let budget = coord
+            .work_state()
+            .budget(NodeType::GeneralPurpose)
+            .context("read human review route budget")?
+            .cloned();
+        coord.work_state_mut().append_graph_audit(route_audit_event(
+            &WorkGraphAuditContext { node_id, attempt },
+            next_step,
+            budget,
+        ));
+        coord
+            .capture_current_work_state()
+            .context("persist human review decision")?;
+        drop(coord);
+        let result = self.complete_work_graph_route(next_step)?;
+        if result.next_step == WorkGraphStep::Complete {
+            let mut coord = self
+                .coordinator
+                .write()
+                .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+            let node_id = coord
+                .current_node()
+                .context("human review completion requires a current node")?
+                .id
+                .clone();
+            coord
+                .set_status(SessionStatus::InProgress)
+                .context("reset session after human review approval")?;
+            coord
+                .update_node_status(&node_id, NodeStatus::Verified)
+                .context("mark node verified after human review approval")?;
+        }
+        Ok(result)
     }
 
     fn record_compile_result(
@@ -1309,6 +1390,55 @@ mod tests {
             .selected_work_graph()
             .expect("selected graph persisted");
         assert_eq!(plan.template_id, "implementation-v1");
+    }
+
+    #[tokio::test]
+    async fn human_review_template_pauses_then_completes_only_after_approval() {
+        let setup = TestSetup::new(0);
+        setup.begin_turn();
+        setup
+            .runtime
+            .begin_node_with_work_graph(
+                "reviewed implementation".into(),
+                vec!["echo compile".into()],
+                vec!["echo test".into()],
+                vec!["echo verify".into()],
+                vec![],
+                WorkGraphRequest {
+                    task_kind: crate::org_graph::WorkGraphTaskKind::Implementation,
+                    requires_human_review: true,
+                },
+            )
+            .await
+            .expect("begin reviewed node");
+
+        let result = setup
+            .runtime
+            .run_work_graph(
+                vec!["echo compile".into()],
+                vec!["echo test".into()],
+                vec!["echo verify".into()],
+                vec![],
+            )
+            .await
+            .expect("run anchors");
+        assert_eq!(result.next_step, WorkGraphStep::AwaitHumanReview);
+
+        let result = setup
+            .runtime
+            .record_human_review(HumanReview::Approve)
+            .expect("approve review");
+        assert_eq!(result.next_step, WorkGraphStep::Complete);
+        assert_eq!(
+            setup
+                .coord
+                .read()
+                .expect("coordinator")
+                .current_node()
+                .expect("node")
+                .status,
+            NodeStatus::Verified
+        );
     }
 
     #[tokio::test]
