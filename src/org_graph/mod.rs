@@ -4,6 +4,7 @@ pub mod audit;
 pub mod contract;
 pub mod registry;
 pub mod render;
+pub mod work_graph_plan;
 pub mod work_state;
 
 pub use audit::WorkGraphAuditSummary;
@@ -12,6 +13,10 @@ pub use contract::{
     ResourceBudget,
 };
 pub use registry::NodeRegistry;
+pub use work_graph_plan::{
+    select_work_graph, WorkGraphPlan, WorkGraphPlanEdge, WorkGraphPlanNode, WorkGraphRequest,
+    WorkGraphTaskKind,
+};
 pub use work_state::{
     AuditCommandRun, Budget, CompileResult, FieldPerms, GeneratedDiff, GraphAuditAnchor,
     GraphAuditCommands, GraphAuditEvent, GraphAuditKind, GraphAuditProfile, GraphAuditRoute,
