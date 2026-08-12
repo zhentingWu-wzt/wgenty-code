@@ -305,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn all_six_builtin_contracts_present() {
+    fn all_seven_builtin_contracts_present() {
         let r = registry(true);
         for nt in [
             NodeType::Explore,
