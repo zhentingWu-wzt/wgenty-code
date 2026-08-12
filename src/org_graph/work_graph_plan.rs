@@ -25,6 +25,15 @@ pub struct WorkGraphRequest {
     pub requires_human_review: bool,
 }
 
+impl Default for WorkGraphRequest {
+    fn default() -> Self {
+        Self {
+            task_kind: WorkGraphTaskKind::Implementation,
+            requires_human_review: false,
+        }
+    }
+}
+
 /// A graph node chosen from the Org-Graph's registered role pool.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkGraphPlanNode {

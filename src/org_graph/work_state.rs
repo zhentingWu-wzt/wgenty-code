@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use super::contract::NodeType;
+use super::work_graph_plan::WorkGraphPlan;
 use crate::agent::coordinator::CoordinatorError;
 use crate::org_graph::contract::ContractDimension;
 
@@ -40,6 +41,11 @@ pub struct WorkState {
     /// 专用子 Agent 的结构化交接报告（兼容既有 checkpoint）。
     #[serde(default)]
     specialist_reports: Vec<SpecialistReport>,
+    /// Coordinator-selected bounded Work-Graph for the active node. This is
+    /// configuration, not an agent-produced artifact, so only the runtime may
+    /// replace it.
+    #[serde(default)]
+    selected_work_graph: Option<WorkGraphPlan>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -340,6 +346,16 @@ impl WorkState {
     /// 读取跨 checkpoint 保留的工作图审计记录。
     pub fn graph_audit(&self) -> &[GraphAuditEvent] {
         &self.graph_audit
+    }
+
+    /// Return the code-selected Work-Graph persisted for the active node.
+    pub fn selected_work_graph(&self) -> Option<&WorkGraphPlan> {
+        self.selected_work_graph.as_ref()
+    }
+
+    /// Persist a bounded Work-Graph selected by the trusted coordinator.
+    pub(crate) fn set_selected_work_graph(&mut self, plan: WorkGraphPlan) {
+        self.selected_work_graph = Some(plan);
     }
 
     /// Read all persisted specialist reports when the caller's contract allows
@@ -650,6 +666,7 @@ impl WorkState {
         self.verify_result = None;
         self.budget = None;
         self.specialist_reports.clear();
+        self.selected_work_graph = None;
     }
 
     /// Invalidate every result derived from a prior work-graph pass before a
@@ -677,6 +694,7 @@ impl WorkState {
             step_log: Vec::new(),
             graph_audit: self.graph_audit.clone(),
             specialist_reports: self.specialist_reports.clone(),
+            selected_work_graph: self.selected_work_graph.clone(),
         }
     }
 }
@@ -953,6 +971,7 @@ mod tests {
             }],
             graph_audit: vec![event("verify", 1, GraphAuditKind::AnchorCompleted)],
             specialist_reports: Vec::new(),
+            selected_work_graph: None,
         };
         let json = serde_json::to_string(&state).expect("serialize");
         let back: WorkState = serde_json::from_str(&json).expect("deserialize");
@@ -1368,6 +1387,7 @@ mod tests {
             }],
             graph_audit: vec![event("verify", 1, GraphAuditKind::AnchorCompleted)],
             specialist_reports: Vec::new(),
+            selected_work_graph: None,
         };
         let next = state.inherit_for_new_turn();
         assert_eq!(next.requirement.as_deref(), Some("跨 turn"));

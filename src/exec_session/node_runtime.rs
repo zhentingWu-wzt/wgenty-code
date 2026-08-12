@@ -25,6 +25,7 @@ use super::session::SessionStatus;
 use super::verification_profile::VerificationProfile;
 use super::verify_gate::{VerifyGate, VerifyResult};
 use super::work_graph::{next_step, WorkGraphStep};
+use crate::org_graph::{select_work_graph, WorkGraphRequest};
 use crate::org_graph::{
     AuditCommandRun, Budget, CompileResult, GeneratedDiff, GraphAuditAnchor, GraphAuditCommands,
     GraphAuditEvent, GraphAuditKind, GraphAuditProfile, GraphAuditRoute, NodeType, TestResult,
@@ -651,6 +652,28 @@ impl NodeRuntime {
         verify_commands: Vec<String>,
         expected_files: Vec<String>,
     ) -> Result<NodeId> {
+        self.begin_node_with_work_graph(
+            goal,
+            compile_commands,
+            test_commands,
+            verify_commands,
+            expected_files,
+            WorkGraphRequest::default(),
+        )
+        .await
+    }
+
+    /// Begin a node and persist the bounded, code-selected Work-Graph that
+    /// governs its subsequent routing.
+    pub async fn begin_node_with_work_graph(
+        &self,
+        goal: String,
+        compile_commands: Vec<String>,
+        test_commands: Vec<String>,
+        verify_commands: Vec<String>,
+        expected_files: Vec<String>,
+        graph_request: WorkGraphRequest,
+    ) -> Result<NodeId> {
         let project_root = {
             let coord = self
                 .coordinator
@@ -704,6 +727,9 @@ impl NodeRuntime {
         self.hooks.pre_node(&node);
         coord.add_node(node).context("add_node failed")?;
         coord.work_state_mut().reset_for_new_node();
+        coord
+            .work_state_mut()
+            .set_selected_work_graph(select_work_graph(&graph_request));
         coord
             .capture_current_work_state()
             .context("persist fresh node work state")?;
@@ -1264,6 +1290,25 @@ mod tests {
         assert_eq!(node.id, "n1");
         assert_eq!(node.status, NodeStatus::Running);
         assert_eq!(node.start_turn_id, "turn-0");
+    }
+
+    #[tokio::test]
+    async fn begin_node_persists_default_bounded_work_graph_in_checkpoint() {
+        let setup = TestSetup::new(0);
+        setup.begin_turn();
+
+        setup
+            .runtime
+            .begin_node("implement feature".into(), vec!["echo ok".into()], vec![])
+            .await
+            .expect("begin node");
+
+        let coordinator = setup.coord.read().expect("coordinator");
+        let plan = coordinator
+            .work_state()
+            .selected_work_graph()
+            .expect("selected graph persisted");
+        assert_eq!(plan.template_id, "implementation-v1");
     }
 
     #[tokio::test]
