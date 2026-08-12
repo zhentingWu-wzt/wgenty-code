@@ -1,6 +1,7 @@
 //! Code-owned routing for the fixed compile → test → verify work graph.
 
 use crate::agent::coordinator::CoordinatorError;
+use crate::org_graph::ContractDimension;
 use crate::org_graph::{HumanReview, NodeType, SpecialistReportKind, VerifyFailureKind, WorkState};
 use serde::{Deserialize, Serialize};
 
@@ -42,11 +43,8 @@ pub fn next_step(state: &WorkState) -> Result<WorkGraphStep, CoordinatorError> {
         return Ok(WorkGraphStep::VerifyGate);
     };
     if verify.success {
-        if state.selected_work_graph().is_some_and(|plan| {
-            plan.nodes
-                .iter()
-                .any(|node| node.role == NodeType::HumanReview)
-        }) {
+        if selected_plan_has_role(state, NodeType::HumanReview) {
+            require_plan_edge(state, NodeType::Verification, NodeType::HumanReview)?;
             return match state.human_review(NodeType::HumanReview)? {
                 None => Ok(WorkGraphStep::AwaitHumanReview),
                 Some(HumanReview::Approve) => Ok(WorkGraphStep::Complete),
@@ -76,11 +74,42 @@ fn retry_or_escalate(state: &WorkState) -> Result<WorkGraphStep, CoordinatorErro
         if reports.iter().any(|report| {
             report.producer == NodeType::RootCause && report.kind == SpecialistReportKind::RootCause
         }) {
+            require_plan_edge(state, NodeType::RootCause, NodeType::GeneralPurpose)?;
             WorkGraphStep::Implement
         } else {
+            require_plan_edge(state, NodeType::Verification, NodeType::RootCause)?;
             WorkGraphStep::RootCause
         },
     )
+}
+
+fn selected_plan_has_role(state: &WorkState, role: NodeType) -> bool {
+    state
+        .selected_work_graph()
+        .is_some_and(|plan| plan.nodes.iter().any(|node| node.role == role))
+}
+
+fn require_plan_edge(
+    state: &WorkState,
+    from: NodeType,
+    to: NodeType,
+) -> Result<(), CoordinatorError> {
+    let Some(plan) = state.selected_work_graph() else {
+        // Legacy checkpoints predate selected plans; retaining their known
+        // deterministic routing keeps recovery backward compatible.
+        return Ok(());
+    };
+    if plan.permits_role_edge(from.clone(), to.clone()) {
+        return Ok(());
+    }
+    Err(CoordinatorError::ContractViolation {
+        node_type: from,
+        dimension: ContractDimension::State,
+        reason: format!(
+            "selected Work-Graph '{}' forbids route to {:?}",
+            plan.template_id, to
+        ),
+    })
 }
 
 #[cfg(test)]
