@@ -518,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn iter_returns_all_six_in_canonical_order() {
+    fn iter_returns_all_seven_in_canonical_order() {
         let r = registry(true);
         let ordered: Vec<NodeType> = r.iter().into_iter().map(|c| c.node_type.clone()).collect();
         assert_eq!(
@@ -529,6 +529,7 @@ mod tests {
                 NodeType::GeneralPurpose,
                 NodeType::Verification,
                 NodeType::RootCause,
+                NodeType::HumanReview,
                 NodeType::WgentyCodeGuide,
             ]
         );
@@ -538,7 +539,7 @@ mod tests {
     fn iter_consistent_with_get() {
         let r = registry(true);
         let collected: Vec<&NodeContract> = r.iter();
-        assert_eq!(collected.len(), 6, "iter returns all six builtins");
+        assert_eq!(collected.len(), 7, "iter returns all seven builtins");
         for c in r.iter() {
             assert_eq!(
                 c,
