@@ -56,6 +56,26 @@ pub struct WorkGraphPlan {
     pub edges: Vec<WorkGraphPlanEdge>,
 }
 
+impl WorkGraphPlan {
+    /// Returns whether this bounded plan contains an edge between roles.
+    ///
+    /// Runtime routing uses this rather than trusting a model-suggested next
+    /// step. Multiple nodes with the same role are supported deliberately.
+    pub fn permits_role_edge(&self, from: NodeType, to: NodeType) -> bool {
+        self.edges.iter().any(|edge| {
+            self.nodes
+                .iter()
+                .find(|node| node.id == edge.from)
+                .is_some_and(|node| node.role == from)
+                && self
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == edge.to)
+                    .is_some_and(|node| node.role == to)
+        })
+    }
+}
+
 /// Selects a registered graph template from structured task facts.
 pub fn select_work_graph(request: &WorkGraphRequest) -> WorkGraphPlan {
     let mut nodes = vec![
@@ -155,5 +175,7 @@ mod tests {
             .edges
             .iter()
             .any(|edge| edge.from == "verify" && edge.to == "human-review"));
+        assert!(plan.permits_role_edge(NodeType::Verification, NodeType::HumanReview));
+        assert!(!plan.permits_role_edge(NodeType::HumanReview, NodeType::GeneralPurpose));
     }
 }
