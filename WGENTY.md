@@ -136,6 +136,13 @@ Agent 的非只读工具调用都被拒绝。只有该 child 能成功提交报�
 `submit_specialist_report` 返回的 `next_step` 始终由当前结构化 State 计算，报告不能
 自行批准结果。
 
+进程重启后，运行时从 `.wgenty-code/snapshots/<session-id>/` 载入既有
+`session.json`、active turn 的 `WorkState` 和审计轨迹；损坏或结构不一致的快照会带
+上下文失败并保持原文件不变。若恢复状态仍选择 `RootCause`，daemon 仅依据该持久化的
+node/attempt 和外部锚点重新派发一个**新** child，再按正常预绑定流程启动它。旧 child ID
+永不恢复；恢复不会重跑 compile/test/verify 锚点或增加 attempt。`Complete`、`Escalate`
+及非 RootCause 路由不会派发 child。
+
 请求链路：`用户输入 -> CLI解析 -> Settings加载 -> Prompt组装(8层) -> API SSE -> 工具调用 -> Guardian审查 -> Sandbox执行 -> 流式返回`
 
 Prompt 8 层：base_instructions → permissions → developer → environment → agents_md → collaboration → skills_inventory → wgenty_md_sections

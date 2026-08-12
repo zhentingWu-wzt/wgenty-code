@@ -471,20 +471,43 @@ impl DaemonState {
         &self,
         session_id: &str,
     ) -> anyhow::Result<crate::agent::AgentExecutionContext> {
-        {
+        let context = {
             let roots = self.root_contexts.read().await;
             if let Some(ctx) = roots.get(session_id) {
-                return Ok(ctx.clone());
+                ctx.clone()
+            } else {
+                drop(roots);
+                let ctx = self
+                    .coordinator
+                    .ensure_root(crate::agent::SessionId::new(session_id))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("ensure_root failed: {e}"))?;
+                let mut roots = self.root_contexts.write().await;
+                roots.insert(session_id.to_string(), ctx.clone());
+                ctx
             }
-        }
-        let ctx = self
-            .coordinator
-            .ensure_root(crate::agent::SessionId::new(session_id))
+        };
+        let tool_context = crate::agent::ToolContext {
+            agent: &context,
+            invocation_id: crate::agent::ToolInvocationId::new(uuid::Uuid::new_v4().to_string()),
+            origin_turn_id: None,
+            workdir: Some(&self.app_state.settings.storage.working_dir),
+            effective_mode: *self.effective_mode.read().expect("effective mode lock"),
+            checkpoint: Some(self.checkpoint_store.as_ref()),
+        };
+        if let Some(child_id) = self
+            .tool_registry
+            .dispatch_recovered_root_cause(&tool_context)
             .await
-            .map_err(|e| anyhow::anyhow!("ensure_root failed: {}", e))?;
-        let mut roots = self.root_contexts.write().await;
-        roots.insert(session_id.to_string(), ctx.clone());
-        Ok(ctx)
+            .map_err(|error| anyhow::anyhow!("recover root-cause specialist: {}", error.message))?
+        {
+            tracing::info!(
+                session_id,
+                child_id,
+                "redispatched recovered root-cause specialist"
+            );
+        }
+        Ok(context)
     }
 
     /// Creates a trusted UI viewer: generates a 256-bit bearer token, stores
