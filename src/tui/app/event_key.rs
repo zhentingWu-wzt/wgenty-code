@@ -360,26 +360,50 @@ impl App {
                 KeyCode::Enter => {
                     if let Some(session) = self.session_state.selected_session() {
                         let id = session.id.clone();
-                        // Adopt the loaded session's ID so subsequent saves
-                        // go back to the original file, not a forked copy.
-                        self.session_id = id.clone();
-                        self.session_name = session.name.clone();
+                        let name = session.name.clone();
+                        if self.has_running_turn() || !self.pending_inputs.is_empty() {
+                            self.push_system_message(
+                                "Finish or cancel the active turn before switching sessions.",
+                            );
+                            return;
+                        }
                         self.session_state.dismiss();
+                        if id == self.session_id {
+                            return;
+                        }
+                        // Record the latest requested switch target so stale
+                        // completions from earlier switches are dropped when
+                        // multiple switches are in flight simultaneously.
+                        self.session_state.pending_switch = Some(id.clone());
+                        // Automatic daemon continuation is invisible to local
+                        // busy gates. Keep observing the old session until its
+                        // run claim is released after the final save.
+                        self.mark_daemon_owned_session_history();
                         let client = self.daemon_client.clone();
-                        let history = self.conversation_history.clone();
                         let tx = self.event_tx.clone();
+                        let from_id = self.session_id.clone();
                         tokio::spawn(async move {
-                            if let Ok(resp) = client.load_session(&id).await {
-                                let messages = resp.messages;
-                                let ui_messages = resp.ui_messages;
-                                {
-                                    let mut h = history.lock().await;
-                                    *h = messages.clone();
+                            match client
+                                .cancel_run_and_wait_for_release(
+                                    &from_id,
+                                    std::time::Duration::from_secs(3),
+                                )
+                                .await
+                            {
+                                Ok(()) => {
+                                    let _ =
+                                        tx.send(AppEvent::SessionSwitched { from_id, id, name });
                                 }
-                                let _ = tx.send(AppEvent::HistoryLoaded {
-                                    messages,
-                                    ui_messages,
-                                });
+                                Err(error) => {
+                                    tracing::warn!(
+                                        session_id = %from_id,
+                                        error = %error,
+                                        "session switch cancellation failed"
+                                    );
+                                    let _ = tx.send(AppEvent::SystemNotice(format!(
+                                        "⚠ session switch cancelled; old session remains active: {error}"
+                                    )));
+                                }
                             }
                         });
                     }
@@ -679,10 +703,14 @@ impl App {
     /// EffectiveMode (Plan stays Plan).
     pub(super) fn sync_permission_mode_to_daemon(&self) {
         let client = self.daemon_client.clone();
+        let session_id = self.session_id.clone();
         let mode = self.mode.to_root_permission_mode();
         let effective_mode = self.mode.to_effective_mode();
         tokio::spawn(async move {
-            if let Err(e) = client.set_permission_mode(mode, effective_mode).await {
+            if let Err(e) = client
+                .set_permission_mode(&session_id, mode, effective_mode)
+                .await
+            {
                 tracing::warn!(error = ?e, "failed to sync permission mode to daemon");
             }
         });
@@ -727,7 +755,14 @@ mod tests {
     use super::*;
     use crate::config::watcher::SettingsHandle;
     use crate::config::Settings;
+    use crate::tools::execution::BackgroundResult;
     use crate::tui::client::DaemonClient;
+    use crate::tui::client::SessionInfo;
+    use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::routing::post;
+    use axum::Router;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
@@ -770,6 +805,399 @@ mod tests {
             !app.should_quit,
             "ESC should not quit when idle (fallback removed)"
         );
+    }
+
+    #[tokio::test]
+    async fn loading_selected_session_restarts_session_scoped_readers() {
+        async fn no_active_run() -> StatusCode {
+            StatusCode::NOT_FOUND
+        }
+
+        let router = Router::new().route("/api/v1/sessions/:id/cancel", post(no_active_run));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind idle session-switch server");
+        let address = listener.local_addr().expect("read idle switch address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve idle session-switch server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "test-esc".to_string(),
+            settings,
+        );
+        app.session_state.show(vec![SessionInfo {
+            id: "loaded-session".to_string(),
+            name: "Loaded Session".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            message_count: 1,
+            summary: None,
+        }]);
+
+        app.handle_key_event(KeyCode::Enter.into());
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while app.session_id != "loaded-session" {
+                let event = app
+                    .event_rx
+                    .recv()
+                    .await
+                    .expect("idle session switch event channel remains open");
+                app.handle_event(event).await;
+            }
+        })
+        .await
+        .expect("idle session switch completes transactionally");
+
+        assert_eq!(app.session_id, "loaded-session");
+        assert!(app.global_event_reader.is_some());
+
+        if let Some(handle) = app.global_event_reader.take() {
+            handle.abort();
+        }
+        if let Some(handle) = app.session_event_reader.take() {
+            handle.abort();
+        }
+        if let Some(handle) = app.trace_event_reader.take() {
+            handle.abort();
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn switching_sessions_requests_cancellation_for_invisible_daemon_work() {
+        async fn capture_cancel(State(count): State<Arc<AtomicUsize>>) -> StatusCode {
+            count.fetch_add(1, Ordering::SeqCst);
+            StatusCode::NOT_FOUND
+        }
+
+        let cancellations = Arc::new(AtomicUsize::new(0));
+        let router = Router::new()
+            .route("/api/v1/sessions/:id/cancel", post(capture_cancel))
+            .with_state(cancellations.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind session-switch cancellation server");
+        let address = listener
+            .local_addr()
+            .expect("read session-switch server address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve session-switch cancellation server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "old-session".to_string(),
+            settings,
+        );
+        app.session_state.show(vec![SessionInfo {
+            id: "loaded-session".to_string(),
+            name: "Loaded Session".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            message_count: 1,
+            summary: None,
+        }]);
+
+        app.handle_key_event(KeyCode::Enter.into());
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while cancellations.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("session switch must cancel the old daemon session");
+        assert_eq!(cancellations.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn session_switch_waits_for_old_daemon_run_to_release_before_adopting_target() {
+        #[derive(Clone)]
+        struct CancelState {
+            attempts: Arc<AtomicUsize>,
+            released: Arc<AtomicBool>,
+        }
+
+        async fn cancel_until_released(State(state): State<CancelState>) -> StatusCode {
+            state.attempts.fetch_add(1, Ordering::SeqCst);
+            if state.released.load(Ordering::SeqCst) {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::NO_CONTENT
+            }
+        }
+
+        let state = CancelState {
+            attempts: Arc::new(AtomicUsize::new(0)),
+            released: Arc::new(AtomicBool::new(false)),
+        };
+        let router = Router::new()
+            .route("/api/v1/sessions/:id/cancel", post(cancel_until_released))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind transactional session-switch server");
+        let address = listener
+            .local_addr()
+            .expect("read transactional session-switch address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve transactional session-switch server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "old-session".to_string(),
+            settings,
+        );
+        app.session_state.show(vec![SessionInfo {
+            id: "loaded-session".to_string(),
+            name: "Loaded Session".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            message_count: 1,
+            summary: None,
+        }]);
+
+        app.handle_key_event(KeyCode::Enter.into());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.attempts.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("session switch requests cancellation");
+        assert_eq!(
+            app.session_id, "old-session",
+            "the target cannot be adopted while the old daemon claim is active"
+        );
+
+        state.released.store(true, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while app.session_id != "loaded-session" {
+                let event = app
+                    .event_rx
+                    .recv()
+                    .await
+                    .expect("session switch event channel remains open");
+                app.handle_event(event).await;
+            }
+        })
+        .await
+        .expect("session switch adopts the target after final release");
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn session_switch_failure_keeps_the_old_session_active() {
+        async fn reject_cancel() -> StatusCode {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+
+        let router = Router::new().route("/api/v1/sessions/:id/cancel", post(reject_cancel));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind rejected session-switch server");
+        let address = listener
+            .local_addr()
+            .expect("read rejected session-switch address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve rejected session-switch server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "old-session".to_string(),
+            settings,
+        );
+        app.session_state.show(vec![SessionInfo {
+            id: "loaded-session".to_string(),
+            name: "Loaded Session".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            message_count: 1,
+            summary: None,
+        }]);
+
+        app.handle_key_event(KeyCode::Enter.into());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !app.committed_messages.iter().any(|message| {
+                message.role == MessageRole::System && message.content.contains("session switch")
+            }) {
+                let event = app
+                    .event_rx
+                    .recv()
+                    .await
+                    .expect("session switch failure event channel remains open");
+                app.handle_event(event).await;
+            }
+        })
+        .await
+        .expect("session switch failure is reported");
+
+        assert_eq!(app.session_id, "old-session");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn latest_session_switch_request_wins_when_older_completion_arrives_first() {
+        #[derive(Clone)]
+        struct OrderedCancelState {
+            attempts: Arc<AtomicUsize>,
+            release_second: Arc<tokio::sync::Notify>,
+        }
+
+        async fn ordered_cancel(State(state): State<OrderedCancelState>) -> StatusCode {
+            let attempt = state.attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt > 0 {
+                state.release_second.notified().await;
+            }
+            StatusCode::NOT_FOUND
+        }
+
+        let state = OrderedCancelState {
+            attempts: Arc::new(AtomicUsize::new(0)),
+            release_second: Arc::new(tokio::sync::Notify::new()),
+        };
+        let router = Router::new()
+            .route("/api/v1/sessions/:id/cancel", post(ordered_cancel))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ordered session-switch server");
+        let address = listener
+            .local_addr()
+            .expect("read ordered session-switch address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve ordered session-switch server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "session-a".to_string(),
+            settings,
+        );
+
+        app.session_state.show(vec![SessionInfo {
+            id: "session-b".to_string(),
+            name: "Session B".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            message_count: 1,
+            summary: None,
+        }]);
+        app.handle_key_event(KeyCode::Enter.into());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.attempts.load(Ordering::SeqCst) < 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first switch cancellation completes");
+
+        app.session_state.show(vec![SessionInfo {
+            id: "session-c".to_string(),
+            name: "Session C".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            message_count: 1,
+            summary: None,
+        }]);
+        app.handle_key_event(KeyCode::Enter.into());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while state.attempts.load(Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("second switch cancellation is pending");
+
+        loop {
+            let event = app
+                .event_rx
+                .recv()
+                .await
+                .expect("older switch completion is queued");
+            let is_stale_switch =
+                matches!(&event, AppEvent::SessionSwitched { id, .. } if id == "session-b");
+            app.handle_event(event).await;
+            if is_stale_switch {
+                break;
+            }
+        }
+        assert_eq!(
+            app.session_id, "session-a",
+            "completion for A→B must not win after A→C becomes the latest request"
+        );
+
+        state.release_second.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while app.session_id != "session-c" {
+                let event = app
+                    .event_rx
+                    .recv()
+                    .await
+                    .expect("latest switch event channel remains open");
+                app.handle_event(event).await;
+            }
+        })
+        .await
+        .expect("latest A→C request adopts C");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn session_picker_refuses_switch_while_server_run_is_active_after_background_notice() {
+        let mut app = build_app();
+        app.server_side_loop = true;
+        app.server_side_turn_active = true;
+        app.handle_event(AppEvent::BackgroundTaskCompleted(BackgroundResult {
+            task_id: "session-a-result".to_string(),
+            session_id: Some("test-esc".to_string()),
+            result_type: "command".to_string(),
+            command: "true".to_string(),
+            stdout: "done".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            success: true,
+            sandbox_bypassed: false,
+            permission_mode: None,
+            sandbox_level: None,
+        }))
+        .await;
+        app.session_state.show(vec![SessionInfo {
+            id: "session-b".to_string(),
+            name: "Session B".to_string(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            message_count: 0,
+            summary: None,
+        }]);
+
+        app.handle_key_event(KeyCode::Enter.into());
+
+        assert_eq!(app.session_id, "test-esc");
+        assert!(app.session_state.visible);
+        assert!(app.pending_inputs.is_empty());
+        assert!(app.committed_messages.iter().any(|message| {
+            message
+                .content
+                .contains("Background task session-a-result completed")
+        }));
     }
 
     #[tokio::test]

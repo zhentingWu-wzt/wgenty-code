@@ -24,6 +24,22 @@ pub struct ConfigResponse {
     pub streaming: bool,
 }
 
+/// `PUT /api/v1/config` — partial update of transport-level settings. All
+/// fields optional; only provided fields are written. Sensitive fields
+/// (api_key/appkey) are intentionally absent — they are never accepted or
+/// returned by this endpoint.
+#[derive(Debug, Deserialize)]
+pub struct UpdateConfigRequest {
+    #[serde(default)]
+    pub max_tokens: Option<usize>,
+    #[serde(default)]
+    pub timeout: Option<u64>,
+    #[serde(default)]
+    pub streaming: Option<bool>,
+    #[serde(default)]
+    pub api_base: Option<String>,
+}
+
 // ── Chat ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +148,16 @@ pub struct SetPermissionModeRequest {
     /// Sandbox effective mode including Plan. When omitted, derived from `mode`.
     #[serde(default)]
     pub effective_mode: Option<crate::sandbox::EffectiveMode>,
+    /// Session whose project root the mode applies to. Required — the
+    /// server-side handler rejects requests without it (400, design §4).
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PermissionModeQuery {
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 // ── Model Switch ─────────────────────────────────────────────────────────────
@@ -246,6 +272,13 @@ pub struct GetTodosResponse {
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
+/// Worktree reference exposed in session responses (project → worktree → session).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeRef {
+    pub path: String,
+    pub branch: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SessionInfoResponse {
     pub id: String,
@@ -255,6 +288,8 @@ pub struct SessionInfoResponse {
     pub updated_at: String,
     pub message_count: usize,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeRef>,
 }
 
 #[derive(Debug, Serialize)]
@@ -263,16 +298,25 @@ pub struct SessionResponse {
     pub name: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Optimistic-concurrency version (see `Session.version`); bumped on
+    /// every persisted write.
+    pub version: u64,
     pub messages: Vec<SessionMessage>,
     /// Human-facing TUI transcript; empty for legacy sessions.
     #[serde(default)]
     pub ui_messages: Vec<crate::context::SessionUiMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<WorktreeRef>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
     #[serde(default)]
     pub name: Option<String>,
+    /// Project root the session belongs to (must be the main project or a
+    /// registered one). `None` = main project (legacy behavior).
+    #[serde(default)]
+    pub project_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -284,6 +328,12 @@ pub struct UpdateSessionRequest {
     /// When `Some`, replace the UI transcript track. `None` leaves existing data.
     #[serde(default)]
     pub ui_messages: Option<Vec<crate::context::SessionUiMessage>>,
+    /// Optimistic concurrency guard: when `Some`, the write is rejected with
+    /// 409 + current_version unless it matches the stored version. `None`
+    /// keeps legacy last-write-wins behavior (risk borne by unupgraded
+    /// clients — documented in design §5).
+    #[serde(default)]
+    pub expected_version: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -405,4 +455,79 @@ pub struct ResetAgentGenerationRequest {
 #[derive(Debug, Serialize)]
 pub struct ResetAgentGenerationResponse {
     pub generation: u64,
+}
+
+// ── Memory ops API (Tier 2 web-ops-console: ops-panel-api) ────────────────────
+// Wraps the existing MemoryManager so the web frontend can inspect/prune the
+// memory pools. MemoryOrigin is intentionally not Serialize on the model
+// (src/context/entry.rs), so the ops DTOs carry a lowercase `origin` string.
+
+/// `GET /api/v1/memory` query filters.
+#[derive(Debug, Deserialize, Default)]
+pub struct MemoryListQuery {
+    pub scope: Option<String>, // "project" | "global" | "all" (default all)
+    pub min_importance: Option<f32>,
+    pub limit: Option<usize>,
+    /// Project whose memory pool to query (`None` = main project).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+/// Query for memory endpoints that only need the project selector.
+#[derive(Debug, Deserialize)]
+pub struct MemoryProjectQuery {
+    /// Project whose memory pool to use (`None` = main project).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+/// Query for `DELETE /api/v1/memory/:id`. Requires `origin` to select the
+/// correct pool (project vs global); `project` further narrows the project
+/// pool when `origin=project`.
+#[derive(Debug, Deserialize)]
+pub struct DeleteMemoryQuery {
+    /// Which pool to delete from: "project" or "global".
+    pub origin: String,
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+/// One memory item with its origin annotated (the model's MemoryOrigin is not
+/// serialized, so we project to a string here). MemoryEntry fields are flattened
+/// in so the client sees id/content/importance/etc. at the top level.
+#[derive(Debug, Serialize)]
+pub struct MemoryItemResponse {
+    pub origin: String, // "project" | "global"
+    #[serde(flatten)]
+    pub entry: crate::context::MemoryEntry,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MemoryListResponse {
+    pub items: Vec<MemoryItemResponse>,
+    pub total: usize,
+}
+
+/// `GET /api/v1/memory/:id` — single item with origin. MemoryEntry already
+/// serializes its own id/content/etc.; we just add `origin` alongside by
+/// projecting to a Value rather than flatten (avoids field-name coupling).
+#[derive(Debug, Serialize)]
+pub struct MemoryDetailResponse {
+    pub origin: String,
+    #[serde(flatten)]
+    pub entry: crate::context::MemoryEntry,
+}
+
+/// `POST /api/v1/memory/prune` request. `dry_run` defaults false.
+#[derive(Debug, Deserialize, Default)]
+pub struct PruneRequest {
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// `POST /api/v1/interactions/:id/resolve` — answer a pending ask_user_question.
+#[derive(Debug, Deserialize)]
+pub struct ResolveInteractionRequest {
+    /// The user's answer: a JSON string (selected option values or free text).
+    pub answer: String,
 }

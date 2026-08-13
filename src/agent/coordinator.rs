@@ -32,14 +32,29 @@ const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct SpawnChildRequest {
     /// Human-readable label for the child task.
     pub label: String,
+    /// The child's node type, used by the coordinator to look up the
+    /// [`NodeContract`](crate::org_graph::NodeContract) for enforcement.
+    /// Defaults to [`NodeType::GeneralPurpose`](crate::org_graph::NodeType);
+    /// `new()` callers that omit `with_node_type` behave exactly as before.
+    pub node_type: crate::org_graph::NodeType,
 }
 
 impl SpawnChildRequest {
     /// Creates a new spawn request with the given label.
+    ///
+    /// `node_type` defaults to `GeneralPurpose`, matching pre-change behavior.
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
+            node_type: crate::org_graph::NodeType::default(),
         }
+    }
+
+    /// Sets the child's node type.
+    #[must_use]
+    pub fn with_node_type(mut self, node_type: crate::org_graph::NodeType) -> Self {
+        self.node_type = node_type;
+        self
     }
 }
 
@@ -213,6 +228,7 @@ struct ChildResultGrant {
 /// The concurrency permit is retained internally by the coordinator's
 /// `ScopeState` and released only after the child reaches a terminal state
 /// through [`AgentCoordinator::finish_child`].
+#[derive(Debug)]
 pub struct ChildReservation {
     /// Trusted execution context for the child agent.
     pub context: AgentExecutionContext,
@@ -264,6 +280,18 @@ pub enum CoordinatorError {
     /// The persistent root is not allowed to enter a terminal lifecycle state.
     #[error("the persistent root has no terminal lifecycle state")]
     RootHasNoTerminalState,
+    /// A node-contract dimension was violated (capability / permission / budget).
+    ///
+    /// Does NOT trigger structural fallback: the exhaustive match in
+    /// [`fallback_eligible_from_coordinator_error`] maps this to `None`, so the
+    /// violation surfaces to the parent agent as a `contract_violation`
+    /// [`ToolError`] rather than degrading to a leaf-tool fallback run.
+    #[error("contract violation for {node_type:?} node ({dimension:?}): {reason}")]
+    ContractViolation {
+        node_type: crate::org_graph::NodeType,
+        dimension: crate::org_graph::ContractDimension,
+        reason: String,
+    },
 }
 
 impl From<StoreError> for CoordinatorError {
@@ -312,6 +340,15 @@ pub struct AgentCoordinator {
     /// level rather than `GroupRecord` so it survives group claim/removal during
     /// `collect_children_for_synthesis`.
     fallback_used: Arc<RwLock<HashSet<String>>>,
+    /// Org-Graph node contracts. Built from settings at construction time and
+    /// immutable thereafter. Used by `reserve_child` to enforce the caller's
+    /// `can_spawn` and the requested child's node-type validity.
+    registry: Arc<crate::org_graph::NodeRegistry>,
+    /// Each agent's node type, recorded when it is spawned. Used to look up the
+    /// *caller's* contract in `reserve_child` so a leaf node (e.g. explore)
+    /// cannot spawn children. The persistent root is never recorded here and
+    /// therefore resolves to the `GeneralPurpose` contract (can spawn).
+    node_types: Arc<RwLock<HashMap<(SessionId, AgentId), crate::org_graph::NodeType>>>,
 }
 
 impl AgentCoordinator {
@@ -331,6 +368,10 @@ impl AgentCoordinator {
             owner_groups: Arc::new(RwLock::new(HashMap::new())),
             group_operations: Arc::new(Mutex::new(())),
             fallback_used: Arc::new(RwLock::new(HashSet::new())),
+            registry: Arc::new(crate::org_graph::NodeRegistry::builtin(
+                &crate::config::agent::SubagentLimits::default(),
+            )),
+            node_types: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -360,9 +401,28 @@ impl AgentCoordinator {
         self
     }
 
+    /// Injects a [`NodeRegistry`](crate::org_graph::NodeRegistry) built from
+    /// real settings. Production code (daemon/state.rs) uses this so contract
+    /// fields like `can_mutate_fs` reflect the user's `explore_readonly`.
+    #[must_use]
+    pub fn with_node_registry(mut self, registry: Arc<crate::org_graph::NodeRegistry>) -> Self {
+        self.registry = registry;
+        self
+    }
+
     /// Returns the configured shutdown timeout.
     pub fn shutdown_timeout(&self) -> Duration {
         self.shutdown_timeout
+    }
+
+    /// Looks up the [`NodeContract`] for a node type. The dispatch layer
+    /// (`task.rs`) reads the same contract the coordinator enforces, so the
+    /// two enforcement layers never disagree.
+    pub fn node_contract(
+        &self,
+        node_type: &crate::org_graph::NodeType,
+    ) -> Option<&crate::org_graph::NodeContract> {
+        self.registry.get(node_type)
     }
 
     /// Returns the number of available concurrency permits.
@@ -414,6 +474,106 @@ impl AgentCoordinator {
         Ok(context)
     }
 
+    /// Resolves the effective max depth for a caller: a contract-level
+    /// `budget.max_depth` overrides the global limit, while `None` falls back
+    /// to the global [`SubagentLimits`] value. Extracted as an associated
+    /// function so the None/Some paths are unit-testable without registry
+    /// injection.
+    fn resolve_effective_max_depth(
+        budget_max_depth: Option<usize>,
+        global_max_depth: usize,
+    ) -> usize {
+        budget_max_depth.unwrap_or(global_max_depth)
+    }
+
+    /// Looks up the *caller's* [`NodeContract`]. The persistent root (and any
+    /// agent not yet recorded in `node_types`) resolves to `GeneralPurpose`,
+    /// which mirrors pre-change behavior (the root could always spawn).
+    async fn caller_contract(
+        &self,
+        caller: &AgentExecutionContext,
+    ) -> Result<crate::org_graph::NodeContract, CoordinatorError> {
+        let nt = {
+            let registry = self.node_types.read().await;
+            registry
+                .get(&(caller.session_id.clone(), caller.agent_id.clone()))
+                .cloned()
+                .unwrap_or(crate::org_graph::NodeType::GeneralPurpose)
+        };
+        self.registry
+            .get(&nt)
+            .cloned()
+            .ok_or_else(|| CoordinatorError::ContractViolation {
+                node_type: nt.clone(),
+                dimension: crate::org_graph::ContractDimension::NodeType,
+                reason: "no contract registered for caller node type".to_string(),
+            })
+    }
+
+    /// Records the freshly-spawned child's node type so that when it later acts
+    /// as a caller, [`Self::caller_contract`] resolves to its own contract.
+    async fn record_child_node_type(
+        &self,
+        context: &AgentExecutionContext,
+        node_type: crate::org_graph::NodeType,
+    ) {
+        let mut registry = self.node_types.write().await;
+        registry.insert(
+            (context.session_id.clone(), context.agent_id.clone()),
+            node_type,
+        );
+    }
+
+    /// Returns the trusted node type for a live spawned child.
+    ///
+    /// The persistent root intentionally has no entry in this side table, so
+    /// identity-sensitive tools can reject it rather than treating it as a
+    /// general-purpose specialist. Terminal children are removed by the
+    /// lifecycle chokepoint and are rejected for the same reason.
+    pub async fn active_child_node_type(
+        &self,
+        caller: &AgentExecutionContext,
+    ) -> Result<crate::org_graph::NodeType, CoordinatorError> {
+        self.with_active_child_node_type(caller, |node_type| node_type)
+            .await
+    }
+
+    /// Runs one synchronous operation while a child is verified as a live
+    /// specialist caller.
+    ///
+    /// The operation runs before the lifecycle read lock is released. This is
+    /// required for state-changing tool sinks: `finish_child` cannot transition
+    /// the child to a terminal scope between authorization and persistence.
+    pub async fn with_active_child_node_type<T>(
+        &self,
+        caller: &AgentExecutionContext,
+        operation: impl FnOnce(crate::org_graph::NodeType) -> T,
+    ) -> Result<T, CoordinatorError> {
+        if caller.parent_id.is_none() {
+            return Err(CoordinatorError::NotVisible);
+        }
+
+        let key = (caller.session_id.clone(), caller.agent_id.clone());
+        // Keep the scope read lock until the node-type lookup completes. This
+        // serializes authorization with `finish_child`, whose first terminal
+        // action requires the scope write lock before it removes node_types.
+        let scopes = self.scopes.read().await;
+        let Some(scope) = scopes.get(&key) else {
+            return Err(CoordinatorError::NotVisible);
+        };
+        if scope.status != AgentLifecycleStatus::Running {
+            return Err(CoordinatorError::NotVisible);
+        }
+        let node_type = self
+            .node_types
+            .read()
+            .await
+            .get(&key)
+            .cloned()
+            .ok_or(CoordinatorError::NotVisible)?;
+        Ok(operation(node_type))
+    }
+
     /// Reserves a child agent slot under the given caller context.
     ///
     /// This acquires a concurrency permit, derives the child's trusted
@@ -425,6 +585,33 @@ impl AgentCoordinator {
         caller: &AgentExecutionContext,
         request: SpawnChildRequest,
     ) -> Result<ChildReservation, CoordinatorError> {
+        // Contract enforcement (Org-Graph). A contract violation takes
+        // precedence over the structural rejections below so that an illegal
+        // spawn surfaces as `contract_violation` rather than degrading.
+        //
+        // Dimension: Permission. The *caller's* contract gates spawning — a
+        // leaf node (e.g. explore) can never reserve a child. The persistent
+        // root resolves to GeneralPurpose (can_spawn=true), matching the
+        // pre-change behavior where the root could always spawn.
+        let caller_contract = self.caller_contract(caller).await?;
+        if !caller_contract.permissions.can_spawn {
+            return Err(CoordinatorError::ContractViolation {
+                node_type: caller_contract.node_type.clone(),
+                dimension: crate::org_graph::ContractDimension::Permission,
+                reason: "this node type cannot spawn children".to_string(),
+            });
+        }
+        // The requested child node type must be a known contract. Trusted
+        // dispatchers (task.rs) only ever pass registered types, so this is
+        // defense in depth against an unknown NodeType.
+        if self.registry.get(&request.node_type).is_none() {
+            return Err(CoordinatorError::ContractViolation {
+                node_type: request.node_type.clone(),
+                dimension: crate::org_graph::ContractDimension::NodeType,
+                reason: "unknown node type".to_string(),
+            });
+        }
+
         // Reject spawning if the caller is Cancelling or terminal.
         {
             let scopes = self.scopes.read().await;
@@ -438,10 +625,17 @@ impl AgentCoordinator {
             }
         }
 
-        // Enforce depth limit using trusted caller depth.
-        if caller.depth >= self.max_depth {
+        // Enforce depth limit using trusted caller depth. A contract-level
+        // `budget.max_depth` (Some) overrides the global limit; None falls back
+        // to the global SubagentLimits value (builtins are all None, so behavior
+        // is unchanged for the five builtin node types). This is an override,
+        // not a clamp — custom contracts are trusted authors and may raise the
+        // ceiling above the global default.
+        let effective_max_depth =
+            Self::resolve_effective_max_depth(caller_contract.budget.max_depth, self.max_depth);
+        if caller.depth >= effective_max_depth {
             return Err(CoordinatorError::DepthLimitReached {
-                limit: self.max_depth,
+                limit: effective_max_depth,
             });
         }
 
@@ -497,6 +691,11 @@ impl AgentCoordinator {
                 .expect("scope just inserted");
             state.status = AgentLifecycleStatus::Running;
         }
+
+        // Record the child's node type so that when it later acts as a caller,
+        // caller_contract resolves to its own contract (can_spawn gate).
+        self.record_child_node_type(&context, request.node_type.clone())
+            .await;
 
         Ok(ChildReservation { context })
     }
@@ -715,6 +914,15 @@ impl AgentCoordinator {
     ) -> Result<(), CoordinatorError> {
         let _operation = self.group_operations.lock().await;
         let child_key = (child.session_id.clone(), child.agent_id.clone());
+        // Terminal transition: drop the child's node-type record. A finished
+        // agent never acts as a caller again, and an unregistered caller
+        // resolves to GeneralPurpose, so removal is safe. This runs for every
+        // child (group or not) — placing it before the group early-return
+        // avoids an insert-only leak on group-less spawns. `record_mapped_child`
+        // is the universal terminal chokepoint (reached by both `finish_child`
+        // and the finish-failure fallback). Lock order is `group_operations`
+        // (held since entry) → `node_types`, matching `reserve_child`.
+        self.node_types.write().await.remove(&child_key);
         let group_id = self.child_groups.read().await.get(&child_key).cloned();
         let Some(group_id) = group_id else {
             return Ok(());
@@ -1796,6 +2004,186 @@ mod tests {
         AgentCoordinator::new(max_concurrent, max_depth)
     }
 
+    #[test]
+    fn spawn_child_request_defaults_to_general_purpose() {
+        let req = SpawnChildRequest::new("demo");
+        assert_eq!(req.label, "demo");
+        assert_eq!(req.node_type, crate::org_graph::NodeType::GeneralPurpose);
+    }
+
+    #[test]
+    fn spawn_child_request_with_node_type_overrides_default() {
+        let req =
+            SpawnChildRequest::new("demo").with_node_type(crate::org_graph::NodeType::Explore);
+        assert_eq!(req.node_type, crate::org_graph::NodeType::Explore);
+    }
+
+    #[test]
+    fn coordinator_default_registry_has_six_agent_contracts() {
+        let coord = test_coordinator(5, 3);
+        for nt in [
+            crate::org_graph::NodeType::Explore,
+            crate::org_graph::NodeType::Plan,
+            crate::org_graph::NodeType::GeneralPurpose,
+            crate::org_graph::NodeType::Verification,
+            crate::org_graph::NodeType::WgentyCodeGuide,
+        ] {
+            assert!(
+                coord.registry.get(&nt).is_some(),
+                "coordinator default registry missing {:?}",
+                nt
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_effective_max_depth_none_falls_back_to_global() {
+        assert_eq!(AgentCoordinator::resolve_effective_max_depth(None, 7), 7);
+    }
+
+    #[test]
+    fn resolve_effective_max_depth_some_overrides_global() {
+        assert_eq!(AgentCoordinator::resolve_effective_max_depth(Some(2), 7), 2);
+    }
+
+    #[tokio::test]
+    async fn leaf_caller_cannot_spawn() {
+        use crate::org_graph::NodeType;
+        let coord = test_coordinator(5, 3);
+        let root = coord.ensure_root(SessionId::new("s")).await.unwrap();
+        // root resolves to GeneralPurpose (can_spawn=true), so it may spawn an
+        // explore child.
+        let child = coord
+            .reserve_child(
+                &root,
+                SpawnChildRequest::new("explore job").with_node_type(NodeType::Explore),
+            )
+            .await
+            .expect("root GP can spawn explore child");
+        // The explore child is a leaf; it must NOT be able to spawn.
+        let err = coord
+            .reserve_child(&child.context, SpawnChildRequest::new("grandchild"))
+            .await
+            .expect_err("leaf explore must not spawn");
+        match err {
+            CoordinatorError::ContractViolation { dimension, .. } => {
+                assert_eq!(dimension, crate::org_graph::ContractDimension::Permission);
+            }
+            other => panic!("expected ContractViolation, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn active_child_node_type_rejects_root_and_resolves_live_child() {
+        use crate::org_graph::NodeType;
+
+        let coordinator = test_coordinator(4, 2);
+        let root = coordinator
+            .ensure_root(SessionId::new("specialist-session"))
+            .await
+            .expect("create root");
+
+        assert!(matches!(
+            coordinator.active_child_node_type(&root).await,
+            Err(CoordinatorError::NotVisible)
+        ));
+
+        let child = coordinator
+            .reserve_child(
+                &root,
+                SpawnChildRequest::new("root cause").with_node_type(NodeType::RootCause),
+            )
+            .await
+            .expect("reserve root-cause child");
+
+        assert_eq!(
+            coordinator
+                .active_child_node_type(&child.context)
+                .await
+                .expect("resolve trusted child node type"),
+            NodeType::RootCause
+        );
+
+        coordinator
+            .finish_child(&child.context, ChildTerminal::completed("done"))
+            .await
+            .expect("finish child");
+        assert!(matches!(
+            coordinator.active_child_node_type(&child.context).await,
+            Err(CoordinatorError::NotVisible)
+        ));
+    }
+
+    #[tokio::test]
+    async fn general_purpose_caller_can_spawn() {
+        use crate::org_graph::NodeType;
+        let coord = test_coordinator(5, 3);
+        let root = coord.ensure_root(SessionId::new("s")).await.unwrap();
+        let child = coord
+            .reserve_child(
+                &root,
+                SpawnChildRequest::new("gp job").with_node_type(NodeType::GeneralPurpose),
+            )
+            .await
+            .expect("root can spawn GP child");
+        let grandchild = coord
+            .reserve_child(&child.context, SpawnChildRequest::new("grandchild"))
+            .await;
+        assert!(
+            grandchild.is_ok(),
+            "GP child can spawn: {:?}",
+            grandchild.err()
+        );
+    }
+
+    #[tokio::test]
+    async fn depth_limit_uses_global_when_budget_none() {
+        // max_depth = 1: root (depth 0) can spawn one child (depth 1), but that
+        // child (depth 1 >= 1) cannot spawn further. Builtin budgets are all
+        // None, so the global limit applies.
+        let coord = test_coordinator(5, 1);
+        let root = coord.ensure_root(SessionId::new("s")).await.unwrap();
+        let child = coord
+            .reserve_child(&root, SpawnChildRequest::new("depth0->1"))
+            .await
+            .expect("depth 0 < 1");
+        let err = coord
+            .reserve_child(&child.context, SpawnChildRequest::new("too deep"))
+            .await
+            .expect_err("should hit depth limit");
+        assert!(matches!(
+            err,
+            CoordinatorError::DepthLimitReached { limit: 1 }
+        ));
+    }
+
+    #[tokio::test]
+    async fn all_builtin_child_types_accepted_from_root() {
+        // The NodeType-dimension rejection path is structurally unreachable for
+        // builtins (the enum is closed and all five variants are registered), so
+        // we assert the realistic guarantee instead: the root (GeneralPurpose,
+        // can_spawn=true) can spawn a child of every builtin node type without a
+        // contract violation, and depth stays within the global limit.
+        use crate::org_graph::NodeType;
+        let coord = test_coordinator(8, 3);
+        let root = coord.ensure_root(SessionId::new("s")).await.unwrap();
+        for nt in [
+            NodeType::Explore,
+            NodeType::Plan,
+            NodeType::GeneralPurpose,
+            NodeType::Verification,
+            NodeType::WgentyCodeGuide,
+        ] {
+            let res = coord
+                .reserve_child(
+                    &root,
+                    SpawnChildRequest::new("ok").with_node_type(nt.clone()),
+                )
+                .await;
+            assert!(res.is_ok(), "root should spawn {:?}: {:?}", nt, res.err());
+        }
+    }
+
     #[tokio::test]
     async fn spawn_derives_parent_depth_and_session() {
         let coordinator = test_coordinator(4, 3);
@@ -1844,6 +2232,43 @@ mod tests {
             .reserve_child(&root, SpawnChildRequest::new("second"))
             .await
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn node_types_entry_removed_after_child_finishes() {
+        // Regression guard (review finding): `node_types` is insert-only on the
+        // spawn path. The terminal transition (`finish_child` →
+        // `record_mapped_child_result`) must remove the child's entry, or the
+        // side-table grows unboundedly across a long-running daemon session.
+        use crate::org_graph::NodeType;
+        let coordinator = test_coordinator(4, 1);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let child = coordinator
+            .reserve_child(
+                &root,
+                SpawnChildRequest::new("explore-child").with_node_type(NodeType::Explore),
+            )
+            .await
+            .unwrap();
+        let key = (
+            child.context.session_id.clone(),
+            child.context.agent_id.clone(),
+        );
+        // After reserve, the child's node type is recorded.
+        assert_eq!(
+            coordinator.node_types.read().await.get(&key),
+            Some(&NodeType::Explore),
+            "child node type must be recorded on reserve"
+        );
+        coordinator
+            .finish_child(&child.context, ChildTerminal::completed("done"))
+            .await
+            .unwrap();
+        // After terminal transition, the entry is gone.
+        assert!(
+            coordinator.node_types.read().await.get(&key).is_none(),
+            "node_types entry must be removed after finish_child (insert-only leak guard)"
+        );
     }
 
     #[tokio::test]

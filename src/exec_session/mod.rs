@@ -18,18 +18,32 @@ pub mod hooks;
 pub mod node;
 pub mod node_runtime;
 pub mod node_tools;
+pub mod runtime_store;
 pub mod session;
+pub mod specialist_report_tool;
+pub mod verification_profile;
 pub mod verify_gate;
+
+pub mod work_graph;
 
 pub use coordinator::{RollbackResult, SessionCoordinator, SessionCoordinatorPort};
 pub use hooks::{
     NoHooks, RollbackContext, SessionHooks, VerifyFailAction, VerifyFailContext, VerifyFailure,
 };
 pub use node::{Node, NodeContract, NodeId, NodeStates, NodeStatus};
-pub use node_runtime::{NodeRollbackResult, NodeRuntime, NodeVerifyResult};
+pub use node_runtime::{
+    NodeRollbackResult, NodeRuntime, NodeVerificationOutcome, NodeVerifyResult, WorkGraphRunResult,
+};
 pub use node_tools::{BeginNodeTool, RollbackNodeTool, VerifyNodeTool};
+pub use runtime_store::{
+    root_cause_runtime_handle, ExecutionSessionRuntimeStore, RootCauseDispatchRequest,
+    RootCauseDispatchState, RootCauseRuntimeHandle,
+};
 pub use session::{GitRefs, SessionSource, SessionState, SessionStatus, TurnRecord};
+pub use specialist_report_tool::SubmitSpecialistReportTool;
+pub use verification_profile::{ResolvedVerificationCommands, VerificationProfile};
 pub use verify_gate::{
     CommandExecutor, CommandRun, ProcessCommandExecutor, UnverifiedOutcome, VerifyAndCompleteTool,
     VerifyGate, VerifyLog, VerifyLogEntry, VerifyLogFinalStatus, VerifyLogResult, VerifyResult,
 };
+pub use work_graph::{next_step, WorkGraphStep};

@@ -17,9 +17,9 @@ use crate::agent::{
     AgentCoordinator, ChildTerminal, CoordinatorError, SpawnChildRequest, ToolContext,
 };
 use crate::api::ApiClient;
-use crate::config::agent::RootPermissionMode;
-use crate::config::Settings;
+use crate::config::{RootPermissionMode, Settings};
 use crate::permissions::policy::ToolPermissionPolicy;
+use crate::permissions::{PermissionModeEntry, PermissionModeStore};
 use crate::runtime::guardian::Guardian;
 use crate::teams::guarding_tool_port::SubagentPermissionContext;
 use crate::teams::permission_bridge::PermissionBridge;
@@ -115,6 +115,12 @@ pub struct TaskTool {
     /// Sandbox effective mode (includes Plan). Snapshotted into
     /// SubagentPermissionContext at spawn.
     effective_mode: Arc<std::sync::RwLock<crate::sandbox::EffectiveMode>>,
+    /// Daemon-only binding for the code-selected RootCause route. The handle
+    /// remains empty for normal registry/test construction.
+    root_cause_runtime: crate::exec_session::RootCauseRuntimeHandle,
+    /// Per-project permission modes (root + effective). Each subagent
+    /// snapshots the entry for its invocation's workdir at spawn time.
+    permission_modes: PermissionModeStore,
 }
 
 impl TaskTool {
@@ -138,6 +144,8 @@ impl TaskTool {
             effective_mode: Arc::new(std::sync::RwLock::new(
                 crate::sandbox::EffectiveMode::Normal,
             )),
+            root_cause_runtime: crate::exec_session::root_cause_runtime_handle(),
+            permission_modes: PermissionModeStore::new(),
         }
     }
 
@@ -151,8 +159,15 @@ impl TaskTool {
         self
     }
 
-    /// Set the shared root permission mode signal. The TUI/daemon updates this
-    /// at runtime; each subagent snapshots the current value at spawn time.
+    /// Share the daemon's per-project permission mode store. Each subagent
+    /// looks up the entry for its invocation's workdir at spawn time, so
+    /// different projects can run under different modes (Normal/Yolo/...).
+    pub fn with_permission_modes(mut self, modes: PermissionModeStore) -> Self {
+        self.permission_modes = modes;
+        self
+    }
+
+    /// Share the daemon's root permission mode lock (Yolo/AcceptEdits/Normal).
     pub fn with_root_mode(mut self, mode: Arc<std::sync::RwLock<RootPermissionMode>>) -> Self {
         self.root_mode = mode;
         self
@@ -167,19 +182,33 @@ impl TaskTool {
         self
     }
 
+    /// Shares the daemon's late-bound static RootCause route runtime.
+    pub fn with_root_cause_runtime(
+        mut self,
+        runtime: crate::exec_session::RootCauseRuntimeHandle,
+    ) -> Self {
+        self.root_cause_runtime = runtime;
+        self
+    }
+
     /// Update the root permission mode at runtime.
     pub fn set_root_mode(&self, mode: RootPermissionMode) {
         *self.root_mode.write().unwrap() = mode;
     }
 
-    fn build_permission_context(&self, agent_id: &str) -> SubagentPermissionContext {
+    /// Build the subagent permission context, looking up the per-project mode
+    /// for `workdir` (falling back to `Normal` when unregistered).
+    fn build_permission_context(
+        &self,
+        agent_id: &str,
+        workdir: Option<&std::path::Path>,
+    ) -> SubagentPermissionContext {
         let workspace = self.settings.storage.working_dir.clone();
         let limits = &self.settings.agent.subagent;
-        let root_mode = *self.root_mode.read().unwrap_or_else(|e| e.into_inner());
-        let effective_mode = *self
-            .effective_mode
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
+        let entry = match workdir {
+            Some(wd) => self.permission_modes.get(wd),
+            None => PermissionModeEntry::default(),
+        };
         SubagentPermissionContext {
             policy: ToolPermissionPolicy::new(workspace),
             session_rules: self
@@ -192,8 +221,8 @@ impl TaskTool {
             timeout_decision: limits.timeout_decision,
             guardian: Guardian::default(),
             agent_id: agent_id.to_string(),
-            root_mode,
-            effective_mode,
+            root_mode: entry.root_mode,
+            effective_mode: entry.effective_mode,
             denial_log: Arc::new(Mutex::new(Vec::new())),
             event_log: Arc::new(Mutex::new(Vec::new())),
         }
@@ -303,7 +332,10 @@ impl TaskTool {
             .collect();
         let timeout_secs = self.settings.agent.subagent.timeout_secs;
         let workdir: Option<std::path::PathBuf> = Some(self.settings.storage.working_dir.clone());
-        let permission = self.build_permission_context(&child_agent_id_str);
+        let permission = self.build_permission_context(
+            &child_agent_id_str,
+            Some(self.settings.storage.working_dir.as_path()),
+        );
 
         let started_at = chrono::Utc::now().timestamp_millis();
         let result = run_subagent_loop_with_permissions(
@@ -345,6 +377,7 @@ impl TaskTool {
                 &result,
                 self.settings.agent.subagent.trace.context_char_limit,
                 retention,
+                context.workdir.map(|p| p.to_string_lossy().to_string()),
             );
         }
 
@@ -389,7 +422,7 @@ impl Tool for TaskTool {
     fn description(&self) -> &str {
         "Launch a subagent to handle complex, multi-step tasks. \
          Available types: general-purpose (default), explore (codebase search), \
-         plan (architecture). Subagents have isolated context and filtered tools. \
+         plan (architecture), root-cause (read-only diagnosis). Subagents have isolated context and filtered tools. \
          Explore/plan never spawn further agents. General-purpose may call task \
          again; if depth limit blocks the nested spawn, the system self-executes \
          that delegated prompt in the calling subagent (structural fallback) so \
@@ -410,8 +443,8 @@ impl Tool for TaskTool {
             "properties": {
                 "subagent_type": {
                     "type": "string",
-                    "description": "Type of subagent: general-purpose, explore, or plan",
-                    "enum": ["general-purpose", "explore", "plan"]
+                    "description": "Type of subagent: general-purpose, explore, plan, or root-cause",
+                    "enum": ["general-purpose", "explore", "plan", "root-cause"]
                 },
                 "description": {
                     "type": "string",
@@ -473,6 +506,19 @@ impl Tool for TaskTool {
         input: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
         let _subagent_type = input["subagent_type"].as_str().unwrap_or("general-purpose");
+        // Map the model-supplied type string to a trusted NodeType and resolve
+        // its NodeContract. The contract is the single source of truth for the
+        // system prompt, allowed tools, and budget; the coordinator enforces the
+        // same contract (two-layer split). The model JSON never reaches
+        // SpawnChildRequest directly — it flows through parse_node_type.
+        let node_type = parse_node_type(_subagent_type);
+        let contract = self
+            .coordinator
+            .node_contract(&node_type)
+            .ok_or_else(|| ToolError {
+                message: format!("no NodeContract registered for {:?} node type", node_type),
+                code: Some("unknown_node_type".to_string()),
+            })?;
         let description = input["description"].as_str().unwrap_or("Subagent task");
         let prompt = input["prompt"].as_str().unwrap_or("");
         // `background` is a legacy mode switch that is now ignored: every
@@ -584,75 +630,14 @@ impl Tool for TaskTool {
         // and interception-point 1 then self-executes the delegated prompt in
         // the non-root parent (depth-limit takeover). Soft-stripping `task` at
         // the limit would make that fallback path unreachable.
-        let depth = context.agent.depth;
-        let explore_readonly = self.settings.agent.subagent.explore_readonly;
         let allowed_tools: Vec<String> = filter_allowed_tools(
             tool_registry.list().iter().map(|t| t.name().to_string()),
-            _subagent_type,
-            depth,
-            self.settings.agent.subagent.max_depth,
-            explore_readonly,
+            contract,
         );
 
-        // Build system prompt based on subagent type.
-        let base_system_prompt: &str = match _subagent_type {
-            "explore" => {
-                "You are a code exploration subagent. Your role is to search \
-                 and analyze codebases thoroughly.\n\n\
-                 IMPORTANT — Choose your strategy based on the task type:\n\
-                 - For PATTERN SEARCH tasks (e.g. 'find all .unwrap() calls', \
-                   'count .clone() usages'): use grep directly with precise \
-                   regex patterns. Do NOT read full files — grep gives you \
-                   matching lines directly. Call grep with the exact pattern \
-                   and max_results to control output size. Report counts, file \
-                   locations, and representative examples.\n\
-                 - For STRUCTURAL ANALYSIS tasks (e.g. 'how does module X \
-                   work'): use glob to find relevant files, then file_read \
-                   to understand key files, then grep for cross-references.\n\
-                 - For COUNTING/STATISTICS tasks: prefer grep with \
-                   files_with_matches=true first to scope the work, then \
-                   detailed grep for actual matches.\n\n\
-                 Key responsibilities:\n\
-                 1. Search for relevant files and code patterns\n\
-                 2. Read and understand code structure\n\
-                 3. Analyze dependencies and relationships\n\
-                 4. Report findings clearly and concisely\n\n\
-                 Use search, grep, glob, and file_read tools to explore the \
-                 codebase. Be thorough but efficient — focus on answering the \
-                 specific question. Return a complete, self-contained result."
-            }
-            "plan" => {
-                "You are a subagent spawned by a coordinator. The coordinator is waiting for your result. Do not attempt to coordinate other agents yourself — focus solely on your assigned task. Return a complete, self-contained result so the coordinator can proceed without follow-up questions.\n\nYou are a planning subagent. Your role is to break down complex \
-                 tasks into actionable steps.\n\nKey responsibilities:\n\
-                 1. Analyze task requirements\n\
-                 2. Identify key files and components\n\
-                 3. Break down the work into logical steps\n\
-                 4. Consider dependencies, risks, and trade-offs\n\n\
-                 Use file_read and search tools to understand the codebase before \
-                 planning. Be thorough and structured in your analysis."
-            }
-            _ => {
-                "You are a general-purpose subagent spawned by a coordinator. The \
-                 coordinator is waiting for your result. Return a complete, \
-                 self-contained result so the coordinator can proceed without \
-                 follow-up questions.\n\n\
-                 You may use the `task` tool to delegate discrete sub-work when it \
-                 helps. If a nested spawn is rejected (depth limit or other \
-                 structural failure), the runtime automatically runs that \
-                 delegated prompt with leaf tools and returns the result as the \
-                 task tool output — treat a successful task result as completed \
-                 work, and if task fails, finish the work yourself with direct \
-                 tools.\n\n\
-                 Key responsibilities:\n\
-                 1. Understand the task requirements\n\
-                 2. Use appropriate tools (or task for discrete sub-work) to \
-                    accomplish the task\n\
-                 3. Provide clear and complete results\n\
-                 4. Handle edge cases gracefully\n\n\
-                 If you need to read files, search, or execute commands, use the \
-                 appropriate tools. Return a complete summary of what was accomplished."
-            }
-        };
+        // System prompt comes from the NodeContract (migrated from the old
+        // hardcoded match arms; the contract holds the identical strings).
+        let base_system_prompt: &str = contract.system_prompt.as_str();
         let system_prompt = if let Some(ref prefix) = comet_prefix {
             format!("{}{}", prefix, base_system_prompt)
         } else {
@@ -701,7 +686,7 @@ impl Tool for TaskTool {
             .coordinator
             .reserve_child_in_group(
                 context.agent,
-                SpawnChildRequest::new(description),
+                SpawnChildRequest::new(description).with_node_type(node_type.clone()),
                 group_id.clone(),
             )
             .await
@@ -863,9 +848,11 @@ impl Tool for TaskTool {
         // `models.main` set to the routed tier endpoint, so reuse it directly.
         let settings_bg = child_settings.clone();
         let coordinator_bg = self.coordinator.clone();
-        let permission_ctx = self.build_permission_context(child_context.agent_id.as_str());
+        let permission_ctx =
+            self.build_permission_context(child_context.agent_id.as_str(), context.workdir);
         // Fold subagent file edits into the root turn's checkpoint snapshot.
         let origin_turn_id_bg = context.origin_turn_id.map(|s| s.to_string());
+        let workdir_bg = context.workdir.map(|p| p.to_path_buf());
 
         // The coordinator-owned child context moves into the spawned task so
         // the loop runs as the child agent and cancellation propagates. The
@@ -873,6 +860,56 @@ impl Tool for TaskTool {
         // root children become deliverable even when no parent joins them.
         let bg_child_context = child_context.clone();
         let worktree_guard_bg = worktree_guard;
+        // Bind the code-owned diagnostic route after the coordinator has
+        // reserved a trusted child identity, but *before* spawning its future.
+        // A RootCause child can publish immediately on its first poll, so
+        // binding after the task acknowledgement is a real TOCTOU bug.
+        let root_cause_route_bound =
+            if is_root_call && node_type == crate::org_graph::NodeType::RootCause {
+                let runtime = self
+                    .root_cause_runtime
+                    .read()
+                    .map_err(|error| ToolError {
+                        message: format!("root-cause runtime handle lock: {error}"),
+                        code: Some("root_cause_dispatch_failed".into()),
+                    })?
+                    .clone();
+                if let Some(runtime) = runtime {
+                    match runtime.try_bind_root_cause_child(
+                        &child_context.session_id,
+                        child_id.as_str().to_string(),
+                    ) {
+                        Ok(bound) => bound,
+                        Err(error) => {
+                            self.coordinator
+                                .finish_child(&child_context, ChildTerminal::Cancelled)
+                                .await
+                                .map_err(map_coordinator_error)?;
+                            return Err(ToolError {
+                                message: format!("bind static root-cause child: {error:#}"),
+                                code: Some("root_cause_dispatch_failed".into()),
+                            });
+                        }
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+        let root_cause_runtime_bg = if root_cause_route_bound {
+            self.root_cause_runtime
+                .read()
+                .map_err(|error| ToolError {
+                    message: format!("root-cause runtime handle lock: {error}"),
+                    code: Some("root_cause_dispatch_failed".into()),
+                })?
+                .clone()
+        } else {
+            None
+        };
+        let root_cause_session_bg = child_context.session_id.clone();
+        let root_cause_child_id_bg = child_id.as_str().to_string();
 
         let handle = tokio::spawn(async move {
             let _worktree_guard = worktree_guard_bg;
@@ -997,6 +1034,23 @@ impl Tool for TaskTool {
                     .await;
             }
 
+            // A report clears the route synchronously before the child reaches
+            // this terminal path. Any other terminal outcome must fail closed:
+            // record Escalate and consume the pending route rather than leaving
+            // the root agent blocked forever or letting it edit around it.
+            if let Some(runtime) = root_cause_runtime_bg {
+                if let Err(error) = runtime.resolve_root_cause_child_terminal(
+                    &root_cause_session_bg,
+                    &root_cause_child_id_bg,
+                ) {
+                    tracing::error!(
+                        child_id = %root_cause_child_id_bg,
+                        error = %error,
+                        "failed to resolve static root-cause child terminal"
+                    );
+                }
+            }
+
             // Offload large results to mailbox before storing transcript.
             let content = mailbox_bg
                 .offload_if_large(&st_bg, &desc_full_bg, &sid_bg, &content)
@@ -1030,8 +1084,8 @@ impl Tool for TaskTool {
                         })
                         .unwrap_or((0, 0, Vec::new(), None))
                 };
-                let project_path = std::env::current_dir()
-                    .ok()
+                let project_path = workdir_bg
+                    .as_deref()
                     .map(|p| p.to_string_lossy().to_string());
                 let transcript = build_transcript(
                     bg_node_id,
@@ -1085,6 +1139,12 @@ impl Tool for TaskTool {
             ),
             ("description".to_string(), serde_json::json!(description)),
         ]);
+        if root_cause_route_bound {
+            metadata.insert(
+                "root_cause_route_bound".to_string(),
+                serde_json::json!(true),
+            );
+        }
         // Compatibility: report the legacy `background` switch as ignored when
         // the model supplies it, instead of branching on its value.
         if background_supplied {
@@ -1109,33 +1169,60 @@ impl Tool for TaskTool {
 /// Mutating filesystem tools removed from explore/plan when `explore_readonly`.
 const MUTATING_FS_TOOLS: &[&str] = &["file_write", "file_edit", "apply_patch"];
 
-/// Filter the registry tool list for a subagent type.
+/// Map the model-supplied `subagent_type` string to a trusted [`NodeType`].
 ///
-/// - `explore` / `plan` never get spawn tools (`task` / `delegate`).
-/// - When `explore_readonly`, those types also lose mutating FS tools.
-/// - `general-purpose` keeps spawn tools at every depth. Depth limiting is
-///   enforced by `AgentCoordinator::reserve_child` (`DepthLimitReached`), which
-///   triggers structural self-execution fallback in the non-root parent so the
-///   work intended for a blocked grandchild is completed inline.
-/// - `exec_command` remains visible (still gated by policy + guardian).
+/// Mirrors the mapping in `cli/args.rs`. Unknown strings fall back to
+/// `GeneralPurpose`, matching the pre-change `unwrap_or("general-purpose")`
+/// behavior. The model JSON is never injected directly into `SpawnChildRequest`;
+/// it always passes through this trusted dispatch-layer mapping.
+fn parse_node_type(s: &str) -> crate::org_graph::NodeType {
+    use crate::org_graph::NodeType;
+    match s {
+        "explore" => NodeType::Explore,
+        "plan" => NodeType::Plan,
+        "general-purpose" | "general" => NodeType::GeneralPurpose,
+        "verify" | "verification" => NodeType::Verification,
+        "root-cause" | "root_cause" => NodeType::RootCause,
+        "guide" | "wgenty-code-guide" => NodeType::WgentyCodeGuide,
+        _ => NodeType::GeneralPurpose,
+    }
+}
+
+/// Filter the registry tool list for a node contract.
+///
+/// Three dimensions, all read from the same [`NodeContract`] the coordinator
+/// enforces (the two-layer split from the spec):
+/// - **capability** (`capabilities.allowed_tools`): when non-empty, a whitelist;
+///   empty means wildcard (all pass). Builtin contracts use empty to mirror the
+///   pre-change "all tools minus spawn/mutating-fs" semantics.
+/// - **permission.can_spawn**: when false, `task`/`delegate` are stripped (leaf
+///   nodes never coordinate).
+/// - **permission.can_mutate_fs**: when false, [`MUTATING_FS_TOOLS`] are
+///   stripped (driven by `explore_readonly` at contract-build time).
+///
+/// `exec_command` remains visible (`can_exec` is declared, not enforced here;
+/// still gated by policy + guardian). Depth limiting is enforced by
+/// `AgentCoordinator::reserve_child`.
 pub(crate) fn filter_allowed_tools(
     names: impl IntoIterator<Item = String>,
-    subagent_type: &str,
-    _depth: usize,
-    _max_depth: usize,
-    explore_readonly: bool,
+    contract: &crate::org_graph::NodeContract,
 ) -> Vec<String> {
-    let is_leaf = matches!(subagent_type, "explore" | "plan");
     names
         .into_iter()
         .filter(|name| {
-            let is_spawn = name == "task" || name == "delegate";
-            if is_spawn {
-                // Leaf types never coordinate. GP always sees spawn tools; the
-                // coordinator + structural fallback own the depth gate.
-                return !is_leaf;
+            // Dimension 1: capability whitelist (empty = wildcard).
+            if !contract.capabilities.allowed_tools.is_empty()
+                && !contract.capabilities.allowed_tools.contains(name)
+            {
+                return false;
             }
-            if explore_readonly && is_leaf && MUTATING_FS_TOOLS.contains(&name.as_str()) {
+            // Dimension 2: can_spawn — leaf nodes never get spawn tools.
+            let is_spawn = name == "task" || name == "delegate";
+            if is_spawn && !contract.permissions.can_spawn {
+                return false;
+            }
+            // Dimension 3: can_mutate_fs — strip mutating FS tools.
+            if MUTATING_FS_TOOLS.contains(&name.as_str()) && !contract.permissions.can_mutate_fs {
                 return false;
             }
             true
@@ -1160,6 +1247,17 @@ fn map_coordinator_error(e: CoordinatorError) -> ToolError {
         CoordinatorError::NotVisible => ToolError {
             message: "agent is not visible from the current execution scope".to_string(),
             code: Some("not_visible".to_string()),
+        },
+        CoordinatorError::ContractViolation {
+            node_type,
+            dimension,
+            reason,
+        } => ToolError {
+            message: format!(
+                "contract violation for {:?} node ({:?}): {}",
+                node_type, dimension, reason
+            ),
+            code: Some("contract_violation".to_string()),
         },
         other => ToolError {
             message: other.to_string(),

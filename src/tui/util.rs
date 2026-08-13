@@ -21,18 +21,147 @@ pub fn truncate_session_name(text: &str) -> String {
     }
 }
 
-/// Start the daemon in a background tokio task and wait for it to be ready.
-/// Returns the base URL (including port) and a shutdown sender.
+/// Outcome of [`start_daemon`]: either an already-running daemon was reused
+/// via the discovery file, or a new embedded daemon was spawned locally.
+/// `Reused` carries no shutdown handles — the daemon is owned by another
+/// process and must keep running after this TUI exits.
 #[cfg(feature = "daemon")]
-pub async fn start_daemon(
+pub enum StartDaemonOutcome {
+    Reused {
+        base_url: String,
+    },
+    Spawned {
+        base_url: String,
+    },
+    Embedded {
+        base_url: String,
+        shutdown_tx: tokio::sync::oneshot::Sender<()>,
+        handle: tokio::task::JoinHandle<()>,
+    },
+}
+
+/// How long to wait for a spawned daemon to become healthy before giving up.
+#[cfg(feature = "daemon")]
+const HEALTH_POLL_TIMEOUT_SECS: u64 = 15;
+
+/// Start the daemon, preferring an external process so it survives TUI exit.
+///
+/// Decision chain:
+/// 1. **Discovery reuse**: an already-running daemon is found via
+///    `daemon.json` -> connect to it (owned by another process).
+/// 2. **External spawn**: spawn `current_exe() daemon --port 8371` as a
+///    detached child process. The child writes its own token + discovery
+///    file and keeps running after the TUI exits, so Web/Desktop can reuse it.
+/// 3. **Retry discovery**: if the spawn failed (e.g. port taken), another UI
+///    may have started a daemon meanwhile -> retry discovery.
+/// 4. **Embedded fallback**: if everything above fails, start the daemon
+///    in-process (legacy behavior; killed on TUI exit).
+#[cfg(feature = "daemon")]
+pub async fn start_daemon(app_state: crate::state::AppState) -> anyhow::Result<StartDaemonOutcome> {
+    // 1. Reuse an already-running global daemon when the discovery file
+    // checks out; fall through to spawning otherwise (design §6.3).
+    if let Some(found) = crate::utils::discovery::discover_daemon() {
+        tracing::info!(
+            port = found.port,
+            "reusing running daemon via discovery file"
+        );
+        return Ok(StartDaemonOutcome::Reused {
+            base_url: format!("http://127.0.0.1:{}", found.port),
+        });
+    }
+
+    // 2. Spawn an external daemon process. The child inherits the current
+    // working directory (so the daemon's `working_dir` matches the TUI's
+    // project root), writes its own token + discovery file, and survives
+    // TUI exit. stdio is redirected to null so the child doesn't hold the
+    // terminal.
+    const DEFAULT_PORT: u16 = 8371;
+    if let Some(base_url) = spawn_external_daemon(DEFAULT_PORT).await {
+        tracing::info!(
+            "daemon spawned as external process on port {}",
+            DEFAULT_PORT
+        );
+        return Ok(StartDaemonOutcome::Spawned { base_url });
+    }
+
+    // 3. Retry discovery: a concurrent UI may have started a daemon while we
+    // were polling health. If so, reuse it instead of spawning a duplicate.
+    if let Some(found) = crate::utils::discovery::discover_daemon() {
+        tracing::info!(
+            port = found.port,
+            "reusing daemon started by a concurrent UI (post-spawn-retry)"
+        );
+        return Ok(StartDaemonOutcome::Reused {
+            base_url: format!("http://127.0.0.1:{}", found.port),
+        });
+    }
+
+    // 4. Fallback: embedded daemon (in-process). This is killed on TUI exit,
+    // so other UIs connected to it will lose connection. Log a warning.
+    tracing::warn!(
+        "external daemon spawn failed; falling back to embedded daemon \
+         (will be killed on TUI exit, other UIs may lose connection)"
+    );
+    spawn_embedded_daemon(app_state).await
+}
+
+/// Spawn `current_exe() daemon --port <port>` as a detached child process
+/// and poll until the port accepts TCP connections. Returns the base URL on
+/// success, or `None` if the process couldn't spawn or the port never came
+/// up (timeout / bind failure / daemon crash).
+#[cfg(feature = "daemon")]
+async fn spawn_external_daemon(port: u16) -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let child = std::process::Command::new(&exe)
+        .arg("daemon")
+        .arg("--port")
+        .arg(port.to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    tracing::debug!(
+        pid = child.id(),
+        exe = %exe.display(),
+        port,
+        "spawned external daemon process"
+    );
+    // Drop the child handle so we don't hold a waitable reference; the
+    // process is now fully independent and survives TUI exit.
+    drop(child);
+
+    // Poll the port until it accepts connections (daemon bound + listening).
+    let mut interval_ms = 200u64;
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(HEALTH_POLL_TIMEOUT_SECS);
+    loop {
+        if std::time::Instant::now() > deadline {
+            tracing::warn!(port, "external daemon health poll timed out");
+            return None;
+        }
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
+            return Some(format!("http://127.0.0.1:{}", port));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
+        interval_ms = (interval_ms * 2).min(2000);
+    }
+}
+
+/// Fallback: start the daemon in a background tokio task (in-process).
+/// The returned `shutdown_tx` kills the daemon when the TUI exits.
+#[cfg(feature = "daemon")]
+async fn spawn_embedded_daemon(
     app_state: crate::state::AppState,
-) -> anyhow::Result<(
-    String,
-    tokio::sync::oneshot::Sender<()>,
-    tokio::task::JoinHandle<()>,
-)> {
-    // Bind to a random available port
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+) -> anyhow::Result<StartDaemonOutcome> {
+    const DEFAULT_PORT: u16 = 8371;
+    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", DEFAULT_PORT)).await {
+        Ok(l) => l,
+        Err(_) => tokio::net::TcpListener::bind("127.0.0.1:0").await?,
+    };
     let port = listener.local_addr()?.port();
     let base_url = format!("http://127.0.0.1:{}", port);
     crate::utils::startup_timing::mark("daemon: tcp bound");
@@ -42,10 +171,6 @@ pub async fn start_daemon(
     let daemon_state = Arc::new(DaemonState::new(app_state).await);
     crate::utils::startup_timing::mark("daemon: DaemonState created");
 
-    // Recover persisted sessions as lightweight index entries (metadata only,
-    // no full message deserialization) so the session list populates quickly
-    // without blocking daemon startup. Full sessions are hydrated on demand
-    // via `load(id)` / `get(id)`.
     {
         let sm_state = Arc::clone(&daemon_state);
         tokio::spawn(async move {
@@ -58,10 +183,7 @@ pub async fn start_daemon(
 
     let api_token = auth::generate_api_token();
     crate::utils::write_daemon_token(&api_token)?;
-    tracing::debug!(
-        "Daemon API token saved to: {}",
-        crate::utils::daemon_token_path().display()
-    );
+    crate::utils::discovery::spawn_discovery_writer(port, api_token.clone());
     let (health, protected) = routes::create_routers(daemon_state, api_token);
     crate::utils::startup_timing::mark("daemon: routers created");
     let app = health.merge(protected).layer(
@@ -96,17 +218,16 @@ pub async fn start_daemon(
             })
             .await
             .ok();
-        // Clean up token file on daemon shutdown.
         let _ = crate::utils::remove_daemon_token();
+        let _ = crate::utils::discovery::remove_discovery_file();
     });
-    // The listener is already bound, so axum::serve will accept connections
-    // as soon as its task is scheduled. We don't block on a health-check
-    // poll: no daemon request is made before the user submits a prompt
-    // (App::new and the first frame are purely local), so the server has
-    // plenty of time to start. A single yield_now lets the serve task run.
     tokio::task::yield_now().await;
-    tracing::info!("daemon ready on port {}", port);
-    Ok((base_url, shutdown_tx, handle))
+    tracing::info!("embedded daemon ready on port {}", port);
+    Ok(StartDaemonOutcome::Embedded {
+        base_url,
+        shutdown_tx,
+        handle,
+    })
 }
 
 /// Compute initial collapse state based on line-count thresholds.
@@ -435,6 +556,7 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::SessionListLoaded(_)
         | AppEvent::HistoryLoaded { .. }
         | AppEvent::PlanUpdate(_)
+        | AppEvent::TodosSnapshot(_)
         | AppEvent::UndoResult(_)
         | AppEvent::SaveSession
         | AppEvent::DeleteSession(_)
@@ -444,10 +566,14 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::ToggleCollapseAll
         | AppEvent::ToggleCollapseLatest
         | AppEvent::TurnStarted { .. }
+        | AppEvent::ServerTurnTerminated
         | AppEvent::ConfigChanged(_)
         | AppEvent::ContextCompacted { .. }
         | AppEvent::AgentLocalView { .. }
         | AppEvent::BackgroundTaskResult(_)
+        | AppEvent::BackgroundTaskRecovered(_)
+        | AppEvent::BackgroundTaskCompleted(_)
+        | AppEvent::SessionClearFailed { .. }
         | AppEvent::AgentGenerationReset { .. }
         | AppEvent::NavigateAgent { .. }
         | AppEvent::AgentViewNavigated(_)
@@ -464,6 +590,13 @@ pub fn agent_phase_from_event(event: &AppEvent) -> Option<AgentPhase> {
         | AppEvent::ModelsReady(_)
         | AppEvent::ModelSwitchRequested { .. }
         | AppEvent::ModelSwitched { .. }
+        | AppEvent::SessionSwitched { .. }
+        | AppEvent::SessionCleared { .. }
+        | AppEvent::ServerPermissionRequired { .. }
+        | AppEvent::ServerQuestionAsked { .. }
+        | AppEvent::SubagentTraceProgress(..)
+        | AppEvent::ServerPermissionResolved { .. }
+        | AppEvent::ServerQuestionResolved { .. }
         | AppEvent::ModelSwitchFailed(_) => None,
     }
 }
@@ -583,6 +716,15 @@ mod tests {
         // phase indicator.
         assert_eq!(
             agent_phase_from_event(&AppEvent::MemoriesReady(vec!["mem1".into()])),
+            None
+        );
+        // /clear 切换会话不改变 agent phase（仍为 Idle）
+        assert_eq!(
+            agent_phase_from_event(&AppEvent::SessionSwitched {
+                from_id: "old".into(),
+                id: "s1".into(),
+                name: "New Session".into()
+            }),
             None
         );
     }
