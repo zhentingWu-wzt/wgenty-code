@@ -2823,7 +2823,7 @@ mod tests {
         assert!(
             top.content.contains("Ziggurat"),
             "rare term should rank highest, got: {}",
-            &top.content
+            top.content
         );
     }
 

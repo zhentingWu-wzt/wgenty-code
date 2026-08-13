@@ -722,6 +722,10 @@ mod tests {
             &["init"],
             &["config", "user.email", "test@wgenty.local"],
             &["config", "user.name", "wgenty test"],
+            // Windows Git defaults to core.autocrlf=true, which rewrites the
+            // committed `seed\n` into `seed\r\n` on checkout and breaks the
+            // byte-exact assertions below. Pin the repo to LF-only.
+            &["config", "core.autocrlf", "false"],
         ];
         for args in cmds {
             let status = Command::new("git")
