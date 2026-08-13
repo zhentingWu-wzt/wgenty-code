@@ -248,9 +248,6 @@ impl AgentLoop {
     ) -> Result<(), AgentError> {
         self.token_counter.reset_turn();
         self.compaction_failed = false;
-        // Command-background results are still injected here (subagent results
-        // are NOT -- they arrive through the delivery).
-        self.inject_background_results().await;
         // Inject the delivered child-result batch as a `user` message so the
         // model sees the completed subagent work inline. Mid-conversation
         // `system` messages are not reliably surfaced by OpenAI-compatible
@@ -277,8 +274,6 @@ impl AgentLoop {
 
     /// Inner implementation of the agent loop.
     async fn process_input_inner(&mut self, input: String) -> Result<(), AgentError> {
-        self.inject_background_results().await;
-
         // 1a. Fire UserPromptSubmit hook synchronously with a 10s timeout.
         //     On timeout the turn continues with empty outcomes (graceful degradation).
         let outcomes = {

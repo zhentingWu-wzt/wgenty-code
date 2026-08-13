@@ -97,6 +97,39 @@ pub struct TraceEvent {
     pub cumulative_tokens: u64,
     /// Redacted serialization of `ErrorInfo` (present only on terminal failure).
     pub error: Option<serde_json::Value>,
+    /// Event discriminant. `"progress"` (default, the original subagent-progress
+    /// event) or `"permission_pending"` / `"permission_resolved"` (subagent
+    /// policy-Ask lifecycle, carried in `permission`). Defaults to `"progress"`
+    /// so old replayed JSON without this field stays valid.
+    #[serde(default)]
+    pub kind: TraceEventKind,
+    /// Present only for permission events (`kind` != progress). Carries the
+    /// approval payload so SSE subscribers can surface a permission prompt
+    /// without polling `/tools/pending-permissions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<crate::teams::permission_bridge::StructuredApproval>,
+    /// Present only for question events (`kind` = question_pending /
+    /// question_resolved). Carries the ask_user_question payload so SSE
+    /// subscribers can render a question modal without polling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<crate::daemon::interaction_bridge::QuestionPayload>,
+}
+
+/// Broad class of a `TraceEvent`. Serialized as a lowercase string.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TraceEventKind {
+    /// Subagent progress update (the original event type).
+    #[default]
+    Progress,
+    /// A subagent policy-Ask is awaiting user approval.
+    PermissionPending,
+    /// A previously-pending policy-Ask has been resolved (approved/denied).
+    PermissionResolved,
+    /// An ask_user_question prompt is awaiting a user answer.
+    QuestionPending,
+    /// A previously-pending question has been resolved.
+    QuestionResolved,
 }
 
 impl TraceEvent {
@@ -136,6 +169,80 @@ impl TraceEvent {
             token_budget_k: p.token_budget_k,
             cumulative_tokens: p.cumulative_tokens,
             error,
+            kind: TraceEventKind::Progress,
+            permission: None,
+            question: None,
+        }
+    }
+
+    /// Build a permission-lifecycle event (pending or resolved). These ride the
+    /// same trace hub + SSE stream as progress events so subscribers need no
+    /// separate channel; clients dispatch on `kind`.
+    pub fn permission(
+        approval: &crate::teams::permission_bridge::StructuredApproval,
+        session_id: &str,
+        resolved: bool,
+    ) -> Self {
+        Self {
+            ts: chrono::Utc::now().timestamp_millis(),
+            session_id: session_id.to_string(),
+            node_id: format!("permission:{}", approval.request_id),
+            parent_id: None,
+            label: approval.human_summary.clone(),
+            status: if resolved {
+                "resolved".into()
+            } else {
+                "pending".into()
+            },
+            round: None,
+            current_tool: Some(approval.tool.clone()),
+            current_params: None,
+            elapsed_ms: 0,
+            progress_delta: None,
+            token_budget_k: None,
+            cumulative_tokens: 0,
+            error: None,
+            kind: if resolved {
+                TraceEventKind::PermissionResolved
+            } else {
+                TraceEventKind::PermissionPending
+            },
+            permission: Some(approval.clone()),
+            question: None,
+        }
+    }
+
+    /// Build a question-lifecycle event (ask_user_question pending/resolved).
+    pub fn question(
+        payload: &crate::daemon::interaction_bridge::QuestionPayload,
+        resolved: bool,
+    ) -> Self {
+        Self {
+            ts: chrono::Utc::now().timestamp_millis(),
+            session_id: payload.session_id.clone(),
+            node_id: format!("question:{}", payload.request_id),
+            parent_id: None,
+            label: payload.question.clone(),
+            status: if resolved {
+                "resolved".into()
+            } else {
+                "pending".into()
+            },
+            round: None,
+            current_tool: Some("ask_user_question".to_string()),
+            current_params: None,
+            elapsed_ms: 0,
+            progress_delta: None,
+            token_budget_k: None,
+            cumulative_tokens: 0,
+            error: None,
+            kind: if resolved {
+                TraceEventKind::QuestionResolved
+            } else {
+                TraceEventKind::QuestionPending
+            },
+            permission: None,
+            question: Some(payload.clone()),
         }
     }
 }

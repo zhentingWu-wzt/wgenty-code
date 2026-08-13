@@ -1,6 +1,7 @@
 //! CLI Arguments
 
 use super::CliArgs;
+use anyhow::Context;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -22,8 +23,20 @@ impl Cli {
             Some(super::Commands::Repl { prompt }) => {
                 self.run_repl(state, prompt.clone()).await?;
             }
-            Some(super::Commands::Query { prompt }) => {
-                self.run_query(state, prompt.clone()).await?;
+            Some(super::Commands::Query {
+                prompt,
+                prompt_file,
+                yolo,
+                max_rounds,
+            }) => {
+                self.run_query(
+                    state,
+                    prompt.clone(),
+                    prompt_file.clone(),
+                    *yolo,
+                    *max_rounds,
+                )
+                .await?;
             }
             Some(super::Commands::Config { action }) => {
                 self.run_config(action)?;
@@ -201,8 +214,17 @@ impl Cli {
         crate::utils::startup_timing::mark("splash rendered (first paint)");
 
         // ── Start daemon (session load deferred to background) ───────────
-        let (base_url, shutdown_tx, daemon_handle) = match app::start_daemon(state).await {
-            Ok(result) => result,
+        // A running global daemon (discovery file checks out) is reused
+        // instead of spawning a duplicate; `embedded_daemon` is then None
+        // and shutdown below is a no-op for the reused case.
+        let (base_url, embedded_daemon) = match app::start_daemon(state).await {
+            Ok(app::StartDaemonOutcome::Reused { base_url }) => (base_url, None),
+            Ok(app::StartDaemonOutcome::Spawned { base_url }) => (base_url, None),
+            Ok(app::StartDaemonOutcome::Embedded {
+                base_url,
+                shutdown_tx,
+                handle,
+            }) => (base_url, Some((shutdown_tx, handle))),
             Err(e) => {
                 let _ = disable_raw_mode();
                 let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
@@ -273,9 +295,12 @@ impl Cli {
         // Restore default panic hook
         let _ = std::panic::take_hook();
 
-        // Shutdown daemon and wait for it to fully stop
-        let _ = shutdown_tx.send(());
-        let _ = daemon_handle.await;
+        // Shutdown the embedded daemon and wait for it to fully stop. A
+        // reused daemon is owned by another process and keeps running.
+        if let Some((shutdown_tx, daemon_handle)) = embedded_daemon {
+            let _ = shutdown_tx.send(());
+            let _ = daemon_handle.await;
+        }
 
         result
     }
@@ -295,10 +320,26 @@ impl Cli {
         Ok(())
     }
 
-    async fn run_query(&self, state: crate::state::AppState, prompt: String) -> anyhow::Result<()> {
+    async fn run_query(
+        &self,
+        state: crate::state::AppState,
+        prompt: Option<String>,
+        prompt_file: Option<String>,
+        yolo: bool,
+        max_rounds: Option<usize>,
+    ) -> anyhow::Result<()> {
         // Full agent loop (tools + micro-compaction + shared stream engine).
         // Replaces the previous one-shot non-streaming HTTP call.
-        crate::cli::headless_runtime::run_oneshot(state.settings, prompt).await
+        let prompt = match (prompt, prompt_file) {
+            (Some(p), None) => p,
+            (None, Some(path)) => std::fs::read_to_string(&path)
+                .with_context(|| format!("reading prompt file: {path}"))?,
+            (Some(_), Some(_)) => {
+                anyhow::bail!("--prompt and --prompt-file are mutually exclusive")
+            }
+            (None, None) => anyhow::bail!("provide --prompt <text> or --prompt-file <path>"),
+        };
+        crate::cli::headless_runtime::run_oneshot(state.settings, prompt, yolo, max_rounds).await
     }
 
     fn run_config(&self, action: &super::ConfigCommands) -> anyhow::Result<()> {
@@ -1016,6 +1057,26 @@ impl Cli {
                 );
                 println!("  Capabilities: {:?}", status.capabilities);
                 println!("  Settings enabled: {}", sb.enabled);
+
+                // Show diagnostics when the backend is not hardware-enforced
+                // and there are failed checks — this is the user-facing guidance.
+                let failed: Vec<_> = status.diagnostics.iter().filter(|d| !d.passed).collect();
+                if !failed.is_empty() && !status.is_hardware_enforced {
+                    println!(
+                        "\n  Availability diagnostics ({}/{} checks passed):",
+                        status.diagnostics.len() - failed.len(),
+                        status.diagnostics.len()
+                    );
+                    for d in &status.diagnostics {
+                        let icon = if d.passed { '✓' } else { '✗' };
+                        println!("    {icon} {}", d.check);
+                        println!("        {}", d.detail);
+                        if let Some(ref fix) = d.fix_suggestion {
+                            println!("        → Fix: {}", fix);
+                        }
+                    }
+                }
+
                 println!("  Mode → level / fail_mode (resolved):");
                 for mode in [
                     EffectiveMode::Plan,

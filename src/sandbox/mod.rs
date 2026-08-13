@@ -152,21 +152,41 @@ pub trait SandboxBackend: Send + Sync {
     ) -> Result<SandboxedChild, SandboxError>;
 }
 
+/// A single diagnostic check result from backend availability probing.
+#[derive(Debug, Clone)]
+pub struct DiagnosticIssue {
+    /// What the check was testing (e.g. \"cgroup writable\", \"bwrap installed\").
+    pub check: String,
+    /// Whether this check passed.
+    pub passed: bool,
+    /// Detail about the result.
+    pub detail: String,
+    /// A suggested fix command or action, if the check failed.
+    pub fix_suggestion: Option<String>,
+}
+
 /// Top-level manager: selects the best available backend and routes calls to it.
 pub struct SandboxManager {
     backend: Box<dyn SandboxBackend>,
+    diagnostics: Vec<DiagnosticIssue>,
 }
 
 impl SandboxManager {
     /// Create a new manager, auto-selecting the best available backend.
     pub fn new() -> Self {
-        let backend = backends::create_backend();
+        let (backend, diagnostics) = backends::create_backend();
+        let failed = diagnostics.iter().filter(|d| !d.passed).count();
         tracing::info!(
-            "Sandbox backend: {} (enforced={})",
+            "Sandbox backend: {} (enforced={}, checks_passed={}/{})",
             backend.name(),
-            backend.is_hardware_enforced()
+            backend.is_hardware_enforced(),
+            diagnostics.len() - failed,
+            diagnostics.len()
         );
-        Self { backend }
+        Self {
+            backend,
+            diagnostics,
+        }
     }
 
     /// Execute a command with the given profile. Blocks until completion.
@@ -200,6 +220,7 @@ impl SandboxManager {
                 .into_iter()
                 .map(String::from)
                 .collect(),
+            diagnostics: self.diagnostics.clone(),
         }
     }
 }
@@ -216,6 +237,7 @@ pub struct SandboxStatus {
     pub backend_name: String,
     pub is_hardware_enforced: bool,
     pub capabilities: Vec<String>,
+    pub diagnostics: Vec<DiagnosticIssue>,
 }
 
 #[cfg(test)]

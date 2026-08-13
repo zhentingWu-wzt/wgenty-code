@@ -17,9 +17,9 @@ use crate::agent::{
     AgentCoordinator, ChildTerminal, CoordinatorError, SpawnChildRequest, ToolContext,
 };
 use crate::api::ApiClient;
-use crate::config::agent::RootPermissionMode;
-use crate::config::Settings;
+use crate::config::{RootPermissionMode, Settings};
 use crate::permissions::policy::ToolPermissionPolicy;
+use crate::permissions::{PermissionModeEntry, PermissionModeStore};
 use crate::runtime::guardian::Guardian;
 use crate::teams::guarding_tool_port::SubagentPermissionContext;
 use crate::teams::permission_bridge::PermissionBridge;
@@ -118,6 +118,9 @@ pub struct TaskTool {
     /// Daemon-only binding for the code-selected RootCause route. The handle
     /// remains empty for normal registry/test construction.
     root_cause_runtime: crate::exec_session::RootCauseRuntimeHandle,
+    /// Per-project permission modes (root + effective). Each subagent
+    /// snapshots the entry for its invocation's workdir at spawn time.
+    permission_modes: PermissionModeStore,
 }
 
 impl TaskTool {
@@ -142,6 +145,7 @@ impl TaskTool {
                 crate::sandbox::EffectiveMode::Normal,
             )),
             root_cause_runtime: crate::exec_session::root_cause_runtime_handle(),
+            permission_modes: PermissionModeStore::new(),
         }
     }
 
@@ -155,8 +159,15 @@ impl TaskTool {
         self
     }
 
-    /// Set the shared root permission mode signal. The TUI/daemon updates this
-    /// at runtime; each subagent snapshots the current value at spawn time.
+    /// Share the daemon's per-project permission mode store. Each subagent
+    /// looks up the entry for its invocation's workdir at spawn time, so
+    /// different projects can run under different modes (Normal/Yolo/...).
+    pub fn with_permission_modes(mut self, modes: PermissionModeStore) -> Self {
+        self.permission_modes = modes;
+        self
+    }
+
+    /// Share the daemon's root permission mode lock (Yolo/AcceptEdits/Normal).
     pub fn with_root_mode(mut self, mode: Arc<std::sync::RwLock<RootPermissionMode>>) -> Self {
         self.root_mode = mode;
         self
@@ -185,14 +196,19 @@ impl TaskTool {
         *self.root_mode.write().unwrap() = mode;
     }
 
-    fn build_permission_context(&self, agent_id: &str) -> SubagentPermissionContext {
+    /// Build the subagent permission context, looking up the per-project mode
+    /// for `workdir` (falling back to `Normal` when unregistered).
+    fn build_permission_context(
+        &self,
+        agent_id: &str,
+        workdir: Option<&std::path::Path>,
+    ) -> SubagentPermissionContext {
         let workspace = self.settings.storage.working_dir.clone();
         let limits = &self.settings.agent.subagent;
-        let root_mode = *self.root_mode.read().unwrap_or_else(|e| e.into_inner());
-        let effective_mode = *self
-            .effective_mode
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
+        let entry = match workdir {
+            Some(wd) => self.permission_modes.get(wd),
+            None => PermissionModeEntry::default(),
+        };
         SubagentPermissionContext {
             policy: ToolPermissionPolicy::new(workspace),
             session_rules: self
@@ -205,8 +221,8 @@ impl TaskTool {
             timeout_decision: limits.timeout_decision,
             guardian: Guardian::default(),
             agent_id: agent_id.to_string(),
-            root_mode,
-            effective_mode,
+            root_mode: entry.root_mode,
+            effective_mode: entry.effective_mode,
             denial_log: Arc::new(Mutex::new(Vec::new())),
             event_log: Arc::new(Mutex::new(Vec::new())),
         }
@@ -316,7 +332,10 @@ impl TaskTool {
             .collect();
         let timeout_secs = self.settings.agent.subagent.timeout_secs;
         let workdir: Option<std::path::PathBuf> = Some(self.settings.storage.working_dir.clone());
-        let permission = self.build_permission_context(&child_agent_id_str);
+        let permission = self.build_permission_context(
+            &child_agent_id_str,
+            Some(self.settings.storage.working_dir.as_path()),
+        );
 
         let started_at = chrono::Utc::now().timestamp_millis();
         let result = run_subagent_loop_with_permissions(
@@ -358,6 +377,7 @@ impl TaskTool {
                 &result,
                 self.settings.agent.subagent.trace.context_char_limit,
                 retention,
+                context.workdir.map(|p| p.to_string_lossy().to_string()),
             );
         }
 
@@ -828,9 +848,11 @@ impl Tool for TaskTool {
         // `models.main` set to the routed tier endpoint, so reuse it directly.
         let settings_bg = child_settings.clone();
         let coordinator_bg = self.coordinator.clone();
-        let permission_ctx = self.build_permission_context(child_context.agent_id.as_str());
+        let permission_ctx =
+            self.build_permission_context(child_context.agent_id.as_str(), context.workdir);
         // Fold subagent file edits into the root turn's checkpoint snapshot.
         let origin_turn_id_bg = context.origin_turn_id.map(|s| s.to_string());
+        let workdir_bg = context.workdir.map(|p| p.to_path_buf());
 
         // The coordinator-owned child context moves into the spawned task so
         // the loop runs as the child agent and cancellation propagates. The
@@ -1062,8 +1084,8 @@ impl Tool for TaskTool {
                         })
                         .unwrap_or((0, 0, Vec::new(), None))
                 };
-                let project_path = std::env::current_dir()
-                    .ok()
+                let project_path = workdir_bg
+                    .as_deref()
                     .map(|p| p.to_string_lossy().to_string());
                 let transcript = build_transcript(
                     bg_node_id,

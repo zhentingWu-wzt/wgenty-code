@@ -389,6 +389,13 @@ pub async fn run_rlm_pipeline(
                                 &result,
                                 sub_settings.agent.subagent.trace.context_char_limit,
                                 retention,
+                                Some(
+                                    sub_settings
+                                        .storage
+                                        .working_dir
+                                        .to_string_lossy()
+                                        .to_string(),
+                                ),
                             );
                         }
                         // Ghost is not registered in coordinator scopes; skip
@@ -461,6 +468,13 @@ pub async fn run_rlm_pipeline(
                         &result,
                         sub_settings.agent.subagent.trace.context_char_limit,
                         retention,
+                        Some(
+                            sub_settings
+                                .storage
+                                .working_dir
+                                .to_string_lossy()
+                                .to_string(),
+                        ),
                     );
                 }
                 // Persist the child's terminal through the coordinator so its
@@ -733,6 +747,13 @@ pub async fn run_rlm_pipeline(
                             &result,
                             sub_settings.agent.subagent.trace.context_char_limit,
                             retention,
+                            Some(
+                                sub_settings
+                                    .storage
+                                    .working_dir
+                                    .to_string_lossy()
+                                    .to_string(),
+                            ),
                         );
                     }
                     let terminal = match &result {
