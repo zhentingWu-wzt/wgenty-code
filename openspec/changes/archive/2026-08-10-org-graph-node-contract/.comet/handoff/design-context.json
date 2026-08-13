@@ -1,0 +1,15 @@
+{
+  "change": "org-graph-node-contract",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "ecb52febd7d4cd42df1313b82bc594120869e546f24d72070c1b0502d1f44ee4",
+  "files": [
+    { "path": "openspec/changes/org-graph-node-contract/proposal.md", "sha256": "e32ba7edd4a3a893c49c7fab75c66a7ca7dce05cbca093cd5e496ec7164c61ff" },
+    { "path": "openspec/changes/org-graph-node-contract/design.md", "sha256": "ab9e9c5ab90050f62cfccbefc5d67a710d15bab81eba834bb9840595d5871fdd" },
+    { "path": "openspec/changes/org-graph-node-contract/tasks.md", "sha256": "b3b30ac5221cab5a4100e738d0c9fdbfc26d4aeb0854ff68828c4d606f09b3f7" },
+    { "path": "openspec/changes/org-graph-node-contract/specs/org-graph-node-contract/spec.md", "sha256": "ac0e741b0813bbc6bfa61296f3881bbd9515ab18c321eec256fc82bdd2cec276" },
+    { "path": "openspec/changes/org-graph-node-contract/specs/subagent-tool-permissions/spec.md", "sha256": "952e0949804a14ef1b37701145813cf23adaa7031cc4fbf70bd822c2db6a2033" }
+  ]
+}

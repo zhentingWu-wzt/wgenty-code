@@ -60,6 +60,18 @@ Edit `job.yaml` to change:
 | `max_tokens` | `16384` (in agent driver) | Max tokens per LLM response |
 | `n_concurrent_trials` | `1` | Parallel tasks (increase for batch runs) |
 
+Before writing settings, the agent driver collects a bounded marker set from
+`/app` inside the task container. It recognizes Rust (`Cargo.toml`), Go
+(`go.mod`), Python (`pyproject.toml`, `pytest.ini`, `setup.cfg`, or `tox.ini`),
+and JavaScript (`package.json`). The resulting developer instructions include
+the matching broad command (`cargo test`, `go test ./...`, `pytest`, or
+`npm test --`) and an ecosystem-specific focused-test template to specialize
+only after locating a concrete failing test. JavaScript uses the package test
+script only when `scripts.test` is non-empty. For an unknown, unreadable, or
+no-command repository, no test command is invented: the agent is instructed
+to inspect repository and CI guidance instead. The driver does not run tests
+automatically, and Vitest is not assumed to be universally available.
+
 ## Files
 
 | File | Purpose |

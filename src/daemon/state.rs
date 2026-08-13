@@ -1,5 +1,6 @@
 //! DaemonState -- shared state for the HTTP API server.
 
+use crate::config::RootPermissionMode;
 use crate::context::memory_session::SessionManager as MemorySessionManager;
 use crate::knowledge::loader::SkillLoader;
 use crate::permissions::PermissionModeStore;
@@ -361,6 +362,10 @@ pub struct DaemonState {
     pub tool_executor: ToolExecutor,
     pub checkpoint_manager: Arc<CheckpointManager>,
     pub checkpoint_store: Arc<CheckpointStore>,
+    /// Per-session static Work-Graph runtimes shared by daemon tool calls.
+    pub work_graph_runtime_store: Arc<crate::exec_session::ExecutionSessionRuntimeStore>,
+    pub task_manager: Arc<TaskManagementTool>,
+    pub todo_state: Arc<RwLock<TodoState>>,
     pub task_router: Arc<crate::tasks::TaskRouter>,
     pub todo_router: Arc<crate::tasks::TodoRouter>,
     pub skill_loader: Arc<SkillLoader>,
@@ -436,6 +441,9 @@ pub struct DaemonState {
     /// Per-project permission modes (root + effective). Each project (by
     /// canonical working dir) owns an independent entry; defaults to Normal.
     pub permission_modes: PermissionModeStore,
+    /// Shared sandbox effective mode lock (includes Plan). Read by
+    /// `root_context` when building the trusted `ToolContext`.
+    pub effective_mode: Arc<std::sync::RwLock<crate::sandbox::EffectiveMode>>,
     /// Shared read connection to the global subagent transcript store, used by
     /// the SSE trace endpoint for cold-start replay. `None` when the store
     /// failed to open at startup (SSE then streams live-only). See design D5.
@@ -557,10 +565,16 @@ impl DaemonState {
         // and lifecycle for this daemon. Derived from trusted subagent
         // settings; identity is never taken from model JSON. Constructed
         // outside the registry's Arc::new_cyclic so DaemonState can hold it.
-        let coordinator = Arc::new(crate::agent::AgentCoordinator::new(
-            app_state.settings.agent.subagent.max_concurrent,
-            app_state.settings.agent.subagent.max_depth,
+        let registry = Arc::new(crate::org_graph::NodeRegistry::builtin(
+            &app_state.settings.agent.subagent,
         ));
+        let coordinator = Arc::new(
+            crate::agent::AgentCoordinator::new(
+                app_state.settings.agent.subagent.max_concurrent,
+                app_state.settings.agent.subagent.max_depth,
+            )
+            .with_node_registry(registry),
+        );
         // Viewer-bound capability service + viewer-token secret. The secret is
         // random per daemon start; viewer tokens do not survive restart.
         let daemon_viewer_secret = {
@@ -583,6 +597,14 @@ impl DaemonState {
         let interaction_bridge =
             Arc::new(crate::daemon::interaction_bridge::InteractionBridge::new());
         let shared_session_rules = Arc::new(RwLock::new(HashSet::<String>::new()));
+        let root_mode = Arc::new(std::sync::RwLock::new(RootPermissionMode::Normal));
+        let effective_mode = Arc::new(std::sync::RwLock::new(
+            crate::sandbox::EffectiveMode::Normal,
+        ));
+        // TaskTool is built inside Arc::new_cyclic, before the per-session
+        // Work-Graph store exists. Keep a late-bound handle so it can bind a
+        // RootCause child before the child future is spawned.
+        let root_cause_runtime_handle = crate::exec_session::root_cause_runtime_handle();
         let permission_modes = PermissionModeStore::new();
         // ── Shared MemoryManager (D1): backs memory_add tool + AutoDream ──
         let memory_manager = Arc::new(crate::context::MemoryManager::with_settings(
@@ -686,6 +708,9 @@ impl DaemonState {
             )
             .with_permission_bridge(permission_bridge.clone())
             .with_session_rules(shared_session_rules.clone())
+            .with_root_mode(root_mode.clone())
+            .with_effective_mode(effective_mode.clone())
+            .with_root_cause_runtime(root_cause_runtime_handle.clone())
             .with_permission_modes(permission_modes.clone());
             registry.register(Box::new(task_tool));
 
@@ -737,6 +762,20 @@ impl DaemonState {
         crate::utils::startup_timing::mark("daemon state: tool registry built");
         let checkpoint_manager = tool_registry.checkpoint_manager.clone();
         let checkpoint_store = tool_registry.checkpoint_store.clone();
+        let work_graph_runtime_store =
+            Arc::new(crate::exec_session::ExecutionSessionRuntimeStore::new(
+                app_state.settings.storage.working_dir.clone(),
+                checkpoint_store.clone(),
+                2,
+            ));
+        *root_cause_runtime_handle
+            .write()
+            .expect("lock poisoned: root-cause runtime handle") =
+            Some(work_graph_runtime_store.clone());
+        tool_registry.register_exec_session_tools(work_graph_runtime_store.clone());
+        tool_registry.enable_static_root_cause_route(work_graph_runtime_store.clone());
+        tool_registry
+            .register_specialist_report_tool(work_graph_runtime_store.clone(), coordinator.clone());
 
         // ── D1: AutoDream startup check (fire-and-forget) ────────────────
         // Replaces the old TUI app-side AutoDream spawn (removed in Task 4).
@@ -856,6 +895,9 @@ impl DaemonState {
             tool_registry,
             checkpoint_manager,
             checkpoint_store,
+            work_graph_runtime_store,
+            task_manager,
+            todo_state,
             task_router,
             todo_router,
             skill_loader,
@@ -885,6 +927,7 @@ impl DaemonState {
             permission_bridge,
             interaction_bridge,
             permission_modes,
+            effective_mode,
             transcript_store: sse_transcript_store,
             session_event_hub: tokio::sync::broadcast::channel(1024).0,
             global_event_hub,
@@ -1092,20 +1135,43 @@ impl DaemonState {
         &self,
         session_id: &str,
     ) -> anyhow::Result<crate::agent::AgentExecutionContext> {
-        {
+        let context = {
             let roots = self.root_contexts.read().await;
             if let Some(ctx) = roots.get(session_id) {
-                return Ok(ctx.clone());
+                ctx.clone()
+            } else {
+                drop(roots);
+                let ctx = self
+                    .coordinator
+                    .ensure_root(crate::agent::SessionId::new(session_id))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("ensure_root failed: {e}"))?;
+                let mut roots = self.root_contexts.write().await;
+                roots.insert(session_id.to_string(), ctx.clone());
+                ctx
             }
-        }
-        let ctx = self
-            .coordinator
-            .ensure_root(crate::agent::SessionId::new(session_id))
+        };
+        let tool_context = crate::agent::ToolContext {
+            agent: &context,
+            invocation_id: crate::agent::ToolInvocationId::new(uuid::Uuid::new_v4().to_string()),
+            origin_turn_id: None,
+            workdir: Some(&self.app_state.settings.storage.working_dir),
+            effective_mode: *self.effective_mode.read().expect("effective mode lock"),
+            checkpoint: Some(self.checkpoint_store.as_ref()),
+        };
+        if let Some(child_id) = self
+            .tool_registry
+            .dispatch_recovered_root_cause(&tool_context)
             .await
-            .map_err(|e| anyhow::anyhow!("ensure_root failed: {}", e))?;
-        let mut roots = self.root_contexts.write().await;
-        roots.insert(session_id.to_string(), ctx.clone());
-        Ok(ctx)
+            .map_err(|error| anyhow::anyhow!("recover root-cause specialist: {}", error.message))?
+        {
+            tracing::info!(
+                session_id,
+                child_id,
+                "redispatched recovered root-cause specialist"
+            );
+        }
+        Ok(context)
     }
 
     /// Creates a trusted UI viewer: generates a 256-bit bearer token, stores

@@ -371,6 +371,10 @@ impl App {
                         if id == self.session_id {
                             return;
                         }
+                        // Record the latest requested switch target so stale
+                        // completions from earlier switches are dropped when
+                        // multiple switches are in flight simultaneously.
+                        self.session_state.pending_switch = Some(id.clone());
                         // Automatic daemon continuation is invisible to local
                         // busy gates. Keep observing the old session until its
                         // run claim is released after the final save.

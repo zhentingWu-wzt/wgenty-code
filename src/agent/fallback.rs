@@ -180,6 +180,21 @@ mod tests {
     }
 
     #[test]
+    fn coordinator_contract_violation_not_eligible() {
+        // ContractViolation must NOT trigger structural fallback: a leaf node
+        // that tries to spawn, or a budget/permission breach, should surface to
+        // the parent agent as a `contract_violation` ToolError, not degrade to
+        // a leaf-tool fallback run. The exhaustive `_ => None` arm covers this;
+        // this test locks the behavior against future regressions.
+        let e = CoordinatorError::ContractViolation {
+            node_type: crate::org_graph::NodeType::Explore,
+            dimension: crate::org_graph::ContractDimension::Permission,
+            reason: "leaf node cannot spawn".to_string(),
+        };
+        assert_eq!(fallback_eligible_from_coordinator_error(&e), None);
+    }
+
+    #[test]
     fn coordinator_parent_not_running_not_eligible() {
         let e = CoordinatorError::ParentNotRunning;
         assert_eq!(fallback_eligible_from_coordinator_error(&e), None);

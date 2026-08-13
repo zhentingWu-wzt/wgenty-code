@@ -307,6 +307,34 @@ impl CheckpointStore {
         ))
     }
 
+    /// 把 WorkState 序列化写入 turn 目录下的 `work_state.json` 旁路文件。
+    /// 不影响文件 capture 语义（try_capture_file / rewind 不读不写此文件）。
+    pub fn capture_work_state(
+        &self,
+        turn_id: &str,
+        state: &crate::org_graph::WorkState,
+    ) -> Result<()> {
+        let json = serde_json::to_string_pretty(state)
+            .with_context(|| format!("serialize work_state for turn {turn_id}"))?;
+        let path = self.turn_dir(turn_id).join("work_state.json");
+        std::fs::write(&path, json)
+            .with_context(|| format!("write work_state.json for turn {turn_id}"))?;
+        Ok(())
+    }
+
+    /// 从 turn 目录读回 WorkState；文件不存在（legacy turn）返回 Ok(None)。
+    pub fn restore_work_state(&self, turn_id: &str) -> Result<Option<crate::org_graph::WorkState>> {
+        let path = self.turn_dir(turn_id).join("work_state.json");
+        if !path.exists() {
+            return Ok(None);
+        }
+        let json = std::fs::read_to_string(&path)
+            .with_context(|| format!("read work_state.json for turn {turn_id}"))?;
+        let state: crate::org_graph::WorkState = serde_json::from_str(&json)
+            .with_context(|| format!("deserialize work_state for turn {turn_id}"))?;
+        Ok(Some(state))
+    }
+
     pub fn prune(&self, keep_n: usize) -> Result<usize> {
         if !self.root.exists() {
             return Ok(0);
@@ -751,5 +779,51 @@ mod tests {
         let report = store.rewind_range(&[]).unwrap();
         assert_eq!(report.restored, 0);
         assert!(report.rewound_turns.is_empty());
+    }
+
+    // ── work_state.json capture/restore (Task 3) ────────────────────────
+
+    #[test]
+    fn work_state_capture_and_restore_roundtrip() {
+        let dir = temp_project();
+        let store = CheckpointStore::new(dir.path());
+        let turn_id = "test-turn-1";
+        store.begin_turn(turn_id).unwrap();
+
+        let mut state = crate::org_graph::WorkState::default();
+        state.set_requirement(Some("实现持久化".into()));
+        state
+            .set_verify_result(
+                crate::org_graph::NodeType::Verification,
+                crate::org_graph::VerifyOutcome {
+                    success: false,
+                    fail_reason: Some(crate::org_graph::VerifyFailureKind::CommandFailed {
+                        exit_code: Some(1),
+                        stderr: "error".into(),
+                    }),
+                },
+            )
+            .expect("Verification may write verify_result");
+
+        store.capture_work_state(turn_id, &state).expect("capture");
+        let restored = store
+            .restore_work_state(turn_id)
+            .expect("restore")
+            .expect("work_state.json should exist after capture");
+        assert_eq!(
+            restored, state,
+            "WorkState must round-trip via serde unchanged"
+        );
+    }
+
+    #[test]
+    fn work_state_restore_returns_none_for_legacy_turn_without_snapshot() {
+        // legacy turn（无 work_state.json）：返回 None，不崩。
+        let dir = temp_project();
+        let store = CheckpointStore::new(dir.path());
+        let turn_id = "legacy-turn";
+        store.begin_turn(turn_id).unwrap();
+        let restored = store.restore_work_state(turn_id).expect("restore");
+        assert!(restored.is_none());
     }
 }

@@ -255,6 +255,9 @@ mod tests {
             contract: NodeContract {
                 goal: "test".into(),
                 verify_commands: vec![],
+                compile_commands: vec![],
+                test_commands: vec![],
+                verification_profile: crate::exec_session::VerificationProfile::None,
                 expected_files: vec![],
             },
             status: NodeStatus::Running,

@@ -13,6 +13,11 @@ pub struct SessionState {
     pub search_query: String,
     /// When true, a delete is pending confirmation for the selected row.
     pub pending_delete: bool,
+    /// Latest requested session switch target (id). `SessionSwitched`
+    /// completions that don't match this are stale (a newer switch request
+    /// superseded them) and must be dropped. `None` when no switch is in
+    /// flight or the last one was accepted.
+    pub pending_switch: Option<String>,
 }
 
 impl SessionState {
@@ -24,6 +29,7 @@ impl SessionState {
             selected: 0,
             search_query: String::new(),
             pending_delete: false,
+            pending_switch: None,
         }
     }
 
