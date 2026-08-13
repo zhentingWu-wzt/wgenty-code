@@ -3379,8 +3379,12 @@ mod tests {
         )
         .unwrap();
 
+        // dirs::home_dir() reads `HOME` on Unix but `USERPROFILE` on Windows —
+        // set both so the handler's load-from-disk path hits the fake home.
         let prev_home = std::env::var_os("HOME");
+        let prev_userprofile = std::env::var_os("USERPROFILE");
         std::env::set_var("HOME", fake_home.path());
+        std::env::set_var("USERPROFILE", fake_home.path());
         let run = async {
             let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
             let mut rx = state.global_event_hub.subscribe();
@@ -3407,6 +3411,10 @@ mod tests {
         match prev_home {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
+        }
+        match prev_userprofile {
+            Some(v) => std::env::set_var("USERPROFILE", v),
+            None => std::env::remove_var("USERPROFILE"),
         }
         run
     }
