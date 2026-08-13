@@ -111,6 +111,38 @@ full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqli
      config/       配置管理
 ```
 
+### Work-Graph 运行时
+
+`begin_node`、`verify_node`、`rollback_node` 与 `verify_and_complete` 通过可信
+`ToolContext` 中的 agent session 解析其 ExecutionSession runtime。daemon 与
+`query` headless 入口均注册这些工具；同一 session 复用一个 checkpointed
+WorkState / 审计轨迹，不同 session 相互隔离。第一次 `begin_node` 会惰性创建图
+turn；编译、测试和最终验证仍由代码执行的外部锚点决定，模型文本不能声明通过。
+
+daemon 还向已注册的专用子 Agent 提供 `submit_specialist_report`：该工具只从可信
+`ToolContext` 识别仍存活的 child `NodeType`，不接受模型提供的 producer、session 或
+turn。报告只能写入当前 active node/turn 的 `WorkState`，并立即写入 checkpoint；字段
+权限与报告类型仍由 `WorkState` 校验。它是给后续静态 Work-Graph 的类型化交接入口，
+不能写外部锚点、验证结果或路由结论。
+
+当前的静态诊断模板将可重试的 compile/test/final-command 锚点失败先路由到
+`RootCause`，daemon 会通过既有 `task` 执行器启动预注册 leaf 子 Agent，并在 child
+future 启动前把其可信身份绑定到同一 node/attempt；从预留到报告 checkpoint 前，根
+Agent 的非只读工具调用都被拒绝。只有该 child 能成功提交报告，代码才记录并返回
+`Implement` 边。child 失败、取消或完成却未报告时，运行时会耗尽该次重试预算、写入
+`Escalate` 审计事件，并将当前 node / 验证会话标记为 Failed；边界违规和预算耗尽也
+直接 `Escalate`。之后必须通过人工决策或既有 rollback 生命周期恢复，不能把失败诊断
+悄悄转为 `Implement`。
+`submit_specialist_report` 返回的 `next_step` 始终由当前结构化 State 计算，报告不能
+自行批准结果。
+
+进程重启后，运行时从 `.wgenty-code/snapshots/<session-id>/` 载入既有
+`session.json`、active turn 的 `WorkState` 和审计轨迹；损坏或结构不一致的快照会带
+上下文失败并保持原文件不变。若恢复状态仍选择 `RootCause`，daemon 仅依据该持久化的
+node/attempt 和外部锚点重新派发一个**新** child，再按正常预绑定流程启动它。旧 child ID
+永不恢复；恢复不会重跑 compile/test/verify 锚点或增加 attempt。`Complete`、`Escalate`
+及非 RootCause 路由不会派发 child。
+
 请求链路：`用户输入 -> CLI解析 -> Settings加载 -> Prompt组装(8层) -> API SSE -> 工具调用 -> Guardian审查 -> Sandbox执行 -> 流式返回`
 
 **Web 前端**（`web/`，React + Vite + TS）：与 TUI 平行的 thin client，通过 daemon 的 `/api/v1/*` 驱动 agent。daemon 的 `/chat/stream` 是纯透传代理，**工具执行与续轮循环在浏览器端**完成（镜像 `src/agent/runtime/loop_.rs`）。启动：`cargo run --features daemon -- daemon` 后 `cd web && npm install && npm run dev`，打开 `http://localhost:5173`（token 由 Vite dev server 从 `~/.wgenty-code/daemon.token` 注入）。能力：流式聊天、Markdown/diff 渲染、权限审批、停止中断、Sessions/Todos/Tasks/Model/Memory/Config 侧边面板。Memory 面板依赖 Tier 2 后端端点（`/api/v1/memory*`，包装 `MemoryManager`）。

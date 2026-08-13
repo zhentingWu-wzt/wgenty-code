@@ -17,7 +17,7 @@ pub mod search;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 
 use crate::agent::ToolContext;
 
@@ -110,6 +110,7 @@ pub struct ToolError {
 
 pub struct ToolRegistry {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
+    root_cause_guard: RwLock<Option<Arc<crate::exec_session::ExecutionSessionRuntimeStore>>>,
     pub checkpoint_manager: Arc<CheckpointManager>,
     pub checkpoint_store: Arc<CheckpointStore>,
 }
@@ -134,6 +135,7 @@ impl ToolRegistry {
             std::sync::Arc::new(checkpoint::CheckpointManager::new(store.clone()));
         let registry = Self {
             tools: RwLock::new(HashMap::new()),
+            root_cause_guard: RwLock::new(None),
             checkpoint_manager: checkpoint_manager.clone(),
             checkpoint_store: store,
         };
@@ -193,43 +195,116 @@ impl ToolRegistry {
         registry
     }
 
-    /// Register the ExecutionSession `verify_and_complete` tool bound to
-    /// `coordinator` (Task 7). Frontends call this after constructing the
-    /// session coordinator so the agent can call `verify_and_complete` to mark
-    /// a session `Completed`. The tool shares the same
-    /// `Arc<RwLock<SessionCoordinator>>` as the agent-loop turn hook, so
-    /// turn-boundary bookkeeping and verify-gate transitions act on one
-    /// session. Uses default hooks (`AutoRetry { max: 2 }` on verify failure)
-    /// and a `ProcessCommandExecutor` (production can swap an executor that
-    /// routes through guardian + sandbox).
+    /// Register context-scoped ExecutionSession tools backed by `runtime_store`.
+    ///
+    /// The registry is global and can serve multiple trusted agent sessions,
+    /// so it must not retain one mutable `SessionCoordinator`. Each adapter
+    /// resolves a per-session runtime exclusively from its [`ToolContext`].
     pub fn register_exec_session_tools(
         &self,
-        coordinator: Arc<RwLock<crate::exec_session::SessionCoordinator>>,
-        auto_retry_max: u32,
+        runtime_store: Arc<crate::exec_session::ExecutionSessionRuntimeStore>,
     ) {
-        let gate = Arc::new(crate::exec_session::VerifyGate::new_with_default_hooks(
-            Arc::clone(&coordinator),
-            Arc::new(crate::exec_session::ProcessCommandExecutor),
+        self.register(Box::new(
+            crate::exec_session::VerifyAndCompleteTool::with_runtime_store(Arc::clone(
+                &runtime_store,
+            )),
         ));
-        self.register(Box::new(crate::exec_session::VerifyAndCompleteTool::new(
-            Arc::clone(&gate),
-        )));
+        self.register(Box::new(
+            crate::exec_session::BeginNodeTool::with_runtime_store(Arc::clone(&runtime_store)),
+        ));
+        self.register(Box::new(
+            crate::exec_session::VerifyNodeTool::with_runtime_store(Arc::clone(&runtime_store)),
+        ));
+        self.register(Box::new(
+            crate::exec_session::RollbackNodeTool::with_runtime_store(runtime_store),
+        ));
+    }
 
-        // Outer-layer node state machine tools.
-        let runtime = Arc::new(crate::exec_session::NodeRuntime::new_with_default_hooks(
-            coordinator,
-            gate,
-            auto_retry_max,
+    /// Enables the daemon-only fixed RootCause route: the `verify_node` tool
+    /// launches the registered specialist and root-agent mutating calls are
+    /// held until that child publishes its trusted handoff.
+    pub fn enable_static_root_cause_route(
+        self: &Arc<Self>,
+        runtime_store: Arc<crate::exec_session::ExecutionSessionRuntimeStore>,
+    ) {
+        let dispatcher = Arc::new(RegistryRootCauseDispatcher {
+            registry: Arc::downgrade(self),
+        });
+        self.register(Box::new(
+            crate::exec_session::VerifyNodeTool::with_runtime_store_and_root_cause_dispatcher(
+                Arc::clone(&runtime_store),
+                dispatcher,
+            ),
         ));
-        self.register(Box::new(crate::exec_session::BeginNodeTool::new(
-            Arc::clone(&runtime),
-        )));
-        self.register(Box::new(crate::exec_session::VerifyNodeTool::new(
-            Arc::clone(&runtime),
-        )));
-        self.register(Box::new(crate::exec_session::RollbackNodeTool::new(
-            runtime,
-        )));
+        *self
+            .root_cause_guard
+            .write()
+            .expect("lock poisoned: root-cause guard") = Some(runtime_store);
+    }
+
+    /// Dispatches a RootCause specialist only when a trusted session's
+    /// persisted Work-Graph state indicates that recovery is required.
+    ///
+    /// The session and parent identity are derived from `context`; callers
+    /// cannot select a route, node, attempt, or child role through tool JSON.
+    pub async fn dispatch_recovered_root_cause(
+        self: &Arc<Self>,
+        context: &crate::agent::ToolContext<'_>,
+    ) -> Result<Option<String>, ToolError> {
+        let store = self
+            .root_cause_guard
+            .read()
+            .expect("lock poisoned: root-cause guard")
+            .clone()
+            .ok_or_else(|| ToolError {
+                message: "static root-cause route is not enabled".into(),
+                code: Some("root_cause_dispatch_failed".into()),
+            })?;
+        let Some(request) = store
+            .prepare_recovered_root_cause_dispatch(&context.agent.session_id)
+            .map_err(|error| ToolError {
+                message: format!("{error:#}"),
+                code: Some("root_cause_dispatch_failed".into()),
+            })?
+        else {
+            return Ok(None);
+        };
+        let dispatcher = RegistryRootCauseDispatcher {
+            registry: Arc::downgrade(self),
+        };
+        match crate::exec_session::node_tools::RootCauseDispatcher::dispatch(
+            &dispatcher,
+            context,
+            request,
+        )
+        .await
+        {
+            Ok(dispatch) => Ok(Some(dispatch.child_id)),
+            Err(error) => {
+                store
+                    .cancel_root_cause_dispatch(&context.agent.session_id)
+                    .map_err(|cleanup| ToolError {
+                        message: format!("{cleanup:#}"),
+                        code: Some("root_cause_dispatch_failed".into()),
+                    })?;
+                Err(error)
+            }
+        }
+    }
+
+    /// Register the trusted specialist handoff sink used by daemon sub-agents.
+    ///
+    /// Unlike general ExecutionSession lifecycle tools, this adapter also
+    /// needs the daemon's [`AgentCoordinator`](crate::agent::AgentCoordinator)
+    /// to derive the live child role from a trusted execution context.
+    pub fn register_specialist_report_tool(
+        &self,
+        runtime_store: Arc<crate::exec_session::ExecutionSessionRuntimeStore>,
+        coordinator: Arc<crate::agent::AgentCoordinator>,
+    ) {
+        self.register(Box::new(
+            crate::exec_session::SubmitSpecialistReportTool::new(runtime_store, coordinator),
+        ));
     }
 
     /// Apply provider-aware configuration after construction.
@@ -375,7 +450,6 @@ impl ToolRegistry {
         name: &str,
         input: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
-        maybe_capture_pre_edit(context, name, &input);
         let tool = self
             .tools
             .read()
@@ -383,12 +457,89 @@ impl ToolRegistry {
             .get(name)
             .cloned();
         match tool {
-            Some(tool) => tool.execute_with_context(context, input).await,
+            Some(tool) => {
+                if !tool.is_read_only()
+                    && name != "submit_specialist_report"
+                    && self
+                        .root_cause_guard
+                        .read()
+                        .expect("lock poisoned: root-cause guard")
+                        .as_ref()
+                        .is_some_and(|store| {
+                            store
+                                .root_cause_pending(&context.agent.session_id)
+                                .unwrap_or(true)
+                        })
+                {
+                    return Err(ToolError {
+                        message:
+                            "the static Work-Graph is waiting for its root-cause specialist report"
+                                .into(),
+                        code: Some("root_cause_pending".into()),
+                    });
+                }
+                maybe_capture_pre_edit(context, name, &input);
+                tool.execute_with_context(context, input).await
+            }
             None => Err(ToolError {
                 message: format!("Tool not found: {}", name),
                 code: Some("tool_not_found".to_string()),
             }),
         }
+    }
+}
+
+struct RegistryRootCauseDispatcher {
+    registry: Weak<ToolRegistry>,
+}
+
+#[async_trait]
+impl crate::exec_session::node_tools::RootCauseDispatcher for RegistryRootCauseDispatcher {
+    async fn dispatch(
+        &self,
+        context: &ToolContext<'_>,
+        request: crate::exec_session::RootCauseDispatchRequest,
+    ) -> Result<crate::exec_session::node_tools::RootCauseDispatch, ToolError> {
+        let registry = self.registry.upgrade().ok_or_else(|| ToolError {
+            message: "tool registry is no longer available for root-cause dispatch".into(),
+            code: Some("root_cause_dispatch_failed".into()),
+        })?;
+        let task = registry.get("task").ok_or_else(|| ToolError {
+            message: "registered task tool is unavailable for root-cause dispatch".into(),
+            code: Some("root_cause_dispatch_failed".into()),
+        })?;
+        // This is the sole code-owned edge that may cross the root mutation
+        // guard while a RootCause route is reserved. Calling the registered
+        // TaskTool directly avoids treating the runtime's own child launch as
+        // an agent-originated write; ordinary root `task` calls still enter
+        // `ToolRegistry::execute_with_context` and remain blocked.
+        let output = task
+            .execute_with_context(
+                context,
+                serde_json::json!({
+                    "subagent_type": "root-cause",
+                    "description": "Diagnose anchored failure",
+                    "prompt": request.prompt
+                }),
+            )
+            .await?;
+        let child_id = output
+            .metadata
+            .get("child_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| ToolError {
+                message: "root-cause task did not return a trusted child id".into(),
+                code: Some("root_cause_dispatch_failed".into()),
+            })?;
+        if output.metadata.get("root_cause_route_bound") != Some(&serde_json::json!(true)) {
+            return Err(ToolError {
+                message: "root-cause child was not bound before it started".into(),
+                code: Some("root_cause_dispatch_failed".into()),
+            });
+        }
+        Ok(crate::exec_session::node_tools::RootCauseDispatch {
+            child_id: child_id.to_string(),
+        })
     }
 }
 
@@ -450,6 +601,7 @@ pub use search::{GlobTool, GrepTool, SearchTool, WebFetchTool, WebSearchTool};
 #[cfg(test)]
 mod external_tool_tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct NamedTool(&'static str);
 
@@ -500,6 +652,46 @@ mod external_tool_tests {
             _input: serde_json::Value,
         ) -> Result<ToolOutput, ToolError> {
             Ok(ToolOutput::text(context.agent.agent_id.to_string()))
+        }
+    }
+
+    struct RootCauseTaskProbe(Arc<AtomicBool>);
+
+    #[async_trait]
+    impl Tool for RootCauseTaskProbe {
+        fn name(&self) -> &str {
+            "task"
+        }
+
+        fn description(&self) -> &str {
+            "records internal root-cause dispatch"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(&self, _input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            Err(ToolError {
+                message: "task requires a trusted context".into(),
+                code: Some("missing_agent_context".into()),
+            })
+        }
+
+        async fn execute_with_context(
+            &self,
+            _context: &ToolContext<'_>,
+            _input: serde_json::Value,
+        ) -> Result<ToolOutput, ToolError> {
+            self.0.store(true, Ordering::SeqCst);
+            Ok(ToolOutput {
+                output_type: "json".into(),
+                content: "{}".into(),
+                metadata: HashMap::from([
+                    ("child_id".into(), serde_json::json!("root-cause-child")),
+                    ("root_cause_route_bound".into(), serde_json::json!(true)),
+                ]),
+            })
         }
     }
 
@@ -652,5 +844,192 @@ mod external_tool_tests {
         assert_eq!(second, "other__remote_unique");
         assert!(registry.get("remote_unique").is_some());
         assert!(registry.get("other__remote_unique").is_some());
+    }
+
+    #[tokio::test]
+    async fn static_root_cause_route_blocks_root_mutation_while_child_is_unbound() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let registry = Arc::new(ToolRegistry::with_project_root(directory.path(), 2));
+        let runtime_store = Arc::new(crate::exec_session::ExecutionSessionRuntimeStore::new(
+            directory.path().to_path_buf(),
+            registry.checkpoint_store.clone(),
+            2,
+        ));
+        registry.register_exec_session_tools(runtime_store.clone());
+        registry.enable_static_root_cause_route(runtime_store.clone());
+        let root = crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new(
+            "root-cause-guard-session",
+        ));
+        runtime_store
+            .ensure_turn(&root.session_id)
+            .expect("start graph turn");
+        runtime_store
+            .runtime_for(&root.session_id)
+            .expect("resolve graph runtime")
+            .begin_node("diagnose".into(), Vec::new(), Vec::new())
+            .await
+            .expect("start graph node");
+        runtime_store.seed_root_cause_route_for_test(&root.session_id);
+        runtime_store
+            .prepare_root_cause_dispatch(&root.session_id)
+            .expect("reserve root-cause route");
+        let context = ToolContext {
+            agent: &root,
+            invocation_id: crate::agent::ToolInvocationId::new("blocked-root-mutation"),
+            origin_turn_id: None,
+            workdir: Some(directory.path()),
+            effective_mode: crate::sandbox::EffectiveMode::Normal,
+            checkpoint: None,
+        };
+
+        let error = registry
+            .execute_with_context(
+                &context,
+                "file_write",
+                serde_json::json!({ "path": "blocked.txt", "content": "must wait" }),
+            )
+            .await
+            .expect_err("root must wait while the root-cause child is being created");
+
+        assert_eq!(error.code.as_deref(), Some("root_cause_pending"));
+        assert!(!directory.path().join("blocked.txt").exists());
+
+        let child = crate::agent::AgentExecutionContext {
+            session_id: root.session_id.clone(),
+            agent_id: crate::agent::AgentId::new("untrusted-root-cause-child"),
+            parent_id: Some(root.agent_id.clone()),
+            depth: 1,
+            cancellation: root.cancellation.child_token(),
+        };
+        let child_context = ToolContext {
+            agent: &child,
+            invocation_id: crate::agent::ToolInvocationId::new("blocked-child-verify"),
+            origin_turn_id: None,
+            workdir: Some(directory.path()),
+            effective_mode: crate::sandbox::EffectiveMode::Normal,
+            checkpoint: None,
+        };
+        let error = registry
+            .execute_with_context(&child_context, "verify_node", serde_json::json!({}))
+            .await
+            .expect_err("a root-cause child must not restart anchored verification");
+        assert_eq!(error.code.as_deref(), Some("root_cause_pending"));
+    }
+
+    #[tokio::test]
+    async fn internal_root_cause_dispatch_bypasses_only_the_registry_guard() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let registry = Arc::new(ToolRegistry::with_project_root(directory.path(), 2));
+        let runtime_store = Arc::new(crate::exec_session::ExecutionSessionRuntimeStore::new(
+            directory.path().to_path_buf(),
+            registry.checkpoint_store.clone(),
+            2,
+        ));
+        registry.enable_static_root_cause_route(runtime_store.clone());
+        let invoked = Arc::new(AtomicBool::new(false));
+        registry.register(Box::new(RootCauseTaskProbe(invoked.clone())));
+
+        let root = crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new(
+            "internal-root-cause-dispatch",
+        ));
+        runtime_store
+            .ensure_turn(&root.session_id)
+            .expect("start graph turn");
+        runtime_store
+            .runtime_for(&root.session_id)
+            .expect("resolve runtime")
+            .begin_node("diagnose".into(), Vec::new(), Vec::new())
+            .await
+            .expect("start graph node");
+        runtime_store.seed_root_cause_route_for_test(&root.session_id);
+        let crate::exec_session::RootCauseDispatchState::Ready(request) = runtime_store
+            .prepare_root_cause_dispatch(&root.session_id)
+            .expect("reserve static route")
+        else {
+            panic!("route must be ready for its first child");
+        };
+        let context = ToolContext {
+            agent: &root,
+            invocation_id: crate::agent::ToolInvocationId::new("internal-root-cause-dispatch"),
+            origin_turn_id: None,
+            workdir: Some(directory.path()),
+            effective_mode: crate::sandbox::EffectiveMode::Normal,
+            checkpoint: None,
+        };
+
+        let dispatcher = RegistryRootCauseDispatcher {
+            registry: Arc::downgrade(&registry),
+        };
+        let dispatch = crate::exec_session::node_tools::RootCauseDispatcher::dispatch(
+            &dispatcher,
+            &context,
+            request,
+        )
+        .await
+        .expect("code-owned dispatcher must cross the root guard");
+
+        assert_eq!(dispatch.child_id, "root-cause-child");
+        assert!(invoked.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn recovered_root_cause_dispatch_uses_new_bound_child_without_running_anchors() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let registry = Arc::new(ToolRegistry::with_project_root(directory.path(), 2));
+        let first_store = Arc::new(crate::exec_session::ExecutionSessionRuntimeStore::new(
+            directory.path().to_path_buf(),
+            registry.checkpoint_store.clone(),
+            2,
+        ));
+        let root = crate::agent::AgentExecutionContext::root(crate::agent::SessionId::new(
+            "recovered-root-cause-dispatch",
+        ));
+        first_store
+            .ensure_turn(&root.session_id)
+            .expect("start graph turn");
+        first_store
+            .runtime_for(&root.session_id)
+            .expect("resolve runtime")
+            .begin_node("diagnose".into(), Vec::new(), Vec::new())
+            .await
+            .expect("start graph node");
+        first_store.seed_root_cause_route_for_test(&root.session_id);
+        drop(first_store);
+
+        let recovered_store = Arc::new(crate::exec_session::ExecutionSessionRuntimeStore::new(
+            directory.path().to_path_buf(),
+            registry.checkpoint_store.clone(),
+            2,
+        ));
+        registry.enable_static_root_cause_route(recovered_store.clone());
+        let invoked = Arc::new(AtomicBool::new(false));
+        registry.register(Box::new(RootCauseTaskProbe(invoked.clone())));
+        let context = ToolContext {
+            agent: &root,
+            invocation_id: crate::agent::ToolInvocationId::new("recovered-root-cause-dispatch"),
+            origin_turn_id: None,
+            workdir: Some(directory.path()),
+            effective_mode: crate::sandbox::EffectiveMode::Normal,
+            checkpoint: None,
+        };
+
+        let child_id = registry
+            .dispatch_recovered_root_cause(&context)
+            .await
+            .expect("dispatch recovered route")
+            .expect("recovered route needs a new child");
+
+        assert_eq!(child_id, "root-cause-child");
+        assert!(invoked.load(Ordering::SeqCst));
+        assert_eq!(
+            recovered_store
+                .work_state_for_test(&root.session_id)
+                .graph_audit()
+                .iter()
+                .filter(|event| event.kind == crate::org_graph::GraphAuditKind::AnchorCompleted)
+                .count(),
+            0,
+            "recovery must not rerun anchors"
+        );
     }
 }

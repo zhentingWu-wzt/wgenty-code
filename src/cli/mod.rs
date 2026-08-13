@@ -8,6 +8,7 @@ pub mod args;
 pub mod branding;
 pub mod commands;
 pub mod headless_runtime;
+pub mod org_graph;
 pub mod subagent;
 
 pub use args::Cli;
@@ -196,6 +197,12 @@ pub enum Commands {
         #[command(subcommand)]
         action: SubagentCommands,
     },
+
+    /// Inspect the Org-Graph node-contract registry
+    OrgGraph {
+        #[command(subcommand)]
+        action: OrgGraphCommands,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -239,6 +246,29 @@ pub enum SubagentCommands {
         /// Filter by project root path
         #[arg(long)]
         project: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum OrgGraphCommands {
+    /// Render the built-in node contracts.
+    ///
+    /// Visual formats (table / dot / mermaid) omit the long `system_prompt`
+    /// field for readability; use `--format json` for the lossless source.
+    Contracts {
+        /// Output format (table | dot | mermaid | json)
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = crate::cli::org_graph::OrgGraphFormatArg::Table
+        )]
+        format: crate::cli::org_graph::OrgGraphFormatArg,
+    },
+    /// Summarize durable work-graph audit records for one checkpointed session.
+    Audit {
+        /// Trusted session id whose persisted audit should be read.
+        #[arg(long)]
+        session: String,
     },
 }
 

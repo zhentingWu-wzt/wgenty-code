@@ -99,6 +99,9 @@ impl Cli {
             Some(super::Commands::Subagent { action }) => {
                 super::subagent::run(&state, action).await?;
             }
+            Some(super::Commands::OrgGraph { action }) => {
+                super::org_graph::run(&state, action).await?;
+            }
             None => {
                 self.run_repl(state, None).await?;
             }

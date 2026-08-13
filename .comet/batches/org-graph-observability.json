@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "goal": "为 Org-Graph 契约层补齐可观测性/可视化：静态注册表视图 + 运行时分发遥测，兑现显式化承诺并为后续 budget/IO/关系层优化提供真实派发数据。",
+  "created_at": "2026-08-10T23:38:00Z",
+  "changes": [
+    {
+      "name": "org-graph-contract-viewer",
+      "goal": "把内置 NodeRegistry（5 个 NodeContract × 5 维：capability/permission/budget/IO shape/identity）渲染成人类可读视图，兑现契约层的显式化承诺。",
+      "scope": "新增 CLI 命令 + 渲染模块（table/dot/mermaid/json 四种格式，默认 table），只读 NodeRegistry 纯数据，不触碰运行时路径。命令挂载点（新顶层 org-graph 组 vs 现有 subagent 组）留待 design 阶段定。",
+      "non_goals": "运行时分发数据、transcript schema 迁移、budget 激活、IO 强制、关系层、ContractViolation 计数。",
+      "acceptance": [
+        "默认输出表格列出 5 个内置契约的 5 维约束（ NodeType / can_spawn / can_mutate_fs / can_exec / IO shape / budget / allowed_tools）",
+        "--format dot 输出合法 Graphviz DOT，可被 dot -Tsvg 渲染",
+        "--format mermaid 输出合法 mermaid 图，可嵌入 markdown",
+        "--format json 输出可被 NodeContract serde 反序列化",
+        "explore_readonly 配置驱动的 can_mutate_fs 维度在输出中正确反映"
+      ],
+      "status": "selected"
+    },
+    {
+      "name": "org-graph-dispatch-telemetry",
+      "goal": "持久化每次 subagent 分发的 NodeType 到 transcript store，并在离线 Subagent CLI inspector（list/trace/health）中按 NodeType 展示/切片，为后续 budget/IO 优化提供真实派发数据。",
+      "scope": "SubagentTranscript 加 node_type: Option<NodeType> 字段 + DB schema 幂等 ALTER 迁移（照搬 failure_diagnostics 迁移模式）+ 在 save_minimal_transcript / store.save 透传 node_type（coordinator.rs:507 已有 node_type，仅缺透传）+ 扩展 Subagent CLI list/trace/health 展示 node_type。health 是否按 node_type 分组留待 design 阶段定。",
+      "non_goals": "静态注册表渲染（Change A 负责）、budget 激活、IO 强制、关系层、复杂分析仪表盘、ContractViolation 计数、实时 daemon 视图。",
+      "acceptance": [
+        "新分发运行的 transcript 持久化了正确的 node_type",
+        "旧 DB 打开不崩溃（幂等 ALTER，legacy row node_type=None）",
+        "subagent list 显示 node_type 列",
+        "subagent trace <id> 显示该 run 的 node_type",
+        "已有 list/trace/health 测试零回归"
+      ],
+      "status": "open-complete"
+    }
+  ]
+}

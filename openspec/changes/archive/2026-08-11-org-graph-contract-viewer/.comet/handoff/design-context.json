@@ -1,0 +1,14 @@
+{
+  "change": "org-graph-contract-viewer",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "65696cb1940b08c3649d8bd1ddb37f9defe44e61b868c798c7796cc781b4e689",
+  "files": [
+    { "path": "openspec/changes/org-graph-contract-viewer/proposal.md", "sha256": "44206a21e156973db8bbcad4111a4df348adb0b7ada415ea3f8bef377e3e7898" },
+    { "path": "openspec/changes/org-graph-contract-viewer/design.md", "sha256": "f08c9d44c80108e28fd5b345d906d92b296f5fea69663d6620ee9f46ac7b5c48" },
+    { "path": "openspec/changes/org-graph-contract-viewer/tasks.md", "sha256": "c02f76ff84b40b27bb8e87d9371054cc26616a0f33ce3f6e797d3db9c445f004" },
+    { "path": "openspec/changes/org-graph-contract-viewer/specs/org-graph-contract-viewer/spec.md", "sha256": "42af5096d05efc538225c5ed0af6f78abe503b17b6db6730d2bb0f63b13fd13e" }
+  ]
+}

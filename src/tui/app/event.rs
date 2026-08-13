@@ -1086,6 +1086,23 @@ impl App {
                 });
             }
             AppEvent::SessionSwitched { from_id, id, name } => {
+                // A newer switch request supersedes any in-flight completion.
+                // Drop completions that don't match the latest requested
+                // target (guards the simultaneous A→B / A→C case where
+                // `session_id` is still the original session for both).
+                if self
+                    .session_state
+                    .pending_switch
+                    .as_deref()
+                    .is_some_and(|pending| pending != id)
+                {
+                    tracing::debug!(
+                        expected_session_id = %from_id,
+                        active_session_id = %self.session_id,
+                        "dropping stale completed session switch",
+                    );
+                    return;
+                }
                 if self.session_id != from_id {
                     tracing::debug!(
                         expected_session_id = %from_id,
@@ -1094,6 +1111,7 @@ impl App {
                     );
                     return;
                 }
+                self.session_state.pending_switch = None;
                 if self.adopt_active_session(id.clone(), name) {
                     let client = self.daemon_client.clone();
                     let history = self.conversation_history.clone();
