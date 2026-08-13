@@ -782,8 +782,14 @@ mod tests {
     /// Run a trivial shell command and return its Output. Uses real
     /// subprocesses so the tests work cross-platform without requiring
     /// `ExitStatusExt` (which is Unix-only).
+    ///
+    /// Pins the subprocess cwd to the OS temp dir so a concurrent test that
+    /// briefly points the *process* cwd at a dropped TempDir cannot make the
+    /// child shell's getcwd() fail (which would pollute stderr and break the
+    /// "(no output)" assertion).
     fn shell_output(command: &str) -> std::process::Output {
         crate::sandbox::std_shell_command(command)
+            .current_dir(std::env::temp_dir())
             .output()
             .expect("test helper shell command should succeed")
     }
