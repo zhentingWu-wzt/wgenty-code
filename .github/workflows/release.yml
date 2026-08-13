@@ -220,13 +220,13 @@ jobs:
         shell: bash
         run: |
           cd web
-          # npm ci can silently skip platform-specific optional deps when the
-          # lockfile was generated on another OS (npm/cli#4828): the win32
-          # rollup native binding is missing after `npm ci` on Windows. Falling
-          # back to a fresh `npm install` (no lockfile) re-resolves per-platform
-          # optional deps and installs the missing binding, per rollup's own
-          # guidance for this bug.
-          npm ci || { rm -f package-lock.json && npm install --no-audit --no-fund; }
+          # Do NOT use `npm ci` here. It can silently skip platform-specific
+          # optional deps when the lockfile was generated on another OS
+          # (npm/cli#4828) — `npm ci` exits 0 but the rollup native binding
+          # (e.g. @rollup/rollup-win32-x64-msvc) is missing, so a `||` fallback
+          # never triggers. `npm install` still honors the committed lockfile
+          # for version pins while correctly resolving per-platform bindings.
+          npm install --no-audit --no-fund
           npm run build
 
       - name: Build daemon (host target)
