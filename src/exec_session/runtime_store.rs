@@ -9,7 +9,8 @@ use serde_json::json;
 
 use crate::agent::SessionId;
 use crate::org_graph::{
-    GraphAuditEvent, GraphAuditKind, GraphAuditRoute, HumanReview, NodeType, SpecialistReport,
+    GraphAuditEvent, GraphAuditKind, GraphAuditRoute, GraphChildBinding, HumanReview, NodeType,
+    SpecialistReport,
 };
 use crate::tools::checkpoint_store::CheckpointStore;
 
@@ -295,7 +296,23 @@ impl ExecutionSessionRuntimeStore {
         if route.child_id.is_some() {
             anyhow::bail!("root-cause route already has a dispatched child");
         }
+        let child_id_for_audit = child_id.clone();
         route.child_id = Some(child_id);
+        let mut coordinator = entry.coordinator.write().map_err(|error| {
+            anyhow::anyhow!("execution-session coordinator write lock: {error}")
+        })?;
+        coordinator
+            .work_state_mut()
+            .append_graph_child_binding(GraphChildBinding {
+                node_id: route.node_id.clone(),
+                attempt: route.attempt,
+                role: NodeType::RootCause,
+                child_agent_id: child_id_for_audit,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            });
+        coordinator
+            .capture_current_work_state()
+            .context("persist RootCause child graph binding")?;
         Ok(())
     }
 
@@ -324,6 +341,22 @@ impl ExecutionSessionRuntimeStore {
             return Ok(false);
         }
         route.child_id = Some(child_id);
+        let child_id_for_audit = route.child_id.clone().expect("just assigned child id");
+        let mut coordinator = entry.coordinator.write().map_err(|error| {
+            anyhow::anyhow!("execution-session coordinator write lock: {error}")
+        })?;
+        coordinator
+            .work_state_mut()
+            .append_graph_child_binding(GraphChildBinding {
+                node_id: route.node_id.clone(),
+                attempt: route.attempt,
+                role: NodeType::RootCause,
+                child_agent_id: child_id_for_audit,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            });
+        coordinator
+            .capture_current_work_state()
+            .context("persist RootCause child graph binding")?;
         Ok(true)
     }
 
@@ -656,6 +689,7 @@ mod tests {
 
     use super::ExecutionSessionRuntimeStore;
     use crate::agent::SessionId;
+    use crate::org_graph::NodeType;
     use crate::tools::checkpoint_store::CheckpointStore;
 
     fn test_store(dir: &TempDir) -> ExecutionSessionRuntimeStore {
@@ -756,6 +790,13 @@ mod tests {
         assert!(store
             .try_bind_root_cause_child(&session_id, "root-cause-child".into())
             .expect("bind before spawn"));
+        let bindings = store
+            .work_state_for_test(&session_id)
+            .graph_child_bindings()
+            .to_vec();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].role, NodeType::RootCause);
+        assert_eq!(bindings[0].child_agent_id, "root-cause-child");
 
         store
             .resolve_root_cause_child_terminal(&session_id, "root-cause-child")

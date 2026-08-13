@@ -41,6 +41,9 @@ pub struct WorkState {
     /// 专用子 Agent 的结构化交接报告（兼容既有 checkpoint）。
     #[serde(default)]
     specialist_reports: Vec<SpecialistReport>,
+    /// Durable binding between a graph role and a spawned child Agent.
+    #[serde(default)]
+    graph_child_bindings: Vec<GraphChildBinding>,
     /// Coordinator-selected bounded Work-Graph for the active node. This is
     /// configuration, not an agent-produced artifact, so only the runtime may
     /// replace it.
@@ -77,6 +80,15 @@ pub struct Budget {
     pub max_iter: u32,
     pub iter_used: u32,
     pub token_used: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GraphChildBinding {
+    pub node_id: String,
+    pub attempt: u32,
+    pub role: NodeType,
+    pub child_agent_id: String,
+    pub timestamp: String,
 }
 
 /// A specialist role's typed report category.
@@ -362,6 +374,14 @@ impl WorkState {
     /// Return the code-selected Work-Graph persisted for the active node.
     pub fn selected_work_graph(&self) -> Option<&WorkGraphPlan> {
         self.selected_work_graph.as_ref()
+    }
+
+    pub fn graph_child_bindings(&self) -> &[GraphChildBinding] {
+        &self.graph_child_bindings
+    }
+
+    pub(crate) fn append_graph_child_binding(&mut self, binding: GraphChildBinding) {
+        self.graph_child_bindings.push(binding);
     }
 
     /// Persist a bounded Work-Graph selected by the trusted coordinator.
@@ -707,6 +727,7 @@ impl WorkState {
             step_log: Vec::new(),
             graph_audit: self.graph_audit.clone(),
             specialist_reports: self.specialist_reports.clone(),
+            graph_child_bindings: self.graph_child_bindings.clone(),
             selected_work_graph: self.selected_work_graph.clone(),
         }
     }
@@ -984,6 +1005,7 @@ mod tests {
             }],
             graph_audit: vec![event("verify", 1, GraphAuditKind::AnchorCompleted)],
             specialist_reports: Vec::new(),
+            graph_child_bindings: Vec::new(),
             selected_work_graph: None,
         };
         let json = serde_json::to_string(&state).expect("serialize");
@@ -1400,6 +1422,7 @@ mod tests {
             }],
             graph_audit: vec![event("verify", 1, GraphAuditKind::AnchorCompleted)],
             specialist_reports: Vec::new(),
+            graph_child_bindings: Vec::new(),
             selected_work_graph: None,
         };
         let next = state.inherit_for_new_turn();
