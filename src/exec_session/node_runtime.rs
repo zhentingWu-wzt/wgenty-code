@@ -28,8 +28,8 @@ use super::work_graph::{next_step, WorkGraphStep};
 use crate::org_graph::{select_work_graph, WorkGraphRequest};
 use crate::org_graph::{
     AuditCommandRun, Budget, CompileResult, GeneratedDiff, GraphAuditAnchor, GraphAuditCommands,
-    GraphAuditEvent, GraphAuditKind, GraphAuditProfile, GraphAuditRoute, HumanReview, NodeType,
-    TestResult,
+    GraphAuditEvent, GraphAuditKind, GraphAuditProfile, GraphAuditRoute, HumanReview, NodeRegistry,
+    NodeType, TestResult,
 };
 
 const AUDIT_STDERR_LIMIT_BYTES: usize = 8_192;
@@ -808,9 +808,13 @@ impl NodeRuntime {
         self.hooks.pre_node(&node);
         coord.add_node(node).context("add_node failed")?;
         coord.work_state_mut().reset_for_new_node();
+        let registry = NodeRegistry::builtin(&Default::default());
+        let selected_plan = select_work_graph(&graph_request)
+            .bind_registry(&registry)
+            .map_err(|error| anyhow::anyhow!("bind Work-Graph roles to Org-Graph: {error}"))?;
         coord
             .work_state_mut()
-            .set_selected_work_graph(select_work_graph(&graph_request));
+            .set_selected_work_graph(selected_plan);
         coord
             .capture_current_work_state()
             .context("persist fresh node work state")?;
