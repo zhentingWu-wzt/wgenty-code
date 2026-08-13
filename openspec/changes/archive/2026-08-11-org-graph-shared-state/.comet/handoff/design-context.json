@@ -1,0 +1,14 @@
+{
+  "change": "org-graph-shared-state",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "7e3cfb40e9e8437c3c81bab1a1232f8601ca378d6688d13ff4080cdaddf2aaa8",
+  "files": [
+    { "path": "openspec/changes/org-graph-shared-state/proposal.md", "sha256": "5634c3e035d0847cd84698d4171ea3b03a25c904adce7932fa48035e0c19fa05" },
+    { "path": "openspec/changes/org-graph-shared-state/design.md", "sha256": "294f89ebacee909fe52a4fe6d4514eac31cd14774b6ccd4a8796ec6f9bdaed2d" },
+    { "path": "openspec/changes/org-graph-shared-state/tasks.md", "sha256": "b2f13068f011595f2e2dfd75e78d7c2edbf50f9bc9b6703a87ec37d4c67fc903" },
+    { "path": "openspec/changes/org-graph-shared-state/specs/org-graph-shared-state/spec.md", "sha256": "732a850ef6731fbfe81a5cdcfcd62757ddcebbb52451e9dbe015422ae70cf0a8" }
+  ]
+}

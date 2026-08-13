@@ -63,14 +63,24 @@ fn is_dismissed(settings: &Settings, working_dir: &Path) -> bool {
 /// `binary_present` flag so tests never depend on the host having `codegraph`
 /// installed.
 fn classify_install_state(settings: &Settings, binary_present: bool) -> CodegraphInstallState {
-    let working_dir = &settings.storage.working_dir;
-    if is_dismissed(settings, working_dir) {
+    let root = settings.storage.working_dir.clone();
+    classify_install_state_for(&root, settings, binary_present)
+}
+
+/// Per-root classifier: multi-project sessions probe their own project root
+/// instead of the daemon's main working_dir.
+fn classify_install_state_for(
+    root: &Path,
+    settings: &Settings,
+    binary_present: bool,
+) -> CodegraphInstallState {
+    if is_dismissed(settings, root) {
         return CodegraphInstallState::Dismissed;
     }
     if !binary_present {
         return CodegraphInstallState::NotInstalled;
     }
-    if !working_dir.join(".codegraph").exists() {
+    if !root.join(".codegraph").exists() {
         return CodegraphInstallState::NotInitialized;
     }
     CodegraphInstallState::Ready
@@ -80,6 +90,12 @@ fn classify_install_state(settings: &Settings, binary_present: bool) -> Codegrap
 pub fn probe_install_state(settings: &Settings) -> CodegraphInstallState {
     let binary_present = which::which("codegraph").is_ok();
     classify_install_state(settings, binary_present)
+}
+
+/// Full probe against an explicit project root (multi-project sessions).
+pub fn probe_install_state_for(root: &Path, settings: &Settings) -> CodegraphInstallState {
+    let binary_present = which::which("codegraph").is_ok();
+    classify_install_state_for(root, settings, binary_present)
 }
 
 /// One-line CLI notice text for actionable states; `None` when silent

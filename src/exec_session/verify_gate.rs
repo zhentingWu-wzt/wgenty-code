@@ -23,11 +23,13 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::agent::ToolContext;
 use crate::exec_session::git::run_git;
 use crate::exec_session::hooks::{
     NoHooks, SessionHooks, VerifyFailAction, VerifyFailContext, VerifyFailure,
 };
 use crate::exec_session::session::{SessionStatus, TurnRecord};
+use crate::exec_session::ExecutionSessionRuntimeStore;
 use crate::exec_session::SessionCoordinator;
 use crate::tools::checkpoint_store::{FileState, Manifest};
 use crate::tools::{Tool, ToolError, ToolOutput};
@@ -61,6 +63,12 @@ pub struct VerifyResult {
     pub fail_reason: Option<VerifyFailure>,
     /// Runtime decision after a failed verify (Task 6). `None` on success.
     pub action: Option<VerifyFailAction>,
+}
+
+struct VerificationAttempt {
+    result: VerifyResult,
+    attempt_num: usize,
+    turns_count: usize,
 }
 
 /// Outcome of [`VerifyGate::mark_unverified_if_incomplete`] (Task 6 agent-loop
@@ -196,6 +204,56 @@ impl VerifyGate {
         Self::new(coordinator, executor, Arc::new(NoHooks))
     }
 
+    /// Persist a code-owned terminal failure to both session metadata and the
+    /// verification log. Work-Graph routing uses this after selecting its
+    /// terminal `Escalate` edge; no agent-supplied status is accepted.
+    pub(crate) fn mark_failed(&self) -> Result<()> {
+        self.transition_terminal(SessionStatus::Failed, VerifyLogFinalStatus::Failed)
+    }
+
+    /// Persist a code-owned terminal success after graph route evidence.
+    pub(crate) fn mark_completed(&self) -> Result<()> {
+        self.transition_terminal(SessionStatus::Completed, VerifyLogFinalStatus::Completed)
+    }
+
+    /// Keep the two durable terminal-status projections synchronized.
+    fn transition_terminal(
+        &self,
+        session_status: SessionStatus,
+        log_status: VerifyLogFinalStatus,
+    ) -> Result<()> {
+        let session_dir = {
+            let mut coord = self
+                .coordinator
+                .write()
+                .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
+            coord.set_status(session_status)?;
+            coord.session_dir().to_path_buf()
+        };
+        set_verify_log_final_status(&session_dir, log_status)
+    }
+
+    /// Execute deterministic anchor commands without mutating session status.
+    ///
+    /// Compile and test anchors use this path. Final verification uses either
+    /// [`Self::verify_and_complete`] for the legacy lifecycle or
+    /// [`Self::verify_for_work_graph`] when graph routing owns the transition.
+    pub async fn run_anchor_commands(&self, commands: &[String]) -> Result<Vec<CommandRun>> {
+        let project_root = {
+            let coord = self
+                .coordinator
+                .read()
+                .map_err(|e| anyhow::anyhow!("coordinator read lock: {e}"))?;
+            coord.project_root().to_path_buf()
+        };
+
+        let mut commands_run = Vec::with_capacity(commands.len());
+        for command in commands {
+            commands_run.push(self.executor.execute(command, &project_root).await?);
+        }
+        Ok(commands_run)
+    }
+
     /// Run `commands` (via the executor, which routes through guardian+sandbox
     /// in production), compute `actual_changed_files` (three sources, spec
     /// §3.3), check `actual ⊆ expected`, write `verify_log.json`, and on
@@ -210,6 +268,107 @@ impl VerifyGate {
         commands: Vec<String>,
         expected_changed_files: Vec<PathBuf>,
     ) -> Result<VerifyResult> {
+        let VerificationAttempt {
+            mut result,
+            attempt_num,
+            turns_count,
+        } = self
+            .run_verification_attempt(commands, expected_changed_files)
+            .await?;
+
+        // Apply the legacy VerifyGate policy after durable executor evidence.
+        // Static Work-Graph callers use `verify_for_work_graph` instead and
+        // route exclusively from WorkState budget.
+        let action = if result.success {
+            self.mark_completed()?;
+            None
+        } else {
+            let (session_id, current_turn) = {
+                let coord = self
+                    .coordinator
+                    .read()
+                    .map_err(|e| anyhow::anyhow!("coordinator read lock: {e}"))?;
+                (
+                    coord.session().session_id.clone(),
+                    coord.session().current_turn.clone(),
+                )
+            };
+            let ctx = VerifyFailContext {
+                session_id,
+                turn_id: current_turn.unwrap_or_default(),
+                attempt: attempt_num,
+                failure: result
+                    .fail_reason
+                    .clone()
+                    .expect("failure present when !success"),
+            };
+            let decided = self.hooks.verify_fail(&ctx);
+            let (status, final_status) = match &decided {
+                VerifyFailAction::AutoRetry { remaining: 0 } => {
+                    // Defensive: a well-behaved hook returns Escalate when the
+                    // budget is exhausted, but treat remaining=0 as Escalate
+                    // so the session never gets stuck InProgress forever.
+                    (SessionStatus::Failed, Some(VerifyLogFinalStatus::Failed))
+                }
+                VerifyFailAction::AutoRetry { remaining: _ } => {
+                    // Retry: status stays InProgress, final_status left open.
+                    (SessionStatus::InProgress, None)
+                }
+                VerifyFailAction::Escalate | VerifyFailAction::Abort => {
+                    (SessionStatus::Failed, Some(VerifyLogFinalStatus::Failed))
+                }
+                VerifyFailAction::WarnAndContinue => (
+                    SessionStatus::Completed,
+                    Some(VerifyLogFinalStatus::Completed),
+                ),
+            };
+            if let Some(fs) = final_status {
+                self.transition_terminal(status, fs)?;
+            }
+            Some(decided)
+        };
+        result.action = action;
+
+        tracing::info!(
+            session_turns = turns_count,
+            attempt = attempt_num,
+            success = result.success,
+            "verify_and_complete"
+        );
+
+        Ok(result)
+    }
+
+    /// Execute and durably record a final Work-Graph verification attempt
+    /// without invoking failure hooks or mutating terminal session/log state.
+    /// NodeRuntime persists its route evidence before applying the code-owned
+    /// terminal transition for `Complete` or `Escalate`.
+    pub(crate) async fn verify_for_work_graph(
+        &self,
+        commands: Vec<String>,
+        expected_changed_files: Vec<PathBuf>,
+    ) -> Result<VerifyResult> {
+        let VerificationAttempt {
+            result,
+            attempt_num,
+            turns_count,
+        } = self
+            .run_verification_attempt(commands, expected_changed_files)
+            .await?;
+        tracing::info!(
+            session_turns = turns_count,
+            attempt = attempt_num,
+            success = result.success,
+            "verify_for_work_graph"
+        );
+        Ok(result)
+    }
+
+    async fn run_verification_attempt(
+        &self,
+        commands: Vec<String>,
+        expected_changed_files: Vec<PathBuf>,
+    ) -> Result<VerificationAttempt> {
         let project_root = {
             let coord = self
                 .coordinator
@@ -281,84 +440,18 @@ impl VerifyGate {
             &out_of_scope,
             &fail_reason,
         )?;
-
-        // 6. Transition session status. On success -> Completed. On failure,
-        //    invoke `hooks.verify_fail` (Task 6) and apply the resulting
-        //    `VerifyFailAction`: AutoRetry keeps InProgress (no rollback, spec
-        //    §3.3); Escalate/Abort -> Failed; WarnAndContinue -> Completed.
-        let action = if success {
-            let mut coord = self
-                .coordinator
-                .write()
-                .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
-            coord.set_status(SessionStatus::Completed)?;
-            set_verify_log_final_status(&session_dir, VerifyLogFinalStatus::Completed)?;
-            None
-        } else {
-            let (session_id, current_turn) = {
-                let coord = self
-                    .coordinator
-                    .read()
-                    .map_err(|e| anyhow::anyhow!("coordinator read lock: {e}"))?;
-                (
-                    coord.session().session_id.clone(),
-                    coord.session().current_turn.clone(),
-                )
-            };
-            let ctx = VerifyFailContext {
-                session_id,
-                turn_id: current_turn.unwrap_or_default(),
-                attempt: attempt_num,
-                failure: fail_reason.clone().expect("failure present when !success"),
-            };
-            let decided = self.hooks.verify_fail(&ctx);
-            let (status, final_status) = match &decided {
-                VerifyFailAction::AutoRetry { remaining: 0 } => {
-                    // Defensive: a well-behaved hook returns Escalate when the
-                    // budget is exhausted, but treat remaining=0 as Escalate
-                    // so the session never gets stuck InProgress forever.
-                    (SessionStatus::Failed, Some(VerifyLogFinalStatus::Failed))
-                }
-                VerifyFailAction::AutoRetry { remaining: _ } => {
-                    // Retry: status stays InProgress, final_status left open.
-                    (SessionStatus::InProgress, None)
-                }
-                VerifyFailAction::Escalate | VerifyFailAction::Abort => {
-                    (SessionStatus::Failed, Some(VerifyLogFinalStatus::Failed))
-                }
-                VerifyFailAction::WarnAndContinue => (
-                    SessionStatus::Completed,
-                    Some(VerifyLogFinalStatus::Completed),
-                ),
-            };
-            if status != SessionStatus::InProgress {
-                let mut coord = self
-                    .coordinator
-                    .write()
-                    .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
-                coord.set_status(status)?;
-            }
-            if let Some(fs) = final_status {
-                set_verify_log_final_status(&session_dir, fs)?;
-            }
-            Some(decided)
-        };
-
-        tracing::info!(
-            session_turns = turns_count,
-            attempt = attempt_num,
-            success,
-            "verify_and_complete"
-        );
-
-        Ok(VerifyResult {
-            success,
-            commands_run,
-            actual_changed_files: actual,
-            expected_changed_files,
-            out_of_scope,
-            fail_reason,
-            action,
+        Ok(VerificationAttempt {
+            result: VerifyResult {
+                success,
+                commands_run,
+                actual_changed_files: actual,
+                expected_changed_files,
+                out_of_scope,
+                fail_reason,
+                action: None,
+            },
+            attempt_num,
+            turns_count,
         })
     }
 
@@ -374,27 +467,22 @@ impl VerifyGate {
     /// workspace (no rollback) - `Unverified` means "work may be fine but was
     /// never proven", which the user can see and act on.
     pub fn mark_unverified_if_incomplete(&self) -> Result<UnverifiedOutcome> {
-        let (session_dir, session_id, current_status) = {
+        let (session_id, current_status) = {
             let coord = self
                 .coordinator
                 .read()
                 .map_err(|e| anyhow::anyhow!("coordinator read lock: {e}"))?;
             (
-                coord.session_dir().to_path_buf(),
                 coord.session().session_id.clone(),
                 coord.session().status.clone(),
             )
         };
         match current_status {
             SessionStatus::InProgress => {
-                {
-                    let mut coord = self
-                        .coordinator
-                        .write()
-                        .map_err(|e| anyhow::anyhow!("coordinator write lock: {e}"))?;
-                    coord.set_status(SessionStatus::Unverified)?;
-                }
-                set_verify_log_final_status(&session_dir, VerifyLogFinalStatus::Unverified)?;
+                self.transition_terminal(
+                    SessionStatus::Unverified,
+                    VerifyLogFinalStatus::Unverified,
+                )?;
                 tracing::info!(
                     session_id = %session_id,
                     "session marked unverified (agent did not call verify_and_complete)"
@@ -524,9 +612,9 @@ fn write_verify_log(session_dir: &Path, log: &VerifyLog) -> Result<()> {
 }
 
 /// Append an attempt to `verify_log.json` and return the 1-based attempt
-/// number. Does NOT set `final_status` - the caller sets it explicitly via
-/// [`set_verify_log_final_status`] based on the hook decision (Task 6:
-/// Completed / Failed / Unverified) or success.
+/// number. A new attempt reopens the log by clearing any prior terminal status;
+/// the caller sets it again only after its current policy selects a terminal
+/// outcome.
 fn append_verify_log(
     session_dir: &Path,
     commands_run: &[CommandRun],
@@ -536,6 +624,7 @@ fn append_verify_log(
     fail_reason: &Option<VerifyFailure>,
 ) -> Result<usize> {
     let mut log = read_verify_log(session_dir);
+    log.final_status = None;
     let attempt_num = log.attempts.len() + 1;
     let result = match fail_reason {
         None => VerifyLogResult::Completed,
@@ -586,12 +675,81 @@ fn set_verify_log_final_status(session_dir: &Path, status: VerifyLogFinalStatus)
 /// `ToolRegistry::with_project_root` because it needs the session's
 /// coordinator.
 pub struct VerifyAndCompleteTool {
-    gate: Arc<VerifyGate>,
+    gate: VerifyGateBinding,
+}
+
+enum VerifyGateBinding {
+    Fixed(Arc<VerifyGate>),
+    Store(Arc<ExecutionSessionRuntimeStore>),
+}
+
+impl VerifyGateBinding {
+    fn resolve(&self, context: Option<&ToolContext<'_>>) -> Result<Arc<VerifyGate>, ToolError> {
+        match self {
+            Self::Fixed(gate) => Ok(Arc::clone(gate)),
+            Self::Store(store) => {
+                let context = context.ok_or_else(|| ToolError {
+                    message: "work-graph tools require a trusted tool context".into(),
+                    code: Some("missing_tool_context".into()),
+                })?;
+                store
+                    .ensure_turn(&context.agent.session_id)
+                    .and_then(|_| store.gate_for(&context.agent.session_id))
+                    .map_err(|error| ToolError {
+                        message: format!("{error:#}"),
+                        code: Some("execution_session_runtime_failed".into()),
+                    })
+            }
+        }
+    }
 }
 
 impl VerifyAndCompleteTool {
     pub fn new(gate: Arc<VerifyGate>) -> Self {
-        Self { gate }
+        Self {
+            gate: VerifyGateBinding::Fixed(gate),
+        }
+    }
+
+    /// Creates a context-scoped verification tool backed by a runtime store.
+    pub fn with_runtime_store(store: Arc<ExecutionSessionRuntimeStore>) -> Self {
+        Self {
+            gate: VerifyGateBinding::Store(store),
+        }
+    }
+
+    async fn execute_for_gate(
+        gate: Arc<VerifyGate>,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        let commands = parse_string_array(&input, "commands")?;
+        let expected = parse_string_array(&input, "expected_changed_files")?
+            .into_iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let result = gate
+            .verify_and_complete(commands, expected)
+            .await
+            .map_err(|e| ToolError {
+                message: format!("{e:#}"),
+                code: Some("verify_failed".to_string()),
+            })?;
+        let content = format_verify_result(&result);
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("success".to_string(), serde_json::json!(result.success));
+        metadata.insert(
+            "out_of_scope".to_string(),
+            serde_json::json!(result
+                .out_of_scope
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()),
+        );
+        Ok(ToolOutput {
+            output_type: "text".to_string(),
+            content,
+            metadata,
+        })
     }
 }
 
@@ -630,35 +788,15 @@ runs the commands itself (anti-fabrication) and rejects out-of-scope changes."
     // Completed and writes verify_log.json.
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let commands = parse_string_array(&input, "commands")?;
-        let expected = parse_string_array(&input, "expected_changed_files")?
-            .into_iter()
-            .map(PathBuf::from)
-            .collect::<Vec<_>>();
-        let result = self
-            .gate
-            .verify_and_complete(commands, expected)
-            .await
-            .map_err(|e| ToolError {
-                message: format!("{e:#}"),
-                code: Some("verify_failed".to_string()),
-            })?;
-        let content = format_verify_result(&result);
-        let mut metadata = std::collections::HashMap::new();
-        metadata.insert("success".to_string(), serde_json::json!(result.success));
-        metadata.insert(
-            "out_of_scope".to_string(),
-            serde_json::json!(result
-                .out_of_scope
-                .iter()
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect::<Vec<_>>()),
-        );
-        Ok(ToolOutput {
-            output_type: "text".to_string(),
-            content,
-            metadata,
-        })
+        Self::execute_for_gate(self.gate.resolve(None)?, input).await
+    }
+
+    async fn execute_with_context(
+        &self,
+        context: &ToolContext<'_>,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        Self::execute_for_gate(self.gate.resolve(Some(context))?, input).await
     }
 }
 
@@ -763,7 +901,9 @@ fn format_verify_result(result: &VerifyResult) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
     use crate::exec_session::session::SessionSource;
+    use crate::exec_session::ExecutionSessionRuntimeStore;
     use crate::tools::checkpoint_store::CheckpointStore;
     use std::process::Command;
     use std::sync::Mutex;
@@ -1214,6 +1354,39 @@ mod tests {
         let err = tool.execute(input).await.unwrap_err();
         assert!(err.message.contains("commands"));
         assert_eq!(err.code.as_deref(), Some("missing_parameter"));
+    }
+
+    #[tokio::test]
+    async fn store_backed_tool_uses_the_trusted_context_session() {
+        let dir = tempdir().expect("temp directory");
+        let store = Arc::new(ExecutionSessionRuntimeStore::new(
+            dir.path().to_path_buf(),
+            Arc::new(CheckpointStore::new(dir.path())),
+            2,
+        ));
+        let root = AgentExecutionContext::root(SessionId::new("verify-context"));
+        let context = ToolContext {
+            agent: &root,
+            invocation_id: ToolInvocationId::new("verify-tool"),
+            origin_turn_id: None,
+            workdir: None,
+            effective_mode: crate::sandbox::EffectiveMode::Normal,
+            checkpoint: None,
+        };
+        let tool = VerifyAndCompleteTool::with_runtime_store(store);
+
+        let output = tool
+            .execute_with_context(
+                &context,
+                serde_json::json!({
+                    "commands": ["true"],
+                    "expected_changed_files": []
+                }),
+            )
+            .await
+            .expect("verify scoped session");
+
+        assert_eq!(output.metadata["success"], true);
     }
 
     // ---- process executor smoke test (uses real `sh`) ----

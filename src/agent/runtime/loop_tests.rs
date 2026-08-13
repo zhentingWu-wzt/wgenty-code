@@ -13,10 +13,12 @@ use super::{
     RuntimeError, RuntimeEvent, StreamStyle,
 };
 use crate::agent::runtime::MutexHistoryStore;
+use crate::agent::{AgentExecutionContext, SessionId, ToolContext, ToolInvocationId};
 use crate::api::token_counter::TokenCounter;
 use crate::api::{ChatMessage, ToolCall, ToolCallFunction, ToolDefinition, Usage};
 use crate::exec_session::{
-    ProcessCommandExecutor, SessionCoordinator, SessionCoordinatorPort, SessionSource, VerifyGate,
+    ExecutionSessionRuntimeStore, ProcessCommandExecutor, SessionCoordinator,
+    SessionCoordinatorPort, SessionSource, VerifyGate,
 };
 use crate::tools::checkpoint_store::CheckpointStore;
 use crate::tools::ToolRegistry;
@@ -726,14 +728,18 @@ async fn exec_session_three_turns_parent_chain() {
     assert_eq!(s.current_turn.as_deref(), Some("turn-2"));
 }
 
-/// 7.3 — verify_and_complete 工具在 ToolRegistry 注册并可调用,通过共享
-/// coordinator 操作 session(verify pass -> status=Completed).
+/// 7.3 — verify_and_complete 工具在 ToolRegistry 注册并可调用，并由可信
+/// ToolContext 选择其 session（verify pass -> status=Completed）。
 #[tokio::test]
 async fn exec_session_verify_tool_registered_and_callable() {
     let tmp = tempfile::tempdir().unwrap();
-    let coord = make_coordinator(&tmp);
     let registry = ToolRegistry::with_project_root(tmp.path(), 5);
-    registry.register_exec_session_tools(coord.clone(), 2);
+    let runtime_store = Arc::new(ExecutionSessionRuntimeStore::new(
+        tmp.path().to_path_buf(),
+        registry.checkpoint_store.clone(),
+        2,
+    ));
+    registry.register_exec_session_tools(runtime_store);
 
     // Tool is registered under its canonical name.
     let tool = registry
@@ -741,15 +747,25 @@ async fn exec_session_verify_tool_registered_and_callable() {
         .expect("verify_and_complete registered");
     assert_eq!(tool.name(), "verify_and_complete");
 
-    // Open a turn so the session has a current turn for verify to seal.
-    coord.write().unwrap().begin_turn().unwrap();
+    let root = AgentExecutionContext::root(SessionId::new("runtime-tool-test"));
+    let context = ToolContext {
+        agent: &root,
+        invocation_id: ToolInvocationId::new("verify-call"),
+        origin_turn_id: None,
+        workdir: None,
+        effective_mode: crate::sandbox::EffectiveMode::Normal,
+        checkpoint: None,
+    };
 
     // Call the tool: `true` exits 0, no files changed, expected=[] -> pass.
     let input = serde_json::json!({
         "commands": ["true"],
         "expected_changed_files": []
     });
-    let output = tool.execute(input).await.expect("tool execute ok");
+    let output = tool
+        .execute_with_context(&context, input)
+        .await
+        .expect("tool execute ok");
     assert!(
         output
             .metadata
@@ -758,13 +774,6 @@ async fn exec_session_verify_tool_registered_and_callable() {
             .unwrap_or(false),
         "verify should pass: {}",
         output.content
-    );
-
-    // The shared coordinator reflects the transition to Completed.
-    let status = coord.read().unwrap().session().status.clone();
-    assert!(
-        matches!(status, crate::exec_session::SessionStatus::Completed),
-        "session should be Completed after verify pass"
     );
 }
 

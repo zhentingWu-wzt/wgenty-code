@@ -1,0 +1,12 @@
+# Comet project-local config (gitignored — root /.comet/ is session state).
+# Recreated per fresh workspace. v1 schema; legacy layout = openspec/ at repo root.
+schema: comet.project.v1
+default_workflow: classic
+workflows: [classic]
+ambient_resume: true
+classic:
+  artifact_layout: legacy
+  language: zh-CN
+  context_compression: off
+  review_mode: standard
+  auto_transition: true

@@ -271,9 +271,15 @@ pub async fn run_rlm_pipeline(
             // Reserve a coordinator-owned child for this subtask so it runs as
             // a direct child of the RLM caller (trusted parentage/depth/session,
             // never derived from model JSON). Depth hides `task` at the limit;
-            // the coordinator remains the enforcement boundary.
+            // the coordinator remains the enforcement boundary. RLM delegate
+            // children are GeneralPurpose workers (design OQ1): they may spawn
+            // and mutate the FS, so the builtin GP contract applies.
             let reservation = match coordinator
-                .reserve_child(caller, crate::agent::SpawnChildRequest::new(&prompt))
+                .reserve_child(
+                    caller,
+                    crate::agent::SpawnChildRequest::new(&prompt)
+                        .with_node_type(crate::org_graph::NodeType::GeneralPurpose),
+                )
                 .await
             {
                 Ok(r) => r,
@@ -383,6 +389,13 @@ pub async fn run_rlm_pipeline(
                                 &result,
                                 sub_settings.agent.subagent.trace.context_char_limit,
                                 retention,
+                                Some(
+                                    sub_settings
+                                        .storage
+                                        .working_dir
+                                        .to_string_lossy()
+                                        .to_string(),
+                                ),
                             );
                         }
                         // Ghost is not registered in coordinator scopes; skip
@@ -455,6 +468,13 @@ pub async fn run_rlm_pipeline(
                         &result,
                         sub_settings.agent.subagent.trace.context_char_limit,
                         retention,
+                        Some(
+                            sub_settings
+                                .storage
+                                .working_dir
+                                .to_string_lossy()
+                                .to_string(),
+                        ),
                     );
                 }
                 // Persist the child's terminal through the coordinator so its
@@ -647,7 +667,11 @@ pub async fn run_rlm_pipeline(
                 };
 
                 let reservation = match coordinator
-                    .reserve_child(caller, crate::agent::SpawnChildRequest::new(&prompt))
+                    .reserve_child(
+                        caller,
+                        crate::agent::SpawnChildRequest::new(&prompt)
+                            .with_node_type(crate::org_graph::NodeType::GeneralPurpose),
+                    )
                     .await
                 {
                     Ok(r) => r,
@@ -723,6 +747,13 @@ pub async fn run_rlm_pipeline(
                             &result,
                             sub_settings.agent.subagent.trace.context_char_limit,
                             retention,
+                            Some(
+                                sub_settings
+                                    .storage
+                                    .working_dir
+                                    .to_string_lossy()
+                                    .to_string(),
+                            ),
                         );
                     }
                     let terminal = match &result {

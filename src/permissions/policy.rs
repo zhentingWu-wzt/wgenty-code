@@ -121,16 +121,26 @@ impl ToolPermissionPolicy {
         match tool_name {
             "file_write" | "file_edit" => {
                 if let Some(path) = args["path"].as_str() {
-                    if let Some(rule_key) = self.path_rule_key(path)? {
-                        if session_rules.contains(&rule_key) {
-                            return Ok(PolicyDecision::Allow);
-                        }
-                        return Ok(PolicyDecision::Ask(PermissionRequest {
-                            tool_name: tool_name.to_string(),
-                            reason: format!("write path is outside the workspace: {}", path),
-                            session_rule: rule_key,
-                        }));
+                    // Writes always Ask, even inside the workspace. The root
+                    // permission mode (Normal/AcceptEdits/Yolo) decides
+                    // downstream whether to auto-approve; returning Allow here
+                    // would short-circuit that decision and never prompt.
+                    let resolved = self.resolve_path(path);
+                    let rule_key = format!("path:{}", resolved.display());
+                    if session_rules.contains(&rule_key) {
+                        return Ok(PolicyDecision::Allow);
                     }
+                    let inside = resolved.starts_with(&self.workspace_root);
+                    let reason = if inside {
+                        format!("write to file requires approval: {path}")
+                    } else {
+                        format!("write path is outside the workspace: {path}")
+                    };
+                    return Ok(PolicyDecision::Ask(PermissionRequest {
+                        tool_name: tool_name.to_string(),
+                        reason,
+                        session_rule: rule_key,
+                    }));
                 }
             }
             "apply_patch" => {
@@ -139,20 +149,24 @@ impl ToolPermissionPolicy {
                     .map(PathBuf::from)
                     .unwrap_or_else(|| self.workspace_root.clone());
                 let resolved = canonical_or_normalized(&workdir);
-                if !resolved.starts_with(&self.workspace_root) {
-                    let rule_key = format!("workdir:{}", resolved.display());
-                    if session_rules.contains(&rule_key) {
-                        return Ok(PolicyDecision::Allow);
-                    }
-                    return Ok(PolicyDecision::Ask(PermissionRequest {
-                        tool_name: tool_name.to_string(),
-                        reason: format!(
-                            "apply_patch workdir is outside the workspace: {}",
-                            resolved.display()
-                        ),
-                        session_rule: rule_key,
-                    }));
+                let rule_key = format!("workdir:{}", resolved.display());
+                if session_rules.contains(&rule_key) {
+                    return Ok(PolicyDecision::Allow);
                 }
+                let inside = resolved.starts_with(&self.workspace_root);
+                let reason = if inside {
+                    "apply_patch requires approval".to_string()
+                } else {
+                    format!(
+                        "apply_patch workdir is outside the workspace: {}",
+                        resolved.display()
+                    )
+                };
+                return Ok(PolicyDecision::Ask(PermissionRequest {
+                    tool_name: tool_name.to_string(),
+                    reason,
+                    session_rule: rule_key,
+                }));
             }
             _ => {}
         }
@@ -722,6 +736,61 @@ mod tests {
 
         let result = policy.validate_tool_call(&tool, "file_write", &args, &empty_rules());
 
+        assert!(matches!(result, Ok(PolicyDecision::Ask(_))));
+    }
+
+    #[test]
+    fn test_write_inside_workspace_asks() {
+        // Writes inside the workspace must still Ask - the root permission
+        // mode (Normal/AcceptEdits/Yolo) decides downstream whether to
+        // auto-approve. Returning Allow here would skip the prompt entirely.
+        let temp = tempfile::tempdir().expect("temp directory should be created");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace should be created");
+        let policy = ToolPermissionPolicy::new(workspace);
+        let tool = FileWriteTool::new();
+        let args = serde_json::json!({
+            "path": "src/main.rs",
+            "content": "fn main() {}"
+        });
+
+        let result = policy.validate_tool_call(&tool, "file_write", &args, &empty_rules());
+        assert!(matches!(result, Ok(PolicyDecision::Ask(_))));
+    }
+
+    #[test]
+    fn test_write_inside_workspace_with_session_rule_allowed() {
+        let temp = tempfile::tempdir().expect("temp directory should be created");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace should be created");
+        let policy = ToolPermissionPolicy::new(workspace);
+        let tool = FileWriteTool::new();
+        let path = "src/main.rs";
+        let args = serde_json::json!({ "path": path, "content": "fn main() {}" });
+
+        // Pre-approve the resolved path rule.
+        let resolved = policy.resolve_path(path);
+        let rule_key = format!("path:{}", resolved.display());
+        let mut rules = HashSet::new();
+        rules.insert(rule_key);
+
+        let result = policy.validate_tool_call(&tool, "file_write", &args, &rules);
+        assert!(matches!(result, Ok(PolicyDecision::Allow)));
+    }
+
+    #[test]
+    fn test_apply_patch_inside_workspace_asks() {
+        let temp = tempfile::tempdir().expect("temp directory should be created");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace should be created");
+        let policy = ToolPermissionPolicy::new(workspace);
+        let tool = crate::tools::filesystem::apply_patch::ApplyPatchTool::new();
+        let args = serde_json::json!({
+            "workdir": ".",
+            "patch": "*** Begin Patch\n*** End Patch"
+        });
+
+        let result = policy.validate_tool_call(&tool, "apply_patch", &args, &empty_rules());
         assert!(matches!(result, Ok(PolicyDecision::Ask(_))));
     }
 

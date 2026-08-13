@@ -142,6 +142,127 @@ jobs:
       - name: Verify Image
         run: docker run --rm wgenty-code:latest --version
 
+  desktop:
+    name: Desktop ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native-architecture Tauri builds only (bundlers like dmg/AppImage
+          # cannot cross-compile). Daemon externalBin is staged per target-triple.
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact_ext: ""
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact_ext: ""
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact_ext: ""
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            artifact_ext: ".exe"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux system dependencies (Tauri)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev build-essential curl wget file \
+            libxdo-dev libayatana-appindicator3-dev libsqlite3-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set version from tag
+        shell: python
+        run: |
+          import os, re, sys, json
+          raw = os.environ['GITHUB_REF_NAME'].lstrip('v')
+          m = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)(.*)', raw)
+          if not m:
+              print(f'::error::Tag version {raw!r} is not MAJOR.MINOR.PATCH[suffix]', file=sys.stderr)
+              sys.exit(1)
+          version = f'{int(m.group(1))}.{int(m.group(2))}.{int(m.group(3))}{m.group(4)}'
+          # Main crate (daemon binary reports --version).
+          with open('Cargo.toml', 'r') as f:
+              content = f.read()
+          content = re.sub(r'^version = ".*"', f'version = "{version}"', content, count=1, flags=re.MULTILINE)
+          with open('Cargo.toml', 'w') as f:
+              f.write(content)
+          # Desktop crate + tauri.conf.json must match.
+          with open('desktop/src-tauri/Cargo.toml', 'r') as f:
+              content = f.read()
+          content = re.sub(r'^version = ".*"', f'version = "{version}"', content, count=1, flags=re.MULTILINE)
+          with open('desktop/src-tauri/Cargo.toml', 'w') as f:
+              f.write(content)
+          with open('desktop/src-tauri/tauri.conf.json', 'r') as f:
+              conf = json.load(f)
+          conf['version'] = version
+          with open('desktop/src-tauri/tauri.conf.json', 'w') as f:
+              json.dump(conf, f, indent=2)
+              f.write('\n')
+          print(f'Set version to {version} (from tag {raw})')
+
+      - name: Build web frontend
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Build daemon (host target)
+        shell: bash
+        # Windows has no system SQLite — match the build job's bundled-sqlite.
+        run: |
+          set -euo pipefail
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cargo build --release --target ${{ matrix.target }} --features bundled-sqlite
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Stage daemon for Tauri externalBin
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p desktop/src-tauri/binaries
+          cp "target/${{ matrix.target }}/release/wgenty-code${{ matrix.artifact_ext }}" \
+            "desktop/src-tauri/binaries/wgenty-code-${{ matrix.target }}${{ matrix.artifact_ext }}"
+
+      - name: Build Tauri app
+        shell: bash
+        run: |
+          cd desktop/src-tauri
+          # npx pulls the CLI without touching the repo (no package.json here).
+          npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }}
+
+      - name: Upload bundles to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.app
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
+          retention-days: 7
+
   publish-platform:
     name: Publish wgenty-code-${{ matrix.sub }}
     needs: build

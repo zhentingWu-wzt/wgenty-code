@@ -93,7 +93,7 @@ full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqli
 基于 **Harness Component Model**（s01-s12 机制模块）：
 
 ```
-前端层 (CLI/TUI/Daemon)
+前端层 (CLI/TUI/Web/Desktop + Daemon)
   -> Agent Loop (agent/)          s01+s02: 核心循环 + SSE 流
   -> Prompt Assembly (prompts/)   8 层指令注入
   -> 业务层
@@ -111,7 +111,45 @@ full = ["wasm", "i18n", "daemon", "bundled-skills", "export-icon", "bundled-sqli
      config/       配置管理
 ```
 
+### Work-Graph 运行时
+
+`begin_node`、`verify_node`、`rollback_node` 与 `verify_and_complete` 通过可信
+`ToolContext` 中的 agent session 解析其 ExecutionSession runtime。daemon 与
+`query` headless 入口均注册这些工具；同一 session 复用一个 checkpointed
+WorkState / 审计轨迹，不同 session 相互隔离。第一次 `begin_node` 会惰性创建图
+turn；编译、测试和最终验证仍由代码执行的外部锚点决定，模型文本不能声明通过。
+
+daemon 还向已注册的专用子 Agent 提供 `submit_specialist_report`：该工具只从可信
+`ToolContext` 识别仍存活的 child `NodeType`，不接受模型提供的 producer、session 或
+turn。报告只能写入当前 active node/turn 的 `WorkState`，并立即写入 checkpoint；字段
+权限与报告类型仍由 `WorkState` 校验。它是给后续静态 Work-Graph 的类型化交接入口，
+不能写外部锚点、验证结果或路由结论。
+
+当前的静态诊断模板将可重试的 compile/test/final-command 锚点失败先路由到
+`RootCause`，daemon 会通过既有 `task` 执行器启动预注册 leaf 子 Agent，并在 child
+future 启动前把其可信身份绑定到同一 node/attempt；从预留到报告 checkpoint 前，根
+Agent 的非只读工具调用都被拒绝。只有该 child 能成功提交报告，代码才记录并返回
+`Implement` 边。child 失败、取消或完成却未报告时，运行时会耗尽该次重试预算、写入
+`Escalate` 审计事件，并将当前 node / 验证会话标记为 Failed；边界违规和预算耗尽也
+直接 `Escalate`。之后必须通过人工决策或既有 rollback 生命周期恢复，不能把失败诊断
+悄悄转为 `Implement`。
+`submit_specialist_report` 返回的 `next_step` 始终由当前结构化 State 计算，报告不能
+自行批准结果。
+
+进程重启后，运行时从 `.wgenty-code/snapshots/<session-id>/` 载入既有
+`session.json`、active turn 的 `WorkState` 和审计轨迹；损坏或结构不一致的快照会带
+上下文失败并保持原文件不变。若恢复状态仍选择 `RootCause`，daemon 仅依据该持久化的
+node/attempt 和外部锚点重新派发一个**新** child，再按正常预绑定流程启动它。旧 child ID
+永不恢复；恢复不会重跑 compile/test/verify 锚点或增加 attempt。`Complete`、`Escalate`
+及非 RootCause 路由不会派发 child。
+
 请求链路：`用户输入 -> CLI解析 -> Settings加载 -> Prompt组装(8层) -> API SSE -> 工具调用 -> Guardian审查 -> Sandbox执行 -> 流式返回`
+
+**Web 前端**（`web/`，React + Vite + TS）：与 TUI 平行的 thin client，通过 daemon 的 `/api/v1/*` 驱动 agent。daemon 的 `/chat/stream` 是纯透传代理，**工具执行与续轮循环在浏览器端**完成（镜像 `src/agent/runtime/loop_.rs`）。启动：`cargo run --features daemon -- daemon` 后 `cd web && npm install && npm run dev`，打开 `http://localhost:5173`（token 由 Vite dev server 从 `~/.wgenty-code/daemon.token` 注入）。能力：流式聊天、Markdown/diff 渲染、权限审批、停止中断、Sessions/Todos/Tasks/Model/Memory/Config 侧边面板。Memory 面板依赖 Tier 2 后端端点（`/api/v1/memory*`，包装 `MemoryManager`）。
+
+**Desktop 桌面端**（`desktop/`，Tauri 2.0）：复用 `web/` React 前端的第三个纯视图客户端。Tauri webview 装入同一 React 应用，通过 daemon 的 `/api/v1/*` + SSE 事件流驱动。daemon 自动发现/拉起（`desktop/src-tauri/src/daemon_manager.rs`）；token 由 Tauri Rust 宿主注入（fetch monkey-patch，浏览器端不接触密钥）；CORS 通过 `tauri-plugin-localhost` 保持 origin 在 daemon 白名单内。`desktop/src-tauri/` 是独立 crate（不在主 workspace），默认 `cargo build` 零影响。platform Adapter 层（`web/src/platform/`）隔离浏览器与桌面特有能力（daemon 启动、窗口事件等），App 代码零 `if (isTauri)`。启动：`cd web && npm run dev` + `cd desktop/src-tauri && cargo tauri dev`。能力：全部复用 web/（流式聊天、Markdown、工具展示、权限审批、Sessions/Search/Checkpoints/Undo、Config 编辑、MCP 管理、Memory 搜索/删除、Subagent 树、Todos 实时同步）。
+
+**Desktop 打包**（daemon 以 externalBin 方式捆绑进安装包）：daemon 以**独立进程**随 app 分发（`wgenty-code daemon`），Tauri 侧通过 `bundle.externalBin` 打包。约定：`desktop/src-tauri/binaries/` 下放置 `wgenty-code-<target-triple>` 命名（Windows 为 `wgenty-code-<target-triple>.exe`）的 daemon 二进制，`daemon_manager.rs::locate_daemon_binary` 在 resource_dir 中按前缀 `wgenty-code` 查找。本地一键打包：`bash desktop/scripts/bundle.sh`（构建 daemon release → 复制为 target-triple 命名 → `cd web && npm run build` → `cargo tauri build`），产物在 `desktop/src-tauri/target/release/bundle/`。CI 由 `release.yml` 的 `desktop` job 在 tag 触发时完成（三平台：macos/linux/windows，原生架构）。
 
 Prompt 8 层：base_instructions → permissions → developer → environment → agents_md → collaboration → skills_inventory → wgenty_md_sections
 
@@ -281,7 +319,7 @@ Prompt 8 层：base_instructions → permissions → developer → environment �
 
 ## CI/CD
 
-`.github/workflows/ci.yml` — push main/develop 或 PR 触发：
+`.github/workflows/ci.yml` — push main/dev 或 PR 触发：
 
 | Job | 命令 |
 |-----|------|

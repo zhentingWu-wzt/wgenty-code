@@ -198,6 +198,11 @@ impl App {
                 args,
                 content,
             } => {
+                if name == "background" {
+                    // The command may finish after the local turn and trigger
+                    // daemon-owned continuation with no local busy gate.
+                    self.mark_daemon_owned_session_history();
+                }
                 let diff_data = extract_diff_data(&name, &args, &content);
                 let tool_metadata = extract_tool_metadata(&content);
                 let just_bypassed = tool_metadata
@@ -307,7 +312,7 @@ impl App {
                 // Throttle the task-group claim poll to 500ms so idle polling
                 // does not generate excessive HTTP traffic. Only poll when no
                 // turn is running.
-                let should_poll = self.current_turn_handle.is_none()
+                let should_poll = !self.has_running_turn()
                     && self
                         .last_claim_attempt
                         .map(|t| t.elapsed() >= std::time::Duration::from_millis(500))
@@ -422,6 +427,7 @@ impl App {
                 self.turn_started_at = Some(std::time::Instant::now());
             }
             AppEvent::TurnComplete => {
+                let was_server_side = self.server_side_turn_active;
                 // Fire Stop hook asynchronously
                 {
                     let hm = self.hook_manager.clone();
@@ -449,6 +455,7 @@ impl App {
                 self.subagent_history.insert(key, snapshot);
                 self.turn_count += 1;
                 self.current_turn_handle = None;
+                self.server_side_turn_active = false;
                 self.last_abort_reason = None; // normal completion clears
                 self.turn_started_at = None;
                 // Finalize the most recent TurnRecord's message_end_idx for
@@ -457,11 +464,27 @@ impl App {
                 // completion.
                 let hist_len = self.conversation_history.lock().await.len();
                 self.finalize_turn_end(hist_len);
-                self.spawn_save_session();
+                // The daemon persists server-side turns after emitting
+                // TurnComplete. Saving the TUI snapshot here can race that
+                // final write and overwrite newer daemon-owned history.
+                if !was_server_side {
+                    self.spawn_save_session();
+                }
                 if !self.pending_inputs.is_empty() {
                     self.start_next_turn();
                 }
             }
+            AppEvent::ServerTurnTerminated if self.server_side_turn_active => {
+                // Unlike TurnComplete, an SSE/run failure has no successful
+                // turn to finalize or persist. It only releases the daemon-run
+                // gate and lets an already queued input proceed.
+                self.server_side_turn_active = false;
+                self.turn_started_at = None;
+                if !self.pending_inputs.is_empty() {
+                    self.start_next_turn();
+                }
+            }
+            AppEvent::ServerTurnTerminated => {}
             AppEvent::TurnAborted { ref reason } => {
                 // Fire Stop hook asynchronously
                 {
@@ -487,6 +510,7 @@ impl App {
                     });
                 }
                 self.last_abort_reason = Some(reason.clone());
+                self.server_side_turn_active = false;
                 // Aborted turn (e.g. /clear via cancel_current_turn, or a turn
                 // failure): clear the subagent tree so stale subagents don't
                 // linger in the status bar. cancel_current_turn does not emit
@@ -550,6 +574,58 @@ impl App {
             } => {
                 self.question_state
                     .show(question, options, multi_select, responder);
+            }
+            AppEvent::ServerPermissionRequired {
+                request_id,
+                tool,
+                reason,
+                rule,
+            } => {
+                self.permission_state.show_server(
+                    format!("{tool}: {reason}"),
+                    rule,
+                    request_id,
+                    self.daemon_client.clone(),
+                );
+            }
+            AppEvent::ServerQuestionAsked {
+                request_id,
+                question,
+                options,
+                multi_select,
+            } => {
+                let opts: Vec<QuestionOption> = serde_json::from_value(options).unwrap_or_default();
+                self.question_state.show_server(
+                    question,
+                    opts,
+                    multi_select,
+                    request_id,
+                    self.daemon_client.clone(),
+                );
+            }
+            AppEvent::SubagentTraceProgress(progress) if self.server_side_loop => {
+                // Only the server-side loop lacks the scoped-view poller, so
+                // apply trace progress directly here. Client-side mode
+                // populates the tree via `AgentLocalView` polling; upsert
+                // there would fight `replace_local`'s periodic clear.
+                self.subagent_tree.upsert(*progress);
+            }
+            AppEvent::ServerPermissionResolved { request_id }
+                if self.permission_state.visible
+                    && self.permission_state.server_request_id.as_deref() == Some(&request_id) =>
+            {
+                // Another device (or the daemon itself) resolved the request;
+                // dismiss the matching popup without re-sending a decision.
+                // `dismiss` only clears local state - it never POSTs.
+                let _ = self.permission_state.dismiss();
+            }
+            AppEvent::ServerQuestionResolved { request_id }
+                if self.question_state.visible
+                    && self.question_state.server_request_id.as_deref() == Some(&request_id) =>
+            {
+                // Clear without responding: the daemon already has the answer
+                // (resolved elsewhere), so we must not POST a duplicate.
+                self.question_state.clear_without_respond();
             }
             AppEvent::ToggleSessions => {
                 if self.session_state.visible {
@@ -973,6 +1049,29 @@ impl App {
                     tool_metadata: None,
                 });
             }
+            AppEvent::BackgroundTaskRecovered(result)
+            | AppEvent::BackgroundTaskCompleted(result) => {
+                if result.session_id.as_deref() != Some(self.session_id.as_str()) {
+                    tracing::debug!(
+                        result_session_id = ?result.session_id,
+                        active_session_id = %self.session_id,
+                        "dropping background result for inactive session"
+                    );
+                    return;
+                }
+                self.mark_daemon_owned_session_history();
+                self.committed_messages.push(UIMessage {
+                    role: MessageRole::System,
+                    content: result.format_completion_notification(),
+                    tool_name: None,
+                    tool_args: None,
+                    content_collapsed: false,
+                    tool_collapsed: false,
+                    tool_running: false,
+                    diff_data: None,
+                    tool_metadata: None,
+                });
+            }
             AppEvent::SystemNotice(notice) => {
                 self.committed_messages.push(UIMessage {
                     role: MessageRole::System,
@@ -985,6 +1084,73 @@ impl App {
                     diff_data: None,
                     tool_metadata: None,
                 });
+            }
+            AppEvent::SessionSwitched { from_id, id, name } => {
+                // A newer switch request supersedes any in-flight completion.
+                // Drop completions that don't match the latest requested
+                // target (guards the simultaneous A→B / A→C case where
+                // `session_id` is still the original session for both).
+                if self
+                    .session_state
+                    .pending_switch
+                    .as_deref()
+                    .is_some_and(|pending| pending != id)
+                {
+                    tracing::debug!(
+                        expected_session_id = %from_id,
+                        active_session_id = %self.session_id,
+                        "dropping stale completed session switch",
+                    );
+                    return;
+                }
+                if self.session_id != from_id {
+                    tracing::debug!(
+                        expected_session_id = %from_id,
+                        active_session_id = %self.session_id,
+                        "dropping stale completed session switch"
+                    );
+                    return;
+                }
+                self.session_state.pending_switch = None;
+                if self.adopt_active_session(id.clone(), name) {
+                    let client = self.daemon_client.clone();
+                    let history = self.conversation_history.clone();
+                    let tx = self.event_tx.clone();
+                    tokio::spawn(async move {
+                        match client.load_session(&id).await {
+                            Ok(resp) => {
+                                let messages = resp.messages;
+                                let ui_messages = resp.ui_messages;
+                                {
+                                    let mut h = history.lock().await;
+                                    *h = messages.clone();
+                                }
+                                let _ = tx.send(AppEvent::HistoryLoaded {
+                                    messages,
+                                    ui_messages,
+                                });
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    session_id = %id,
+                                    error = %error,
+                                    "failed to load session after transactional switch"
+                                );
+                                let _ = tx.send(AppEvent::SystemNotice(format!(
+                                    "⚠ session switched but history could not be loaded: {error}"
+                                )));
+                            }
+                        }
+                    });
+                }
+            }
+            AppEvent::SessionCleared { id, name } => {
+                self.adopt_session_after_reset(id, name);
+            }
+            AppEvent::SessionClearFailed {
+                suppress_phase_updates,
+            } => {
+                self.suppress_phase_updates = suppress_phase_updates;
             }
             AppEvent::AgentGenerationReset { generation } => {
                 if generation == u64::MAX {
@@ -1095,6 +1261,17 @@ impl App {
             }
             AppEvent::PlanUpdate(value) => {
                 self.plan_panel_state.apply_update_value(&value);
+            }
+            AppEvent::TodosSnapshot(items) => {
+                use crate::tui::components::plan_panel::{PlanItem, PlanStatus};
+                let items = items
+                    .into_iter()
+                    .map(|t| PlanItem {
+                        step: t.content,
+                        status: PlanStatus::parse_status(&t.status),
+                    })
+                    .collect::<Vec<_>>();
+                self.plan_panel_state.update(items);
             }
             AppEvent::MemoriesReady(lines) => {
                 // Cross-session memory recall completed in the background at

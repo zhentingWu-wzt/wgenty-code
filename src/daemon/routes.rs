@@ -4,11 +4,18 @@
 //! routes while keeping `GET /api/v1/health` public.
 
 use crate::daemon::auth;
+use crate::daemon::fs;
+use crate::daemon::global_events;
 use crate::daemon::handlers;
+use crate::daemon::projects;
+use crate::daemon::run_loop;
+use crate::daemon::session_admin;
+use crate::daemon::skills_api;
 use crate::daemon::state::DaemonState;
+use crate::daemon::worktrees;
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use std::sync::Arc;
@@ -48,13 +55,20 @@ pub(crate) fn agent_routes() -> Router<Arc<DaemonState>> {
 
 /// Return `(health_router, protected_router)` so callers can layer differently.
 pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Router) {
+    state.start_background_continuation_scheduler();
     let health = Router::new()
         .route("/api/v1/health", get(handlers::health))
+        // Thin-client heartbeat (SSE keepalive); daemon tracks connected
+        // clients and initiates graceful shutdown when the last one leaves.
+        .route("/api/v1/client/heartbeat", get(handlers::client_heartbeat))
         .with_state(state.clone());
 
     let protected = Router::new()
         // Config
-        .route("/api/v1/config", get(handlers::get_config))
+        .route(
+            "/api/v1/config",
+            get(handlers::get_config).put(handlers::update_config),
+        )
         // Model profiles (switchable via /model in the TUI)
         .route("/api/v1/models", get(handlers::list_models))
         .route("/api/v1/model/switch", post(handlers::switch_model))
@@ -73,6 +87,11 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             "/api/v1/tools/resolve-permission",
             post(handlers::resolve_subagent_permission),
         )
+        // Interaction (ask_user_question) resolve — server-side loop prompts
+        .route(
+            "/api/v1/interactions/:id/resolve",
+            post(handlers::resolve_interaction),
+        )
         // Undo (per-turn file checkpoint rollback)
         .route("/api/v1/tools/undo-turn", post(handlers::undo_turn_range))
         .route("/api/v1/checkpoints", get(handlers::list_checkpoints))
@@ -86,6 +105,16 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
         .route("/api/v1/tasks/progress", get(handlers::task_progress))
         // Todos (s03 TodoWrite state)
         .route("/api/v1/todos", get(handlers::get_todos))
+        // Global cross-project event stream (SSE, live-only v1)
+        .route("/api/v1/events", get(global_events::get_global_events))
+        // Memory ops (web-ops-console Tier 2): wrap MemoryManager
+        .route("/api/v1/memory/status", get(handlers::memory_status))
+        .route("/api/v1/memory", get(handlers::list_memory))
+        .route(
+            "/api/v1/memory/:id",
+            get(handlers::get_memory).delete(handlers::delete_memory),
+        )
+        .route("/api/v1/memory/prune", post(handlers::prune_memory))
         // Background tasks
         .route(
             "/api/v1/background/results",
@@ -101,11 +130,48 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             get(handlers::subagent_trace_stream),
         )
         // MCP
-        .route("/api/v1/mcp/servers", get(handlers::list_mcp_servers))
+        .route(
+            "/api/v1/mcp/servers",
+            get(handlers::list_mcp_servers).post(handlers::add_mcp_server),
+        )
+        .route(
+            "/api/v1/mcp/servers/:name",
+            delete(handlers::remove_mcp_server),
+        )
+        .route(
+            "/api/v1/mcp/servers/:name/start",
+            post(handlers::start_mcp_server),
+        )
+        .route(
+            "/api/v1/mcp/servers/:name/stop",
+            post(handlers::stop_mcp_server),
+        )
+        .route(
+            "/api/v1/mcp/servers/:name/restart",
+            post(handlers::restart_mcp_server),
+        )
+        // Skills (web command center, read-only)
+        .route("/api/v1/skills", get(skills_api::list_skills))
         // Sessions
         .route(
             "/api/v1/sessions",
             get(handlers::list_sessions).post(handlers::create_session),
+        )
+        // Filesystem browsing (web directory picker — read-only sub-dir listing)
+        .route("/api/v1/fs/dirs", get(fs::list_dirs))
+        // Projects (multi-project registry; main project = daemon working_dir)
+        .route(
+            "/api/v1/projects",
+            get(projects::list_projects)
+                .post(projects::add_project)
+                .delete(projects::remove_project),
+        )
+        // Worktrees (web command center)
+        .route(
+            "/api/v1/worktrees",
+            get(worktrees::list_worktrees)
+                .post(worktrees::create_worktree)
+                .delete(worktrees::delete_worktree),
         )
         .route("/api/v1/sessions/search", get(handlers::search_sessions))
         .route(
@@ -113,6 +179,22 @@ pub fn create_routers(state: Arc<DaemonState>, api_token: String) -> (Router, Ro
             get(handlers::get_session)
                 .put(handlers::update_session)
                 .delete(handlers::delete_session),
+        )
+        // Session server-side runs (spawn / cancel an agent turn, live SSE events)
+        .route("/api/v1/sessions/:id/run", post(run_loop::post_run))
+        .route("/api/v1/sessions/:id/cancel", post(run_loop::post_cancel))
+        .route(
+            "/api/v1/sessions/:id/events",
+            get(run_loop::get_session_events),
+        )
+        // Session worktree binding + archive (project v1)
+        .route(
+            "/api/v1/sessions/:id/worktree",
+            put(session_admin::bind_worktree).delete(session_admin::unbind_worktree),
+        )
+        .route(
+            "/api/v1/sessions/:id/archive",
+            put(session_admin::set_archived),
         )
         .route_layer(middleware::from_fn_with_state(
             api_token,

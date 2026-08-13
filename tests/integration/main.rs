@@ -11,6 +11,11 @@
 
 mod codegraph_mcp_e2e;
 mod comet_integration_test;
+mod daemon_background_continuation;
+mod daemon_conflicts;
+mod daemon_events_replay;
+mod daemon_global_events;
+mod daemon_harness;
 mod exec_session_e2e;
 mod exec_session_node_lifecycle;
 mod integration_test;

@@ -39,47 +39,118 @@ impl App {
         }
         // Slash commands
         if text.trim() == "/clear" {
+            // Empty session: nothing to save, and creating another empty
+            // session would just clutter the session list.
+            if self.committed_messages.is_empty() {
+                self.push_system_message("会话为空，无需清除");
+                return;
+            }
+
+            // Snapshot UI transcript synchronously (no await needed) before
+            // clearing the display. History is snapshotted inside the spawn
+            // below because the tokio Mutex cannot be locked from this sync ctx.
+            let old_id = self.session_id.clone();
+            let previous_suppress_phase_updates = self.suppress_phase_updates;
+            let old_ui_messages: Vec<_> = self
+                .committed_messages
+                .iter()
+                .map(UIMessage::to_session_ui_message)
+                .collect();
+
+            // Clear visible state immediately so /clear returns a clean slate.
             self.committed_messages.clear();
             self.streaming_content.clear();
             self.streaming_active = false;
             self.scroll_offset = 0;
             self.user_scrolled = false;
             self.sandbox_bypassed_session = false;
+            // Automatic daemon continuation is intentionally invisible to
+            // local run gates. Fence every old-session save before canceling.
+            self.mark_daemon_owned_session_history();
             self.cancel_current_turn();
+            // Keep a daemon-owned run gated until the async phase confirms
+            // cancellation and emits the explicit reset/adoption event.
             // Reset phase immediately and suppress stale events from the
             // just-aborted turn so the status bar shows "Ready" instead of
-            // lingering on "Thinking". Cleared when a new turn starts.
+            // lingering on "Thinking". Cleared by the follow-up
+            // AgentGenerationReset (both success and failure paths spawn one).
             self.phase = AgentPhase::Idle;
             self.suppress_phase_updates = true;
-            let history = self.conversation_history.clone();
-            tokio::spawn(async move {
-                let mut h = history.lock().await;
-                // Dialogue-only: system layers live in assembled_system_messages
-                // and are prepended each API round — never stored in history.
-                h.clear();
-            });
             // Clear queued inputs: a fresh generation cancels obsolete work.
             self.pending_inputs.clear();
-            // Atomically advance the task generation on the daemon (which
-            // cancels obsolete root-direct subtrees) and adopt the new
-            // generation when it returns. Until it completes, stale
-            // subagent views are suppressed and no queued work starts.
+
+            // Async: snapshot+clear history, cancel daemon ownership, create a
+            // new session, then switch. Never PUT the old local snapshot: the
+            // daemon owns any final history produced by cancellation.
             let client = self.daemon_client.clone();
-            let session_id = self.session_id.clone();
+            let history = self.conversation_history.clone();
             let event_tx = self.event_tx.clone();
             tokio::spawn(async move {
-                match client.reset_agent_generation(&session_id).await {
-                    Ok(generation) => {
-                        let _ = event_tx.send(AppEvent::AgentGenerationReset { generation });
+                let old_history = {
+                    let mut h = history.lock().await;
+                    crate::api::types::sanitize_tool_call_pairing(&mut h);
+                    let snapshot = h.clone();
+                    h.clear();
+                    snapshot
+                };
+
+                // 1. Terminate daemon ownership before switching. A
+                // server-side run persists its own final history after
+                // cancellation, so a stale TUI PUT must not race that save.
+                if let Err(error) = client.cancel_run(&old_id).await {
+                    tracing::warn!(
+                        session_id = %old_id,
+                        error = %error,
+                        "failed to cancel daemon session during /clear"
+                    );
+                    {
+                        let mut current = history.lock().await;
+                        *current = old_history.clone();
+                    }
+                    let _ = event_tx.send(AppEvent::HistoryLoaded {
+                        messages: old_history,
+                        ui_messages: old_ui_messages,
+                    });
+                    let _ = event_tx.send(AppEvent::SessionClearFailed {
+                        suppress_phase_updates: previous_suppress_phase_updates,
+                    });
+                    let _ = event_tx.send(AppEvent::SystemNotice(format!(
+                        "⚠️ 无法取消当前会话，未创建新会话：{error}"
+                    )));
+                    return;
+                }
+
+                // 2. Create a new session and switch.
+                match client.create_session(None).await {
+                    Ok(resp) => {
+                        let _ = event_tx.send(AppEvent::SessionCleared {
+                            id: resp.id,
+                            name: resp.name,
+                        });
                     }
                     Err(error) => {
-                        tracing::warn!(
-                            error = %error,
-                            "reset_agent_generation failed; retaining old generation"
-                        );
-                        let _ = event_tx.send(AppEvent::AgentGenerationReset {
-                            generation: u64::MAX,
-                        });
+                        tracing::warn!(error = %error, "create_session failed after /clear");
+                        let _ = event_tx.send(AppEvent::SystemNotice(format!(
+                            "⚠️ 创建新会话失败：{error}（当前会话已清空，可继续使用）"
+                        )));
+                        // Fallback: reset generation under the old id so
+                        // subagent state and suppress_phase_updates are
+                        // cleaned up (session_id stays the old one).
+                        match client.reset_agent_generation(&old_id).await {
+                            Ok(generation) => {
+                                let _ =
+                                    event_tx.send(AppEvent::AgentGenerationReset { generation });
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    error = %error,
+                                    "reset_agent_generation failed; retaining old generation"
+                                );
+                                let _ = event_tx.send(AppEvent::AgentGenerationReset {
+                                    generation: u64::MAX,
+                                });
+                            }
+                        }
                     }
                 }
             });
@@ -148,7 +219,7 @@ impl App {
                 self.pending_inputs.push_back(PendingInput::new(
                     "Continue the current task from where you left off.".to_string(),
                 ));
-                if self.current_turn_handle.is_none() {
+                if !self.has_running_turn() {
                     self.start_next_turn();
                 }
             } else {
@@ -172,14 +243,14 @@ impl App {
             self.push_system_message(
                 "🔄 Running /init — 正在分析代码库以生成 WGENTY.md 和 AGENTS.md...",
             );
-            if self.current_turn_handle.is_none() {
+            if !self.has_running_turn() {
                 let init_prompt = crate::prompts::get_init_prompt().to_string();
                 self.spawn_agent_turn(init_prompt, true);
             }
             return;
         }
         if text.trim() == "/compact" {
-            if self.current_turn_handle.is_some() {
+            if self.has_running_turn() {
                 self.push_system_message(
                     "⏳ Please wait for the current task to finish before compacting.",
                 );
@@ -213,6 +284,15 @@ impl App {
             } else {
                 self.switch_model_direct(rest);
             }
+            return;
+        }
+        if slash == "/server-side" {
+            self.server_side_loop = !self.server_side_loop;
+            self.push_system_message(format!(
+                "server-side loop: {}",
+                if self.server_side_loop { "ON" } else { "OFF" }
+            ));
+            self.phase = AgentPhase::Idle;
             return;
         }
         if text.trim() == "/help" {
@@ -285,7 +365,7 @@ impl App {
                         );
                         self.pending_inputs
                             .push_back(PendingInput::internal(text.clone(), agent_input));
-                        if self.current_turn_handle.is_none() {
+                        if !self.has_running_turn() {
                             self.start_next_turn();
                         }
                         return;
@@ -325,7 +405,7 @@ impl App {
             return;
         }
         self.pending_inputs.push_back(PendingInput::new(text));
-        if self.current_turn_handle.is_none() {
+        if !self.has_running_turn() {
             self.start_next_turn();
         }
     }
@@ -429,6 +509,197 @@ fn format_bang_output(output: &std::process::Output) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::watcher::SettingsHandle;
+    use crate::config::Settings;
+    use crate::tui::client::DaemonClient;
+    use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::routing::{post, put};
+    use axum::{Json, Router};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, RwLock};
+    use std::time::Duration;
+
+    #[derive(Clone, Default)]
+    struct ClearCapture {
+        cancellations: Arc<AtomicUsize>,
+        saves: Arc<AtomicUsize>,
+        creations: Arc<AtomicUsize>,
+        reject_cancel: bool,
+        create_delay: Duration,
+    }
+
+    async fn capture_cancel(State(capture): State<ClearCapture>) -> StatusCode {
+        capture.cancellations.fetch_add(1, Ordering::SeqCst);
+        if capture.reject_cancel {
+            StatusCode::INTERNAL_SERVER_ERROR
+        } else {
+            StatusCode::NO_CONTENT
+        }
+    }
+
+    async fn accept_save(State(capture): State<ClearCapture>) -> StatusCode {
+        capture.saves.fetch_add(1, Ordering::SeqCst);
+        StatusCode::NO_CONTENT
+    }
+
+    async fn create_cleared_session(
+        State(capture): State<ClearCapture>,
+    ) -> Json<serde_json::Value> {
+        tokio::time::sleep(capture.create_delay).await;
+        capture.creations.fetch_add(1, Ordering::SeqCst);
+        Json(serde_json::json!({
+            "id": "cleared-session",
+            "name": "New Session",
+            "created_at": "",
+            "updated_at": "",
+            "messages": [],
+            "ui_messages": []
+        }))
+    }
+
+    async fn assert_clear_cancels_and_adopts(local_run_gate: bool) {
+        let capture = ClearCapture {
+            create_delay: Duration::default(),
+            ..ClearCapture::default()
+        };
+        let router = Router::new()
+            .route("/api/v1/sessions", post(create_cleared_session))
+            .route("/api/v1/sessions/:id", put(accept_save))
+            .route("/api/v1/sessions/:id/cancel", post(capture_cancel))
+            .with_state(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind clear protocol server");
+        let address = listener.local_addr().expect("clear server address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve clear protocol server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "active-session".to_string(),
+            settings,
+        );
+        app.committed_messages.push(UIMessage {
+            role: MessageRole::User,
+            content: "running".to_string(),
+            tool_name: None,
+            content_collapsed: false,
+            tool_collapsed: false,
+            tool_running: false,
+            tool_args: None,
+            diff_data: None,
+            tool_metadata: None,
+        });
+        app.server_side_loop = true;
+        app.server_side_turn_active = local_run_gate;
+
+        app.submit_input("/clear".to_string());
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while app.session_id != "cleared-session" {
+                let event = app
+                    .event_rx
+                    .recv()
+                    .await
+                    .expect("app event channel remains open");
+                app.handle_event(event).await;
+            }
+        })
+        .await
+        .expect("clear must adopt the session it creates");
+        assert_eq!(capture.cancellations.load(Ordering::SeqCst), 1);
+        assert_eq!(capture.creations.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            capture.saves.load(Ordering::SeqCst),
+            0,
+            "daemon-owned history must not be overwritten during clear"
+        );
+        assert!(!app.server_side_turn_active);
+        assert!(app.pending_inputs.is_empty());
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn clear_cancels_active_server_run_and_adopts_created_session() {
+        assert_clear_cancels_and_adopts(true).await;
+    }
+
+    #[tokio::test]
+    async fn clear_cancels_daemon_continuation_without_a_local_run_gate() {
+        assert_clear_cancels_and_adopts(false).await;
+    }
+
+    #[tokio::test]
+    async fn clear_does_not_orphan_new_session_when_server_cancel_fails() {
+        let capture = ClearCapture {
+            reject_cancel: true,
+            ..ClearCapture::default()
+        };
+        let router = Router::new()
+            .route("/api/v1/sessions", post(create_cleared_session))
+            .route("/api/v1/sessions/:id", put(accept_save))
+            .route("/api/v1/sessions/:id/cancel", post(capture_cancel))
+            .with_state(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind failed-clear protocol server");
+        let address = listener.local_addr().expect("failed-clear server address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve failed-clear protocol server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "active-session".to_string(),
+            settings,
+        );
+        app.committed_messages.push(UIMessage {
+            role: MessageRole::User,
+            content: "running".to_string(),
+            tool_name: None,
+            content_collapsed: false,
+            tool_collapsed: false,
+            tool_running: false,
+            tool_args: None,
+            diff_data: None,
+            tool_metadata: None,
+        });
+        app.server_side_loop = true;
+        app.server_side_turn_active = true;
+
+        app.submit_input("/clear".to_string());
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !app
+                .committed_messages
+                .iter()
+                .any(|message| message.content.contains("无法取消当前会话"))
+            {
+                let event = app
+                    .event_rx
+                    .recv()
+                    .await
+                    .expect("app event channel remains open");
+                app.handle_event(event).await;
+            }
+        })
+        .await
+        .expect("cancel failure must restore the old session");
+        assert_eq!(app.session_id, "active-session");
+        assert_eq!(capture.cancellations.load(Ordering::SeqCst), 1);
+        assert_eq!(capture.creations.load(Ordering::SeqCst), 0);
+        assert!(app.server_side_turn_active);
+        assert!(app.pending_inputs.is_empty());
+
+        server.abort();
+    }
 
     // ── is_bang_input ──────────────────────────────────────────
 
