@@ -175,9 +175,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+          # libayatana-appindicator3-dev is the maintained replacement for
+          # libappindicator3-dev; the two conflict (Conflicts:), so installing
+          # both makes apt fail on ubuntu-22.04.
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
             librsvg2-dev patchelf libssl-dev build-essential curl wget file \
-            libxdo-dev libayatana-appindicator3-dev libsqlite3-dev
+            libxdo-dev libsqlite3-dev
 
       - uses: actions/setup-node@v4
         with:
@@ -214,9 +217,16 @@ jobs:
           print(f'Set version to {version} (from tag {raw})')
 
       - name: Build web frontend
+        shell: bash
         run: |
           cd web
-          npm ci
+          # npm ci can silently skip platform-specific optional deps when the
+          # lockfile was generated on another OS (npm/cli#4828): the win32
+          # rollup native binding is missing after `npm ci` on Windows. Falling
+          # back to a fresh `npm install` (no lockfile) re-resolves per-platform
+          # optional deps and installs the missing binding, per rollup's own
+          # guidance for this bug.
+          npm ci || { rm -f package-lock.json && npm install --no-audit --no-fund; }
           npm run build
 
       - name: Build daemon (host target)
