@@ -104,6 +104,9 @@ jobs:
         # race in softprops/action-gh-release. Pre-create it idempotently
         # (|| true for the already-exists case) so softprops only does
         # asset upload, which it handles gracefully on existing releases.
+        # `shell: bash` keeps flag parsing portable: pwsh (default on Windows
+        # runners) chokes on `--title` as a unary operator.
+        shell: bash
         run: |
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
@@ -277,6 +280,8 @@ jobs:
       - name: Ensure Release exists
         # See build job: idempotently pre-create the Release so the
         # concurrent desktop matrix uploads only do asset upload.
+        # `shell: bash` — pwsh on Windows runners mis-parses `--title`.
+        shell: bash
         run: |
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \

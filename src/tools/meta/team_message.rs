@@ -235,12 +235,16 @@ mod tests {
 
     #[tokio::test]
     async fn send_and_drain_roundtrip() {
+        // Construct the inbox path directly under a temp dir instead of
+        // changing the process cwd (a global, process-wide mutable state).
+        // Concurrent tests that read cwd or spawn subprocesses inheriting it
+        // would otherwise observe a dangling path once the TempDir drops.
         let tmp = tempfile::TempDir::new().unwrap();
-        let prev = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
-
-        // Simulate recipient inbox path directly.
-        let path = TeamMessageTool::inbox_path("recipient-1").unwrap();
+        let path = tmp
+            .path()
+            .join(".team")
+            .join("inbox")
+            .join(format!("{}.jsonl", sanitize("recipient-1")));
         let mailbox = Mailbox::new(path);
         mailbox
             .send(&TeamMessage::Message {
@@ -254,7 +258,5 @@ mod tests {
 
         let drained = mailbox.receive_all().await.unwrap();
         assert_eq!(drained.len(), 1);
-
-        std::env::set_current_dir(prev).unwrap();
     }
 }
