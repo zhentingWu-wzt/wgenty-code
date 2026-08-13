@@ -4,8 +4,9 @@
 //! It never accepts model-provided node types or arbitrary edges.
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-use super::NodeType;
+use super::{NodeRegistry, NodeType};
 
 /// Structured category supplied by a trusted caller at node creation.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -54,9 +55,53 @@ pub struct WorkGraphPlan {
     pub template_id: String,
     pub nodes: Vec<WorkGraphPlanNode>,
     pub edges: Vec<WorkGraphPlanEdge>,
+    #[serde(default)]
+    pub bindings: Vec<WorkGraphRoleBinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkGraphRoleBinding {
+    pub node_id: String,
+    pub role: NodeType,
+    pub contract_name: String,
+    pub can_spawn: bool,
+    pub can_mutate_fs: bool,
+    pub can_exec: bool,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum WorkGraphPlanError {
+    #[error("Work-Graph role {role:?} for node '{node_id}' is not registered in Org-Graph")]
+    UnregisteredRole { node_id: String, role: NodeType },
 }
 
 impl WorkGraphPlan {
+    /// Resolve every selected role against the immutable Org-Graph registry.
+    pub fn bind_registry(&self, registry: &NodeRegistry) -> Result<Self, WorkGraphPlanError> {
+        let mut bound = self.clone();
+        bound.bindings = self
+            .nodes
+            .iter()
+            .map(|node| {
+                let contract = registry.get(&node.role).ok_or_else(|| {
+                    WorkGraphPlanError::UnregisteredRole {
+                        node_id: node.id.clone(),
+                        role: node.role.clone(),
+                    }
+                })?;
+                Ok(WorkGraphRoleBinding {
+                    node_id: node.id.clone(),
+                    role: node.role.clone(),
+                    contract_name: contract.name.clone(),
+                    can_spawn: contract.permissions.can_spawn,
+                    can_mutate_fs: contract.permissions.can_mutate_fs,
+                    can_exec: contract.permissions.can_exec,
+                })
+            })
+            .collect::<Result<Vec<_>, WorkGraphPlanError>>()?;
+        Ok(bound)
+    }
+
     /// Returns whether this bounded plan contains an edge between roles.
     ///
     /// Runtime routing uses this rather than trusting a model-suggested next
@@ -133,6 +178,7 @@ pub fn select_work_graph(request: &WorkGraphRequest) -> WorkGraphPlan {
         },
         nodes,
         edges,
+        bindings: Vec::new(),
     }
 }
 
@@ -177,5 +223,17 @@ mod tests {
             .any(|edge| edge.from == "verify" && edge.to == "human-review"));
         assert!(plan.permits_role_edge(NodeType::Verification, NodeType::HumanReview));
         assert!(!plan.permits_role_edge(NodeType::HumanReview, NodeType::GeneralPurpose));
+    }
+
+    #[test]
+    fn bind_registry_captures_registered_contracts() {
+        let plan = select_work_graph(&WorkGraphRequest::default());
+        let registry = NodeRegistry::builtin(&Default::default());
+        let bound = plan.bind_registry(&registry).expect("bind plan");
+        assert_eq!(bound.bindings.len(), bound.nodes.len());
+        assert!(bound
+            .bindings
+            .iter()
+            .any(|binding| binding.role == NodeType::RootCause && !binding.can_mutate_fs));
     }
 }
