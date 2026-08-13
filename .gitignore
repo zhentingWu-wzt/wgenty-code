@@ -26,6 +26,8 @@ jobs/
 *.so
 *.dylib
 .wgenty-code/traces/
+.wgenty-code/snapshots/
+target-cov/
 .vite/
 # Test
 /test-project/

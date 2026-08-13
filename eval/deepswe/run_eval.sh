@@ -41,6 +41,16 @@ else
     exit 1
 fi
 
+# Optional: forward an API_BASE_URL override (e.g. a local LLM gateway
+# reachable from the task container as http://host.docker.internal:8317).
+# wgenty_code_agent.py writes it into settings.json and allowlists it.
+if [ -n "${API_BASE_URL:-}" ]; then
+    API_ENV="${API_ENV:+$API_ENV }--ae API_BASE_URL=${API_BASE_URL}"
+fi
+
+# Optional: override the model name in job.yaml (default deepseek-v4-flash).
+MODEL_NAME="${MODEL_NAME:-deepseek-v4-flash}"
+
 # --- Check binary exists ---
 BINARY="$REPO_ROOT/wgenty-code-linux-amd64"
 if [ ! -f "$BINARY" ]; then
@@ -61,9 +71,12 @@ fi
 
 # --- Generate job.yaml with actual paths ---
 TMP_JOB="/tmp/wgenty-deepswe-job-$$.yaml"
+JOB_SUFFIX="$(printf '%s' "$MODEL_NAME" | tr -c 'a-zA-Z0-9' '-')"
 sed \
     -e "s|__WGENTY_BINARY__|$BINARY|g" \
     -e "s|__DEEPSWE_TASKS__|$TASKS_DIR|g" \
+    -e "s|job_name: wgenty-code-deepswe|job_name: wgenty-code-deepswe-$JOB_SUFFIX|g" \
+    -e "s|model_name: \"deepseek-v4-flash\"|model_name: \"$MODEL_NAME\"|g" \
     "$SCRIPT_DIR/job.yaml" > "$TMP_JOB"
 
 # --- Run ---
