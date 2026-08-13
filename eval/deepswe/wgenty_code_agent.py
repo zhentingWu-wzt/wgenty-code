@@ -11,10 +11,13 @@ Usage:
         --model deepseek-v4-pro --ae DEEPSEEK_API_KEY=sk-xxx
 """
 
+import base64
+import binascii
 import json
 import shlex
 import uuid
-from typing import Any, ClassVar
+from dataclasses import dataclass
+from typing import Any, ClassVar, Mapping
 
 from pier.agents.installed.base import (
     BaseInstalledAgent,
@@ -53,6 +56,239 @@ _PROVIDER_DOMAINS: dict[str, list[str]] = {
     "groq": ["api.groq.com"],
     "xai": ["api.x.ai"],
 }
+
+_REPOSITORY_MARKERS: tuple[str, ...] = (
+    "Cargo.toml",
+    "go.mod",
+    "pyproject.toml",
+    "pytest.ini",
+    "setup.cfg",
+    "tox.ini",
+    "package.json",
+)
+_PACKAGE_JSON_LIMIT = 65_536
+
+
+@dataclass(frozen=True)
+class ProjectProfile:
+    """Detected repository ecosystem and its safest test command."""
+
+    ecosystem: str
+    test_command: str | None
+    focused_test_hint: str
+    package_hint: str
+
+    @classmethod
+    def generic(cls) -> "ProjectProfile":
+        """Return the conservative profile for an unknown repository."""
+        return cls(
+            ecosystem="generic",
+            test_command=None,
+            focused_test_hint="",
+            package_hint="",
+        )
+
+
+def detect_project_profile(repository_metadata: Mapping[str, str]) -> ProjectProfile:
+    """Classify bounded repository metadata without filesystem access or errors."""
+    if "Cargo.toml" in repository_metadata:
+        return ProjectProfile(
+            "rust", "cargo test", "cargo test TestName", "Cargo.toml"
+        )
+    if "go.mod" in repository_metadata:
+        return ProjectProfile(
+            "go", "go test ./...", "go test ./path -run TestName", "go.mod"
+        )
+    for marker in ("pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini"):
+        if marker in repository_metadata:
+            return ProjectProfile(
+                "python", "pytest", "pytest path::test_name", marker
+            )
+    if "package.json" in repository_metadata:
+        try:
+            package = json.loads(repository_metadata["package.json"])
+        except (TypeError, json.JSONDecodeError):
+            return ProjectProfile(
+                "javascript",
+                None,
+                "npm test -- <runner-specific focused arguments>",
+                "package.json",
+            )
+        test_script = (
+            package.get("scripts", {}).get("test")
+            if isinstance(package, dict) and isinstance(package.get("scripts"), dict)
+            else None
+        )
+        test_command = (
+            "npm test --"
+            if isinstance(test_script, str) and test_script.strip()
+            else None
+        )
+        return ProjectProfile(
+            "javascript",
+            test_command,
+            "npm test -- <runner-specific focused arguments>",
+            "package.json",
+        )
+    return ProjectProfile.generic()
+
+
+def parse_repository_metadata(output: str | None) -> dict[str, str]:
+    """Parse the bounded marker protocol emitted inside the task container."""
+    metadata: dict[str, str] = {}
+    for line in (output or "").splitlines():
+        if line.startswith("marker:"):
+            marker = line.removeprefix("marker:")
+            if marker in _REPOSITORY_MARKERS:
+                metadata.setdefault(marker, "")
+            continue
+        if not line.startswith("content:package.json:"):
+            continue
+        encoded = line.removeprefix("content:package.json:")
+        try:
+            package_json = base64.b64decode(encoded, validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError):
+            continue
+        metadata["package.json"] = package_json
+    return metadata
+
+
+def repository_metadata_command() -> str:
+    """Build the read-only command that emits the bounded marker protocol."""
+    markers = " ".join(shlex.quote(marker) for marker in _REPOSITORY_MARKERS)
+    return (
+        f"for marker in {markers}; do\n"
+        "  if test -f \"$marker\"; then printf 'marker:%s\\n' \"$marker\"; fi\n"
+        "done\n"
+        "if test -f package.json; then\n"
+        "  printf 'content:package.json:'\n"
+        f"  head -c {_PACKAGE_JSON_LIMIT} package.json | base64 | tr -d '\\n'\n"
+        "  printf '\\n'\n"
+        "fi"
+    )
+
+
+def _focused_test_guidance(profile: ProjectProfile) -> str:
+    """Render safe ecosystem-specific focused-test guidance."""
+    if profile.ecosystem == "javascript" and not profile.test_command:
+        return (
+            "The detected package.json does not declare a usable test script. Inspect "
+            "package.json and project or CI guidance before choosing focused or broad "
+            "test commands; do not invent one."
+        )
+    if not profile.focused_test_hint:
+        return (
+            "Inspect repository and CI guidance before choosing a focused test command; "
+            "do not invent one."
+        )
+    if profile.ecosystem == "go":
+        condition = "only after identifying a concrete failing test and package"
+    elif profile.ecosystem == "javascript":
+        condition = "only after identifying the test runner's syntax and concrete test"
+    else:
+        condition = "only after identifying a concrete failing test"
+    return (
+        f"For focused testing, {condition}, specialize this template: "
+        f"`{profile.focused_test_hint}`."
+    )
+
+
+def render_deepswe_instructions(profile: ProjectProfile) -> str:
+    """Render repository-aware developer instructions for a DeepSWE trial."""
+    if profile.test_command:
+        final_verification = (
+            "Before finishing, run this repository's broad verification command exactly "
+            f"once and record its real outcome: `{profile.test_command}`."
+        )
+    else:
+        final_verification = (
+            "Before finishing, inspect the repository and CI guidance to select and run "
+            "the appropriate broad verification command; do not invent one."
+        )
+
+    marker_context = (
+        f"The repository profile was detected from `{profile.package_hint}`."
+        if profile.package_hint
+        else "No supported repository marker was detected."
+    )
+    focused_testing = _focused_test_guidance(profile)
+
+    return "\n".join(
+        (
+            "You are solving a software engineering task in an autonomous evaluation sandbox.",
+            marker_context,
+            "1. Read the task and repository guidance, then spend at most 5-15 rounds "
+            "locating the responsible code and existing tests before implementing promptly.",
+            "2. Do NOT clone external repositories or fetch external specs. Work with the "
+            "code and tests already in the repo.",
+            "3. Do NOT ask questions; make reasonable assumptions and proceed.",
+            "4. Use work-graph tools only for independent phases or changes spanning "
+            "multiple subsystems; do not add work-graph ceremony to a focused change.",
+            "5. After each meaningful change, run the most focused relevant test. "
+            f"{focused_testing}",
+            "6. When a test fails, extract the failing test and assertion, fix the "
+            "responsible behavior rather than expected-behavior tests, then rerun that "
+            "same focused test.",
+            "7. You must not claim tests pass without executing them.",
+            f"8. {final_verification}",
+            "9. Follow the project's existing coding style and conventions.",
+            "10. Commit all changes with git before finishing.",
+        )
+    )
+
+
+def render_fallback_agents_md(profile: ProjectProfile) -> str:
+    """Render profile-aware guidance for repositories without AGENTS.md."""
+    if profile.test_command:
+        testing_guidance = (
+            f"- Use the repository's broad verification command when appropriate: "
+            f"`{profile.test_command}`\n"
+        )
+    else:
+        testing_guidance = (
+            "- Inspect the repository and CI guidance to choose an appropriate test command; "
+            "do not invent one\n"
+        )
+
+    return (
+        "# AGENTS.md\n\n"
+        "## Testing\n"
+        "- Run the most focused relevant test after meaningful changes\n"
+        f"- {_focused_test_guidance(profile)}\n"
+        f"{testing_guidance}\n"
+        "## Code Style\n"
+        "- Follow the existing coding style in the repository\n"
+        "- Use the same formatting and indentation as surrounding code\n"
+        "- Do not add unnecessary dependencies\n\n"
+        "## Workflow\n"
+        "- Read the task instruction carefully before starting\n"
+        "- Make incremental changes and test after each one\n"
+        "- Do not modify test files that define expected behavior (test specs)\n"
+        "- Commit all changes when done\n"
+    )
+
+
+def build_eval_settings(
+    model_name: str, base_url: str, profile: ProjectProfile
+) -> dict[str, Any]:
+    """Build the wgenty-code settings used for a DeepSWE evaluation trial."""
+    return {
+        "models": {
+            "main": {
+                "name": model_name,
+                "base_url": base_url,
+            },
+            "transport": {
+                "max_tokens": 16384,
+                "timeout": 300,
+                "streaming": True,
+                "beta_headers": [],
+            },
+        },
+        "prompt": {
+            "developer_instructions": render_deepswe_instructions(profile),
+        },
+    }
 
 
 def _infer_domains(model_name: str) -> list[str]:
@@ -188,40 +424,31 @@ class WgentyCodeAgent(BaseInstalledAgent):
             or _infer_base_url(model_name)
         )
 
-        # Build a minimal settings.json so wgenty-code uses the right model.
-        settings = {
-            "models": {
-                "main": {
-                    "name": model_name,
-                    "base_url": base_url,
-                },
-                "transport": {
-                    "max_tokens": 16384,
-                    "timeout": 300,
-                    "streaming": True,
-                    "beta_headers": [],
-                },
-            },
-            "prompt": {
-                "developer_instructions": (
-                    "You are solving a software engineering task in an autonomous "
-                    "evaluation sandbox. Work efficiently:\n"
-                    "1. Explore the codebase briefly (at most 20-30 rounds), then "
-                    "start implementing changes immediately.\n"
-                    "2. Do NOT clone external repositories or fetch external specs. "
-                    "Work with the code and tests already in the repo.\n"
-                    "3. Do NOT ask questions - make reasonable assumptions and proceed.\n"
-                    "4. After each significant change, run the project's test suite "
-                    "to check for regressions.\n"
-                    "5. Update test snapshots if the expected behavior changes.\n"
-                    "6. Follow the project's existing coding style and conventions.\n"
-                    "7. Commit all changes with git before finishing."
-                ),
-            },
-        }
-        settings_json = json.dumps(settings, indent=2)
-
         env = self.build_process_env({})
+
+        # Collect a bounded marker set inside the task container. Classification
+        # remains pure and never probes the Pier host filesystem.
+        try:
+            metadata_result = await self.exec_as_agent(
+                environment,
+                command=repository_metadata_command(),
+                env=env,
+                cwd="/app",
+                timeout_sec=10,
+            )
+        except RuntimeError as exc:
+            logger.debug(
+                "wgenty-code agent: repository metadata probe failed; using generic profile: %s",
+                exc,
+            )
+            repository_metadata: dict[str, str] = {}
+        else:
+            repository_metadata = parse_repository_metadata(metadata_result.stdout)
+        profile = detect_project_profile(repository_metadata)
+
+        # Build a minimal settings.json so wgenty-code uses the right model.
+        settings = build_eval_settings(model_name, base_url, profile)
+        settings_json = json.dumps(settings, indent=2)
 
         # --- Step 1: write instruction to a temp file (avoids ARG_MAX) ---
         task_marker = f"WGENTY_TASK_{uuid.uuid4().hex[:8]}"
@@ -275,22 +502,7 @@ class WgentyCodeAgent(BaseInstalledAgent):
         # Provides project-level guidance (Layer 9 in prompt assembly) so the
         # agent knows the test framework, coding conventions, etc.  Only
         # writes if the repo doesn't already have one.
-        agents_md = (
-            "# AGENTS.md\n\n"
-            "## Testing\n"
-            "- Run tests with: `npx vitest run` (or the project's existing test command)\n"
-            "- Update test snapshots with: `npx vitest run -u` when behavior changes are intentional\n"
-            "- Always run the full test suite after making changes\n\n"
-            "## Code Style\n"
-            "- Follow the existing coding style in the repository\n"
-            "- Use the same formatting and indentation as surrounding code\n"
-            "- Do not add unnecessary dependencies\n\n"
-            "## Workflow\n"
-            "- Read the task instruction carefully before starting\n"
-            "- Make incremental changes and test after each one\n"
-            "- Do not modify test files that define expected behavior (test specs)\n"
-            "- Commit all changes when done\n"
-        )
+        agents_md = render_fallback_agents_md(profile)
         agents_md_cmd = (
             "test -f AGENTS.md || "
             f"cat > AGENTS.md << 'WGENTY_AGENTS_EOF'\n{agents_md}\nWGENTY_AGENTS_EOF"
