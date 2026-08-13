@@ -497,11 +497,22 @@ mod cwd_display_tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn compact_cwd_display_is_non_empty() {
+        // compact_cwd_display reads the process cwd, a global mutable state.
+        // Run serially and pin the cwd to a known-good temp dir so other
+        // tests that (transiently) point the cwd at a dropped TempDir cannot
+        // make current_dir() fail here and yield an empty string.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
         let cwd = compact_cwd_display();
         assert!(!cwd.is_empty());
         // Should never contain Windows backslashes after normalization.
         assert!(!cwd.contains('\\'));
+
+        std::env::set_current_dir(prev).unwrap();
     }
 }
 
