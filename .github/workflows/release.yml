@@ -98,6 +98,20 @@ jobs:
       - name: Rename artifact
         run: cp target/${{ matrix.target }}/release/${{ matrix.artifact }} ${{ matrix.asset_name }}
 
+      - name: Ensure Release exists
+        # The build matrix uploads from 6 concurrent jobs; whichever job
+        # creates the Release first wins and the others can hit a 422
+        # race in softprops/action-gh-release. Pre-create it idempotently
+        # (|| true for the already-exists case) so softprops only does
+        # asset upload, which it handles gracefully on existing releases.
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --verify-tag \
+            --generate-notes || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
@@ -150,9 +164,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Native-architecture Tauri builds only (bundlers like dmg/AppImage
-          # cannot cross-compile). Daemon externalBin is staged per target-triple.
-          - os: macos-13
+          # Intel macOS: macos-13 was retired from GitHub-hosted runners, and
+          # all remaining public macOS runners are Apple Silicon. Tauri 2
+          # cross-compiles x86_64 bundles on arm64 hosts (hdiutil/dmg is
+          # architecture-independent), same pattern as the build job.
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact_ext: ""
           - os: macos-14
@@ -220,12 +236,15 @@ jobs:
         shell: bash
         run: |
           cd web
-          # Do NOT use `npm ci` here. It can silently skip platform-specific
-          # optional deps when the lockfile was generated on another OS
-          # (npm/cli#4828) — `npm ci` exits 0 but the rollup native binding
-          # (e.g. @rollup/rollup-win32-x64-msvc) is missing, so a `||` fallback
-          # never triggers. `npm install` still honors the committed lockfile
-          # for version pins while correctly resolving per-platform bindings.
+          # npm/cli#4828: a lockfile generated on one platform (e.g.
+          # darwin-arm64) only records node_modules entries for that
+          # platform's rollup native binding. `npm ci` exits 0 while
+          # skipping the missing binding, and `npm install` honors the
+          # existing lockfile resolution, so neither installs the binding
+          # for the current CI platform. Deleting the lockfile forces npm
+          # to re-resolve optionalDependencies for this runner's OS/arch.
+          rm -f package-lock.json
+          rm -rf node_modules
           npm install --no-audit --no-fund
           npm run build
 
@@ -254,6 +273,17 @@ jobs:
           cd desktop/src-tauri
           # npx pulls the CLI without touching the repo (no package.json here).
           npx --yes @tauri-apps/cli@2 build --target ${{ matrix.target }}
+
+      - name: Ensure Release exists
+        # See build job: idempotently pre-create the Release so the
+        # concurrent desktop matrix uploads only do asset upload.
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --verify-tag \
+            --generate-notes || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload bundles to Release
         uses: softprops/action-gh-release@v2
