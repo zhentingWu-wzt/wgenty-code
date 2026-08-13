@@ -3151,7 +3151,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut settings = Settings::default();
         settings.storage.working_dir = temp.path().to_path_buf();
-        let state = Arc::new(DaemonState::new(AppState::new(settings)).await);
+        let mut state = DaemonState::new(AppState::new(settings)).await;
+        // Isolate the global memory pool: the default manager writes global
+        // memories to the real `~/.wgenty-code/memory/` regardless of
+        // working_dir, so swap in a test manager backed by the tempdir.
+        state.memory_manager = Arc::new(crate::context::MemoryManager::new_for_test(
+            temp.path().to_path_buf(),
+            temp.path().join("global-memory"),
+        ));
+        let state = Arc::new(state);
 
         // Seed: one high-importance project memory, one low project, one global.
         let mut hi = MemoryEntry::new(MemoryType::Knowledge, "important project fact");
