@@ -37,7 +37,7 @@ impl Tool for GitOperationsTool {
     }
 
     fn description(&self) -> &str {
-        "Execute Git version control operations. Remote ops (push/pull) run non-interactively and never prompt on the TTY; on missing credentials the tool returns error code git_auth_required — ask the user via ask_user_question how to fix auth, do not retry blindly."
+        "Execute Git version control operations. The `operation` field selects the git subcommand (status/add/commit/push/pull/log/diff/branch/checkout/worktree_*); `args` must contain ONLY subcommand-specific flags — never repeat the subcommand name or the remote name (e.g. for `git push --delete <branch>` pass operation=\"push\", branch=\"<branch>\", args=[\"--delete\"]; the remote is taken from the `remote` field, default \"origin\"). Remote ops (push/pull) run non-interactively and never prompt on the TTY; on missing credentials the tool returns error code git_auth_required — ask the user via ask_user_question how to fix auth, do not retry blindly."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -62,7 +62,7 @@ impl Tool for GitOperationsTool {
                     "items": {
                         "type": "string"
                     },
-                    "description": "Additional arguments for the git command"
+                    "description": "Subcommand-specific flags only (e.g. \"--delete\", \"-D\", \"--force\"). Do NOT include the operation/subcommand name or the remote name."
                 },
                 "message": {
                     "type": "string",
