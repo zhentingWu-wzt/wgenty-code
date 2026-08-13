@@ -164,9 +164,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Native-architecture Tauri builds only (bundlers like dmg/AppImage
-          # cannot cross-compile). Daemon externalBin is staged per target-triple.
-          - os: macos-13
+          # Intel macOS: macos-13 was retired from GitHub-hosted runners, and
+          # all remaining public macOS runners are Apple Silicon. Tauri 2
+          # cross-compiles x86_64 bundles on arm64 hosts (hdiutil/dmg is
+          # architecture-independent), same pattern as the build job.
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact_ext: ""
           - os: macos-14
