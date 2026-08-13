@@ -5,6 +5,7 @@ mod event;
 mod event_key;
 mod input;
 mod render;
+mod server_side;
 pub mod turn;
 pub mod types;
 
@@ -115,6 +116,17 @@ pub struct App {
     /// observe this under the save lock and skip so they cannot overwrite the
     /// final snapshot with a UI clone taken earlier in the session.
     session_exit_saved: Arc<std::sync::atomic::AtomicBool>,
+    /// Sticky for the current session once the daemon can extend its history
+    /// independently (server-side runs or background continuations). Generic
+    /// TUI saves become read-only observers after this flips to true.
+    ///
+    /// The flag is shared with already-spawned save tasks so they can recheck
+    /// ownership after acquiring `session_save_lock`.
+    daemon_owns_session_history: Arc<std::sync::atomic::AtomicBool>,
+    /// True only for the locally minted startup id until it is first persisted.
+    /// Existing/daemon-created sessions must never be recreated from a stale
+    /// TUI history snapshot when a server-side run starts.
+    session_needs_initial_upsert: Arc<std::sync::atomic::AtomicBool>,
     /// Pending user inputs queued while a Turn is running.
     pub pending_inputs: VecDeque<PendingInput>,
     /// Handle for the currently executing Turn (None when idle).
@@ -157,6 +169,24 @@ pub struct App {
     /// Previous mode before entering PlanMode via toggle (Ctrl+P or /plan).
     /// Used to restore the correct mode when toggling back.
     pub previous_mode: Option<AgentMode>,
+    /// When true, Submit triggers a server-side daemon run (POST /run) and
+    /// the SSE reader renders events, instead of the client-side loop
+    /// (chat_stream + DaemonToolPort). Toggled via `/server-side`.
+    pub server_side_loop: bool,
+    /// True while a daemon-owned server-side run is active. The client-side
+    /// handle remains empty for those runs because aborting the submit request
+    /// cannot cancel work the daemon has already accepted.
+    server_side_turn_active: bool,
+    /// Join handle of the daemon session-event SSE reader (server-side mode).
+    /// Recreated on each server-side run and on session switch so the
+    /// subscription always follows the current session id (abort + respawn).
+    session_event_reader: Option<tokio::task::JoinHandle<()>>,
+    session_event_last_seq: Arc<std::sync::atomic::AtomicU64>,
+    /// Join handle of the daemon subagent trace SSE reader (server-side mode).
+    trace_event_reader: Option<tokio::task::JoinHandle<()>>,
+    /// Join handle of the global-events reader, recreated when the active
+    /// session changes so background-result filtering remains session-scoped.
+    global_event_reader: Option<tokio::task::JoinHandle<()>>,
     /// Pre-assembled system messages (layered instructions from PromptAssembler).
     /// Cloned into each new AgentLoop so every Turn inherits the same base instructions.
     pub assembled_instructions: AssembledInstructions,
@@ -484,6 +514,8 @@ impl App {
             conversation_history,
             session_save_lock: Arc::new(TokioMutex::new(())),
             session_exit_saved: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            daemon_owns_session_history: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            session_needs_initial_upsert: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             assembled_instructions: assembled,
             pending_inputs: VecDeque::new(),
             current_turn_handle: None,
@@ -506,6 +538,12 @@ impl App {
                 AgentMode::Normal
             },
             previous_mode: None,
+            server_side_loop: false,
+            server_side_turn_active: false,
+            session_event_reader: None,
+            session_event_last_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            trace_event_reader: None,
+            global_event_reader: None,
             event_tx,
             event_rx,
             should_quit: false,
@@ -573,10 +611,133 @@ impl App {
         self.event_tx.clone()
     }
 
+    /// (Re)create the server-side session-event SSE reader for the current
+    /// session id, aborting any previous reader. Pass `ready` to be signalled
+    /// once the subscription is established — used to gate `POST /run` so the
+    /// run's live-only events are not missed.
+    fn respawn_session_event_reader(&mut self, ready: Option<tokio::sync::oneshot::Sender<()>>) {
+        if let Some(handle) = self.session_event_reader.take() {
+            handle.abort();
+        }
+        let client = self.daemon_client.clone();
+        let sid = self.session_id.clone();
+        let tx = self.event_tx.clone();
+        let shutdown = self.shutdown_flag.clone();
+        self.session_event_reader = Some(crate::tui::app::server_side::spawn_session_event_reader(
+            client,
+            sid,
+            tx,
+            shutdown,
+            ready,
+            self.session_event_last_seq.clone(),
+        ));
+    }
+
+    /// (Re)create the server-side subagent trace SSE reader for the current
+    /// session id, aborting any previous reader.
+    fn respawn_trace_event_reader(&mut self) {
+        if let Some(handle) = self.trace_event_reader.take() {
+            handle.abort();
+        }
+        let client = self.daemon_client.clone();
+        let sid = self.session_id.clone();
+        let tx = self.event_tx.clone();
+        let shutdown = self.shutdown_flag.clone();
+        self.trace_event_reader = Some(crate::tui::app::server_side::spawn_trace_event_reader(
+            client, sid, tx, shutdown,
+        ));
+    }
+
+    /// Adopt a different session and rebind every session-scoped delivery
+    /// mechanism to it. Both `/clear` and the session picker use this path so
+    /// deduplication state and SSE filters cannot retain the previous session.
+    fn adopt_active_session(&mut self, id: String, name: String) -> bool {
+        if self.has_running_turn() || !self.pending_inputs.is_empty() {
+            self.committed_messages.push(UIMessage {
+                role: MessageRole::System,
+                content: "Finish or cancel the active turn before switching sessions.".to_string(),
+                tool_name: None,
+                tool_args: None,
+                content_collapsed: false,
+                tool_collapsed: false,
+                tool_running: false,
+                diff_data: None,
+                tool_metadata: None,
+            });
+            return false;
+        }
+        self.adopt_session_after_reset(id, name);
+        true
+    }
+
+    /// Complete an explicit reset protocol such as `/clear`. The caller has
+    /// already cancelled the old run and flushed its session-owned queue, so
+    /// the interactive busy guard does not apply.
+    fn adopt_session_after_reset(&mut self, id: String, name: String) {
+        self.session_id = id.clone();
+        self.session_name = name;
+        self.server_side_turn_active = false;
+        self.session_event_last_seq = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        self.respawn_session_event_reader(None);
+        self.respawn_trace_event_reader();
+        self.respawn_global_event_reader();
+        self.session_exit_saved
+            .store(false, std::sync::atomic::Ordering::Release);
+        // Replace rather than clear the old Arc: save tasks spawned for the
+        // previous session must keep observing its sticky ownership fence.
+        self.daemon_owns_session_history = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.session_needs_initial_upsert = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let client = self.daemon_client.clone();
+        let event_tx = self.event_tx.clone();
+        tokio::spawn(async move {
+            match client.reset_agent_generation(&id).await {
+                Ok(generation) => {
+                    let _ = event_tx.send(AppEvent::AgentGenerationReset { generation });
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "reset_agent_generation failed; retaining old generation"
+                    );
+                    let _ = event_tx.send(AppEvent::AgentGenerationReset {
+                        generation: u64::MAX,
+                    });
+                }
+            }
+        });
+    }
+
+    /// (Re)create the global-event reader for the active session. Todos stay
+    /// global, while background results are filtered to this session.
+    fn respawn_global_event_reader(&mut self) {
+        if let Some(handle) = self.global_event_reader.take() {
+            handle.abort();
+        }
+        let client = self.daemon_client.clone();
+        let session_id = self.session_id.clone();
+        let event_tx = self.event_tx.clone();
+        let shutdown = self.shutdown_flag.clone();
+        self.global_event_reader = Some(crate::tui::app::server_side::spawn_global_event_reader(
+            client, session_id, event_tx, shutdown,
+        ));
+    }
+
     /// Max time to wait for the final session flush on exit.
     /// Local daemon + JSON write is typically tens of ms; 3s covers a
     /// momentarily busy daemon without making Ctrl+C feel stuck.
     const EXIT_SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+    /// Fence generic TUI persistence once history can change in the daemon.
+    pub(super) fn mark_daemon_owned_session_history(&self) {
+        self.daemon_owns_session_history
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn daemon_owns_session_history(&self) -> bool {
+        self.daemon_owns_session_history
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
 
     /// Snapshot current history + UI track and persist under `session_save_lock`.
     ///
@@ -584,6 +745,13 @@ impl App {
     /// any earlier fire-and-forget save still waiting on the lock drops its
     /// stale UI clone instead of overwriting the final snapshot.
     pub(super) async fn save_session_snapshot(&self) {
+        if self.daemon_owns_session_history() {
+            tracing::debug!(
+                session_id = %self.session_id,
+                "skipping session save; daemon owns session history"
+            );
+            return;
+        }
         // Skip persisting sessions with no chat content - avoids leaving
         // unused "New Session" entries in the panel when the REPL quits
         // before any message is sent (see the startup comment in
@@ -606,8 +774,17 @@ impl App {
             .collect();
         let lock = self.session_save_lock.clone();
         let exit_saved = self.session_exit_saved.clone();
+        let daemon_owns_history = self.daemon_owns_session_history.clone();
+        let needs_initial_upsert = self.session_needs_initial_upsert.clone();
 
         let _guard = lock.lock().await;
+        if daemon_owns_history.load(std::sync::atomic::Ordering::Acquire) {
+            tracing::debug!(
+                session_id = %id,
+                "skipping session save after lock; daemon owns session history"
+            );
+            return;
+        }
         // Sanitize under the save lock so interrupt/exit never persist unpaired
         // tool_calls (idempotent when history is already well-formed).
         let h = {
@@ -617,6 +794,7 @@ impl App {
         };
         match client.save_session(&id, &name, &h, &ui_messages).await {
             Ok(()) => {
+                needs_initial_upsert.store(false, std::sync::atomic::Ordering::Release);
                 exit_saved.store(true, std::sync::atomic::Ordering::Release);
             }
             Err(e) => {
@@ -639,6 +817,13 @@ impl App {
     /// If exit flush *timed out* without setting the flag, an in-flight spawn
     /// still writes (best-effort) rather than dropping the only remaining save.
     pub(super) fn spawn_save_session(&self) {
+        if self.daemon_owns_session_history() {
+            tracing::debug!(
+                session_id = %self.session_id,
+                "skipping spawned session save; daemon owns session history"
+            );
+            return;
+        }
         // Skip persisting sessions with no chat content - see
         // save_session_snapshot for rationale.
         if self.committed_messages.is_empty() {
@@ -659,8 +844,17 @@ impl App {
             .collect();
         let lock = self.session_save_lock.clone();
         let exit_saved = self.session_exit_saved.clone();
+        let daemon_owns_history = self.daemon_owns_session_history.clone();
+        let needs_initial_upsert = self.session_needs_initial_upsert.clone();
         tokio::spawn(async move {
             let _guard = lock.lock().await;
+            if daemon_owns_history.load(std::sync::atomic::Ordering::Acquire) {
+                tracing::debug!(
+                    session_id = %id,
+                    "skipping spawned session save after lock; daemon owns session history"
+                );
+                return;
+            }
             if exit_saved.load(std::sync::atomic::Ordering::Acquire) {
                 tracing::debug!(
                     session_id = %id,
@@ -680,6 +874,8 @@ impl App {
                     error = %e,
                     "Failed to save session to daemon"
                 );
+            } else {
+                needs_initial_upsert.store(false, std::sync::atomic::Ordering::Release);
             }
         });
     }
@@ -727,6 +923,20 @@ impl App {
                 }
             }
         });
+
+        // Plan/todos panel: subscribe to the daemon global event stream
+        // (`GET /api/v1/events`, `todos_changed` snapshots) with a 500ms
+        // `GET /todos` polling fallback while the subscription is down.
+        // Session-independent, so it is spawned once here (unlike the
+        // server-side SSE readers below, which follow the session id).
+        self.respawn_global_event_reader();
+
+        // Server-side SSE readers (session events + subagent trace) are NOT
+        // spawned at startup: the session id is a locally generated UUID that
+        // the daemon has not seen yet, so an eager `GET /sessions/:id/events`
+        // would 404 (surfaced as a spurious "lost connection" error). They are
+        // created on demand by `start_server_side_run` and re-pointed at the
+        // current session on `/clear` (see `respawn_*_event_reader`).
 
         // Render the first frame IMMEDIATELY so the user sees the UI before any
         // startup background work runs. Cross-session memory recall is spawned
@@ -1080,6 +1290,8 @@ pub use super::util::start_daemon;
 pub use super::util::tool_label;
 /// Truncate a user message to a short session name (max ~50 chars, no newlines).
 pub use super::util::truncate_session_name;
+#[cfg(feature = "daemon")]
+pub use super::util::StartDaemonOutcome;
 
 /// Format a MemoryType variant as a short human-readable string.
 fn format_memory_type(mt: &crate::context::MemoryType) -> &'static str {

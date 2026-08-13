@@ -1,8 +1,10 @@
-//! Permissions Module — tool permission governance and sandboxing.
+//! Permissions Module - tool permission governance and sandboxing.
 //!
 //! Corresponds to the harness permission mechanism: sandboxing, approval
 //! workflows, and trust boundaries between the agent and external systems.
 
+pub mod mode_store;
 pub mod policy;
 
+pub use mode_store::{PermissionModeEntry, PermissionModeStore};
 pub use policy::{PermissionRequest, PolicyDecision, ToolPermissionPolicy};

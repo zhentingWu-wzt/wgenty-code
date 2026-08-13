@@ -245,6 +245,46 @@ mod win {
     }
 }
 
+/// Run availability checks and return diagnostic results.
+pub fn diagnostic_checks() -> Vec<crate::sandbox::DiagnosticIssue> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        let job_ok = !handle.is_null() && handle != INVALID_HANDLE_VALUE;
+        if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
+            unsafe { CloseHandle(handle) };
+        }
+
+        vec![crate::sandbox::DiagnosticIssue {
+            check: "CreateJobObjectW".into(),
+            passed: job_ok,
+            detail: if job_ok {
+                "Windows Job Objects API is available".into()
+            } else {
+                "CreateJobObjectW failed — Job Objects unavailable on this system".into()
+            },
+            fix_suggestion: if !job_ok {
+                Some("Job Objects require Windows 8+/Server 2012+. \
+                         Not available on restricted Server Core or certain container configurations."
+                        .into())
+            } else {
+                None
+            },
+        }]
+    }
+    #[cfg(not(windows))]
+    {
+        vec![crate::sandbox::DiagnosticIssue {
+            check: "platform".into(),
+            passed: false,
+            detail: "Not running on Windows".into(),
+            fix_suggestion: None,
+        }]
+    }
+}
+
 impl SandboxBackend for WindowsBackend {
     fn name(&self) -> &str {
         if cfg!(windows) {

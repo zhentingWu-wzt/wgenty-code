@@ -40,9 +40,9 @@ docs(readme): update installation instructions
 
 ## Branch & PR Workflow
 
-1. Create a feature branch from `develop`: `feature/<description>`, `fix/<description>`, `refactor/<description>`
+1. Create a feature branch from `dev`: `feature/<description>`, `fix/<description>`, `refactor/<description>`
 2. Make changes, commit following Conventional Commits
-3. Open a PR to `develop` with a Conventional Commits title
+3. Open a PR to `dev` with a Conventional Commits title
 4. Ensure CI passes (check, test, fmt, clippy)
 
 ### PR Checklist

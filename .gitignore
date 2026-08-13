@@ -1,6 +1,9 @@
 # Rust
 /target/
 *.pdb
+# Tauri desktop spike build artifacts
+/desktop/src-tauri/target/
+/desktop/src-tauri/gen/
 
 # IDE
 .vscode/
@@ -15,9 +18,15 @@ Thumbs.db
 # Build artifacts
 *.exe
 *.dll
+wgenty-code-linux-*
+
+# Eval artifacts
+eval/deepswe/__pycache__/
+jobs/
 *.so
 *.dylib
 .wgenty-code/traces/
+.vite/
 # Test
 /test-project/
 *.json.bak
@@ -63,6 +72,8 @@ openspec/**/.comet/trajectory.jsonl
 openspec/**/.comet/skill-snapshots/
 
 # OpenSpec development workflow artifacts
+# Comet local workspace pointer (which change is currently selected) — not shared
+.comet/
 
 # Benchmark output
 benchmark_results/
@@ -72,3 +83,9 @@ benchmark_results/
 # Install scripts (self-contained, don't ignore)
 # install.ps1 and install-unix.sh are part of the repo
 .wgenty-code/traces/s-nested.jsonl
+
+# Tauri dev test artifacts (sessions created during local testing)
+/desktop/src-tauri/.wgenty-code/
+
+# pnpm store (web/ dev dependency cache)
+.pnpm-store/

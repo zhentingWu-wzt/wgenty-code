@@ -99,6 +99,17 @@ pub struct MemoryManager {
     last_injected_ids: Arc<RwLock<HashSet<String>>>,
 }
 
+/// Resolves which [`MemoryManager`] a tool invocation should write to.
+///
+/// Single-project callers never see this: tools built with a fixed manager
+/// keep using it. The daemon's multi-project `MemoryRouter` implements it to
+/// route by the invocation's workdir (a session bound to a worktree writes
+/// to its project's pool, not the worktree's).
+#[async_trait::async_trait]
+pub trait MemoryResolver: Send + Sync {
+    async fn resolve(&self, workdir: Option<&std::path::Path>) -> Arc<MemoryManager>;
+}
+
 impl MemoryManager {
     /// Create project and global Storage instances with fallback.
     ///
@@ -1926,12 +1937,14 @@ mod tests {
         )
         .await;
         assert!(
-            recall.contains("bug fixed"),
-            "new content should be recallable: {recall}"
+            recall.text.contains("bug fixed"),
+            "new content should be recallable: {}",
+            recall.text
         );
         assert!(
-            !recall.contains("bug exists"),
-            "superseded old content must be excluded from recall: {recall}"
+            !recall.text.contains("bug exists"),
+            "superseded old content must be excluded from recall: {}",
+            recall.text
         );
     }
 

@@ -5,15 +5,34 @@
 
 use crate::api::ChatMessage;
 use crate::context::{MemoryManager, MemoryType, RetrievalMode};
+use serde::Serialize;
 
 /// Stateless injector that searches cross-session memories and prepends
 /// relevant context to a user message.
 pub struct MemoryContextInjector;
 
+/// Structured metadata for a single recalled memory — used by inspector
+/// panels to show what was injected without re-parsing the text block.
+#[derive(Debug, Clone, Serialize)]
+pub struct RecalledMemory {
+    pub scope: String,
+    pub importance: f32,
+    pub score: Option<f32>,
+    pub memory_type: String,
+    pub content_preview: String,
+}
+
+/// Result of a recall call: the formatted text block (for prompt injection)
+/// plus structured metadata (for inspector display).
+pub struct RecallResult {
+    pub text: String,
+    pub memories: Vec<RecalledMemory>,
+}
+
 impl MemoryContextInjector {
     /// Extract keywords from user input, search relevant memories via TF-IDF,
     /// and return a formatted `<memory-context>` block (or empty string if no
-    /// relevant memories were found).
+    /// relevant memories were found) plus structured metadata for each hit.
     ///
     /// `explore_draw` is a test hook: `None` draws Bernoulli(`exploration_epsilon`);
     /// `Some(true/false)` forces the exploration branch without RNG.
@@ -23,12 +42,15 @@ impl MemoryContextInjector {
         top_n: usize,
         threshold: f64,
         explore_draw: Option<bool>,
-    ) -> String {
+    ) -> RecallResult {
         let keywords = extract_keywords(user_input);
 
         // Don't trigger on very short / empty messages.
         if keywords.len() < 2 {
-            return String::new();
+            return RecallResult {
+                text: String::new(),
+                memories: vec![],
+            };
         }
 
         let query = keywords.join(" ");
@@ -53,7 +75,10 @@ impl MemoryContextInjector {
         let mut top: Vec<_> = scored.into_iter().take(top_n).collect();
 
         if top.is_empty() {
-            return String::new();
+            return RecallResult {
+                text: String::new(),
+                memories: vec![],
+            };
         }
 
         // Optional ε-greedy exploration: replace lowest-ranked injected slot
@@ -70,6 +95,7 @@ impl MemoryContextInjector {
         tracing::info!(count = top.len(), "per-turn memory recall triggered");
 
         let mut block = String::from("<memory-context>\n");
+        let mut memories = Vec::with_capacity(top.len());
         for (m, eff) in &top {
             block.push_str(&format!(
                 "- [{}] {} (importance: {:.1})\n",
@@ -77,10 +103,20 @@ impl MemoryContextInjector {
                 m.content,
                 eff
             ));
+            memories.push(RecalledMemory {
+                scope: String::new(), // origin not available on MemoryEntry
+                importance: *eff,
+                score: None,
+                memory_type: format_memory_type(&m.memory_type).to_string(),
+                content_preview: m.content.chars().take(200).collect(),
+            });
         }
         block.push_str("</memory-context>");
 
-        block
+        RecallResult {
+            text: block,
+            memories,
+        }
     }
 
     /// Format global memories into lines for the `<global-memory>` system
@@ -128,8 +164,8 @@ impl MemoryContextInjector {
         top_n: usize,
         threshold: f64,
     ) {
-        let memory_block = Self::recall(user_input, manager, top_n, threshold, None).await;
-        if memory_block.is_empty() {
+        let recall_result = Self::recall(user_input, manager, top_n, threshold, None).await;
+        if recall_result.text.is_empty() {
             return;
         }
 
@@ -137,7 +173,7 @@ impl MemoryContextInjector {
         for msg in messages.iter_mut() {
             if msg.role == "user" {
                 let original = msg.content.take().unwrap_or_default();
-                msg.content = Some(format!("{}\n\n{}", memory_block, original));
+                msg.content = Some(format!("{}\n\n{}", recall_result.text, original));
                 return;
             }
         }
@@ -310,7 +346,10 @@ mod tests {
         mm.load().await.unwrap();
 
         let result = MemoryContextInjector::recall("", &mm, 5, 0.5, None).await;
-        assert!(result.is_empty(), "empty input should produce empty recall");
+        assert!(
+            result.text.is_empty(),
+            "empty input should produce empty recall"
+        );
     }
 
     #[tokio::test]
@@ -322,7 +361,7 @@ mod tests {
         let result =
             MemoryContextInjector::recall("completely unrelated query", &mm, 5, 0.5, None).await;
         assert!(
-            result.is_empty(),
+            result.text.is_empty(),
             "query with no matches should produce empty recall"
         );
     }
@@ -336,31 +375,31 @@ mod tests {
 
         // Should find the two high-importance rust/tokio memories, not the low-importance python one
         assert!(
-            !result.is_empty(),
+            !result.text.is_empty(),
             "should find matching memories for 'rust async programming'"
         );
         assert!(
-            result.contains("<memory-context>"),
+            result.text.contains("<memory-context>"),
             "result should contain <memory-context> block: {}",
-            result
+            result.text
         );
         assert!(
-            result.contains("</memory-context>"),
+            result.text.contains("</memory-context>"),
             "result should close </memory-context> block"
         );
         // Should include the high-importance knowledge entry
         assert!(
-            result.contains("Rust async programming patterns"),
+            result.text.contains("Rust async programming patterns"),
             "should include the rust knowledge entry"
         );
         // Should include the decision entry
         assert!(
-            result.contains("Use tokio for async runtime"),
+            result.text.contains("Use tokio for async runtime"),
             "should include the tokio decision entry"
         );
         // Should NOT include the low-importance python entry (importance 0.3 < threshold 0.5)
         assert!(
-            !result.contains("Python is better"),
+            !result.text.contains("Python is better"),
             "should NOT include low-importance (< threshold) entry"
         );
     }
@@ -389,9 +428,10 @@ mod tests {
         let result =
             MemoryContextInjector::recall("rust programming language", &mm, 2, 0.5, None).await;
 
-        assert!(!result.is_empty());
+        assert!(!result.text.is_empty());
         // Count lines in the result (minus the <memory-context> wrapper lines)
         let body_lines: Vec<&str> = result
+            .text
             .lines()
             .filter(|l| {
                 !l.contains("<memory-context>")
@@ -414,9 +454,9 @@ mod tests {
         // With threshold 0.85, only the 0.9 importance entry should pass
         let result =
             MemoryContextInjector::recall("rust async programming", &mm, 5, 0.85, None).await;
-        assert!(result.contains("Rust async programming patterns"));
+        assert!(result.text.contains("Rust async programming patterns"));
         assert!(
-            !result.contains("Use tokio"),
+            !result.text.contains("Use tokio"),
             "0.8 < 0.85 threshold, should be excluded"
         );
     }
@@ -450,12 +490,14 @@ mod tests {
                 .await;
 
         assert!(
-            result.contains("patterns live"),
-            "live memory should appear in recall: {result}"
+            result.text.contains("patterns live"),
+            "live memory should appear in recall: {}",
+            result.text
         );
         assert!(
-            !result.contains("old superseded"),
-            "superseded memory must not appear in recall block: {result}"
+            !result.text.contains("old superseded"),
+            "superseded memory must not appear in recall block: {}",
+            result.text
         );
     }
 
@@ -480,12 +522,14 @@ mod tests {
                 .await;
         // One Knowledge half-life → effective ≈ 0.9 * 0.5 = 0.45 → "{:.1}" = "0.5" or "0.4".
         assert!(
-            result.contains("(importance: 0.4)") || result.contains("(importance: 0.5)"),
-            "recall should print effective (~0.45), not raw 0.9: {result}"
+            result.text.contains("(importance: 0.4)") || result.text.contains("(importance: 0.5)"),
+            "recall should print effective (~0.45), not raw 0.9: {}",
+            result.text
         );
         assert!(
-            !result.contains("(importance: 0.9)"),
-            "must not print raw base importance when decayed: {result}"
+            !result.text.contains("(importance: 0.9)"),
+            "must not print raw base importance when decayed: {}",
+            result.text
         );
     }
 
@@ -508,8 +552,9 @@ mod tests {
             MemoryContextInjector::recall("rust async programming recall count", &mm, 5, 0.5, None)
                 .await;
         assert!(
-            block.contains("recall count probe"),
-            "memory must be injected so recall_count can bump: {block}"
+            block.text.contains("recall count probe"),
+            "memory must be injected so recall_count can bump: {}",
+            block.text
         );
 
         let in_memory = mm
@@ -579,16 +624,19 @@ mod tests {
                 .await;
 
         assert!(
-            block.contains("high ranked alpha"),
-            "top slot should remain: {block}"
+            block.text.contains("high ranked alpha"),
+            "top slot should remain: {}",
+            block.text
         );
         assert!(
-            block.contains("mid ranked beta"),
-            "second slot should remain without exploration: {block}"
+            block.text.contains("mid ranked beta"),
+            "second slot should remain without exploration: {}",
+            block.text
         );
         assert!(
-            !block.contains("cold low ranked gamma"),
-            "epsilon=0 must never inject the cold candidate: {block}"
+            !block.text.contains("cold low ranked gamma"),
+            "epsilon=0 must never inject the cold candidate: {}",
+            block.text
         );
     }
 
@@ -602,16 +650,19 @@ mod tests {
                 .await;
 
         assert!(
-            block.contains("high ranked alpha"),
-            "highest-ranked slot must be kept: {block}"
+            block.text.contains("high ranked alpha"),
+            "highest-ranked slot must be kept: {}",
+            block.text
         );
         assert!(
-            block.contains("cold low ranked gamma"),
-            "forced explore should inject the cold candidate: {block}"
+            block.text.contains("cold low ranked gamma"),
+            "forced explore should inject the cold candidate: {}",
+            block.text
         );
         assert!(
-            !block.contains("mid ranked beta"),
-            "lowest-ranked top slot should be replaced: {block}"
+            !block.text.contains("mid ranked beta"),
+            "lowest-ranked top slot should be replaced: {}",
+            block.text
         );
         assert!(
             mm.was_recently_explored("explore-cold").await,
@@ -640,8 +691,9 @@ mod tests {
                 .await;
 
         assert!(
-            block.contains("only alpha slot") && block.contains("only beta slot"),
-            "with no cold candidate, original top must be kept (no panic): {block}"
+            block.text.contains("only alpha slot") && block.text.contains("only beta slot"),
+            "with no cold candidate, original top must be kept (no panic): {}",
+            block.text
         );
     }
 
@@ -654,8 +706,9 @@ mod tests {
             MemoryContextInjector::recall("rust programming ranked fact", &mm, 2, 0.5, Some(true))
                 .await;
         assert!(
-            first.contains("cold low ranked gamma"),
-            "first forced explore should inject cold: {first}"
+            first.text.contains("cold low ranked gamma"),
+            "first forced explore should inject cold: {}",
+            first.text
         );
         assert!(
             mm.was_recently_explored("explore-cold").await,
@@ -668,16 +721,19 @@ mod tests {
             MemoryContextInjector::recall("rust programming ranked fact", &mm, 2, 0.5, Some(true))
                 .await;
         assert!(
-            second.contains("high ranked alpha"),
-            "highest-ranked slot must still be kept: {second}"
+            second.text.contains("high ranked alpha"),
+            "highest-ranked slot must still be kept: {}",
+            second.text
         );
         assert!(
-            second.contains("mid ranked beta"),
-            "with cold blocked, original second slot should return: {second}"
+            second.text.contains("mid ranked beta"),
+            "with cold blocked, original second slot should return: {}",
+            second.text
         );
         assert!(
-            !second.contains("cold low ranked gamma"),
-            "recently explored cold must not be re-injected: {second}"
+            !second.text.contains("cold low ranked gamma"),
+            "recently explored cold must not be re-injected: {}",
+            second.text
         );
     }
 
@@ -731,20 +787,24 @@ mod tests {
                 .await;
 
         assert!(
-            block.contains("high ranked alpha"),
-            "highest-ranked slot must be kept: {block}"
+            block.text.contains("high ranked alpha"),
+            "highest-ranked slot must be kept: {}",
+            block.text
         );
         assert!(
-            block.contains("live cold epsilon"),
-            "live cold should be the exploration pick: {block}"
+            block.text.contains("live cold epsilon"),
+            "live cold should be the exploration pick: {}",
+            block.text
         );
         assert!(
-            !block.contains("tombstone cold delta"),
-            "superseded tombstone must never be chosen as cold: {block}"
+            !block.text.contains("tombstone cold delta"),
+            "superseded tombstone must never be chosen as cold: {}",
+            block.text
         );
         assert!(
-            !block.contains("mid ranked beta"),
-            "lowest top slot should be replaced by live cold: {block}"
+            !block.text.contains("mid ranked beta"),
+            "lowest top slot should be replaced by live cold: {}",
+            block.text
         );
         assert!(
             mm.was_recently_explored("explore-cold-live").await,

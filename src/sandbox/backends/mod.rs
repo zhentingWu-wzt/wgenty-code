@@ -170,33 +170,56 @@ pub fn apply_noninteractive_env_std(cmd: &mut std::process::Command) {
 }
 
 /// Auto-select the best available backend for the current platform.
-pub fn create_backend() -> Box<dyn SandboxBackend> {
+///
+/// Returns the backend and a vector of diagnostic check results from the
+/// platform-specific availability probes. When the backend is `none`, the
+/// diagnostics explain *why* no kernel sandbox could be activated and suggest
+/// remediations.
+pub fn create_backend() -> (
+    Box<dyn SandboxBackend>,
+    Vec<crate::sandbox::DiagnosticIssue>,
+) {
     #[cfg(target_os = "macos")]
     {
+        let diagnostics = macos::MacOSBackend::diagnostic_checks();
         if macos::MacOSBackend::is_available() {
             tracing::info!("Selected macOS Seatbelt sandbox backend");
-            return Box::new(macos::MacOSBackend::new());
+            (Box::new(macos::MacOSBackend::new()), diagnostics)
+        } else {
+            tracing::warn!("macOS seatbelt backend unavailable; falling back to no-op");
+            (Box::new(none::NoneBackend), diagnostics)
         }
     }
 
     #[cfg(target_os = "linux")]
     {
+        let diagnostics = linux::LinuxBackend::diagnostic_checks();
         if linux::LinuxBackend::is_available() {
             tracing::info!("Selected Linux seccomp+namespace sandbox backend");
-            return Box::new(linux::LinuxBackend::new());
+            (Box::new(linux::LinuxBackend::new()), diagnostics)
+        } else {
+            tracing::warn!("Linux sandbox backend unavailable; falling back to no-op");
+            (Box::new(none::NoneBackend), diagnostics)
         }
     }
 
     #[cfg(target_os = "windows")]
     {
+        let diagnostics = windows::diagnostic_checks();
         if windows::WindowsBackend::is_available() {
             tracing::info!("Selected Windows Job Object sandbox backend");
-            return Box::new(windows::WindowsBackend::new());
+            (Box::new(windows::WindowsBackend::new()), diagnostics)
+        } else {
+            tracing::warn!("Windows sandbox backend unavailable; falling back to no-op");
+            (Box::new(none::NoneBackend), diagnostics)
         }
     }
 
-    tracing::warn!("No kernel sandbox available; using no-op fallback (policy-only enforcement)");
-    Box::new(none::NoneBackend)
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        tracing::warn!("Unknown platform; using no-op fallback (policy-only enforcement)");
+        (Box::new(none::NoneBackend), Vec::new())
+    }
 }
 
 #[cfg(test)]

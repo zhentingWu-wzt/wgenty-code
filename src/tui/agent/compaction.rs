@@ -1,51 +1,5 @@
-//! TUI-only background-result injection (command tasks).
-//!
 //! Micro/auto compaction policy lives in `agent::runtime`; auto-summary I/O is
 //! `adapters::TuiCompactor`.
-
-use super::AgentLoop;
-use crate::api::ChatMessage;
-
-impl AgentLoop {
-    pub(super) async fn inject_background_results(&mut self) {
-        match self.client.get_background_results().await {
-            Ok(results) if !results.is_empty() => {
-                // Subagent results arrive through task-group continuation turns.
-                // Only command background results are injected here.
-                let notification: String = results
-                    .iter()
-                    .filter_map(|r| {
-                        let result_type = r["result_type"].as_str().unwrap_or("command");
-                        if result_type == "subagent" {
-                            return None;
-                        }
-                        let task_id = r["task_id"].as_str().unwrap_or("unknown");
-                        let success = r["success"].as_bool().unwrap_or(false);
-                        Some(format!(
-                            "[Background task {} completed: {}]",
-                            task_id,
-                            if success { "SUCCESS" } else { "FAILED" }
-                        ))
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n\n");
-                if notification.is_empty() {
-                    return;
-                }
-                {
-                    let mut history = self.conversation_history.lock().await;
-                    history.push(ChatMessage::user(notification.clone()));
-                }
-                let _ = self
-                    .event_tx
-                    .send(crate::tui::app::types::AppEvent::BackgroundTaskResult(
-                        notification,
-                    ));
-            }
-            _ => {}
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

@@ -26,6 +26,11 @@ pub struct Session {
     pub metadata: HashMap<String, serde_json::Value>,
     #[serde(default)]
     pub status: SessionStatus,
+    /// Optimistic-concurrency version, bumped on every persisted write
+    /// (PUT overwrite and run saves). `#[serde(default)]` keeps pre-versioning
+    /// files loadable as version 0.
+    #[serde(default)]
+    pub version: u64,
     /// When `Some(n)`, this session was loaded as a lightweight index entry:
     /// `messages` is empty but the real message count is `n`.  Calling
     /// `load(id)` replaces the entry with the fully-deserialized session.
@@ -59,6 +64,7 @@ impl Session {
             ui_messages: Vec::new(),
             metadata: HashMap::new(),
             status: SessionStatus::Active,
+            version: 0,
             lazy_message_count: None,
         }
     }
@@ -177,6 +183,24 @@ pub enum SessionStatus {
     Error,
 }
 
+/// A session's worktree binding (project → worktree → session, N:1), persisted
+/// in `Session.metadata["worktree"]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionWorktree {
+    pub path: String,
+    pub branch: String,
+}
+
+/// Read the worktree binding from a session's metadata, if present and
+/// well-formed.
+pub fn worktree_of(session: &Session) -> Option<SessionWorktree> {
+    session
+        .metadata
+        .get("worktree")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,
@@ -186,8 +210,14 @@ pub struct SessionInfo {
     pub updated_at: DateTime<Utc>,
     pub message_count: usize,
     pub status: SessionStatus,
+    /// Worktree binding from metadata (None = main checkout).
+    #[serde(default)]
+    pub worktree: Option<SessionWorktree>,
 }
 
+/// Cheaply cloneable: the sessions dir plus shared in-memory index handles.
+/// Clones (e.g. the per-project manager cache in the daemon) share state.
+#[derive(Clone)]
 pub struct SessionManager {
     sessions_dir: PathBuf,
     active_session: Arc<RwLock<Option<Session>>>,
@@ -366,6 +396,9 @@ impl SessionManager {
                                 .get("status")
                                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                                 .unwrap_or_default();
+                            // Pre-versioning files have no `version`; index as 0.
+                            let version =
+                                value.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
                             let msg_count = value
                                 .get("messages")
                                 .and_then(|v| v.as_array())
@@ -382,6 +415,7 @@ impl SessionManager {
                                 ui_messages: Vec::new(),
                                 metadata: HashMap::new(),
                                 status,
+                                version,
                                 lazy_message_count: Some(msg_count),
                             };
                             let mut sessions = self.sessions.write().await;
@@ -460,6 +494,7 @@ impl SessionManager {
                 updated_at: s.updated_at,
                 message_count: s.lazy_message_count.unwrap_or(s.messages.len()),
                 status: s.status.clone(),
+                worktree: worktree_of(s),
             })
             .collect();
         drop(sessions);
@@ -556,6 +591,56 @@ impl SessionManager {
         Ok(())
     }
 
+    pub async fn unarchive(&self, id: &str) -> anyhow::Result<()> {
+        // Hydrate lazy-loaded index entries before mutating (same as archive()).
+        let needs_hydrate = {
+            let sessions = self.sessions.read().await;
+            sessions
+                .get(id)
+                .map(|s| s.lazy_message_count.is_some())
+                .unwrap_or(false)
+        };
+        if needs_hydrate {
+            self.load(id).await?;
+        }
+        let snapshot = {
+            let mut sessions = self.sessions.write().await;
+            if let Some(session) = sessions.get_mut(id) {
+                session.status = SessionStatus::Active;
+                Some(session.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(session) = snapshot {
+            self.persist_to_disk(&session).await?;
+        }
+        Ok(())
+    }
+
+    /// Set (`Some`) or remove (`None`) a metadata key on a session and persist.
+    /// Returns false when the session does not exist.
+    pub async fn set_metadata(
+        &self,
+        id: &str,
+        key: &str,
+        value: Option<serde_json::Value>,
+    ) -> anyhow::Result<bool> {
+        let Some(mut session) = self.get(id).await else {
+            return Ok(false);
+        };
+        match value {
+            Some(v) => {
+                session.metadata.insert(key.to_string(), v);
+            }
+            None => {
+                session.metadata.remove(key);
+            }
+        }
+        self.save(&session).await?;
+        Ok(true)
+    }
+
     pub async fn search(&self, query: &str) -> Vec<SessionInfo> {
         let query_lower = query.to_lowercase();
         let sessions = self.sessions.read().await;
@@ -576,6 +661,7 @@ impl SessionManager {
                 updated_at: s.updated_at,
                 message_count: s.lazy_message_count.unwrap_or(s.messages.len()),
                 status: s.status.clone(),
+                worktree: worktree_of(s),
             })
             .collect()
     }
@@ -590,6 +676,19 @@ impl Default for SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_session_without_version_deserializes_as_zero() {
+        // Pre-versioning persisted session JSON has no `version` field; it must
+        // deserialize with version 0 thanks to `#[serde(default)]`.
+        let legacy = serde_json::json!({
+            "id": "s1", "name": "s1", "project_path": null,
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z",
+            "messages": [], "metadata": {}, "status": "Active"
+        });
+        let session: Session = serde_json::from_value(legacy).expect("legacy json parses");
+        assert_eq!(session.version, 0);
+    }
 
     #[tokio::test]
     async fn load_all_recovers_persisted_sessions() {

@@ -68,9 +68,10 @@ pub fn list(
     session: Option<&str>,
     status: Option<&str>,
     limit: usize,
+    project: Option<&str>,
 ) -> anyhow::Result<String> {
     let store = open_store(db_path)?;
-    let headers = collect_headers(&store, session)?;
+    let headers = collect_headers(&store, session, project)?;
     Ok(render_list(&headers, status, limit))
 }
 
@@ -79,8 +80,13 @@ pub fn list(
 fn collect_headers(
     store: &SubagentTranscriptStore,
     session: Option<&str>,
+    project: Option<&str>,
 ) -> anyhow::Result<Vec<SubagentTranscriptHeader>> {
-    let mut headers: Vec<SubagentTranscriptHeader> = if let Some(sid) = session {
+    let mut headers: Vec<SubagentTranscriptHeader> = if let Some(pp) = project {
+        store
+            .list_by_project(pp)
+            .map_err(|e| anyhow::anyhow!("Failed to list transcripts: {}", e))?
+    } else if let Some(sid) = session {
         store
             .list_by_session(sid)
             .map_err(|e| anyhow::anyhow!("Failed to list transcripts: {}", e))?
@@ -200,11 +206,12 @@ pub fn health(
     db_path: &str,
     period: HealthPeriodArg,
     session: Option<&str>,
+    project: Option<&str>,
 ) -> anyhow::Result<String> {
     let store = open_store(db_path)?;
     let analyzer = SubagentHealthAnalyzer::new(store);
     let health = analyzer
-        .compute_health(session, period.into())
+        .compute_health(session, project, period.into())
         .map_err(|e| anyhow::anyhow!("Failed to compute health: {}", e))?;
     Ok(render_health(&health))
 }
@@ -286,8 +293,15 @@ pub async fn run(
             session,
             status,
             limit,
+            project,
         } => {
-            let out = list(&db_path, session.as_deref(), status.as_deref(), *limit)?;
+            let out = list(
+                &db_path,
+                session.as_deref(),
+                status.as_deref(),
+                *limit,
+                project.as_deref(),
+            )?;
             print!("{}", out);
         }
         super::SubagentCommands::Trace { id, format, raw } => {
@@ -300,8 +314,12 @@ pub async fn run(
                 Err(e) => return Err(e),
             }
         }
-        super::SubagentCommands::Health { period, session } => {
-            let out = health(&db_path, *period, session.as_deref())?;
+        super::SubagentCommands::Health {
+            period,
+            session,
+            project,
+        } => {
+            let out = health(&db_path, *period, session.as_deref(), project.as_deref())?;
             print!("{}", out);
         }
     }

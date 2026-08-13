@@ -12,14 +12,16 @@ use crate::tools::execution::sandbox_exec::{
 };
 use crate::tools::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// A completed background task result
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BackgroundResult {
     pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub result_type: String,
     pub command: String,
     pub stdout: String,
@@ -35,9 +37,36 @@ pub struct BackgroundResult {
     pub sandbox_level: Option<String>,
 }
 
+impl BackgroundResult {
+    /// Human-facing completion details shown by both live SSE delivery and
+    /// retained snapshot recovery.
+    pub(crate) fn format_completion_notification(&self) -> String {
+        format!(
+            "[Background task {} completed: {}]\ncommand: {}\nexit code: {}\nstdout:\n{}\nstderr:\n{}",
+            self.task_id,
+            if self.success { "SUCCESS" } else { "FAILED" },
+            self.command,
+            self.exit_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            self.stdout,
+            self.stderr,
+        )
+    }
+}
+
+/// Delivery hook for completed results. When installed (daemon retained-queue
+/// path), results go to the hook instead of the internal drain queue.
+type ResultHook = Arc<dyn Fn(BackgroundResult) + Send + Sync>;
+
 /// Manages background command execution and notification delivery.
 pub struct BackgroundManager {
     results: Arc<Mutex<Vec<BackgroundResult>>>,
+    /// Optional delivery hook; when set, completed results are delivered to
+    /// the hook instead of the internal drain queue. std RwLock: set once at
+    /// startup, read for a single clone per completion, never held across
+    /// `.await`.
+    result_hook: Arc<std::sync::RwLock<Option<ResultHook>>>,
     next_id: Arc<Mutex<u64>>,
     /// Shared with shell tools when attached via [`with_sandbox`](Self::with_sandbox).
     pub(crate) sandbox: Option<Arc<SandboxManager>>,
@@ -47,8 +76,38 @@ impl BackgroundManager {
     pub fn new() -> Self {
         Self {
             results: Arc::new(Mutex::new(Vec::new())),
+            result_hook: Arc::new(std::sync::RwLock::new(None)),
             next_id: Arc::new(Mutex::new(1)),
             sandbox: None,
+        }
+    }
+
+    /// Install a delivery hook for completed results. With a hook set,
+    /// results are delivered to the hook instead of the internal drain queue
+    /// (daemon retained-queue path); without a hook the CLI drain path is
+    /// unchanged.
+    pub fn set_result_hook(&self, hook: impl Fn(BackgroundResult) + Send + Sync + 'static) {
+        *self
+            .result_hook
+            .write()
+            .expect("background result hook lock poisoned") = Some(Arc::new(hook));
+    }
+
+    /// Deliver a completed result: to the installed hook if present, else
+    /// onto the internal drain queue.
+    async fn deliver_result(
+        results: &Arc<Mutex<Vec<BackgroundResult>>>,
+        hook_slot: &Arc<std::sync::RwLock<Option<ResultHook>>>,
+        result: BackgroundResult,
+    ) {
+        let hook = hook_slot
+            .read()
+            .expect("background result hook lock poisoned")
+            .clone();
+        if let Some(hook) = hook {
+            hook(result);
+        } else {
+            results.lock().await.push(result);
         }
     }
 
@@ -68,6 +127,23 @@ impl BackgroundManager {
         timeout_secs: u64,
         mode: EffectiveMode,
         workdir: Option<&std::path::Path>,
+    ) -> Result<String, ToolError> {
+        self.spawn_for_session(command, timeout_secs, mode, workdir, None)
+            .await
+    }
+
+    /// Spawn a command associated with a daemon session.
+    ///
+    /// Session-aware tool execution uses this entry point so retained results
+    /// can be delivered only to the owning session. Library callers that do
+    /// not have a session continue to use [`Self::spawn`].
+    pub async fn spawn_for_session(
+        &self,
+        command: &str,
+        timeout_secs: u64,
+        mode: EffectiveMode,
+        workdir: Option<&std::path::Path>,
+        session_id: Option<String>,
     ) -> Result<String, ToolError> {
         let mut id_lock = self.next_id.lock().await;
         let task_id = format!("bg_{}", *id_lock);
@@ -101,8 +177,10 @@ impl BackgroundManager {
         }
 
         let task_id_clone = task_id.clone();
+        let session_id_clone = session_id.clone();
         let command_clone = command.to_string();
         let results = self.results.clone();
+        let result_hook = self.result_hook.clone();
         let sandbox = self.sandbox.clone();
         let profile = policy.profile.clone();
         let fail_mode = policy.fail_mode;
@@ -129,12 +207,14 @@ impl BackgroundManager {
                                     false,
                                     &mode_str,
                                     &level_str,
+                                    session_id_clone.clone(),
                                 );
                             }
                             Err(e) => {
                                 if !should_degrade_to_direct(fail_mode) {
                                     return BackgroundResult {
                                         task_id: task_id_clone.clone(),
+                                        session_id: session_id_clone.clone(),
                                         result_type: "command".to_string(),
                                         command: cmd_inner.clone(),
                                         stdout: String::new(),
@@ -169,6 +249,7 @@ impl BackgroundManager {
                 match cmd.output().await {
                     Ok(out) => BackgroundResult {
                         task_id: task_id_clone.clone(),
+                        session_id: session_id_clone.clone(),
                         result_type: "command".to_string(),
                         command: cmd_inner.clone(),
                         stdout: String::from_utf8_lossy(&out.stdout).to_string(),
@@ -181,6 +262,7 @@ impl BackgroundManager {
                     },
                     Err(e) => BackgroundResult {
                         task_id: task_id_clone.clone(),
+                        session_id: session_id_clone.clone(),
                         result_type: "command".to_string(),
                         command: cmd_inner,
                         stdout: String::new(),
@@ -201,6 +283,7 @@ impl BackgroundManager {
                 Ok(r) => r,
                 Err(_) => BackgroundResult {
                     task_id: task_id_clone,
+                    session_id: session_id_clone,
                     result_type: "command".to_string(),
                     command: command_clone,
                     stdout: String::new(),
@@ -213,8 +296,7 @@ impl BackgroundManager {
                 },
             };
 
-            let mut results = results.lock().await;
-            results.push(final_result);
+            Self::deliver_result(&results, &result_hook, final_result).await;
         });
 
         Ok(task_id)
@@ -227,19 +309,24 @@ impl BackgroundManager {
         *id_lock += 1;
         drop(id_lock);
 
-        let mut results = self.results.lock().await;
-        results.push(BackgroundResult {
-            task_id,
-            result_type: "subagent".to_string(),
-            command: description.to_string(),
-            stdout: stdout.to_string(),
-            stderr: String::new(),
-            exit_code: if success { Some(0) } else { Some(1) },
-            success,
-            sandbox_bypassed: false,
-            permission_mode: None,
-            sandbox_level: None,
-        });
+        Self::deliver_result(
+            &self.results,
+            &self.result_hook,
+            BackgroundResult {
+                task_id,
+                session_id: None,
+                result_type: "subagent".to_string(),
+                command: description.to_string(),
+                stdout: stdout.to_string(),
+                stderr: String::new(),
+                exit_code: if success { Some(0) } else { Some(1) },
+                success,
+                sandbox_bypassed: false,
+                permission_mode: None,
+                sandbox_level: None,
+            },
+        )
+        .await;
     }
 
     /// Drain all completed results from the queue.
@@ -291,6 +378,7 @@ fn background_from_sandbox(
     bypassed: bool,
     mode: &str,
     level: &str,
+    session_id: Option<String>,
 ) -> BackgroundResult {
     let success = out.exit_code == 0 && !out.killed_by_sandbox;
     let stderr = if out.killed_by_sandbox {
@@ -300,6 +388,7 @@ fn background_from_sandbox(
     };
     BackgroundResult {
         task_id: task_id.to_string(),
+        session_id,
         result_type: "command".to_string(),
         command: command.to_string(),
         stdout: out.stdout,
@@ -365,7 +454,7 @@ impl Tool for BackgroundTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        self.run(input, EffectiveMode::default(), None).await
+        self.run(input, EffectiveMode::default(), None, None).await
     }
 
     async fn execute_with_context(
@@ -373,8 +462,13 @@ impl Tool for BackgroundTool {
         context: &ToolContext<'_>,
         input: serde_json::Value,
     ) -> Result<ToolOutput, ToolError> {
-        self.run(input, context.effective_mode, context.workdir)
-            .await
+        self.run(
+            input,
+            context.effective_mode,
+            context.workdir,
+            Some(context.agent.session_id.as_str()),
+        )
+        .await
     }
 }
 
@@ -384,6 +478,7 @@ impl BackgroundTool {
         input: serde_json::Value,
         mode: EffectiveMode,
         workdir: Option<&std::path::Path>,
+        session_id: Option<&str>,
     ) -> Result<ToolOutput, ToolError> {
         let command = input["command"].as_str().unwrap_or("");
         if command.is_empty() {
@@ -409,7 +504,16 @@ impl BackgroundTool {
             .unwrap_or(false);
 
         // Pre-check HardFail when no sandbox manager and enabled (spawn also checks).
-        let task_id = self.manager.spawn(command, timeout, mode, workdir).await?;
+        let task_id = self
+            .manager
+            .spawn_for_session(
+                command,
+                timeout,
+                mode,
+                workdir,
+                session_id.map(str::to_string),
+            )
+            .await?;
 
         // At accept time we do not yet know if runtime will degrade; mark intent.
         let bypassed = !policy.enabled
@@ -445,6 +549,19 @@ mod tests {
     use crate::agent::{AgentExecutionContext, SessionId, ToolInvocationId};
     use serde_json::json;
 
+    async fn wait_for_result(manager: &BackgroundManager) -> BackgroundResult {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(result) = manager.drain_results().await.into_iter().next() {
+                    return result;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("background command should complete")
+    }
+
     #[tokio::test]
     async fn normal_without_sandbox_hard_fails() {
         let mgr = Arc::new(BackgroundManager::new());
@@ -479,5 +596,86 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(true)
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_four_argument_spawn_remains_source_compatible() {
+        let manager = BackgroundManager::new();
+
+        let task_id = manager
+            .spawn("true", 300, EffectiveMode::Yolo, None)
+            .await
+            .expect("legacy spawn call should compile and start");
+
+        assert_eq!(task_id, "bg_1");
+    }
+
+    /// A contextual background command must retain its originating session
+    /// through asynchronous completion delivery.
+    #[tokio::test]
+    async fn contextual_execution_scopes_result_to_originating_session() {
+        let manager = Arc::new(BackgroundManager::new());
+        let tool = BackgroundTool::new(manager.clone());
+        let root = AgentExecutionContext::root(SessionId::new("session-a"));
+        let context = ToolContext {
+            agent: &root,
+            invocation_id: ToolInvocationId::new("inv"),
+            origin_turn_id: None,
+            workdir: None,
+            effective_mode: EffectiveMode::Yolo,
+            checkpoint: None,
+        };
+
+        tool.execute_with_context(&context, json!({"command": "echo hi"}))
+            .await
+            .expect("background command should start");
+
+        let result = wait_for_result(&manager).await;
+        assert_eq!(result.session_id.as_deref(), Some("session-a"));
+    }
+
+    /// Context-free calls deliberately leave completed results unscoped.
+    #[tokio::test]
+    async fn context_free_execution_leaves_result_unscoped() {
+        let manager =
+            Arc::new(BackgroundManager::new().with_sandbox(Arc::new(SandboxManager::new())));
+        let tool = BackgroundTool::new(manager.clone());
+
+        tool.execute(json!({"command": "echo hi"}))
+            .await
+            .expect("background command should start");
+
+        let result = wait_for_result(&manager).await;
+        assert_eq!(result.session_id, None);
+    }
+
+    /// With a result hook installed (daemon retained-queue path), completed
+    /// results are delivered to the hook instead of the internal drain queue.
+    #[tokio::test]
+    async fn result_hook_receives_results_instead_of_drain_queue() {
+        let mgr = BackgroundManager::new();
+        let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received_in_hook = received.clone();
+        mgr.set_result_hook(move |result| {
+            received_in_hook
+                .lock()
+                .expect("received lock poisoned")
+                .push(result);
+        });
+        mgr.push_subagent_result("desc", "out", true).await;
+        {
+            let got = received.lock().expect("received lock poisoned");
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].result_type, "subagent");
+        }
+        assert!(mgr.drain_results().await.is_empty());
+    }
+
+    /// Without a hook the CLI drain path is unchanged.
+    #[tokio::test]
+    async fn results_still_queue_without_hook() {
+        let mgr = BackgroundManager::new();
+        mgr.push_subagent_result("desc", "out", true).await;
+        assert_eq!(mgr.drain_results().await.len(), 1);
     }
 }

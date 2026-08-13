@@ -418,18 +418,44 @@ fn resolve_patch_path(workdir: &Path, raw_path: &str) -> PathBuf {
         if resolved_canon.starts_with(&workdir_canon) {
             return resolved_canon;
         }
-        // Path escapes workspace — fall back to a safe name under workdir
+        // Path escapes workspace - fall back to a safe name under workdir
         tracing::warn!(
             path = %raw_path,
             "patch path escaped workspace root, using filename only"
         );
+        let safe_name = relative
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("patched_file"));
+        return workdir.join(safe_name);
     }
 
-    // Fallback: use just the filename under workdir
-    let safe_name = relative
-        .file_name()
-        .unwrap_or_else(|| std::ffi::OsStr::new("patched_file"));
-    workdir.join(safe_name)
+    // File doesn't exist yet (Add File): verify the normalized path stays
+    // within the workspace, then return it as-is. Previously this fell
+    // through to the basename fallback, dropping the directory portion.
+    if let Ok(workdir_canon) = std::fs::canonicalize(workdir) {
+        let mut normalized = workdir_canon.clone();
+        for component in relative.components() {
+            match component {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                }
+                other => normalized.push(other.as_os_str()),
+            }
+        }
+        if !normalized.starts_with(&workdir_canon) {
+            tracing::warn!(
+                path = %raw_path,
+                "patch path escaped workspace root, using filename only"
+            );
+            let safe_name = relative
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("patched_file"));
+            return workdir.join(safe_name);
+        }
+        return normalized;
+    }
+    resolved
 }
 
 impl Default for ApplyPatchTool {
@@ -459,6 +485,35 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("base.txt")).unwrap(),
             "alpha\nbeta2\n"
+        );
+    }
+
+    /// Regression: Add File with a nested relative path must create the file
+    /// at the full path, not collapse to the basename. Previously
+    /// `resolve_patch_path` fell through to the basename fallback for
+    /// not-yet-existing files (canonicalize failed), silently writing to the
+    /// workdir root instead of the requested subdirectory.
+    #[tokio::test]
+    async fn add_file_nested_path_preserves_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tool = ApplyPatchTool::new();
+        let patch = "*** Begin Patch\n*** Add File: sub/deep/new.txt\n+hello\n*** End Patch";
+        tool.execute(serde_json::json!({
+            "patch": patch,
+            "workdir": tmp.path().to_string_lossy(),
+        }))
+        .await
+        .expect("Add File should succeed");
+
+        let expected = tmp.path().join("sub/deep/new.txt");
+        assert!(
+            expected.exists(),
+            "file should be created at nested path, not collapsed to basename"
+        );
+        assert_eq!(std::fs::read_to_string(&expected).unwrap(), "hello");
+        assert!(
+            !tmp.path().join("new.txt").exists(),
+            "basename fallback should not have been used"
         );
     }
 

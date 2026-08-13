@@ -65,9 +65,26 @@ pub enum Commands {
 
     /// Execute a single query
     Query {
-        /// The query to execute
+        /// The query to execute (use --prompt-file for long prompts)
         #[arg(short, long)]
-        prompt: String,
+        prompt: Option<String>,
+
+        /// Read the prompt from a file (useful for long task instructions
+        /// such as SWE eval prompts; avoids shell ARG_MAX limits)
+        #[arg(long, value_name = "PATH")]
+        prompt_file: Option<String>,
+
+        /// Autonomous mode: full filesystem/network access and no approval
+        /// gating. Bypasses the Critical-risk guardian block so the agent
+        /// can run arbitrary commands (builds, tests, installs). Intended for
+        /// disposable sandboxed eval runs (e.g. DeepSWE).
+        #[arg(long)]
+        yolo: bool,
+
+        /// Override the agent loop max rounds
+        /// (default: settings.agent.max_rounds or 100)
+        #[arg(long, value_name = "N")]
+        max_rounds: Option<usize>,
     },
 
     /// Manage configuration settings
@@ -201,6 +218,9 @@ pub enum SubagentCommands {
         /// Max rows to print
         #[arg(long, default_value_t = 50)]
         limit: usize,
+        /// Filter by project root path (the working dir the subagent ran in)
+        #[arg(long)]
+        project: Option<String>,
     },
 
     /// Render a single subagent trace by id
@@ -223,6 +243,9 @@ pub enum SubagentCommands {
         /// Filter by session id
         #[arg(long)]
         session: Option<String>,
+        /// Filter by project root path
+        #[arg(long)]
+        project: Option<String>,
     },
 }
 

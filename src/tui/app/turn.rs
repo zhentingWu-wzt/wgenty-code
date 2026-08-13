@@ -15,6 +15,9 @@ use crate::tui::util::truncate_session_name;
 impl App {
     /// Start the next pending turn (if any).
     pub(super) fn start_next_turn(&mut self) {
+        if self.has_running_turn() {
+            return;
+        }
         if let Some(pending) = self.pending_inputs.pop_front() {
             if pending.is_continuation() {
                 // Synthetic continuation: inject the delivered child results
@@ -50,13 +53,122 @@ impl App {
     /// Spawn an agent turn with `input_text` as the initial user message.
     /// When `hide_input` is true, the input is not displayed as a user message
     /// in the chat (used for internal prompts like /init).
+    /// Server-side turn: POST /run and let the SSE reader render events.
+    /// The daemon owns the loop (LLM + tools + history); TUI only observes.
+    pub(super) fn start_server_side_run(&mut self, input_text: String, hide_input: bool) {
+        self.mark_daemon_owned_session_history();
+        if !hide_input {
+            // Push user message optimistically for rendering (daemon owns history).
+            self.committed_messages.push(UIMessage {
+                role: MessageRole::User,
+                content: input_text.clone(),
+                tool_name: None,
+                tool_args: None,
+                content_collapsed: false,
+                tool_collapsed: true,
+                tool_running: false,
+                diff_data: None,
+                tool_metadata: None,
+            });
+        }
+        let client = self.daemon_client.clone();
+        let sid = self.session_id.clone();
+        let tx = self.event_tx.clone();
+        let plan_mode = self.mode == AgentMode::PlanMode;
+        let name = self.session_name.clone();
+        let history = self.conversation_history.clone();
+        let save_lock = self.session_save_lock.clone();
+        let needs_initial_upsert = self.session_needs_initial_upsert.clone();
+        let ui_messages: Vec<_> = self
+            .committed_messages
+            .iter()
+            .map(UIMessage::to_session_ui_message)
+            .collect();
+        // (Re)subscribe the session-event SSE reader for the current session
+        // id. `ready` fires once the subscription is established so the run
+        // below doesn't miss its live-only events (mirrors the web client's
+        // subscribe-then-run ordering).
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        self.respawn_session_event_reader(Some(ready_tx));
+        self.respawn_trace_event_reader();
+        self.server_side_turn_active = true;
+        tokio::spawn(async move {
+            // Establish the daemon-ownership boundary under the same lock as
+            // generic TUI saves. Any save already in flight finishes before
+            // the run claim; queued saves observe the sticky ownership fence.
+            let _save_guard = save_lock.lock().await;
+            if needs_initial_upsert.load(std::sync::atomic::Ordering::Acquire) {
+                match client.session_exists(&sid).await {
+                    Ok(true) => {
+                        needs_initial_upsert.store(false, std::sync::atomic::Ordering::Release);
+                    }
+                    Ok(false) => {
+                        // Only the locally minted startup id may take this path.
+                        // Existing/loaded sessions are initialized with the flag
+                        // false and can never be overwritten here.
+                        let h = { history.lock().await.clone() };
+                        if let Err(error) = client.save_session(&sid, &name, &h, &ui_messages).await
+                        {
+                            super::server_side::send_stream_termination(
+                                &tx,
+                                format!("initial session upsert failed: {error}"),
+                            );
+                            return;
+                        }
+                        needs_initial_upsert.store(false, std::sync::atomic::Ordering::Release);
+                    }
+                    Err(error) => {
+                        super::server_side::send_stream_termination(
+                            &tx,
+                            format!("session existence check failed: {error}"),
+                        );
+                        return;
+                    }
+                }
+            }
+            // Initial local ids become subscribable only after the safe upsert
+            // above. Then wait for the reader before claiming the daemon run so
+            // no live-only event can be missed.
+            if tokio::time::timeout(std::time::Duration::from_secs(10), ready_rx)
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    session_id = %sid,
+                    "session event reader not connected before run; some early events may be missed"
+                );
+            }
+            match client.run_session(&sid, &input_text, plan_mode).await {
+                Ok(_run_id) => {
+                    // The session-event SSE reader (respawned above) delivers
+                    // events into the UI as the daemon-owned run progresses.
+                }
+                Err(e) => {
+                    super::server_side::send_stream_termination(
+                        &tx,
+                        format!("server-side run failed: {e}"),
+                    );
+                }
+            }
+        });
+    }
+
     pub(super) fn spawn_agent_turn(&mut self, input_text: String, hide_input: bool) {
-        if hide_input {
+        self.spawn_agent_turn_inner(input_text, hide_input, true);
+    }
+
+    fn spawn_agent_turn_inner(
+        &mut self,
+        input_text: String,
+        hide_input: bool,
+        name_hidden_session: bool,
+    ) {
+        if hide_input && name_hidden_session {
             // Auto-name session from a short label instead of the full prompt
             if self.session_name == "New Session" {
                 self.session_name = "Init Project".to_string();
             }
-        } else if self.session_name == "New Session" {
+        } else if !hide_input && self.session_name == "New Session" {
             let name = truncate_session_name(&input_text);
             self.session_name = name;
         }
@@ -73,6 +185,11 @@ impl App {
         // by turn_id (daemon `begin_turn`). file_count is filled lazily from
         // the checkpoint manifest when the /undo picker opens.
         self.record_turn_start(turn_id.to_string(), &input_text, turn_id.to_string());
+        // Server-side mode: POST /run; the SSE reader renders events.
+        if self.server_side_loop {
+            self.start_server_side_run(input_text, hide_input);
+            return;
+        }
         let history = self.conversation_history.clone();
         let client = self.daemon_client.clone();
         let event_tx = self.event_tx.clone();
@@ -148,7 +265,7 @@ impl App {
             }
             // Per-turn recall: use MemoryContextInjector for keyword extraction
             // and TF-IDF search over cross-session memories.
-            let recalled_text = MemoryContextInjector::recall(
+            let recall_result = MemoryContextInjector::recall(
                 &input_agent,
                 &memory_manager,
                 recall_top_n,
@@ -156,6 +273,7 @@ impl App {
                 None,
             )
             .await;
+            let recalled_text = &recall_result.text;
 
             // Set memories on PromptContext (extract lines from the
             // <memory-context> block for the prompt builder).
@@ -228,6 +346,11 @@ impl App {
             }
             let _ = event_tx.send(AppEvent::TurnComplete);
         }));
+    }
+
+    /// Whether either TUI-owned or daemon-owned work is currently running.
+    pub(super) fn has_running_turn(&self) -> bool {
+        self.current_turn_handle.is_some() || self.server_side_turn_active
     }
 
     /// Spawn a synthetic continuation turn that consumes a claimed task-group
@@ -768,7 +891,17 @@ mod tests {
     use super::*;
     use crate::config::watcher::SettingsHandle;
     use crate::config::Settings;
+    use crate::tools::execution::BackgroundResult;
+    use crate::tui::app::PendingInput;
     use crate::tui::client::{CheckpointInfo, DaemonClient};
+    use axum::extract::State;
+    use axum::http::StatusCode;
+    use axum::response::sse::{Event, Sse};
+    use axum::response::IntoResponse;
+    use axum::routing::{get, post, put};
+    use axum::{Json, Router};
+    use std::convert::Infallible;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
@@ -776,6 +909,711 @@ mod tests {
         let client = DaemonClient::new("http://localhost:0".to_string());
         let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
         App::new(client, "test-interrupt".to_string(), settings)
+    }
+
+    fn background_result() -> BackgroundResult {
+        BackgroundResult {
+            task_id: "bg_a".to_string(),
+            session_id: Some("test-interrupt".to_string()),
+            result_type: "command".to_string(),
+            command: "true".to_string(),
+            stdout: "done".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            success: true,
+            sandbox_bypassed: false,
+            permission_mode: None,
+            sandbox_level: None,
+        }
+    }
+
+    #[derive(Clone)]
+    struct RunCapture {
+        messages: tokio::sync::mpsc::UnboundedSender<String>,
+        post_attempts: Arc<AtomicUsize>,
+        put_attempts: Arc<AtomicUsize>,
+        persisted_messages: Arc<tokio::sync::Mutex<Vec<String>>>,
+    }
+
+    async fn accept_session_save(State(capture): State<RunCapture>) -> StatusCode {
+        capture.put_attempts.fetch_add(1, Ordering::SeqCst);
+        *capture.persisted_messages.lock().await = vec!["stale TUI history".to_string()];
+        StatusCode::NO_CONTENT
+    }
+
+    async fn load_existing_session() -> Json<serde_json::Value> {
+        Json(serde_json::json!({
+            "id": "test-interrupt",
+            "name": "Existing Session",
+            "created_at": "",
+            "updated_at": "",
+            "messages": [],
+            "ui_messages": []
+        }))
+    }
+
+    async fn missing_session() -> StatusCode {
+        StatusCode::NOT_FOUND
+    }
+
+    async fn pending_sse() -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+        Sse::new(futures::stream::pending())
+    }
+
+    async fn capture_run(
+        State(capture): State<RunCapture>,
+        Json(body): Json<serde_json::Value>,
+    ) -> axum::response::Response {
+        if capture.post_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            return (StatusCode::CONFLICT, "run active").into_response();
+        }
+        let message = body["message"].as_str().unwrap_or_default().to_string();
+        capture
+            .persisted_messages
+            .lock()
+            .await
+            .push(message.clone());
+        capture
+            .messages
+            .send(message)
+            .expect("run capture receiver remains open");
+        (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "run_id": "run-background-result",
+                "session_id": "test-interrupt"
+            })),
+        )
+            .into_response()
+    }
+
+    #[tokio::test]
+    async fn completed_background_result_renders_without_starting_hidden_turn_when_idle() {
+        let mut app = build_app();
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+
+        assert!(
+            app.current_turn_handle.is_none(),
+            "an SSE notification must not start a local model turn"
+        );
+        assert!(
+            app.pending_inputs.is_empty(),
+            "an SSE notification must not queue a hidden turn"
+        );
+        assert_eq!(
+            app.session_name, "New Session",
+            "hidden result does not name the session"
+        );
+        assert!(app.committed_messages.iter().any(|message| {
+            message.role == MessageRole::System
+                && message.content
+                    == "[Background task bg_a completed: SUCCESS]\ncommand: true\nexit code: 0\nstdout:\ndone\nstderr:\n"
+        }));
+        assert!(!app
+            .committed_messages
+            .iter()
+            .any(|message| { message.role == MessageRole::User && message.content.is_empty() }));
+    }
+
+    #[tokio::test]
+    async fn completed_background_result_is_displayed_without_queuing_while_running() {
+        let mut app = build_app();
+        app.current_turn_handle = Some(tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }));
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+
+        assert!(
+            app.current_turn_handle.is_some(),
+            "existing turn keeps running"
+        );
+        assert!(
+            app.pending_inputs.is_empty(),
+            "running turn does not queue a continuation"
+        );
+        assert!(app.committed_messages.iter().any(|message| {
+            message.role == MessageRole::System
+                && message.content
+                    == "[Background task bg_a completed: SUCCESS]\ncommand: true\nexit code: 0\nstdout:\ndone\nstderr:\n"
+        }));
+        app.current_turn_handle
+            .take()
+            .expect("running turn remains active")
+            .abort();
+    }
+
+    #[tokio::test]
+    async fn completed_background_result_shows_captured_output_while_running() {
+        let mut app = build_app();
+        app.current_turn_handle = Some(tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }));
+        let mut result = background_result();
+        result.success = false;
+        result.stdout = "partial output".to_string();
+        result.stderr = "command failed".to_string();
+        result.exit_code = Some(1);
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(result))
+            .await;
+
+        assert!(app.committed_messages.iter().any(|message| {
+            message.role == MessageRole::System
+                && message.content
+                    == "[Background task bg_a completed: FAILED]\ncommand: true\nexit code: 1\nstdout:\npartial output\nstderr:\ncommand failed"
+        }));
+        assert!(app.pending_inputs.is_empty(), "running turn stays unqueued");
+
+        app.current_turn_handle
+            .take()
+            .expect("running turn remains active")
+            .abort();
+    }
+
+    #[tokio::test]
+    async fn live_and_snapshot_recovery_each_render_as_observer_notifications() {
+        let mut app = build_app();
+        app.current_turn_handle = Some(tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }));
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+        app.handle_event(AppEvent::BackgroundTaskRecovered(background_result()))
+            .await;
+
+        let completion_messages = app
+            .committed_messages
+            .iter()
+            .filter(|message| message.content.contains("Background task bg_a completed"))
+            .count();
+        assert_eq!(completion_messages, 2);
+
+        app.current_turn_handle
+            .take()
+            .expect("running turn remains active")
+            .abort();
+    }
+
+    #[tokio::test]
+    async fn snapshot_and_live_delivery_each_render_without_starting_turns() {
+        let mut app = build_app();
+
+        app.handle_event(AppEvent::BackgroundTaskRecovered(background_result()))
+            .await;
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+
+        let completion_messages = app
+            .committed_messages
+            .iter()
+            .filter(|message| message.content.contains("Background task bg_a completed"))
+            .count();
+        assert_eq!(completion_messages, 2);
+        assert!(app.current_turn_handle.is_none());
+        assert!(app.pending_inputs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn server_side_background_result_does_not_mark_a_turn_running() {
+        let mut app = build_app();
+        app.server_side_loop = true;
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+
+        assert!(!app.server_side_turn_active);
+        assert!(app.current_turn_handle.is_none());
+
+        if let Some(handle) = app.session_event_reader.take() {
+            handle.abort();
+        }
+        if let Some(handle) = app.trace_event_reader.take() {
+            handle.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn exit_snapshot_after_background_notice_does_not_put_stale_history() {
+        let (message_tx, _message_rx) = tokio::sync::mpsc::unbounded_channel();
+        let capture = RunCapture {
+            messages: message_tx,
+            post_attempts: Arc::new(AtomicUsize::new(0)),
+            put_attempts: Arc::new(AtomicUsize::new(0)),
+            persisted_messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
+        let router = Router::new()
+            .route("/api/v1/sessions/:id", put(accept_session_save))
+            .with_state(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind exit-save capture server");
+        let address = listener
+            .local_addr()
+            .expect("read exit-save capture address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve exit-save capture server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "test-interrupt".to_string(),
+            settings,
+        );
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+        app.save_session_snapshot().await;
+
+        assert_eq!(
+            capture.put_attempts.load(Ordering::SeqCst),
+            0,
+            "an observer must not overwrite daemon-owned continuation history on exit"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn queued_local_save_is_dropped_after_daemon_takes_history_ownership() {
+        let (message_tx, _message_rx) = tokio::sync::mpsc::unbounded_channel();
+        let capture = RunCapture {
+            messages: message_tx,
+            post_attempts: Arc::new(AtomicUsize::new(0)),
+            put_attempts: Arc::new(AtomicUsize::new(0)),
+            persisted_messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
+        let router = Router::new()
+            .route("/api/v1/sessions/:id", put(accept_session_save))
+            .with_state(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind queued-save capture server");
+        let address = listener
+            .local_addr()
+            .expect("read queued-save capture address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve queued-save capture server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "test-interrupt".to_string(),
+            settings,
+        );
+        app.push_system_message("local snapshot queued before background completion");
+
+        let save_lock = app.session_save_lock.clone();
+        let save_guard = save_lock.lock().await;
+        app.spawn_save_session();
+        tokio::task::yield_now().await;
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+        drop(save_guard);
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(
+            capture.put_attempts.load(Ordering::SeqCst),
+            0,
+            "a queued local save must recheck daemon ownership after acquiring the lock"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn explicit_run_on_existing_daemon_session_does_not_put_stale_local_history() {
+        let (message_tx, _message_rx) = tokio::sync::mpsc::unbounded_channel();
+        let capture = RunCapture {
+            messages: message_tx,
+            post_attempts: Arc::new(AtomicUsize::new(0)),
+            put_attempts: Arc::new(AtomicUsize::new(0)),
+            persisted_messages: Arc::new(tokio::sync::Mutex::new(vec![
+                "authoritative daemon history".to_string(),
+            ])),
+        };
+        let router = Router::new()
+            .route(
+                "/api/v1/sessions/:id",
+                get(load_existing_session).put(accept_session_save),
+            )
+            .route("/api/v1/sessions/:id/events", get(pending_sse))
+            .route("/api/v1/sessions/:id/run", post(capture_run))
+            .route("/api/v1/subagents/trace/stream", get(pending_sse))
+            .with_state(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind existing-session run server");
+        let address = listener
+            .local_addr()
+            .expect("read existing-session run address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve existing-session run server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "test-interrupt".to_string(),
+            settings,
+        );
+        app.server_side_loop = true;
+        app.conversation_history
+            .lock()
+            .await
+            .push(ChatMessage::assistant("stale local history"));
+
+        app.submit_input("explicit user turn".to_string());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while capture.post_attempts.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("explicit run reaches daemon");
+
+        assert_eq!(
+            capture.put_attempts.load(Ordering::SeqCst),
+            0,
+            "an existing daemon session must not be upserted from stale TUI history"
+        );
+        assert_eq!(
+            *capture.persisted_messages.lock().await,
+            vec!["authoritative daemon history".to_string()]
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn first_server_run_may_upsert_only_the_locally_minted_session() {
+        let (message_tx, _message_rx) = tokio::sync::mpsc::unbounded_channel();
+        let capture = RunCapture {
+            messages: message_tx,
+            post_attempts: Arc::new(AtomicUsize::new(0)),
+            put_attempts: Arc::new(AtomicUsize::new(0)),
+            persisted_messages: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        };
+        let router = Router::new()
+            .route(
+                "/api/v1/sessions/:id",
+                get(missing_session).put(accept_session_save),
+            )
+            .route("/api/v1/sessions/:id/events", get(pending_sse))
+            .route("/api/v1/sessions/:id/run", post(capture_run))
+            .route("/api/v1/subagents/trace/stream", get(pending_sse))
+            .with_state(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind initial-session upsert server");
+        let address = listener
+            .local_addr()
+            .expect("read initial-session upsert address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve initial-session upsert server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "test-interrupt".to_string(),
+            settings,
+        );
+        app.server_side_loop = true;
+
+        app.submit_input("first explicit turn".to_string());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while capture.post_attempts.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("initial session is upserted before explicit run");
+
+        assert_eq!(capture.put_attempts.load(Ordering::SeqCst), 1);
+        assert!(
+            !app.session_needs_initial_upsert
+                .load(std::sync::atomic::Ordering::Acquire),
+            "successful initial upsert closes the one-time creation path"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn server_run_waits_for_in_flight_local_put_before_claiming_daemon_ownership() {
+        #[derive(Clone)]
+        struct FenceCapture {
+            put_attempts: Arc<AtomicUsize>,
+            post_attempts: Arc<AtomicUsize>,
+            release_put: Arc<tokio::sync::Notify>,
+        }
+
+        async fn blocking_put(State(capture): State<FenceCapture>) -> StatusCode {
+            capture.put_attempts.fetch_add(1, Ordering::SeqCst);
+            capture.release_put.notified().await;
+            StatusCode::NO_CONTENT
+        }
+
+        async fn accept_run_after_fence(
+            State(capture): State<FenceCapture>,
+        ) -> axum::response::Response {
+            capture.post_attempts.fetch_add(1, Ordering::SeqCst);
+            (
+                StatusCode::ACCEPTED,
+                Json(serde_json::json!({
+                    "run_id": "run-after-save-fence",
+                    "session_id": "test-interrupt"
+                })),
+            )
+                .into_response()
+        }
+
+        let capture = FenceCapture {
+            put_attempts: Arc::new(AtomicUsize::new(0)),
+            post_attempts: Arc::new(AtomicUsize::new(0)),
+            release_put: Arc::new(tokio::sync::Notify::new()),
+        };
+        let router = Router::new()
+            .route(
+                "/api/v1/sessions/:id",
+                get(load_existing_session).put(blocking_put),
+            )
+            .route("/api/v1/sessions/:id/events", get(pending_sse))
+            .route("/api/v1/sessions/:id/run", post(accept_run_after_fence))
+            .route("/api/v1/subagents/trace/stream", get(pending_sse))
+            .with_state(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind in-flight save fence server");
+        let address = listener
+            .local_addr()
+            .expect("read in-flight save fence address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve in-flight save fence server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "test-interrupt".to_string(),
+            settings,
+        );
+        app.push_system_message("local snapshot already saving");
+        app.spawn_save_session();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while capture.put_attempts.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("local PUT enters the daemon before server-side takeover");
+
+        app.server_side_loop = true;
+        app.submit_input("explicit server-side turn".to_string());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            capture.post_attempts.load(Ordering::SeqCst),
+            0,
+            "POST /run must wait until the earlier local PUT releases the shared save lock"
+        );
+
+        capture.release_put.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while capture.post_attempts.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("server-side run starts after the old PUT completes");
+        assert_eq!(capture.put_attempts.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn background_sse_renders_without_posting_hidden_run_or_owning_gate() {
+        let (message_tx, mut message_rx) = tokio::sync::mpsc::unbounded_channel();
+        let post_attempts = Arc::new(AtomicUsize::new(0));
+        let put_attempts = Arc::new(AtomicUsize::new(0));
+        let persisted_messages = Arc::new(tokio::sync::Mutex::new(vec![
+            "prior daemon assistant message".to_string(),
+        ]));
+        let router = Router::new()
+            .route("/api/v1/sessions/:id", put(accept_session_save))
+            .route("/api/v1/sessions/:id/events", get(pending_sse))
+            .route("/api/v1/sessions/:id/run", post(capture_run))
+            .route("/api/v1/subagents/trace/stream", get(pending_sse))
+            .with_state(RunCapture {
+                messages: message_tx,
+                post_attempts: post_attempts.clone(),
+                put_attempts: put_attempts.clone(),
+                persisted_messages: persisted_messages.clone(),
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind daemon-run capture server");
+        let address = listener
+            .local_addr()
+            .expect("read daemon-run capture address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve daemon-run capture server");
+        });
+        let settings: SettingsHandle = Arc::new(RwLock::new(Settings::default()));
+        let mut app = App::new(
+            DaemonClient::new(format!("http://{address}")),
+            "test-interrupt".to_string(),
+            settings,
+        );
+        app.server_side_loop = true;
+        let wire = crate::tui::client::GlobalEventWire {
+            seq: 1,
+            kind: "background_result".to_string(),
+            data: serde_json::json!({"result": background_result()}),
+        };
+        let events =
+            crate::tui::app::server_side::global_event_to_app_events(wire, "test-interrupt");
+        assert_eq!(events.len(), 1, "matching SSE result maps to one UI event");
+        for event in events {
+            app.handle_event(event).await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        assert_eq!(
+            post_attempts.load(Ordering::SeqCst),
+            0,
+            "rendering a background SSE event must never POST /run or retry it"
+        );
+        assert_eq!(put_attempts.load(Ordering::SeqCst), 0);
+        assert!(message_rx.try_recv().is_err());
+        assert!(
+            app.pending_inputs.is_empty(),
+            "the observer must not retain a hidden continuation"
+        );
+        assert!(!app.server_side_turn_active, "SSE display owns no run gate");
+        assert!(app.current_turn_handle.is_none());
+        assert!(app.committed_messages.iter().any(|message| {
+            message.role == MessageRole::System
+                && message.content.contains("Background task bg_a completed")
+        }));
+
+        if let Some(handle) = app.session_event_reader.take() {
+            handle.abort();
+        }
+        if let Some(handle) = app.trace_event_reader.take() {
+            handle.abort();
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn queued_input_does_not_start_while_server_side_turn_is_active() {
+        let mut app = build_app();
+        app.server_side_turn_active = true;
+
+        app.submit_input("queued user input".to_string());
+
+        assert_eq!(app.pending_inputs.len(), 1);
+        assert!(app.current_turn_handle.is_none());
+        assert!(app.server_side_turn_active);
+    }
+
+    #[tokio::test]
+    async fn start_next_turn_obeys_server_side_running_gate() {
+        let mut app = build_app();
+        app.server_side_turn_active = true;
+        app.pending_inputs
+            .push_back(PendingInput::new("queued".to_string()));
+
+        app.start_next_turn();
+
+        assert_eq!(app.pending_inputs.len(), 1);
+        assert!(app.current_turn_handle.is_none());
+    }
+
+    #[tokio::test]
+    async fn server_terminal_event_releases_gate_and_starts_queued_input() {
+        let mut app = build_app();
+        app.server_side_turn_active = true;
+        app.pending_inputs
+            .push_back(PendingInput::new("queued".to_string()));
+
+        app.handle_event(AppEvent::ServerTurnTerminated).await;
+
+        assert!(!app.server_side_turn_active);
+        assert!(app.current_turn_handle.is_some());
+        assert!(app.pending_inputs.is_empty());
+
+        app.current_turn_handle
+            .take()
+            .expect("queued turn starts after terminal event")
+            .abort();
+    }
+
+    #[tokio::test]
+    async fn stale_background_result_is_dropped_after_session_switch() {
+        let mut app = build_app();
+        app.session_id = "session-b".to_string();
+
+        app.handle_event(AppEvent::BackgroundTaskCompleted(background_result()))
+            .await;
+
+        assert!(app.committed_messages.is_empty());
+        assert!(app.pending_inputs.is_empty());
+        assert!(app.current_turn_handle.is_none());
+    }
+
+    #[tokio::test]
+    async fn session_switch_restarts_the_session_scoped_global_reader() {
+        let mut app = build_app();
+        assert!(app.global_event_reader.is_none());
+
+        app.handle_event(AppEvent::SessionSwitched {
+            from_id: "test-interrupt".to_string(),
+            id: "session-b".to_string(),
+            name: "Session B".to_string(),
+        })
+        .await;
+
+        assert!(
+            app.global_event_reader.is_some(),
+            "session switch installs a reader filtered to the new session"
+        );
+
+        if let Some(handle) = app.global_event_reader.take() {
+            handle.abort();
+        }
+        if let Some(handle) = app.session_event_reader.take() {
+            handle.abort();
+        }
+        if let Some(handle) = app.trace_event_reader.take() {
+            handle.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_session_switch_is_dropped_when_its_source_is_no_longer_active() {
+        let mut app = build_app();
+        app.session_id = "newer-session".to_string();
+
+        app.handle_event(AppEvent::SessionSwitched {
+            from_id: "test-interrupt".to_string(),
+            id: "stale-target".to_string(),
+            name: "Stale Target".to_string(),
+        })
+        .await;
+
+        assert_eq!(app.session_id, "newer-session");
+        assert!(app.global_event_reader.is_none());
     }
 
     #[tokio::test]

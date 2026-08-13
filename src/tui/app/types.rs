@@ -195,7 +195,7 @@ mod agent_mode_effective_tests {
 
 /// A selectable option for `ask_user_question`, carrying a short label and a
 /// longer description (explanation) shown beneath the label in the panel.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct QuestionOption {
     /// Short display label (1-5 words).
     pub label: String,
@@ -291,6 +291,40 @@ pub enum AppEvent {
         multi_select: bool,
         responder: QuestionResponder,
     },
+    /// Server-side permission required (from SessionEvent SSE; no responder -
+    /// resolved via POST /resolve-permission).
+    ServerPermissionRequired {
+        request_id: String,
+        tool: String,
+        reason: String,
+        rule: String,
+    },
+    /// Server-side ask_user_question (from SessionEvent SSE; no responder -
+    /// resolved via POST /interactions/:id/resolve).
+    ServerQuestionAsked {
+        request_id: String,
+        question: String,
+        options: serde_json::Value,
+        multi_select: bool,
+    },
+    /// Server-side subagent progress update (from the trace SSE stream).
+    /// Applied to the [`SubagentTree`] via `upsert` so the live subagent tree
+    /// renders while a daemon-owned run drives subagents. Only applied in
+    /// server-side mode; client-side mode populates the tree via
+    /// [`AppEvent::AgentLocalView`] polling (upsert there would fight
+    /// `replace_local`).
+    SubagentTraceProgress(Box<crate::agent::progress::SubagentProgress>),
+    /// A server-side permission request was resolved (approved/denied),
+    /// possibly from another device. Dismisses the matching popup if still
+    /// showing without re-sending a decision (the daemon already has it).
+    ServerPermissionResolved {
+        request_id: String,
+    },
+    /// A server-side ask_user_question was resolved, possibly from another
+    /// device. Clears the matching popup without sending a duplicate answer.
+    ServerQuestionResolved {
+        request_id: String,
+    },
     /// A stream error occurred
     StreamError(String),
     /// Conversation compaction started: the transcript is being archived and
@@ -309,6 +343,9 @@ pub enum AppEvent {
     },
     /// A turn (user-input → final response) completed; start next queued input if any
     TurnComplete,
+    /// A daemon-owned turn ended without a normal TurnDone event (run error,
+    /// submission failure, or established SSE disconnect).
+    ServerTurnTerminated,
     /// A turn began processing
     TurnStarted {
         turn_id: TurnId,
@@ -333,6 +370,10 @@ pub enum AppEvent {
     CtrlCPressed,
     /// Structured plan updated via update_plan tool
     PlanUpdate(serde_json::Value),
+    /// Full todos snapshot from the daemon — a `todos_changed` global event
+    /// (`GET /api/v1/events`) or a fallback `GET /api/v1/todos` poll while the
+    /// subscription is down. Replaces the plan panel state wholesale.
+    TodosSnapshot(Vec<crate::tui::client::TodoItem>),
     /// User-visible system notice (e.g. per-turn reminder transcript portion).
     SystemNotice(String),
     /// Sessions loaded from daemon
@@ -386,6 +427,29 @@ pub enum AppEvent {
     },
     /// Background task/subagent result notification for display in chat.
     BackgroundTaskResult(String),
+    /// A retained background command result recovered for display only.
+    BackgroundTaskRecovered(crate::tools::execution::BackgroundResult),
+    /// A completed daemon-owned background command scoped to this session and
+    /// rendered as a notification only.
+    BackgroundTaskCompleted(crate::tools::execution::BackgroundResult),
+    SessionClearFailed {
+        suppress_phase_updates: bool,
+    },
+    /// The session picker observed final release of the old daemon run and may
+    /// transactionally adopt the selected id/name.
+    SessionSwitched {
+        /// Session that was active when cancellation began. The handler drops
+        /// the event if another reset won the race before final release.
+        from_id: String,
+        id: String,
+        name: String,
+    },
+    /// `/clear` has explicitly cancelled/reset the previous turn and may
+    /// adopt the newly created session without the interactive picker guard.
+    SessionCleared {
+        id: String,
+        name: String,
+    },
     /// A new task generation was established after `/clear` or shutdown
     /// cancellation. Obsolete root-direct subtrees are cancelled by the
     /// daemon; the app adopts the new generation and clears local views.

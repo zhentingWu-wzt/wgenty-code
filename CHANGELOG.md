@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added (Desktop packaging)
+
+- Desktop 打包链路打通：`tauri.conf.json` 的 `bundle.externalBin` 配置
+  `binaries/wgenty-code`，daemon 以 target-triple 命名（`wgenty-code-<triple>[.exe]`）
+  随安装包分发；本地一键打包脚本 `desktop/scripts/bundle.sh`（构建 daemon →
+  复制为 externalBin 约定命名 → `web` 前端构建 → `cargo tauri build`）。
+- 修复打包 app 内 daemon 查找：externalBin 二进制实际落在**主可执行文件同目录**
+  （macOS `Contents/MacOS/`），此前 `locate_daemon_binary` 只查 resource dir
+  （`Contents/Resources/`，仅有图标），打包后找不到 daemon 会回退 dev 路径而失败。
+  现在按「exe 同目录 → resource dir → dev target/」顺序查找，并用精确命名约定
+  （含 target-triple 连字符）排除 shell 自身 `wgenty-code-desktop` 与非二进制资源
+  （`wgenty-code.icns` 等）；新增 6 个单元测试覆盖命名判定与查找顺序。
+- 完整图标集：`tauri icon` 生成 `.icns`/`.ico`/多尺寸 png，替换原单一 `icon.png`。
+- CI：`release.yml` 新增 `desktop` job（tag 触发），原生架构矩阵
+  （macos-13 x64 / macos-14 arm64 / ubuntu-22.04 x64 / windows-2022 x64），
+  构建 daemon + web 前端 + `tauri build`，产物上传 Release 与 artifact。
+
+### Added (Multi-Project, web + daemon)
+
+- daemon 新增项目注册表（`~/.wgenty-code/projects.json`）：`GET/POST/DELETE /api/v1/projects`，
+  主项目（daemon working_dir）恒为第一项；项目 = 任意目录（不要求 git 仓库）。
+- session 按项目路由：`POST /sessions` 接受 `project_path`，sessions 存于各项目
+  `.wgenty-code/sessions/`；list/get/update/delete/run/events 跨项目聚合与路由。
+- 权限 policy、checkpoint 快照（`<project>/.wgenty-code/checkpoints/`）、memory 池
+  （`<project>/.wgenty-code/memory/`）、codegraph 探测均按 session 所属项目隔离；
+  同时修复了"相对路径按主项目校验、按绑定 workdir 执行"的权限校验旁路。
+- worktree 端点支持 `project` 参数（list/create/delete），非 git 项目返回 400。
+- web 侧边栏升级为多项目树：添加/移除项目、按项目分组 task(worktree) 与 session，
+  非 git 项目隐藏 task 功能；新建 session 对话框按项目预填工作区。
+
+### Fixed (Web)
+
+- 修复 web 端工具调用"不可见"：daemon 此前把每一轮 LLM 流结束（含
+  `finish_reason="tool_calls"` 的工具轮次）都广播为 `turn_done`，web 在工具执行前
+  就停止监听，工具执行过程和最终回答均不渲染。现在仅真正的 turn 结束才发布
+  `TurnDone`（每个 run 恰好一次），web 端对 `tool_calls` 轮次边界亦做了兼容。
+
 ### Changed (Memory Quality)
 
 - Compact 抽取改为“少而精”：收紧 system prompt，写入前按

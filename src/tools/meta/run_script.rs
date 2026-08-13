@@ -205,6 +205,7 @@ impl Tool for RunScriptTool {
                                     &result,
                                     settings.agent.subagent.trace.context_char_limit,
                                     retention,
+                                    Some(settings.storage.working_dir.to_string_lossy().to_string()),
                                 );
                             }
                             return match result {
@@ -248,6 +249,7 @@ impl Tool for RunScriptTool {
                             &result,
                             settings.agent.subagent.trace.context_char_limit,
                             retention,
+                            Some(settings.storage.working_dir.to_string_lossy().to_string()),
                         );
                     }
                     let (terminal, content) = match result {
