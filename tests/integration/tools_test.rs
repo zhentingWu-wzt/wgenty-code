@@ -152,7 +152,12 @@ async fn test_exec_command_interactive_io() {
             json!({
                 "session_id": session_id,
                 "chars": "world\n",
-                "yield_time_ms": 50,
+                // Same deadline semantics as exec_command: read_incremental
+                // returns when the command exits OR yield_time_ms passes. The
+                // interactive `read line; printf` command needs time to consume
+                // stdin and print on slow CI runners; a generous deadline
+                // returns early once the command exits.
+                "yield_time_ms": 2000,
                 "max_output_chars": 200
             }),
         )
