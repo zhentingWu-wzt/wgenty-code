@@ -89,7 +89,12 @@ async fn test_exec_command_session_lifecycle() {
             "exec_command",
             json!({
                 "command": "printf 'hello'",
-                "yield_time_ms": 50,
+                // read_incremental returns when the command exits OR the
+                // deadline passes. 50ms is too short on slow CI runners for
+                // the spawned process to even start; a generous deadline
+                // returns immediately for this fast command but tolerates
+                // scheduling latency.
+                "yield_time_ms": 2000,
                 "max_output_chars": 200
             }),
         )

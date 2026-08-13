@@ -63,7 +63,16 @@ impl Default for DaemonConfig {
 impl Settings {
     /// Resolve the path to ~/.wgenty-code/settings.json
     fn config_path() -> PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        // `WGENTY_HOME` overrides the user home directory (same layout:
+        // $WGENTY_HOME/.wgenty-code/settings.json). This is the canonical way
+        // to point the config at a custom location — required for hermetic
+        // tests, and useful for running multiple profiles. On Windows,
+        // dirs::home_dir() prefers the Known Folder API over the USERPROFILE
+        // env var, so env injection must go through this explicit override.
+        let home = std::env::var_os("WGENTY_HOME")
+            .map(PathBuf::from)
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("."));
         home.join(".wgenty-code").join("settings.json")
     }
 
