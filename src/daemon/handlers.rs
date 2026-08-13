@@ -3379,12 +3379,12 @@ mod tests {
         )
         .unwrap();
 
-        // dirs::home_dir() reads `HOME` on Unix but `USERPROFILE` on Windows —
-        // set both so the handler's load-from-disk path hits the fake home.
-        let prev_home = std::env::var_os("HOME");
-        let prev_userprofile = std::env::var_os("USERPROFILE");
-        std::env::set_var("HOME", fake_home.path());
-        std::env::set_var("USERPROFILE", fake_home.path());
+        // Point the config path at the fake home via WGENTY_HOME. This is the
+        // only reliable cross-platform override: dirs::home_dir() reads `HOME`
+        // on Unix but prefers the Known Folder API (COM) over USERPROFILE on
+        // Windows, so env injection through HOME/USERPROFILE is not hermetic.
+        let prev_wgenty_home = std::env::var_os("WGENTY_HOME");
+        std::env::set_var("WGENTY_HOME", fake_home.path());
         let run = async {
             let state = Arc::new(DaemonState::new(crate::state::AppState::new(settings)).await);
             let mut rx = state.global_event_hub.subscribe();
@@ -3408,13 +3408,9 @@ mod tests {
             assert_eq!(ev.data["provider"], "openai");
         }
         .await;
-        match prev_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        match prev_userprofile {
-            Some(v) => std::env::set_var("USERPROFILE", v),
-            None => std::env::remove_var("USERPROFILE"),
+        match prev_wgenty_home {
+            Some(v) => std::env::set_var("WGENTY_HOME", v),
+            None => std::env::remove_var("WGENTY_HOME"),
         }
         run
     }
