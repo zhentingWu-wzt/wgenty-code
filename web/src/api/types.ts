@@ -305,6 +305,29 @@ export interface LocalAgentViewResponse {
   children: DirectChildResponse[];
 }
 
+/** One node of the recursive subagent tree. Mirrors `AgentDirectoryEntry`
+ *  (src/daemon/models.rs). */
+export interface AgentDirectoryEntry {
+  agent_id: string;
+  status: AgentLifecycleStatus;
+  label: string;
+  summary: string | null;
+  cumulative_tokens: number;
+  started_at: number;
+  elapsed_ms: number;
+  round: number | null;
+  max_rounds: number | null;
+  depth: number;
+  children: AgentDirectoryEntry[];
+}
+
+/** Full subagent tree for a session. Mirrors `AgentDirectoryResponse`
+ *  (src/daemon/models.rs). */
+export interface AgentDirectoryResponse {
+  session_id: string;
+  root: AgentDirectoryEntry;
+}
+
 /** `POST /api/v1/ui/viewers` response. */
 export interface CreateViewerResponse {
   viewer_token: string;
