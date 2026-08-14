@@ -205,7 +205,7 @@ Prompt 8 层：base_instructions → permissions → developer → environment �
 | `agent.subagent.explore_readonly` | bool | true | explore/plan 隐藏 file_write/edit/apply_patch |
 | `agent.subagent.approval_timeout_secs` | u64 | 60 | 子代理升级审批超时(秒) |
 | `agent.subagent.timeout_decision` | enum | `deny` | 审批超时决策（fail closed） |
-| `agent.subagent.trace.sink` | enum | `file` | trace 流式输出：`file`/`daemon`/`both`/`off` |
+| `agent.subagent.trace.sink` | enum | `both` | trace 流式输出：`file`/`daemon`/`both`/`off`；默认 `both`（JSONL + daemon SSE，web/服务端实时进度依赖后者） |
 | `agent.subagent.trace.dir` | Option | null | trace JSONL 目录；null=`<project>/.wgenty-code/traces` |
 | `agent.subagent.trace.context_char_limit` | usize | 2000 | 失败轮次上下文（assistant 文本+工具输出）char-boundary 截断阈值 |
 | `agent.rlm.enabled` | bool | true | RLM 管道主开关 |

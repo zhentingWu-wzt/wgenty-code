@@ -69,16 +69,18 @@ pub enum TimeoutDecision {
 
 /// Where subagent trace events are emitted (design D6).
 ///
-/// - `file`: append JSONL to `<trace_dir>/<session_id>.jsonl` (default).
+/// - `file`: append JSONL to `<trace_dir>/<session_id>.jsonl` only.
 /// - `daemon`: broadcast to the daemon SSE trace stream (no file).
-/// - `both`: file + daemon.
+/// - `both`: file + daemon (default; keeps the offline JSONL trace while
+///   feeding the daemon SSE hub so web/server-side clients receive live
+///   subagent progress).
 /// - `off`: disable streaming entirely.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TraceSinkMode {
-    #[default]
     File,
     Daemon,
+    #[default]
     Both,
     Off,
 }

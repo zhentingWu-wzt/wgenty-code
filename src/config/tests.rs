@@ -492,7 +492,7 @@ fallback_models = ["claude-sonnet-4", "gpt-4o"]
     fn subagent_trace_context_char_limit_defaults_to_2000() {
         let trace = SubagentTraceConfig::default();
         assert_eq!(trace.context_char_limit, 2000);
-        assert_eq!(trace.sink, TraceSinkMode::File);
+        assert_eq!(trace.sink, TraceSinkMode::Both);
         assert!(trace.dir.is_none());
     }
 
