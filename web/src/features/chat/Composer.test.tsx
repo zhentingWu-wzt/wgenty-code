@@ -77,7 +77,68 @@ describe("Composer", () => {
 
     expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
-    expect(screen.getByRole("textbox")).toBeDisabled();
+    // The textarea stays enabled so the user can queue a follow-up message;
+    // the running placeholder hints at this.
+    expect(screen.getByRole("textbox")).not.toBeDisabled();
+    expect(screen.getByRole("textbox")).toHaveAttribute(
+      "placeholder",
+      "Agent is working… type to queue your next message",
+    );
+  });
+
+  it("calls onSend via Enter while running so the parent can queue", async () => {
+    const store = createSessionStore();
+    store.getState().setRunning(true);
+    const onSend = vi.fn();
+    const user = userEvent.setup();
+    renderComposer(onSend, store);
+
+    const input = screen.getByRole("textbox");
+    // Input is enabled while running — typing + Enter queues.
+    expect(input).not.toBeDisabled();
+    await user.type(input, "follow up");
+    await user.keyboard("{Enter}");
+
+    expect(onSend).toHaveBeenCalledWith("follow up");
+    expect(input).toHaveValue("");
+  });
+});
+
+describe("Composer pending queue", () => {
+  it("renders each queued message as an editable field", () => {
+    const store = createSessionStore();
+    store.getState().enqueueInput("first");
+    store.getState().enqueueInput("second");
+    renderComposer(vi.fn(), store);
+
+    expect(screen.getByLabelText("Queued message 1")).toHaveValue("first");
+    expect(screen.getByLabelText("Queued message 2")).toHaveValue("second");
+  });
+
+  it("edits a queued message in place and keeps it queued", async () => {
+    const store = createSessionStore();
+    store.getState().enqueueInput("draft");
+    const user = userEvent.setup();
+    renderComposer(vi.fn(), store);
+
+    const field = screen.getByLabelText("Queued message 1");
+    await user.clear(field);
+    await user.type(field, "revised");
+    expect(field).toHaveValue("revised");
+    // Still queued (not sent): store reflects the edit.
+    expect(store.getState().pendingInputs).toEqual(["revised"]);
+  });
+
+  it("removes a queued message via its remove button", async () => {
+    const store = createSessionStore();
+    store.getState().enqueueInput("keep");
+    store.getState().enqueueInput("drop");
+    const user = userEvent.setup();
+    renderComposer(vi.fn(), store);
+
+    await user.click(screen.getAllByLabelText("Remove queued message")[1]);
+    expect(store.getState().pendingInputs).toEqual(["keep"]);
+    expect(screen.queryByLabelText("Queued message 2")).not.toBeInTheDocument();
   });
 });
 

@@ -112,6 +112,11 @@ export interface SessionState {
    * messages, reminder, token usage). Null before the first turn completes. */
   turnContext: TurnContextData | null;
 
+  /** FIFO queue of messages waiting to run after the current turn completes.
+   *  Mirrors the TUI's `pending_inputs`: while a turn runs, new sends are
+   *  queued here and drained by `runSessionTurn` on clean completion. */
+  pendingInputs: string[];
+
   // ── Actions ──────────────────────────────────────────────────────────────
   setConnection: (s: ConnectionStatus) => void;
   setModelName: (n: string | null) => void;
@@ -134,6 +139,16 @@ export interface SessionState {
   setError: (err: TurnError | null) => void;
   setRunning: (b: boolean) => void;
   setTurnContext: (data: TurnContextData) => void;
+  /** Append a message to the per-session queue (sent while a turn runs). */
+  enqueueInput: (text: string) => void;
+  /** Pop the next queued message (FIFO). Returns undefined when empty. */
+  shiftPendingInput: () => string | undefined;
+  /** Discard all queued messages. */
+  clearPendingInputs: () => void;
+  /** Replace the queued message at `index` with `text`. */
+  editPendingInput: (index: number, text: string) => void;
+  /** Remove the queued message at `index`. */
+  removePendingInput: (index: number) => void;
   /** Surface a permission prompt; returns a promise the modal resolves. */
   requestPermission: (info: PermissionRequiredInfo) => Promise<PermissionDecision>;
   resolvePermission: (decision: PermissionDecision) => void;
@@ -170,6 +185,7 @@ export function createSessionStore() {
     pendingQuestion: null,
     turnContext: null,
 
+    pendingInputs: [],
     setConnection: (s) => set({ connection: s }),
     setModelName: (n) => set({ modelName: n }),
 
@@ -243,6 +259,29 @@ export function createSessionStore() {
     setTurnContext: (data) => set({ turnContext: data }),
     setRunning: (b) => set({ isRunning: b }),
 
+    enqueueInput: (text) => set((s) => ({ pendingInputs: [...s.pendingInputs, text] })),
+    shiftPendingInput: () => {
+      const list = get().pendingInputs;
+      let i = 0;
+      while (i < list.length && list[i].trim() === "") i += 1;
+      if (i >= list.length) {
+        if (list.length > 0) set({ pendingInputs: [] });
+        return undefined;
+      }
+      set({ pendingInputs: list.slice(i + 1) });
+      return list[i];
+    },
+    clearPendingInputs: () => set({ pendingInputs: [] }),
+    editPendingInput: (index, text) =>
+      set((s) => {
+        if (index < 0 || index >= s.pendingInputs.length) return {};
+        const next = [...s.pendingInputs];
+        next[index] = text;
+        return { pendingInputs: next };
+      }),
+    removePendingInput: (index) =>
+      set((s) => ({ pendingInputs: s.pendingInputs.filter((_, i) => i !== index) })),
+
     requestPermission: (info) =>
       new Promise<PermissionDecision>((resolve) => {
         set({ pendingPermission: { info, resolve } });
@@ -291,6 +330,7 @@ export function createSessionStore() {
         pendingSubagent: null,
         pendingQuestion: null,
         isRunning: false,
+        pendingInputs: [],
       }),
   }));
 }

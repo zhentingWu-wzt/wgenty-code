@@ -291,7 +291,16 @@ export function App() {
               </main>
               <Composer
                 onSend={(text) => {
-                  if (activeId) void runSessionTurn(client, activeId, text);
+                  if (!activeId || !activeStore) return;
+                  const state = activeStore.getState();
+                  if (state.isRunning) {
+                    // A turn is active — queue the message and auto-send it
+                    // once the current turn finishes cleanly. Mirrors the
+                    // TUI pending_inputs / submit_input path.
+                    state.enqueueInput(text);
+                  } else {
+                    void runSessionTurn(client, activeId, text);
+                  }
                 }}
                 onStop={() => {
                   if (activeId) void stopSessionTurn(client, activeId);
