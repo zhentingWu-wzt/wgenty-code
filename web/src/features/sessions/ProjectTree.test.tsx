@@ -79,18 +79,24 @@ describe("ProjectTree", () => {
     expect(screen.getByText("feat-x")).toBeInTheDocument();
   });
 
-  it("+ Task creates a worktree via prompt", async () => {
+  it("+ Task creates a worktree via the dialog", async () => {
     const spy = stubFetch();
     vi.stubGlobal("fetch", spy);
-    vi.stubGlobal("prompt", vi.fn().mockReturnValue("feat-y"));
     const user = userEvent.setup();
     render(<ProjectTree client={client} />);
 
     await user.click(await screen.findByRole("button", { name: /new task/i }));
-    const mk = spy.mock.calls.find(
-      ([u, i]) => String(u) === "/api/v1/worktrees" && i?.method === "POST",
+    // The dialog replaced the old native prompt; fill the branch field.
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    expect(dialog).toBeInTheDocument();
+    await user.type(screen.getByPlaceholderText(/feature\/login/i), "feat-y");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    const mk = await waitFor(() =>
+      spy.mock.calls.find(
+        ([u, i]) => String(u) === "/api/v1/worktrees" && i?.method === "POST",
+      ),
     );
-    expect(mk).toBeDefined();
     expect(JSON.parse(mk![1]!.body as string)).toEqual({
       path: ".worktrees/feat-y",
       branch: "feat-y",
