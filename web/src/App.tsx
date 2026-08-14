@@ -21,6 +21,7 @@ import { AppTopbar } from "./components/layout/AppTopbar";
 import type { SlashCommand } from "./components/slashCommands";
 import { sessionMessagesToDisplay } from "./agent/sessionLoad";
 import { usePermissionTrace } from "./hooks/usePermissionTrace";
+import { useSubagentDirectory } from "./hooks/useSubagentDirectory";
 import { usePolling } from "./hooks/usePolling";
 import { startUiSync } from "./state/uiSync";
 import { useUiStore } from "./state/uiStore";
@@ -208,6 +209,11 @@ export function App() {
   // Subscribe to the trace SSE for pushed subagent permission prompts
   // (design D2.1: replaces 500ms polling of /tools/pending-permissions).
   usePermissionTrace(client);
+
+  // Poll the lightweight agent directory into the per-session store so the
+  // Subagents panel always has the whole-session tree (not just SSE-active
+  // nodes). Pauses while the tab is hidden; caches per session on switch.
+  useSubagentDirectory(client);
 
   // ── Daemon health heartbeat (design D7.1) ──────────────────────────────────
   // Poll /health on a slow cadence so the status bar reflects daemon
