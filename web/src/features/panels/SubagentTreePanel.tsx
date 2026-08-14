@@ -1,32 +1,49 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight, Network } from "lucide-react";
-import { useSubagentTraceStore, buildChildrenMap, type SubagentNode } from "../../state/subagentTraceStore";
+import { useSubagentTraceStore, type SubagentNode } from "../../state/subagentTraceStore";
+import { useSubagentDirectoryStore, flattenCount } from "../../state/subagentDirectoryStore";
+import { useSessionManager } from "../../state/sessionManager";
 import { useUiStore } from "../../state/uiStore";
+import type { AgentDirectoryEntry } from "../../api/types";
 
 /**
- * Subagent execution tree panel - shows a live view of the subagent hierarchy,
- * fed by `progress` events from the daemon's trace SSE stream.
+ * Subagent execution tree panel — renders the whole-session agent hierarchy
+ * from the per-session directory cache (polled `GET /agents/directory`), which
+ * survives across turns and session switches.
  *
- * Each node displays label, status, current tool (if executing), elapsed time,
- * and cumulative tokens. Nodes are expandable to reveal children. Clicking a
- * node opens a dedicated detail tab (`subagent:<nodeId>`) backed by the
- * capability-scoped agent API. The tree auto-clears when a new root node
- * arrives (previous turn completed).
+ * The directory is the structural source of truth (labels, statuses, tokens,
+ * parent/child links). The SSE-fed trace store is a read-only supplement: a
+ * live trace node with the same agent id contributes its fresher `currentTool`
+ * only — the panel no longer depends on the trace store's clear-on-new-root
+ * semantics.
+ *
+ * Children are sorted running-first (running/thinking/pending, directory
+ * order kept among them), finished siblings follow newest-started-first.
+ * The header shows live badge counts plus a muted `离线` badge when polling
+ * has failed repeatedly (cached tree kept). Clicking any node — root included
+ * — opens its detail tab (`subagent:<nodeId>`).
  */
 export function SubagentTreePanel() {
-  const nodes = useSubagentTraceStore((s) => s.nodes);
   const openSubagentTab = useUiStore((s) => s.openSubagentTab);
-  const { roots, children } = buildChildrenMap(nodes);
+  // Resolve the directory cache key the same way as useSubagentDirectory /
+  // App.tsx: daemon id when bound, local id otherwise.
+  const activeEntry = useSessionManager((s) => (s.activeId ? s.entries[s.activeId] : undefined));
+  const sid = activeEntry ? (activeEntry.daemonId ?? activeEntry.id) : null;
+  const bucket = useSubagentDirectoryStore((s) => (sid ? s.bySession[sid] : undefined));
+  const traceNodes = useSubagentTraceStore((s) => s.nodes);
 
-  if (roots.length === 0) {
+  // Never polled (or session just created): the first fetch has not landed.
+  if (!bucket || !bucket.tree) {
     return (
       <div className="p-2">
-        <div className="p-2 text-[12px] text-muted-foreground">
-          No active subagents. The tree populates when a turn spawns subagents.
-        </div>
+        <div className="p-2 text-[12px] text-muted-foreground">加载中…</div>
       </div>
     );
   }
+
+  const counts = flattenCount(bucket.tree);
+  const childrenMap = new Map<string, SubagentNode[]>();
+  const rootNode = buildDirectoryTree(bucket.tree, sid ?? "", null, traceNodes, childrenMap);
 
   const onOpen = (node: SubagentNode) =>
     openSubagentTab({
@@ -37,16 +54,99 @@ export function SubagentTreePanel() {
 
   return (
     <div className="p-2">
-      <div className="mb-1 px-1 text-[10px] text-muted-foreground">
-        点击节点在新标签页查看详情
+      <div className="mb-1 flex items-center gap-2 px-1 text-[10px]">
+        <span className="text-muted-foreground">
+          ● {counts.running} running / {counts.total} total
+        </span>
+        {bucket.stale && (
+          <span className="rounded-sm bg-accent px-1 text-muted-foreground">离线</span>
+        )}
       </div>
-      <ul className="flex flex-col gap-0.5">
-        {roots.map((node) => (
-          <TreeNode key={node.nodeId} node={node} childrenMap={children} depth={0} onOpen={onOpen} />
-        ))}
-      </ul>
+      {bucket.tree.children.length === 0 ? (
+        <div className="p-2 text-[12px] text-muted-foreground">
+          本会话暂无子代理,发起任务后此处显示
+        </div>
+      ) : (
+        <>
+          <div className="mb-1 px-1 text-[10px] text-muted-foreground">
+            点击节点在新标签页查看详情
+          </div>
+          <ul className="flex flex-col gap-0.5">
+            <TreeNode
+              key={rootNode.nodeId}
+              node={rootNode}
+              childrenMap={childrenMap}
+              depth={0}
+              onOpen={onOpen}
+            />
+          </ul>
+        </>
+      )}
     </div>
   );
+}
+
+/** Lifecycle statuses that sort a child ahead of finished siblings. */
+const ACTIVE_CHILD_STATUSES = new Set(["running", "thinking", "pending"]);
+
+/**
+ * Convert one directory entry into a renderable SubagentNode. `nodeId` is the
+ * directory's `agent_id`; a live trace node with the same agent id (if any)
+ * contributes its `currentTool`, which the polled snapshot may lag behind.
+ */
+function toSubagentNode(
+  entry: AgentDirectoryEntry,
+  sessionId: string,
+  parentId: string | null,
+  traceNodes: Map<string, SubagentNode>,
+): SubagentNode {
+  const trace = traceNodes.get(entry.agent_id);
+  return {
+    nodeId: entry.agent_id,
+    parentId,
+    sessionId,
+    label: entry.label,
+    status: entry.status,
+    round: entry.round ?? null,
+    currentTool: trace ? trace.currentTool : null,
+    elapsedMs: entry.elapsed_ms,
+    cumulativeTokens: entry.cumulative_tokens,
+    lastUpdated: Date.now(),
+  };
+}
+
+/**
+ * Sort sibling directory entries: running-ish first (stable — directory order
+ * preserved among them), then finished agents by `started_at` descending.
+ */
+function sortSiblings(entries: AgentDirectoryEntry[]): AgentDirectoryEntry[] {
+  return [...entries].sort((a, b) => {
+    const aActive = ACTIVE_CHILD_STATUSES.has(a.status.toLowerCase()) ? 0 : 1;
+    const bActive = ACTIVE_CHILD_STATUSES.has(b.status.toLowerCase()) ? 0 : 1;
+    if (aActive !== bActive) return aActive - bActive;
+    if (aActive === 0) return 0;
+    return b.started_at - a.started_at;
+  });
+}
+
+/**
+ * Recursively convert a directory tree into the flat `SubagentNode` shape the
+ * `TreeNode` renderer consumes, filling `childrenMap` (keyed by node id) with
+ * each node's sorted children along the way.
+ */
+function buildDirectoryTree(
+  entry: AgentDirectoryEntry,
+  sessionId: string,
+  parentId: string | null,
+  traceNodes: Map<string, SubagentNode>,
+  childrenMap: Map<string, SubagentNode[]>,
+): SubagentNode {
+  const node = toSubagentNode(entry, sessionId, parentId, traceNodes);
+  const kids = sortSiblings(entry.children).map((child) =>
+    buildDirectoryTree(child, sessionId, entry.agent_id, traceNodes, childrenMap),
+  );
+  childrenMap.set(node.nodeId, kids);
+  return node;
 }
 
 function TreeNode({
