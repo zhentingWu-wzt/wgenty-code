@@ -757,7 +757,7 @@ mod tests {
 
     #[test]
     fn test_trace_sink_mode_serde_and_defaults() {
-        assert_eq!(TraceSinkMode::default(), TraceSinkMode::File);
+        assert_eq!(TraceSinkMode::default(), TraceSinkMode::Both);
         assert!(TraceSinkMode::File.writes_file());
         assert!(TraceSinkMode::Both.writes_file());
         assert!(!TraceSinkMode::Daemon.writes_file());
