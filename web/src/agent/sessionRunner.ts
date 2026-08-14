@@ -89,6 +89,11 @@ export async function runSessionTurn(
     pendingTools: [],
   };
 
+  // Track how this turn ended so the finally block knows whether to drain the
+  // queued-input FIFO. Only a clean finish auto-sends the next message — an
+  // error or explicit Stop leaves the queue intact for the user to retry.
+  let outcome: "ok" | "stopped" | "error" = "ok";
+
   try {
     // 3. POST /run — daemon spawns the turn and returns immediately.
     await client.runSession(daemonId, text);
@@ -138,9 +143,11 @@ export async function runSessionTurn(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg === "aborted") {
+      outcome = "stopped";
       // User hit stop — the reader was cancelled; daemon turn may still be
       // running server-side. Status set by stopSessionTurn.
     } else {
+      outcome = "error";
       store.getState().setError({
         message: msg,
         kind: "transport",
@@ -155,6 +162,12 @@ export async function runSessionTurn(
     store.getState().setRunning(false);
     if (m.entries[sessionId]?.store.getState().lastError === null) {
       m.setStatus(sessionId, "idle");
+    }
+    // Drain the next queued message only on a clean finish — not on error or
+    // explicit stop. Mirrors the TUI's pending_inputs / start_next_turn.
+    if (outcome === "ok") {
+      const next = store.getState().shiftPendingInput();
+      if (next) void runSessionTurn(client, sessionId, next);
     }
   }
 }
