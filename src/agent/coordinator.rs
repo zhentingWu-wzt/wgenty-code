@@ -16,7 +16,9 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::identity::{AgentExecutionContext, AgentId, AgentLifecycleStatus, SessionId};
-use crate::agent::store::{AgentRecord, InMemoryAgentStore, LocalAgentView, StoreError};
+use crate::agent::store::{
+    AgentRecord, DirectoryEntry, InMemoryAgentStore, LocalAgentView, StoreError,
+};
 use crate::agent::task_group::{TaskGroupDelivery, TaskGroupError, TaskGroupId, TaskGroupStore};
 
 /// Default bounded shutdown timeout applied while awaiting cancelling children.
@@ -1199,6 +1201,28 @@ impl AgentCoordinator {
     ) -> Result<(AgentRecord, Vec<AgentRecord>), CoordinatorError> {
         self.store
             .local_records_for_trusted_ui(session, agent)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Returns the recursive whole-tree directory rooted at `root` for a
+    /// trusted UI projection after navigation authority has already been
+    /// established.
+    ///
+    /// Hierarchy records only: progress cross-fill (tokens/elapsed/round)
+    /// stays in the daemon handler layer, mirroring `assemble_local_view`'s
+    /// separation of concerns.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "wired into get_agent_directory in Task 2")
+    )]
+    pub(crate) async fn trusted_ui_directory(
+        &self,
+        session: &SessionId,
+        root: &AgentId,
+    ) -> Result<DirectoryEntry, CoordinatorError> {
+        self.store
+            .directory_for_trusted_ui(session, root)
             .await
             .map_err(Into::into)
     }
@@ -3311,6 +3335,68 @@ mod tests {
                 .await,
             Err(CoordinatorError::NotVisible)
         ));
+    }
+
+    #[tokio::test]
+    async fn trusted_ui_directory_delegates_to_store_recursively() {
+        let coordinator = test_coordinator(8, 3);
+        let root = coordinator.ensure_root(SessionId::new("s")).await.unwrap();
+        let child_a = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("task a"))
+            .await
+            .unwrap();
+        let child_b = coordinator
+            .reserve_child(&root, SpawnChildRequest::new("task b"))
+            .await
+            .unwrap();
+        let grandchild = coordinator
+            .reserve_child(&child_a.context, SpawnChildRequest::new("grandtask"))
+            .await
+            .unwrap();
+
+        // Empty session root maps to NotVisible through the store.
+        assert!(matches!(
+            coordinator
+                .trusted_ui_directory(&SessionId::new("empty"), &root.agent_id)
+                .await,
+            Err(CoordinatorError::NotVisible)
+        ));
+
+        let directory = coordinator
+            .trusted_ui_directory(&root.session_id, &root.agent_id)
+            .await
+            .unwrap();
+        assert_eq!(directory.agent_id, root.agent_id);
+        assert_eq!(directory.depth, 0);
+        assert_eq!(directory.children.len(), 2);
+        // Child entries must be sorted by agent_id ascending.
+        let child_ids: Vec<&str> = directory
+            .children
+            .iter()
+            .map(|c| c.agent_id.as_str())
+            .collect();
+        let mut sorted = child_ids.clone();
+        sorted.sort();
+        assert_eq!(child_ids, sorted);
+
+        let entry_a = directory
+            .children
+            .iter()
+            .find(|c| c.agent_id == child_a.context.agent_id)
+            .expect("child a present");
+        assert_eq!(entry_a.label, "task a");
+        assert_eq!(entry_a.depth, 1);
+        assert_eq!(entry_a.children.len(), 1);
+        assert_eq!(entry_a.children[0].agent_id, grandchild.context.agent_id);
+        assert_eq!(entry_a.children[0].label, "grandtask");
+        assert_eq!(entry_a.children[0].depth, 2);
+
+        let entry_b = directory
+            .children
+            .iter()
+            .find(|c| c.agent_id == child_b.context.agent_id)
+            .expect("child b present");
+        assert!(entry_b.children.is_empty());
     }
 }
 
