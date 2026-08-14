@@ -1,17 +1,21 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Network } from "lucide-react";
 import { useSubagentTraceStore, buildChildrenMap, type SubagentNode } from "../../state/subagentTraceStore";
+import { useUiStore } from "../../state/uiStore";
 
 /**
- * Subagent execution tree panel — shows a live view of the subagent hierarchy,
+ * Subagent execution tree panel - shows a live view of the subagent hierarchy,
  * fed by `progress` events from the daemon's trace SSE stream.
  *
  * Each node displays label, status, current tool (if executing), elapsed time,
- * and cumulative tokens. Nodes are expandable to reveal children. The tree
- * auto-clears when a new root node arrives (previous turn completed).
+ * and cumulative tokens. Nodes are expandable to reveal children. Clicking a
+ * node opens a dedicated detail tab (`subagent:<nodeId>`) backed by the
+ * capability-scoped agent API. The tree auto-clears when a new root node
+ * arrives (previous turn completed).
  */
 export function SubagentTreePanel() {
   const nodes = useSubagentTraceStore((s) => s.nodes);
+  const openSubagentTab = useUiStore((s) => s.openSubagentTab);
   const { roots, children } = buildChildrenMap(nodes);
 
   if (roots.length === 0) {
@@ -24,11 +28,21 @@ export function SubagentTreePanel() {
     );
   }
 
+  const onOpen = (node: SubagentNode) =>
+    openSubagentTab({
+      nodeId: node.nodeId,
+      label: node.label,
+      rootSessionId: node.sessionId,
+    });
+
   return (
     <div className="p-2">
+      <div className="mb-1 px-1 text-[10px] text-muted-foreground">
+        点击节点在新标签页查看详情
+      </div>
       <ul className="flex flex-col gap-0.5">
         {roots.map((node) => (
-          <TreeNode key={node.nodeId} node={node} childrenMap={children} depth={0} />
+          <TreeNode key={node.nodeId} node={node} childrenMap={children} depth={0} onOpen={onOpen} />
         ))}
       </ul>
     </div>
@@ -39,10 +53,12 @@ function TreeNode({
   node,
   childrenMap,
   depth,
+  onOpen,
 }: {
   node: SubagentNode;
   childrenMap: Map<string, SubagentNode[]>;
   depth: number;
+  onOpen: (node: SubagentNode) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const kids = childrenMap.get(node.nodeId) ?? [];
@@ -59,15 +75,20 @@ function TreeNode({
   return (
     <li>
       <div
-        className="flex items-center gap-1 rounded-sm px-1 py-0.5 hover:bg-accent"
+        className="flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 hover:bg-accent"
         style={{ paddingLeft: `${depth * 12 + 4}px` }}
+        title="点击打开详情"
+        onClick={() => onOpen(node)}
       >
         {/* Expand/collapse toggle */}
         {hasChildren ? (
           <button
             type="button"
             className="shrink-0 text-muted-foreground"
-            onClick={() => setExpanded(!expanded)}
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpanded(!expanded);
+            }}
           >
             {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
           </button>
@@ -75,6 +96,7 @@ function TreeNode({
           <span className="w-[11px] shrink-0" />
         )}
 
+        <Network size={11} className="shrink-0 text-primary" />
         {/* Label + status */}
         <span className="min-w-0 flex-1 truncate text-[12px]">{node.label}</span>
         <span className={`shrink-0 text-[10px] ${statusColor(node.status)}`}>{node.status}</span>
@@ -101,7 +123,7 @@ function TreeNode({
       {expanded && hasChildren && (
         <ul className="flex flex-col gap-0.5">
           {kids.map((kid) => (
-            <TreeNode key={kid.nodeId} node={kid} childrenMap={childrenMap} depth={depth + 1} />
+            <TreeNode key={kid.nodeId} node={kid} childrenMap={childrenMap} depth={depth + 1} onOpen={onOpen} />
           ))}
         </ul>
       )}
